@@ -4661,6 +4661,42 @@ fn current_period_life_growth(state: &GameState) -> Vec<(PlayerId, u32)> {
 /// never auto-resolve, CR 732.2a). Both driven iterations run inside ONE
 /// `SimulationProbeGuard` so the injector's internal `apply_action` never recurses into
 /// this hook or any `!in_simulation_probe()`-gated shortcut logic.
+///
+/// # CR 732.1b — THIS ENGINE REPRESENTS THE LOOP INSTEAD OF PERFORMING IT
+///
+/// CR 732.1b: once the game reaches a state "in which a set of actions could be repeated
+/// indefinitely", the shortcut rules "can be used to determine how many times those actions are
+/// repeated without having to actually perform them, and how the loop is broken". Both halves of
+/// that sentence name an instrument this engine builds, and they are the two surfaces to map:
+///   • *how many times* — the `∞` capability marker and the certificate's bound. The loop is
+///     represented, never driven to exhaustion; `analysis::resource::elimination_bounds` supplies
+///     the largest count a proposal may legally contain.
+///   • *how the loop is broken* — the accept-or-shorten window (`WaitingFor::RespondToShortcut`)
+///     and the finite collapse the controller names at the ending point
+///     (`PayableResource::LoopCollapse`).
+///
+/// Representing rather than performing is the rule's own remedy, not an engine convenience.
+///
+/// CR 732.1a: "The rules for taking shortcuts are largely informal. As long as each player in the
+/// game understands the intent of each other player, any shortcut system they use is acceptable."
+/// A digital system that publishes the proposal, collects each other player's accept-or-shorten
+/// answer in turn order, and advances to the proposed ending point is such a system.
+///
+/// # WHERE THE SHORTCUT ENDS — THE SHORT VERSION
+///
+/// The loop ends by proceeding directly to the phase change, with the iterations elided by
+/// CR 732.1b ("without having to actually perform them"). At the phase change the opposing player
+/// has priority, and that priority window is the proposal's ending point. That is all this engine
+/// does, and CR 732.2a asks nothing more of it.
+///
+/// The support, for anyone checking the clause: CR 732.2a requires "the ending point of this
+/// sequence must be a place where a player has priority", which is satisfied by that window and
+/// NOT by the CR 500.5 step/phase end itself — CR 500.5 is a turn-based action and CR 117.3a puts
+/// priority at the BEGINNING of the next step. CR 732.2c then holds on its own terms: the game
+/// "advances to the last proposed ending point, with all game choices contained in the shortcut
+/// proposal having been taken", and the growth this engine lands at the CR 500.5 boundary is
+/// landed while that advance is still in progress. Stated again at `PayableResource::LoopCollapse`,
+/// which is where the count is named.
 fn try_offer_object_growth_shortcut(
     state: &GameState,
 ) -> Option<(
@@ -4703,7 +4739,19 @@ fn try_offer_object_growth_shortcut(
         .map(|c| loop_action_expected_def(state, c))
         .collect();
     // CR 732.2a: a shortcut "can't include conditional actions, where the outcome of a game
-    // event determines the next action." A driving ability whose body bears an auto-resolved
+    // event determines the next action."
+    //
+    // THIS GATE IS WHY EVERY PROPOSAL THIS ENGINE MAKES IS LEGAL — unconditionality holds BY
+    // CONSTRUCTION, not by inspection after the fact. Nothing conditional can reach a proposal:
+    // randomness is rejected here before driving, and `analysis::resource::elimination_bounds`
+    // separately stops the count STRICTLY SHORT of every CR 704 loss threshold, because a
+    // mid-sequence death would make the remaining declared choices unmakeable — itself a
+    // conditional action and an illegal proposal. Consequence for the display layer: a family the
+    // engine cannot certify as an unconditional collapse is never proposed as one, which is what
+    // `FamilyCollapseState`'s non-`Committed` variants render. Those variants are NOT a
+    // conditional shortcut proposal — they are the absence of a proposal this gate would pass.
+    //
+    // A driving ability whose body bears an auto-resolved
     // coin flip (CR 705.1) / die roll (CR 706.1a) / random selection (CR 701.9a/b) has more
     // than one equally-likely outcome ⇒ not a legal shortcut. Reject it STATICALLY, before
     // driving (cheap + compile-time exhaustive over `Effect`), scanning EVERY step of the period
@@ -5443,8 +5491,11 @@ fn handle_respond_to_shortcut(
             }
         }
         crate::analysis::loop_check::ShortcutResponse::Shorten { .. } => {
-            // CR 732.2c (Phase-3 conservative): hand this opponent a real priority window
-            // instead of taking the shortcut. Finite-K materialization is Phase 4.
+            // DEFICIENCY NOTE (realization gap vs the design at `types::game_state`'s
+            // `scheduled_collapse_axes` doc; full note on `ShortcutResponse`): CR 732.2b makes the
+            // named place the new ending point, so the shortcut should still be taken up to there.
+            // This hands the responder a real priority window instead. Tracked by the
+            // "Shortcut-system rules-correctness completion" follow-up in `.deferred-backlog.md`.
             priority::reset_priority(state);
             state.priority_player = player;
             state.waiting_for = WaitingFor::Priority { player };
@@ -15688,7 +15739,24 @@ mod stage2_injector_tests {
                 // the two tests this change adds contain no line matching the needle, so the
                 // total stays 37 and the partition stays 5/7/25. A drop path releasing a
                 // construction cursor cannot mint a CR 603.5 prompt.
-                "game/engine.rs:11712".to_string(),
+                //
+                // CR 732 ANNOTATION ROUND (this branch, base `684335b0a`): `:11712 ⇒ :11763`,
+                // `+51`, and ONLY this entry moved — the other four live in `effects/` and
+                // `scoped_library_search.rs`, untouched by a comment-only change. The `+51` is
+                // exactly this file's three hunks, ALL of which land above the producer:
+                // `@@ -4663,0 +4664,36 @@` (the CR 732.1b / 732.1a / 732.2a block on
+                // `try_offer_object_growth_shortcut`) is `+36`, `@@ -4706 +4742,13 @@` (the
+                // no-conditional-actions clause's role) is `+12`, and `@@ -5446,2 +5494,5 @@`
+                // (the `Shorten` deficiency note) is `+3`; predicted `11712+51` equals the
+                // observed coordinate exactly. Identity re-established, not assumed, on three
+                // axes: the line at `:11763` is sha256-identical to
+                // `684335b0a:game/engine.rs:11712`
+                // (`8a544e878d3e77fb80391b95af8f74059540d5ce4ad6fb83559f364df5cc7d63`); that
+                // text occurs exactly ONCE in the file, so the coordinate is unambiguous; and
+                // it is still inside `apply_retarget` on both sides. The round is comment-only,
+                // so no `waiting_for = ` or `Ok(Some(` line was added or removed anywhere and
+                // the total stays 37 with the partition 5/7/25.
+                "game/engine.rs:11763".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \

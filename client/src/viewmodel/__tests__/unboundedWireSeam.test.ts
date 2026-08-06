@@ -7,8 +7,8 @@
  * Every existing client test that touches these channels hand-writes its own `derived` block, so
  * this file is the only place the engine's wire shape and the client's readers meet.
  * Both goldens are captured AFTER the accept, while a finite collapse is merely SCHEDULED — the
- * engine defers APPLYING the growth to the next CR 500.5 boundary (an engine deviation,
- * pre-existing and deliberate), and the marks stay live through that window, so the ∞ channels are
+ * engine applies the growth at the next CR 500.5 boundary, while advancing to the shortcut's
+ * ending point (CR 732.2c), and the marks stay live through that window, so the ∞ channels are
  * still populated. If the engine went back to hiding them there, both goldens would regenerate
  * empty and every assertion below would red.
  * The `unbounded_pile → Set` hop is performed here rather than by `gameStateView.ts`, because

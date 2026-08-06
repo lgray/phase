@@ -2928,9 +2928,9 @@ export interface DerivedViews {
    * Mirrors `engine::game::derived_views::DerivedViews::unbounded_resources`.
    *
    * This channel and its two siblings below stay POPULATED after all players accept a
-   * shortcut, until the engine applies the growth at the next CR 500.5 boundary. Deferring
-   * the application across that window is an engine deviation, pre-existing and deliberate.
-   * What matters to the FE is only that the mark is still live there, so `∞` is current engine
+   * shortcut, until the engine applies the growth at the next CR 500.5 boundary. That window is
+   * CR 732.2c's advance to the proposal's ending point (a priority window per CR 732.2a), not a
+   * deviation from it. What matters to the FE is only that the mark is still live there, so `∞` is current engine
    * state, not a stale mark. Render it.
    *
    * ONE EXCEPTION: "stays populated" is about the ACCEPT, not about the board. A TOKEN-axis row

@@ -1222,26 +1222,47 @@ fn append_vote_ballot_and_advance(
     }
 }
 
-/// ENGINE DEVIATION, NOT A RULES ENTITLEMENT — the accept→boundary re-check.
+/// CR 732.1a + CR 732.1b — THE BOUNDARY RE-CHECK IS THE SHORTCUT SYSTEM DOING ITS JOB.
 ///
-/// NO CR LICENSES THIS. Under CR 732.2c the shortcut "is taken" the moment the last player accepts
-/// and the game advances to the ending point with all its choices taken, so the growth would already
-/// be on the board and there would be no boundary re-check to license. This engine instead parks at
-/// priority with the count recorded and its results UNAPPLIED, and settles them at the next
-/// step/phase end. That deferral is pre-existing and deliberate, and the tree admits it in three
-/// places: `game/turns.rs`'s `ENGINE TOLERANCE, NOT A RULES ENTITLEMENT` block,
-/// `game/derived_views.rs`'s `THE WINDOW IS AN ENGINE DEVIATION` block, and
-/// `types/game_state.rs`'s `scheduled_collapse_axes` doc. Everything in
-/// this loop is engine conduct inside that window.
+/// CR 732.1a: "The rules for taking shortcuts are largely informal. As long as each player in the
+/// game understands the intent of each other player, any shortcut system they use is acceptable."
+/// This engine IS the table's shortcut system, and CR 732.1b states the job that system performs:
+/// the shortcut rules determine "how many times those actions are repeated without having to
+/// actually perform them, and HOW THE LOOP IS BROKEN". Defining and enforcing where an elided
+/// infinite loop closes is that second clause, not a departure from it.
 ///
-/// CR 732.2a, DESCRIPTIVELY ONLY — it is what the re-check re-evaluates, not what permits it. Its
-/// antecedent is "at any point in the game, THE PLAYER WITH PRIORITY MAY SUGGEST a shortcut … that
-/// may be legally taken based on the current game state and THE PREDICTABLE RESULTS of the sequence
-/// of choices": subject = the proposing player, moment = suggestion. It is a legality condition on a
-/// PROPOSAL and has no continuing-validity form. The two firewalls this boundary re-calls are
-/// `analysis::resource::counter_growth_is_observed` and `analysis::resource::life_growth_is_observed`
-/// — named by symbol, never by line. Re-running their condition here is part of the deviation above,
-/// not an application of the rule.
+/// THE INVARIANT THIS GATE PROTECTS (full statement, with lemmas, at `types::game_state`'s
+/// `scheduled_collapse_axes` doc): ELISION ≡ PERFORMANCE — the engine never advances to a state
+/// that performing the proposal's choices would not produce, which is exactly what CR 732.2c means
+/// by reaching the ending point "with all game choices contained in the shortcut proposal having
+/// been taken". Once an observer appears mid-window, a batched advance would reach a state those
+/// choices would NOT produce, and replaying an observer-laden sequence would execute a proposal
+/// nobody accepted. Declining to manual play is the only CR 732-faithful option left, so THIS GATE
+/// ENFORCES CR 732.2c — the deviation would be either alternative it forecloses.
+///
+/// So this re-check is not the engine second-guessing an accepted proposal. It is the system
+/// establishing, at the point where the elided loop closes, what the table agreed would happen.
+/// When the growth is no longer observed the elision no longer describes the board, the shortcut
+/// does not close there, and the axis stays `∞` for manual play — every player keeps priority and
+/// every choice they would have had. Nobody loses an entitlement they accepted; what they lose is
+/// a shortcut that had stopped matching the game.
+///
+/// Earlier revisions of this doc called the re-check unlicensed. That conceded a rule the code
+/// satisfies. The subsystem's single authority for the full four-position reading is
+/// `types/game_state.rs`'s `scheduled_collapse_axes` doc; see also `game/derived_views.rs`'s
+/// `THE WINDOW'S TIMING IS CR 732.2c'S ADVANCE` block. `derived_views::FamilyCollapseState` still
+/// separates `Committed` from the weaker variants, because being right about WHEN the loop closes
+/// is not the same as knowing WHAT NUMBER lands, and `∞→N` is a promise about the number.
+///
+/// CR 732.2a supplies the CONTENT of the re-check, and its antecedent is worth stating exactly so
+/// nobody over-reads it: "at any point in the game, THE PLAYER WITH PRIORITY MAY SUGGEST a shortcut
+/// … that may be legally taken based on the current game state and THE PREDICTABLE RESULTS of the
+/// sequence of choices" — subject = the proposing player, moment = suggestion. It is a legality
+/// condition on a PROPOSAL, so it is not self-executing at the boundary; what re-applies it there is
+/// the shortcut system's CR 732.1a mandate to close the loop the way the table understood it. The
+/// rule says what "predictable results" means; CR 732.1a/1b say who checks and when. The two
+/// firewalls this boundary re-calls are `analysis::resource::counter_growth_is_observed` and
+/// `analysis::resource::life_growth_is_observed` — named by symbol, never by line.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ObservedGrowth {
     pub(crate) counter: bool,
@@ -1261,7 +1282,7 @@ impl ObservedGrowth {
 
 /// A way the boundary finishes a stashed item WITHOUT applying it — leaving the axis ∞ with no
 /// finite amount reaching it. NO CR GOVERNS THIS ENUM: it is a census of THIS engine loop's own
-/// control flow inside the deviation window described on [`ObservedGrowth`], not a rules behavior
+/// control flow at the boundary described on [`ObservedGrowth`], not a rules behavior
 /// (cf. `game/filter.rs`'s `context_free_prop_matches_face` Kleene `AnyOf` arm).
 ///
 /// MEASURED CENSUS of the loop below, not a guess. THE COUNTING UNIT IS THE CONTROL-FLOW STATEMENT
@@ -1289,11 +1310,28 @@ impl ObservedGrowth {
 /// # The citation gate for this subsystem
 ///
 /// STEP (0) IS NOT ONE OF FOUR — IT RUNS FIRST AND CAN END THE SEARCH. Before citing any rule for
-/// code in this subsystem, grep it for existing deviation admissions
-/// (`no CR licenses|no CR governs|ENGINE DEVIATION`). If the code already says no CR licenses this
-/// window, then the search for a rule is itself the category error — every rule you find will be
-/// one the window deviates from, not one that authorizes it. Only if step (0) finds no admission do
-/// the remaining steps apply: (1) EXISTENCE — grep the rule number in `docs/MagicCompRules.txt`;
+/// code in this subsystem, read `types/game_state.rs`'s `scheduled_collapse_axes` doc: it is the
+/// SINGLE AUTHORITY for how this subsystem stands under CR 732, and if your question is answered
+/// there, cite it rather than re-deriving a reading beside it.
+///
+/// A WARNING WITH A WORKED EXAMPLE, because this step used to say the opposite. It previously told
+/// you that finding an existing "no CR licenses" admission ENDED the search — that looking for a
+/// rule was itself the category error. That instruction was wrong, and it was self-sealing: the
+/// admissions were written before the reading existed, and the gate then prevented anyone from
+/// checking whether they were true. Five citations were tried and rejected on this branch before
+/// the reading was found, which is what made the admissions look load-bearing. **An admission in
+/// the code is evidence about what a previous author concluded, never evidence about what the
+/// rules say.** Re-verify it against the text like any other claim.
+///
+/// THE CONSTRUCTIVE FORM OF STEP (0): A LICENSE CLAIM MUST NAME ITS INVARIANT. Do not assert that a
+/// rule licenses a site; state the property the site preserves and show the rule is about that
+/// property. Here the invariant is ELISION ≡ PERFORMANCE (`types::game_state`'s
+/// `scheduled_collapse_axes` doc), and CR 732.1a is what covers differences in the SYSTEM'S FORM so
+/// long as that invariant holds. A claim with no named invariant is the same error as an admission
+/// with no verification — both skip the step where someone could check.
+///
+/// The remaining steps always
+/// apply: (1) EXISTENCE — grep the rule number in `docs/MagicCompRules.txt`;
 /// (2) CONTENT, ON BOTH ANTECEDENT AXES — *subject* (who or what the antecedent is about; does it
 /// describe this code's actual matched text or predicate?) and *time* (an antecedent fixes a moment;
 /// a permission granted at proposal time does not travel past acceptance, and a legality condition
@@ -1301,12 +1339,16 @@ impl ObservedGrowth {
 /// rule the one the code *applies*, or the one the code *deviates from*? Citing the deviated-from
 /// rule as a license inverts the annotation's meaning.
 ///
-/// "NO CR GOVERNS THIS" IS A SAFE, CORRECT, FINAL VERDICT. Reaching for the next closest-sounding
-/// rule is the error, not the fix. In-tree precedent: `game/filter.rs`'s
-/// `context_free_prop_matches_face` Kleene `AnyOf` arm, `game/turns.rs`'s
-/// `ENGINE TOLERANCE, NOT A RULES ENTITLEMENT` block, `game/derived_views.rs`'s
-/// `THE WINDOW IS AN ENGINE DEVIATION` block, and `types/game_state.rs`'s
-/// `scheduled_collapse_axes` doc.
+/// "NO CR GOVERNS THIS" IS STILL A SAFE, CORRECT, FINAL VERDICT WHERE IT IS TRUE — reaching for the
+/// next closest-sounding rule remains the error. In-tree precedent that survives: `game/filter.rs`'s
+/// `context_free_prop_matches_face` Kleene `AnyOf` arm, which answers an `Option<bool>` question
+/// that is not a rules behavior at all.
+///
+/// THE TWO FAILURE MODES ARE SYMMETRIC, AND THIS SUBSYSTEM HAS NOW COMMITTED BOTH. Citing a
+/// closest-sounding rule as a license inverts an annotation's meaning; conceding a deviation the
+/// code does not actually commit gives away a rule the implementation satisfies, and it is the
+/// harder error to detect because it reads as rigor. Prefer the reading you can defend clause by
+/// clause, and where a clause genuinely does not reach the code, say so — but only after checking.
 ///
 /// DO NOT COPY A CITATION SET FROM ONE SITE TO ANOTHER. The parser
 /// (`parse_optional_token_substitution_choice` in `oracle_replacement.rs`)
@@ -1325,7 +1367,7 @@ impl ObservedGrowth {
 /// file the change happens not to touch.
 ///
 /// The rule has now failed twice, each time through its own carve-out. The first form exempted
-/// files the edit itself re-derives; this change then moved `derived_views.rs`'s deviation block
+/// files the edit itself re-derives; this change then moved `derived_views.rs`'s CR 732 doctrine block
 /// ~120 lines and shipped five citations pointing at unrelated code, which read as "the no-CR
 /// precedent does not exist". The second form exempted a cited file *untouched by the change* and
 /// named three survivors — but that makes staleness depend on WHO edits rather than on whether the
@@ -1347,19 +1389,23 @@ pub(crate) enum BoundaryHold {
     /// would no longer match the sequence's own result, and the engine declines it: `continue`, no
     /// push, ∞ left for manual play. Runtime gate: [`boundary_declines`].
     ///
-    /// NOT LICENSED BY ANY CR — see [`ObservedGrowth`]. Under CR 732.2c the growth would already
-    /// have been applied at accept; declining here is a DEVIATION from that rule, never an
-    /// application of it. Three rules that look close and are not:
-    ///   • NOT CR 732.1b — its antecedent describes a live repeatable state and its permission is
-    ///     live PRE-proposal. This code is post-accept and post-N-named. The crate cites 732.1b only
-    ///     "SHAPED", for the live ∞ capability mark (`derived_views.rs`'s
-    ///     `IS AN ENGINE-STATE ARGUMENT, NOT A RULES ONE` block); it is used that way on
-    ///     `FamilyCollapseState::Unscheduled` and nowhere else.
-    ///   • NOT CR 732.2b — "each OTHER player … may accept or shorten" is a player action by a
-    ///     non-proposer. This decline is the ENGINE's, and the measured drift case has the proposer
-    ///     himself casting the observer.
-    ///   • NOT CR 732.2a as authority — see [`ObservedGrowth`]; it is the condition re-evaluated,
-    ///     not the permission to re-evaluate it.
+    /// THIS ARM ENFORCES CR 732.2c. The sentence above states the invariant without naming it: the
+    /// batched single-application "would no longer match the sequence's own result" — that is
+    /// ELISION ≢ PERFORMANCE, detected. CR 732.2c defines the advance as reaching the ending point
+    /// "with all game choices contained in the shortcut proposal having been taken", so the end
+    /// state must be the state those choices produce. Applying the batch anyway would land a state
+    /// they would NOT produce; replaying an observer-laden sequence would execute a proposal nobody
+    /// accepted. Declining to manual play is the only remaining CR 732-faithful option, and it
+    /// costs no player a decision — everyone keeps priority and performs the actions. The full
+    /// three-route statement with lemmas is at `types::game_state`'s `scheduled_collapse_axes` doc.
+    ///
+    /// An earlier revision of this doc said "NOT LICENSED BY ANY CR" and listed CR 732.1a/1b/2a/2b
+    /// as rules that "look close and are not". That list was built on the assumption that CR 732.2
+    /// is the exclusive procedure; CR 732.1a's plain text ("any shortcut system they use is
+    /// acceptable") is what refutes it, and CR 732.1b names this exact job — the shortcut rules
+    /// determine "how many times those actions are repeated … and how the loop is broken".
+    /// Declining an elision is not a deviation from a rule that licenses elision: the ELISION is
+    /// what needs a license, and its absence never does.
     ObservedGrowth,
     /// CR 614.1 + CR 614.1a: the fodder mint parked on a replacement choice, so the arm returns
     /// through its pause transaction before the push — zero tokens minted, no finite amount chosen,
@@ -1437,8 +1483,8 @@ pub(crate) fn materialization_certainty(
     }
 }
 
-/// THE boundary's decline gate — the runtime half of [`BoundaryHold::ObservedGrowth`], and its rules
-/// frame (no CR licenses it) is stated there. SINGLE AUTHORITY: the loop branches on this instead of
+/// THE boundary's decline gate — the runtime half of [`BoundaryHold::ObservedGrowth`], whose rules
+/// frame (CR 732.1a/1b: the shortcut system decides how the loop is broken) is stated there. SINGLE AUTHORITY: the loop branches on this instead of
 /// per-arm `if *_observed_now`.
 pub(crate) fn boundary_declines(
     item: &PersistentAxisMaterialization,
@@ -2511,14 +2557,15 @@ pub(super) fn handle_resolution_choice(
                     // AXIS-SPECIFIC re-check: an observer of the counter class must not veto a
                     // batched LIFE gain and vice-versa. Each axis re-runs its own firewall —
                     // which is why `ObservedGrowth` carries both answers separately.
-                    // NO CR LICENSES THIS RE-CHECK: it is engine conduct inside the deferral
-                    // window. The rules frame lives on `ObservedGrowth::at_boundary` and
-                    // `BoundaryHold::ObservedGrowth`; do not re-derive one here.
+                    // CR 732.1a/1b: this re-check is the shortcut system closing the elided loop
+                    // where the table understood it would close. The rules frame lives on
+                    // `ObservedGrowth::at_boundary` and `BoundaryHold::ObservedGrowth`; do not
+                    // re-derive one here.
                     let observed = ObservedGrowth::at_boundary(state);
                     let mut collapsed: Vec<PersistentAxisMaterialization> = Vec::new();
                     for item in &items {
                         // The ONE decline decision — `BoundaryHold::ObservedGrowth` (see its doc
-                        // for why no CR licenses it).
+                        // for the CR 732.1a/1b frame).
                         if boundary_declines(item, observed) {
                             continue;
                         }
@@ -2600,8 +2647,8 @@ pub(super) fn handle_resolution_choice(
                                     // applied THIS pass (a mixed stash, Edit 1 puts Tokens last) so
                                     // no finite-applied Counters/Life axis is left with a stale ∞
                                     // mark. The still-paused Tokens axis is NOT in `collapsed`, so
-                                    // its ∞ axis/pile is preserved for manual play (ENGINE
-                                    // DEVIATION — no CR licenses leaving it ∞; see
+                                    // its ∞ axis/pile is preserved for manual play (the loop has
+                                    // not closed yet, so the capability still stands; see
                                     // `BoundaryHold::CopyTokenPause`). Do NOT drain the phase — the
                                     // mint is mid-flight.
                                     state.clear_collapsed_materializations(player, &collapsed);
@@ -2668,8 +2715,8 @@ pub(super) fn handle_resolution_choice(
                     // debug infinite-mana capability, or a finding-#4-declined axis). The ∞
                     // display collapses to an ordinary ×N for the collapsed axes (§9).
                     //
-                    // FINDING #4 DECLINED-AXIS ∞ LIFECYCLE (ENGINE DEVIATION — no CR licenses the
-                    // decline; see BoundaryHold::ObservedGrowth): a declined `Counters`/`Life`
+                    // FINDING #4 DECLINED-AXIS ∞ LIFECYCLE (CR 732.1b — the shortcut system
+                    // determines how the loop is broken; see BoundaryHold::ObservedGrowth): a declined `Counters`/`Life`
                     // axis (`continue`d above without `collapsed.push`) is absent from `collapsed`,
                     // so `clear_collapsed_materializations` — which iterates ONLY `collapsed`
                     // (game_state.rs) — never removes its `unbounded_resources` /

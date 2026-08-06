@@ -216,12 +216,16 @@ impl CollapseCertainty {
     }
 }
 
-/// This family's collapse coverage. `Scheduled` is the display of the ENGINE's deferral stash
-/// (`GameState::pending_unbounded_materialization`) — an engine deviation, pre-existing and
-/// deliberate, that no CR licenses (`types/game_state.rs`'s `scheduled_collapse_axes` doc, and this
-/// file's `THE WINDOW IS AN ENGINE DEVIATION` block). It is NOT the display shadow of CR 732.2c:
-/// under that rule the growth would already have been applied at accept and there would be nothing
-/// to schedule. `Mixed` is a join result — no CR governs it either.
+/// This family's collapse coverage. `Scheduled` displays
+/// `GameState::pending_unbounded_materialization` — growth whose count was fixed at accept and
+/// which is in flight along CR 732.2c's advance to the proposal's ending point, that point being a
+/// priority window per CR 732.2a and not the CR 500.5 boundary the stash is cashed out at
+/// (`types/game_state.rs`'s `scheduled_collapse_axes` doc, and this file's
+/// `THE WINDOW'S TIMING IS CR 732.2c'S ADVANCE` block). An earlier version of this doc called that
+/// stash unlicensed; it is not — see `scheduled_collapse_axes` for the four-position reading.
+/// `Scheduled` is nonetheless a WEAKER claim than `Committed`, and that distinction is the point of
+/// this enum: `Committed` is what licenses the `∞→N` badge, which is a promise about what will
+/// land, and the engine makes that promise only where it can keep it. `Mixed` is a join result.
 ///
 /// `Unscheduled` is the one variant a CR describes, and only in the SHAPED sense the rest of this
 /// crate uses (this file's `IS AN ENGINE-STATE ARGUMENT, NOT A RULES ONE` block): CR 732.1b's
@@ -280,10 +284,13 @@ impl FamilyCollapseState {
 /// `two_controllers_draining_one_victim_do_not_cross_schedule`.
 ///
 /// `GameState::pending_unbounded_materialization` remains THE authority for the accepted-collapse
-/// contract, and it is what the boundary reads to cash the collapse out. It is the engine's
-/// DEFERRAL of an accepted shortcut's results — an engine deviation, pre-existing and deliberate,
-/// that no CR licenses (`types/game_state.rs`'s `scheduled_collapse_axes` doc) — NOT "the CR 732.2c
-/// contract"; under that rule the growth would already be on the board. A second channel mirroring
+/// contract, and it is what the boundary reads to cash the collapse out. It holds an accepted
+/// shortcut's results in flight along CR 732.2c's advance to the proposal's ending point — a
+/// priority window per CR 732.2a, not the CR 500.5 boundary itself
+/// (`types/game_state.rs`'s `scheduled_collapse_axes` doc). It is still not a GUARANTEE of the
+/// final amount: the boundary's growth re-check and the controller's CR 732.2a count choice can
+/// both reduce what lands, which is why the display carries certainty rather than a
+/// number. A second channel mirroring
 /// the stash is no longer "a contract with no reader", which it genuinely was when that objection
 /// was written:
 /// THIS is the reader — `usePlayerDesignations` → `UnboundedBadge`, pinned on the wire by
@@ -1066,14 +1073,23 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
 
     // WHY THE THREE ∞ SURFACE CHANNELS BELOW ARE UNCONDITIONAL — the accept→boundary window.
     //
-    // THE WINDOW IS AN ENGINE DEVIATION, PRE-EXISTING AND DELIBERATE — NOT A RULES ENTITLEMENT, and
-    // no CR is cited as licensing it. CR 732.2c has the shortcut taken the moment the last player
-    // accepts, with the game advancing to the last proposed ending point; this engine instead parks
-    // at priority with the accepted count recorded but its results UNAPPLIED, and settles them at
-    // the next CR 500.5 boundary (`game::turns`, unchanged by this projection). Nothing below
-    // claims otherwise. What IS resolved at accept is the count itself
-    // (`pending_materialization_count`); what is deferred is applying it, plus `turns.rs`' `min: 0`
-    // under-delivery tolerance, which that file documents in its own words.
+    // THE WINDOW'S TIMING IS CR 732.2c'S ADVANCE, NOT A DEVIATION FROM IT. CR 732.2c: once the
+    // last player accepts, "the game advances to the last proposed ending point, with all game
+    // choices contained in the shortcut proposal having been taken". Per CR 732.2a that ending
+    // point "must be a place where a player has priority" — so it is NOT the CR 500.5 step/phase
+    // end, which is a turn-based action, with priority arriving at the beginning of the next step
+    // (CR 117.3a). The count is resolved at accept (`pending_materialization_count`), and the
+    // growth lands at the CR 500.5 boundary while the game is still advancing toward that priority
+    // window. State AT the ending point is the proposed state. An earlier version of this block
+    // called the whole window unlicensed; that conceded rules the code satisfies. The full
+    // four-position reading lives at `types/game_state.rs`'s `scheduled_collapse_axes` doc.
+    //
+    // WHY THE CHANNELS BELOW STILL CARRY `FamilyCollapseState` RATHER THAN A BARE FLAG: being
+    // rules-correct about WHEN the loop closes is not the same as knowing WHAT NUMBER will land.
+    // The boundary re-checks whether the growth is still observed, and the controller names the
+    // count at the ending point (CR 732.2a's "specified number of times"), so the final amount is
+    // not knowable while the badge is on screen. `∞→N` is a promise; the engine makes it only for
+    // a family whose amount it can already stand behind, and shows `∞→?` otherwise.
     //
     // The two CRs this code does rely on, each for what it actually governs:
     //  • CR 732.2c — the shortcut is taken at the count every player accepted, so the collapse may
@@ -1084,8 +1100,8 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     //    until-end-of-step effects expire and unspent mana empties. That mana drain is the one
     //    thing here CR 500.5 genuinely governs (`turns::drain_pending_phase_transition_progress`,
     //    and it is why a `Mana(_)` ∞ ends there). It does NOT license CASHING OUT the deferred
-    //    token/life/counter growth at that moment — the engine chose that landmark, and that
-    //    choice is part of the same uncited deviation described above.
+    //    token/life/counter growth at that moment — the engine chose that landmark as the point
+    //    along CR 732.2c's advance at which the elided loop closes (CR 732.1b), as described above.
     //
     // WHY `∞` IS RIGHT HERE IS AN ENGINE-STATE ARGUMENT, NOT A RULES ONE. Throughout the window the
     // loop's enabling permanents are still on the battlefield and `unbounded_resources` still
@@ -1208,7 +1224,7 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // left the battlefield (stale member). Public board state (no viewer filtering);
     // the frontend renders `∞` on any group whose members are all pile members.
     //
-    // Unconditional while a collapse is merely scheduled — see the engine-deviation block above.
+    // Unconditional while a collapse is merely scheduled — see the CR 732 timing block above.
     for ids in state.unbounded_loop_pile.values() {
         for id in ids {
             if state.battlefield.contains(id) {
@@ -1224,7 +1240,7 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // `unbounded_pile`; the frontend renders `∞` (not `×N`) on any counter pill whose
     // type is in this set. Runs in every format (BEFORE the Commander short-circuit).
     //
-    // Unconditional while a collapse is merely scheduled — see the engine-deviation block above.
+    // Unconditional while a collapse is merely scheduled — see the CR 732 timing block above.
     for targets in state.unbounded_counter_targets.values() {
         for (id, ct) in targets {
             if !state.battlefield.contains(id) {
@@ -1368,9 +1384,13 @@ fn turn_order_views(
 /// The axes `controller` has an accepted-but-unapplied collapse for, as the HUD should announce
 /// them, each carrying how CERTAIN that collapse is.
 ///
-/// This reads the ENGINE'S DEFERRAL STASH. NO CR LICENSES THAT STASH — under CR 732.2c the shortcut
-/// is taken at the last accept and the growth would already be on the board, so there would be
-/// nothing here to announce. See `FamilyCollapseState` and the engine-deviation block above.
+/// This reads the stash of growth in flight along CR 732.2c's advance to the proposal's ending
+/// point — a priority window per CR 732.2a, reached after the CR 500.5 boundary where the growth
+/// lands. What it announces is therefore a real accepted result, not a parking spot; the reason it
+/// announces CERTAINTY rather than a number is that the boundary re-checks whether the growth is
+/// still observed and the controller names the count at the ending point (CR 732.2a). See
+/// `FamilyCollapseState`, the `THE WINDOW'S TIMING IS CR 732.2c'S ADVANCE` block above, and
+/// `types/game_state.rs`'s `scheduled_collapse_axes` doc for the reading.
 ///
 /// Named rather than inlined into its one caller because the SCOPE LIMIT below is a rule, not a
 /// line of the row loop, and it has already proved it drifts when written twice: an earlier cut of

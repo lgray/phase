@@ -7208,8 +7208,8 @@ fn phase_reachable_ledger_observer_whose_filter_matches_the_class_still_suppress
 
 // ===========================================================================
 // R6a — the ∞ badge stays up while a collapse is merely SCHEDULED (the engine defers APPLYING
-// an accepted shortcut's growth to the CR 500.5 boundary; that window is an engine deviation, not
-// a rules entitlement), and CR 732.2c bounds the boundary prompt by the count the table accepted.
+// an accepted shortcut's growth to the CR 500.5 boundary, while advancing to the proposal's
+// ending point per CR 732.2c), and CR 732.2c bounds the boundary prompt by the accepted count.
 // ===========================================================================
 
 /// Sprout Swarm in P0's hand in the `witherbloom_sprout_lumaret_simple_4p` capture.
@@ -7278,9 +7278,9 @@ fn r6a_drive_to_boundary(state: &mut GameState) {
 /// `unbounded_resources = {P0: [Life(0), TokensCreated]}` plus a non-empty ∞ pile, and
 /// registers a finite collapse. The COUNT is fixed at accept (`pending_materialization_count`,
 /// which bounds the boundary prompt per CR 732.2c); what this engine defers is APPLYING it, until
-/// the CR 500.5 boundary (`game::turns`). That deferral is an engine deviation — pre-existing,
-/// deliberate, and licensed by no CR. This test pins what the engine DOES during that window, not
-/// a claim that the rules put the game there: the marks and their enablers are still live, so the
+/// the CR 500.5 boundary (`game::turns`), while the game advances to the proposal's ending point
+/// (CR 732.2c; `types::game_state`'s `scheduled_collapse_axes` doc has the full reading). This test
+/// pins what the engine DOES during that window: the marks and their enablers are still live, so the
 /// projection KEEPS every `∞` surface. CR 732.2c bounds the collapse; it never licensed hiding a
 /// mark the store still carries, which is what the BASE gate used it for.
 ///

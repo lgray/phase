@@ -438,7 +438,7 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
 
     // (3) THE PER-SURFACE COUNTER-PILL ROW, on a REAL production fixture. The accept registers an
     // observed-growth `DriveSequence` naming the charge-counter axis, but the engine DEFERS
-    // applying it to the CR 500.5 boundary — an engine deviation, pre-existing and deliberate. The
+    // applying it to the CR 500.5 boundary, while advancing to the proposal's ending point (CR 732.2c). The
     // real charge count is unchanged (asserted just above) and the ∞ mark is live, so the pill
     // stays ∞ throughout that window. Filter nothing: (2) above is unchanged and still passes.
     //

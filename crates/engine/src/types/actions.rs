@@ -887,9 +887,10 @@ pub enum GameAction {
     /// CR 732.2a: the proposer (the loop's determinate winner, holding priority)
     /// declares the loop shortcut. `count` is the repeat count — Phase 3 only produces
     /// [`IterationCount::UntilLethal`]. `template` pins the per-iteration choices for a
-    /// choice-bearing loop; it MUST be `None` in Phase 3 (the B3 consumer that reads it
-    /// is Phase 4 — the field is present now so Phase 4 adds no dispatch-signature
-    /// change).
+    /// choice-bearing loop; it MUST be `None` until the B3 consumer that reads it exists — the
+    /// field is present now so completing it adds no dispatch-signature change. That completion is
+    /// part of the "Shortcut-system rules-correctness completion" follow-up in
+    /// `.deferred-backlog.md` (see `analysis::loop_check::ShortcutResponse`'s deficiency note).
     DeclareShortcut {
         count: crate::analysis::decision_template::IterationCount,
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -224,7 +224,7 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
     // (2) DERIVED — derive_views projects the pile (battlefield-filtered, public board state).
     //
     // This accept ALSO scheduled a finite `TokensCreated` collapse, but the engine DEFERS applying
-    // it to the CR 500.5 boundary — an engine deviation, pre-existing and deliberate. No token has
+    // it to the CR 500.5 boundary, while advancing to the proposal's ending point (CR 732.2c). No token has
     // been minted yet: the `oracle` set below is the tapped fodder P0 ALREADY controlled, and the ∞
     // mark over it is live, so the pile stays PROJECTED. The scheduling does not change the pile
     // set, which is why the same `oracle` comparison runs directly on the real post-accept state.
@@ -659,7 +659,7 @@ fn build_fresh_4p_cast_offer_accept_writes_infinite_pile() {
     // (2) DERIVED — derive_views projects the pile.
     //
     // The accept also scheduled a finite `TokensCreated` collapse, but the engine DEFERS applying
-    // it to the CR 500.5 boundary (an engine deviation, pre-existing and deliberate), so nothing is
+    // it to the CR 500.5 boundary (advancing to the proposal's ending point, CR 732.2c), so nothing is
     // minted yet and the ∞ pile stays PROJECTED while it is merely scheduled. The scheduling does
     // not change the pile set, which is why the same `oracle` comparison now runs directly on the
     // real post-accept state.
@@ -1490,7 +1490,7 @@ fn real_4p_one_shot_bootstrap_seeds_tapped_infinite_pile_and_w_plus_1_untapped()
     // derive_views projects the pile; it survives a serde round-trip.
     //
     // The accept also scheduled a finite `TokensCreated` collapse, but the engine DEFERS applying
-    // it to the CR 500.5 boundary (an engine deviation, pre-existing and deliberate), so nothing is
+    // it to the CR 500.5 boundary (advancing to the proposal's ending point, CR 732.2c), so nothing is
     // minted yet and the ∞ pile stays PROJECTED while it is merely scheduled. The scheduling does
     // not change the pile set, which is why the same `oracle` comparison now runs directly on the
     // real post-accept state.
@@ -2070,8 +2070,8 @@ fn real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_li
             .unbounded_resources
             .get(&P0)
             .is_some_and(|a| a.contains(&ResourceAxis::Life(P0))),
-        "the declined life axis stays ∞-marked for manual play (ENGINE DEVIATION — no CR licenses \
-         the decline; see BoundaryHold::ObservedGrowth)"
+        "the declined life axis stays ∞-marked for manual play (CR 732.1b — the shortcut \
+         system determines how the loop is broken; see BoundaryHold::ObservedGrowth)"
     );
     assert!(
         !state
@@ -2095,9 +2095,9 @@ fn real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_li
 /// boundary. Because the batched `apply_counter_addition` bypasses the counter doubler pipeline, a
 /// lump N×δ apply would mis-honor a newly-present observer. The submit handler RE-CHECKS the
 /// firewall per-axis and DECLINES the batched COUNTER collapse when an observer appeared, leaving
-/// the ∞ axis for manual play — unambiguously sound. NO CR LICENSES THAT DECLINE: it is engine
-/// conduct inside the deferral window, and its rules frame lives on
-/// `engine_resolution_choices::BoundaryHold::ObservedGrowth`.
+/// the ∞ axis for manual play — unambiguously sound. CR 732.1a/1b FRAME THAT DECLINE: the engine
+/// is the table's shortcut system and determines how the elided loop is broken; the full statement
+/// lives on `engine_resolution_choices::BoundaryHold::ObservedGrowth`.
 ///
 /// MATCHED PAIR with `real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_life`
 /// (no counter observer ⇒ the counter batches 5×2): the SAME grafted +1/+1 counter loop, WITH a
@@ -2265,8 +2265,8 @@ fn real_4p_counter_observer_drift_in_window_declines_batched_counter_but_still_m
                 CounterClass::Plus1Plus1,
                 ObjectClass::Creature
             ))),
-        "the declined counter axis stays ∞-marked for manual play (ENGINE DEVIATION — no CR \
-         licenses the decline; see BoundaryHold::ObservedGrowth)"
+        "the declined counter axis stays ∞-marked for manual play (CR 732.1b — the shortcut \
+         system determines how the loop is broken; see BoundaryHold::ObservedGrowth)"
     );
     // (2) POSITIVE reach-guard: the Tokens axis STILL mints N (tokens honor observers via real ETB
     //     events, so they always proceed) — proves the submit ran and the negative is non-vacuous.

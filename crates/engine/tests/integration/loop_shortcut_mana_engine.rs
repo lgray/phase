@@ -1019,8 +1019,9 @@ fn mana_engine_accept_records_no_collapse_bound() {
 /// what makes this the strongest rig in the file for the projection's schedule-independence.
 ///
 /// The `Life(P0)` axis is DEFERRED: no life has been gained, and none will be until the CR 500.5
-/// boundary applies the growth. That deferral is an engine deviation, pre-existing and deliberate,
-/// and no CR licenses it — nothing here claims one does. What it means for the DISPLAY is only
+/// boundary applies the growth. The growth is in flight along CR 732.2c's advance to the
+/// proposal's ending point (`types::game_state`'s `scheduled_collapse_axes` doc). For the DISPLAY
+/// what matters is only
 /// that the mark and its enablers are still live through the window, so the ∞ renders current
 /// engine state rather than a stale mark.
 ///

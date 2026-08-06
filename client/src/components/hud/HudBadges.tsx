@@ -469,8 +469,8 @@ export function UnboundedBadge({
   // `Poison` axes is the victim, and the badge also renders on opponent HUDs. So the copy stays in
   // the passive voice: a second-person promise here would be addressed to the wrong seat in both
   // cases. Emitting the prompted seat is the engine's to add, and is owned by the follow-on PR.
-  // The window itself is an engine deviation, not a rules state — this only reports what the
-  // engine says is pending.
+  // The window itself is CR 732.2c's advance to the shortcut's ending point; this only reports
+  // what the engine says is pending.
   const title = ((): string => {
     switch (state.type) {
       case "Unscheduled":

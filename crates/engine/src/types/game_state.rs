@@ -10175,6 +10175,20 @@ pub enum WaitingFor {
     /// shortcut, each other living player is prompted in turn order (drain-one-advance
     /// via `remaining_players`, mirroring `OpponentMayChoice.remaining`). `player` is the
     /// current responder; `proposal` is the public offer summary.
+    ///
+    /// This IS CR 732.2b's structure, not an analogue of it. The rule: "Each other player, in turn
+    /// order starting after the player who suggested the shortcut, may either accept the proposed
+    /// sequence, or shorten it by naming a place where they will make a game choice that's
+    /// different than what's been proposed. (The player doesn't need to specify at this time what
+    /// the new choice will be.) This place becomes the new ending point of the proposed sequence."
+    /// Each clause has a carrier here — turn order via `game::players::apnap_order_from` starting
+    /// after the proposer, the two answers via `ShortcutResponse::{Accept, Shorten}`, and the
+    /// declare-now/specify-later property via `Shorten` carrying only `at_iteration` and no choice.
+    ///
+    /// The window is what makes CR 732.2c's "once the LAST player has either accepted or
+    /// shortened" a real condition rather than an assumption: no advance occurs until this queue
+    /// drains. See `ShortcutResponse` for how a `Shorten` is realized, which is deliberately
+    /// conservative and disclosed there.
     RespondToShortcut {
         player: PlayerId,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -11158,8 +11172,20 @@ pub enum PayableResource {
     Speed,
     /// CR 732.2a: NOT a resource payment. The finite count an accepted
     /// object-growth loop shortcut collapses into, named by the loop controller
-    /// at the next phase/step boundary (the shortcut's ending point is a priority
-    /// window). The submit handler reads the deferred materialization stash by
+    /// at the next phase/step boundary.
+    ///
+    /// CR 732.2a + CR 732.2c — WHERE THE PROPOSAL ENDS, AND WHY THAT IS HERE. CR 732.2a requires
+    /// the ending point be "a place where a player has priority", so it is NOT the phase/step end
+    /// itself: CR 500.5 makes that a turn-based action and CR 117.3a gives priority at the
+    /// BEGINNING of the next step. The ending point is the priority window that follows, and the
+    /// materialization at the CR 500.5 boundary happens DURING THE ADVANCE to it. CR 732.2c is
+    /// then satisfied on its own terms — "the game advances to the last proposed ending point,
+    /// with all game choices contained in the shortcut proposal having been taken": every choice
+    /// is taken at accept (the count is fixed there, see `pending_materialization_count`), and the
+    /// observable state at the ending point is the proposed one. The advance is not instantaneous
+    /// under any reading of 732.2c; what the rule constrains is where it LANDS.
+    ///
+    /// The submit handler reads the deferred materialization stash by
     /// player and applies it — it deducts nothing. `axis` is a DISPLAY-ONLY label
     /// (derived from the stash at construction, `turns.rs`) so the prompt names the
     /// correct growth axis (tokens / counters / life / mixed); resolution ignores it
@@ -19920,10 +19946,100 @@ impl GameState {
     /// since-removed tag loop as the caller. Each time the mirror sentence in `derived_views` was
     /// updated and this one — the doc a future caller reads first — was not. Hence it now names
     /// the FUNCTION, not the consumer, so adding a consumer inside `derived_views` cannot make it
-    /// stale again.) This stash is the
-    /// engine's DEFERRAL of an accepted shortcut's results — an engine deviation, pre-existing and
-    /// deliberate, that no CR licenses. The count itself is already fixed at accept
-    /// (`pending_materialization_count`); what is deferred is putting the growth on the board.
+    /// stale again.)
+    ///
+    /// CR 732.2a + CR 732.2c — WHAT THIS STASH IS, STATED AS THE RULE RATHER THAN AS A CONCESSION.
+    /// This doc previously called the stash an engine deviation "that no CR licenses". That was
+    /// wrong: it conceded a rule the code satisfies. The count is fixed AT ACCEPT
+    /// (`pending_materialization_count`), so every game choice in the proposal is taken there,
+    /// exactly as CR 732.2c requires. What the stash carries is the growth still in flight along
+    /// the advance to the proposal's ending point — and per CR 732.2a that ending point is a
+    /// PRIORITY WINDOW, not the CR 500.5 boundary the stash is cashed out at (CR 117.3a: priority
+    /// arrives at the beginning of the next step). Landing the growth during that advance is not a
+    /// deferral of CR 732.2c; it is CR 732.2c's advance. See `PayableResource::LoopCollapse`.
+    ///
+    /// THIS DOC IS THE SUBSYSTEM'S SINGLE AUTHORITY FOR THE CR 732 READING. Other sites point here
+    /// rather than restating it, so there is one place to correct if it is ever wrong. Four
+    /// positions, each anchored on a clause rather than on a vibe:
+    ///
+    /// 1. TIMING — the loop ends by proceeding directly to the phase change, iterations elided per
+    ///    CR 732.1b ("without having to actually perform them"); the opposing player then has
+    ///    priority, and that window is the CR 732.2a-legal ending point. Full statement at
+    ///    `game::engine::try_offer_object_growth_shortcut`.
+    /// 2. NO CONDITIONAL ACTIONS — CR 732.2a bars a sequence "where the outcome of a game event
+    ///    determines the next action a player takes", and requires "predictable results". Pins fix
+    ///    every free choice BEFORE the offer, and `DecisionTemplate`'s schedules are pure functions
+    ///    of (iteration index, live legal set) — never of a prior iteration's outcome, which makes
+    ///    a react-to-what-happened choice unrepresentable rather than merely unused. With the
+    ///    coin/die/random rejection at the offer gate and `elimination_bounds` stopping short of
+    ///    every CR 704 threshold, predictability holds BY CONSTRUCTION.
+    /// 3. THE COUNT — CR 732.2a lets a proposal be "a loop that repeats a specified number of
+    ///    times", and the proposer is who specifies it. The collapse prompt (`game::turns`) is that
+    ///    specification, bounded above by what the table accepted; `SubmitPayAmount` rejects any
+    ///    over-collapse. Choosing fewer repetitions is CR 732.2b/2c shortening realized — a player
+    ///    names a place for a different choice without specifying it then (CR 732.2b), and at the
+    ///    new ending point makes a different game choice (CR 732.2c).
+    /// 4. WHEN THE LOOP CLOSES — CR 732.1a: "As long as each player in the game understands the
+    ///    intent of each other player, any shortcut system they use is acceptable." This engine IS
+    ///    that system. Fixing and enforcing where the elided loop closes is the system doing its
+    ///    job, and CR 732.1b names that job outright: the shortcut rules determine "how many times
+    ///    those actions are repeated ... and HOW THE LOOP IS BROKEN".
+    ///
+    /// # THE FIDELITY INVARIANT — why all four positions hold at once
+    ///
+    /// **ELISION ≡ PERFORMANCE. The engine can never advance to a state that performing the
+    /// proposal's choices would not produce.** CR 732.2c defines the advance as reaching the ending
+    /// point "with all game choices contained in the shortcut proposal having been taken", so the
+    /// end state must be the state those choices produce. There are exactly three materialization
+    /// routes and each preserves that identity:
+    ///
+    /// (a) UNOBSERVED → batch. `batch(N) ≡ perform-each(N)` by the growth-observed firewall's own
+    ///     precondition: the batch route is entered only when no observer can make the lump apply
+    ///     differently from N separate applications.
+    /// (b) OBSERVED AT ACCEPT → `DriveSequence`, which literally performs the iterations, so
+    ///     observers fire exactly as they would in manual play.
+    /// (c) BECAME OBSERVED IN-WINDOW → `engine_resolution_choices::boundary_declines` → manual
+    ///     play, where the player performs the actions.
+    ///
+    /// Route (c) is the one the review indicted, and it is the route that ENFORCES CR 732.2c rather
+    /// than departing from it. Once an observer appears, the other two options both break the
+    /// identity: a batch advance would reach a state the proposal's choices would NOT produce, and
+    /// replaying an observer-laden sequence would execute a proposal nobody made or accepted.
+    /// Decline-to-manual is the only CR 732-faithful behavior left. **The gate is not the
+    /// deviation; the two alternatives it forecloses are.** `boundary_declines` is exhaustive over
+    /// `PersistentAxisMaterialization` with no wildcard — `Tokens` (real ETB events) and
+    /// `DriveSequence` (real replay) never decline; only the batched `Counters`/`Life` axes can,
+    /// and only when their own observer appeared.
+    ///
+    /// Supporting lemmas, each checkable at a symbol rather than by argument:
+    /// * **L1 OPTIONALITY** — the offer gate admits only voluntarily-repeatable periods, and
+    ///   `LoopAction::is_voluntarily_repeatable` is `true` on an exhaustive match over all three
+    ///   variants (`Recast`, `Activate`, `TapLandForMana`), every one player-initiated. A mandatory
+    ///   loop never produces this shape and stays on the CR 104.4b draw / lethal paths. So in
+    ///   manual play the controller may stop after any prefix.
+    /// * **L2 UNCONDITIONALITY BY CONSTRUCTION** — pins plus the static randomness scan plus the
+    ///   runtime rng-position backstop satisfy CR 732.2a's "predictable results" and
+    ///   no-conditional-actions clauses before an offer exists
+    ///   (`analysis::decision_template::predictability_gate`).
+    /// * **L3 PREFIX CONSENT** — accepting a proposal of bound N is declining CR 732.2b shortening
+    ///   at every place up to N, i.e. consenting to every prefix. The collapse prompt's `[0, N]`
+    ///   range therefore only ever lands on a consented, manually-reachable prefix.
+    /// * **L5 THIRD-PARTY INVARIANCE** — the batch route is reachable only when unobserved, so no
+    ///   non-controller state depends on the count; under-delivery moves only the controller's own
+    ///   gain (and tapped tokens carry no lethal driver, per `game::turns`).
+    ///
+    /// THE HONEST BOUNDARY, STATED BECAUSE IT IS THE ARGUMENT AND NOT A CONCESSION: this engine does
+    /// not follow the CR 732.2 procedure verbatim. It is a CR 732.1a-licensed VARIANT — "as long as
+    /// each player in the game understands the intent of each other player, any shortcut system
+    /// they use is acceptable" — and the published badge/window semantics are what make that mutual
+    /// understanding hold by construction. Reading the window as illegal requires CR 732.2 to be
+    /// the exclusive procedure, which CR 732.1a's plain text contradicts. The in-window
+    /// interactivity is CR 732.2b's shortening right made continuous: strictly MORE player rights
+    /// than the paper procedure, never fewer.
+    ///
+    /// `FamilyCollapseState` still distinguishes `Committed` from the weaker variants, because a
+    /// badge that reads `∞→N` is a promise about what WILL land and the engine only makes that
+    /// promise where it can keep it.
     /// While it is pending, the `∞` HUD rows, the ∞ object pile and the ∞ counter pills all keep
     /// projecting, because the marks and their enablers are still live. This set says nothing
     /// about them — it names what the boundary will REMOVE, not what the display may show.
