@@ -9825,6 +9825,30 @@ impl PersistedGameState {
         // one (it is lowered to the activator at creation), so this only sanitizes
         // corrupt/forged snapshots and closes the fail-open path in both consumers.
         state.drop_unresolved_source_controller_restrictions();
+        // Issue #5466: `rng` is `#[serde(skip)]`, so a decode leaves the LIVE ChaCha20 stream at
+        // word 0 while the serialized high-water `rng_word_pos` keeps its saved offset. A
+        // `capture_rng_word_pos` on that state — the production library shuffle performs one, see
+        // `game/library.rs` — then `.expect`-panics `HighWaterRegression { current: <saved>,
+        // requested: 0 }`, and any shuffle before it replays entropy the game already consumed.
+        //
+        // Rehydrating HERE means every caller of the chokepoint inherits the repair instead of
+        // owing its own. It does NOT make the load paths equivalent: what each caller does
+        // AFTERWARDS is that caller's own policy, and they differ.
+        //   * `engine-wasm`'s `restore_game_state` still calls `rehydrate_rng` itself, so that
+        //     path now runs it twice. Harmless — `rehydrate_rng` is idempotent, both of its
+        //     statements being absolute assignments from persisted fields.
+        //   * `engine-wasm`'s `resume_multiplayer_host_state` deliberately re-seeds and sets
+        //     `rng_word_pos = 0` so a resumed host does not replay saved randomness. That is a
+        //     resume policy choice, not a bug, and it leaves live position and high-water agreed.
+        //   * `server-core`'s `GameSession::from_persisted` re-seeds `rng` from fresh entropy and
+        //     does NOT zero `rng_word_pos`, so immediately after this call it is back at live 0 /
+        //     high-water <saved> and the next `capture_rng_word_pos` still panics. The server
+        //     restore path therefore REMAINS BROKEN. That gap is pre-existing and untouched here —
+        //     the server has never zeroed the offset, before or after this call existed — so this
+        //     call must not be read as repairing it. The repair is a behavior change owed its own
+        //     commit; disclosed and queued as a follow-up.
+        // Offline tooling (`phase-ai`'s `load_saved_game_state`) simply inherits the repair.
+        state.rehydrate_rng();
         state
     }
 }
