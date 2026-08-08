@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { GameObject } from "../../../adapter/types.ts";
+import type { GameObject, UnboundedCounterView } from "../../../adapter/types.ts";
 import { useCardImage } from "../../../hooks/useCardImage.ts";
 import { useGameStore } from "../../../stores/gameStore.ts";
 import { usePreferencesStore } from "../../../stores/preferencesStore.ts";
@@ -581,7 +581,7 @@ describe("CardPreview blocked abilities", () => {
 // Matched pair: the ONLY difference between the two cases is the engine mark, so
 // it is the discriminator.
 describe("CardPreview unbounded counters", () => {
-  function inspectPentadPrism(unbounded: Array<{ counter: string; count: number }> | null) {
+  function inspectPentadPrism(unbounded: UnboundedCounterView[] | null) {
     const object = battlefieldObject({
       id: 409,
       name: "Pentad Prism",

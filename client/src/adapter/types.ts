@@ -2715,6 +2715,21 @@ export interface UnboundedFamilyView {
   state: FamilyCollapseState;
 }
 
+/**
+ * One renderable `∞` counter row on one object. Mirrors
+ * `engine::game::derived_views::UnboundedCounterView`.
+ *
+ * `counter` matches the object's `counters` map key (`CounterType`'s serde spelling — e.g.
+ * `"charge"`, `"P1P1"`). `count` is the object's LIVE count and is engine-supplied because a row
+ * may legitimately have no entry in that map at all: a pair the loop pumps from `0 -> 1` is
+ * registered while the object still carries none, so the count is `0` and there is nothing to join
+ * back to. Re-deriving it here would also be the FE inferring game state.
+ */
+export interface UnboundedCounterView {
+  counter: string;
+  count: number;
+}
+
 /** Mirrors `engine::analysis::loop_check::WinKind` (unit variants → bare strings). */
 export type WinKind =
   | "LethalDamage"
@@ -3001,7 +3016,7 @@ export interface DerivedViews {
    * Empty/omitted when no counter-growth loop is active. Mirrors
    * `engine::game::derived_views::DerivedViews::unbounded_counters`.
    */
-  unbounded_counters?: Record<string, Array<{ counter: string; count: number }>>;
+  unbounded_counters?: Record<string, UnboundedCounterView[]>;
 }
 
 /** Mirrors `engine::types::game_state::NextSpellModifier` (serde tag="type"). */

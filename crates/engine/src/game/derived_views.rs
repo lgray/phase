@@ -667,18 +667,19 @@ pub struct DerivedViews {
     pub unbounded_pile: Vec<ObjectId>,
 
     /// CR 732.2a / CR 701.34a: the per-object `∞` COUNTER channel — for each
-    /// battlefield object, the counter types whose preserved BENEFICIAL counters an
-    /// accepted counter-growth loop (proliferate charge on Pentad Prism, burden on
+    /// battlefield object, one ROW per PRESERVED BENEFICIAL counter that an accepted
+    /// counter-growth loop (proliferate charge on Pentad Prism, burden on
     /// The One Ring, a +1/+1 or loyalty pump loop) pumps unboundedly (projected from
     /// `GameState::unbounded_counter_targets`, filtered to objects still on the
-    /// battlefield). Which counters qualify is
+    /// battlefield, and deduplicated ACROSS seats — the per-seat store can hold one pair twice).
+    /// Which counters qualify is
     /// `analysis::resource::counter_is_beneficial_materializable`'s wildcard-free partition
     /// (`Generic(_)`, `Plus1Plus1`, `Loyalty`, `Defense`), derived once by
     /// `game::engine::current_period_counter_growth`. The counter analog of `unbounded_pile`:
     /// object-growth marks whole objects, but a counter-growth loop's unbounded axis MAY be
     /// object-agnostic (one accepted proposal can carry both an object-classed counter axis and
-    /// the display channel's `Counter(Other, Other)`), so this keys the specific pumped counter
-    /// so the frontend renders `∞` (not `×N`) on that counter pill and nothing else. Keyed by
+    /// the display channel's `Counter(Other, Other)`), so each row names the specific pumped
+    /// counter and the frontend renders `∞` (not `×N`) for that row and nothing else. Keyed by
     /// ObjectId; DISPLAY-only (the real counter count is unchanged). Public board state — no
     /// viewer filtering. Empty (and omitted) when no counter-growth loop is active — the
     /// dominant case.
@@ -1374,45 +1375,57 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // +1/+1 / loyalty / defense, per `analysis::resource::counter_is_beneficial_materializable`)
     // the certified-unbounded loop pumps each cycle — dropping any that have since left
     // the battlefield (stale member). Display-only per-object channel mirroring
-    // `unbounded_pile`; the frontend renders `∞` (not `×N`) on any counter pill whose
-    // type is in this set. Runs in every format (BEFORE the Commander short-circuit).
+    // `unbounded_pile`; each row emitted here IS one `∞` (never `×N`) pill, rather than a mark
+    // applied to a pill the object's own counter map already supplies — see the `count: 0` note
+    // below for why no such pill need exist. Runs in every format (BEFORE the Commander
+    // short-circuit).
     //
     // Unconditional while a collapse is merely scheduled — see the CR 732 timing block above.
-    for targets in state.unbounded_counter_targets.values() {
-        for (id, ct) in targets {
-            // CR 110.1 + CR 122.2: a counter is a marker ON a permanent, and counters cease to
-            // exist on a zone change — an off-battlefield bearer has no row.
-            if !state.battlefield.contains(id) {
-                continue;
-            }
-            // CR 122.1: a counter is a marker ON an object, so a row names an (object, counter)
-            // pair, not a stored quantity. The `unwrap_or(0)` is the PROJECTOR/PRODUCER
-            // convention, not a rule: it mirrors `analysis::resource::
-            // grown_beneficial_counter_deltas`, so both sides share one definition of "absent".
-            //
-            // WHY A `count: 0` ROW EXISTS: the pair is derived by diffing a SIMULATED one-period
-            // frame against a clone of the LIVE state (`game::engine::drive_one_period_frames`),
-            // so a pair growing 0 -> 1 across that period is registered while the live object
-            // carries none. Publishing only the type left such a pair unrenderable. Dropping it
-            // instead would trade a display over-KEEP for an over-DROP, which this subsystem's
-            // stated polarity forbids. Row existence is decided by the ∞ stores and live
-            // battlefield membership — never by `objects[..].counters`; see the
-            // NO-SURFACE-IS-FILTERED invariant (stated in this file and mirrored above
-            // `GameState::scheduled_collapse_axes`).
-            let count = state
-                .objects
-                .get(id)
-                .and_then(|o| o.counters.get(ct).copied())
-                .unwrap_or(0);
-            views
-                .unbounded_counters
-                .entry(*id)
-                .or_default()
-                .push(UnboundedCounterView {
-                    counter: ct.clone(),
-                    count,
-                });
+    //
+    // CROSS-SEAT DEDUPE: the store is per-seat (`BTreeMap<PlayerId, BTreeSet<..>>`), so it dedupes
+    // WITHIN a seat and never ACROSS seats. Two controllers whose accepted loops pump the same
+    // (object, counter) pair each hold their own entry, and emitting both produced a duplicate row
+    // — two identical pills sharing one React key, since every render site keys on the counter
+    // type alone. The rows are byte-identical (`count` below is keyed only by `(id, ct)`, with no
+    // seat input), so collapsing at the source is a deduplication, not a choice of whose row wins.
+    // Flattening into a `BTreeSet` keeps the wire order the single-seat case already had: sorted
+    // by `(ObjectId, CounterType)`.
+    let targets: BTreeSet<&(ObjectId, CounterType)> =
+        state.unbounded_counter_targets.values().flatten().collect();
+    for (id, ct) in targets {
+        // CR 122.1 + CR 110.1 + CR 122.2: a counter is a marker placed ON an object, a permanent
+        // is a card or token ON THE BATTLEFIELD, and counters cease to exist when their bearer
+        // changes zones — so an off-battlefield bearer has no row.
+        if !state.battlefield.contains(id) {
+            continue;
         }
+        // CR 122.1: a counter is a marker ON an object, so a row names an (object, counter)
+        // pair, not a stored quantity. The `unwrap_or(0)` is the PROJECTOR/PRODUCER
+        // convention, not a rule: it mirrors `analysis::resource::
+        // grown_beneficial_counter_deltas`, so both sides share one definition of "absent".
+        //
+        // WHY A `count: 0` ROW EXISTS: the pair is derived by diffing a SIMULATED one-period
+        // frame against a clone of the LIVE state (`game::engine::drive_one_period_frames`),
+        // so a pair growing 0 -> 1 across that period is registered while the live object
+        // carries none. Publishing only the type left such a pair unrenderable. Dropping it
+        // instead would trade a display over-KEEP for an over-DROP, which this subsystem's
+        // stated polarity forbids. Row existence is decided by the ∞ stores and live
+        // battlefield membership — never by `objects[..].counters`; see the
+        // NO-SURFACE-IS-FILTERED invariant (stated in this file and mirrored above
+        // `GameState::scheduled_collapse_axes`).
+        let count = state
+            .objects
+            .get(id)
+            .and_then(|o| o.counters.get(ct).copied())
+            .unwrap_or(0);
+        views
+            .unbounded_counters
+            .entry(*id)
+            .or_default()
+            .push(UnboundedCounterView {
+                counter: ct.clone(),
+                count,
+            });
     }
 
     if state.format_config.commander_damage_threshold.is_none() {

@@ -1,10 +1,10 @@
 import { useMemo } from "react";
-import type { ObjectId } from "../adapter/types.ts";
+import type { ObjectId, UnboundedCounterView } from "../adapter/types.ts";
 import { useGameStore } from "../stores/gameStore.ts";
 
 // CR 732.2a / CR 701.34a: stable empty refs so a permanent with no unbounded counter
 // (the dominant case) never re-renders on identity churn.
-const EMPTY_UNBOUNDED_ROWS: ReadonlyArray<{ counter: string; count: number }> = [];
+const EMPTY_UNBOUNDED_ROWS: ReadonlyArray<UnboundedCounterView> = [];
 const EMPTY_ROWS: CounterRow[] = [];
 
 /**

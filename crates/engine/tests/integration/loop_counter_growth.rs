@@ -616,3 +616,84 @@ fn plus_one_counter_growth_registers_a_target_the_bearer_does_not_yet_carry() {
         "(A-4) the display row must not materialize into rules state, got {wire_counters}"
     );
 }
+
+/// CROSS-SEAT DEDUPE — one `(object, counter)` pair registered by TWO seats projects ONE row.
+///
+/// THE DEFECT THIS PINS. `GameState::unbounded_counter_targets` is
+/// `BTreeMap<PlayerId, BTreeSet<(ObjectId, CounterType)>>`: the `BTreeSet` dedupes WITHIN a seat
+/// and nothing dedupes ACROSS seats. The projector iterated `.values()` and pushed every pair
+/// unconditionally, so two controllers whose accepted loops pump the same pair emitted the pair
+/// TWICE. Both rows are byte-identical — the count is read from `state.objects` keyed only by
+/// `(id, ct)`, with no seat input — so this is a duplicate, never a "whose count wins" question.
+/// Downstream, all three render sites (`board/PermanentCard`, `card/ArtCropCard`,
+/// `card/CardPreview`) key their pill on the counter TYPE alone, so a duplicate row is two React
+/// children sharing one key: undefined reconciliation plus a dev warning. The frontend cannot fix
+/// this — deduping engine-published game state in the display layer is exactly what this codebase
+/// forbids — so the collapse belongs here, at the seam that owns the row set.
+///
+/// WHY A DIRECTLY-CONSTRUCTED STATE IS HONEST HERE. Reachability is STRUCTURAL, not scenario-
+/// dependent: `register_unbounded_counter_targets` is the store's single write authority and it
+/// keys strictly by the winning controller (`game::engine::materialize_object_growth_shortcut`
+/// passes `proposal.proposer`), so "two seats hold the same pair" is reached by two accepted
+/// proposals in either order and carries no per-seat state beyond the key. Driving two full
+/// concurrent loop accepts would exercise the offer machinery, not this projection. The
+/// registrations below therefore go through that same production write authority; only the
+/// scheduling around them is harness-built.
+#[test]
+fn one_pair_registered_by_two_seats_projects_a_single_row() {
+    use engine::game::derived_views::derive_views;
+    use engine::game::zones::create_object;
+    use engine::types::identifiers::CardId;
+    use engine::types::zones::Zone;
+
+    const P1: PlayerId = PlayerId(1);
+
+    let mut state = GameState::new_two_player(42);
+    let bearer = create_object(
+        &mut state,
+        CardId(1),
+        P0,
+        "Shared Bearer".to_string(),
+        Zone::Battlefield,
+    );
+    // NONZERO on purpose: it makes the surviving row's `count` a discriminating value, so a
+    // "dedupe" that dropped both rows and re-invented one from thin air cannot pass.
+    state
+        .objects
+        .get_mut(&bearer)
+        .expect("the bearer is on the board")
+        .counters
+        .insert(CounterType::Plus1Plus1, 3);
+
+    // Both seats register the SAME pair, through the store's real single write authority.
+    state.register_unbounded_counter_targets(P0, vec![(bearer, CounterType::Plus1Plus1)]);
+    state.register_unbounded_counter_targets(P1, vec![(bearer, CounterType::Plus1Plus1)]);
+
+    // REACH-GUARD (the positive control). Without this, a registration that silently dropped the
+    // second seat would make the single-row assertion below pass vacuously — it would be asserting
+    // that one row came from one entry, which was never in doubt.
+    let seats: Vec<PlayerId> = state
+        .unbounded_counter_targets
+        .iter()
+        .filter(|(_, pairs)| pairs.contains(&(bearer, CounterType::Plus1Plus1)))
+        .map(|(seat, _)| *seat)
+        .collect();
+    assert_eq!(
+        seats,
+        vec![P0, P1],
+        "reach-guard: BOTH seats must really hold the pair, or the dedupe below is untested"
+    );
+
+    // THE ASSERTION. Exactly one row — not two identical ones sharing a React key.
+    let views = derive_views(&state, None);
+    assert_eq!(
+        views.unbounded_counters.get(&bearer),
+        Some(&vec![UnboundedCounterView {
+            counter: CounterType::Plus1Plus1,
+            count: 3,
+        }]),
+        "one (object, counter) pair held by two seats must project ONE row carrying the live \
+         count; duplicates collide on the counter-type React key at every render site. Got {:?}",
+        views.unbounded_counters
+    );
+}
