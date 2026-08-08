@@ -165,23 +165,10 @@ fn filter_is_actor_owned(filter: &TargetFilter) -> bool {
     }
 }
 
-/// Reach of one effect node. Four allowlisted shapes; everything else is
+/// Reach of one effect node. Three allowlisted shapes; everything else is
 /// interference by default (see the module doc, §2).
 fn effect_window_reach(effect: &Effect) -> WindowReach {
     match effect {
-        // CR 106.4: "When an effect instructs a player to add mana,
-        // that mana goes into a player's mana pool." Mana is a pool resource;
-        // producing it removes nothing from the board and answers no loop.
-        // `target` is the Jetfire-class recipient/count role — routing the pool
-        // it lands in does not make the production an interfering action.
-        Effect::Mana {
-            produced: _,
-            restrictions: _,
-            grants: _,
-            expiry: _,
-            target: _,
-        } => WindowReach::OwnResourcesOnly,
-
         // Absent `target_player` is an engine parser convention for "the
         // actor's own library". It is a true description of engine behaviour
         // and it is NOT the safety warrant for this arm, because it is NOT
@@ -251,6 +238,36 @@ fn effect_window_reach(effect: &Effect) -> WindowReach {
                     && *destination == Zone::Battlefield),
         ),
 
+        // NOT allowlisted — and `Effect::Mana` is the case that has to be NAMED
+        // here rather than left to the reader, because an earlier revision of
+        // this module allowlisted it.
+        //
+        // CR 106.1: "Mana is the primary resource in the game. Players spend
+        // mana to pay costs, usually when casting spells and activating
+        // abilities." CR 106.4 is the rule that earlier arm cited, and it quoted
+        // only the FIRST sentence — "that mana goes into a player's mana pool".
+        // The second sentence is the one that refutes the inference drawn from
+        // it: "From there, it can be used to pay costs immediately". CR 601.2g
+        // then runs mana abilities during the very cast they fund.
+        //
+        // So mana is FUNGIBLE REACH, and the earlier arm's inference —
+        // "producing it removes nothing from the board" — answers where the mana
+        // LANDS, which is not what this classifier asks. The question is whether
+        // the action widens what the seat can do inside the window
+        // `game::engine`'s `RespondToShortcut(Shorten)` arm hands back.
+        //
+        // Whether it does is NOT a function of the AST: it depends on the rest of
+        // the hand, the board, the colors produced, and on what other permanents
+        // trigger off mana being added (CR 603.2) or off the source leaving the
+        // battlefield (CR 701.21a). This function reads ONE ability and no other
+        // object, so `OwnResourcesOnly` here would be a proof it cannot
+        // discharge — exactly the unknowable this module's §2 default exists for.
+        //
+        // It is also the CONSISTENT answer: stage 1 re-admits a sacrifice-for-mana
+        // activation precisely BECAUSE the sacrifice is board-changing (see
+        // `types::mana::ManaSourcePenalty::is_meaningful_priority_activation`), so
+        // classifying that same action as confined here contradicted the stage
+        // that handed it over.
         _ => WindowReach::MayInterfere,
     }
 }
@@ -261,6 +278,14 @@ fn cost_window_reach(cost: &AbilityCost) -> WindowReach {
     match cost {
         // Tapping the source and spending mana from your own pool (CR 106.4)
         // touch nothing outside the actor.
+        //
+        // The `Mana` arm here is the SPENDING side and it stays allowlisted;
+        // only PRODUCING mana is reach. Paying a mana cost consumes a resource
+        // the actor already holds and hands nothing new to the seat, whereas the
+        // effect-side `_` arm above explains why adding mana widens what the
+        // seat can do inside the window. Flipping this arm would classify every
+        // ability with a mana cost as interference and vacate the feature, so
+        // its absence from that change is deliberate.
         AbilityCost::Tap => WindowReach::OwnResourcesOnly,
         AbilityCost::Mana { cost: _ } => WindowReach::OwnResourcesOnly,
         AbilityCost::Sacrifice(sacrifice) => {
@@ -601,6 +626,14 @@ mod tests {
         oracle: "Exile target creature. Its controller may search their library for a basic land \
         card, put that card onto the battlefield tapped, then shuffle.",
     };
+    const DARK_RITUAL: Card = Card {
+        name: "Dark Ritual",
+        oracle: "Add {B}{B}{B}.",
+    };
+    const LOTUS_PETAL: Card = Card {
+        name: "Lotus Petal",
+        oracle: "{T}, Sacrifice this artifact: Add one mana of any color.",
+    };
 
     /// V8 — the classifier is correct across the whole class, in BOTH
     /// directions. Acceptance (a) must be confined; every acceptance-(b)
@@ -609,8 +642,25 @@ mod tests {
     /// the hostile pair must all be interference.
     ///
     /// Revert-probe: deleting any allowlisted arm flips its acceptance-(a) rows
-    /// to `MayInterfere`; trivializing `filter_is_actor_owned` to `true` flips
-    /// the `Deathrite Shaman[0]` row to `OwnResourcesOnly`.
+    /// to `MayInterfere`. That clause is TIGHTER than it used to be — there are
+    /// now three allowlisted arms and all three are exercised by the three
+    /// `confined` rows, whereas the `Effect::Mana` arm this table shipped with
+    /// had no acceptance-(a) row witnessing it at all.
+    ///
+    /// This table no longer witnesses the TRIVIALIZE mutant, and the sentence
+    /// that said it did has been removed rather than weakened. It claimed that
+    /// trivializing `filter_is_actor_owned` to `true` flips the
+    /// `Deathrite Shaman[0]` row to `OwnResourcesOnly`; MEASURED, that stopped
+    /// being true when `Effect::Mana` left the allowlist. `Deathrite Shaman[0]`
+    /// carries its "Add one mana of any color" clause as a `sub_ability`, which
+    /// now folds `MayInterfere` on its own, so the absorbing fold holds the row
+    /// no matter what the owner axis says. The owner axis keeps its full
+    /// discriminating power; only this table's claim to be its witness went
+    /// stale. Its witnesses are the two tests that assert on
+    /// `filter_is_actor_owned` DIRECTLY —
+    /// `deathrite_and_terramorphic_are_separated_only_by_the_owner_axis` and
+    /// `composite_filters_prove_ownership_by_set_logic`, both in this module. Do
+    /// NOT weaken any assertion here to restore the old sentence.
     #[test]
     fn window_reach_matches_the_measured_class_table() {
         let confined: &[(&Card, usize)] = &[
@@ -936,5 +986,79 @@ mod tests {
             !filter_is_actor_owned(&TargetFilter::Or { filters: vec![] }),
             "a degenerate empty Or must not be proven by a vacuous all()"
         );
+    }
+
+    /// Mana is FUNGIBLE REACH (CR 106.1 / CR 106.4 / CR 601.2g), so neither a
+    /// cast ritual nor an actor-owned sacrifice-for-mana is confined.
+    ///
+    /// The Lotus Petal half is the load-bearing one, and its ATTRIBUTION is the
+    /// second assertion: the parser emits "Sacrifice this artifact" as a
+    /// `TargetFilter::SelfRef`, which `filter_is_actor_owned` PROVES actor-owned
+    /// — and CR 701.21a is why proving it is SOUND rather than merely convenient
+    /// ("A player can't sacrifice something that isn't a permanent, or something
+    /// that's a permanent they don't control"). The rule grounds
+    /// actor-OWNERSHIP; it does not dictate the AST encoding.
+    /// So `cost_window_reach` returns `OwnResourcesOnly` and the ONLY thing that
+    /// can carry the verdict is the mana effect. That is what separates this row
+    /// from `v9b`'s Ironworks, which reaches `MayInterfere` through an UNPROVEN
+    /// sacrifice filter and therefore never exercises this arm.
+    ///
+    /// Revert-probe, EXECUTED: restoring
+    /// `Effect::Mana {..} => WindowReach::OwnResourcesOnly` as this match's first
+    /// arm reds this row at the Dark Ritual verdict, which is where the run
+    /// aborts. The Lotus Petal verdict flips under the same mutation and that is
+    /// MEASURED rather than derived — the integration row `v10b` reads exactly
+    /// this ability through `indexed_ability_window_reach` and flips to `Accept`
+    /// under the same mutation, which it can only do if this fold returned
+    /// `OwnResourcesOnly`.
+    #[test]
+    fn mana_production_is_reach_not_a_confined_own_resource() {
+        for (card, index) in [(&DARK_RITUAL, 0usize), (&LOTUS_PETAL, 0usize)] {
+            assert!(
+                !head_is_unparsed(card, index),
+                "VACUITY GUARD: {} must PARSE, or the row measures the fail-closed arm instead \
+                 of the mana effect's own semantics",
+                card.name
+            );
+        }
+
+        // PREMISE (card-data is gitignored; re-measured here on the live parser).
+        let ritual = ability(&DARK_RITUAL, 0);
+        assert!(
+            matches!(ritual.effect.as_ref(), Effect::Mana { .. }),
+            "PREMISE: Dark Ritual heads Effect::Mana; got {:?}",
+            ritual.effect
+        );
+        assert!(
+            ritual.cost.is_none(),
+            "PREMISE: Dark Ritual carries no cost, so NOTHING but the head can carry the verdict"
+        );
+        assert_eq!(
+            reach(&DARK_RITUAL, 0),
+            WindowReach::MayInterfere,
+            "a cast ritual funds an otherwise-unaffordable response"
+        );
+
+        let petal = ability(&LOTUS_PETAL, 0);
+        let cost = petal
+            .cost
+            .as_ref()
+            .expect("PREMISE: Lotus Petal carries an activation cost");
+        assert_eq!(
+            cost_window_reach(cost),
+            WindowReach::OwnResourcesOnly,
+            "ATTRIBUTION: the SelfRef sacrifice IS proven actor-owned (CR 701.21a: a player can \
+             only sacrifice a permanent they control), so the cost leg is confined and cannot be \
+             what produces the verdict below"
+        );
+        assert_eq!(
+            ability_window_reach(&petal),
+            WindowReach::MayInterfere,
+            "…so the verdict is carried by the mana effect ALONE — this is the row v9b cannot be"
+        );
+
+        // Reach-guard: the classifier can still return OwnResourcesOnly, so the
+        // two MayInterfere verdicts above are attributable and not a constant.
+        assert_eq!(reach(&RAMPANT_GROWTH, 0), WindowReach::OwnResourcesOnly);
     }
 }
