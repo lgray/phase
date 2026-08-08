@@ -660,12 +660,33 @@ fn give_bolt(state: &mut GameState, player: PlayerId) -> ObjectId {
 /// reads, and `ManaCost`'s `Default` is `zero()` (`GameObject::new` seeds both
 /// cost fields from it), so the free-Bolt caller above is byte-unchanged.
 ///
-/// BOTH fields are assigned, and `base_mana_cost` is the load-bearing one:
-/// `game::layers`' `seed_live_characteristics_from_base` reassigns
-/// `mana_cost` from `base_mana_cost` on every layer pass, and every consumer
-/// here reaches the object through `ai_support::shortcut_probe`, which flushes
-/// layers. Setting only the live field would silently restore the free cost and
-/// leave the "otherwise-unaffordable" premise measuring nothing.
+/// BOTH fields are assigned, but the LIVE one is what carries this helper —
+/// `base_mana_cost` is NOT load-bearing for the objects staged here, and saying
+/// otherwise would be a justification the next reader trusts.
+///
+/// READ FROM SOURCE (three call sites, not a runtime probe — the evidence grade
+/// is stated because overclaiming it is the very habit this comment replaces).
+/// `game::layers`' base→live reseed does run
+/// `mana_cost = base_mana_cost.clone()` (`seed_live_characteristics_from_base`),
+/// and every consumer here does reach the object through
+/// `ai_support::shortcut_probe`, which flushes layers — but the full pass
+/// applies that reseed (via `reset_recipient_to_base`) only over
+/// `battlefield_phased_in_ids()`, and the hand branch of the same pass resets
+/// `keywords` alone. `layers::layer_pass_materializes_keywords`' doc is the
+/// in-repo authority for that split ("Battlefield — resets the full
+/// characteristic set" vs "Hand — keywords-only reset"); the incremental arm
+/// resets only battlefield entrants and their hosts, so it cannot reach a hand
+/// object either. This object is staged to `Zone::Hand`, so no pass reseeds its
+/// `mana_cost`. `GameObject`'s
+/// `sync_missing_base_characteristics` — which the hand branch DOES call —
+/// would in fact back-fill `base_mana_cost` from the live field, the opposite
+/// direction.
+///
+/// `base_mana_cost` is set for symmetry: it keeps the two fields from
+/// disagreeing on a freshly minted object, and it keeps the helper correct if
+/// the hardcoded `Zone::Hand` below ever becomes the battlefield, where the
+/// reseed WOULD restore the default (free) cost over the printed one and
+/// silently leave an "otherwise-unaffordable" premise measuring nothing.
 fn give_bolt_with_cost(state: &mut GameState, player: PlayerId, cost: ManaCost) -> ObjectId {
     let card_id = CardId(state.next_object_id);
     let id = engine::game::zones::create_object(
@@ -868,7 +889,11 @@ fn v1_live_path_fetchland_seat_accepts_on_the_real_4p_board() {
     // `GameAction::is_mana_ability` filter. (It CAN contain a hand- or
     // graveyard-zone mana activation, which has its own candidate loop and is a
     // `GameAction::ActivateAbility` — so the filter never sees it. That class is
-    // not on this board, and the assertion below would catch it if it were.)
+    // not on this board, and what would catch it is the `non_pass.len() == 1`
+    // REACH-GUARD above, NOT the assertion below: such an activation is already
+    // IN the flat list, so it shows up as a second non-pass action, while
+    // `stage_two_action_set` only APPENDS `meaningful_sacrifice_mana_actions` —
+    // a non-sacrifice one adds nothing and `stage_two == flat` still holds.)
     // The set stage 2 actually folds over is WIDER still — `stage_two_action_set`
     // re-admits sacrifice-for-mana activations — so without this the flagship is
     // blind to exactly the class that would vacuate the feature: a seat that
@@ -1166,39 +1191,25 @@ fn v8_precast_window_takes_the_same_efficacy_answer() {
 /// That gap between the two stages' inputs is the whole subject of this section.
 const IRONWORKS: &str = "Sacrifice an artifact: Add {C}{C}.";
 
-/// Stage the Ironworks on `player`'s battlefield with its ability taken from the
-/// REAL parser, not hand-built: the verdict under test is a function of the AST,
-/// so a hand-written `AbilityDefinition` would let this section pass against a
-/// shape the pipeline never produces.
+/// Stage the Ironworks on `player`'s battlefield, ability taken from the REAL
+/// parser (see `give_parsed_card`, which this is now one call into).
+///
+/// It was an inlined copy of that helper until the two were diffed field by
+/// field and found byte-equivalent — same parse call, same assertion text once
+/// `name` is substituted, same `create_object` arguments, same core-type push,
+/// same `base_card_types`/`abilities`/`base_abilities` assignment, same
+/// `layers_dirty`. Delegating is behaviour-identical BY CONSTRUCTION, and the
+/// divergence it prevents already fired once inside this same change:
+/// `base_mana_cost` reached one construction path and not the other.
 fn give_ironworks(state: &mut GameState, player: PlayerId) -> ObjectId {
-    let parsed =
-        engine::parser::oracle::parse_oracle_text(IRONWORKS, "Krark-Clan Ironworks", &[], &[], &[]);
-    assert_eq!(
-        parsed.abilities.len(),
-        1,
-        "PREMISE: Krark-Clan Ironworks parses to exactly one ability; got {:?}",
-        parsed.abilities
-    );
-    let id = engine::game::zones::create_object(
+    give_parsed_card(
         state,
-        CardId(state.next_object_id),
         player,
-        "Krark-Clan Ironworks".to_string(),
+        "Krark-Clan Ironworks",
+        IRONWORKS,
+        CoreType::Artifact,
         Zone::Battlefield,
-    );
-    let obj = state.objects.get_mut(&id).expect("just created");
-    obj.card_types
-        .core_types
-        .push(engine::types::card_type::CoreType::Artifact);
-    obj.base_card_types = obj.card_types.clone();
-    // CR 302.6 gates only creatures, but the mana-source sweep reads the flag
-    // uniformly; a permanent that has been under its controller's control since
-    // their most recent turn began is not sick.
-    obj.summoning_sick = false;
-    obj.abilities = std::sync::Arc::new(parsed.abilities.clone());
-    obj.base_abilities = std::sync::Arc::new(parsed.abilities);
-    state.layers_dirty = LayersDirty::full();
-    id
+    )
 }
 
 /// A vanilla artifact for the Ironworks to eat. No abilities and no card claim:
@@ -1312,8 +1323,9 @@ fn v9a_stage_two_folds_over_every_action_stage_one_counted() {
 ///
 /// This row's verdict is now OVER-DETERMINED, which changes what a future
 /// refinement does to it. The doc used to predict that a `filter_is_actor_owned`
-/// which learns to prove "Sacrifice an artifact" actor-owned (CR 701.21a makes
-/// that TRUE in fact) would red this row; it will not, because the unallowlisted
+/// which learns to prove "Sacrifice an artifact" actor-owned (CR 701.21a bounds
+/// the actor to permanents they CONTROL, which is the fact such a refinement
+/// would be reading) would red this row; it will not, because the unallowlisted
 /// `Effect::Mana` head carries `MayInterfere` unconditionally. The guidance the
 /// prediction carried still stands and is the part to keep: if this row ever
 /// does red, re-derive the fixture on an ability whose reach is genuinely
@@ -1371,10 +1383,16 @@ const DARK_RITUAL: &str = "Add {B}{B}{B}.";
 
 /// Lotus Petal, verbatim. CARD PROVENANCE. This is the maintainer's named
 /// "actor-owned sacrifice-for-mana" class: the parser emits "Sacrifice this
-/// artifact" as a `TargetFilter::SelfRef`, which `filter_is_actor_owned` PROVES
-/// actor-owned (CR 701.21a grounds why that is sound — a player can only
-/// sacrifice a permanent they control), so the cost leg is confined and the mana
-/// head carries the verdict ALONE. That is what makes it not a second `v9b`,
+/// artifact" as a `TargetFilter::SelfRef`, which `filter_is_actor_owned`
+/// returns true for, so the cost leg reads confined and the mana head carries
+/// the verdict ALONE. CR 701.21a bounds the actor to permanents they CONTROL,
+/// which is the most that predicate can be grounded in — its first sentence
+/// sends the sacrificed card to its OWNER's graveyard, so control is not
+/// ownership and "confined" is narrower than the predicate's name suggests.
+/// `shortcut_efficacy`'s `mana_production_is_reach_not_a_confined_own_resource`
+/// quotes the rule in full and names the limit; nothing here rests on it,
+/// because the mana head decides this verdict either way. That is also what
+/// makes this row not a second `v9b`,
 /// whose Ironworks reaches the same verdict through an UNPROVEN cost filter.
 const LOTUS_PETAL: &str = "{T}, Sacrifice this artifact: Add one mana of any color.";
 
@@ -1386,9 +1404,9 @@ const SOL_RING: &str = "{T}: Add {C}{C}.";
 /// Stage a real card with its abilities taken from the REAL parser, not
 /// hand-built: every verdict below is a function of the AST, so a hand-written
 /// `AbilityDefinition` would let this section pass against a shape the pipeline
-/// never produces. Same construction shape as `give_ironworks` above (left
-/// untouched: it is shipped and `v9a`/`v9b` are green on it), parameterized over
-/// the three axes the V10 rows vary.
+/// never produces. Parameterized over the three axes the V10 rows vary, and the
+/// SINGLE staging path for parsed cards in this file — `give_ironworks` above
+/// delegates here rather than keeping the byte-equivalent copy it used to be.
 fn give_parsed_card(
     state: &mut GameState,
     player: PlayerId,
@@ -1414,10 +1432,11 @@ fn give_parsed_card(
     let obj = state.objects.get_mut(&id).expect("just created");
     obj.card_types.core_types.push(core_type);
     obj.base_card_types = obj.card_types.clone();
-    // CR 302.6 gates only creatures, but the mana-source sweep reads the flag
-    // uniformly; a permanent that has been under its controller's control since
-    // their most recent turn began is not sick.
-    obj.summoning_sick = false;
+    // No `summoning_sick = false` here: it would be a no-op that reads as
+    // load-bearing. `zones::create_object` documents that it deliberately does
+    // NOT set the flag (only the real ETB pipeline's
+    // `reset_for_battlefield_entry` does), `add_to_zone` never touches it, and
+    // `GameObject::new` already defaults it to `false`.
     obj.abilities = std::sync::Arc::new(parsed.abilities.clone());
     obj.base_abilities = std::sync::Arc::new(parsed.abilities);
     state.layers_dirty = LayersDirty::full();
