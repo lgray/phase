@@ -11,10 +11,16 @@ const EMPTY_PILLS: ReadonlyArray<CounterRowView> = [];
  * partitioned and ordered them.
  *
  * The engine's `counter_display` projection is the SINGLE authority for counter display. It
- * already dropped zero-count entries (CR 122.1 — a zero map entry is not a marker), split the
- * loyalty TOTAL out of the pill strip (CR 306.5c), deduplicated across seats, and ordered the
- * rows (`∞` first, then `CounterType` order). So this hook joins nothing, filters nothing, sorts
- * nothing, and interprets no counter type — it is one keyed lookup.
+ * already split the loyalty TOTAL out of the pill strip (CR 306.5c), deduplicated across seats,
+ * and ordered the rows (`∞` first, then `CounterType` order). So this hook joins nothing, filters
+ * nothing, sorts nothing, and interprets no counter type — it is one keyed lookup.
+ *
+ * ZERO COUNTS ARE DROPPED IN THE FINITE PASS ONLY, and a consumer that re-filters on
+ * `count > 0` therefore deletes real rows. `counter_display_views`' finite pass admits through
+ * `positive_counter_entries` (CR 122.1 — a zero map entry is not a marker), so no `Finite` row
+ * carries `count: 0`; its UNBOUNDED pass has NO zero filter and reads the live count for a
+ * REGISTERED pair, so an `Unbounded` row legitimately carries `count: 0` for a pair the loop
+ * pumps `0 -> 1`.
  *
  * THERE IS NO FALLBACK TO `objects[id].counters`, AND ONE MUST NOT BE ADDED — not here, not in a
  * render site, not in `groupKey`. A frame that arrives with no `derived` renders NO counter pills
@@ -41,17 +47,17 @@ const EMPTY_PILLS: ReadonlyArray<CounterRowView> = [];
  * the fix lands at every `groupByName` consumer at once instead of per chip. `isUnboundedPile`'s
  * `.every()` stays as written: it is a fail-safe over a channel `groupKey` does not key on.
  *
- * Subscribed today by exactly FOUR render sites: `board/PermanentCard`, `card/ArtCropCard`,
- * `card/CardPreview`'s `CardInfoPanel`, and `controls/AttackTargetPicker`'s `StackLabel`.
+ * Subscribed today by exactly FIVE render sites — EVERY counter DISPLAY surface in the client:
+ * `board/PermanentCard`, `card/ArtCropCard`, `card/CardPreview`'s `CardInfoPanel`,
+ * `controls/AttackTargetPicker`'s `StackLabel`, and `hud/DialogAttachmentCard`. FU-B (the last
+ * one) landed with this ledger revision; it previously enumerated and re-filtered
+ * `obj.counters`, so it could not express an `Unbounded` pill at all.
  *
  * Every surviving reader of the raw `objects[id].counters` map, measured with `git grep` and
  * cross-checked with `ast-grep` (an `Object.entries`-shaped pattern alone MISSES the indexed
- * reads, which is how an earlier census undercounted this list):
- *   - FU-B `hud/DialogAttachmentCard` (`:115`) — the one remaining DISPLAY site, and the only
- *     entry here that is a pending conversion. It re-implements the projection's own work
- *     (drops zero rows, excludes `loyalty`). `__tests__/DialogAttachmentCard.test.tsx` EXISTS,
- *     so this is NOT blocked on a missing test file (an earlier revision of this ledger claimed
- *     it was); it is simply outside the frozen scope of the change that subscribed FU-A.
+ * reads, which is how an earlier census undercounted this list). BOTH are DELIBERATE, PERMANENT
+ * EXCLUSIONS — neither is a display site, and neither is a pending conversion. There is no
+ * remaining conversion work:
  *   - `modal/CardChoiceModal` (`:1712`, `:1715`, in `removableCounterCostEntries`) — NOT a
  *     display site and NOT a pending conversion. It enumerates which counters are legal to
  *     REMOVE AS A COST — CR 118.3, a player can't pay a cost without the resources to pay it
@@ -66,7 +72,8 @@ const EMPTY_PILLS: ReadonlyArray<CounterRowView> = [];
  *     value of the counter its own +/- buttons are about to `ModifyCounters`, `loyalty`
  *     included. It needs the writable map it mutates, not the CR 306.5c-partitioned view.
  *
- * Do not claim this hook covers every counter render site until FU-B lands.
+ * This hook now covers every counter render site. A NEW raw-map DISPLAY reader is a regression,
+ * not an omission — add it to the subscribed list above, or justify it here as a third exclusion.
  */
 export function useCounterDisplay(objectId: ObjectId): ObjectCounterDisplay {
   return useGameStore(
@@ -79,7 +86,7 @@ export const pillsOf = (display: ObjectCounterDisplay): ReadonlyArray<CounterRow
   display.pills ?? EMPTY_PILLS;
 
 /**
- * The single spelling of the engine enum → render-time distinction, so the three render sites
+ * The single spelling of the engine enum → render-time distinction, so the five render sites
  * cannot drift. An absent `magnitude` is the serde default, `"Finite"`.
  */
 export const isUnbounded = (row?: CounterRowView): boolean => row?.magnitude === "Unbounded";

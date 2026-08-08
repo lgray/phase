@@ -57,6 +57,24 @@ use std::collections::BTreeSet;
 
 use super::support::shared_card_db;
 
+/// The `DerivedViews` channels both client wire goldens are lifted from, declared ONCE and
+/// referenced by path from `kilo_live_offer_from_real_dump` so the two emitters cannot drift.
+/// Previously each file hard-coded its own copy of these four names with only a comment coupling
+/// them: `filter_map` silently DROPS a name that matches no field, and each file's drift compare
+/// then reads a committed golden written by the same typo, so both sides omit the channel and
+/// agree with themselves. One shared array makes an edit land on both emitters at once.
+///
+/// Neither frame carries all four (this file's has no `counter_display`; kilo's has no
+/// `unbounded_pile`), so each non-vacuity guard asserts this set MINUS the one name its frame
+/// legitimately lacks — which is what makes the union of the two guards span all four by
+/// construction rather than by comment.
+pub(crate) const WIRE_GOLDEN_CHANNELS: [&str; 4] = [
+    "unbounded_pile",
+    "unbounded_resources",
+    "counter_display",
+    "unbounded_families",
+];
+
 const P0: PlayerId = PlayerId(0);
 const P1: PlayerId = PlayerId(1);
 const P2: PlayerId = PlayerId(2);
@@ -252,15 +270,10 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
     // workspace — see Cargo.lock), so `to_value` re-sorts every map key. Measured byte-identical
     // across independent test processes. No normalization needed.
     let wire = serde_json::to_value(&derived).expect("derived views serialize");
-    let golden: serde_json::Map<String, serde_json::Value> = [
-        "unbounded_pile",
-        "unbounded_resources",
-        "counter_display",
-        "unbounded_families",
-    ]
-    .into_iter()
-    .filter_map(|k| wire.get(k).map(|v| (k.to_string(), v.clone())))
-    .collect();
+    let golden: serde_json::Map<String, serde_json::Value> = WIRE_GOLDEN_CHANNELS
+        .into_iter()
+        .filter_map(|k| wire.get(k).map(|v| (k.to_string(), v.clone())))
+        .collect();
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../client/src/test/fixtures/unbounded-token-wire.json"
@@ -295,16 +308,14 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
     // PER-FILE RESIDUAL, CLOSED BY THE PAIR: this frame legitimately carries no `counter_display`,
     // and a name a frame never populates is indistinguishable from a mistyped one from inside that
     // frame. `kilo_live_offer_from_real_dump`'s twin guard covers `counter_display` (and this file
-    // covers the `unbounded_pile` its frame lacks). The UNION of the two guards spans all four
-    // names ONLY while both arrays keep the same four — do not change one array without the other.
+    // covers the `unbounded_pile` its frame lacks). The union spans all four BY CONSTRUCTION: both
+    // guards are `WIRE_GOLDEN_CHANNELS` minus the one name their own frame lacks, so a name added
+    // to the shared array reds whichever frame does not carry it instead of being silently dropped.
     let channels: BTreeSet<&str> = golden.keys().map(String::as_str).collect();
+    let mut expected = BTreeSet::from(WIRE_GOLDEN_CHANNELS);
+    expected.remove("counter_display");
     assert_eq!(
-        channels,
-        BTreeSet::from([
-            "unbounded_families",
-            "unbounded_pile",
-            "unbounded_resources"
-        ]),
+        channels, expected,
         "the golden key list names a field `DerivedViews` does not have, or this frame stopped \
          carrying one it must: a mistyped name is dropped silently and the drift compare below \
          then agrees with itself. Check every name against `DerivedViews`."

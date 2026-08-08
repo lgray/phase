@@ -825,7 +825,7 @@ interface StackLabelProps {
 function StackLabel({ stack, t, hoverProps }: StackLabelProps) {
   const ptLabel = objectPtLabel(stack.representative ?? undefined);
   // CR 122.1 + CR 306.5c: the engine's counter-display projection is the single authority —
-  // it already dropped zero rows, split the loyalty total out, and ordered the pills. Keyed on
+  // it already dropped zero FINITE rows, split the loyalty total out, and ordered the pills. Keyed on
   // `ids[0]` because that is exactly the object `representative` is defined as (combat.ts), so
   // the hook call is unconditional and the chips match the row set `groupKey` grouped on.
   const counters = pillsOf(useCounterDisplay(stack.ids[0]));

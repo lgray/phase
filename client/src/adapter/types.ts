@@ -2729,7 +2729,8 @@ export type CounterMagnitude = "Finite" | "Unbounded";
  * `"charge"`, `"P1P1"`). `count` is the object's LIVE count and is engine-supplied because a row
  * may legitimately have no entry in that map at all: a pair the loop pumps from `0 -> 1` is
  * registered while the object still carries none, so the count is `0` and there is nothing to join
- * back to. Re-deriving it here would also be the FE inferring game state.
+ * back to. Re-deriving it here would also be the FE inferring game state. That `count: 0` case is
+ * `"Unbounded"`-only — the finite pass drops zero entries, the unbounded pass does not.
  */
 export interface CounterRowView {
   counter: CounterType;
@@ -3024,8 +3025,15 @@ export interface DerivedViews {
    *
    * CONTRACT FOR CONSUMERS: render `pills` in the order given; never sort, never filter,
    * never read `obj.counters`; `magnitude` absent means `"Finite"`. The engine already
-   * dropped zero-count entries (CR 122.1), partitioned loyalty (CR 306.5c), deduplicated
-   * across seats, and ordered the rows (`∞` first, then `CounterType` order).
+   * partitioned loyalty (CR 306.5c), deduplicated across seats, and ordered the rows (`∞`
+   * first, then `CounterType` order).
+   *
+   * ZERO COUNTS ARE DROPPED IN THE FINITE PASS ONLY. `counter_display_views`' FINITE pass
+   * admits through `positive_counter_entries` (CR 122.1 — a zero map entry is not a marker),
+   * so no `"Finite"` row ever carries `count: 0`. The UNBOUNDED pass has NO zero filter: it
+   * reads the live count for a REGISTERED pair, so an `"Unbounded"` row legitimately carries
+   * `count: 0` for a pair the loop pumps `0 -> 1`. A consumer that filters on `count > 0`
+   * therefore deletes real `∞` rows — which is why consumers filter nothing.
    *
    * An object with no renderable row is absent from this map; the whole field is omitted
    * when no object has one. Mirrors

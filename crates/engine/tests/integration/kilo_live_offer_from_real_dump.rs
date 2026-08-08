@@ -595,15 +595,13 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     // workspace — see Cargo.lock), so `to_value` re-sorts every map key. Measured byte-identical
     // across independent test processes. No normalization needed.
     let wire = serde_json::to_value(&views).expect("derived views serialize");
-    let golden: serde_json::Map<String, serde_json::Value> = [
-        "unbounded_pile",
-        "unbounded_resources",
-        "counter_display",
-        "unbounded_families",
-    ]
-    .into_iter()
-    .filter_map(|k| wire.get(k).map(|v| (k.to_string(), v.clone())))
-    .collect();
+    // Shared with `combo_infinite_pile`'s emitter — see `WIRE_GOLDEN_CHANNELS` for why the two
+    // copies of this list had to become one.
+    let golden: serde_json::Map<String, serde_json::Value> =
+        crate::combo_infinite_pile::WIRE_GOLDEN_CHANNELS
+            .into_iter()
+            .filter_map(|k| wire.get(k).map(|v| (k.to_string(), v.clone())))
+            .collect();
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../client/src/test/fixtures/unbounded-counter-wire.json"
@@ -677,16 +675,15 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     // PER-FILE RESIDUAL, CLOSED BY THE PAIR: this frame legitimately carries no `unbounded_pile`,
     // and a name a frame never populates is indistinguishable from a mistyped one from inside that
     // frame. `combo_infinite_pile`'s twin guard covers `unbounded_pile` (and this file covers the
-    // `counter_display` its frame lacks). The UNION of the two guards spans all four names ONLY
-    // while both arrays keep the same four — do not change one array without the other.
+    // `counter_display` its frame lacks). The union spans all four BY CONSTRUCTION: both guards are
+    // `WIRE_GOLDEN_CHANNELS` minus the one name their own frame lacks, so a name added to the
+    // shared array reds whichever frame does not carry it instead of being silently dropped.
     let channels: std::collections::BTreeSet<&str> = golden.keys().map(String::as_str).collect();
+    let mut expected =
+        std::collections::BTreeSet::from(crate::combo_infinite_pile::WIRE_GOLDEN_CHANNELS);
+    expected.remove("unbounded_pile");
     assert_eq!(
-        channels,
-        std::collections::BTreeSet::from([
-            "counter_display",
-            "unbounded_families",
-            "unbounded_resources",
-        ]),
+        channels, expected,
         "the golden key list names a field `DerivedViews` does not have, or this frame stopped \
          carrying one it must: a mistyped name is dropped silently and the drift compare below \
          then agrees with itself. Check every name against `DerivedViews`."

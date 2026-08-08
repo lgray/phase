@@ -636,8 +636,9 @@ fn plus_one_counter_growth_registers_a_target_the_bearer_does_not_yet_carry() {
 /// unconditionally, so two controllers whose accepted loops pump the same pair emitted the pair
 /// TWICE. Both rows are byte-identical — the count is read from `state.objects` keyed only by
 /// `(id, ct)`, with no seat input — so this is a duplicate, never a "whose count wins" question.
-/// Downstream, all three render sites (`board/PermanentCard`, `card/ArtCropCard`,
-/// `card/CardPreview`) key their pill on the counter TYPE alone, so a duplicate row is two React
+/// Downstream, all five render sites (`board/PermanentCard`, `card/ArtCropCard`,
+/// `card/CardPreview`, `controls/AttackTargetPicker`, `hud/DialogAttachmentCard`) key their pill
+/// on the counter TYPE alone, so a duplicate row is two React
 /// children sharing one key: undefined reconciliation plus a dev warning. The frontend cannot fix
 /// this — deduping engine-published game state in the display layer is exactly what this codebase
 /// forbids — so the collapse belongs here, at the seam that owns the row set.

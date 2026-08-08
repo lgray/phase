@@ -716,7 +716,7 @@ pub struct DerivedViews {
     /// `(ObjectId, CounterType)`, so the per-seat store holding one pair twice yields one row.
     ///
     /// ORDER: `Unbounded` rows lead, then `CounterType`'s declaration `Ord` inside each class.
-    /// The lead is display salience under clipping — all three subscribed strips are fixed-size
+    /// The lead is display salience under clipping — all five subscribed strips are fixed-size
     /// overlay stacks, so a row pushed past the fold is a row the player does not see, and the `∞`
     /// state is the exceptional one. The finite tie-break is `CounterType`'s `Ord` because that is
     /// already the order `counter_map_serde` puts `objects[*].counters` on the wire in, so the
