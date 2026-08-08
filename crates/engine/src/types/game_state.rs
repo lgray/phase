@@ -9512,6 +9512,7 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
     if let WaitingFor::LoopShortcut {
         schema,
         certificate,
+        proposer,
         ..
     } = &state.waiting_for
     {
@@ -9519,6 +9520,73 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
             return Err(
                 "persisted LoopShortcut offer states max_iterations 0, which CR 732.2a admits \
                  no legally takeable sequence for"
+                    .to_string(),
+            );
+        }
+        // THE PAIR NO PRODUCER MINTS. `is_bounded()` says the offer's producer NARROWED the
+        // repetition bound below `MAX_SHORTCUT_CYCLES`; `loop_period_controller()` says a driving
+        // period belonging to THIS proposer is recorded. The engine's three `LoopShortcut` mints
+        // partition that cross-product and none of them lands in this cell:
+        //
+        //   * the object-growth mint (`reconcile_terminal_result`, schema from
+        //     `try_offer_object_growth_shortcut`) and the Path A drain mint
+        //     (`interactive_loop_bridge`) both hand `build_shortcut_schema` the global
+        //     `MAX_SHORTCUT_CYCLES` verbatim, so neither is EVER `is_bounded()` — the growth mint
+        //     is the one that REQUIRES its proposer's own period, and it is unbounded by
+        //     construction;
+        //   * the bounded mint (`certified_bounded_cycle_offer`) is `is_bounded()` by construction
+        //     — it refuses `NoNarrowedLegalCount` unless `(1..MAX_SHORTCUT_CYCLES)` contains the
+        //     bound — but its caller's gate (1b) (`bounded_cycle_offer`) returns
+        //     `BoundedOfferRefusal::ProposerHasDrivingPeriod` while that seat's own period is
+        //     accumulating, so it can never mint INTO this cell;
+        //   * `visibility.rs`'s per-viewer re-wrap copies `max_iterations` verbatim off an offer
+        //     one of the three already minted.
+        //
+        // No live beat can join the two afterwards either. Nothing assigns `schema` or
+        // `max_iterations` in place anywhere in the engine, so an unbounded offer cannot ACQUIRE a
+        // narrowed bound; and every writer that GROWS `last_loop_action_sequence` is priority-side
+        // — the `TapLandForMana` / `ActivateManaSource` / `ActivateAbility` `WaitingFor::Priority`
+        // arms (`accumulate_loop_action_step` and the token-creating `vec![step]` beside it) and
+        // the cast finalize. A pending offer reaches none of them: its only reducer arms are
+        // `DeclareShortcut` and `DeclineShortcut`.
+        //
+        // WHAT IT COSTS TO ACCEPT IT: `materialize_fixed_shortcut` (SITE C) dispatches on period
+        // ownership ALONE and early-returns the accepted proposal into
+        // `materialize_object_growth_shortcut`, committing ZERO of the agreed cycles — the silent
+        // misroute gate (1b)'s own doc block exists to prevent, entering through the restore door
+        // instead of the producer door.
+        //
+        // ⚠ DELIBERATELY CARRIES NO `CR` ANNOTATION, and the measurement for that absence travels
+        // with it so a later reader does not "fix" the omission. CR 732.2a's own Example is a
+        // proposer repeating THEIR OWN activation a SPECIFIED 999,999 more times — bounded, own
+        // period — so this state class is LEGAL AT THE TABLE and the rules license nothing here to
+        // enforce. What is violated is a producer-reachability fact about this engine, not a rule.
+        // Same call, same reason, same file family as `handle_declare_shortcut`'s IMPLEMENTATION
+        // BUDGET BOUND note: "a maintainer applying the CR 732.2a iff to a branch that wears a CR
+        // number will either trust it wrongly or delete it wrongly."
+        //
+        // BOTH conjuncts are required. Own period ALONE is the object-growth route's own admission
+        // condition, so rejecting it would refuse every legitimate growth capture; a narrowed bound
+        // ALONE is the ordinary bounded offer.
+        //
+        // ⚠ AFTER THE ZERO-BOUND CHECK, DELIBERATELY: `0 < MAX_SHORTCUT_CYCLES`, so a zero bound is
+        // ALSO `is_bounded()` and hoisting this block would relabel a corrupt zero with the wrong
+        // invariant. Observed, not assumed — see the zero-bound-plus-own-period arm of
+        // `a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load`.
+        //
+        // ⚠ THIS BLOCK COVERS ONE OF THE HARM'S TWO WIRE HOSTS, and unlike the zero-bound sibling
+        // above the residual is NOT empty. A persisted `WaitingFor::RespondToShortcut { proposal }`
+        // whose `proposal.proposer` owns the recorded period reaches the SAME SITE C misroute via
+        // `apply_confirmed_shortcut`. No bound-keyed conjunct can see it — `ShortcutProposal`
+        // carries no `schema`/`max_iterations` at all (the scoping note on the zero-bound guard
+        // above). The candidate discriminator on that host is `proposal.per_cycle.is_some()`; it is
+        // filed rather than shipped because "`per_cycle: Some` ⟺ the bounded mint" is not yet
+        // measured per branch, and a guard on an inherited marker is what this seam must not carry.
+        if schema.is_bounded() && state.loop_period_controller() == Some(*proposer) {
+            return Err(
+                "persisted LoopShortcut offer narrows its repetition bound while recording the \
+                 proposer's own driving period; no producer mints that pair, and accepting it \
+                 routes the agreed cycles to the object-growth materializer, committing none"
                     .to_string(),
             );
         }

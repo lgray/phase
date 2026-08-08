@@ -5738,6 +5738,215 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
     );
 }
 
+/// R0e — the wire pair NO PRODUCER MINTS: a persisted `LoopShortcut` offer that NARROWS its
+/// repetition bound (`schema.is_bounded()`) while recording the PROPOSER'S OWN driving period
+/// (`loop_period_controller() == Some(proposer)`) must fail the load.
+///
+/// The engine's three mints partition that cross-product and none lands in this cell: the
+/// object-growth and Path A drain mints both publish `MAX_SHORTCUT_CYCLES` (never
+/// `is_bounded()`), and the bounded mint's gate (1b) refuses `ProposerHasDrivingPeriod`. Accepting
+/// the pair anyway routes the accepted proposal through `materialize_fixed_shortcut`'s
+/// period-ownership early return into `materialize_object_growth_shortcut` — the table agreed to
+/// `n` cycles and gets NONE.
+///
+/// ⚠ NOT A CR REFUSAL, and the row asserts on the engine-invariant message accordingly. CR 732.2a's
+/// Example is a proposer repeating THEIR OWN activation a specified 999,999 more times, so this
+/// state class is legal at the table; what it violates is producer reachability in this engine.
+///
+/// THE PERIOD IS A PRODUCTION-SERIALIZED VALUE lifted whole out of the real object-growth capture,
+/// never hand-authored JSON — the discipline the `frames_per_period` row above states.
+///
+/// MATCHED REVERT-PROBE TABLE — each conjunct has its own failing arm, and the three
+/// single-conjunct reverts produce three DISTINCT failing sets:
+///
+/// | mutation to `reject_zero_bound_shortcut_offer` | flips | stays green |
+/// |---|---|---|
+/// | delete the whole own-period `if` block | A1 → `Ok` | A2, A3, A4, A5, A6 |
+/// | delete `schema.is_bounded() &&` | A3, A5 → `Err` | A1, A2, A4, A6 |
+/// | delete `&& loop_period_controller() == …` | A2, A4 → `Err` | A1, A3, A5, A6 |
+/// | hoist the block ABOVE the `max_iterations == 0` block | A6's message | A1–A5 |
+#[test]
+fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
+    let json = gunzip_dump(include_bytes!(
+        "../fixtures/tenacity_exquisite_blood_4p.json.gz"
+    ));
+    let envelope: serde_json::Value =
+        serde_json::from_str(&json).expect("dump envelope parses as JSON");
+    let base = envelope["gameState"].clone();
+
+    // ── REACH-GUARDS ON THE BASE: both splices below must CREATE their key ──────────────
+    assert_eq!(
+        base["waiting_for"]["type"].as_str(),
+        Some("LoopShortcut"),
+        "the invariant is scoped to the one variant that carries a schema AND a proposer"
+    );
+    assert!(
+        base["waiting_for"]["data"]["schema"].is_object(),
+        "the tenacity offer carries a schema object for the bound to live on"
+    );
+    assert!(
+        base["waiting_for"]["data"]["schema"]
+            .get("max_iterations")
+            .is_none(),
+        "the fixture predates the field, so the bound splice CREATES the key (absent ⇒ \
+         MAX_SHORTCUT_CYCLES ⇒ NOT is_bounded, which is what arms A3/A5 rest on)"
+    );
+    assert!(
+        base.get("last_loop_action_sequence").is_none(),
+        "the fixture records no driving period, so the period splice CREATES the key"
+    );
+    let proposer = base["waiting_for"]["data"]["proposer"].clone();
+
+    let donor_json = gunzip_dump(include_bytes!(
+        "../fixtures/combo_infinite_pile_4p_offer.json.gz"
+    ));
+    // The combo capture is BARE (no `gameState` envelope) — it is the other decode ingress, and
+    // A5 rides it as itself below.
+    let donor_state: serde_json::Value =
+        serde_json::from_str(&donor_json).expect("the combo dump parses as JSON");
+    let donor_period = donor_state["last_loop_action_sequence"].clone();
+    let donor_steps = donor_period
+        .as_array()
+        .expect("the real object-growth capture records a driving period to donate");
+    assert!(
+        !donor_steps.is_empty(),
+        "an empty donated sequence would make loop_period_controller() None and every arm vacuous"
+    );
+    assert!(
+        donor_steps
+            .iter()
+            .all(|step| step["controller"] == proposer),
+        "the donated period must belong to the SAME seat as the tenacity proposer, or A1 would \
+         be testing a FOREIGN period — which is A4's job, not A1's"
+    );
+
+    let spliced = |bound: Option<u64>, period: Option<&serde_json::Value>| {
+        let mut v = base.clone();
+        if let Some(n) = bound {
+            v["waiting_for"]["data"]["schema"]["max_iterations"] = serde_json::json!(n);
+            assert_eq!(
+                v["waiting_for"]["data"]["schema"]["max_iterations"].as_u64(),
+                Some(n),
+                "the bound splice must reach schema.max_iterations"
+            );
+        }
+        if let Some(seq) = period {
+            v["last_loop_action_sequence"] = seq.clone();
+            assert_eq!(
+                &v["last_loop_action_sequence"], seq,
+                "the period splice must reach last_loop_action_sequence"
+            );
+        }
+        v
+    };
+    let decode_persisted = |value: serde_json::Value| {
+        serde_json::from_value::<engine::types::game_state::PersistedGameState>(value)
+    };
+
+    // ── A1 — THE GUARD FIRES. Also the reach-guard for A2/A3/A4: the predicate reads the period
+    // from the state AS DECODED FROM THE WIRE, so an `Err` here is proof the splice landed and
+    // survived `decode_persisted_resolution_state`. Were it dropped, this would be `Ok` and the
+    // three `Ok` arms below would mean nothing.
+    let message = decode_persisted(spliced(Some(5), Some(&donor_period)))
+        .expect_err("a narrowed bound carrying the proposer's own period must fail the load")
+        .to_string();
+    assert!(
+        message.contains("narrows its repetition bound"),
+        "the rejection must NAME the invariant it enforces and must not be either sibling zero \
+         guard firing instead, got: {message}"
+    );
+
+    // ── A6 — ORDERING PROBE. `0 < MAX_SHORTCUT_CYCLES`, so a zero bound is ALSO `is_bounded()`:
+    // the two blocks are not disjoint and the zero check must keep answering first. No pre-existing
+    // row observes this — the sibling zero row's fixture carries no period, so the new predicate is
+    // false there regardless of order.
+    let message = decode_persisted(spliced(Some(0), Some(&donor_period)))
+        .expect_err("a zero bound must still fail the load when a period rides with it")
+        .to_string();
+    assert!(
+        message.contains("max_iterations 0"),
+        "ORDERING: hoisting the own-period block above the zero-bound block relabels a corrupt \
+         zero with the wrong invariant, got: {message}"
+    );
+
+    // ── A2 — THE PERIOD CONJUNCT. A narrowed bound ALONE is the ordinary bounded offer.
+    assert!(
+        decode_persisted(spliced(Some(5), None)).is_ok(),
+        "a narrowed bound with NO recorded period is exactly what the bounded mint publishes"
+    );
+
+    // ── A3 — THE `is_bounded()` CONJUNCT. Own period ALONE is the object-growth route's own
+    // admission condition; rejecting it would refuse every legitimate growth capture.
+    assert!(
+        decode_persisted(spliced(None, Some(&donor_period))).is_ok(),
+        "an UNNARROWED offer (absent bound ⇒ MAX_SHORTCUT_CYCLES) carrying the proposer's own \
+         period is the legitimate object-growth shape and must still load"
+    );
+
+    // ── A4 — SEAT-RELATIVITY. It must be THIS proposer's period, not merely A period.
+    let foreign_period = {
+        let mut seq = donor_period.clone();
+        for step in seq
+            .as_array_mut()
+            .expect("the donated period is an array of steps")
+        {
+            step["controller"] = serde_json::json!(1);
+        }
+        assert!(
+            seq.as_array()
+                .expect("still an array")
+                .iter()
+                .all(|step| step["controller"] != proposer),
+            "the controller rewrite must reach every step, or A4 would re-run A1"
+        );
+        seq
+    };
+    assert!(
+        decode_persisted(spliced(Some(5), Some(&foreign_period))).is_ok(),
+        "a period recorded from a DIFFERENT seat describes no sequence this proposer can take \
+         (SITE B's seat-relative form), so it must not reject the offer"
+    );
+
+    // ── A5 — THE REAL OBJECT-GROWTH CAPTURE, UNMUTATED, ON THE OTHER GUARDED INGRESS ──────
+    // `reject_zero_bound_shortcut_offer` is called from BOTH decoders; A1-A4 ride
+    // `decode_persisted_resolution_state`, this one rides `GameStateDecode::decode` through
+    // `impl Deserialize for GameState`.
+    let combo: GameState = serde_json::from_str(&donor_json)
+        .expect("the real object-growth capture must still load through the bare ingress");
+    // REACH-GUARD, INLINE — A1 cannot stand in for it (different fixture, different ingress).
+    // Without these three, `Ok` would also be explained by the period never surviving THIS
+    // decode, and the `is_bounded()` revert (delete it ⇒ this arm must flip to `Err`) would not
+    // fire.
+    let WaitingFor::LoopShortcut {
+        proposer: combo_proposer,
+        schema,
+        ..
+    } = &combo.waiting_for
+    else {
+        panic!(
+            "fixture precondition: the combo capture is AT a LoopShortcut offer, got {:?}",
+            combo.waiting_for
+        )
+    };
+    assert!(
+        !combo.last_loop_action_sequence.is_empty(),
+        "the period must SURVIVE this decode, or A5's Ok is unattributable"
+    );
+    assert!(
+        combo
+            .last_loop_action_sequence
+            .iter()
+            .all(|step| step.controller == *combo_proposer),
+        "the surviving period must be homogeneous on the PROPOSER's seat — that is what makes \
+         loop_period_controller() == Some(proposer) and puts this arm on the guard's own predicate"
+    );
+    assert!(
+        !schema.is_bounded(),
+        "and the offer must be UNNARROWED, so A5's Ok is attributable to the is_bounded() \
+         conjunct alone rather than to a missing period"
+    );
+}
+
 /// Opponents the ENGINE considers living. `Player::is_eliminated` is the authority the
 /// CR 732.2a detector uses when it builds its `living` set — `eliminated_players` and
 /// `life > 0` are not sufficient on their own, so this reads the field the detector reads.
