@@ -27,7 +27,7 @@ use crate::types::ability::{
 use crate::types::attribution::EffectRef;
 use crate::types::card::TokenImageRef;
 use crate::types::card_type::CoreType;
-use crate::types::counter::CounterType;
+use crate::types::counter::{positive_counter_entries, CounterType};
 use crate::types::events::GameEvent;
 use crate::types::format::GameFormat;
 use crate::types::game_state::{
@@ -334,13 +334,14 @@ impl FamilyCollapseState {
 /// SAME-FRAME ASYMMETRY — UNCHANGED AND LIVE. Carried forward from the `scheduled` flag this
 /// channel replaced, because retyping the flag as [`FamilyCollapseState`] did not answer the
 /// objection, and a reader still sees it on screen. Only THIS channel carries a collapse state.
-/// `unbounded_pile` (card groups) and `unbounded_counters` (counter pills) are `ObjectId`-keyed and
+/// `unbounded_pile` (card groups) and `counter_display` (counter pills) are `ObjectId`-keyed and
 /// carry no collapse projection at all, so during the accept→boundary window one loop can show
 /// `∞→N` on the badge and a plain `∞` on its own token group and counter pill in the SAME frame.
 /// Witnessed rather than asserted:
 /// `kilo_live_offer_from_real_dump::kilo_accept_marks_pentad_charge_as_unbounded_display_target`
-/// pins `unbounded_counters[Pentad]` as a single `charge` row — a bare `∞` pill — in the exact
-/// frame whose golden family state is `Scheduled(Committed)`.
+/// pins `counter_display[Pentad]` as a single `charge` row carrying [`CounterMagnitude`]'s
+/// `Unbounded` — a bare `∞` pill — in the exact frame whose golden family state is
+/// `Scheduled(Committed)`.
 ///
 /// THE ANSWER, not a disclosure: this is not the `Mana(_)` false-promise case. The collapse really
 /// IS scheduled for that axis, so the quiet surfaces under-announce; none of them promises a bound
@@ -372,35 +373,59 @@ pub struct UnboundedFamilyView {
     pub state: FamilyCollapseState,
 }
 
-/// One RENDERABLE `∞` counter row: an accepted counter-growth loop pumps `counter` on the
-/// object this row is keyed by, and `count` is that object's LIVE count of it.
+/// CR 122.1 + CR 732.2a: whether a counter row's count is a real quantity or one an accepted
+/// shortcut pumps without bound. Typed rather than a bool because the row is engine-classified
+/// data, not a render-time guess. `Finite` is the dominant case and is therefore the serde
+/// default, so the wire stays quiet for it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CounterMagnitude {
+    #[default]
+    Finite,
+    Unbounded,
+}
+
+/// `skip_serializing_if` predicate for [`CounterRowView`]'s `magnitude`, mirroring the free-fn
+/// `is_false` shape every sibling display row in this module already uses.
+fn is_finite(magnitude: &CounterMagnitude) -> bool {
+    matches!(magnitude, CounterMagnitude::Finite)
+}
+
+/// One RENDERABLE counter row on one object: an (object, counter) pair. CR 122.1 — a counter is a
+/// marker ON an object, so the pair IS the row key and no two rows can name one pair.
 ///
-/// CR 122.1: a counter is a marker ON an object, so a row names an (object, counter) pair, not a
-/// stored quantity. The `unwrap_or(0)` at the projection site is the PROJECTOR/PRODUCER
-/// convention, not a rule: it mirrors `analysis::resource::grown_beneficial_counter_deltas`,
-/// which reads the producing side with the same `unwrap_or(0)`, so both ends share one
-/// definition of "absent".
+/// `count` is the object's LIVE count; the `unwrap_or(0)` at the projection site is the
+/// PRODUCER/PROJECTOR convention mirroring `analysis::resource::grown_beneficial_counter_deltas`,
+/// so both ends share one definition of "absent". An `Unbounded` row with `count: 0` is real, not
+/// a placeholder: the pair is derived by diffing a SIMULATED one-period frame against a clone of
+/// the LIVE state (`game::engine::drive_one_period_frames`), so a pair growing `0 -> 1` across
+/// that period is registered while the live object carries NONE of that counter.
 ///
-/// WHY THE COUNT IS IN THE ROW rather than left to the display layer: the pair is derived by
-/// diffing a SIMULATED one-period frame against a clone of the LIVE state
-/// (`game::engine::drive_one_period_frames`), so a pair growing `0 -> 1` across that period is
-/// registered while the live object carries NONE of that counter. Publishing only the type left
-/// such a pair unrenderable — the display had no row to hang `∞` on, and inventing one from
-/// `objects[..].counters` would be the frontend deriving game state. Dropping the pair instead
-/// would trade a display over-KEEP for an over-DROP, which this subsystem's stated polarity
-/// forbids (see [`UnboundedFamilyView`]): it may leave an `∞` standing one boundary too long,
-/// never hide a real one.
-///
-/// DISPLAY-only — never written back to `GameState`. Carries data only: the row's PRESENCE in
-/// this channel is the entire unboundedness claim, so `isUnbounded` stays a render-time
-/// distinction and never becomes an engine-published boolean field on the row.
+/// DISPLAY-only — never written back to `GameState`.
 ///
 /// Derive list matches its siblings [`UnboundedResourceView`] / [`UnboundedFamilyView`] exactly.
 /// `Eq` is not optional: [`DerivedViews`] itself derives `Eq`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnboundedCounterView {
+pub struct CounterRowView {
     pub counter: CounterType,
     pub count: u32,
+    #[serde(default, skip_serializing_if = "is_finite")]
+    pub magnitude: CounterMagnitude,
+}
+
+/// Every counter row one object renders, PRE-PARTITIONED by where it renders — so the display
+/// layer selects nothing, filters nothing, and interprets no counter type.
+///
+/// CR 306.5c: a planeswalker's loyalty IS its loyalty-counter count, so a loyalty counter on an
+/// object that HAS a loyalty characteristic drives the total badge, never a pill.
+/// CR 606.4: a loyalty ABILITY COST is a different game fact and is never projected here.
+/// A loyalty counter on an object with NO loyalty characteristic is a `pills` row — CR 306.5c
+/// speaks only of planeswalkers, and hiding such a marker would be an over-DROP.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectCounterDisplay {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pills: Vec<CounterRowView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loyalty: Option<CounterRowView>,
 }
 
 /// The display family a pumped [`ResourceAxis`] groups into. Exhaustive by design (no wildcard) —
@@ -667,35 +692,42 @@ pub struct DerivedViews {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unbounded_pile: Vec<ObjectId>,
 
-    /// CR 732.2a / CR 701.34a: the per-object `∞` COUNTER channel — for each
-    /// battlefield object, one ROW per BENEFICIAL-MATERIALIZABLE counter that an accepted
-    /// counter-growth loop (proliferate charge on Pentad Prism, burden on
-    /// The One Ring, a +1/+1 or loyalty pump loop) pumps unboundedly (projected from
-    /// `GameState::unbounded_counter_targets`, filtered to objects still on the
-    /// battlefield, and deduplicated ACROSS seats — the per-seat store can hold one pair twice).
-    /// Which counters qualify is
-    /// `analysis::resource::counter_is_beneficial_materializable`'s wildcard-free partition
-    /// (`Generic(_)`, `Plus1Plus1`, `Loyalty`, `Defense`), derived once by
-    /// `game::engine::current_period_counter_growth`. The counter analog of `unbounded_pile`:
-    /// object-growth marks whole objects, but a counter-growth loop's unbounded axis MAY be
-    /// object-agnostic (one accepted proposal can carry both an object-classed counter axis and
-    /// the display channel's `Counter(Other, Other)`), so each row names the specific pumped
-    /// counter and the frontend renders `∞` (not `×N`) for that row and nothing else. Keyed by
-    /// ObjectId; DISPLAY-only (the real counter count is unchanged). Public board state — no
-    /// viewer filtering. Empty (and omitted) when no counter-growth loop is active — the
-    /// dominant case.
+    /// CR 122.1 + CR 732.2a: the COMPLETE per-object counter-display projection — every counter
+    /// row every display surface renders, for EVERY object that has one, in ANY zone. The single
+    /// authority for counter display: the client looks up its object's [`ObjectCounterDisplay`]
+    /// and renders it, joining nothing, filtering nothing, sorting nothing, and interpreting no
+    /// counter type. Produced by `counter_display_views`.
     ///
-    /// SHAPE: each entry is a self-sufficient [`UnboundedCounterView`] ROW, not a bare counter
-    /// type. The row carries the object's LIVE count, which is `0` when the loop pumps a counter
-    /// the object does not yet carry — a real row, not a marker needing a host row that does not
-    /// exist. See [`UnboundedCounterView`] for why the count is engine-supplied.
+    /// TWO DISTINCT EXISTENCE GATES, and conflating them is the bug this shape exists to prevent:
+    ///   - A FINITE row exists iff the object's own map carries that counter with a POSITIVE count
+    ///     (`types::counter::positive_counter_entries` — CR 122.1, a zero map entry is not a
+    ///     marker). It is NOT battlefield-gated. CR 122.2 already makes counters cease to exist on
+    ///     a zone change, and `zones::counters_persist_on_move` is the SINGLE authority for the
+    ///     CR 113.6b carve-out that overrides it (Skullbriar, Me the Immortal) — so a zone gate
+    ///     here would be a second, weaker copy of that rule, and it would also delete a suspended
+    ///     card's time counters in exile (CR 702.62b). The projection defers; it never re-derives.
+    ///   - The `Unbounded` ANNOTATION exists iff the pair is registered in
+    ///     `GameState::unbounded_counter_targets` AND the bearer is on the LIVE battlefield.
+    ///     CR 110.1: a permanent is a card or token on the battlefield, and the CR 732.2a mark
+    ///     claims a PERMANENT's counters are being pumped — off the battlefield there is no
+    ///     permanent, so the annotation drops while a persisting finite row may survive.
     ///
-    /// CR 306.5c: a `Loyalty` row states that this planeswalker's loyalty TOTAL is unbounded
-    /// (loyalty IS its loyalty-counter count), so it drives the loyalty total badge rather than a
-    /// pill. Loyalty ABILITY COST badges are never unbounded — CR 606.4, an activation cost is a
-    /// number of loyalty counters to pay, a different game fact from the total.
+    /// Cross-seat duplication is structurally impossible rather than deduplicated: the row key is
+    /// `(ObjectId, CounterType)`, so the per-seat store holding one pair twice yields one row.
+    ///
+    /// ORDER: `Unbounded` rows lead, then `CounterType`'s declaration `Ord` inside each class.
+    /// The lead is display salience under clipping — all three subscribed strips are fixed-size
+    /// overlay stacks, so a row pushed past the fold is a row the player does not see, and the `∞`
+    /// state is the exceptional one. The finite tie-break is `CounterType`'s `Ord` because that is
+    /// already the order `counter_map_serde` puts `objects[*].counters` on the wire in, so the
+    /// finite-only case — the dominant case — renders exactly as it did before.
+    ///
+    /// PAYLOAD: this field's population grew from `∞`-registered battlefield pairs (usually zero
+    /// entries) to every counter-bearing object. Measured on the production dumps this PR drives:
+    /// ONE entry on a 411-object board and ZERO on a 410-object one, and `HashMap::is_empty` still
+    /// omits the channel entirely for a counterless board.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub unbounded_counters: HashMap<ObjectId, Vec<UnboundedCounterView>>,
+    pub counter_display: HashMap<ObjectId, ObjectCounterDisplay>,
 }
 
 /// Serialize-only wrapper: the WASM getter passes `&GameState` by reference
@@ -853,10 +885,12 @@ pub struct ClientGameState {
     pub derived: DerivedViews,
 }
 
-/// Compute all engine-authored projections over `state`. Runs in O(damage
-/// entries) per call; the JIT short-circuit for non-Commander formats
-/// (where `commander_damage_threshold` is `None`) keeps the cost at exactly
-/// zero for the overwhelmingly common case.
+/// Compute all engine-authored projections over `state`. Runs in O(objects + `∞`
+/// targets + damage entries) per call; the JIT short-circuit for non-Commander
+/// formats (where `commander_damage_threshold` is `None`) still keeps the
+/// commander-damage grouping at exactly zero cost. The per-object counter walk
+/// (`counter_display_views`) allocates nothing for the dominant counterless
+/// object.
 ///
 /// CR 903.10a: commander damage is public information tracked per commander
 /// — no viewer-based redaction is applied here, and the grouping runs
@@ -1296,8 +1330,12 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // i.e. it hid a badge beside a pool the player can visibly keep spending.
     //
     // NO SURFACE IS FILTERED BY THE SCHEDULE — that, and only that, is the invariant here. Which
-    // rows/groups/pills EXIST is decided by the `∞` stores and the LIVE battlefield alone; nothing
-    // below hides a surface because a collapse is scheduled. The schedule is read to ANNOTATE, not
+    // rows/groups/pills EXIST is decided by the `∞` stores, the object's own counters, and the
+    // LIVE battlefield alone; nothing below hides a surface because a collapse is scheduled. That
+    // now covers a COMPLETE projection, not just the `∞` subset: `counter_display` publishes every
+    // rendered counter row on every object, and the schedule decides the existence of none of
+    // them. The schedule may only ANNOTATE (`unbounded_families`), never admit or withhold a row.
+    // The schedule is read to ANNOTATE, not
     // to filter: the row loop accumulates a per-`(player, family)` `FamilyCollapseState` emitted as
     // a SEPARATE channel (`unbounded_families`), and NO row carries a flag. Still additive.
     //
@@ -1320,6 +1358,10 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     //      lose a row" — falsified when that arm stopped reading the controller-keyed store WHOLE
     //      and started deriving each registered pair's own axis, which is an axis-scoped
     //      authority and therefore may revoke a counter row too.
+    //   6. "…and the counter-pill loop projects only `∞`-marked pairs" — falsified when the
+    //      channel widened to the complete per-object projection in `counter_display_views`. `∞`
+    //      became an ANNOTATION on a row whose existence is decided by the object's own counters,
+    //      and `Finite` row existence stopped being battlefield-gated at all.
     // The gate itself reads the schedule for the first time, and it still does not FILTER by it:
     // an accepted collapse can only ADD a row back that the backing check would have dropped
     // (CR 732.2c — the shortcut is already taken), never remove one.
@@ -1416,62 +1458,12 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
         }
     }
 
-    // CR 732.2a / CR 701.34a: project the accepted counter-growth loop's per-object ∞
-    // counter targets — the objects whose BENEFICIAL-MATERIALIZABLE counters (charge / burden /
-    // +1/+1 / loyalty / defense, per `analysis::resource::counter_is_beneficial_materializable`)
-    // the certified-unbounded loop pumps each cycle — dropping any that have since left
-    // the battlefield (stale member). Display-only per-object channel mirroring
-    // `unbounded_pile`; each row emitted here IS one `∞` (never `×N`) pill, rather than a mark
-    // applied to a pill the object's own counter map already supplies — see the `count: 0` note
-    // below for why no such pill need exist. Runs in every format (BEFORE the Commander
-    // short-circuit).
+    // CR 122.1 + CR 732.2a: the COMPLETE per-object counter-display projection. Emitted HERE,
+    // above the Commander short-circuit below, for the same reason the two loops above are: that
+    // `return` would drop this channel in every non-Commander format.
     //
     // Unconditional while a collapse is merely scheduled — see the CR 732 timing block above.
-    //
-    // CROSS-SEAT DEDUPE: the store is per-seat (`BTreeMap<PlayerId, BTreeSet<..>>`), so it dedupes
-    // WITHIN a seat and never ACROSS seats. Two controllers whose accepted loops pump the same
-    // (object, counter) pair each hold their own entry, and emitting both produced a duplicate row
-    // — two identical pills sharing one React key, since every render site keys on the counter
-    // type alone. The rows are byte-identical (`count` below is keyed only by `(id, ct)`, with no
-    // seat input), so collapsing at the source is a deduplication, not a choice of whose row wins.
-    // Flattening into a `BTreeSet` keeps the wire order the single-seat case already had: sorted
-    // by `(ObjectId, CounterType)`.
-    let targets: BTreeSet<&(ObjectId, CounterType)> =
-        state.unbounded_counter_targets.values().flatten().collect();
-    for (id, ct) in targets {
-        // CR 122.1 + CR 110.1 + CR 122.2: a counter is a marker placed ON an object, a permanent
-        // is a card or token ON THE BATTLEFIELD, and counters cease to exist when their bearer
-        // changes zones — so an off-battlefield bearer has no row.
-        if !state.battlefield.contains(id) {
-            continue;
-        }
-        // CR 122.1: a counter is a marker ON an object, so a row names an (object, counter)
-        // pair, not a stored quantity. The `unwrap_or(0)` is the PROJECTOR/PRODUCER
-        // convention, not a rule: it mirrors `analysis::resource::
-        // grown_beneficial_counter_deltas`, so both sides share one definition of "absent".
-        //
-        // WHY A `count: 0` ROW EXISTS: the pair is derived by diffing a SIMULATED one-period
-        // frame against a clone of the LIVE state (`game::engine::drive_one_period_frames`),
-        // so a pair growing 0 -> 1 across that period is registered while the live object
-        // carries none. Publishing only the type left such a pair unrenderable. Dropping it
-        // instead would trade a display over-KEEP for an over-DROP, which this subsystem's
-        // stated polarity forbids. Row existence is decided by the ∞ stores and live
-        // battlefield membership — never by `objects[..].counters`, which supplies only the
-        // count once the row's existence is already settled.
-        let count = state
-            .objects
-            .get(id)
-            .and_then(|o| o.counters.get(ct).copied())
-            .unwrap_or(0);
-        views
-            .unbounded_counters
-            .entry(*id)
-            .or_default()
-            .push(UnboundedCounterView {
-                counter: ct.clone(),
-                count,
-            });
-    }
+    views.counter_display = counter_display_views(state);
 
     if state.format_config.commander_damage_threshold.is_none() {
         return views;
@@ -1494,6 +1486,109 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
         }
     }
     views
+}
+
+/// CR 306.5c: route one row to the loyalty TOTAL or to the pill strip. A `Loyalty` counter drives
+/// the total only on an object that HAS a loyalty characteristic; on anything else CR 306.5c says
+/// nothing, so hiding the marker would be an over-DROP and the row stays a pill. CR 606.4's
+/// loyalty ABILITY COST is a different game fact and is never projected here.
+fn push_counter_row(display: &mut ObjectCounterDisplay, has_loyalty: bool, row: CounterRowView) {
+    if has_loyalty && row.counter == CounterType::Loyalty {
+        display.loyalty = Some(row);
+    } else {
+        display.pills.push(row);
+    }
+}
+
+/// CR 122.1 + CR 732.2a: build the COMPLETE per-object counter-display projection — every counter
+/// row every display surface renders, for every object that has one, in any zone.
+///
+/// TWO DISJOINT PASSES, so no `(ObjectId, CounterType)` key can be emitted twice and a duplicate
+/// pill is structurally unrepresentable rather than removed by a step that could regress. CR 122.1
+/// — a counter is a marker ON an object, so the pair IS the row key.
+///
+/// PASS 1, the `∞` ANNOTATION, driven from the registered target set:
+///
+/// CR 122.1 + CR 110.1 + CR 122.2: a counter is a marker placed ON an object, a permanent is a
+/// card or token ON THE BATTLEFIELD, and counters cease to exist when their bearer changes zones
+/// — so an off-battlefield bearer carries no `∞` ANNOTATION. Only the annotation is gated this
+/// way; a FINITE row for the same bearer may still survive the move (pass 2).
+///
+/// CROSS-SEAT DEDUPE: the store is per-seat (`BTreeMap<PlayerId, BTreeSet<..>>`), so it dedupes
+/// WITHIN a seat and never ACROSS seats. Two controllers whose accepted loops pump the same
+/// (object, counter) pair each hold their own entry, and emitting both produced a duplicate row —
+/// two identical pills sharing one React key, since every render site keys on the counter type
+/// alone. The rows are byte-identical (`count` is keyed only by `(id, ct)`, with no seat input),
+/// so collapsing at the source is a deduplication, not a choice of whose row wins. Flattening into
+/// a `BTreeSet` keeps the wire order the single-seat case already had: sorted by
+/// `(ObjectId, CounterType)`.
+///
+/// The `unwrap_or(0)` is the PROJECTOR/PRODUCER convention, not a rule: it mirrors
+/// `analysis::resource::grown_beneficial_counter_deltas`, so both sides share one definition of
+/// "absent". WHY A `count: 0` ROW EXISTS: the pair is derived by diffing a SIMULATED one-period
+/// frame against a clone of the LIVE state (`game::engine::drive_one_period_frames`), so a pair
+/// growing `0 -> 1` across that period is registered while the live object carries none. Dropping
+/// it would trade a display over-KEEP for an over-DROP, which this subsystem's stated polarity
+/// forbids (see [`UnboundedFamilyView`]).
+///
+/// PASS 2, the FINITE rows, driven from the objects themselves:
+///
+/// Admission is `types::counter::positive_counter_entries` — CR 122.1, an internal map entry with
+/// count zero is not a marker. There is NO zone gate: CR 122.2 already makes counters cease to
+/// exist on a zone change and `zones::counters_persist_on_move` is the SINGLE authority for the
+/// CR 113.6b carve-out that overrides it, so a gate here would be a second, weaker copy of that
+/// rule — one that would silently delete a persisting bearer's graveyard pills and a suspended
+/// card's time counters in exile (CR 702.62b). The projection defers to that authority instead of
+/// re-deriving it. Collecting into a `BTreeMap` is what makes the intra-class order
+/// `CounterType`'s declaration `Ord`, which is the order `counter_map_serde` already puts
+/// `objects[*].counters` on the wire in.
+fn counter_display_views(state: &GameState) -> HashMap<ObjectId, ObjectCounterDisplay> {
+    let mut display: HashMap<ObjectId, ObjectCounterDisplay> = HashMap::new();
+    let mut annotated: HashMap<ObjectId, BTreeSet<&CounterType>> = HashMap::new();
+
+    let targets: BTreeSet<&(ObjectId, CounterType)> =
+        state.unbounded_counter_targets.values().flatten().collect();
+    for (id, ct) in targets {
+        if !state.battlefield.contains(id) {
+            continue;
+        }
+        let object = state.objects.get(id);
+        let count = object
+            .and_then(|obj| obj.counters.get(ct).copied())
+            .unwrap_or(0);
+        // A battlefield id with no `state.objects` entry cannot answer the CR 306.5c question, so
+        // the row goes to the pill strip — matching what this channel published before it widened.
+        push_counter_row(
+            display.entry(*id).or_default(),
+            object.is_some_and(|obj| obj.loyalty.is_some()),
+            CounterRowView {
+                counter: ct.clone(),
+                count,
+                magnitude: CounterMagnitude::Unbounded,
+            },
+        );
+        annotated.entry(*id).or_default().insert(ct);
+    }
+
+    for (id, object) in &state.objects {
+        let annotated_here = annotated.get(id);
+        let finite: BTreeMap<&CounterType, u32> = positive_counter_entries(&object.counters)
+            .filter(|(counter, _)| !annotated_here.is_some_and(|set| set.contains(counter)))
+            .collect();
+        for (counter, count) in finite {
+            push_counter_row(
+                display.entry(*id).or_default(),
+                object.loyalty.is_some(),
+                CounterRowView {
+                    counter: counter.clone(),
+                    count,
+                    magnitude: CounterMagnitude::Finite,
+                },
+            );
+        }
+    }
+
+    display
 }
 
 /// Derive a viewer-safe presentation from `filtered_state`, retaining only the
@@ -5550,5 +5645,387 @@ mod tests {
             .expect("serialize filtered search view");
             assert_eq!(wire["derived"]["unique_authorized_submitter"], 1);
         }
+    }
+
+    // ---- `counter_display_views`: the COMPLETE per-object counter projection ----
+
+    fn make_counter_bearer(
+        state: &mut GameState,
+        card: u64,
+        zone: Zone,
+        counters: &[(CounterType, u32)],
+    ) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(card),
+            PlayerId(0),
+            format!("Bearer {card}"),
+            zone,
+        );
+        let obj = state
+            .objects
+            .get_mut(&id)
+            .expect("the bearer was just created");
+        for (counter, count) in counters {
+            obj.counters.insert(counter.clone(), *count);
+        }
+        id
+    }
+
+    /// "Counters remain on this permanent as it moves to any zone other than a player's hand or
+    /// library" (Skullbriar / Me, the Immortal). Rig mirrored from `zones`' own
+    /// `CountersPersistAcrossZones` building-block tests, so this exercises the shipping shape.
+    fn grant_counter_persistence(state: &mut GameState, id: ObjectId) {
+        state
+            .objects
+            .get_mut(&id)
+            .expect("the bearer exists")
+            .static_definitions
+            .push(
+                crate::types::ability::StaticDefinition::new(
+                    StaticMode::CountersPersistAcrossZones {
+                        excluded_zones: vec![Zone::Hand, Zone::Library],
+                    },
+                )
+                .affected(TargetFilter::SelfRef)
+                .active_zones(vec![
+                    Zone::Battlefield,
+                    Zone::Graveyard,
+                    Zone::Exile,
+                    Zone::Command,
+                    Zone::Stack,
+                ]),
+            );
+    }
+
+    /// CR 113.6b + CR 122.2: a FINITE row is NOT battlefield-gated. `zones::counters_persist_on_move`
+    /// is the single authority for which counters survive a zone change; `counter_display_views`
+    /// defers to it and never re-derives a zone rule of its own. Arm C is what proves the survival
+    /// is that authority and not a zone-blind projection — without it, a projection that never
+    /// cleared anything would pass arm B.
+    #[test]
+    fn counter_rows_survive_a_bearer_that_keeps_its_counters_off_the_battlefield() {
+        let mut state = GameState::new(FormatConfig::standard(), 2, 42);
+        let keeper = make_counter_bearer(
+            &mut state,
+            1,
+            Zone::Battlefield,
+            &[(CounterType::Plus1Plus1, 3)],
+        );
+        grant_counter_persistence(&mut state, keeper);
+        let plain = make_counter_bearer(
+            &mut state,
+            2,
+            Zone::Battlefield,
+            &[(CounterType::Plus1Plus1, 3)],
+        );
+
+        let expected = ObjectCounterDisplay {
+            pills: vec![CounterRowView {
+                counter: CounterType::Plus1Plus1,
+                count: 3,
+                magnitude: CounterMagnitude::Finite,
+            }],
+            loyalty: None,
+        };
+
+        // ARM A — MATCHED POSITIVE: on the battlefield both bearers render the same finite pill,
+        // so arm C's later absence is a measured transition rather than a fixture that never had
+        // a row.
+        let before = derive_views(&state, None);
+        assert_eq!(
+            before.counter_display.get(&keeper),
+            Some(&expected),
+            "arm A: a battlefield bearer's own positive counters are finite pills"
+        );
+        assert_eq!(
+            before.counter_display.get(&plain),
+            Some(&expected),
+            "arm A: the paired negative's bearer starts with the identical row"
+        );
+
+        let mut events = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, keeper, Zone::Graveyard, &mut events);
+        crate::game::zones::move_to_zone(&mut state, plain, Zone::Graveyard, &mut events);
+        let after = derive_views(&state, None);
+
+        // ARM B — THE ANSWER: CR 113.6b kept the counters, so the row must keep rendering.
+        assert_eq!(
+            after.counter_display.get(&keeper),
+            Some(&expected),
+            "arm B: a bearer whose counters persist off the battlefield keeps its FINITE row — \
+             gating the finite pass on battlefield membership reds exactly here"
+        );
+        // ARM C — PAIRED NEGATIVE: the plain bearer's counters ceased to exist (CR 122.2), so it
+        // has no row at all.
+        assert!(
+            !after.counter_display.contains_key(&plain),
+            "arm C: an ordinary bearer's counters ceased to exist on the move, so the projection \
+             must invent no row; got {:?}",
+            after.counter_display.get(&plain)
+        );
+    }
+
+    /// The `∞` ANNOTATION leads its object's rows and SHADOWS the finite row for the same pair —
+    /// exactly two rows, never three. CR 122.1: the `(object, counter)` pair is the row key, so a
+    /// duplicate pill is unrepresentable rather than deduplicated.
+    #[test]
+    fn unbounded_row_leads_and_shadows_the_same_pair() {
+        let charge = CounterType::Generic("charge".to_string());
+        let mut state = GameState::new(FormatConfig::standard(), 2, 42);
+        let bearer = make_counter_bearer(
+            &mut state,
+            1,
+            Zone::Battlefield,
+            &[(charge.clone(), 4), (CounterType::Plus1Plus1, 2)],
+        );
+        state.register_unbounded_counter_targets(PlayerId(0), vec![(bearer, charge.clone())]);
+
+        assert_eq!(
+            derive_views(&state, None).counter_display.get(&bearer),
+            Some(&ObjectCounterDisplay {
+                pills: vec![
+                    CounterRowView {
+                        counter: charge,
+                        count: 4,
+                        magnitude: CounterMagnitude::Unbounded,
+                    },
+                    CounterRowView {
+                        counter: CounterType::Plus1Plus1,
+                        count: 2,
+                        magnitude: CounterMagnitude::Finite,
+                    },
+                ],
+                loyalty: None,
+            }),
+            "the registered pair renders ONCE, annotated and leading; the unregistered counter \
+             follows as a finite row. A third row is a shadow regression; a flipped order is a \
+             salience regression"
+        );
+    }
+
+    /// CR 122.1: an internal map entry with count zero is not a marker, so it is not a finite row.
+    /// An `Unbounded` row's existence comes from the `∞` store instead, so a zero-count one is
+    /// real. The two arms break under OPPOSITE mutations, so neither is satisfiable by weakening
+    /// the other.
+    #[test]
+    fn a_zero_count_entry_is_not_a_pill_but_a_zero_count_unbounded_pair_is() {
+        let charge = CounterType::Generic("charge".to_string());
+        let finite_row = CounterRowView {
+            counter: CounterType::Plus1Plus1,
+            count: 1,
+            magnitude: CounterMagnitude::Finite,
+        };
+
+        let mut unmarked = GameState::new(FormatConfig::standard(), 2, 42);
+        let bearer = make_counter_bearer(
+            &mut unmarked,
+            1,
+            Zone::Battlefield,
+            &[(charge.clone(), 0), (CounterType::Plus1Plus1, 1)],
+        );
+
+        // ARM 1 — dropping `positive_counter_entries` grows a row here.
+        assert_eq!(
+            derive_views(&unmarked, None).counter_display.get(&bearer),
+            Some(&ObjectCounterDisplay {
+                pills: vec![finite_row.clone()],
+                loyalty: None,
+            }),
+            "a zero-count map entry is not a marker, so it publishes no finite row"
+        );
+
+        // ARM 2 — the SAME map, the pair now registered: applying `positive_counter_entries` to
+        // the `∞` pass too would lose this row.
+        let mut marked = unmarked.clone();
+        marked.register_unbounded_counter_targets(PlayerId(0), vec![(bearer, charge.clone())]);
+        assert_eq!(
+            derive_views(&marked, None).counter_display.get(&bearer),
+            Some(&ObjectCounterDisplay {
+                pills: vec![
+                    CounterRowView {
+                        counter: charge,
+                        count: 0,
+                        magnitude: CounterMagnitude::Unbounded,
+                    },
+                    finite_row,
+                ],
+                loyalty: None,
+            }),
+            "a registered pair the bearer carries none of is still a real row"
+        );
+    }
+
+    /// CR 306.5c speaks only of planeswalkers, so a `Loyalty` counter drives the TOTAL only on an
+    /// object that has a loyalty characteristic. On anything else, hiding the marker would be an
+    /// over-DROP — arm 2 is that hostile fixture, and it is a disclosed behavior change.
+    #[test]
+    fn loyalty_routes_to_the_total_only_when_the_object_has_one() {
+        let mut state = GameState::new(FormatConfig::standard(), 2, 42);
+        let walker = make_counter_bearer(
+            &mut state,
+            1,
+            Zone::Battlefield,
+            &[(CounterType::Loyalty, 4)],
+        );
+        state
+            .objects
+            .get_mut(&walker)
+            .expect("the walker exists")
+            .loyalty = Some(4);
+        let creature = make_counter_bearer(
+            &mut state,
+            2,
+            Zone::Battlefield,
+            &[(CounterType::Loyalty, 1)],
+        );
+        assert!(
+            state.objects[&creature].loyalty.is_none(),
+            "reach-guard: arm 2's object must have NO loyalty characteristic, or it is arm 1 again"
+        );
+
+        let views = derive_views(&state, None);
+        assert_eq!(
+            views.counter_display.get(&walker),
+            Some(&ObjectCounterDisplay {
+                pills: vec![],
+                loyalty: Some(CounterRowView {
+                    counter: CounterType::Loyalty,
+                    count: 4,
+                    magnitude: CounterMagnitude::Finite,
+                }),
+            }),
+            "arm 1: a planeswalker's loyalty counters drive the TOTAL, never a stray pill"
+        );
+        assert_eq!(
+            views.counter_display.get(&creature),
+            Some(&ObjectCounterDisplay {
+                pills: vec![CounterRowView {
+                    counter: CounterType::Loyalty,
+                    count: 1,
+                    magnitude: CounterMagnitude::Finite,
+                }],
+                loyalty: None,
+            }),
+            "arm 2: partitioning on the counter TYPE alone would hide this marker entirely"
+        );
+    }
+
+    /// The cross-language discriminator `tsc` cannot see: the TS mirror types `magnitude` as
+    /// optional, so an inverted `skip_serializing_if` would make every client row read `Finite`
+    /// with no type error anywhere.
+    #[test]
+    fn finite_magnitude_is_omitted_on_the_wire_and_unbounded_is_not() {
+        let finite = CounterRowView {
+            counter: CounterType::Plus1Plus1,
+            count: 2,
+            magnitude: CounterMagnitude::Finite,
+        };
+        let unbounded = CounterRowView {
+            counter: CounterType::Plus1Plus1,
+            count: 2,
+            magnitude: CounterMagnitude::Unbounded,
+        };
+
+        let finite_wire = serde_json::to_value(&finite).expect("the finite row serializes");
+        assert!(
+            finite_wire.get("magnitude").is_none(),
+            "the dominant case stays off the wire, got {finite_wire}"
+        );
+        let unbounded_wire = serde_json::to_value(&unbounded).expect("the ∞ row serializes");
+        assert_eq!(
+            unbounded_wire.get("magnitude"),
+            Some(&serde_json::json!("Unbounded")),
+            "the exceptional case is always written, got {unbounded_wire}"
+        );
+
+        assert_eq!(
+            serde_json::from_value::<CounterRowView>(finite_wire).expect("finite round-trip"),
+            finite,
+            "an absent `magnitude` deserializes back to the serde default"
+        );
+        assert_eq!(
+            serde_json::from_value::<CounterRowView>(unbounded_wire).expect("∞ round-trip"),
+            unbounded,
+            "the ∞ annotation survives a round-trip"
+        );
+    }
+
+    /// WHY THIS TEST EXISTS. `counter_display` projects EVERY object, including objects `hide_card`
+    /// redacts — six call sites in `filter_state_for_viewer`, of which face-down exile (CR 406.3)
+    /// can hold a counter-bearing object per `zones::counters_persist_on_move`. That widening
+    /// publishes nothing new ONLY because `GameObject`'s `counters` is serialized unconditionally
+    /// and `hide_card` does not clear it, so the projection is a pure function of data already on
+    /// the same wire. Nothing in either function states that dependency. Clear `counters` in
+    /// `hide_card`, or gate its serialization on anything that can omit a POPULATED map, and the
+    /// projection silently becomes a real information leak — this test is what turns that into a
+    /// red build.
+    ///
+    /// A fidelity note, not a leak: `hide_card` DOES clear `loyalty`, so on a redacted object a
+    /// `Loyalty` counter routes to `pills` rather than to the total. That is still zero new
+    /// information — arm 4 is exactly the assertion that a client reading the same filtered
+    /// envelope computes the identical partition.
+    #[test]
+    fn counter_display_publishes_nothing_a_viewer_cannot_already_read() {
+        let mut state = GameState::new(FormatConfig::standard(), 2, 42);
+        let hidden = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Exiled Bearer".to_string(),
+            Zone::Exile,
+        );
+        {
+            let obj = state.objects.get_mut(&hidden).expect("the bearer exists");
+            obj.face_down = true;
+            obj.counters.insert(CounterType::Plus1Plus1, 2);
+        }
+        let viewer = PlayerId(1);
+        let filtered = crate::game::visibility::filter_state_for_viewer(&state, viewer);
+
+        // ARM 1 — REACH-GUARD (matched positive). Without it, arms 2-4 could pass on an
+        // unredacted object and prove nothing. Compared against the original name rather than the
+        // private redaction constant.
+        assert_ne!(
+            filtered.objects[&hidden].name, state.objects[&hidden].name,
+            "reach-guard: `hide_card` must really have redacted this face-down exiled card in \
+             this frame, or this test is measuring an unredacted object"
+        );
+
+        // ARM 2 — THE PIN: `hide_card` does not clear counters.
+        assert_eq!(
+            filtered.objects[&hidden].counters, state.objects[&hidden].counters,
+            "`hide_card` must leave the counter map alone; clearing it there turns the widened \
+             projection into a leak"
+        );
+
+        // ARM 3 — THE PIN: the counter map really reaches the wire beside the projection. Any
+        // `skip_serializing_if` predicate that can omit a POPULATED map reds here.
+        let wire = serde_json::to_value(&filtered.objects[&hidden])
+            .expect("the filtered object serializes");
+        assert_eq!(
+            wire["counters"]["P1P1"],
+            serde_json::json!(2),
+            "the redacted object still carries its counters on the same wire the projection \
+             rides, got {wire}"
+        );
+
+        // ARM 4 — THE CLAIM: the projection is recomputable from that same envelope, so it
+        // publishes nothing new.
+        assert_eq!(
+            derive_filtered_views(&state, &filtered, Some(viewer))
+                .counter_display
+                .get(&hidden),
+            Some(&ObjectCounterDisplay {
+                pills: vec![CounterRowView {
+                    counter: CounterType::Plus1Plus1,
+                    count: 2,
+                    magnitude: CounterMagnitude::Finite,
+                }],
+                loyalty: None,
+            }),
+            "the rows are exactly what a client rebuilds from the filtered object's counters, its \
+             loyalty, the battlefield set and the `∞` store — zero new information"
+        );
     }
 }

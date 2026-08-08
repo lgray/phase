@@ -3567,9 +3567,10 @@ pub enum PersistentAxisMaterialization {
 /// counter target to its axis, with exactly four production call sites: `scheduled_collapse_axes`
 /// and `clear_collapsed_materializations`' surviving-target guard (twice) in this file, plus
 /// `game::derived_views::object_growth_backing`, which derives each registered pair's own axis to
-/// decide whether THIS axis still has live board backing. The ∞ counter-PILL projection in
-/// `game::derived_views` is NOT one of them — it projects the battlefield-surviving entries of
-/// `unbounded_counter_targets` directly and never maps them to an axis.
+/// decide whether THIS axis still has live board backing. The counter-DISPLAY projection in
+/// `game::derived_views` is NOT one of them — `counter_display_views` unions the
+/// BATTLEFIELD-SURVIVING entries of `unbounded_counter_targets` (as the ∞ ANNOTATION) with every
+/// object's own positive counters (as `Finite` rows, in every zone), and maps neither to an axis.
 ///
 /// LIVE RE-DERIVATION — DELIBERATE DISPLAY-ONLY TOLERANCE. The class is read from the
 /// object as it stands NOW, not snapshotted at accept. `state.objects` retains an object
@@ -14514,8 +14515,9 @@ declare_game_state! {
     /// Re-derived once at loop materialization by
     /// `game::engine::current_period_counter_growth` (drive one period on a clone,
     /// diff beneficial counters) — the SAME single derivation the batched-collapse δ
-    /// stash carries, projected to `(object, counter)` — and projected again to
-    /// `DerivedViews::unbounded_counters`. Written ONLY by
+    /// stash carries, projected to `(object, counter)` — and projected again, as the ∞
+    /// ANNOTATION half only, into `DerivedViews::counter_display`, whose rows also exist
+    /// for objects this store never names. Written ONLY by
     /// `register_unbounded_counter_targets`. Cleared by TWO authorities:
     /// `clear_unbounded_loop` (whole-map, in lockstep with `unbounded_resources` /
     /// `unbounded_loop_pile`) and `clear_collapsed_materializations`, which filters
@@ -25449,18 +25451,22 @@ mod tests {
              nothing about it has ended"
         );
         let pills =
-            crate::game::derived_views::derive_views(&state, Some(PlayerId(0))).unbounded_counters;
+            crate::game::derived_views::derive_views(&state, Some(PlayerId(0))).counter_display;
         assert_eq!(
             pills.get(&bearer),
-            Some(&vec![crate::game::derived_views::UnboundedCounterView {
-                counter: CounterType::Plus1Plus1,
-                count: state
-                    .objects
-                    .get(&bearer)
-                    .and_then(|o| o.counters.get(&CounterType::Plus1Plus1).copied())
-                    .unwrap_or(0),
-            }]),
-            "ARM2 pill projection: the surviving pair really reaches `unbounded_counters` — the \
+            Some(&crate::game::derived_views::ObjectCounterDisplay {
+                pills: vec![crate::game::derived_views::CounterRowView {
+                    counter: CounterType::Plus1Plus1,
+                    count: state
+                        .objects
+                        .get(&bearer)
+                        .and_then(|o| o.counters.get(&CounterType::Plus1Plus1).copied())
+                        .unwrap_or(0),
+                    magnitude: crate::game::derived_views::CounterMagnitude::Unbounded,
+                }],
+                loyalty: None,
+            }),
+            "ARM2 pill projection: the surviving pair really reaches `counter_display` — the \
              store half alone would not prove the display over-keep is visible, got {pills:?}"
         );
 
