@@ -52,9 +52,10 @@ const DINA_NOFF_RNG_WORD_POS: u128 = 313;
 /// **Row 9, positive arm.** The chokepoint rehydrates: a load that ENDS at
 /// `PersistedGameState::into_game_state`, as `load_dina_noff` does, leaves the LIVE stream at the
 /// saved high-water, so a later export-time capture is legal instead of a rewind. Scope: that is
-/// the chokepoint's own postcondition, not a claim about every shipped ingress — `server-core`'s
-/// `from_persisted` re-seeds afterwards without zeroing `rng_word_pos` and still panics there
-/// (pre-existing, disclosed at the chokepoint, not repaired by this change).
+/// the chokepoint's own postcondition, not a claim that every shipped ingress ends here —
+/// `server-core`'s `GameSession::from_persisted` re-seeds afterwards and zeroes `rng_word_pos`
+/// with it, so the server ends at an agreed live-0 / high-water-0 pair rather than at this
+/// resumed position.
 ///
 /// Non-vacuity: the reach-guard below pins the real board (4 seats, turn 5, the captured life
 /// vector, a NON-ZERO saved high-water), so "no panic" cannot be satisfied by a degenerate or

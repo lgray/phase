@@ -55,8 +55,8 @@ fn gunzip(gz: &[u8]) -> String {
 /// stream, which only `engine-wasm`'s `restore_game_state` used to do on its own — a load that
 /// ENDED at the chokepoint, like this one, was left with a word-0 stream under this dump's saved
 /// `rng_word_pos` of 291. WASM's own call is now an idempotent repeat. Callers may still diverge
-/// afterwards: `from_persisted` re-seeds without zeroing `rng_word_pos`, a pre-existing gap
-/// disclosed at `PersistedGameState::into_game_state` and not repaired here.
+/// afterwards: `GameSession::from_persisted` re-seeds and zeroes `rng_word_pos` with it,
+/// discarding the saved position rather than resuming it as this load does.
 /// The migration drops the primed loop sequence
 /// because the dump sits at empty-stack Priority (NOT a shortcut window), so the offer must be
 /// rebuilt by a live cast below.

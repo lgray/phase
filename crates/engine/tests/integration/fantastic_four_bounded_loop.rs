@@ -91,9 +91,9 @@ fn gunzip(gz: &[u8]) -> String {
 /// the repair lived only in `engine-wasm`'s `restore_game_state`, so a load that ENDED at the
 /// chokepoint — as `load_f4` does — left the live stream rewound to word 0 under a saved
 /// `rng_word_pos` of 379. Every caller now inherits it and WASM's own call became an idempotent
-/// repeat. This does NOT equalize the shipped load paths: `server-core`'s `from_persisted`
-/// re-seeds afterwards without zeroing `rng_word_pos`, a pre-existing gap that this change neither
-/// caused nor repairs (disclosed at `PersistedGameState::into_game_state`).
+/// repeat. It does NOT make the shipped load paths identical: `server-core`'s
+/// `GameSession::from_persisted` re-seeds afterwards and zeroes `rng_word_pos` with it, so the
+/// server deliberately DISCARDS the saved position instead of resuming it as `load_f4` does.
 ///
 /// The dump was captured with the detector OFF; every row here is about the CR 732.2a
 /// interactive offer, so the mode is set to `Interactive` at load — the same thing the user's
@@ -370,9 +370,9 @@ fn replay_at_priority(state: &GameState, proposer: PlayerId) -> GameState {
 /// at word 0, so the very next export-time `capture_rng_word_pos` panicked
 /// `HighWaterRegression { current: 379, requested: 0 }`. Every row in this file loads through
 /// `load_f4`, so the gap sat under all of them. Scope: this row measures the CHOKEPOINT's
-/// postcondition. It is not a claim that every shipped ingress is now sound — `server-core`'s
-/// `from_persisted` re-seeds after the chokepoint without zeroing `rng_word_pos` and still hits
-/// this panic (pre-existing, disclosed at `PersistedGameState::into_game_state`, not repaired here).
+/// postcondition, which is not every shipped ingress's postcondition — `server-core`'s
+/// `GameSession::from_persisted` re-seeds after the chokepoint and zeroes `rng_word_pos` with it,
+/// ending at an agreed live-0 / high-water-0 pair rather than at this row's resumed position.
 ///
 /// Two-sided on one axis, like its Dina sibling: the restored stream is AT the high-water and the
 /// capture is legal; the same board with the live position rewound to 0 — the exact pre-fix decode
