@@ -993,15 +993,32 @@ mod tests {
     ///
     /// The Lotus Petal half is the load-bearing one, and its ATTRIBUTION is the
     /// second assertion: the parser emits "Sacrifice this artifact" as a
-    /// `TargetFilter::SelfRef`, which `filter_is_actor_owned` PROVES actor-owned
-    /// — and CR 701.21a is why proving it is SOUND rather than merely convenient
-    /// ("A player can't sacrifice something that isn't a permanent, or something
-    /// that's a permanent they don't control"). The rule grounds
-    /// actor-OWNERSHIP; it does not dictate the AST encoding.
-    /// So `cost_window_reach` returns `OwnResourcesOnly` and the ONLY thing that
-    /// can carry the verdict is the mana effect. That is what separates this row
-    /// from `v9b`'s Ironworks, which reaches `MayInterfere` through an UNPROVEN
-    /// sacrifice filter and therefore never exercises this arm.
+    /// `TargetFilter::SelfRef`, which `filter_is_actor_owned` returns true for,
+    /// so `cost_window_reach` returns `OwnResourcesOnly` and the ONLY thing that
+    /// can carry the verdict is the mana effect.
+    ///
+    /// What that predicate does and does NOT establish — CR 701.21a, quoted from
+    /// its FIRST sentence: "To sacrifice a permanent, its controller moves it
+    /// from the battlefield directly to its owner's graveyard. A player can't
+    /// sacrifice something that isn't a permanent, or something that's a
+    /// permanent they don't control." Sentence two bounds the actor to
+    /// permanents they CONTROL — that much is grounded. Sentence one is the half
+    /// that bounds the conclusion: the card goes to its OWNER's graveyard, so a
+    /// controlled-but-not-owned Petal (Control Magic) puts a card into another
+    /// player's graveyard while this leg still answers `OwnResourcesOnly`.
+    /// `SelfRef` therefore proves control, never ownership, and "confined" is
+    /// narrower than the predicate's name reads.
+    ///
+    /// Not repairable at this seam: `filter_is_actor_owned` is a pure AST
+    /// predicate and the AST carries no ownership. Nor does it move this row,
+    /// whose verdict the mana head decides on its own. It is named so the limit
+    /// is not later widened on the strength of a half-quoted rule — which is the
+    /// exact species of error (CR 106.4, above) this whole change repairs.
+    ///
+    /// A confined cost leg plus a verdict carried by the mana head ALONE is what
+    /// separates this row from `v9b`'s Ironworks, which reaches `MayInterfere`
+    /// through an UNPROVEN sacrifice filter and therefore never exercises this
+    /// arm.
     ///
     /// Revert-probe, EXECUTED: restoring
     /// `Effect::Mana {..} => WindowReach::OwnResourcesOnly` as this match's first
@@ -1047,9 +1064,10 @@ mod tests {
         assert_eq!(
             cost_window_reach(cost),
             WindowReach::OwnResourcesOnly,
-            "ATTRIBUTION: the SelfRef sacrifice IS proven actor-owned (CR 701.21a: a player can \
-             only sacrifice a permanent they control), so the cost leg is confined and cannot be \
-             what produces the verdict below"
+            "ATTRIBUTION: the SelfRef sacrifice is proven CONTROLLED (CR 701.21a bounds the actor \
+             to permanents they control; the card still leaves for its OWNER's graveyard — see \
+             the doc comment), so the cost leg reads confined and cannot be what produces the \
+             verdict below"
         );
         assert_eq!(
             ability_window_reach(&petal),
