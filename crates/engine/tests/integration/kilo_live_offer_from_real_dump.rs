@@ -20,8 +20,13 @@
 //! The `kilo_reinjected_pinless_history_suppresses_offer` test is the matched-pair proof that the
 //! migration is load-bearing (re-injecting the stale prefix flips the offer OFF).
 
+use engine::analysis::decision_template::IterationCount;
 use engine::game::derived_views::{CollapseCertainty, FamilyCollapseState, UnboundedFamily};
 use engine::game::engine::apply;
+use engine::game::interaction::{
+    bind_interaction_authority, derive_viewer_interaction, resolve_interaction_response,
+};
+use engine::game::visibility::filter_state_for_viewer;
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{
@@ -29,8 +34,14 @@ use engine::types::game_state::{
     PayableResource, PersistedGameState, PersistentAxisMaterialization, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
+use engine::types::interaction::{
+    InteractionOpportunityResponse, InteractionResponse, InteractionResponseSpec,
+    InteractionSessionId, InteractionShortcutCountSpec, InteractionShortcutDecision,
+    InteractionShortcutPin, InteractionSubmission,
+};
 use engine::types::mana::ManaType;
 use engine::types::player::PlayerId;
+use engine::types::zones::Zone;
 
 const P0: PlayerId = PlayerId(0);
 const KILO: ObjectId = ObjectId(402);
@@ -41,6 +52,30 @@ const PENTAD: ObjectId = ObjectId(405);
 /// mana of any color"; Freed from the Real ability index 1 = "{U}: Untap enchanted creature".
 const RELIC_TAP_MANA: usize = 1;
 const FREED_UNTAP: usize = 1;
+
+/// The four loop permanents, per dump. Both real captures hold the same Kilo/Freed/Relic/Pentad
+/// board under P0; only the `ObjectId`s differ, so ONE drive authority serves both and the
+/// regression row cannot silently diverge from the rows that already pin this loop's behavior.
+struct LoopIds {
+    kilo: ObjectId,
+    freed: ObjectId,
+    relic: ObjectId,
+    pentad: ObjectId,
+}
+const FIXTURE_IDS: LoopIds = LoopIds {
+    kilo: KILO,
+    freed: FREED,
+    relic: RELIC,
+    pentad: PENTAD,
+};
+/// MEASURED off the reported capture, not guessed: Kilo 406, Relic 407, Freed 408, Pentad 409.
+/// Note the Freed/Relic order is TRANSPOSED relative to the older fixture (403/404).
+const CAPTURE_IDS: LoopIds = LoopIds {
+    kilo: ObjectId(406),
+    freed: ObjectId(408),
+    relic: ObjectId(407),
+    pentad: ObjectId(409),
+};
 
 fn gunzip(gz: &[u8]) -> String {
     use std::io::Read;
@@ -73,6 +108,22 @@ fn load_migrated_dump() -> GameState {
         .into_game_state()
 }
 
+/// Load the REPORTED playtest capture — the dump the "offer says ∞, collapse allows 1" bug was
+/// filed from — through the same production restore chokepoint `load_migrated_dump` uses. It is a
+/// DIFFERENT game from `kilo_freed_relic_pentad_4p.json.gz` (different seed, board size, phase and
+/// ObjectIds); this is the one the regression row drives, so nobody has to argue that the older
+/// fixture stands in for it.
+fn load_reported_capture() -> GameState {
+    let json = gunzip(include_bytes!(
+        "../fixtures/kilo_freed_relic_pentad_max_of_one_4p.json.gz"
+    ));
+    let envelope: serde_json::Value =
+        serde_json::from_str(&json).expect("capture envelope parses as JSON");
+    serde_json::from_value::<PersistedGameState>(envelope["gameState"].clone())
+        .expect("the reported capture's gameState deserializes through the production decoder")
+        .into_game_state()
+}
+
 /// The acting player for the current beat (choice prompts carry their own `player`; a priority beat
 /// is answered by the live holder so the multiplayer APNAP pass is authorized).
 fn beat_actor(state: &GameState) -> PlayerId {
@@ -90,12 +141,12 @@ fn beat_actor(state: &GameState) -> PlayerId {
 /// fire live — this is NOT a simulation probe). Answers each fixed choice with the loop's demanded
 /// value (tap Kilo, Blue mana, proliferate Pentad), activates Freed once, and settles at the first
 /// of `{empty-stack Priority, LoopShortcut}` reached after Freed resolves.
-fn drive_one_live_cycle(state: &mut GameState) {
+fn drive_one_live_cycle(state: &mut GameState, ids: &LoopIds) {
     apply(
         state,
         P0,
         GameAction::ActivateAbility {
-            source_id: RELIC,
+            source_id: ids.relic,
             ability_index: RELIC_TAP_MANA,
         },
     )
@@ -111,8 +162,14 @@ fn drive_one_live_cycle(state: &mut GameState) {
                 kind: PayCostKind::TapCreatures { .. },
                 ..
             } => {
-                apply(state, actor, GameAction::SelectCards { cards: vec![KILO] })
-                    .expect("tap Kilo for the Relic mana ability");
+                apply(
+                    state,
+                    actor,
+                    GameAction::SelectCards {
+                        cards: vec![ids.kilo],
+                    },
+                )
+                .expect("tap Kilo for the Relic mana ability");
             }
             // Relic's "add one mana of any color": choose BLUE to pay Freed's {U}.
             WaitingFor::ChooseManaColor { .. } => {
@@ -132,7 +189,7 @@ fn drive_one_live_cycle(state: &mut GameState) {
                     state,
                     actor,
                     GameAction::SelectTargets {
-                        targets: vec![TargetRef::Object(PENTAD)],
+                        targets: vec![TargetRef::Object(ids.pentad)],
                     },
                 )
                 .expect("proliferate Pentad");
@@ -147,7 +204,7 @@ fn drive_one_live_cycle(state: &mut GameState) {
                         state,
                         P0,
                         GameAction::ActivateAbility {
-                            source_id: FREED,
+                            source_id: ids.freed,
                             ability_index: FREED_UNTAP,
                         },
                     )
@@ -213,7 +270,7 @@ fn kilo_migrated_dump_fires_object_growth_offer() {
         "Pentad carries 3 charge counters in the real dump"
     );
 
-    drive_one_live_cycle(&mut state);
+    drive_one_live_cycle(&mut state, &FIXTURE_IDS);
 
     // Non-vacuous reach-guard: the live drive rebuilt a clean, fully-recorded 2-step period.
     assert_eq!(
@@ -302,7 +359,7 @@ fn kilo_reinjected_pinless_history_suppresses_offer() {
     }
     state.last_loop_action_sequence = pinless;
 
-    drive_one_live_cycle(&mut state);
+    drive_one_live_cycle(&mut state, &FIXTURE_IDS);
 
     // The stale pinless prefix makes `try_offer` re-drive from a pinless `seq[0]` and abort ⇒
     // no offer surfaces (the C2 / R3.0-A baseline).
@@ -349,6 +406,45 @@ fn drive_all_accept_n(state: &mut GameState, n: u32) {
     }
 }
 
+/// Declare the offer's OWN stated count — exactly what the real frontend dispatches
+/// (`LoopShortcutModal`'s `handleConfirm` sends `count: schema.iteration_count`, there being no
+/// declare-time picker) — then accept in APNAP order. Returns the ceiling the SAME offer
+/// published, so a caller can compare the CR 500.5 collapse range against it without restating a
+/// literal that would pass on both sides of a regression.
+fn drive_all_accept_as_offered(state: &mut GameState) -> u32 {
+    use engine::analysis::loop_check::ShortcutResponse;
+    let (proposer, ceiling, offered) = match &state.waiting_for {
+        WaitingFor::LoopShortcut {
+            proposer, schema, ..
+        } => (
+            *proposer,
+            schema.max_iterations,
+            schema.iteration_count.clone(),
+        ),
+        other => panic!("expected a CR 732.2a loop-shortcut offer, got {other:?}"),
+    };
+    apply(
+        state,
+        proposer,
+        GameAction::DeclareShortcut {
+            count: offered,
+            template: None,
+        },
+    )
+    .expect("the proposer declares the offer's own stated count, as the modal does");
+    while let WaitingFor::RespondToShortcut { player, .. } = state.waiting_for.clone() {
+        apply(
+            state,
+            player,
+            GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            },
+        )
+        .expect("each living opponent accepts the as-offered ∞-charge shortcut");
+    }
+    ceiling
+}
+
 /// Pass priority (for whichever seat holds it) until the next CR 500.5 phase/step boundary raises
 /// the deferred-collapse prompt. No player re-drives the loop — the accept cleared the recorded
 /// `last_loop_action_sequence` — so the phase simply ends and the boundary drain surfaces the
@@ -391,7 +487,7 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     use engine::types::counter::CounterType;
 
     let mut state = load_migrated_dump();
-    drive_one_live_cycle(&mut state);
+    drive_one_live_cycle(&mut state, &FIXTURE_IDS);
 
     // (1) Reach-guard (holds both ways under revert): the ∞-charge offer surfaced for P0. If
     // this ever regresses, every downstream assertion is vacuous — so it gates them.
@@ -628,7 +724,7 @@ fn departed_counter_target_drops_its_pill_but_keeps_its_row_and_store_entry() {
     use engine::types::zones::Zone;
 
     let mut state = load_migrated_dump();
-    drive_one_live_cycle(&mut state);
+    drive_one_live_cycle(&mut state, &FIXTURE_IDS);
     assert!(
         matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
         "reach-guard: at the CR 732.2a ∞-charge offer for P0, got {:?}",
@@ -767,7 +863,7 @@ fn kilo_accept_collapses_at_boundary_to_exactly_n_counters() {
     let charge = CounterType::Generic("charge".into());
 
     let mut state = load_migrated_dump();
-    drive_one_live_cycle(&mut state);
+    drive_one_live_cycle(&mut state, &FIXTURE_IDS);
 
     // (1) Reach-guard (gates everything downstream): the ∞-charge offer surfaced for P0.
     assert!(
@@ -851,5 +947,224 @@ fn kilo_accept_collapses_at_boundary_to_exactly_n_counters() {
         matches!(state.waiting_for, WaitingFor::Priority { .. }),
         "after the collapse submit, priority is restored, got {:?}",
         state.waiting_for
+    );
+}
+
+/// CR 732.2a + CR 732.2c REGRESSION, driven from the ACTUAL REPORTED PLAYTEST CAPTURE (the dump the
+/// "the offer says ∞ but the collapse only allows 1" report was filed from — a DIFFERENT game from
+/// the older fixture the rows above drive).
+///
+/// The unbounded object-growth producer publishes the global safety limit as its ceiling but seeded
+/// its stated count with a bare 1. The frontend echoes that stated count verbatim (there is no
+/// declare-time picker), CR 732.2c makes the accepted count binding, and the accepted count caps the
+/// CR 500.5 collapse prompt — so a stated count below the published ceiling silently picks the
+/// controller's number for them.
+///
+/// ONE flipping conjunct and THREE reach-guards. The flipping one is the boundary range: it reads
+/// the ceiling off the SAME live offer rather than restating a literal, so no arm of it can pass on
+/// both sides of the regression. Pre-fix it reads a collapse max of 1 against a published ceiling of
+/// 1000.
+///
+/// Never hard-code the declared count here: `drive_all_accept_as_offered` reads
+/// `schema.iteration_count` to reproduce the frontend echo exactly, and that echo is what makes the
+/// row discriminating. Never submit the amount either — the row stops at the prompt, because
+/// asserting the offered RANGE is both the claim under test and the cheap path.
+#[test]
+fn kilo_reported_capture_offer_states_the_full_ceiling_it_publishes() {
+    let mut state = load_reported_capture();
+
+    // (1) LOAD REACH-GUARD (holds both ways): the reported capture is what loaded, not a stand-in
+    // for it. The board is the untouched 4p playtest capture, with the loop's four permanents on
+    // the controller's battlefield under the MEASURED ids.
+    assert_eq!(
+        state.objects.len(),
+        409,
+        "the reported 4p playtest capture loads intact"
+    );
+    for (label, id) in [
+        ("Kilo", CAPTURE_IDS.kilo),
+        ("Freed", CAPTURE_IDS.freed),
+        ("Relic", CAPTURE_IDS.relic),
+        ("Pentad", CAPTURE_IDS.pentad),
+    ] {
+        let permanent = &state.objects[&id];
+        assert_eq!(
+            (permanent.zone, permanent.controller),
+            (Zone::Battlefield, P0),
+            "{label} is on the loop controller's battlefield in the reported capture"
+        );
+    }
+
+    drive_one_live_cycle(&mut state, &CAPTURE_IDS);
+
+    // (2) OFFER REACH-GUARD (holds both ways; gates 3 and 4). This assertion MUST sit here, between
+    // the live drive and the accept: `drive_all_accept_as_offered` CONSUMES the offer, and its own
+    // first statement panics on any non-offer beat, so placed after the accept this guard would be
+    // dead code and its failure mode unreadable.
+    assert!(
+        matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
+        "reach-guard: the CR 732.2a ∞-charge offer surfaced for the loop's controller, got {:?}",
+        state.waiting_for
+    );
+
+    // Declare the offer's OWN stated count and accept in APNAP order — the exact dispatch the modal
+    // makes. Returns the ceiling that same offer published.
+    let ceiling = drive_all_accept_as_offered(&mut state);
+
+    // (3) NON-VACUITY FLOOR (holds both ways): a published ceiling of 1 could not tell a capped
+    // boundary apart from an honest one.
+    assert!(
+        ceiling > 1,
+        "the offer publishes a ceiling above 1, so a capped boundary is a real narrowing"
+    );
+
+    drive_to_collapse_boundary(&mut state);
+
+    // (4) THE FLIPPING ASSERTION. CR 732.2c binds the accepted count, and CR 500.5's collapse prompt
+    // is capped by it — so the range the controller is offered must reach the ceiling the offer
+    // itself published. Pre-fix this reads a max of 1 against a ceiling of 1000.
+    let WaitingFor::PayAmountChoice {
+        player,
+        resource: PayableResource::LoopCollapse { .. },
+        min,
+        max,
+        ..
+    } = &state.waiting_for
+    else {
+        panic!(
+            "the boundary drive must end at the deferred-collapse prompt it exists to reach, \
+             got {:?}",
+            state.waiting_for
+        );
+    };
+    assert_eq!(
+        *player, P0,
+        "the loop's controller is the seat asked to name the collapse count"
+    );
+    assert_eq!(
+        *min, 0,
+        "CR 732.2b: declining to shorten at every place makes every prefix consented to"
+    );
+    assert_eq!(
+        *max, ceiling,
+        "CR 732.2c: the collapse prompt offers the very ceiling the accepted offer published"
+    );
+}
+
+/// CR 732.2a + CR 732.2c: the offer has TWO live declare authorities, and they must state the same
+/// count. `LoopShortcutModal` echoes `schema.iteration_count` verbatim; the interaction wire echoes
+/// it through the published `suggested`, and `AcceptSuggested` turns that `suggested` into the
+/// declared `IterationCount`. If they disagree, a client on the wire binds a different CR 732.2c
+/// count than the React client binds for the SAME offer.
+///
+/// Driven from the REPORTED capture through the real producer — no hand-built schema anywhere, which
+/// is exactly what the two `interaction_contract` rows this replaces could not offer.
+///
+/// TWO assertions, with DIFFERENT jobs — do not read them as two revert-failing conjuncts.
+/// The first is the revert-failing one: pre-fix the published pair reads a suggestion of 1 against a
+/// max of 1000, it fails, and because a failing assertion panics, the second never evaluates on that
+/// arm. The second is a MUTATION GUARD on the arm that maps the published suggestion to the declared
+/// count: post-fix both are green, and forcing that arm to declare a bare 1 reds this row and only
+/// this row. Without the second assertion that mutation leaves the row green, which would move the
+/// coverage gap by one line instead of closing it.
+#[test]
+fn kilo_reported_capture_interaction_picker_suggests_the_full_ceiling() {
+    let mut state = load_reported_capture();
+    drive_one_live_cycle(&mut state, &CAPTURE_IDS);
+
+    // Reach-guard (holds both ways): the live offer is what we are about to project.
+    let WaitingFor::LoopShortcut {
+        proposer, schema, ..
+    } = &state.waiting_for
+    else {
+        // Wording is deliberately unlike every other abort message in this file — the regression
+        // triage procedure routes on message text, so two sites must never print a near-match.
+        panic!(
+            "the interaction-picker row needs the offer still live at this beat, got {:?}",
+            state.waiting_for
+        );
+    };
+    assert_eq!(*proposer, P0, "the loop's controller proposes the shortcut");
+    let ceiling = schema.max_iterations;
+    // Non-vacuity floor (holds both ways): a ceiling of 1 could not discriminate.
+    assert!(ceiling > 1, "the offer publishes a ceiling above 1");
+
+    // Probe on a CLONE. `bind_interaction_authority` takes `&mut GameState`, and nothing in this
+    // row may perturb a drive; cloning makes the whole projection provably inert.
+    let mut probe = state.clone();
+    bind_interaction_authority(
+        &mut probe,
+        InteractionSessionId("wb7048-ceiling".to_string()),
+    )
+    .expect("bind the interaction authority over the live offer");
+    let filtered = filter_state_for_viewer(&probe, P0);
+    let view = derive_viewer_interaction(&probe, &filtered, P0);
+    let opportunity = view
+        .opportunities
+        .first()
+        .expect("the live offer publishes an interaction opportunity");
+    let InteractionOpportunityResponse::Schema {
+        spec: InteractionResponseSpec::Shortcut { count, points, .. },
+        ..
+    } = &opportunity.response
+    else {
+        panic!(
+            "the live offer publishes a Shortcut response schema, got {:?}",
+            opportunity.response
+        );
+    };
+    let InteractionShortcutCountSpec::Fixed { suggested, max, .. } = count else {
+        panic!("an Advantage offer publishes a Fixed count spec, got {count:?}");
+    };
+
+    // ASSERTION 1 — THE REVERT-FAILING ONE (hops 1-3): the producer's seed survives the clamp, at
+    // the offer's own bound. Pre-fix this reads a suggestion of 1 against a max of 1000, fails, and
+    // panics — so assertion 2 below does not evaluate on the pre-fix arm.
+    assert_eq!(
+        (*suggested, *max),
+        (ceiling, ceiling),
+        "CR 732.2a: the picker suggests the very ceiling this offer publishes"
+    );
+
+    // ASSERTION 2 — THE MUTATION GUARD (hop 4): `AcceptSuggested` declares that suggestion. It is
+    // green on BOTH arms of the seed fix; what it catches is a change to the arm that maps the
+    // published suggestion onto the declared count, which assertion 1 cannot see at all. Pins are
+    // derived from the PUBLISHED points, never by index — one pin per non-read-only point, holding
+    // exactly that point's `min` choices, which is what the materializer validates.
+    let pins: Vec<InteractionShortcutPin> = points
+        .iter()
+        .filter(|point| !point.read_only)
+        .map(|point| InteractionShortcutPin {
+            group: point.group,
+            choice_ids: point
+                .candidate_ids
+                .iter()
+                .take(point.min as usize)
+                .cloned()
+                .collect(),
+        })
+        .collect();
+    let action = resolve_interaction_response(
+        &probe,
+        P0,
+        &InteractionSubmission {
+            interaction_id: opportunity.interaction_id.clone(),
+            response: InteractionResponse::Shortcut {
+                decision: InteractionShortcutDecision::AcceptSuggested,
+                pins,
+            },
+        },
+    )
+    .expect("AcceptSuggested materializes a declare against the live offer");
+    let GameAction::DeclareShortcut {
+        count: declared, ..
+    } = &action
+    else {
+        panic!("AcceptSuggested materializes a DeclareShortcut, got {action:?}");
+    };
+    assert_eq!(
+        *declared,
+        IterationCount::Fixed(ceiling),
+        "CR 732.2c: the wire declare binds the same count the React echo binds"
     );
 }

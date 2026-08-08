@@ -4904,11 +4904,34 @@ fn try_offer_object_growth_shortcut(
     // CR 732.2a: an UNBOUNDED object-growth offer is not repeated a CR 704-limited number of
     // times — it is materialized once as an unbounded axis — so it states no narrowed count
     // bound and keeps the global safety limit.
+    //
+    // CR 732.2a + CR 732.2c: the count this offer STATES is the count the table binds. There is
+    // no declare-time picker (the frontend echoes `iteration_count` verbatim), and once the last
+    // player accepts, "the shortcut is taken" at that count, which then caps the CR 500.5
+    // collapse prompt. An offer that narrows no bound must therefore STATE the global limit it
+    // publishes as its ceiling; stating less silently caps the controller's collapse choice.
+    // This mirrors `certified_bounded_cycle_offer`, which already states `Fixed(max_iterations)`.
+    //
+    // CR 704.5a / CR 704.5c: the `UntilLethal` arm is UNREACHABLE FROM THIS PRODUCER — `delta` is
+    // a two-`snapshot` diff, and `ResourceVector::snapshot` writes neither `damage_dealt` nor
+    // `extra_turns` and never keys a poison `counters` entry by `ObjectClass::Player`, while
+    // `has_no_loss_axis` just above forces `life >= 0`, `library_delta >= 0`, `poison <= 0` on
+    // every seat; together those negate every non-`Advantage` branch of `classify_win_kind`. The
+    // arm is kept anyway so `shortcut_iteration_count` stays the SINGLE authority for that
+    // classification, and so this wildcard-free match build-breaks on a future third
+    // `IterationCount` variant — the guard `handle_declare_shortcut` states for its own cap. The
+    // unreachability is editorial, not structural: this function already event-feeds
+    // `tokens_created` into the same delta, so feeding `damage_dealt` would make the arm live.
+    use crate::analysis::decision_template::IterationCount;
+    let iteration_count = match shortcut_iteration_count(certificate.win_kind) {
+        IterationCount::UntilLethal => IterationCount::UntilLethal,
+        IterationCount::Fixed(_) => IterationCount::Fixed(MAX_SHORTCUT_CYCLES),
+    };
     let schema = build_shortcut_schema(
         // CR 732.2a: an unresolvable pin WITHDRAWS the offer rather than publishing an
         // undeclarable point — see `pinned_decisions_to_points`.
         pinned_decisions_to_points(&schema_template.decisions, state, caster)?,
-        shortcut_iteration_count(certificate.win_kind),
+        iteration_count,
         MAX_SHORTCUT_CYCLES,
     );
     Some((certificate, schema))
@@ -15924,7 +15947,31 @@ mod stage2_injector_tests {
                 // COLLISION NOTE: a separate in-flight CR 500.5 `max` bugfix also edits this file
                 // above this producer. Whichever lands second MUST re-derive by content; it cannot
                 // reuse this number, and neither entry's arithmetic is authority for the other's.
-                "game/engine.rs:11814".to_string(),
+                //
+                // CR 500.5 `max` BUGFIX (WB-7048): `:11814 ⇒ :11837`, `+23`. This IS the in-flight
+                // bugfix the COLLISION NOTE directly above anticipated, and it is the one landing
+                // SECOND — so the coordinate was re-derived BY CONTENT exactly as that note
+                // requires, and the arithmetic was computed afterwards as a CHECK, never as the
+                // source. The number above was NOT reused. The insertion is a single expression in
+                // `try_offer_object_growth_shortcut` — the unbounded object-growth producer now
+                // STATES the ceiling it publishes (`Fixed(MAX_SHORTCUT_CYCLES)`) instead of seeding
+                // `Fixed(1)`, since CR 732.2c makes the accepted count binding and that count caps
+                // the CR 500.5 collapse prompt. Its 33 lines replace 10 (23 of the 33 are comment),
+                // netting `+23`; the shift is LOCAL, originating in this diff, not rebase-induced.
+                // That insertion sits ABOVE this producer and BELOW nothing else pinned by this
+                // row. Predicted `11814+23` equals the observed coordinate exactly.
+                //
+                // Identity re-established, hashing convention per the entry above (hashed WITH the
+                // trailing newline — not restated here): the line at `:11837` is sha256-identical
+                // to every earlier coordinate this row has carried, that digest is still UNIQUE
+                // under a whole-file scan, and it is still inside
+                // `begin_pending_trigger_target_selection`.
+                //
+                // SET PRESERVATION: unchanged. The other four entries live in `game/effects/mod.rs`
+                // and `game/effects/scoped_library_search.rs`, neither of which this change touches,
+                // and the inserted expression adds no line matching the needle — total still 37,
+                // partition still 5/7/25.
+                "game/engine.rs:11837".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \

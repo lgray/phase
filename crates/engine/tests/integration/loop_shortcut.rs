@@ -4131,7 +4131,7 @@ fn object_growth_random_recast_body_does_not_offer() {
 
 /// T1 ⭐: the object-growth (convoke-recast) offer carries exactly ONE `ConvokeTaps`
 /// decision-point whose `tappable` is the LIVE offer-time `is_convoke_eligible(P0)` set, and an
-/// optional-loop `Fixed(1)` iteration seed. Board-derivation (hostile): the creature TAPPED to
+/// optional-loop iteration seed EQUAL to the ceiling it publishes. Board-derivation (hostile): the creature TAPPED to
 /// pay convoke during the real cast is EXCLUDED; an untapped controlled creature is INCLUDED — a
 /// constant/hard-coded set could not track which creature was spent. Revert-probe: a builder
 /// that dropped the ConvokeTaps pin (empty points) or hard-coded the set fails these.
@@ -4165,8 +4165,13 @@ fn object_growth_offer_schema_has_live_convoke_taps() {
             schema.points[0].kind
         );
     };
-    // Optional Advantage loop ⇒ Fixed(1) frontend count seed (not a determinate drain).
-    assert_eq!(schema.iteration_count, IterationCount::Fixed(1));
+    // CR 732.2a + CR 732.2c: an optional Advantage loop narrows no CR 704 bound, so the offer
+    // STATES the same global ceiling it publishes — the frontend echoes this value verbatim and
+    // the accepted count caps the CR 500.5 collapse prompt, so a smaller seed would cap it too.
+    assert_eq!(
+        schema.iteration_count,
+        IterationCount::Fixed(schema.max_iterations)
+    );
 
     // The tappable set is LIVE-derived from the offer-time board: exactly the untapped creatures
     // P0 controls (== is_convoke_eligible(P0)), compared as a set.
