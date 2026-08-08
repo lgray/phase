@@ -9841,12 +9841,14 @@ impl PersistedGameState {
         //     `rng_word_pos = 0` so a resumed host does not replay saved randomness. That is a
         //     resume policy choice, not a bug, and it leaves live position and high-water agreed.
         //   * `server-core`'s `GameSession::from_persisted` re-seeds `rng` from fresh entropy and
-        //     does NOT zero `rng_word_pos`, so immediately after this call it is back at live 0 /
-        //     high-water <saved> and the next `capture_rng_word_pos` still panics. The server
-        //     restore path therefore REMAINS BROKEN. That gap is pre-existing and untouched here —
-        //     the server has never zeroed the offset, before or after this call existed — so this
-        //     call must not be read as repairing it. The repair is a behavior change owed its own
-        //     commit; disclosed and queued as a follow-up.
+        //     zeroes `rng_word_pos` in the same step, so it lands on the same agreed live-0 /
+        //     high-water-0 pair as the host resume above. It therefore DISCARDS the position this
+        //     call just restored, deliberately: a resumed server game must not replay randomness
+        //     the pre-save game already consumed. That makes this call's rehydrate inert on the
+        //     server path — the chokepoint hands every caller a coherent stream, and a caller
+        //     wanting a different one overwrites BOTH halves rather than half of one. Re-seeding
+        //     WITHOUT zeroing the offset was the earlier server bug: it left live 0 / high-water
+        //     <saved>, so the next `capture_rng_word_pos` `.expect`-panicked `HighWaterRegression`.
         // Offline tooling (`phase-ai`'s `load_saved_game_state`) simply inherits the repair.
         state.rehydrate_rng();
         state
