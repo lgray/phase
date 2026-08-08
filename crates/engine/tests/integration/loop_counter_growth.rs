@@ -17,7 +17,7 @@
 //! prompt.
 
 use engine::analysis::resource::{CounterClass, ResourceAxis};
-use engine::game::derived_views::UnboundedCounterView;
+use engine::game::derived_views::{CounterMagnitude, CounterRowView, ObjectCounterDisplay};
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::types::ability::AbilityKind;
 use engine::types::actions::GameAction;
@@ -460,14 +460,18 @@ fn plus_one_counter_growth_registers_its_infinity_display_target() {
          below is vacuous; got {live}"
     );
     assert_eq!(
-        views.unbounded_counters.get(&rider),
-        Some(&vec![UnboundedCounterView {
-            counter: CounterType::Plus1Plus1,
-            count: live,
-        }]),
+        views.counter_display.get(&rider),
+        Some(&ObjectCounterDisplay {
+            pills: vec![CounterRowView {
+                counter: CounterType::Plus1Plus1,
+                count: live,
+                magnitude: CounterMagnitude::Unbounded,
+            }],
+            loyalty: None,
+        }),
         "(4)/(A-3) the +1/+1 ∞ pill must reach the wire carrying the rider's LIVE count \
          ({live}), got {:?}",
-        views.unbounded_counters
+        views.counter_display
     );
 }
 
@@ -573,14 +577,18 @@ fn plus_one_counter_growth_registers_a_target_the_bearer_does_not_yet_carry() {
     // `objects[id].counters.contains_key(ct)` it would be absent entirely.
     let views = derive_views(runner.state(), None);
     assert_eq!(
-        views.unbounded_counters.get(&rider),
-        Some(&vec![UnboundedCounterView {
-            counter: CounterType::Plus1Plus1,
-            count: 0,
-        }]),
+        views.counter_display.get(&rider),
+        Some(&ObjectCounterDisplay {
+            pills: vec![CounterRowView {
+                counter: CounterType::Plus1Plus1,
+                count: 0,
+                magnitude: CounterMagnitude::Unbounded,
+            }],
+            loyalty: None,
+        }),
         "(A-1) a registered pair the bearer carries NONE of must still publish a renderable row \
          with `count: 0`, got {:?}",
-        views.unbounded_counters
+        views.counter_display
     );
 
     // (A-2) …and it survives to the real adapter-visible envelope, not just the in-process view.
@@ -588,7 +596,7 @@ fn plus_one_counter_growth_registers_a_target_the_bearer_does_not_yet_carry() {
         .expect("the client envelope serializes");
     let rows = envelope
         .get("derived")
-        .and_then(|d| d.get("unbounded_counters"))
+        .and_then(|d| d.get("counter_display"))
         .and_then(|c| c.get(rider.0.to_string()))
         .unwrap_or_else(|| panic!("(A-2) no wire rows for the bearer; envelope={envelope}"));
     // The `"P1P1"` key is the serde authority's spelling (`CounterType::as_str`), written as a
@@ -596,7 +604,9 @@ fn plus_one_counter_growth_registers_a_target_the_bearer_does_not_yet_carry() {
     // so deriving it from the enum here would make the assertion agree with itself.
     assert_eq!(
         rows,
-        &serde_json::json!([{ "counter": "P1P1", "count": 0 }]),
+        &serde_json::json!({
+            "pills": [{ "counter": "P1P1", "count": 0, "magnitude": "Unbounded" }]
+        }),
         "(A-2) the wire row the frontend actually reads must carry `count: 0`"
     );
 
@@ -713,21 +723,125 @@ fn two_seats_collapse_the_shared_pair_and_keep_the_distinct_one() {
     // `(ObjectId, CounterType)` — `Plus1Plus1` is declared before `Generic`, so it comes first.
     let views = derive_views(&state, None);
     assert_eq!(
-        views.unbounded_counters.get(&bearer),
-        Some(&vec![
-            UnboundedCounterView {
-                counter: CounterType::Plus1Plus1,
-                count: 3,
-            },
-            UnboundedCounterView {
-                counter: charge.clone(),
-                count: 7,
-            },
-        ]),
+        views.counter_display.get(&bearer),
+        Some(&ObjectCounterDisplay {
+            pills: vec![
+                CounterRowView {
+                    counter: CounterType::Plus1Plus1,
+                    count: 3,
+                    magnitude: CounterMagnitude::Unbounded,
+                },
+                CounterRowView {
+                    counter: charge.clone(),
+                    count: 7,
+                    magnitude: CounterMagnitude::Unbounded,
+                },
+            ],
+            loyalty: None,
+        }),
         "the (object, counter) pair held by two seats must project ONE row carrying the live \
          count (duplicates collide on the counter-type React key at every render site), while a \
          DISTINCT pair on the same object must survive that collapse in `(ObjectId, CounterType)` \
          order. Got {:?}",
-        views.unbounded_counters
+        views.counter_display
+    );
+}
+
+/// CR 122.2 + CR 110.1 — THE `∞` ROW DIES WITH ITS BEARER WHILE THE STORE DOES NOT.
+///
+/// The widened projection is not battlefield-gated for FINITE rows (see
+/// `derived_views`' `counter_rows_survive_a_bearer_that_keeps_its_counters_off_the_battlefield`),
+/// so the question this fixture answers is the OTHER half: an ordinary bearer's counters cease to
+/// exist when it changes zones (CR 122.2) and it stops being a permanent (CR 110.1), so NEITHER
+/// magnitude may publish a row — even though the `∞` store still names the pair.
+///
+/// THE SPECIFIC REGRESSION THIS PINS. The counter pass must NOT gain an
+/// `!accepted_axes.contains_key(..)` KEEP conjunct copied from the axis-row loop: that would make
+/// the accepted-collapse SCHEDULE decide a row's EXISTENCE, which the mirror invariant in
+/// `derive_views` forbids. Arm 3 reds if it does.
+///
+/// Arm ORDER matters. Arm 1 asserts a POPULATED row in the same run, so arm 3's emptiness is a
+/// measured transition rather than a fixture that never had rows. Arm 2 separates "the projection
+/// gated it" from "the store was wiped" — without it arm 3 has two explanations and proves
+/// neither. Arm 4 separates "the `∞` gate fired" from "the finite pass would have emitted a row
+/// and something else suppressed it": it proves `zones::move_to_zone`, the single authority, did
+/// the clearing and the projection merely declined to invent rows.
+#[test]
+fn unbounded_counter_row_dies_with_its_bearer_but_the_store_does_not() {
+    use engine::analysis::loop_check::ShortcutResponse;
+    use engine::game::derived_views::derive_views;
+    use engine::game::zones::move_to_zone;
+    use engine::types::zones::Zone;
+
+    let (mut runner, rider) = drive_plus1_token_engine_to_declared_offer();
+
+    while matches!(
+        runner.state().waiting_for,
+        WaitingFor::RespondToShortcut { .. }
+    ) {
+        runner
+            .act(GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            })
+            .expect("the opponent accepts");
+    }
+
+    // (1) POSITIVE CONTROL — matched, and FIRST so a regression on the negative cannot skip it.
+    let live = plus1_of(&runner, rider);
+    assert!(
+        live >= 1,
+        "(1) reach-guard: the bearer must carry counters here, or the populated row below is \
+         vacuous; got {live}"
+    );
+    assert_eq!(
+        derive_views(runner.state(), None)
+            .counter_display
+            .get(&rider),
+        Some(&ObjectCounterDisplay {
+            pills: vec![CounterRowView {
+                counter: CounterType::Plus1Plus1,
+                count: live,
+                magnitude: CounterMagnitude::Unbounded,
+            }],
+            loyalty: None,
+        }),
+        "(1) the accepted pair really publishes an ∞ row before the departure"
+    );
+
+    // (2) REACH-GUARD / THE DISCRIMINATOR: the departure happens through the production
+    // chokepoint, and the STORE keeps the pair — only the projection filters.
+    let mut events: Vec<GameEvent> = Vec::new();
+    move_to_zone(runner.state_mut(), rider, Zone::Graveyard, &mut events);
+    assert!(
+        !runner.state().battlefield.contains(&rider),
+        "(2) reach-guard: the departure really happened"
+    );
+    assert!(
+        runner
+            .state()
+            .unbounded_counter_targets
+            .get(&P0)
+            .is_some_and(|pairs| pairs.contains(&(rider, CounterType::Plus1Plus1))),
+        "(2) the STORE must still hold the departed pair — the CR 500.5 boundary collapse reads \
+         it — so arm 3 can only be explained by the projection's gate, got {:?}",
+        runner.state().unbounded_counter_targets
+    );
+
+    // (3) THE ANSWER.
+    assert_eq!(
+        derive_views(runner.state(), None)
+            .counter_display
+            .get(&rider),
+        None,
+        "(3) the bearer is no longer a permanent and its counters ceased to exist, so no row of \
+         either magnitude may be published"
+    );
+
+    // (4) THE POLARITY GUARD.
+    assert!(
+        runner.state().objects[&rider].counters.is_empty(),
+        "(4) `move_to_zone` — the single authority — is what cleared the counters; the \
+         projection merely declined to invent rows. Got {:?}",
+        runner.state().objects[&rider].counters
     );
 }

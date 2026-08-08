@@ -1,11 +1,14 @@
 {
-  "unbounded_counters": {
-    "405": [
-      {
-        "count": 4,
-        "counter": "charge"
-      }
-    ]
+  "counter_display": {
+    "405": {
+      "pills": [
+        {
+          "count": 4,
+          "counter": "charge",
+          "magnitude": "Unbounded"
+        }
+      ]
+    }
   },
   "unbounded_families": [
     {

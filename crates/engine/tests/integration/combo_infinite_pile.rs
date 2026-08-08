@@ -246,16 +246,16 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
     // able to regenerate the client goldens with `UPDATE_WIRE_GOLDEN=1`, or the client-side half of
     // that probe (RP-1b, RP-2) is unreachable. An assert panic aborts the test.
     //
-    // DETERMINISM: `unbounded_counters` is a std `HashMap<ObjectId, Vec<UnboundedCounterView>>`
-    // (derived_views.rs) — the VALUE is a row list, not a bare counter-type list — but
-    // `serde_json::Map` is BTreeMap-backed (serde_json has no `preserve_order` feature in this
+    // DETERMINISM: `counter_display` is a std `HashMap<ObjectId, ObjectCounterDisplay>`
+    // (derived_views.rs) — the VALUE is a pre-partitioned row set, not a bare counter-type list —
+    // but `serde_json::Map` is BTreeMap-backed (serde_json has no `preserve_order` feature in this
     // workspace — see Cargo.lock), so `to_value` re-sorts every map key. Measured byte-identical
     // across independent test processes. No normalization needed.
     let wire = serde_json::to_value(&derived).expect("derived views serialize");
     let golden: serde_json::Map<String, serde_json::Value> = [
         "unbounded_pile",
         "unbounded_resources",
-        "unbounded_counters",
+        "counter_display",
         "unbounded_families",
     ]
     .into_iter()
@@ -283,6 +283,31 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
     assert_eq!(
         derived_set, oracle,
         "derive_views().unbounded_pile must equal the pile set (battlefield-filtered)"
+    );
+
+    // NON-VACUITY GUARD for the key list above, and it sits HERE — below the WRITE — under this
+    // emitter's own stated rule, because it reads `golden`, which is derived from `derived`.
+    // `filter_map` DROPS a name that matches no `DerivedViews` field, and the drift compare below
+    // then reads a committed file the same typo wrote — so both sides omit the channel and the
+    // compare agrees with itself. Asserting the exact key SET turns a mistyped name into a RED.
+    // `BTreeSet` so this does not depend on which container backs `serde_json::Map`.
+    //
+    // PER-FILE RESIDUAL, CLOSED BY THE PAIR: this frame legitimately carries no `counter_display`,
+    // and a name a frame never populates is indistinguishable from a mistyped one from inside that
+    // frame. `kilo_live_offer_from_real_dump`'s twin guard covers `counter_display` (and this file
+    // covers the `unbounded_pile` its frame lacks). The UNION of the two guards spans all four
+    // names ONLY while both arrays keep the same four — do not change one array without the other.
+    let channels: BTreeSet<&str> = golden.keys().map(String::as_str).collect();
+    assert_eq!(
+        channels,
+        BTreeSet::from([
+            "unbounded_families",
+            "unbounded_pile",
+            "unbounded_resources"
+        ]),
+        "the golden key list names a field `DerivedViews` does not have, or this frame stopped \
+         carrying one it must: a mistyped name is dropped silently and the drift compare below \
+         then agrees with itself. Check every name against `DerivedViews`."
     );
 
     // Cross-seam wire pin, PART 2 — the drift COMPARE (see PART 1 for why it sits here).

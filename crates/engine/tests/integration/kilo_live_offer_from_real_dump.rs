@@ -471,7 +471,7 @@ fn drive_to_collapse_boundary(state: &mut GameState) {
 /// loop marks Pentad Prism's charge counter as an unbounded DISPLAY target — so the frontend
 /// renders `∞` on that pill — WITHOUT mutating the real charge count. Composite of the new
 /// field write (`register_unbounded_counter_targets`), the derived-view projection
-/// (`DerivedViews::unbounded_counters`), and the serde wire shape, all driven through the real
+/// (`DerivedViews::counter_display`), and the serde wire shape, all driven through the real
 /// accept pipeline from the real 4p dump.
 ///
 /// REVERT-PROBE (measured, non-vacuous): deleting the `register_unbounded_counter_targets`
@@ -483,7 +483,9 @@ fn drive_to_collapse_boundary(state: &mut GameState) {
 /// (display-only: the real count is untouched) HOLD BOTH WAYS.
 #[test]
 fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
-    use engine::game::derived_views::{derive_views, DerivedViews, UnboundedCounterView};
+    use engine::game::derived_views::{
+        derive_views, CounterMagnitude, CounterRowView, DerivedViews, ObjectCounterDisplay,
+    };
     use engine::types::counter::CounterType;
 
     let mut state = load_migrated_dump();
@@ -587,16 +589,16 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     // Where a pre-WRITE frame must be asserted, CAPTURE it into a local above and assert the local
     // below (see combo_infinite_pile.rs's declined-wire emitter).
     //
-    // DETERMINISM: `unbounded_counters` is a std `HashMap<ObjectId, Vec<UnboundedCounterView>>`
-    // (derived_views.rs) — the VALUE is a row list, not a bare counter-type list — but
-    // `serde_json::Map` is BTreeMap-backed (serde_json has no `preserve_order` feature in this
+    // DETERMINISM: `counter_display` is a std `HashMap<ObjectId, ObjectCounterDisplay>`
+    // (derived_views.rs) — the VALUE is a pre-partitioned row set, not a bare counter-type list —
+    // but `serde_json::Map` is BTreeMap-backed (serde_json has no `preserve_order` feature in this
     // workspace — see Cargo.lock), so `to_value` re-sorts every map key. Measured byte-identical
     // across independent test processes. No normalization needed.
     let wire = serde_json::to_value(&views).expect("derived views serialize");
     let golden: serde_json::Map<String, serde_json::Value> = [
         "unbounded_pile",
         "unbounded_resources",
-        "unbounded_counters",
+        "counter_display",
         "unbounded_families",
     ]
     .into_iter()
@@ -634,11 +636,15 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
          row's `count` below is a NONZERO live value and not vacuously 0; got {pentad_charge}"
     );
     assert_eq!(
-        views.unbounded_counters.get(&PENTAD),
-        Some(&vec![UnboundedCounterView {
-            counter: charge.clone(),
-            count: pentad_charge,
-        }]),
+        views.counter_display.get(&PENTAD),
+        Some(&ObjectCounterDisplay {
+            pills: vec![CounterRowView {
+                counter: charge.clone(),
+                count: pentad_charge,
+                magnitude: CounterMagnitude::Unbounded,
+            }],
+            loyalty: None,
+        }),
         "the ∞ charge pill stays projected while the collapse is merely SCHEDULED, and it carries \
          the LIVE count so the display never has to join back to `objects[..].counters`"
     );
@@ -661,6 +667,31 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
         views.unbounded_families
     );
 
+    // NON-VACUITY GUARD for the key list above, and it sits HERE — below the WRITE — under this
+    // emitter's own stated rule, because it reads `golden`, which is derived from `views`.
+    // `filter_map` DROPS a name that matches no `DerivedViews` field, and the drift compare below
+    // then reads a committed file the same typo wrote — so both sides omit the channel and the
+    // compare agrees with itself. Asserting the exact key SET turns a mistyped name into a RED.
+    // `BTreeSet` so this does not depend on which container backs `serde_json::Map`.
+    //
+    // PER-FILE RESIDUAL, CLOSED BY THE PAIR: this frame legitimately carries no `unbounded_pile`,
+    // and a name a frame never populates is indistinguishable from a mistyped one from inside that
+    // frame. `combo_infinite_pile`'s twin guard covers `unbounded_pile` (and this file covers the
+    // `counter_display` its frame lacks). The UNION of the two guards spans all four names ONLY
+    // while both arrays keep the same four — do not change one array without the other.
+    let channels: std::collections::BTreeSet<&str> = golden.keys().map(String::as_str).collect();
+    assert_eq!(
+        channels,
+        std::collections::BTreeSet::from([
+            "counter_display",
+            "unbounded_families",
+            "unbounded_resources",
+        ]),
+        "the golden key list names a field `DerivedViews` does not have, or this frame stopped \
+         carrying one it must: a mistyped name is dropped silently and the drift compare below \
+         then agrees with itself. Check every name against `DerivedViews`."
+    );
+
     // Cross-seam wire pin, PART 2 — the drift COMPARE (see PART 1 for why it sits here).
     let committed: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).expect("committed wire golden"))
@@ -675,22 +706,26 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     // the wire, and survives a round-trip; an EMPTY derived view omits it (skip_serializing_if).
     let json = serde_json::to_string(&views).expect("derived views serialize");
     assert!(
-        json.contains("unbounded_counters"),
-        "the populated ∞-counter channel is present on the wire"
+        json.contains("counter_display"),
+        "the populated counter-display channel is present on the wire"
     );
     let round: DerivedViews = serde_json::from_str(&json).expect("derived views round-trip");
     assert_eq!(
-        round.unbounded_counters.get(&PENTAD),
-        Some(&vec![UnboundedCounterView {
-            counter: charge,
-            count: pentad_charge,
-        }]),
-        "the ∞ counter channel survives a serde round-trip, count included"
+        round.counter_display.get(&PENTAD),
+        Some(&ObjectCounterDisplay {
+            pills: vec![CounterRowView {
+                counter: charge,
+                count: pentad_charge,
+                magnitude: CounterMagnitude::Unbounded,
+            }],
+            loyalty: None,
+        }),
+        "the counter-display channel survives a serde round-trip, count and magnitude included"
     );
     let empty_json =
         serde_json::to_string(&DerivedViews::default()).expect("empty derived views serialize");
     assert!(
-        !empty_json.contains("unbounded_counters"),
+        !empty_json.contains("counter_display"),
         "the field is omitted (skip_serializing_if) when empty"
     );
 }
@@ -774,9 +809,9 @@ fn departed_counter_target_drops_its_pill_but_keeps_its_row_and_store_entry() {
     let before = derive_views(&state, None);
     assert!(
         before
-            .unbounded_counters
+            .counter_display
             .get(&PENTAD)
-            .is_some_and(|rows| rows.iter().any(|r| r.counter == charge)),
+            .is_some_and(|display| display.pills.iter().any(|r| r.counter == charge)),
         "reach-guard: the pill is on the wire before the departure"
     );
     let row_axes_before: Vec<_> = before.unbounded_resources.iter().map(|r| r.axis).collect();
@@ -800,9 +835,9 @@ fn departed_counter_target_drops_its_pill_but_keeps_its_row_and_store_entry() {
 
     // (3) THE PILL IS GONE — departure is an object event and the pill has object identity.
     assert!(
-        !after.unbounded_counters.contains_key(&PENTAD),
+        !after.counter_display.contains_key(&PENTAD),
         "(3) the departed target's ∞ pill must leave the wire, got {:?}",
-        after.unbounded_counters
+        after.counter_display
     );
 
     // (4) THE ROW REMAINS — because the collapse was ACCEPTED (CR 732.2c), not because nothing
@@ -876,7 +911,9 @@ fn departed_counter_target_drops_its_pill_but_keeps_its_row_and_store_entry() {
 /// (priority advances straight into combat) ⇒ the boundary reach-guard (2) FLIPS to a panic.
 #[test]
 fn kilo_accept_collapses_at_boundary_to_exactly_n_counters() {
-    use engine::game::derived_views::derive_views;
+    use engine::game::derived_views::{
+        derive_views, CounterMagnitude, CounterRowView, ObjectCounterDisplay,
+    };
     use engine::types::counter::CounterType;
 
     const N: u32 = 5;
@@ -956,10 +993,29 @@ fn kilo_accept_collapses_at_boundary_to_exactly_n_counters() {
         "the collapsed ∞ counter target is cleared for P0, got {:?}",
         state.unbounded_counter_targets.get(&P0)
     );
+    // (5b) THE ∞ ANNOTATION CLEARS BUT THE FINITE ROW SURVIVES, on an object that never left the
+    // battlefield: `clear_collapsed_materializations` drops the registered pair, and the finite
+    // pass in `counter_display_views` keeps publishing the now-real count — so the pill renders
+    // the real number rather than `∞`, and it does not vanish.
+    let display = derive_views(&state, None)
+        .counter_display
+        .get(&PENTAD)
+        .cloned()
+        .expect(
+            "after the collapse Pentad still renders a FINITE charge row — the `∞` ANNOTATION is \
+             what `clear_collapsed_materializations` clears, not the row itself",
+        );
     assert_eq!(
-        derive_views(&state, None).unbounded_counters.get(&PENTAD),
-        None,
-        "the derived ∞-counter view no longer projects Pentad after the collapse"
+        display,
+        ObjectCounterDisplay {
+            pills: vec![CounterRowView {
+                counter: charge.clone(),
+                count: baseline + N,
+                magnitude: CounterMagnitude::Finite,
+            }],
+            loyalty: None,
+        },
+        "the collapsed pair renders as EXACTLY one FINITE row carrying the real collapsed count"
     );
 
     // (6) The boundary protocol closed cleanly back to ordinary priority (CR 800.4a).
