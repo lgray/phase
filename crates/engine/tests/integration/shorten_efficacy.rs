@@ -42,9 +42,10 @@ use engine::game::engine::apply;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::types::ability::{AbilityDefinition, AbilityKind, Effect, QuantityExpr, TargetFilter};
 use engine::types::actions::{GameAction, PrecastCopyShortcutResponse};
+use engine::types::card_type::CoreType;
 use engine::types::game_state::{GameState, LayersDirty, LoopDetectionMode, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
-use engine::types::mana::ManaColor;
+use engine::types::mana::{ManaColor, ManaCost, ManaCostShard};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
@@ -651,6 +652,21 @@ fn drive_to_offer(state: &mut GameState, cap: usize) -> Option<usize> {
 /// absence of a printed mana cost) so the positive control below is the same
 /// interaction the shipped fixtures use.
 fn give_bolt(state: &mut GameState, player: PlayerId) -> ObjectId {
+    give_bolt_with_cost(state, player, ManaCost::zero())
+}
+
+/// `give_bolt` with a PRINTED cost, so a row can stage an interaction the seat
+/// cannot yet afford. `GameObject::mana_cost` is the field the castability probe
+/// reads, and `ManaCost`'s `Default` is `zero()` (`GameObject::new` seeds both
+/// cost fields from it), so the free-Bolt caller above is byte-unchanged.
+///
+/// BOTH fields are assigned, and `base_mana_cost` is the load-bearing one:
+/// `game::layers`' `seed_live_characteristics_from_base` reassigns
+/// `mana_cost` from `base_mana_cost` on every layer pass, and every consumer
+/// here reaches the object through `ai_support::shortcut_probe`, which flushes
+/// layers. Setting only the live field would silently restore the free cost and
+/// leave the "otherwise-unaffordable" premise measuring nothing.
+fn give_bolt_with_cost(state: &mut GameState, player: PlayerId, cost: ManaCost) -> ObjectId {
     let card_id = CardId(state.next_object_id);
     let id = engine::game::zones::create_object(
         state,
@@ -673,6 +689,8 @@ fn give_bolt(state: &mut GameState, player: PlayerId) -> ObjectId {
         .core_types
         .push(engine::types::card_type::CoreType::Instant);
     obj.base_card_types = obj.card_types.clone();
+    obj.base_mana_cost = cost.clone();
+    obj.mana_cost = cost;
     obj.abilities = std::sync::Arc::new(vec![ability.clone()]);
     obj.base_abilities = std::sync::Arc::new(vec![ability]);
     state.layers_dirty = LayersDirty::full();
@@ -842,6 +860,30 @@ fn v1_live_path_fetchland_seat_accepts_on_the_real_4p_board() {
         "REACH-GUARD: that one action must be P2's OWN battlefield fetchland — the object the \
          diagnosis pinned; got {non_pass:?}"
     );
+
+    // NON-VACUITY PIN. The guards above read the FLAT list, which cannot contain
+    // a BATTLEFIELD mana activation: `candidates.rs` excludes it at generation
+    // (`!is_mana_ability(&ability_def)`), and a land's `TapLandForMana` is
+    // additionally dropped by `flat_priority_actions_with_probe`'s
+    // `GameAction::is_mana_ability` filter. (It CAN contain a hand- or
+    // graveyard-zone mana activation, which has its own candidate loop and is a
+    // `GameAction::ActivateAbility` — so the filter never sees it. That class is
+    // not on this board, and the assertion below would catch it if it were.)
+    // The set stage 2 actually folds over is WIDER still — `stage_two_action_set`
+    // re-admits sacrifice-for-mana activations — so without this the flagship is
+    // blind to exactly the class that would vacuate the feature: a seat that
+    // acquired a Lotus-Petal-shaped permanent during the drive would silently
+    // start Shortening and this row would flip.
+    let (probe, flat) = engine::ai_support::shortcut_probe(&polled, P2);
+    let stage_two = engine::ai_support::stage_two_action_set(probe.state(), &flat);
+    assert_eq!(
+        stage_two, flat,
+        "NON-VACUITY: P2 must own NO mana-producing action on this board, so its Accept is \
+         produced by the fetchland's confinement and NOT by the absence of a widening. If this \
+         fails, the flagship Accept is no longer measuring what it claims — re-derive the row, \
+         do NOT relax the assertion"
+    );
+
     assert!(
         stage_one_meaningful(&polled, P2),
         "REACH-GUARD: stage 1 (POSSIBILITY, untouched here) must still return true. An Accept \
@@ -1244,13 +1286,21 @@ fn v9a_stage_two_folds_over_every_action_stage_one_counted() {
 /// The response-level discriminator: with the invariant restored, this seat
 /// Shortens; without it, it Accepts.
 ///
-/// It discriminates because the Ironworks activation classifies `MayInterfere` —
-/// its `Sacrifice` cost filter (`Typed{Artifact}`) names no controller, so
-/// `filter_is_actor_owned` cannot PROVE actor ownership and `cost_window_reach`
-/// takes the fail-closed direction. A sacrifice ability whose filter *were*
-/// proven actor-owned would classify `OwnResourcesOnly` and the response would
-/// stay `Accept` under both versions — i.e. would not discriminate — so the
-/// unproven filter is load-bearing, not incidental.
+/// It discriminates because the Ironworks activation classifies `MayInterfere`,
+/// and since V10 it does so through TWO independent legs. Its `Sacrifice` cost
+/// filter (`Typed{Artifact}`) names no controller, so `filter_is_actor_owned`
+/// cannot PROVE actor ownership and `cost_window_reach` takes the fail-closed
+/// direction; and its `Effect::Mana` head is no longer allowlisted either, so
+/// the head alone would carry the verdict.
+///
+/// The counterfactual this doc used to carry — "a sacrifice ability whose filter
+/// *were* proven actor-owned would classify `OwnResourcesOnly` … i.e. would not
+/// discriminate" — is FALSE since `Effect::Mana` left the allowlist, and
+/// `v10b` is the row that refutes it on exactly that shape (Lotus Petal's
+/// `SelfRef` sacrifice IS proven actor-owned, and the seat still Shortens). What
+/// survives is the sentence's purpose: the unproven filter is still what makes
+/// THIS row's own MUTANT discriminate, because that mutant deletes the widening
+/// rather than touching the classifier.
 ///
 /// REACH-GUARD: the flat list is asserted to be EXACTLY `[PassPriority]`. That
 /// is what makes the verdict attributable: `PassPriority` is the classifier's
@@ -1260,11 +1310,16 @@ fn v9a_stage_two_folds_over_every_action_stage_one_counted() {
 /// MUTANT (EXECUTED, see the report): `stage_two_action_set ≡ flat_actions
 /// .to_vec()` — i.e. delete the widening — flips this row to `Accept`.
 ///
-/// If a future `filter_is_actor_owned` learns to prove "Sacrifice an artifact"
-/// actor-owned (CR 701.21a makes that TRUE in fact), this row will fail. That
-/// failure is a signal to re-derive the fixture on an ability whose reach is
-/// genuinely unproven — NOT to delete the row, and NOT to weaken the classifier.
-/// `v9a` above holds the invariant meanwhile.
+/// This row's verdict is now OVER-DETERMINED, which changes what a future
+/// refinement does to it. The doc used to predict that a `filter_is_actor_owned`
+/// which learns to prove "Sacrifice an artifact" actor-owned (CR 701.21a makes
+/// that TRUE in fact) would red this row; it will not, because the unallowlisted
+/// `Effect::Mana` head carries `MayInterfere` unconditionally. The guidance the
+/// prediction carried still stands and is the part to keep: if this row ever
+/// does red, re-derive the fixture on an ability whose reach is genuinely
+/// unproven — NOT delete the row, and NOT weaken the classifier. Its
+/// discriminating power comes from its MUTANT rather than from the cost filter's
+/// imprecision, and `v9a` above holds the invariant meanwhile.
 #[test]
 fn v9b_a_sacrifice_for_mana_seat_still_gets_its_window() {
     let (runner, ironworks) = ironworks_seat_polled();
@@ -1293,4 +1348,432 @@ fn v9b_a_sacrifice_for_mana_seat_still_gets_its_window() {
          not prove the sacrificed artifact is this seat's own, and stage 2 must not Accept a \
          reach it cannot rule out"
     );
+}
+
+// ===========================================================================
+// V10 — MANA IS FUNGIBLE REACH, not a confined own resource.
+//
+// CR 106.4's first sentence ("that mana goes into a player's mana pool") is the
+// half an earlier `Effect::Mana` arm quoted; the rest of the same rule says the
+// mana "can be used to pay costs immediately", CR 106.1 says paying costs is
+// mana's whole function, and CR 601.2g runs mana abilities during the very cast
+// they fund. So producing mana widens what the polled seat can do inside the
+// window `game::engine`'s `RespondToShortcut(Shorten)` arm hands back, and the
+// classifier — which reads ONE ability's AST and no other object — cannot prove
+// otherwise. Both rows below ride the REAL 4p board through the same production
+// chokepoint the flagship uses.
+// ===========================================================================
+
+/// Dark Ritual, verbatim. CARD PROVENANCE in the sense the header block defines.
+/// The `Effect::Mana` head with `cost: None` is the point — nothing but the head
+/// can carry this object's verdict.
+const DARK_RITUAL: &str = "Add {B}{B}{B}.";
+
+/// Lotus Petal, verbatim. CARD PROVENANCE. This is the maintainer's named
+/// "actor-owned sacrifice-for-mana" class: the parser emits "Sacrifice this
+/// artifact" as a `TargetFilter::SelfRef`, which `filter_is_actor_owned` PROVES
+/// actor-owned (CR 701.21a grounds why that is sound — a player can only
+/// sacrifice a permanent they control), so the cost leg is confined and the mana
+/// head carries the verdict ALONE. That is what makes it not a second `v9b`,
+/// whose Ironworks reaches the same verdict through an UNPROVEN cost filter.
+const LOTUS_PETAL: &str = "{T}, Sacrifice this artifact: Add one mana of any color.";
+
+/// Sol Ring, verbatim. CARD PROVENANCE. The ORDINARY mana source: no sacrifice
+/// leg, so `mana_ability_penalty` is `None` rather than `Sacrifices` and the
+/// stage-2 widening must not re-admit it.
+const SOL_RING: &str = "{T}: Add {C}{C}.";
+
+/// Stage a real card with its abilities taken from the REAL parser, not
+/// hand-built: every verdict below is a function of the AST, so a hand-written
+/// `AbilityDefinition` would let this section pass against a shape the pipeline
+/// never produces. Same construction shape as `give_ironworks` above (left
+/// untouched: it is shipped and `v9a`/`v9b` are green on it), parameterized over
+/// the three axes the V10 rows vary.
+fn give_parsed_card(
+    state: &mut GameState,
+    player: PlayerId,
+    name: &str,
+    oracle: &str,
+    core_type: CoreType,
+    zone: Zone,
+) -> ObjectId {
+    let parsed = engine::parser::oracle::parse_oracle_text(oracle, name, &[], &[], &[]);
+    assert_eq!(
+        parsed.abilities.len(),
+        1,
+        "PREMISE: {name} parses to exactly one ability; got {:?}",
+        parsed.abilities
+    );
+    let id = engine::game::zones::create_object(
+        state,
+        CardId(state.next_object_id),
+        player,
+        name.to_string(),
+        zone,
+    );
+    let obj = state.objects.get_mut(&id).expect("just created");
+    obj.card_types.core_types.push(core_type);
+    obj.base_card_types = obj.card_types.clone();
+    // CR 302.6 gates only creatures, but the mana-source sweep reads the flag
+    // uniformly; a permanent that has been under its controller's control since
+    // their most recent turn began is not sick.
+    obj.summoning_sick = false;
+    obj.abilities = std::sync::Arc::new(parsed.abilities.clone());
+    obj.base_abilities = std::sync::Arc::new(parsed.abilities);
+    state.layers_dirty = LayersDirty::full();
+    id
+}
+
+/// The Ritual is staged as an INSTANT and with no printed mana cost, and both
+/// are deliberate. Without a core type the sorcery-timing gate refuses the cast
+/// at this window and the funder never enters the action set — the row would go
+/// vacuous silently. And Dark Ritual's real printed cost is `{B}` while P2
+/// controls no mana source, so a printed-cost Ritual would itself be uncastable
+/// and the row would measure an empty board twice. What the row measures is the
+/// CLASSIFIER, which reads the AST and never the mana cost.
+fn give_dark_ritual(state: &mut GameState, player: PlayerId) -> ObjectId {
+    give_parsed_card(
+        state,
+        player,
+        "Dark Ritual",
+        DARK_RITUAL,
+        CoreType::Instant,
+        Zone::Hand,
+    )
+}
+
+/// THE SIZING SITE. This source contributes **exactly 1** to
+/// `game::mana_sources`' `feasible_mana_capacity`: its `AnyOneColor` production
+/// carries `count: Fixed { value: 1 }`, and that arm of
+/// `game::effects::mana`'s `resolve_mana_types_for_ability` returns
+/// `vec![mana_type; amount]` — length `amount`, NOT `color_options.len()`.
+///
+/// MEASURED on this fixture, the only mana-gated action P2 owns at this window
+/// is Angel of the Ruins' hand-zone plainscycling (object 210), whose cost is
+/// `Composite[Mana{generic 2}, Discard{self_ref}]` — `{2}` generic. **The margin
+/// is exactly 1 mana.** ANY staged P2 source contributing 2 or more unlocks that
+/// cycling, puts an `ActivateAbility` in P2's flat list, and destroys `v10b`'s
+/// attribution — its `non_pass` assertion is what fails, loudly, if that
+/// happens. A future edit that raises this source's capacity silently destroys
+/// the discrimination, so do NOT "strengthen" it.
+fn give_lotus_petal(state: &mut GameState, player: PlayerId) -> ObjectId {
+    give_parsed_card(
+        state,
+        player,
+        "Lotus Petal",
+        LOTUS_PETAL,
+        CoreType::Artifact,
+        Zone::Battlefield,
+    )
+}
+
+/// Capacity **2** (`Colorless { count: Fixed 2 }`), which is why the control it
+/// serves asserts re-admission ONLY and never a verdict — see `v10b`.
+fn give_sol_ring(state: &mut GameState, player: PlayerId) -> ObjectId {
+    give_parsed_card(
+        state,
+        player,
+        "Sol Ring",
+        SOL_RING,
+        CoreType::Artifact,
+        Zone::Battlefield,
+    )
+}
+
+/// V10a — a CAST mana spell funds an otherwise-unaffordable answer, so the seat
+/// must keep its window.
+///
+/// The pair varies exactly one object: a Dark Ritual in P2's hand. Both arms
+/// hold the same `{B}{B}{B}` Bolt, and assertion 1 is the operational definition
+/// of "otherwise-unaffordable" — `feasible_mana_capacity` is battlefield-scoped,
+/// so a Ritual sitting in HAND contributes 0 and the castability gate
+/// structurally cannot see "cast a ritual first, then the Bolt". That two-step
+/// is exactly what the priority window buys, and CR 601.2g / CR 117.1d are the
+/// rules that make the mana available to pay a cost the moment it is produced.
+///
+/// The row does NOT assert the post-resolution board: reaching it would require
+/// driving the Ritual through the stack, and the row's discriminating power does
+/// not depend on it. The arithmetic is carried by the verbatim texts — the
+/// Ritual adds `{B}{B}{B}`, the Bolt is printed at `{B}{B}{B}`.
+///
+/// MUTANT: restoring `Effect::Mana {..} => WindowReach::OwnResourcesOnly` as
+/// `effect_window_reach`'s first arm flips the SHORTEN arm to `Accept`. Under it
+/// the Ritual's single ability folds `OwnResourcesOnly` (head `Effect::Mana`,
+/// `cost: None`), and P2's remaining actions are `PassPriority` — the
+/// classifier's one `false` arm — and the fetchland, whose verdict rides
+/// untouched arms. The ACCEPT arm is unaffected by the mutation by construction:
+/// its action set carries no `Effect::Mana` node at all.
+///
+/// Every `GameAction::CastSpell` matcher below binds `{ object_id, .. }` and
+/// must NOT name `payment_mode`: a Petal- or Ritual-funded cast can be offered
+/// as `CastPaymentMode::AutoExceptSacrificialMana`, and a mode-specific matcher
+/// would fail with a message claiming the funding does not work.
+#[test]
+fn v10a_a_cast_mana_spell_that_funds_an_unaffordable_answer_keeps_its_window() {
+    let mut board = live_path_board();
+    drive_to_offer(&mut board, 400).expect("CR 732.2a: the offer must fire on this real 4p drain");
+    // ONE drive, ONE poll, shared by both arms — so staging cannot perturb the
+    // drive, the offer schema, or the APNAP walk.
+    let polled = declare_and_poll(&board, P2);
+
+    let mut base = polled.clone();
+    let bolt = give_bolt_with_cost(
+        &mut base,
+        P2,
+        // `{B}{B}{B}` — sized to exactly what one Dark Ritual adds.
+        ManaCost::Cost {
+            shards: vec![ManaCostShard::Black; 3],
+            generic: 0,
+        },
+    );
+
+    // ── arm ACCEPT: the interaction alone ──
+    let accept_arm = base.clone();
+    // ── arm SHORTEN: same board, same Bolt, PLUS the funding piece ──
+    let mut shorten_arm = base.clone();
+    let ritual = give_dark_ritual(&mut shorten_arm, P2);
+
+    for (label, arm) in [("ACCEPT", &accept_arm), ("SHORTEN", &shorten_arm)] {
+        assert!(
+            !probe_actions(arm, P2).iter().any(
+                |a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == bolt)
+            ),
+            "PREMISE ({label} arm): the Bolt must be OTHERWISE-UNAFFORDABLE at poll time — a \
+             hand-zone Ritual is invisible to the battlefield-scoped capacity scan, so the \
+             castability gate cannot see the two-step the window buys; got {:?}",
+            non_pass_actions(arm, P2)
+        );
+        assert!(
+            stage_one_meaningful(arm, P2),
+            "reach-guard ({label} arm): stage 1 must return true, or the seat answers at stage 1 \
+             and the fold under test never runs"
+        );
+    }
+
+    assert!(
+        probe_actions(&shorten_arm, P2)
+            .iter()
+            .any(|a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == ritual)),
+        "reach-guard: the FUNDER must really be castable, or the SHORTEN arm is the ACCEPT arm \
+         with extra steps; got {:?}",
+        non_pass_actions(&shorten_arm, P2)
+    );
+
+    let accept_non_pass = non_pass_actions(&accept_arm, P2);
+    assert_eq!(
+        accept_non_pass.len(),
+        1,
+        "ATTRIBUTION: the ACCEPT arm's action set must be the flagship's exactly, so its Accept \
+         is the already-shipped verdict and the pair's ONLY variable is the Ritual; got \
+         {accept_non_pass:?}"
+    );
+    assert!(
+        accept_non_pass[0].contains("Terramorphic Expanse")
+            && accept_non_pass[0].contains("zone=Some(Battlefield)")
+            && accept_non_pass[0].contains("controller=Some(PlayerId(2))"),
+        "ATTRIBUTION: that one action must be P2's OWN battlefield fetchland; got \
+         {accept_non_pass:?}"
+    );
+
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&accept_arm, P2),
+        ShortcutResponse::Accept,
+        "the pair's negative arm: an unaffordable answer and a confined fetchland buy nothing"
+    );
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&shorten_arm, P2),
+        ShortcutResponse::Shorten { at_iteration: 0 },
+        "the pair's positive arm: producing mana is REACH (CR 106.1 / CR 106.4 / CR 601.2g). \
+         The ritual is the one object that differs, and accepting here surrenders a live out"
+    );
+}
+
+/// V10b — an ACTOR-OWNED sacrifice-for-mana seat keeps its window. This is the
+/// maintainer's named class, and it is the row `v9b` structurally cannot be.
+///
+/// The pair varies exactly ONE object: a Lotus Petal on P2's battlefield. No
+/// Bolt, no Swamp, no second permanent.
+///
+/// **CAPACITY THRESHOLD — the sizing this row lives or dies on.** The staged
+/// source contributes exactly **1** to `feasible_mana_capacity` (see
+/// `give_lotus_petal`), and the only mana-gated action P2 owns at this window is
+/// Angel of the Ruins' hand-zone plainscycling at `{2}` generic. **The margin is
+/// exactly 1 mana.** ANY staged P2 source contributing 2 or more unlocks that
+/// cycling, puts an `ActivateAbility` in P2's flat list, and destroys this row's
+/// attribution — the `non_pass` assertion below is what fails, loudly, if that
+/// happens. A row that reds that way is a fixture-threshold artifact, not a
+/// defect in the classifier: check whether `non_pass_actions` names object 210
+/// first, shrink the staged source, and do NOT respond by relaxing an
+/// `Effect::Mana` classification.
+///
+/// **P2's full reachable surface at this window, enumerated so the threshold is
+/// not a claim about the hand alone.** MEASURED from the committed fixture:
+/// battlefield 1 (Terramorphic Expanse, capacity 0); hand 7, of which six are
+/// sorcery-speed (`Victimize`, `Plains`, `Arcane Signet`, `Commander's Sphere`,
+/// `Compleated Huntmaster`, `Night's Whisper`) and only the Angel offers a
+/// mana-gated instant-speed action; command zone 1 — `Brimaz, Blight of
+/// Oreskos`, `{2}{W}{B}`, a CREATURE, and `format_config.command_zone` is true,
+/// so `casting::spell_objects_available_to_cast`'s `Zone::Command` clause does
+/// put it inside the candidate loop. The fixture is `active_player` 0 in
+/// `CombatDamage` with priority at P2, so it is neither P2's turn nor a main
+/// phase and sorcery-speed timing blocks Brimaz — and no amount of mana lifts a
+/// timing gate. Library-zone activations are gated `is_active && stack_empty`
+/// and P2 is not active. So `{2}` really is the whole threshold, over the whole
+/// surface rather than over the hand.
+///
+/// MUTANT: restoring `Effect::Mana {..} => WindowReach::OwnResourcesOnly` flips
+/// the SHORTEN arm to `Accept`. The Petal's cost leg is ALREADY
+/// `OwnResourcesOnly` — `Composite[Tap, Sacrifice{SelfRef}]`, and
+/// `filter_is_actor_owned` proves `SelfRef` at its first match arm — so with the
+/// mana arm restored the whole ability folds `OwnResourcesOnly`. That is exactly
+/// why this row is not a second `v9b`, whose verdict rides its UNPROVEN cost
+/// filter and is untouched by the mutation.
+#[test]
+fn v10b_an_actor_owned_sacrifice_for_mana_seat_keeps_its_window() {
+    let mut board = live_path_board();
+    drive_to_offer(&mut board, 400).expect("CR 732.2a: the offer must fire on this real 4p drain");
+    let polled = declare_and_poll(&board, P2);
+
+    // ── arm ACCEPT: the polled board, untouched ──
+    let accept_arm = polled.clone();
+    // ── arm SHORTEN: the polled board plus ONE object ──
+    let mut shorten_arm = polled.clone();
+    let petal = give_lotus_petal(&mut shorten_arm, P2);
+    let activation = GameAction::ActivateAbility {
+        source_id: petal,
+        ability_index: 0,
+    };
+
+    assert!(
+        !probe_actions(&shorten_arm, P2).contains(&activation),
+        "PREMISE: the Petal's ability IS a mana ability (CR 605.1a), so candidate generation \
+         excludes it from the flat list outright. This is the issue-#544 asymmetry the whole \
+         V9/V10 section exists for — if it were present, stage 2 would already see it and the \
+         widening below would be vacuous"
+    );
+
+    let non_pass = non_pass_actions(&shorten_arm, P2);
+    assert_eq!(
+        non_pass.len(),
+        1,
+        "ATTRIBUTION + THRESHOLD SENTINEL: if the Petal's mana made ANY P2 action affordable — a \
+         hand card, or the Angel's {{2}} cycling — it would appear here and could carry \
+         MayInterfere independently of the arm under test. See this row's capacity-threshold \
+         note before touching the staged source; got {non_pass:?}"
+    );
+    assert!(
+        non_pass[0].contains("Terramorphic Expanse")
+            && non_pass[0].contains("zone=Some(Battlefield)")
+            && non_pass[0].contains("controller=Some(PlayerId(2))"),
+        "ATTRIBUTION: that one action must still be P2's OWN battlefield fetchland; got \
+         {non_pass:?}"
+    );
+
+    let (probe, flat) = engine::ai_support::shortcut_probe(&shorten_arm, P2);
+    let mut expected = flat.clone();
+    expected.push(activation);
+    assert_eq!(
+        engine::ai_support::stage_two_action_set(probe.state(), &flat),
+        expected,
+        "the widening added EXACTLY the Petal. Order is determinate — `stage_two_action_set` is \
+         the flat list chained with the meaningful sacrifice-mana actions — and the penalty is \
+         `Sacrifices` because `mana_ability_penalty`'s FIRST clause is `cost_includes_sacrifice`, \
+         which inspects `Composite` legs"
+    );
+
+    let (accept_probe, accept_flat) = engine::ai_support::shortcut_probe(&accept_arm, P2);
+    assert_eq!(
+        engine::ai_support::stage_two_action_set(accept_probe.state(), &accept_flat),
+        accept_flat,
+        "the negative half of the widening, on the same instrument: without the Petal there is \
+         nothing to re-admit"
+    );
+
+    for (label, arm) in [("ACCEPT", &accept_arm), ("SHORTEN", &shorten_arm)] {
+        assert!(
+            stage_one_meaningful(arm, P2),
+            "reach-guard ({label} arm): stage 1 must return true, or the seat answers at stage 1 \
+             and the fold under test never runs"
+        );
+    }
+
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&accept_arm, P2),
+        ShortcutResponse::Accept,
+        "the pair's negative arm — and it is the flagship's own verdict on the flagship's own \
+         action set"
+    );
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&shorten_arm, P2),
+        ShortcutResponse::Shorten { at_iteration: 0 },
+        "the pair's positive arm: an actor-owned sacrifice-for-mana activation is two board \
+         events, not a confined own resource. Stage 1 re-admits it PRECISELY because the \
+         sacrifice is board-changing, so classifying it as confined here contradicted the stage \
+         that handed it over"
+    );
+
+    // ── FUNDING LEMMA (CR 117.1d + CR 601.2g), deliberately QUARANTINED ──
+    //
+    // These two clones NEVER reach `smart_shortcut_response`. Staging the probe
+    // spell into an arm above would put a `CastSpell` in the flat list whose own
+    // `Effect::DealDamage` reaches the fail-closed arm — the pair would then
+    // Shorten with the fix reverted and would stop measuring anything. The
+    // separation IS the design; do not merge them.
+    //
+    // `{1}` generic on purpose: a generic residual is decided by comparing the
+    // summed capacity against it, so both halves are decided on one read path
+    // with zero slack. Without the Petal, P2's battlefield is one Terramorphic
+    // Expanse, whose ability heads `SearchLibrary` and contributes 0, so the sum
+    // is 0 < 1; with the Petal it is exactly 1 >= 1.
+    let mut funded = shorten_arm.clone();
+    let probe_spell = give_bolt_with_cost(&mut funded, P2, ManaCost::generic(1));
+    assert!(
+        probe_actions(&funded, P2).iter().any(
+            |a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == probe_spell)
+        ),
+        "FUNDING: with the Petal on the battlefield the engine's own castability gate says a \
+         {{1}} interaction IS payable — by activating a mana ability during cost payment, which \
+         is exactly what happens inside the window this row buys (CR 117.1d / CR 601.2g); got \
+         {:?}",
+        non_pass_actions(&funded, P2)
+    );
+
+    let mut unfunded = accept_arm.clone();
+    let unfunded_spell = give_bolt_with_cost(&mut unfunded, P2, ManaCost::generic(1));
+    assert!(
+        !probe_actions(&unfunded, P2).iter().any(
+            |a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == unfunded_spell)
+        ),
+        "FUNDING, negative half: the SAME interaction on the SAME board minus the Petal is NOT \
+         payable. Together with the assertion above, the Petal's mana is what makes it reachable \
+         — which is the whole content of 'otherwise-unaffordable'; got {:?}",
+        non_pass_actions(&unfunded, P2)
+    );
+
+    // ── the ORDINARY-mana-source control: plain mana never leaks into stage 2 ──
+    let mut ordinary = polled.clone();
+    let sol_ring = give_sol_ring(&mut ordinary, P2);
+    let (ordinary_probe, ordinary_flat) = engine::ai_support::shortcut_probe(&ordinary, P2);
+    assert!(
+        !ordinary_flat.iter().any(
+            |a| matches!(a, GameAction::ActivateAbility { source_id, .. } if *source_id == sol_ring)
+        ),
+        "candidate generation excludes a mana ability outright (CR 605.1a); got {ordinary_flat:?}"
+    );
+    assert_eq!(
+        engine::ai_support::stage_two_action_set(ordinary_probe.state(), &ordinary_flat),
+        ordinary_flat,
+        "NON-VACUITY: an ordinary mana source has penalty `None`, not `Sacrifices`, so the \
+         stage-2 widening does NOT re-admit it. The Lotus Petal DOES enter this same set in this \
+         same test, so this emptiness is a measurement and not a stuck instrument"
+    );
+    // NO verdict assertion here, deliberately. Sol Ring contributes 2 to
+    // `feasible_mana_capacity`, which is enough to pay Angel of the Ruins'
+    // hand-zone plainscycling already sitting in P2's hand on this fixture. That
+    // activation enters the FLAT list and is `MayInterfere` on two independent
+    // legs (`AbilityCost::Discard` is not allowlisted; its `sub_ability` moves a
+    // card to a HAND, which the anaphoric fetch disjunct does not cover), so
+    // this seat answers Shorten — through candidate affordability, a route this
+    // control does not model and claims nothing about. Asserting Accept here
+    // would assert a false fact about the board.
 }
