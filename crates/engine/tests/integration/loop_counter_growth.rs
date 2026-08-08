@@ -17,6 +17,7 @@
 //! prompt.
 
 use engine::analysis::resource::{CounterClass, ResourceAxis};
+use engine::game::derived_views::UnboundedCounterView;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::types::ability::AbilityKind;
 use engine::types::actions::GameAction;
@@ -232,39 +233,24 @@ fn plus1_of(runner: &GameRunner, id: ObjectId) -> u32 {
         .unwrap_or(0)
 }
 
-/// THE `∞` DISPLAY CHANNEL REGISTERS A `+1/+1` GROWTH (CR 122.1 + CR 732.2a).
+/// Drives the `PLUS1_TOKEN_ENGINE` rider to a DECLARED, not-yet-accepted CR 732.2a offer.
 ///
-/// WHY THIS FIXTURE HAD TO BE BUILT rather than reused: a census of every test touching
-/// `unbounded_counter_targets` found that all of them grow `charge` — a `Generic` counter, which
-/// registers IDENTICALLY under the old cover partition and the current beneficial one. So the
-/// whole suite passed byte-for-byte with or without the display/collapse consolidation, and no
-/// existing test could distinguish the change from its absence.
+/// A pure extraction of what was this file's single `+1/+1` fixture: setup, the activation
+/// drive, both reach-guards, and `DeclareShortcut`. Two tests share it so the matched pair
+/// below differs in exactly ONE line (the counter clear) — one authority for a 100-line
+/// drive, because two copies drift.
 ///
-/// REACHABILITY, measured rather than assumed — a `+1/+1` loop is detected by a DIFFERENT
-/// disjunct than a charge loop, and it matters: `CounterType::Plus1Plus1
-/// ::is_monotone_loop_resource()` is `true`, so `project_out_resources` strips it and the frames
-/// read EQUAL under `loop_states_equal_modulo_resources`. (A charge loop cannot do that —
-/// `Generic` is preserved, which is exactly why `loop_states_cover_modulo_counter_growth` exists.)
-/// So this loop arrives through the base equality disjunct, is offered, and its `+1/+1` growth is
-/// materialized at the boundary by `counter_is_beneficial_materializable` — while the DISPLAY
-/// registration, when it was partitioned by the `Generic`-only ω-cover rule, saw nothing. That
-/// gap is the defect: a real loop whose collapse lands and whose pills never render `∞`.
-///
-/// THE REVERT-PROBE (the evidence, run and recorded): restore the display registration to the
-/// `Generic`-only derivation — i.e. re-point it at a `grown_generic_counter_targets`-shaped
-/// filter instead of projecting `growths` — and assertion (3) flips to an EMPTY target set. Every
-/// other assertion here holds under that revert, which is what makes (3) the discriminator rather
-/// than a bystander.
-///
-/// DIVISION OF LABOUR, stated so neither half is overread: this fixture is DERIVED state (a
-/// scenario-built loop), so it proves the registration covers the `+1/+1` class end-to-end
-/// through a real offer and accept. It does NOT carry production-dump provenance; that burden is
-/// `kilo_live_offer_from_real_dump`'s, on a real 4p dump.
-#[test]
-fn plus_one_counter_growth_registers_its_infinity_display_target() {
+/// THE WINDOW THIS RETURNS IN IS LOAD-BEARING. CR 732.2b: the declaration fans the offer out
+/// to each other player in APNAP order, and CR 732.2c: the shortcut is taken only once the
+/// LAST of them accepts. So at the returned instant the shortcut is DECLARED and OFFERED and
+/// nothing has been materialized — which is the only window in which a board edit still
+/// reaches the accept-time re-derivation. The `RespondToShortcut` assert pins that: with a
+/// single living opponent the fan-out lands here, but a future one-opponent-less shape
+/// (a conceded seat, a solo proposer) would take CR 732.2c's "nobody else to poll" branch
+/// and materialize AT declaration — silently degrading the cleared test below from a `0 -> 1`
+/// test into an `N -> N+1` test that still passes. The assert makes that loud.
+fn drive_plus1_token_engine_to_declared_offer() -> (GameRunner, ObjectId) {
     use engine::analysis::decision_template::IterationCount;
-    use engine::analysis::loop_check::ShortcutResponse;
-    use engine::game::derived_views::derive_views;
 
     let mut scenario = GameScenario::new_n_player(2, 7);
     scenario.at_phase(Phase::PreCombatMain);
@@ -380,6 +366,58 @@ fn plus_one_counter_growth_registers_its_infinity_display_target() {
             template: None,
         })
         .expect("P0 (proposer) declares the +1/+1 growth shortcut");
+
+    // (RG-0) The offer must be PENDING on a living opponent's response, not already taken.
+    // See this helper's doc: this is what pins "materialization happens at accept, not at
+    // declaration" (CR 732.2b fan-out reached, CR 732.2c completion not yet reached).
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::RespondToShortcut { .. }
+        ),
+        "the declared shortcut must be pending a living opponent's response (CR 732.2b), so \
+         nothing is materialized yet (CR 732.2c); got {:?}",
+        runner.state().waiting_for
+    );
+
+    (runner, rider)
+}
+
+/// THE `∞` DISPLAY CHANNEL REGISTERS A `+1/+1` GROWTH (CR 122.1 + CR 732.2a).
+///
+/// WHY THIS FIXTURE HAD TO BE BUILT rather than reused: a census of every test touching
+/// `unbounded_counter_targets` found that all of them grow `charge` — a `Generic` counter, which
+/// registers IDENTICALLY under the old cover partition and the current beneficial one. So the
+/// whole suite passed byte-for-byte with or without the display/collapse consolidation, and no
+/// existing test could distinguish the change from its absence.
+///
+/// REACHABILITY, measured rather than assumed — a `+1/+1` loop is detected by a DIFFERENT
+/// disjunct than a charge loop, and it matters: `CounterType::Plus1Plus1
+/// ::is_monotone_loop_resource()` is `true`, so `project_out_resources` strips it and the frames
+/// read EQUAL under `loop_states_equal_modulo_resources`. (A charge loop cannot do that —
+/// `Generic` is preserved, which is exactly why `loop_states_cover_modulo_counter_growth` exists.)
+/// So this loop arrives through the base equality disjunct, is offered, and its `+1/+1` growth is
+/// materialized at the boundary by `counter_is_beneficial_materializable` — while the DISPLAY
+/// registration, when it was partitioned by the `Generic`-only ω-cover rule, saw nothing. That
+/// gap is the defect: a real loop whose collapse lands and whose pills never render `∞`.
+///
+/// THE REVERT-PROBE (the evidence, run and recorded): restore the display registration to the
+/// `Generic`-only derivation — i.e. re-point it at a `grown_generic_counter_targets`-shaped
+/// filter instead of projecting `growths` — and assertion (3) flips to an EMPTY target set. Every
+/// other assertion here holds under that revert, which is what makes (3) the discriminator rather
+/// than a bystander.
+///
+/// DIVISION OF LABOUR, stated so neither half is overread: this fixture is DERIVED state (a
+/// scenario-built loop), so it proves the registration covers the `+1/+1` class end-to-end
+/// through a real offer and accept. It does NOT carry production-dump provenance; that burden is
+/// `kilo_live_offer_from_real_dump`'s, on a real 4p dump.
+#[test]
+fn plus_one_counter_growth_registers_its_infinity_display_target() {
+    use engine::analysis::loop_check::ShortcutResponse;
+    use engine::game::derived_views::derive_views;
+
+    let (mut runner, rider) = drive_plus1_token_engine_to_declared_offer();
+
     while matches!(
         runner.state().waiting_for,
         WaitingFor::RespondToShortcut { .. }
@@ -407,13 +445,174 @@ fn plus_one_counter_growth_registers_its_infinity_display_target() {
 
     // (4) …and it reaches the WIRE as a pill, which is the user-visible half of (3). Asserted
     // separately because (3) could hold while the projection filtered it back out.
+    //
+    // (A-3) THE MATCHED POSITIVE for the cleared sibling below. The row carries this object's
+    // LIVE count, and the helper's `grown >= 1` reach-guard makes that count NONZERO here — so a
+    // projector that hardcoded `count: 0` (the way to make the sibling's A-1 pass vacuously) reds
+    // exactly here. The pair is across two tests because a SelfRef-only pump
+    // ("…on this creature") registers exactly one object, so a zero-count row and a nonzero-count
+    // row cannot coexist in one frame.
+    let live = plus1_of(&runner, rider);
     let views = derive_views(runner.state(), None);
     assert!(
-        views
-            .unbounded_counters
-            .get(&rider)
-            .is_some_and(|cts| cts.contains(&CounterType::Plus1Plus1)),
-        "(4) the +1/+1 ∞ pill must reach the wire, got {:?}",
+        live >= 1,
+        "(A-3) reach-guard: the un-cleared rider must carry counters, or the count assertion \
+         below is vacuous; got {live}"
+    );
+    assert_eq!(
+        views.unbounded_counters.get(&rider),
+        Some(&vec![UnboundedCounterView {
+            counter: CounterType::Plus1Plus1,
+            count: live,
+        }]),
+        "(4)/(A-3) the +1/+1 ∞ pill must reach the wire carrying the rider's LIVE count \
+         ({live}), got {:?}",
         views.unbounded_counters
+    );
+}
+
+/// THE `0 -> 1` HALF OF THE PAIR — a registered pair the live object carries NONE of still
+/// renders (CR 122.1 + CR 732.2a).
+///
+/// THE DEFECT THIS PINS. `unbounded_counter_targets` is derived by diffing a SIMULATED one-period
+/// frame against a clone of the LIVE state (`game::engine::drive_one_period_frames` feeding
+/// `analysis::resource::grown_beneficial_counter_deltas`, which admits a pair on `a > b` with
+/// `b = counters.get(ct).unwrap_or(0)`). So a counter growing `0 -> 1` across that period is
+/// registered while the live bearer carries none of it. While the channel published bare counter
+/// TYPES, the display could only draw such a mark by finding a matching row in the object's own
+/// `counters` map — there was none — so a real, accepted, registered `∞` rendered NOWHERE. That
+/// is the subsystem's own polarity violated: it may leave an `∞` standing one boundary too long,
+/// never hide a real one.
+///
+/// HOW THE `0` IS REACHED, and what is production vs. harness — stated rather than blurred.
+/// The MATERIALIZATION is entirely production: a real offer, a real `DeclareShortcut`, a real
+/// `RespondToShortcut::Accept` driving `materialize_object_growth_shortcut` ->
+/// `current_period_counter_growth` -> `register_unbounded_counter_targets`. The PRECONDITION —
+/// the bearer sitting at zero — is harness-injected, and deliberately so: this pump is
+/// `PutCounter{this creature}`, so the only object it can ever reach is the rider itself, and the
+/// rider was necessarily present for the period that recorded it. The state is nonetheless a real
+/// one the engine can reach (`AbilityCost::RemoveCounter` and CR 122.3's `+1/+1`/`-1/-1`
+/// annihilation both decrease a battlefield permanent's counters), and it is legal on its own
+/// terms: a 2/2 base creature with no `+1/+1` counters is a 2/2, so no state-based action fires.
+/// It is injected as a faithful stand-in for that class, not smuggled in as production shape.
+///
+/// WHY THE CLEAR CANNOT BE UNDONE BY THE ACCEPT. The accept consumes the proposal already latched
+/// in `WaitingFor::RespondToShortcut` and re-derives against LIVE state, which is the point: with
+/// the rider cleared, `before` has no `Plus1Plus1` entry and `after` has one, so the `a > b`
+/// admission is reached by production code. And `materialize_object_growth_shortcut` only STASHES
+/// the concrete finite growth (`register_pending_materialization`) — it is applied at the next
+/// phase/step boundary — so the rider's live count is still `0` at `derive_views`. RG-1 and the
+/// post-accept re-check below assert both halves rather than assuming them.
+#[test]
+fn plus_one_counter_growth_registers_a_target_the_bearer_does_not_yet_carry() {
+    use engine::analysis::loop_check::ShortcutResponse;
+    use engine::game::derived_views::{derive_views, ClientGameStateRef};
+
+    let (mut runner, rider) = drive_plus1_token_engine_to_declared_offer();
+
+    // THE ONE LINE that differs from the sibling above. Placed AFTER `DeclareShortcut` and BEFORE
+    // the first Accept — the only window that matters, because CR 732.2b's fan-out has happened
+    // (so declaration-time handling already saw an unmutated board) while CR 732.2c's completion
+    // has not (so nothing is materialized yet). The helper's RG-0 assert pins that window.
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&rider)
+        .expect("the rider is still on the battlefield at the accept beat")
+        .counters
+        .remove(&CounterType::Plus1Plus1);
+
+    // (RG-1) MANDATORY PRECONDITION — the only thing separating `0 -> 1` from `N -> N+1`. Nothing
+    // else in this test reds if it is removed, which is exactly why it is asserted, not assumed.
+    // NEVER weaken it to make the test pass: RG-1 *is* the proof the `0 -> 1` path was driven.
+    assert_eq!(
+        plus1_of(&runner, rider),
+        0,
+        "RG-1: the bearer must carry ZERO +1/+1 counters at the accept beat, or this fixture is \
+         an N -> N+1 test wearing a 0 -> 1 label"
+    );
+
+    while matches!(
+        runner.state().waiting_for,
+        WaitingFor::RespondToShortcut { .. }
+    ) {
+        runner
+            .act(GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            })
+            .expect("the opponent accepts");
+    }
+
+    // (RG-3) The registration happened. Separates "registration missed the 0 -> 1 pair" from
+    // "the projection dropped it" — without this, a red A-1 has two explanations.
+    let targets = runner
+        .state()
+        .unbounded_counter_targets
+        .get(&P0)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        targets.contains(&(rider, CounterType::Plus1Plus1)),
+        "RG-3: the accept must register the +1/+1 pair even though the bearer carries none of it \
+         — this is production's `a > b` admission with `b == 0`; got {targets:?} (waiting_for \
+         {:?})",
+        runner.state().waiting_for
+    );
+
+    // Premise re-check: the stashed growth is applied at the next phase/step boundary, so the
+    // bearer is STILL at zero here. If a boundary had already run, A-1 would fail with a nonzero
+    // count and this names the reason.
+    assert_eq!(
+        plus1_of(&runner, rider),
+        0,
+        "the accepted growth must still be STASHED, not applied, at the derived-view seam"
+    );
+
+    // (A-1) THE DISCRIMINATOR. The row exists and carries `count: 0`. Under the old bare-type
+    // shape this row was unrenderable; under a projector that filtered on
+    // `objects[id].counters.contains_key(ct)` it would be absent entirely.
+    let views = derive_views(runner.state(), None);
+    assert_eq!(
+        views.unbounded_counters.get(&rider),
+        Some(&vec![UnboundedCounterView {
+            counter: CounterType::Plus1Plus1,
+            count: 0,
+        }]),
+        "(A-1) a registered pair the bearer carries NONE of must still publish a renderable row \
+         with `count: 0`, got {:?}",
+        views.unbounded_counters
+    );
+
+    // (A-2) …and it survives to the real adapter-visible envelope, not just the in-process view.
+    let envelope = serde_json::to_value(ClientGameStateRef::wrap(runner.state(), None))
+        .expect("the client envelope serializes");
+    let rows = envelope
+        .get("derived")
+        .and_then(|d| d.get("unbounded_counters"))
+        .and_then(|c| c.get(rider.0.to_string()))
+        .unwrap_or_else(|| panic!("(A-2) no wire rows for the bearer; envelope={envelope}"));
+    // The `"P1P1"` key is the serde authority's spelling (`CounterType::as_str`), written as a
+    // literal deliberately: this is the adapter-visible contract the TS mirror matches against,
+    // so deriving it from the enum here would make the assertion agree with itself.
+    assert_eq!(
+        rows,
+        &serde_json::json!([{ "counter": "P1P1", "count": 0 }]),
+        "(A-2) the wire row the frontend actually reads must carry `count: 0`"
+    );
+
+    // (A-4) RULES STATE STAYED CLEAN. The display row must NOT have been bought by writing a
+    // `{plus1plus1: 0}` entry into the object — `GameObject::counters` sits inside `PartialEq`
+    // and these envelopes round-trip into the `.json` dumps engine tests reload, so a phantom
+    // zero entry would corrupt CR 104.4b / CR 732.2a loop equality: the very subsystem this fix
+    // repairs. This is what pins DISPLAY-only.
+    let wire_counters = envelope
+        .get("state")
+        .and_then(|s| s.get("objects"))
+        .and_then(|o| o.get(rider.0.to_string()))
+        .and_then(|o| o.get("counters"))
+        .expect("(A-4) the bearer is on the serialized board");
+    assert!(
+        wire_counters.get("P1P1").is_none(),
+        "(A-4) the display row must not materialize into rules state, got {wire_counters}"
     );
 }

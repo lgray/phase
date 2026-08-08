@@ -190,7 +190,8 @@ describe("toRoman", () => {
 // LOW-4 (CR 732.2a / CR 701.34a): while an accepted counter-growth loop pumps a counter, the
 // badge renders `∞` — the tooltip summary must say "unbounded" and NOT leak the still-finite
 // count. `isUnbounded` is the display-only flag threaded from the engine's `unbounded_counters`
-// membership set (never computed in the frontend).
+// ROW list (never computed in the frontend) — each row names an (object, counter) pair and
+// carries the live count, which is `0` when the loop pumps a counter the object does not carry.
 describe("formatCounterTooltip — unbounded summary", () => {
   it("says ∞ and hides the finite count when unbounded (fallback, no translator)", () => {
     const summary = formatCounterTooltip("charge", 4, undefined, true);

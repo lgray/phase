@@ -5,7 +5,7 @@ import type { PTColor } from "../../viewmodel/cardProps";
 import { useCardImage } from "../../hooks/useCardImage.ts";
 import { useIsCompactHeight } from "../../hooks/useIsCompactHeight.ts";
 import { useIsMobile } from "../../hooks/useIsMobile.ts";
-import { useUnboundedCounterTypes } from "../../hooks/useUnboundedCounterTypes.ts";
+import { useUnboundedCounterRows } from "../../hooks/useUnboundedCounterRows.ts";
 import { cardImageLookup, tokenFiltersForObject } from "../../services/cardImageLookup.ts";
 import { CARD_BACK_URL } from "../../services/scryfall.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
@@ -29,7 +29,7 @@ const PT_COLORS: Record<PTColor, string> = {
 export const ArtCropCard = memo(function ArtCropCard({ objectId }: ArtCropCardProps) {
   const { t } = useTranslation("game");
   const obj = useGameStore((s) => s.gameState?.objects[objectId]);
-  const unboundedCounterTypes = useUnboundedCounterTypes(objectId);
+  const unboundedCounterRows = useUnboundedCounterRows(objectId);
   const isMobile = useIsMobile();
   const inspectObject = useUiStore((s) => s.inspectObject);
   const isCompactHeight = useIsCompactHeight();
@@ -79,8 +79,14 @@ export const ArtCropCard = memo(function ArtCropCard({ objectId }: ArtCropCardPr
   // Kamigawa flip card stores its alternative half in the same slot and has no
   // face 1 to inspect. Use the engine-provided layout discriminant.
   const hasDfc = !obj.face_down && hasOtherPrintedFace(obj);
-  // Filter out loyalty counters — shown separately as the loyalty badge
-  const counters = Object.entries(obj.counters).filter((entry): entry is [string, number] => entry[1] != null && entry[0] !== "loyalty");
+  // Filter out loyalty counters — shown separately as the loyalty badge (which renders its
+  // own `∞` per CR 306.5c when the engine marks a loyalty row).
+  const counters = unboundedCounterRows.filter((row) => row.type !== "loyalty");
+  // CR 306.5c: a planeswalker's loyalty IS its loyalty-counter count, so an engine `∞`
+  // loyalty row means the TOTAL is unbounded.
+  const isLoyaltyUnbounded = unboundedCounterRows.some(
+    (row) => row.type === "loyalty" && row.isUnbounded,
+  );
   const devotionValue = obj.devotion ?? null;
   // --- Dynamic Text Sizing Logic ---
   let ptNumClass = "text-[14px]";
@@ -204,10 +210,9 @@ export const ArtCropCard = memo(function ArtCropCard({ objectId }: ArtCropCardPr
               {/* Top-right overlay stack: counter badges kept clear of the
                   bottom P/T and loyalty badges. */}
               <div className="absolute top-0.5 right-0.5 z-[60] flex flex-col items-end gap-0.5">
-                {counters.map(([type, count]) => {
+                {counters.map(({ type, count, isUnbounded }) => {
                   // CR 732.2a / CR 701.34a: an accepted counter-growth loop pumps this
                   // counter unboundedly — render ∞ instead of the (still-finite) real count.
-                  const isUnbounded = unboundedCounterTypes.includes(type);
                   return (
                     <CounterTooltip
                       key={type}
@@ -301,6 +306,7 @@ export const ArtCropCard = memo(function ArtCropCard({ objectId }: ArtCropCardPr
         <LoyaltyBadge
           amount={obj.loyalty}
           kind="total"
+          isUnbounded={isLoyaltyUnbounded}
           size="battlefield"
           reinforcedTopRim
           className="absolute z-30"

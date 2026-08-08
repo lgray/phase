@@ -336,7 +336,7 @@ describe("PermanentCard", () => {
   it("renders ∞ on a counter the engine marks as unbounded", () => {
     const gameState = makeState();
     gameState.objects[1].counters = { charge: 4 };
-    gameState.derived = { unbounded_counters: { 1: ["charge"] } };
+    gameState.derived = { unbounded_counters: { 1: [{ counter: "charge", count: 4 }] } };
     useGameStore.setState({ gameState, waitingFor: gameState.waiting_for });
 
     const { container } = renderPermanent();
@@ -355,6 +355,63 @@ describe("PermanentCard", () => {
 
     expect(container.textContent).toContain("x4");
     expect(container.textContent).not.toContain("∞");
+  });
+
+  // THE `0 -> 1` ROW, at the render layer. The engine registers a pumped pair while the
+  // object carries NONE of that counter, so the row's `count` is 0 and there is no entry in
+  // `obj.counters` to join back to. Before the channel published rows, this pill could not be
+  // drawn at all — the display had nothing to hang `∞` on.
+  //
+  // DISCRIMINATOR: the finite `burden` pill in the SAME frame proves the component did not
+  // simply start rendering `∞` for everything, and it is a positive reach-guard for the
+  // negative assertion below — without it, "no x0" would pass on a card that rendered no
+  // pills whatsoever.
+  it("renders ∞ for a marked counter the object does not yet carry (count 0)", () => {
+    const gameState = makeState();
+    gameState.objects[1].counters = { burden: 2 };
+    gameState.derived = { unbounded_counters: { 1: [{ counter: "charge", count: 0 }] } };
+    useGameStore.setState({ gameState, waitingFor: gameState.waiting_for });
+
+    const { container } = renderPermanent();
+
+    expect(container.textContent).toContain("∞");
+    expect(container.textContent).toContain("x2");
+    expect(container.textContent).not.toContain("x0");
+  });
+
+  // CR 306.5c: a planeswalker's loyalty IS its loyalty-counter count, so a marked `loyalty`
+  // row means the TOTAL is unbounded and the BADGE renders ∞. The pill-side "loyalty" filter
+  // stays, so there is no ∞ pill beside a stale numeric badge.
+  it("renders ∞ on the loyalty TOTAL badge when the engine marks a loyalty row", () => {
+    const gameState = makeState();
+    gameState.objects[1].loyalty = 4;
+    gameState.objects[1].counters = { loyalty: 4 };
+    gameState.derived = { unbounded_counters: { 1: [{ counter: "loyalty", count: 4 }] } };
+    useGameStore.setState({ gameState, waitingFor: gameState.waiting_for });
+
+    const { container } = renderPermanent();
+    const badge = container.querySelector('[data-loyalty-badge="total"]') as HTMLElement;
+
+    expect(badge).toBeInTheDocument();
+    expect(badge.textContent).toContain("∞");
+    expect(badge.textContent).not.toContain("4");
+    // The DOM attribute stays truthful — selectors keep working.
+    expect(badge.getAttribute("data-loyalty-value")).toBe("4");
+  });
+
+  it("renders the finite loyalty total when no loyalty row is marked", () => {
+    const gameState = makeState();
+    gameState.objects[1].loyalty = 4;
+    gameState.objects[1].counters = { loyalty: 4 };
+    gameState.derived = {};
+    useGameStore.setState({ gameState, waitingFor: gameState.waiting_for });
+
+    const { container } = renderPermanent();
+    const badge = container.querySelector('[data-loyalty-badge="total"]') as HTMLElement;
+
+    expect(badge).toBeInTheDocument();
+    expect(badge.textContent).toContain("4");
+    expect(badge.textContent).not.toContain("∞");
   });
 
   it("lifts the permanent tree above siblings while keeping attachments behind the host", () => {

@@ -1,7 +1,10 @@
 {
   "unbounded_counters": {
     "405": [
-      "charge"
+      {
+        "count": 4,
+        "counter": "charge"
+      }
     ]
   },
   "unbounded_families": [

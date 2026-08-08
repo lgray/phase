@@ -483,7 +483,7 @@ fn drive_to_collapse_boundary(state: &mut GameState) {
 /// (display-only: the real count is untouched) HOLD BOTH WAYS.
 #[test]
 fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
-    use engine::game::derived_views::{derive_views, DerivedViews};
+    use engine::game::derived_views::{derive_views, DerivedViews, UnboundedCounterView};
     use engine::types::counter::CounterType;
 
     let mut state = load_migrated_dump();
@@ -587,7 +587,8 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     // Where a pre-WRITE frame must be asserted, CAPTURE it into a local above and assert the local
     // below (see combo_infinite_pile.rs's declined-wire emitter).
     //
-    // DETERMINISM: `unbounded_counters` is a std `HashMap` (derived_views.rs), but
+    // DETERMINISM: `unbounded_counters` is a std `HashMap<ObjectId, Vec<UnboundedCounterView>>`
+    // (derived_views.rs) — the VALUE is a row list, not a bare counter-type list — but
     // `serde_json::Map` is BTreeMap-backed (serde_json has no `preserve_order` feature in this
     // workspace — see Cargo.lock), so `to_value` re-sorts every map key. Measured byte-identical
     // across independent test processes. No normalization needed.
@@ -620,10 +621,26 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
         .expect("write the wire golden");
     }
 
+    // The row's count is READ FROM THE DUMP, never invented — this frame's Pentad really carries
+    // this many charge counters, and the committed wire golden compared below carries that literal.
+    let pentad_charge = state
+        .objects
+        .get(&PENTAD)
+        .and_then(|o| o.counters.get(&charge).copied())
+        .unwrap_or(0);
+    assert!(
+        pentad_charge >= 1,
+        "reach-guard: this real-dump frame's Pentad must actually carry charge counters, so the \
+         row's `count` below is a NONZERO live value and not vacuously 0; got {pentad_charge}"
+    );
     assert_eq!(
         views.unbounded_counters.get(&PENTAD),
-        Some(&vec![charge.clone()]),
-        "the ∞ charge pill stays projected while the collapse is merely SCHEDULED"
+        Some(&vec![UnboundedCounterView {
+            counter: charge.clone(),
+            count: pentad_charge,
+        }]),
+        "the ∞ charge pill stays projected while the collapse is merely SCHEDULED, and it carries \
+         the LIVE count so the display never has to join back to `objects[..].counters`"
     );
 
     assert!(
@@ -664,8 +681,11 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     let round: DerivedViews = serde_json::from_str(&json).expect("derived views round-trip");
     assert_eq!(
         round.unbounded_counters.get(&PENTAD),
-        Some(&vec![charge]),
-        "the ∞ counter channel survives a serde round-trip"
+        Some(&vec![UnboundedCounterView {
+            counter: charge,
+            count: pentad_charge,
+        }]),
+        "the ∞ counter channel survives a serde round-trip, count included"
     );
     let empty_json =
         serde_json::to_string(&DerivedViews::default()).expect("empty derived views serialize");
@@ -756,7 +776,7 @@ fn departed_counter_target_drops_its_pill_but_keeps_its_row_and_store_entry() {
         before
             .unbounded_counters
             .get(&PENTAD)
-            .is_some_and(|cts| cts.contains(&charge)),
+            .is_some_and(|rows| rows.iter().any(|r| r.counter == charge)),
         "reach-guard: the pill is on the wire before the departure"
     );
     let row_axes_before: Vec<_> = before.unbounded_resources.iter().map(|r| r.axis).collect();

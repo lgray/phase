@@ -2981,15 +2981,27 @@ export interface DerivedViews {
   unbounded_pile?: ObjectId[];
   /**
    * CR 732.2a / CR 701.34a: per-object `∞` counter channel — for each battlefield
-   * object (keyed by ObjectId-as-string), the counter-type keys whose preserved
-   * `Generic` counters an accepted counter-growth loop (proliferate charge, burden)
-   * pumps unboundedly. Each value string matches the object's `counters` map key
-   * (e.g. `"charge"`). The FE renders `∞` (not `×N`) on any counter pill whose type
-   * is in this set, and never re-derives which counters are unbounded. Empty/omitted
-   * when no counter-growth loop is active. Mirrors
+   * object (keyed by ObjectId-as-string), the engine-authored counter ROWS an accepted
+   * counter-growth loop pumps unboundedly. Covers the full beneficial materializable
+   * partition — `Generic` markers (charge, burden), `+1/+1`, loyalty, and defense —
+   * not `Generic` alone.
+   *
+   * SHAPE: each entry is a ROW, not a bare counter-type key. `counter` matches the
+   * object's `counters` map key (e.g. `"charge"`, `"P1P1"`); `count` is the object's
+   * live count, which is `0` when the loop pumps a counter the object does not yet
+   * carry. Render every row as `∞` (never `×N`). Never re-derive which counters are
+   * unbounded, and never infer a row's count from the object's `counters` map — a row
+   * may legitimately have no entry there.
+   *
+   * CR 306.5c: a `"loyalty"` row means the planeswalker's loyalty TOTAL is unbounded
+   * (loyalty IS its loyalty-counter count), so the total badge renders `∞`. Loyalty
+   * ABILITY COST badges are never unbounded (CR 606.4 — a cost is a number of loyalty
+   * counters to pay, not a total).
+   *
+   * Empty/omitted when no counter-growth loop is active. Mirrors
    * `engine::game::derived_views::DerivedViews::unbounded_counters`.
    */
-  unbounded_counters?: Record<string, string[]>;
+  unbounded_counters?: Record<string, Array<{ counter: string; count: number }>>;
 }
 
 /** Mirrors `engine::types::game_state::NextSpellModifier` (serde tag="type"). */

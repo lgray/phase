@@ -338,8 +338,8 @@ impl FamilyCollapseState {
 /// `∞→N` on the badge and a plain `∞` on its own token group and counter pill in the SAME frame.
 /// Witnessed rather than asserted:
 /// `kilo_live_offer_from_real_dump::kilo_accept_marks_pentad_charge_as_unbounded_display_target`
-/// pins `unbounded_counters[Pentad] == [charge]` — a bare `∞` pill — in the exact frame whose
-/// golden family state is `Scheduled(Committed)`.
+/// pins `unbounded_counters[Pentad]` as a single `charge` row — a bare `∞` pill — in the exact
+/// frame whose golden family state is `Scheduled(Committed)`.
 ///
 /// THE ANSWER, not a disclosure: this is not the `Mana(_)` false-promise case. The collapse really
 /// IS scheduled for that axis, so the quiet surfaces under-announce; none of them promises a bound
@@ -369,6 +369,37 @@ pub struct UnboundedFamilyView {
     pub player: PlayerId,
     pub family: UnboundedFamily,
     pub state: FamilyCollapseState,
+}
+
+/// One RENDERABLE `∞` counter row: an accepted counter-growth loop pumps `counter` on the
+/// object this row is keyed by, and `count` is that object's LIVE count of it.
+///
+/// CR 122.1: a counter is a marker ON an object, so a row names an (object, counter) pair, not a
+/// stored quantity. The `unwrap_or(0)` at the projection site is the PROJECTOR/PRODUCER
+/// convention, not a rule: it mirrors `analysis::resource::grown_beneficial_counter_deltas`,
+/// which reads the producing side with the same `unwrap_or(0)`, so both ends share one
+/// definition of "absent".
+///
+/// WHY THE COUNT IS IN THE ROW rather than left to the display layer: the pair is derived by
+/// diffing a SIMULATED one-period frame against a clone of the LIVE state
+/// (`game::engine::drive_one_period_frames`), so a pair growing `0 -> 1` across that period is
+/// registered while the live object carries NONE of that counter. Publishing only the type left
+/// such a pair unrenderable — the display had no row to hang `∞` on, and inventing one from
+/// `objects[..].counters` would be the frontend deriving game state. Dropping the pair instead
+/// would trade a display over-KEEP for an over-DROP, which this subsystem's stated polarity
+/// forbids (see [`UnboundedFamilyView`]): it may leave an `∞` standing one boundary too long,
+/// never hide a real one.
+///
+/// DISPLAY-only — never written back to `GameState`. Carries data only; `isUnbounded` stays a
+/// render-time distinction and never becomes an engine-published boolean, per this file's
+/// NO-SURFACE-IS-FILTERED invariant ("no row carries a flag").
+///
+/// Derive list matches its siblings [`UnboundedResourceView`] / [`UnboundedFamilyView`] exactly.
+/// `Eq` is not optional: [`DerivedViews`] itself derives `Eq`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnboundedCounterView {
+    pub counter: CounterType,
+    pub count: u32,
 }
 
 /// The display family a pumped [`ResourceAxis`] groups into. Exhaustive by design (no wildcard) —
@@ -651,8 +682,18 @@ pub struct DerivedViews {
     /// ObjectId; DISPLAY-only (the real counter count is unchanged). Public board state — no
     /// viewer filtering. Empty (and omitted) when no counter-growth loop is active — the
     /// dominant case.
+    ///
+    /// SHAPE: each entry is a self-sufficient [`UnboundedCounterView`] ROW, not a bare counter
+    /// type. The row carries the object's LIVE count, which is `0` when the loop pumps a counter
+    /// the object does not yet carry — a real row, not a marker needing a host row that does not
+    /// exist. See [`UnboundedCounterView`] for why the count is engine-supplied.
+    ///
+    /// CR 306.5c: a `Loyalty` row states that this planeswalker's loyalty TOTAL is unbounded
+    /// (loyalty IS its loyalty-counter count), so it drives the loyalty total badge rather than a
+    /// pill. Loyalty ABILITY COST badges are never unbounded — CR 606.4, an activation cost is a
+    /// number of loyalty counters to pay, a different game fact from the total.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub unbounded_counters: HashMap<ObjectId, Vec<CounterType>>,
+    pub unbounded_counters: HashMap<ObjectId, Vec<UnboundedCounterView>>,
 }
 
 /// Serialize-only wrapper: the WASM getter passes `&GameState` by reference
@@ -1339,14 +1380,38 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // Unconditional while a collapse is merely scheduled — see the CR 732 timing block above.
     for targets in state.unbounded_counter_targets.values() {
         for (id, ct) in targets {
+            // CR 110.1 + CR 122.2: a counter is a marker ON a permanent, and counters cease to
+            // exist on a zone change — an off-battlefield bearer has no row.
             if !state.battlefield.contains(id) {
                 continue;
             }
+            // CR 122.1: a counter is a marker ON an object, so a row names an (object, counter)
+            // pair, not a stored quantity. The `unwrap_or(0)` is the PROJECTOR/PRODUCER
+            // convention, not a rule: it mirrors `analysis::resource::
+            // grown_beneficial_counter_deltas`, so both sides share one definition of "absent".
+            //
+            // WHY A `count: 0` ROW EXISTS: the pair is derived by diffing a SIMULATED one-period
+            // frame against a clone of the LIVE state (`game::engine::drive_one_period_frames`),
+            // so a pair growing 0 -> 1 across that period is registered while the live object
+            // carries none. Publishing only the type left such a pair unrenderable. Dropping it
+            // instead would trade a display over-KEEP for an over-DROP, which this subsystem's
+            // stated polarity forbids. Row existence is decided by the ∞ stores and live
+            // battlefield membership — never by `objects[..].counters`; see the
+            // NO-SURFACE-IS-FILTERED invariant (stated in this file and mirrored above
+            // `GameState::scheduled_collapse_axes`).
+            let count = state
+                .objects
+                .get(id)
+                .and_then(|o| o.counters.get(ct).copied())
+                .unwrap_or(0);
             views
                 .unbounded_counters
                 .entry(*id)
                 .or_default()
-                .push(ct.clone());
+                .push(UnboundedCounterView {
+                    counter: ct.clone(),
+                    count,
+                });
         }
     }
 

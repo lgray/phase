@@ -28,7 +28,7 @@ import type {
   UnboundedFamily,
 } from "../../adapter/types";
 import { familyOf, UNBOUNDED_FAMILY_FOR_TEST } from "../../components/hud/HudBadges";
-import { useUnboundedCounterTypes } from "../../hooks/useUnboundedCounterTypes";
+import { useUnboundedCounterRows } from "../../hooks/useUnboundedCounterRows";
 import { buildGameObject } from "../../test/factories/gameObjectFactory";
 import { buildGameState } from "../../test/factories/gameStateFactory";
 import counterWire from "../../test/fixtures/unbounded-counter-wire.json";
@@ -54,7 +54,8 @@ describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
     // (2) reach-guard + the two counter seam facts: the map key is a JSON STRING, and
     // `CounterType` serializes FLAT ("charge", not {"Generic":"charge"}). A regressed Serialize
     // would silently blank every ∞ pill.
-    expect(counterWire.unbounded_counters).toEqual({ "405": ["charge"] });
+    // The value is a ROW list carrying the engine's live count, not a bare type list.
+    expect(counterWire.unbounded_counters).toEqual({ "405": [{ counter: "charge", count: 4 }] });
     // (3) omit-when-empty, engine-attested in BOTH directions.
     expect("unbounded_pile" in counterWire).toBe(false);
     expect("unbounded_counters" in tokenWire).toBe(false);
@@ -191,13 +192,36 @@ describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
     );
   });
 
-  it("feeds the real useUnboundedCounterTypes hook from the engine wire", () => {
+  it("feeds the real useUnboundedCounterRows hook from the engine wire", () => {
     setGameStoreForTest({
       gameState: buildGameState({ derived: counterWire as unknown as DerivedViews }),
     });
-    // (10) paired POSITIVE through the real zustand selector.
-    expect(renderHook(() => useUnboundedCounterTypes(405)).result.current).toEqual(["charge"]);
+    // (10) paired POSITIVE through the real zustand selector — the engine's count is carried
+    // through to the row, not re-derived from the object (which is absent from this state).
+    expect(renderHook(() => useUnboundedCounterRows(405)).result.current).toEqual([
+      { type: "charge", count: 4, isUnbounded: true },
+    ]);
     // (11) paired NEGATIVE: 404 is on the same battlefield and carries no ∞ mark.
-    expect(renderHook(() => useUnboundedCounterTypes(404)).result.current).toEqual([]);
+    expect(renderHook(() => useUnboundedCounterRows(404)).result.current).toEqual([]);
+  });
+
+  // The zustand v5 hazard the hook's shape exists to avoid: v5 has no shallow default, so the
+  // selector result IS React's `getSnapshot` return, compared with `Object.is`. An allocating
+  // selector returns a fresh ref on every store read and trips the getSnapshot cache. `tsc`
+  // cannot see it; this asserts the referential stability directly.
+  it("returns a referentially STABLE array across re-renders (zustand v5 getSnapshot)", () => {
+    setGameStoreForTest({
+      gameState: buildGameState({ derived: counterWire as unknown as DerivedViews }),
+    });
+    const marked = renderHook(() => useUnboundedCounterRows(405));
+    const firstMarked = marked.result.current;
+    marked.rerender();
+    expect(marked.result.current).toBe(firstMarked);
+
+    // The dominant no-∞ case must be stable too — that is what the module constant is for.
+    const bare = renderHook(() => useUnboundedCounterRows(404));
+    const firstBare = bare.result.current;
+    bare.rerender();
+    expect(bare.result.current).toBe(firstBare);
   });
 });

@@ -246,7 +246,8 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
     // able to regenerate the client goldens with `UPDATE_WIRE_GOLDEN=1`, or the client-side half of
     // that probe (RP-1b, RP-2) is unreachable. An assert panic aborts the test.
     //
-    // DETERMINISM: `unbounded_counters` is a std `HashMap` (derived_views.rs), but
+    // DETERMINISM: `unbounded_counters` is a std `HashMap<ObjectId, Vec<UnboundedCounterView>>`
+    // (derived_views.rs) — the VALUE is a row list, not a bare counter-type list — but
     // `serde_json::Map` is BTreeMap-backed (serde_json has no `preserve_order` feature in this
     // workspace — see Cargo.lock), so `to_value` re-sorts every map key. Measured byte-identical
     // across independent test processes. No normalization needed.

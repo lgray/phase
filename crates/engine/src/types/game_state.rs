@@ -25273,7 +25273,14 @@ mod tests {
             crate::game::derived_views::derive_views(&state, Some(PlayerId(0))).unbounded_counters;
         assert_eq!(
             pills.get(&bearer),
-            Some(&vec![CounterType::Plus1Plus1]),
+            Some(&vec![crate::game::derived_views::UnboundedCounterView {
+                counter: CounterType::Plus1Plus1,
+                count: state
+                    .objects
+                    .get(&bearer)
+                    .and_then(|o| o.counters.get(&CounterType::Plus1Plus1).copied())
+                    .unwrap_or(0),
+            }]),
             "ARM2 pill projection: the surviving pair really reaches `unbounded_counters` — the \
              store half alone would not prove the display over-keep is visible, got {pills:?}"
         );

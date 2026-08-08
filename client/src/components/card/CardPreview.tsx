@@ -14,7 +14,7 @@ import { useCardImage } from "../../hooks/useCardImage.ts";
 import type { SourcePrinting } from "../../hooks/useCardImage.ts";
 import { useIsMobile } from "../../hooks/useIsMobile.ts";
 import { useEngineCardData, useCardParseDetails, useCardRulings, type ParsedItem } from "../../hooks/useEngineCardData.ts";
-import { useUnboundedCounterTypes } from "../../hooks/useUnboundedCounterTypes.ts";
+import { useUnboundedCounterRows } from "../../hooks/useUnboundedCounterRows.ts";
 import { tokenFiltersForObject } from "../../services/cardImageLookup.ts";
 import type { CardRuling } from "../../services/engineRuntime.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
@@ -1323,9 +1323,6 @@ function CardInfoPanel({
 }) {
   const { t } = useTranslation("game");
   const ptDisplay = computePTDisplay(obj);
-  const counters = Object.entries(obj.counters).flatMap(([type, count]) =>
-    type === "loyalty" || count == null ? [] : [[type, count] as const],
-  );
   const keywords = sortKeywords(obj.keywords);
   const colorsChanged =
     obj.color.length !== obj.base_color.length ||
@@ -1344,7 +1341,8 @@ function CardInfoPanel({
   // CR 732.2a / CR 701.34a: the ∞ mark for this object. Same engine channel
   // PermanentCard's pill and ArtCropCard's badge read — every counter display mode
   // must agree, or the ∞ silently drops in one of them.
-  const unboundedCounterTypes = useUnboundedCounterTypes(obj.id);
+  const unboundedCounterRows = useUnboundedCounterRows(obj.id);
+  const counters = unboundedCounterRows.filter((row) => row.type !== "loyalty");
   const deref = { objects, transientContinuousEffects };
   const keywordSources = buildGrantedKeywordSources(attribution, obj.id, deref);
   const ptSources = buildPTSources(attribution, obj.id, deref);
@@ -1512,11 +1510,10 @@ function CardInfoPanel({
       {/* Counters */}
       {counters.length > 0 && (
         <div className="mt-1 flex flex-wrap gap-x-3 text-gray-400">
-          {counters.map(([type, count]) => {
+          {counters.map(({ type, count, isUnbounded }) => {
             // CR 732.2a / CR 701.34a: an accepted counter-growth loop pumps this counter
             // unboundedly — render ∞ instead of the (still-finite) real count, and tell the
             // tooltip so its summary can't contradict the row.
-            const isUnbounded = unboundedCounterTypes.includes(type);
             return (
               <CounterTooltip key={type} type={type} count={count} isUnbounded={isUnbounded}>
                 <span>

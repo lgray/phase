@@ -320,7 +320,7 @@ describe("ArtCropCard", () => {
     useGameStore.setState({
       gameState: {
         objects: { [permanent.id]: permanent },
-        derived: { unbounded_counters: { [permanent.id]: ["charge"] } },
+        derived: { unbounded_counters: { [permanent.id]: [{ counter: "charge", count: 2 }] } },
       } as never,
     });
 
@@ -356,7 +356,7 @@ describe("ArtCropCard", () => {
     useGameStore.setState({
       gameState: {
         objects: { [permanent.id]: permanent },
-        derived: { unbounded_counters: { [permanent.id]: ["charge"] } },
+        derived: { unbounded_counters: { [permanent.id]: [{ counter: "charge", count: 2 }] } },
       } as never,
     });
 

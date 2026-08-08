@@ -14,7 +14,7 @@ import { useCardHover } from "../../hooks/useCardHover.ts";
 import { useIsCompactHeight } from "../../hooks/useIsCompactHeight.ts";
 import { useIsMobile } from "../../hooks/useIsMobile.ts";
 import { useLongPress } from "../../hooks/useLongPress.ts";
-import { useUnboundedCounterTypes } from "../../hooks/useUnboundedCounterTypes.ts";
+import { useUnboundedCounterRows } from "../../hooks/useUnboundedCounterRows.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { renderDescription } from "../../utils/description.ts";
 import { usePreferencesStore } from "../../stores/preferencesStore.ts";
@@ -303,7 +303,7 @@ export const PermanentCard = memo(function PermanentCard({
   const isCopiedPermanent = useGameStore((s) =>
     (s.gameState?.derived?.copied_permanents ?? []).includes(objectId),
   );
-  const unboundedCounterTypes = useUnboundedCounterTypes(objectId);
+  const unboundedCounterRows = useUnboundedCounterRows(objectId);
   const isManaPaymentPreviewSource = useGameStore((s) =>
     s.manaPaymentPreviewSourceIds.includes(objectId),
   );
@@ -603,8 +603,14 @@ export const PermanentCard = memo(function PermanentCard({
       ? undefined
       : gameObjects?.[String(temporaryCantBeBlockedSourceId)]?.name;
 
-  // Filter out loyalty counters — shown separately as the loyalty badge
-  const counters = Object.entries(obj.counters).filter((entry): entry is [string, number] => entry[1] != null && entry[0] !== "loyalty");
+  // Filter out loyalty counters — shown separately as the loyalty badge (which renders its
+  // own `∞` per CR 306.5c when the engine marks a loyalty row).
+  const counters = unboundedCounterRows.filter((row) => row.type !== "loyalty");
+  // CR 306.5c: a planeswalker's loyalty IS its loyalty-counter count, so an engine `∞`
+  // loyalty row means the TOTAL is unbounded.
+  const isLoyaltyUnbounded = unboundedCounterRows.some(
+    (row) => row.type === "loyalty" && row.isUnbounded,
+  );
 
   // Tap rotation: 17deg in MTGA mode (or compact-height), 90deg in classic mode
   const tapBaseOpacity = (isCompactHeight || tapRotation === "mtga") && obj.tapped ? 0.85 : 1;
@@ -920,6 +926,7 @@ export const PermanentCard = memo(function PermanentCard({
             <LoyaltyBadge
               amount={obj.loyalty}
               kind="total"
+              isUnbounded={isLoyaltyUnbounded}
               size="battlefield"
               className="absolute bottom-0 right-0 z-30"
               style={{ position: "absolute" }}
@@ -965,11 +972,10 @@ export const PermanentCard = memo(function PermanentCard({
           {/* Top-right overlay stack: counter badges kept clear of the
               bottom-right P/T box. */}
           <div className="absolute right-0.5 top-0.5 z-[60] flex flex-col items-end gap-0.5">
-            {counters.map(([type, count]) => {
+            {counters.map(({ type, count, isUnbounded }) => {
               const iconClass = counterIconClass(type);
               // CR 732.2a / CR 701.34a: an accepted counter-growth loop pumps this
               // counter unboundedly — render ∞ instead of the (still-finite) real count.
-              const isUnbounded = unboundedCounterTypes.includes(type);
               return (
                 <CounterTooltip
                   key={type}
