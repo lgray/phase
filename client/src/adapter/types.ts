@@ -2718,9 +2718,12 @@ export interface UnboundedFamilyView {
   state: FamilyCollapseState;
 }
 
+/** Mirrors `engine::game::derived_views::CounterMagnitude`. Absent on the wire ⇒ `"Finite"`. */
+export type CounterMagnitude = "Finite" | "Unbounded";
+
 /**
- * One renderable `∞` counter row on one object. Mirrors
- * `engine::game::derived_views::UnboundedCounterView`.
+ * One renderable counter row on one object. Mirrors
+ * `engine::game::derived_views::CounterRowView`.
  *
  * `counter` matches the object's `counters` map key (`CounterType`'s serde spelling — e.g.
  * `"charge"`, `"P1P1"`). `count` is the object's LIVE count and is engine-supplied because a row
@@ -2728,9 +2731,24 @@ export interface UnboundedFamilyView {
  * registered while the object still carries none, so the count is `0` and there is nothing to join
  * back to. Re-deriving it here would also be the FE inferring game state.
  */
-export interface UnboundedCounterView {
+export interface CounterRowView {
   counter: string;
   count: number;
+  magnitude?: CounterMagnitude;
+}
+
+/**
+ * Every counter row one object renders, PRE-PARTITIONED by the engine. Mirrors
+ * `engine::game::derived_views::ObjectCounterDisplay`.
+ *
+ * CR 306.5c: `loyalty` is the loyalty TOTAL row for an object that has a loyalty characteristic
+ * (loyalty IS its loyalty-counter count); everything else is a `pills` row, including a loyalty
+ * counter on an object with no loyalty. Loyalty ABILITY COST badges are never unbounded (CR 606.4
+ * — a cost is a number of loyalty counters to pay, not a total).
+ */
+export interface ObjectCounterDisplay {
+  pills?: CounterRowView[];
+  loyalty?: CounterRowView;
 }
 
 /** Mirrors `engine::analysis::loop_check::WinKind` (unit variants → bare strings). */
@@ -2998,28 +3016,22 @@ export interface DerivedViews {
    */
   unbounded_pile?: ObjectId[];
   /**
-   * CR 732.2a / CR 701.34a: per-object `∞` counter channel — for each battlefield
-   * object (keyed by ObjectId-as-string), the engine-authored counter ROWS an accepted
-   * counter-growth loop pumps unboundedly. Covers the full beneficial materializable
-   * partition — `Generic` markers (charge, burden), `+1/+1`, loyalty, and defense —
-   * not `Generic` alone.
+   * CR 122.1 + CR 732.2a: the COMPLETE per-object counter-display projection, keyed by
+   * ObjectId-as-string — every counter row every display surface renders, for every
+   * object that has one, in ANY zone (a Skullbriar-class permanent keeps its counters in
+   * the graveyard per CR 113.6b; a suspended card carries time counters in exile per
+   * CR 702.62b).
    *
-   * SHAPE: each entry is a ROW, not a bare counter-type key. `counter` matches the
-   * object's `counters` map key (e.g. `"charge"`, `"P1P1"`); `count` is the object's
-   * live count, which is `0` when the loop pumps a counter the object does not yet
-   * carry. Render every row as `∞` (never `×N`). Never re-derive which counters are
-   * unbounded, and never infer a row's count from the object's `counters` map — a row
-   * may legitimately have no entry there.
+   * CONTRACT FOR CONSUMERS: render `pills` in the order given; never sort, never filter,
+   * never read `obj.counters`; `magnitude` absent means `"Finite"`. The engine already
+   * dropped zero-count entries (CR 122.1), partitioned loyalty (CR 306.5c), deduplicated
+   * across seats, and ordered the rows (`∞` first, then `CounterType` order).
    *
-   * CR 306.5c: a `"loyalty"` row means the planeswalker's loyalty TOTAL is unbounded
-   * (loyalty IS its loyalty-counter count), so the total badge renders `∞`. Loyalty
-   * ABILITY COST badges are never unbounded (CR 606.4 — a cost is a number of loyalty
-   * counters to pay, not a total).
-   *
-   * Empty/omitted when no counter-growth loop is active. Mirrors
-   * `engine::game::derived_views::DerivedViews::unbounded_counters`.
+   * An object with no renderable row is absent from this map; the whole field is omitted
+   * when no object has one. Mirrors
+   * `engine::game::derived_views::DerivedViews::counter_display`.
    */
-  unbounded_counters?: Record<string, UnboundedCounterView[]>;
+  counter_display?: Record<string, ObjectCounterDisplay>;
 }
 
 /** Mirrors `engine::types::game_state::NextSpellModifier` (serde tag="type"). */

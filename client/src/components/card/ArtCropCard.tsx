@@ -5,7 +5,7 @@ import type { PTColor } from "../../viewmodel/cardProps";
 import { useCardImage } from "../../hooks/useCardImage.ts";
 import { useIsCompactHeight } from "../../hooks/useIsCompactHeight.ts";
 import { useIsMobile } from "../../hooks/useIsMobile.ts";
-import { useUnboundedCounterRows } from "../../hooks/useUnboundedCounterRows.ts";
+import { isUnbounded, pillsOf, useCounterDisplay } from "../../hooks/useCounterDisplay.ts";
 import { cardImageLookup, tokenFiltersForObject } from "../../services/cardImageLookup.ts";
 import { CARD_BACK_URL } from "../../services/scryfall.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
@@ -29,7 +29,7 @@ const PT_COLORS: Record<PTColor, string> = {
 export const ArtCropCard = memo(function ArtCropCard({ objectId }: ArtCropCardProps) {
   const { t } = useTranslation("game");
   const obj = useGameStore((s) => s.gameState?.objects[objectId]);
-  const unboundedCounterRows = useUnboundedCounterRows(objectId);
+  const counterDisplay = useCounterDisplay(objectId);
   const isMobile = useIsMobile();
   const inspectObject = useUiStore((s) => s.inspectObject);
   const isCompactHeight = useIsCompactHeight();
@@ -79,14 +79,9 @@ export const ArtCropCard = memo(function ArtCropCard({ objectId }: ArtCropCardPr
   // Kamigawa flip card stores its alternative half in the same slot and has no
   // face 1 to inspect. Use the engine-provided layout discriminant.
   const hasDfc = !obj.face_down && hasOtherPrintedFace(obj);
-  // Filter out loyalty counters — shown separately as the loyalty badge (which renders its
-  // own `∞` per CR 306.5c when the engine marks a loyalty row).
-  const counters = unboundedCounterRows.filter((row) => row.type !== "loyalty");
-  // CR 306.5c: a planeswalker's loyalty IS its loyalty-counter count, so an engine `∞`
-  // loyalty row means the TOTAL is unbounded.
-  const isLoyaltyUnbounded = unboundedCounterRows.some(
-    (row) => row.type === "loyalty" && row.isUnbounded,
-  );
+  // CR 306.5c: the engine already split the loyalty TOTAL out of the pill strip, so this site
+  // classifies nothing — it renders the rows it is given, in the order it is given them.
+  const counters = pillsOf(counterDisplay);
   const devotionValue = obj.devotion ?? null;
   // --- Dynamic Text Sizing Logic ---
   let ptNumClass = "text-[14px]";
@@ -210,21 +205,23 @@ export const ArtCropCard = memo(function ArtCropCard({ objectId }: ArtCropCardPr
               {/* Top-right overlay stack: counter badges kept clear of the
                   bottom P/T and loyalty badges. */}
               <div className="absolute top-0.5 right-0.5 z-[60] flex flex-col items-end gap-0.5">
-                {counters.map(({ type, count, isUnbounded }) => {
+                {counters.map((row) => {
+                  const type = row.counter;
                   // CR 732.2a / CR 701.34a: an accepted counter-growth loop pumps this
                   // counter unboundedly — render ∞ instead of the (still-finite) real count.
+                  const unbounded = isUnbounded(row);
                   return (
                     <CounterTooltip
                       key={type}
                       type={type}
-                      count={count}
-                      isUnbounded={isUnbounded}
+                      count={row.count}
+                      isUnbounded={unbounded}
                     >
                       <span
                         className={`rounded-full flex items-center justify-center font-bold text-white shadow-md border border-black/50 ${COUNTER_COLORS[type] ?? "bg-purple-600"}`}
                         style={counterStyle}
                       >
-                        {isUnbounded ? "∞" : count}
+                        {unbounded ? "∞" : row.count}
                       </span>
                     </CounterTooltip>
                   );
@@ -306,7 +303,7 @@ export const ArtCropCard = memo(function ArtCropCard({ objectId }: ArtCropCardPr
         <LoyaltyBadge
           amount={obj.loyalty}
           kind="total"
-          isUnbounded={isLoyaltyUnbounded}
+          isUnbounded={isUnbounded(counterDisplay.loyalty)}
           size="battlefield"
           reinforcedTopRim
           className="absolute z-30"
