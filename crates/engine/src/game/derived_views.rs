@@ -885,18 +885,6 @@ pub struct ClientGameState {
     pub derived: DerivedViews,
 }
 
-/// Compute all engine-authored projections over `state`. Runs in O(objects + `∞`
-/// targets + damage entries) per call; the JIT short-circuit for non-Commander
-/// formats (where `commander_damage_threshold` is `None`) still keeps the
-/// commander-damage grouping at exactly zero cost. The per-object counter walk
-/// (`counter_display_views`) allocates nothing for the dominant counterless
-/// object.
-///
-/// CR 903.10a: commander damage is public information tracked per commander
-/// — no viewer-based redaction is applied here, and the grouping runs
-/// unconditionally for every Commander-format game regardless of who is
-/// viewing. Partner commanders under the same controller each get their
-/// own `CommanderDamageView` entry, not a summed total.
 /// CR 118.3a + CR 601.2g: the cost still unpaid by `viewer`'s pinned pool units
 /// during their own manual mana payment for a spell. Reduces the locked spell
 /// cost against a pool containing ONLY the pinned units (so the residual is
@@ -1046,6 +1034,18 @@ fn temporary_cant_be_blocked_source(
     })
 }
 
+/// Compute all engine-authored projections over `state`. Runs in O(objects + `∞`
+/// targets + damage entries) per call; the JIT short-circuit for non-Commander
+/// formats (where `commander_damage_threshold` is `None`) still keeps the
+/// commander-damage grouping at exactly zero cost. The per-object counter walk
+/// (`counter_display_views`) allocates nothing for the dominant counterless
+/// object.
+///
+/// CR 903.10a: commander damage is public information tracked per commander
+/// — no viewer-based redaction is applied here, and the grouping runs
+/// unconditionally for every Commander-format game regardless of who is
+/// viewing. Partner commanders under the same controller each get their
+/// own `CommanderDamageView` entry, not a summed total.
 pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews {
     let mut views = DerivedViews {
         unique_authorized_submitter: unique_authorized_submitter(state),

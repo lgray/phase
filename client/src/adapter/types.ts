@@ -2732,7 +2732,7 @@ export type CounterMagnitude = "Finite" | "Unbounded";
  * back to. Re-deriving it here would also be the FE inferring game state.
  */
 export interface CounterRowView {
-  counter: string;
+  counter: CounterType;
   count: number;
   magnitude?: CounterMagnitude;
 }

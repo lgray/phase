@@ -205,6 +205,90 @@ describe("AttackTargetPicker", () => {
     expect(screen.getAllByText("×2").length).toBeGreaterThan(0);
   });
 
+  it("renders counter chips from the engine projection, never the raw counters map (CR 122.1)", () => {
+    // The raw map and the projection DISAGREE on every axis: a differing count, a row the map
+    // does not carry at all, and a map entry the projection dropped. Only a StackLabel reading
+    // `derived.counter_display` can satisfy all three, so any reintroduced `obj.counters` read
+    // (or a join back to it) fails here.
+    const goblin = makeCreature(101, "Goblin");
+    useGameStore.setState({
+      gameState: buildGameState({
+        players: buildPlayers([0, 1, 2]),
+        seat_order: [0, 1, 2],
+        objects: buildObjectMap({ ...goblin, counters: { charge: 99, stun: 2 } }),
+        derived: {
+          counter_display: {
+            "101": {
+              pills: [
+                { counter: "charge", count: 4 },
+                // CR 122.1: engine-supplied row with NO entry in the raw map — a pair pumped
+                // 0 -> 1 is registered while the object still carries none, so it is
+                // unreachable by any client-side derivation from `obj.counters`.
+                { counter: "lore", count: 0 },
+              ],
+            },
+          },
+        },
+      }),
+    });
+    render(
+      <AttackTargetPicker
+        validTargets={TARGETS}
+        selectedAttackers={[101]}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    enterDistribute();
+
+    // Projection count wins over the raw map's disagreeing count.
+    expect(screen.getAllByText("charge x4").length).toBeGreaterThan(0);
+    expect(screen.queryAllByText("charge x99")).toHaveLength(0);
+    // Projection-only row renders even though the raw map has no such key.
+    expect(screen.getAllByText("lore x0").length).toBeGreaterThan(0);
+    // Raw-map-only entry the projection dropped must NOT render.
+    expect(screen.queryAllByText("stun x2")).toHaveLength(0);
+  });
+
+  it("visibly distinguishes two same-named stacks that differ only in counter magnitude (CR 732.2a)", () => {
+    // The MED regression: `groupKey` splits these two attackers because their engine counter
+    // rows differ, but with a raw-map-fed StackLabel both stacks render an IDENTICAL name and
+    // an IDENTICAL `charge x1` chip — a split with no visible cause. The counters maps are
+    // byte-identical, so the ONLY channel that can tell them apart is the projection's
+    // `magnitude`.
+    const a = makeCreature(101, "Goblin");
+    const b = makeCreature(102, "Goblin");
+    useGameStore.setState({
+      gameState: buildGameState({
+        players: buildPlayers([0, 1, 2]),
+        seat_order: [0, 1, 2],
+        objects: buildObjectMap(
+          { ...a, counters: { charge: 1 } },
+          { ...b, counters: { charge: 1 } },
+        ),
+        derived: {
+          counter_display: {
+            "101": { pills: [{ counter: "charge", count: 1, magnitude: "Unbounded" }] },
+            "102": { pills: [{ counter: "charge", count: 1 }] },
+          },
+        },
+      }),
+    });
+    render(
+      <AttackTargetPicker
+        validTargets={TARGETS}
+        selectedAttackers={[101, 102]}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    enterDistribute();
+
+    // Two separate stacks, each rendering its own chip, and the two chips DIFFER.
+    expect(screen.getAllByText("charge ∞").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("charge x1").length).toBeGreaterThan(0);
+  });
+
   it("steppers claim the lowest-id unassigned member deterministically", () => {
     const { onConfirm } = renderPicker();
     enterDistribute();

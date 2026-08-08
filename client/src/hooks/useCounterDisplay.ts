@@ -41,13 +41,32 @@ const EMPTY_PILLS: ReadonlyArray<CounterRowView> = [];
  * the fix lands at every `groupByName` consumer at once instead of per chip. `isUnboundedPile`'s
  * `.every()` stays as written: it is a fail-safe over a channel `groupKey` does not key on.
  *
- * Subscribed today by exactly three render sites: `board/PermanentCard`, `card/ArtCropCard`, and
- * `card/CardPreview`'s `CardInfoPanel`. Two counter render sites remain unsubscribed, each a
- * "wire it up", neither a hazard:
- *   - FU-A `controls/AttackTargetPicker` (`StackLabel`) reads `obj.counters` itself and renders
- *     no `∞` at all. With group splitting on the counter rows in `groupKey`, subscribing it is a
- *     safe three-line change.
- *   - FU-B `hud/DialogAttachmentCard` — a four-line conversion blocked on a missing test file.
+ * Subscribed today by exactly FOUR render sites: `board/PermanentCard`, `card/ArtCropCard`,
+ * `card/CardPreview`'s `CardInfoPanel`, and `controls/AttackTargetPicker`'s `StackLabel`.
+ *
+ * Every surviving reader of the raw `objects[id].counters` map, measured with `git grep` and
+ * cross-checked with `ast-grep` (an `Object.entries`-shaped pattern alone MISSES the indexed
+ * reads, which is how an earlier census undercounted this list):
+ *   - FU-B `hud/DialogAttachmentCard` (`:115`) — the one remaining DISPLAY site, and the only
+ *     entry here that is a pending conversion. It re-implements the projection's own work
+ *     (drops zero rows, excludes `loyalty`). `__tests__/DialogAttachmentCard.test.tsx` EXISTS,
+ *     so this is NOT blocked on a missing test file (an earlier revision of this ledger claimed
+ *     it was); it is simply outside the frozen scope of the change that subscribed FU-A.
+ *   - `modal/CardChoiceModal` (`:1712`, `:1715`, in `removableCounterCostEntries`) — NOT a
+ *     display site and NOT a pending conversion. It enumerates which counters are legal to
+ *     REMOVE AS A COST — CR 118.3, a player can't pay a cost without the resources to pay it
+ *     fully, which is exactly the `count > 0` filter — so it must read the live payable map. It
+ *     is reached for ability costs as well as spell costs, so the general cost rule governs, not
+ *     the spell-casting payment step. It deliberately keeps
+ *     `loyalty` (removing loyalty counters is a payable cost) where the display projection
+ *     splits loyalty out per CR 306.5c, and a cost must be paid in real counters, so an
+ *     `Unbounded` magnitude would be actively wrong here.
+ *   - `chrome/DebugCardContextMenu` (`:253`, `:254`, `:258`, `:261`) — NOT a display site and NOT
+ *     a pending conversion. It is a debug counter EDITOR: each `CounterRow` reads the current
+ *     value of the counter its own +/- buttons are about to `ModifyCounters`, `loyalty`
+ *     included. It needs the writable map it mutates, not the CR 306.5c-partitioned view.
+ *
+ * Do not claim this hook covers every counter render site until FU-B lands.
  */
 export function useCounterDisplay(objectId: ObjectId): ObjectCounterDisplay {
   return useGameStore(
