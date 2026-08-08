@@ -9,7 +9,10 @@
       "family": "counters",
       "player": 0,
       "state": {
-        "data": "Committed",
+        "data": {
+          "certainty": "Committed",
+          "prompted": 0
+        },
         "type": "Scheduled"
       }
     }

@@ -2736,6 +2736,13 @@ pub(super) fn handle_resolution_choice(
                     // The DISPLAY half of follow-up F2 is instead covered live at the projection by
                     // `derived_views::object_growth_backing`, which drops an ∞ row whose entire
                     // registered display set has left the battlefield without touching the stash.
+                    // That cover now spans BOTH object-backed families — the token axis reads the
+                    // ∞ pile, and the counter axes read the registered `(object, counter)` pairs
+                    // that derive each axis — and it applies ONLY while the collapse is still
+                    // UNACCEPTED. Once a stash exists for the axis, CR 732.2c has already taken the
+                    // shortcut, so the projection's acceptance gate keeps the row even with its
+                    // whole backing gone: the growth still lands here, and a row that vanished
+                    // before it landed would be the display lying about an agreed result.
                     state.clear_collapsed_materializations(player, &collapsed);
                     // Continue the boundary fixpoint (§7): re-draining either prompts the
                     // next APNAP player with a stash or restores Priority now.

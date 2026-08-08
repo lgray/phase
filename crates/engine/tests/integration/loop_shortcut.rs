@@ -7529,7 +7529,7 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
         let scheduled_families: Vec<UnboundedFamily> = views
             .unbounded_families
             .iter()
-            .filter(|f| matches!(f.state, FamilyCollapseState::Scheduled(_)))
+            .filter(|f| matches!(f.state, FamilyCollapseState::Scheduled { .. }))
             .map(|f| f.family)
             .collect();
         assert!(
@@ -7611,8 +7611,10 @@ fn stale_pile_member_is_omitted_from_the_wire_but_kept_in_the_store() {
     assert!(
         stored.len() >= 2,
         "reach-guard: this rig's pile has >= 2 members, so removing ONE leaves a non-empty \
-         wire — the case is about a STALE member, not about the whole backing set dying \
-         (that is `object_growth_infinity_row_dies_with_its_last_pile_member`), got {}",
+         wire — the case is about a STALE member, not about the whole backing set dying. The \
+         whole-set case is `accepted_object_growth_row_survives_losing_its_entire_pile`, which \
+         asserts the row SURVIVES it, because that rig's collapse has been accepted (CR 732.2c); \
+         got {}",
         stored.len()
     );
     assert!(
@@ -7757,7 +7759,7 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
         assert!(
             v.unbounded_families
                 .iter()
-                .any(|f| matches!(f.state, FamilyCollapseState::Scheduled(_)))
+                .any(|f| matches!(f.state, FamilyCollapseState::Scheduled { .. }))
                 && j.contains("\"Scheduled\""),
             "R3/pre-clear: a registered materialization SCHEDULES a family AND emits it, got {:?}",
             v.unbounded_families

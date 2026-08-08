@@ -240,17 +240,40 @@ impl CollapseCertainty {
 pub enum FamilyCollapseState {
     Unscheduled,
     Mixed,
-    Scheduled(CollapseCertainty),
+    Scheduled {
+        certainty: CollapseCertainty,
+        /// CR 732.2a: the seat that will be asked to name the "specified number of times" when
+        /// this collapse cashes out — the loop's CONTROLLER, emitted because it is NOT
+        /// recoverable from [`UnboundedFamilyView::player`] (the ATTRIBUTION seat, which for
+        /// `Life`/`DamageDealt`/`LibraryDelta`/`Poison` is the VICTIM, who is never asked).
+        ///
+        /// `None` means the family's scheduled axes name TWO OR MORE distinct seats — never
+        /// "nobody", which this variant makes unrepresentable. One glyph cannot address two
+        /// players, so the badge falls back to the seat-neutral voice rather than picking a
+        /// winner. Witnessed by `two_controllers_draining_one_victim_do_not_cross_schedule`.
+        ///
+        /// SCOPE: `game::turns` raises ONE `PayAmountChoice` for the controller's WHOLE stash, so
+        /// a multi-family collapse names one count across several badges. The shipped copy says
+        /// "you'll name the count", which is true of each family that count collapses.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompted: Option<PlayerId>,
+    },
 }
 
 impl FamilyCollapseState {
-    /// Join: `Scheduled(a) ⊔ Scheduled(b) = Scheduled(weaker)`, `Unscheduled ⊔ Scheduled(_) =
-    /// Mixed`, `Mixed` is top. Commutative + associative + idempotent because it IS a join —
-    /// load-bearing: the FE fold it replaces documented a last-wins order hazard, and its open
-    /// question ("what would make the over-report reachable") is settled here rather than avoided:
-    /// `Mixed` is REPRESENTABLE, so a mixed family renders a bare `∞` instead of a wrong `∞→N`.
-    /// Witnessed by `mixed_family_is_not_scheduled` and
+    /// Join: `Scheduled ⊔ Scheduled = Scheduled(weaker certainty, met seat)`,
+    /// `Unscheduled ⊔ Scheduled { .. } = Mixed`, `Mixed` is top. Commutative + associative +
+    /// idempotent because it IS a join — load-bearing: the FE fold it replaces documented a
+    /// last-wins order hazard, and its open question ("what would make the over-report
+    /// reachable") is settled here rather than avoided: `Mixed` is REPRESENTABLE, so a mixed
+    /// family renders a bare `∞` instead of a wrong `∞→N`. Witnessed by
+    /// `mixed_family_is_not_scheduled` and
     /// `two_controllers_draining_one_victim_do_not_cross_schedule`.
+    ///
+    /// The seat meet is the flat-lattice meet on `Option<PlayerId>` (⊥ = `None`): equal seats
+    /// agree, distinct seats fall to `None`. Idempotent, commutative and associative, so the fold
+    /// over a family's axes is order-independent for any number of members. The two
+    /// `Unscheduled × Scheduled` arms drop the seat STRUCTURALLY — a `Mixed` family names none.
     ///
     /// No CR governs this — it is a join over a display projection, not a rules behavior
     /// (cf. `game/filter.rs`'s `context_free_prop_matches_face` Kleene `AnyOf` arm).
@@ -258,10 +281,21 @@ impl FamilyCollapseState {
         match (self, other) {
             (Self::Mixed, _) | (_, Self::Mixed) => Self::Mixed,
             (Self::Unscheduled, Self::Unscheduled) => Self::Unscheduled,
-            (Self::Unscheduled, Self::Scheduled(_)) | (Self::Scheduled(_), Self::Unscheduled) => {
-                Self::Mixed
-            }
-            (Self::Scheduled(a), Self::Scheduled(b)) => Self::Scheduled(a.weaker(b)),
+            (Self::Unscheduled, Self::Scheduled { .. })
+            | (Self::Scheduled { .. }, Self::Unscheduled) => Self::Mixed,
+            (
+                Self::Scheduled {
+                    certainty: a,
+                    prompted: p,
+                },
+                Self::Scheduled {
+                    certainty: b,
+                    prompted: q,
+                },
+            ) => Self::Scheduled {
+                certainty: a.weaker(b),
+                prompted: if p == q { p } else { None },
+            },
         }
     }
 }
@@ -314,6 +348,22 @@ impl FamilyCollapseState {
 /// that join downstream is precisely the display-layer computation this channel exists to remove
 /// (see `CLAUDE.md`). `Mana(_)` is different in kind — its promise is false the moment it is made —
 /// and it is handled by exclusion upstream at `scheduled_display_axes`, not by this asymmetry.
+///
+/// THE SECOND ASYMMETRY, ACROSS THE BOUNDARY RATHER THAN INSIDE THE WINDOW — disclosed, measured,
+/// and deliberately kept. `∞` counter targets are registered for the whole beneficial-counter
+/// partition, while a `DriveSequence` collapse names only the axes its own proposal carried. At the
+/// boundary, `types::game_state::clear_collapsed_materializations` filters the registered pairs by
+/// the collapsed axes and RE-INSERTS the survivors, and the counter-pill loop below is ungated on
+/// `unbounded_resources` — so a registered pair whose derived axis was NOT in the driven collapse
+/// keeps rendering `∞` on its own pill for one boundary after its family row is gone. The rules
+/// state is untouched: that pair's axis was never collapsed, so per CR 732.2c nothing about it has
+/// ended, and the axis-removal set and the `unbounded_loop_enablers` lockstep both move exactly as
+/// they did before the widening. Fixing the pill by stripping unmatched pairs would trade this
+/// display over-KEEP for a display over-DROP, which the subsystem's stated polarity forbids: it may
+/// only ever leave an `∞` standing one boundary longer than it should, never hide a real one.
+/// Pinned by `types::game_state`'s
+/// `widened_counter_registration_survives_a_driven_collapse_without_moving_the_axis_set` and its
+/// matched negative `a_counter_pair_on_the_driven_axis_is_dropped_at_the_boundary`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnboundedFamilyView {
     pub player: PlayerId,
@@ -549,13 +599,20 @@ pub struct DerivedViews {
     /// `unbounded_families` below); the frontend renders what it is handed.
     /// Empty (and omitted) in the dominant case where no loop is active.
     ///
-    /// NOT a straight projection of the mark: a TOKEN-axis row is withheld when its entire
-    /// registered pile has left the battlefield ([`object_growth_backing`]), so this can carry
-    /// FEWER axes than `GameState::unbounded_resources` marks. The mark and the accepted stash
-    /// are both unaffected by that — it is a display decision, never a cancellation of agreed
-    /// growth (CR 732.2c). A withheld row therefore does NOT mean the collapse was cancelled;
+    /// NOT a straight projection of the mark: an object-backed row (TOKEN axis, or a COUNTER axis
+    /// with registered targets) is withheld on TWO conjuncts, and both must hold —
+    ///
+    /// 1. the controller has NO accepted collapse for that axis ([`accepted_collapse_axes`]), and
+    /// 2. the axis' entire registered board backing has left the battlefield
+    ///    ([`object_growth_backing`] answering `Some(false)`).
+    ///
+    /// so this can carry FEWER axes than `GameState::unbounded_resources` marks. Conjunct 1 is
+    /// CR 732.2c: once the last player accepts, the shortcut is TAKEN, so an agreed collapse is not
+    /// cancelled by its board backing dying afterwards — the growth still lands at the boundary and
+    /// the row keeps saying so. Conjunct 2 alone is a display decision, never a cancellation of
+    /// agreed growth. A withheld row therefore does NOT mean the collapse was cancelled;
     /// `pending_unbounded_materialization` still carries it and the boundary still applies it,
-    /// which `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`
+    /// which `combo_infinite_pile::accepted_object_growth_row_survives_losing_its_entire_pile`
     /// asserts at the store level.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unbounded_resources: Vec<UnboundedResourceView>,
@@ -579,16 +636,21 @@ pub struct DerivedViews {
     pub unbounded_pile: Vec<ObjectId>,
 
     /// CR 732.2a / CR 701.34a: the per-object `∞` COUNTER channel — for each
-    /// battlefield object, the counter types whose preserved `Generic` counters an
+    /// battlefield object, the counter types whose preserved BENEFICIAL counters an
     /// accepted counter-growth loop (proliferate charge on Pentad Prism, burden on
-    /// The One Ring) pumps unboundedly (projected from
+    /// The One Ring, a +1/+1 or loyalty pump loop) pumps unboundedly (projected from
     /// `GameState::unbounded_counter_targets`, filtered to objects still on the
-    /// battlefield). The counter analog of `unbounded_pile`: object-growth marks whole
-    /// objects, but a counter-growth loop's unbounded axis is object-agnostic, so this
-    /// keys the specific pumped counter so the frontend renders `∞` (not `×N`) on that
-    /// counter pill and nothing else. Keyed by ObjectId; DISPLAY-only (the real counter
-    /// count is unchanged). Public board state — no viewer filtering. Empty (and
-    /// omitted) when no counter-growth loop is active — the dominant case.
+    /// battlefield). Which counters qualify is
+    /// `analysis::resource::counter_is_beneficial_materializable`'s wildcard-free partition
+    /// (`Generic(_)`, `Plus1Plus1`, `Loyalty`, `Defense`), derived once by
+    /// `game::engine::current_period_counter_growth`. The counter analog of `unbounded_pile`:
+    /// object-growth marks whole objects, but a counter-growth loop's unbounded axis MAY be
+    /// object-agnostic (one accepted proposal can carry both an object-classed counter axis and
+    /// the display channel's `Counter(Other, Other)`), so this keys the specific pumped counter
+    /// so the frontend renders `∞` (not `×N`) on that counter pill and nothing else. Keyed by
+    /// ObjectId; DISPLAY-only (the real counter count is unchanged). Public board state — no
+    /// viewer filtering. Empty (and omitted) when no counter-growth loop is active — the
+    /// dominant case.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub unbounded_counters: HashMap<ObjectId, Vec<CounterType>>,
 }
@@ -1166,6 +1228,13 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     //   4. "…and the schedule rides on each row as a `scheduled` flag" — falsified when that flag
     //      was deleted. A per-FAMILY badge cannot render a per-ROW flag honestly: two same-family
     //      axes that disagree need a third answer, which is what `FamilyCollapseState::Mixed` is.
+    //   5. "…and `object_growth_backing` refuses for `Counter(..)`, so only the token axis can
+    //      lose a row" — falsified when that arm stopped reading the controller-keyed store WHOLE
+    //      and started deriving each registered pair's own axis, which is an axis-scoped
+    //      authority and therefore may revoke a counter row too.
+    // The gate itself reads the schedule for the first time, and it still does not FILTER by it:
+    // an accepted collapse can only ADD a row back that the backing check would have dropped
+    // (CR 732.2c — the shortcut is already taken), never remove one.
     // Naming WHO reads the schedule is a claim every future consumer can break; naming what the
     // schedule may not DO is not. The stores are not filtered either:
     // `unbounded_resources` keeps the mark until the boundary applies the growth. (`unbounded_loop_enablers` is held in
@@ -1193,19 +1262,36 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
         // downstream consumer (engine or frontend) can answer this correctly; two controllers
         // draining one victim would collide. This reads the ENGINE'S DEFERRAL STASH, which no CR
         // licenses (see `FamilyCollapseState`) — it is not a projection of CR 732.2c.
-        let scheduled_axes = scheduled_display_axes(state, controller);
+        let accepted_axes = accepted_collapse_axes(state, controller);
+        let scheduled_axes = scheduled_display_axes(&accepted_axes);
         for &axis in axes {
             // CR 732.2a + CR 110.1: an object-growth ∞ whose ENTIRE registered display set
             // has left the battlefield has no live board backing left — drop the row rather
             // than render an ∞ beside an already-empty ∞ pile. `None` (never registered a
             // backing set, e.g. a mana engine) keeps the badge; see `object_growth_backing`
             // for why that asymmetry is typed rather than collapsed into a bool.
-            if object_growth_backing(state, controller, axis) == Some(false) {
+            //
+            // CR 732.2c binds the shortcut the instant the last player accepts, so an agreed
+            // collapse is NOT cancelled by its board backing dying — its row survives the
+            // departure and keeps announcing the growth that will still land. The FACT set is
+            // read here, deliberately not the display-filtered one: `object_growth_backing`
+            // returns `None` for `Mana(_)` today, so the two happen to agree — an accident
+            // between two functions, not an invariant either of them states.
+            if !accepted_axes.contains_key(&axis)
+                && object_growth_backing(state, controller, axis) == Some(false)
+            {
                 continue;
             }
             let player = attribution_player(axis, controller);
             let state_for_axis = match scheduled_axes.get(&axis) {
-                Some(&certainty) => FamilyCollapseState::Scheduled(certainty),
+                Some(&certainty) => FamilyCollapseState::Scheduled {
+                    certainty,
+                    // The prompted seat is THIS loop's controller, captured here, in the only
+                    // scope that still knows it: one line below, `attribution_player` may
+                    // replace `player` with the victim, and from that point the controller is
+                    // unrecoverable.
+                    prompted: Some(controller),
+                },
                 None => FamilyCollapseState::Unscheduled,
             };
             families
@@ -1243,7 +1329,8 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     }
 
     // CR 732.2a / CR 701.34a: project the accepted counter-growth loop's per-object ∞
-    // counter targets — the objects whose PRESERVED Generic counters (charge / burden)
+    // counter targets — the objects whose PRESERVED BENEFICIAL counters (charge / burden /
+    // +1/+1 / loyalty / defense, per `analysis::resource::counter_is_beneficial_materializable`)
     // the certified-unbounded loop pumps each cycle — dropping any that have since left
     // the battlefield (stale member). Display-only per-object channel mirroring
     // `unbounded_pile`; the frontend renders `∞` (not `×N`) on any counter pill whose
@@ -1390,22 +1477,58 @@ fn turn_order_views(
     (turn_order, viewer_turn_number)
 }
 
-/// The axes `controller` has an accepted-but-unapplied collapse for, as the HUD should announce
-/// them, each carrying how CERTAIN that collapse is.
+/// CR 732.2c: THE FACT — the axes `controller` has an accepted, not-yet-applied collapse for.
+///
+/// The KEYS are the fact (which axes an accepted collapse names). The VALUES are
+/// `engine_resolution_choices::possible_hold`'s display encoding ([`CollapseCertainty`], typed as a
+/// display promise by its own doc there), carried alongside because every consumer that needs the
+/// fact also needs to know what may be promised about it. No display judgement is applied here —
+/// that is [`scheduled_display_axes`]'s job, and the split is what keeps a RULES consumer (the row
+/// loop's acceptance gate) from silently inheriting a DISPLAY exclusion.
 ///
 /// This reads the stash of growth in flight along CR 732.2c's advance to the proposal's ending
 /// point — a priority window per CR 732.2a, reached after the CR 500.5 boundary where the growth
-/// lands. What it announces is therefore a real accepted result, not a parking spot; the reason it
-/// announces CERTAINTY rather than a number is that the boundary re-checks whether the growth is
+/// lands. What it reports is therefore a real accepted result, not a parking spot; the reason the
+/// value is CERTAINTY rather than a number is that the boundary re-checks whether the growth is
 /// still observed and the controller names the count at the ending point (CR 732.2a). See
-/// `FamilyCollapseState`, the `THE WINDOW'S TIMING IS CR 732.2c'S ADVANCE` block above, and
+/// [`FamilyCollapseState`], the `THE WINDOW'S TIMING IS CR 732.2c'S ADVANCE` block above, and
 /// `types/game_state.rs`'s `scheduled_collapse_axes` doc for the reading.
+fn accepted_collapse_axes(
+    state: &GameState,
+    controller: PlayerId,
+) -> BTreeMap<ResourceAxis, CollapseCertainty> {
+    let mut axes: BTreeMap<ResourceAxis, CollapseCertainty> = BTreeMap::new();
+    let Some(items) = state.pending_unbounded_materialization.get(&controller) else {
+        return axes;
+    };
+    for item in items {
+        // Per ITEM, so each axis inherits the certainty of the kind that actually scheduled it;
+        // two items naming the same axis merge to the weaker answer.
+        let certainty = crate::game::engine_resolution_choices::materialization_certainty(item);
+        for axis in state.scheduled_collapse_axes(std::slice::from_ref(item)) {
+            axes.entry(axis)
+                .and_modify(|acc| *acc = acc.weaker(certainty))
+                .or_insert(certainty);
+        }
+    }
+    axes
+}
+
+/// THE ANNOUNCEMENT — the fact ([`accepted_collapse_axes`]) minus what the badge cannot honestly
+/// promise, as the HUD should announce it, each axis carrying how CERTAIN that collapse is.
+///
+/// Takes the fact BY REFERENCE rather than re-deriving it: the signature is the guarantee that no
+/// caller can compute one without holding the other, so the two cannot drift into agreeing by
+/// coincidence. The `Mana(_)` exclusion below is the ONLY display judgement in the pair, which is
+/// what makes the FACT/ANNOUNCEMENT split meaningful at all.
 ///
 /// Named rather than inlined into its one caller because the SCOPE LIMIT below is a rule, not a
 /// line of the row loop, and it has already proved it drifts when written twice: an earlier cut of
 /// this change had a second consumer (a `scheduled_collapse` tag channel, since removed for having
 /// no reader) and the guard lived in that consumer alone, so mana rows shipped flagged while the
-/// tag omitted them. Any future second consumer calls THIS, and inherits the limit.
+/// tag omitted them. Any future second consumer calls THIS, and inherits the limit; a consumer that
+/// needs the unfiltered rules answer calls [`accepted_collapse_axes`] instead, and the type it asks
+/// for says which of the two it got.
 ///
 /// SCOPE LIMIT — `Mana(_)` is excluded. This is about what the badge would TELL the player, not
 /// about which code path ends the axis, and it is scoped to THE WINDOW THE BADGE RENDERS IN
@@ -1446,26 +1569,10 @@ fn turn_order_views(
 /// seats, which that clear excludes.) The badge still must not promise a bound the player's
 /// spendable pool never had.
 fn scheduled_display_axes(
-    state: &GameState,
-    controller: PlayerId,
+    accepted: &BTreeMap<ResourceAxis, CollapseCertainty>,
 ) -> BTreeMap<ResourceAxis, CollapseCertainty> {
-    let mut axes: BTreeMap<ResourceAxis, CollapseCertainty> = BTreeMap::new();
-    let Some(items) = state.pending_unbounded_materialization.get(&controller) else {
-        return axes;
-    };
-    for item in items {
-        // Per ITEM, so each axis inherits the certainty of the kind that actually scheduled it;
-        // two items naming the same axis merge to the weaker answer.
-        let certainty = crate::game::engine_resolution_choices::materialization_certainty(item);
-        for axis in state.scheduled_collapse_axes(std::slice::from_ref(item)) {
-            if matches!(axis, ResourceAxis::Mana(_)) {
-                continue;
-            }
-            axes.entry(axis)
-                .and_modify(|acc| *acc = acc.weaker(certainty))
-                .or_insert(certainty);
-        }
-    }
+    let mut axes = accepted.clone();
+    axes.retain(|axis, _| !matches!(axis, ResourceAxis::Mana(_)));
     axes
 }
 
@@ -1532,32 +1639,39 @@ fn attribution_player(axis: ResourceAxis, controller: PlayerId) -> PlayerId {
 /// `state.battlefield.contains` test at MEMBER level; this is its SET-level closure, so all
 /// three read the same board in the same frame and none can be staler than another.
 ///
-/// GRANULARITY — the rule that decides which axes may consult a backing store at all:
+/// GRANULARITY — the rule that decides how an axis may consult a backing store:
 ///
-/// > A CONTROLLER-keyed backing store can answer an AXIS-scoped question if and only if the
-/// > axis is a UNIT variant.
+/// > A CONTROLLER-keyed backing store can be READ AS an axis' backing if and only if the axis is
+/// > a UNIT variant. A DATA variant must derive its axis from each stored ELEMENT.
 ///
 /// `TokensCreated` is a unit variant, so a controller can hold at most one of it and
 /// `unbounded_loop_pile[controller]` IS that axis' backing — a bijection, no granularity is
 /// assumed that the store does not have. `Counter(CounterClass, ObjectClass)` is a DATA
-/// variant: `mark_unbounded_loop` unions arbitrarily many per controller (`entry.extend`), so a
-/// controller-keyed store is strictly coarser than the axis, and it returns `None` here.
+/// variant: `mark_unbounded_loop` unions arbitrarily many per controller (`entry.extend`), so
+/// the controller-keyed store is strictly coarser than the axis and must NOT be read whole.
+/// It is read per ELEMENT instead — each stored `(ObjectId, CounterType)` pair derives its own
+/// axis through `types::game_state::collapsed_counter_axis`, and only the pairs matching THIS
+/// axis answer for it.
 ///
-/// An earlier revision of this function did read `unbounded_counter_targets` for `Counter(..)`,
-/// and its doc claimed the error direction was safe — "over-KEEPS a badge, never over-drops
-/// one". That was FALSE, and measured so: one accepted proposal can carry both
+/// An earlier revision of this function read `unbounded_counter_targets` WHOLE for
+/// `Counter(..)`, and its doc claimed the error direction was safe — "over-KEEPS a badge, never
+/// over-drops one". That was FALSE, and measured so: one accepted proposal can carry both
 /// `Counter(Plus1Plus1, Creature)` (`analysis::corpus`'s `ResourceFamily::Counters`) and the
 /// display channel's object-agnostic `Counter(Other, Other)`, while only the latter's targets
 /// are ever registered — so when those targets left the battlefield the guard dropped EVERY
-/// counter row, including the one whose backing it had never consulted.
+/// counter row, including the one whose backing it had never consulted. The per-element
+/// derivation is what fixes that: a row is revoked only by the departure of pairs that derive
+/// ITS axis, and an axis with no registered pair at all answers `None` (badge kept), never
+/// `Some(false)`. Re-keying the store by `(controller, ResourceAxis)` would have asserted a
+/// scope the derivation does not have; deriving per element asserts none.
 ///
-/// Re-keying the store by `(controller, ResourceAxis)` would not fix it. The targets are
-/// axis-blind at the DERIVATION, not just at the key: `register_unbounded_counter_targets` is
-/// fed by `game::engine::current_period_counter_targets` →
-/// `analysis::resource::grown_generic_counter_targets`, which takes no axis argument and
-/// returns one undifferentiated `Generic`-only set for the whole proposal. A per-axis key would
-/// assert a scope nothing derives. Revoking a counter row needs an axis-scoped authority to
-/// exist first; until one does, this refuses rather than guesses.
+/// CR 400.7 — the FAIL-OPEN direction, stated because it is a design choice and not an
+/// accident: the pair is snapshotted at accept, but the axis it derives to is LIVE
+/// (`collapsed_counter_axis` reads `state.objects` on every projection). A bearer that ceased to
+/// exist derives `Counter(_, Other)`, which matches no registered pair for this axis, so nothing
+/// answers, and the answer is `None` — the badge is KEPT. Every drift in this bridge therefore
+/// leaves an `∞` standing one boundary too long; none can hide a real one. Witnessed by
+/// `bridge_drift_on_cease_to_exist_fails_open`.
 ///
 /// Read-only: recomputed from live state on every `derive_views` call, nothing is stored,
 /// so nothing can go stale. Deliberately not a `clear_unbounded_loop` from the zone-exit
@@ -1578,16 +1692,30 @@ fn object_growth_backing(
             .unbounded_loop_pile
             .get(&controller)
             .map(|pile| pile.iter().any(|id| state.battlefield.contains(id))),
+        // CR 122.1: a counter is a marker ON AN OBJECT, so the counter axis' backing is the set
+        // of registered `(ObjectId, CounterType)` pairs that derive THIS axis — not the whole
+        // controller-keyed store (GRANULARITY, above). `?` on the lookup: a controller that
+        // never registered any target has no live authority to consult ⇒ `None` ⇒ badge kept.
+        ResourceAxis::Counter(..) => {
+            let targets = state.unbounded_counter_targets.get(&controller)?;
+            let mut any_for_axis = false;
+            let mut any_live = false;
+            for (id, ct) in targets {
+                if crate::types::game_state::collapsed_counter_axis(state, *id, ct) != axis {
+                    continue;
+                }
+                any_for_axis = true;
+                any_live |= state.battlefield.contains(id);
+            }
+            // No pair derives this axis ⇒ nothing registered a backing FOR IT ⇒ `None`, not
+            // `Some(false)`. That is the CR 400.7 fail-open in one expression.
+            any_for_axis.then_some(any_live)
+        }
         // No registered board backing exists for these axes — no live authority to consult,
         // badge unchanged. Exhaustive on purpose: a future ResourceAxis variant must decide
         // which side it lands on rather than silently defaulting to "unbacked"; the
         // unit-variant rule in this function's doc is the criterion for choosing.
-        //
-        // `Counter(..)` is here rather than reading `unbounded_counter_targets` because that
-        // store cannot answer a per-axis question — see the GRANULARITY note above. Witnessed
-        // by `counter_rows_are_not_revoked_by_a_controller_keyed_backing_set`.
-        ResourceAxis::Counter(..)
-        | ResourceAxis::Mana(_)
+        ResourceAxis::Mana(_)
         | ResourceAxis::Life(_)
         | ResourceAxis::DamageDealt(_)
         | ResourceAxis::LibraryDelta(_)
@@ -2155,27 +2283,38 @@ mod tests {
         );
     }
 
-    /// A controller-keyed backing store can answer an axis-scoped question only when the axis is
-    /// a UNIT variant. `TokensCreated` is one — at most one per controller, so
-    /// `unbounded_loop_pile[controller]` IS that axis' backing. `Counter(CounterClass,
-    /// ObjectClass)` is not: `mark_unbounded_loop` unions arbitrary axes for one controller, and
-    /// the backing derivation (`current_period_counter_targets` → `grown_generic_counter_targets`)
-    /// accepts NO axis — it diffs every shared object's growable `Generic` counters and returns
-    /// ONE undifferentiated set for the whole proposal.
+    /// Counter-row revocation is AXIS-SCOPED: the departure of a registered pair may revoke the
+    /// axis THAT PAIR DERIVES, and no other.
     ///
-    /// So the controller-keyed `Some(false)` this PR first shipped revoked EVERY counter row at
-    /// once, including axes whose backing was never in that set: a certified proposal can carry
-    /// both `Counter(Plus1Plus1, Creature)` (`analysis::corpus`'s `ResourceFamily::Counters`) and
-    /// the display channel's object-agnostic `Counter(Other, Other)`, while only the latter's
-    /// Generic targets are ever registered. That is an over-DROP — the opposite of the
-    /// "conservative, over-keeps only" claim the first revision shipped with.
+    /// A controller-keyed backing store may be read WHOLE only when the axis is a UNIT variant.
+    /// `TokensCreated` is one — at most one per controller, so `unbounded_loop_pile[controller]`
+    /// IS that axis' backing. `Counter(CounterClass, ObjectClass)` is not: `mark_unbounded_loop`
+    /// unions arbitrary axes for one controller, so the store is strictly coarser than the axis
+    /// and is read PER ELEMENT instead — each registered `(ObjectId, CounterType)` derives its own
+    /// axis through `types::game_state::collapsed_counter_axis`.
     ///
-    /// Two-sided on ONE assertion (are both rows on the wire?): restoring the controller-keyed
-    /// `Some(false)` arm reds the SUBJECT — both rows vanish, including the axis whose backing was
-    /// never consulted. The CONTROL runs FIRST as the non-vacuity anchor: it proves this wire can
-    /// carry two counter rows at all, which a "rows survived" assertion alone cannot establish.
+    /// Both wrong answers this fixture rules out are real revisions of this code. The
+    /// controller-keyed `Some(false)` originally shipped here revoked EVERY counter row at once,
+    /// including axes whose backing was never in that set: a certified proposal can carry both
+    /// `Counter(Plus1Plus1, Creature)` (`analysis::corpus`'s `ResourceFamily::Counters`) and the
+    /// display channel's object-agnostic `Counter(Other, Other)`, while only the latter's targets
+    /// are ever registered. Refusing entirely (`None` for every `Counter(..)`) is the opposite
+    /// error: the departed axis keeps a badge it has no backing for.
+    ///
+    /// Two-sided on ONE assertion pair: reverting the arm to `None` reds "Generic gone"; dropping
+    /// the per-pair `collapsed_counter_axis` filter — i.e. exactly the original axis-blind code —
+    /// reds "Plus1Plus1 survives". The CONTROL runs FIRST as the non-vacuity anchor: it proves
+    /// this wire can carry two counter rows at all, which a "rows survived" assertion alone cannot
+    /// establish.
+    ///
+    /// CONTRACT — NOT REACHABLE AT ACCEPT, which is a narrower claim than "production cannot build
+    /// it". At accept both writes happen in one `materialize_object_growth_shortcut` body, so a
+    /// registered backing with no stash is both-or-neither there. POST-boundary it IS producible:
+    /// `take_pending_materialization` drops the stash while `clear_collapsed_materializations` can
+    /// re-insert surviving targets. The rig is hand-built because the accept-time shape is the one
+    /// being excluded, not because the state is unreachable.
     #[test]
-    fn counter_rows_are_not_revoked_by_a_controller_keyed_backing_set() {
+    fn counter_row_revocation_is_axis_scoped() {
         use crate::analysis::resource::{CounterClass, ObjectClass, ResourceAxis};
         use crate::game::zones::move_to_zone;
         use crate::types::counter::CounterType;
@@ -2231,9 +2370,270 @@ mod tests {
         );
         let subject_rows = rows(&subject);
         assert!(
-            subject_rows.contains(&plus1_axis) && subject_rows.contains(&generic_axis),
-            "THE assertion (subject): a controller-keyed backing set must not revoke ANY counter \
-             row — least of all `plus1_axis`, whose backing was never registered, got {subject_rows:?}"
+            !subject_rows.contains(&generic_axis),
+            "THE assertion (subject, half 1): the departed pair derives `generic_axis`, so THAT \
+             row loses its live backing and is revoked, got {subject_rows:?}"
+        );
+        assert!(
+            subject_rows.contains(&plus1_axis),
+            "THE assertion (subject, half 2): NO registered pair derives `plus1_axis`, so nothing \
+             answers for it and the badge is kept — an axis-blind guard would drop it too, got \
+             {subject_rows:?}"
+        );
+    }
+
+    /// CR 732.2c: once the last player accepts, the shortcut IS TAKEN — so an accepted TOKEN
+    /// collapse keeps its `∞` row even after its entire registered pile has left the battlefield.
+    /// The growth still lands at the boundary, and a row that vanished first would have the HUD
+    /// deny a result the table already agreed to.
+    ///
+    /// Three arms, and the third is what stops the second from being vacuous:
+    /// - REACH: the backing check really answers `Some(false)` on this rig, so the gate's second
+    ///   conjunct is live and the row survival below is decided by the FIRST conjunct.
+    /// - SUBJECT: with a stash, the row is present.
+    /// - NON-VACUITY: same departure, NO stash ⇒ the row must DIE. Without it, "the row survived"
+    ///   would also pass against a projection that never revokes anything.
+    ///
+    /// REVERT-PROBE: drop `!accepted_axes.contains_key(&axis)` from the gate ⇒ the SUBJECT arm
+    /// reds. (Dropping a negated restricting conjunct makes the `continue` fire MORE often, so
+    /// rows are dropped MORE and a PRESENCE assertion is what flips; the NON-VACUITY arm stays
+    /// green, since its `accepted_axes` is empty either way.)
+    #[test]
+    fn an_accepted_token_collapse_keeps_its_row_when_its_pile_dies() {
+        use crate::game::zones::move_to_zone;
+        use crate::types::events::GameEvent;
+        use crate::types::game_state::PersistentAxisMaterialization;
+
+        let p0 = PlayerId(0);
+        let build = |accepted: bool| {
+            let mut state = GameState::new(FormatConfig::standard(), 2, 42);
+            let token = create_object(
+                &mut state,
+                CardId(1),
+                p0,
+                "Saproling".to_string(),
+                Zone::Battlefield,
+            );
+            state.mark_unbounded_loop(p0, &[ResourceAxis::TokensCreated]);
+            state.register_unbounded_loop_pile(p0, BTreeSet::from([token]));
+            if accepted {
+                state.register_pending_materialization(
+                    p0,
+                    PersistentAxisMaterialization::Tokens(family_test_token_profile()),
+                );
+            }
+            let mut events: Vec<GameEvent> = Vec::new();
+            move_to_zone(&mut state, token, Zone::Graveyard, &mut events);
+            assert!(
+                !state.battlefield.contains(&token),
+                "precondition: the whole registered pile really left the battlefield"
+            );
+            state
+        };
+
+        let has_token_row = |state: &GameState| -> bool {
+            derive_views(state, Some(p0))
+                .unbounded_resources
+                .iter()
+                .any(|r| r.axis == ResourceAxis::TokensCreated)
+        };
+
+        // REACH: the backing authority answers `Some(false)` — the gate's second conjunct is TRUE
+        // on this rig, so nothing below is decided by an inert check.
+        let subject = build(true);
+        assert_eq!(
+            object_growth_backing(&subject, p0, ResourceAxis::TokensCreated),
+            Some(false),
+            "reach: the pile is registered and entirely gone, so the backing check says so"
+        );
+
+        // SUBJECT: an accepted collapse keeps the row anyway (CR 732.2c).
+        assert!(
+            has_token_row(&subject),
+            "an ACCEPTED token collapse keeps its ∞ row when its pile dies — the growth still \
+             lands at the boundary"
+        );
+
+        // NON-VACUITY: the identical departure without a stash must drop the row.
+        assert!(
+            !has_token_row(&build(false)),
+            "with NO accepted collapse the same dead pile revokes the row — otherwise the arm \
+             above measures a projection that never revokes anything"
+        );
+    }
+
+    /// The same CR 732.2c acceptance gate, through the OTHER `object_growth_backing` arm: an
+    /// accepted COUNTER collapse keeps its row when every registered target has left the
+    /// battlefield.
+    ///
+    /// Carries two extra pins the token twin does not need, because the counter arm derives its
+    /// backing per element rather than reading a store whole:
+    /// - the `collapsed_counter_axis` REACH pin, so every later assertion is provably about the
+    ///   axis this rig actually registers a pair for;
+    /// - `object_growth_backing(..) == Some(true)` while the bearer is alive. That is the V4
+    ///   discriminator: an arm that was never implemented (or reverted to `None`) reds HERE, which
+    ///   is what stops "the row survived" from being vacuous — a `None` arm keeps every row too.
+    #[test]
+    fn an_accepted_counter_collapse_keeps_its_row_when_its_targets_die() {
+        use crate::game::zones::move_to_zone;
+        use crate::types::counter::CounterType;
+        use crate::types::events::GameEvent;
+        use crate::types::game_state::{
+            collapsed_counter_axis, CounterGrowth, PersistentAxisMaterialization,
+        };
+
+        let p0 = PlayerId(0);
+        let charge = CounterType::Generic("charge".to_string());
+        let build = |accepted: bool| {
+            let mut state = GameState::new(FormatConfig::standard(), 2, 42);
+            let prism = create_object(
+                &mut state,
+                CardId(1),
+                p0,
+                "Pentad Prism".to_string(),
+                Zone::Battlefield,
+            );
+            let axis = collapsed_counter_axis(&state, prism, &charge);
+            state.mark_unbounded_loop(p0, &[axis]);
+            state.register_unbounded_counter_targets(p0, vec![(prism, charge.clone())]);
+            if accepted {
+                state.register_pending_materialization(
+                    p0,
+                    PersistentAxisMaterialization::Counters(vec![CounterGrowth {
+                        object: prism,
+                        counter: charge.clone(),
+                        per_cycle_delta: 1,
+                    }]),
+                );
+            }
+            (state, prism, axis)
+        };
+
+        let has_axis_row = |state: &GameState, axis: ResourceAxis| -> bool {
+            derive_views(state, Some(p0))
+                .unbounded_resources
+                .iter()
+                .any(|r| r.axis == axis)
+        };
+
+        // REACH (a): the registered pair really derives the marked axis.
+        let (mut subject, prism, axis) = build(true);
+        assert_eq!(
+            collapsed_counter_axis(&subject, prism, &charge),
+            axis,
+            "reach: the registered pair derives the axis this test is about"
+        );
+        // REACH (b): the counter arm ANSWERS, and answers positively while the bearer is alive.
+        // A `None` (never-implemented) arm reds here.
+        assert_eq!(
+            object_growth_backing(&subject, p0, axis),
+            Some(true),
+            "reach: the Counter(..) arm consults the registered pairs and finds a live one"
+        );
+
+        let mut events: Vec<GameEvent> = Vec::new();
+        move_to_zone(&mut subject, prism, Zone::Graveyard, &mut events);
+        assert_eq!(
+            object_growth_backing(&subject, p0, axis),
+            Some(false),
+            "reach: with the only registered bearer gone the arm says the backing is dead — the \
+             gate's second conjunct is live"
+        );
+
+        // SUBJECT: the accepted collapse keeps the row anyway.
+        assert!(
+            has_axis_row(&subject, axis),
+            "an ACCEPTED counter collapse keeps its ∞ row when its targets die"
+        );
+
+        // NON-VACUITY: identical departure, no stash ⇒ the row dies.
+        let (mut control, control_prism, control_axis) = build(false);
+        let mut control_events: Vec<GameEvent> = Vec::new();
+        move_to_zone(
+            &mut control,
+            control_prism,
+            Zone::Graveyard,
+            &mut control_events,
+        );
+        assert!(
+            !has_axis_row(&control, control_axis),
+            "with NO accepted collapse the same dead target revokes the counter row"
+        );
+    }
+
+    /// CR 400.7: an object that ceases to exist has no characteristics to read, so
+    /// `collapsed_counter_axis` falls back to `ObjectClass::Other` and the registered pair stops
+    /// deriving the axis it was registered under. The arm must then answer `None` (badge KEPT),
+    /// never `Some(false)` (badge dropped) — every drift in this bridge fails OPEN.
+    ///
+    /// THE BEARER MUST BE A CREATURE, and that requirement is load-bearing rather than flavour:
+    /// `GameObject::new` sets `card_types: CardType::default()`, i.e. EMPTY `core_types`, which
+    /// already derives `ObjectClass::Other` while the object is alive. On such a bearer removing
+    /// the object changes nothing about the derived axis and the drift is invisible — the test
+    /// would pass vacuously. The `core_types` assignment below is what makes the pre-drift and
+    /// post-drift axes differ at all.
+    ///
+    /// BASELINE arm (the paired positive): before the drift the arm answers `Some(false)`, so the
+    /// revocation really was ON and the `None` below is a change, not a constant.
+    ///
+    /// REVERT-PROBE: replace `any_for_axis.then_some(any_live)` with `Some(any_live)` ⇒ the
+    /// post-drift assertion reds with `Some(false)`, while the BASELINE arm stays green.
+    #[test]
+    fn bridge_drift_on_cease_to_exist_fails_open() {
+        use crate::analysis::resource::{CounterClass, ObjectClass};
+        use crate::game::game_object::GameObject;
+        use crate::game::zones::move_to_zone;
+        use crate::types::counter::CounterType;
+        use crate::types::events::GameEvent;
+
+        let p0 = PlayerId(0);
+        let mut state = GameState::new(FormatConfig::standard(), 2, 42);
+        let bearer = ObjectId(10);
+        let mut creature = GameObject::new(
+            bearer,
+            CardId(10),
+            p0,
+            "Beast".to_string(),
+            Zone::Battlefield,
+        );
+        // MANDATORY — see the doc above. Without this the bearer is already `Other` while alive.
+        creature.card_types.core_types = vec![CoreType::Creature];
+        state.objects.insert(bearer, creature);
+        state.battlefield.push_back(bearer);
+
+        let axis = ResourceAxis::Counter(CounterClass::Plus1Plus1, ObjectClass::Creature);
+        assert_eq!(
+            crate::types::game_state::collapsed_counter_axis(
+                &state,
+                bearer,
+                &CounterType::Plus1Plus1
+            ),
+            axis,
+            "reach: a CREATURE bearer derives the Creature-classed axis — if this is `Other` the \
+             rig lost its core_types and the drift below would be invisible"
+        );
+        state.mark_unbounded_loop(p0, &[axis]);
+        state.register_unbounded_counter_targets(p0, vec![(bearer, CounterType::Plus1Plus1)]);
+
+        // BASELINE: the bearer leaves the battlefield but still EXISTS, so it still derives the
+        // Creature-classed axis and the revocation is genuinely ON.
+        let mut events: Vec<GameEvent> = Vec::new();
+        move_to_zone(&mut state, bearer, Zone::Graveyard, &mut events);
+        assert_eq!(
+            object_growth_backing(&state, p0, axis),
+            Some(false),
+            "baseline: an existing-but-departed bearer still derives this axis, so the arm \
+             revokes — the paired positive proving the `None` below is a CHANGE"
+        );
+
+        // DRIFT: CR 400.7 cease-to-exist. The object is gone from `state.objects` entirely.
+        state.objects.remove(&bearer);
+        assert_eq!(
+            object_growth_backing(&state, p0, axis),
+            None,
+            "CR 400.7 fail-open: a ceased-to-exist bearer derives Counter(_, Other), which matches \
+             no registered pair for this axis, so NOTHING answers and the badge is kept. \
+             `Some(false)` here would hide a real ∞"
         );
     }
 
@@ -4080,6 +4480,14 @@ mod tests {
              never consulting the stash would say Unscheduled; got {:?}",
             life_rows[0]
         );
+        // ARM A's seat half: a `Mixed` family names NO seat, structurally. The seat lives inside
+        // `Scheduled`, so this is unrepresentable rather than merely absent — asserted anyway,
+        // because a future sibling field beside `state` would make it representable again.
+        assert!(
+            !matches!(life_rows[0].state, FamilyCollapseState::Scheduled { .. }),
+            "a Mixed family carries no prompted seat at all, got {:?}",
+            life_rows[0]
+        );
 
         // CROSS-CHECK AGAINST THE CONTRACT'S OWN AUTHORITY, not against a second wire channel.
         // `pending_unbounded_materialization` is what the boundary reads to cash the collapse out,
@@ -4096,6 +4504,86 @@ mod tests {
             accepted,
             vec![p1],
             "the accepted-collapse contract names exactly P1 for this axis, got {accepted:?}"
+        );
+
+        // Arms B and C share a rig with arm A's: same three seats, same victim-attributed axis,
+        // and they differ only in WHO marked and WHO accepted. `life_family_state` reads the one
+        // badge the victim's life family produces.
+        let life_family_state = |state: &GameState| -> FamilyCollapseState {
+            let rows: Vec<UnboundedFamilyView> = derive_views(state, Some(victim))
+                .unbounded_families
+                .into_iter()
+                .filter(|f| f.player == victim && f.family == UnboundedFamily::Life)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "one badge per (seat, family) in every arm, got {rows:?}"
+            );
+            rows[0].state
+        };
+
+        // ARM B — DISAGREEMENT. Both controllers mark AND both accept, so the victim's one life
+        // family is genuinely scheduled by TWO distinct seats. One glyph cannot address two
+        // players, so the seat meets to ⊥. `None` here means "two or more seats", never "nobody".
+        // MUTATION: make the seat meet last-wins (`prompted: q`) ⇒ this reds with `Some(p0)` or
+        // `Some(p1)` depending on iteration order — which is exactly the order-dependence the join
+        // laws exist to forbid.
+        let mut both = GameState::new(FormatConfig::commander(), 3, 42);
+        both.mark_unbounded_loop(p0, &[axis]);
+        both.mark_unbounded_loop(p1, &[axis]);
+        for controller in [p0, p1] {
+            both.register_pending_materialization(
+                controller,
+                PersistentAxisMaterialization::Life {
+                    player: victim,
+                    per_cycle_delta: 1,
+                },
+            );
+        }
+        assert_eq!(
+            life_family_state(&both),
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Conditional,
+                prompted: None,
+            },
+            "two controllers with accepted collapses on one victim's life family name two seats, \
+             so the badge falls back to the seat-neutral voice"
+        );
+
+        // ARM C — AGREEMENT, and the MATCHED POSITIVE for arm B. Without it an implementation that
+        // returned `prompted: None` unconditionally would pass B. This is also the ONE fixture
+        // shape where the prompted seat and the attributed seat are provably DIFFERENT players:
+        // the badge sits on the victim's HUD (CR 119.3 + CR 704.5a) while CR 732.2a asks the
+        // CONTROLLER for the count.
+        // MUTATION: emit `player` (the attribution seat) instead of `controller` ⇒ the `assert_ne!`
+        // below reds, because on this rig `player` IS the victim.
+        let mut agreed = GameState::new(FormatConfig::commander(), 3, 42);
+        agreed.mark_unbounded_loop(p1, &[axis]);
+        agreed.register_pending_materialization(
+            p1,
+            PersistentAxisMaterialization::Life {
+                player: victim,
+                per_cycle_delta: 1,
+            },
+        );
+        let agreed_state = life_family_state(&agreed);
+        assert_eq!(
+            agreed_state,
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Conditional,
+                prompted: Some(p1),
+            },
+            "one controller, one accepted collapse ⇒ the badge names THAT controller"
+        );
+        let FamilyCollapseState::Scheduled { prompted, .. } = agreed_state else {
+            panic!("arm C just asserted this is Scheduled");
+        };
+        assert_ne!(
+            prompted,
+            Some(victim),
+            "the prompted seat is the CONTROLLER, never the attributed victim — the victim is \
+             never asked to name the count"
         );
     }
 
@@ -4271,7 +4759,13 @@ mod tests {
                 .contains(&UnboundedFamilyView {
                     player: PlayerId(0),
                     family: UnboundedFamily::Tokens,
-                    state: FamilyCollapseState::Scheduled(CollapseCertainty::Conditional),
+                    state: FamilyCollapseState::Scheduled {
+                        certainty: CollapseCertainty::Conditional,
+                        // The controller IS the attributed seat for an aggregate axis, so this
+                        // fixture cannot tell the two apart — the divergent case is
+                        // `two_controllers_draining_one_victim_do_not_cross_schedule`.
+                        prompted: Some(PlayerId(0)),
+                    },
                 }),
             "an accepted Tokens collapse is Scheduled(Conditional) — never Committed; got {:?}",
             scheduled_views.unbounded_families
@@ -4386,7 +4880,10 @@ mod tests {
         );
         assert_eq!(
             scheduled_rows[0].state,
-            FamilyCollapseState::Scheduled(CollapseCertainty::Conditional),
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Conditional,
+                prompted: Some(p0),
+            },
             "matched positive: with no unscheduled sibling the counters family IS scheduled, and \
              a batched Counters collapse is Conditional; got {:?}",
             scheduled_rows[0]
@@ -4544,13 +5041,35 @@ mod tests {
     ///
     /// MUTATION: make `merge` last-wins (`|_, other| other`) ⇒ commutativity reds in exactly one
     /// order, e.g. `Unscheduled ⊔ Mixed` vs `Mixed ⊔ Unscheduled`.
+    ///
+    /// The value set includes two `Scheduled` values differing ONLY in `prompted`, so the three
+    /// laws are checked over the ENLARGED set the seat meet created rather than over the pre-seat
+    /// one. MUTATION: drop seat idempotence (always emit `prompted: None`) ⇒ `merge(x, x) != x`
+    /// reds for the two seat-carrying values. MUTATION: make the seat meet last-wins
+    /// (`prompted: q`) ⇒ commutativity reds on the `Some(0)` × `Some(1)` pair.
     #[test]
     fn family_collapse_state_merge_is_a_join() {
         let all = [
             FamilyCollapseState::Unscheduled,
             FamilyCollapseState::Mixed,
-            FamilyCollapseState::Scheduled(CollapseCertainty::Committed),
-            FamilyCollapseState::Scheduled(CollapseCertainty::Conditional),
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Committed,
+                prompted: Some(PlayerId(0)),
+            },
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Conditional,
+                prompted: Some(PlayerId(0)),
+            },
+            // Same certainty as the row above, DIFFERENT seat — the axis the seat meet added.
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Conditional,
+                prompted: Some(PlayerId(1)),
+            },
+            // ⊥ of the seat lattice, reachable only as a meet result.
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Conditional,
+                prompted: None,
+            },
         ];
         for x in all {
             assert_eq!(x.merge(x), x, "idempotent: {x:?}");
@@ -4571,17 +5090,45 @@ mod tests {
         }
         // The lattice's load-bearing shape, stated so a reader need not re-derive it.
         assert_eq!(
-            FamilyCollapseState::Scheduled(CollapseCertainty::Committed).merge(
-                FamilyCollapseState::Scheduled(CollapseCertainty::Conditional)
-            ),
-            FamilyCollapseState::Scheduled(CollapseCertainty::Conditional),
-            "two schedules keep the WEAKER certainty"
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Committed,
+                prompted: Some(PlayerId(0)),
+            }
+            .merge(FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Conditional,
+                prompted: Some(PlayerId(0)),
+            }),
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Conditional,
+                prompted: Some(PlayerId(0)),
+            },
+            "two schedules keep the WEAKER certainty, and an AGREED seat survives the meet"
         );
         assert_eq!(
-            FamilyCollapseState::Scheduled(CollapseCertainty::Committed)
-                .merge(FamilyCollapseState::Unscheduled),
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Committed,
+                prompted: Some(PlayerId(0)),
+            }
+            .merge(FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Committed,
+                prompted: Some(PlayerId(1)),
+            }),
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Committed,
+                prompted: None,
+            },
+            "two DISTINCT seats meet to ⊥ (`None` = 'two or more seats', never 'nobody') while the \
+             certainty is untouched — the seat axis and the certainty axis meet independently"
+        );
+        assert_eq!(
+            FamilyCollapseState::Scheduled {
+                certainty: CollapseCertainty::Committed,
+                prompted: Some(PlayerId(0)),
+            }
+            .merge(FamilyCollapseState::Unscheduled),
             FamilyCollapseState::Mixed,
-            "a schedule beside an unscheduled sibling is Mixed, never Scheduled"
+            "a schedule beside an unscheduled sibling is Mixed, never Scheduled — and `Mixed` \
+             names no seat, structurally"
         );
     }
 

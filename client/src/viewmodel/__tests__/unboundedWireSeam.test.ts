@@ -73,11 +73,31 @@ describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
     //   - declined wire: the post-decline frame ⇒ Unscheduled, axis still ∞, promise withdrawn.
     // Certainty is the discriminator here: the first two are both "scheduled", and a projection
     // that collapsed them into one answer reds this row.
+    //
+    // EXHAUSTIVE OBJECT EQUALITY, not a property read, and that choice is the discriminator for
+    // `prompted`: `toEqual` on the whole row reds if the engine silently stops emitting the seat,
+    // whereas `expect(row.state.data.prompted).toBe(0)` would read `undefined` off a dropped field
+    // and... still pass on a golden regenerated without it. The seat is a real wire field, so it
+    // is pinned like one.
+    //
+    // HONEST BOUND: both goldens carry `prompted: 0`, and 0 is also the attributed seat, because
+    // each golden's single axis attributes to its own controller. So this file pins the ENCODING
+    // of the seat, never the divergence between the prompted seat and the badge's seat — that is
+    // `derived_views::tests::two_controllers_draining_one_victim_do_not_cross_schedule` arms B/C
+    // engine-side and `UnboundedBadge.test.tsx`'s U8 client-side.
     expect(tokenWire.unbounded_families).toEqual([
-      { player: 0, family: "tokens", state: { type: "Scheduled", data: "Conditional" } },
+      {
+        player: 0,
+        family: "tokens",
+        state: { type: "Scheduled", data: { certainty: "Conditional", prompted: 0 } },
+      },
     ]);
     expect(counterWire.unbounded_families).toEqual([
-      { player: 0, family: "counters", state: { type: "Scheduled", data: "Committed" } },
+      {
+        player: 0,
+        family: "counters",
+        state: { type: "Scheduled", data: { certainty: "Committed", prompted: 0 } },
+      },
     ]);
     expect(declinedWire.unbounded_families).toEqual([
       { player: 0, family: "counters", state: { type: "Unscheduled" } },

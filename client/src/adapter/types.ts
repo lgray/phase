@@ -2675,7 +2675,23 @@ export type CollapseCertainty = "Committed" | "Conditional";
 export type FamilyCollapseState =
   | { type: "Unscheduled" }
   | { type: "Mixed" }
-  | { type: "Scheduled"; data: CollapseCertainty };
+  | {
+      type: "Scheduled";
+      data: {
+        certainty: CollapseCertainty;
+        /**
+         * The seat the engine will ask to name the collapse count (CR 732.2a's "specified number
+         * of times") — the loop's CONTROLLER. It is emitted because it is NOT recoverable from
+         * `UnboundedFamilyView.player`, which is the ATTRIBUTION seat: for `Life`/`DamageDealt`/
+         * `LibraryDelta`/`Poison` axes that is the VICTIM, who is never asked.
+         *
+         * `undefined` means the family's scheduled axes name TWO OR MORE distinct seats — never
+         * "nobody". One glyph cannot address two players, so the badge falls back to the
+         * seat-neutral voice instead of picking a winner.
+         */
+        prompted?: PlayerId;
+      };
+    };
 
 /**
  * One `∞` badge's engine-owned state, keyed per seat and per display family. Mirrors
@@ -2937,12 +2953,13 @@ export interface DerivedViews {
    * deviation from it. What matters to the FE is only that the mark is still live there, so `∞` is current engine
    * state, not a stale mark. Render it.
    *
-   * ONE EXCEPTION: "stays populated" is about the ACCEPT, not about the board. A TOKEN-axis row
-   * is still dropped if its entire registered pile leaves the battlefield during that window —
-   * the engine will not render an `∞` beside an already-empty pile. Counter-axis rows are not
-   * dropped that way (the engine has no per-axis backing authority for them yet), so do not
-   * generalize the exception. Either way the accepted collapse itself is never cancelled: the row
-   * may vanish and the boundary still cashes the axis out. Do not infer a cancellation from a
+   * ONE EXCEPTION, ON TWO CONJUNCTS THAT MUST BOTH HOLD: an object-backed row (a TOKEN axis, or a
+   * COUNTER axis with registered targets) is dropped when (1) no accepted collapse names that axis
+   * AND (2) its entire registered board backing has left the battlefield — the engine will not
+   * render an `∞` beside an already-empty pile. Once the table has ACCEPTED, conjunct (1) fails and
+   * the row survives its backing dying, because CR 732.2c takes the shortcut at the last accept and
+   * the growth still lands. Either way the accepted collapse itself is never cancelled: the row may
+   * vanish and the boundary still cashes the axis out. Do not infer a cancellation from a
    * disappearing row — a row's disappearance says nothing about the collapse. What the FE IS told
    * about the collapse arrives on `unbounded_families` below, and only there.
    */

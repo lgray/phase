@@ -622,12 +622,20 @@ describe("CardPreview unbounded counters", () => {
     expect(screen.queryByText(/2 charge counters/i)).not.toBeInTheDocument();
   });
 
-  // KNOWN GAP (F2), not desired behaviour: `grown_generic_counter_targets`
-  // (analysis/resource.rs:1330-1331) reads the BEFORE count off the live state, so the
-  // engine can mark an (object, counter) pair the object does not carry. Every display
-  // mode iterates `obj.counters`, so such a mark renders nowhere. The frontend must NOT
-  // synthesize a counter row the engine says does not exist; if the ∞ should be visible
-  // there, the ENGINE must decide it.
+  // KNOWN GAP (F2), not desired behaviour, and STILL OPEN: the ∞ counter targets are derived by
+  // `analysis::resource::grown_beneficial_counter_deltas` over the two frames
+  // `game::engine::drive_one_period_frames` produces, and its BEFORE frame is a clone of the LIVE
+  // state. A pair that grows 0 → 1 across the driven period is therefore registered while the live
+  // object carries none of that counter. Every display mode iterates `obj.counters`, so such a
+  // mark renders nowhere. The frontend must NOT synthesize a counter row the engine says does not
+  // exist; if the ∞ should be visible there, the ENGINE must decide it.
+  //
+  // The derivation was renamed and widened by the ∞ axis-scoped-revocation change — the display
+  // channel and the batched-collapse δ stash now share ONE derivation instead of running a second
+  // `Generic`-only diff. That does not touch this gap's mechanism (the same frame diff against the
+  // same BEFORE clone), but it does enlarge the gap's domain from `Generic` counters to the whole
+  // beneficial partition (+1/+1, loyalty, defense). Comment repointed at the surviving symbol; the
+  // gap it describes is unchanged.
   it("KNOWN GAP: a marked counter type the object does not carry renders nowhere (F2)", () => {
     const { container } = inspectPentadPrism(["oil"]);
 

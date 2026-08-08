@@ -379,8 +379,9 @@ fn drive_to_collapse_boundary(state: &mut GameState) {
 /// accept pipeline from the real 4p dump.
 ///
 /// REVERT-PROBE (measured, non-vacuous): deleting the `register_unbounded_counter_targets`
-/// write in `materialize_object_growth_shortcut` (or the `grown_generic_counter_targets`
-/// re-derivation) leaves `unbounded_counter_targets` empty ⇒ assertions (2) the field write,
+/// write in `materialize_object_growth_shortcut` (or the `current_period_counter_growth`
+/// derivation it projects from) leaves `unbounded_counter_targets` empty ⇒ assertions (2) the
+/// field write,
 /// (3) the derived-view projection, and (4) the wire round-trip all FLIP to fail. The
 /// offer-fires reach-guard (1) and the `charge == Some(4)` rules-correctness anchor
 /// (display-only: the real count is untouched) HOLD BOTH WAYS.
@@ -532,7 +533,11 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     assert!(
         views.unbounded_families.iter().any(|f| f.player == P0
             && f.family == UnboundedFamily::Counters
-            && f.state == FamilyCollapseState::Scheduled(CollapseCertainty::Committed)),
+            && f.state
+                == FamilyCollapseState::Scheduled {
+                    certainty: CollapseCertainty::Committed,
+                    prompted: Some(P0),
+                }),
         "the real kilo accept's single DriveSequence yields a Committed family on a REAL \
          production dump — that is this witness's distinct property, NOT uniqueness: two other \
          Committed witnesses exist on synthetic boards (combo_infinite_pile's grafted \
@@ -571,6 +576,165 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     assert!(
         !empty_json.contains("unbounded_counters"),
         "the field is omitted (skip_serializing_if) when empty"
+    );
+}
+
+/// TARGET-DEPARTURE RELATION (CR 732.2a / CR 110.1), pinned end-to-end on the real 4p dump: when a
+/// registered ∞ counter target leaves the battlefield, the per-object PILL disappears from the wire
+/// while the aggregate counter ROW remains — and the STORE keeps the departed pair.
+///
+/// That the pill and the row disagree is the point, and the REASON has changed — the assertion
+/// outlived its original justification, which is why the discriminator arm below now exists.
+///
+/// A pill is keyed by `ObjectId` and departure is an OBJECT event, so a pill has the identity it
+/// needs to filter itself, and it filters unconditionally. A row is keyed by `ResourceAxis`. This
+/// test used to explain the row's survival by "no axis-scoped backing authority exists" — that is
+/// no longer true: `object_growth_backing` answers `Counter(..)` by deriving each registered
+/// `(ObjectId, CounterType)` pair's own axis (`collapsed_counter_axis`), and on this very state
+/// that answer is `Some(false)`. The row survives for a DIFFERENT reason: this fixture's collapse
+/// was ACCEPTED (`drive_all_accept` above), and CR 732.2c makes an accepted shortcut binding, so
+/// the acceptance conjunct keeps the row regardless of what happened to its targets.
+///
+/// THAT DISTINCTION IS WHY (6) IS LOAD-BEARING. With the stash present, (4) passes whether or not
+/// the counter authority works at all — every wrong answer in that subsystem (`None` from an
+/// unmatched axis, an unregistered axis, a drifted bridge) also keeps the badge. So (4) alone is
+/// vacuous in the direction that matters, and (6) is the arm that removes the acceptance and
+/// requires the row to DIE. Only (6) proves the accept registered a pair whose derived axis equals
+/// a marked axis — i.e. that the bridge join succeeds on PRODUCTION-DERIVED data rather than on
+/// hand-built state, which no building-block test can establish.
+///
+/// Nothing pinned this relation before: the token family's analog
+/// (`loop_shortcut::stale_pile_member_is_omitted_from_the_wire_but_kept_in_the_store`) covers the
+/// pile, and the counter pill's battlefield filter had no runnable guard on a real accept.
+///
+/// MUTATIONS (to be RUN and recorded, one expected red each — if any reds more than its own row
+/// that is reported, not trimmed):
+/// - delete the `!state.battlefield.contains(id)` filter in `derive_views`' counter-pill loop
+///   => (3) reds alone;
+/// - restore the controller-keyed `Some(false)` `Counter(..)` arm in `object_growth_backing`
+///   => (4) reds alone;
+/// - "fix" it by pruning the STORE instead of the wire => (5) reds alone. (5) is the discriminator
+///   against that wrong fix: the boundary collapse reads the store;
+/// - revert the `Counter(..)` arm to `None` (the refusing revision) => (6) reds ALONE, and
+///   nothing else here moves. That isolation is the proof (6) is measuring the authority and not
+///   the acceptance gate.
+#[test]
+fn departed_counter_target_drops_its_pill_but_keeps_its_row_and_store_entry() {
+    use engine::analysis::resource::ResourceAxis;
+    use engine::game::derived_views::derive_views;
+    use engine::game::zones::move_to_zone;
+    use engine::types::counter::CounterType;
+    use engine::types::events::GameEvent;
+    use engine::types::zones::Zone;
+
+    let mut state = load_migrated_dump();
+    drive_one_live_cycle(&mut state);
+    assert!(
+        matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
+        "reach-guard: at the CR 732.2a ∞-charge offer for P0, got {:?}",
+        state.waiting_for
+    );
+    drive_all_accept(&mut state);
+
+    let charge = CounterType::Generic("charge".into());
+
+    // (1) REACH-GUARD, holds under every mutation below: the accept registered the target AND it
+    // is on the battlefield right now — so any divergence after the move is caused by the
+    // departure and by nothing else.
+    assert!(
+        state
+            .unbounded_counter_targets
+            .get(&P0)
+            .is_some_and(|t| t.contains(&(PENTAD, charge.clone()))),
+        "reach-guard: the accept registered (Pentad, charge) as a ∞ display target"
+    );
+    assert!(
+        state.battlefield.contains(&PENTAD),
+        "reach-guard: BEFORE the departure the target is on the battlefield"
+    );
+
+    // (2) REACH-GUARD: the pill and the row are BOTH present beforehand. Without this the
+    // post-departure assertions could pass on a wire that never carried either.
+    let before = derive_views(&state, None);
+    assert!(
+        before
+            .unbounded_counters
+            .get(&PENTAD)
+            .is_some_and(|cts| cts.contains(&charge)),
+        "reach-guard: the pill is on the wire before the departure"
+    );
+    let row_axes_before: Vec<_> = before.unbounded_resources.iter().map(|r| r.axis).collect();
+    assert!(
+        row_axes_before
+            .iter()
+            .any(|a| matches!(a, ResourceAxis::Counter(..))),
+        "reach-guard: a counter ROW is on the wire before the departure, got {row_axes_before:?}"
+    );
+
+    // The departure itself, through the production chokepoint (CR 110.1: it stops being a
+    // permanent).
+    let mut events: Vec<GameEvent> = Vec::new();
+    move_to_zone(&mut state, PENTAD, Zone::Graveyard, &mut events);
+    assert!(
+        !state.battlefield.contains(&PENTAD),
+        "the departure really happened"
+    );
+
+    let after = derive_views(&state, None);
+
+    // (3) THE PILL IS GONE — departure is an object event and the pill has object identity.
+    assert!(
+        !after.unbounded_counters.contains_key(&PENTAD),
+        "(3) the departed target's ∞ pill must leave the wire, got {:?}",
+        after.unbounded_counters
+    );
+
+    // (4) THE ROW REMAINS — because the collapse was ACCEPTED (CR 732.2c), not because nothing
+    // could revoke it. (6) below is what distinguishes those two explanations.
+    let row_axes_after: Vec<_> = after.unbounded_resources.iter().map(|r| r.axis).collect();
+    assert!(
+        row_axes_after
+            .iter()
+            .any(|a| matches!(a, ResourceAxis::Counter(..))),
+        "(4) the counter ROW must survive its target's departure — the table already accepted \
+         this collapse and it still lands at the boundary, got {row_axes_after:?}"
+    );
+
+    // (5) THE STORE IS NOT PRUNED — discriminator against "fixing" this by mutating the store:
+    // the CR 500.5 boundary collapse reads it.
+    assert!(
+        state
+            .unbounded_counter_targets
+            .get(&P0)
+            .is_some_and(|t| t.contains(&(PENTAD, charge.clone()))),
+        "(5) the STORE must still carry the departed (object, counter) pair — only the wire filters"
+    );
+
+    // (6) THE DISCRIMINATOR, and the only non-vacuous half of (4). Same post-departure state with
+    // the ACCEPTANCE removed: the row must now DIE. This is the single assertion in this file that
+    // requires the counter authority to actually work — it forces `object_growth_backing` to
+    // derive the departed pair's axis through `collapsed_counter_axis` and match it against a
+    // MARKED axis, both sides produced by the real accept on a real dump. Nothing hand-built can
+    // show that the two agree on production-derived data; that is why this arm lives here rather
+    // than at building-block level.
+    //
+    // `pending_unbounded_materialization` is a public field and this is a local clone, so removing
+    // it mutates nothing the rest of the test observes.
+    let mut unaccepted = state.clone();
+    unaccepted.pending_unbounded_materialization.clear();
+    let after_unaccepted = derive_views(&unaccepted, None);
+    let unaccepted_axes: Vec<_> = after_unaccepted
+        .unbounded_resources
+        .iter()
+        .map(|r| r.axis)
+        .collect();
+    assert!(
+        !unaccepted_axes
+            .iter()
+            .any(|a| matches!(a, ResourceAxis::Counter(..))),
+        "(6) with the accepted collapse removed, the departed targets leave the counter row with \
+         no live backing and it MUST be revoked — if it survives here, (4) above is passing for \
+         no reason and the counter authority is not working, got {unaccepted_axes:?}"
     );
 }
 
