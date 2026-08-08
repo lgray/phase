@@ -1099,6 +1099,14 @@
       "returnToHand_one": "zwróć trwałego do ręki",
       "returnToHand_other": "zwróć {{count}} trwałych do ręki",
       "energy": "{{amount}} energii",
+      "playerCounters_one": "zdobądź {{count}} znacznik {{kind}}",
+      "playerCounters_other": "zdobądź {{count}} znaczników {{kind}}",
+      "playerCounterKind": {
+        "Poison": "trucizny",
+        "Experience": "doświadczenia",
+        "Rad": "promieniowania",
+        "Ticket": "biletu"
+      },
       "generic": "koszt",
       "pay": "Zapłać {{cost}}"
     },

@@ -253,6 +253,7 @@ where
         | AbilityCost::NinjutsuFamily { .. }
         // CR 118.9: a borrowed keyword cost carries no nested effect/cost carrier.
         | AbilityCost::KeywordCostOfCastSpell { .. }
+        | AbilityCost::GetPlayerCounters { .. }
         | AbilityCost::Unimplemented { .. } => {}
     }
     ControlFlow::Continue(())

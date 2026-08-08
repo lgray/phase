@@ -272,6 +272,13 @@ fn ward_cost_to_ability_cost(ward_cost: &WardCost) -> AbilityCost {
                 }
             }
         }
+        WardCost::GetPlayerCounters {
+            counter_kind,
+            count,
+        } => AbilityCost::GetPlayerCounters {
+            counter_kind: *counter_kind,
+            count: *count,
+        },
     }
 }
 
@@ -8324,6 +8331,19 @@ pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Ve
     }
 
     new_events
+}
+
+/// CR 603.2 + CR 603.3b + CR 603.7c: Collect delayed triggers from an event
+/// batch into the same deferred queue as ordinary triggers. Cost-payment
+/// transactions use this before claiming their events, so a one-shot delayed
+/// trigger caused by a cost is ordered with the other triggers from that cost.
+pub(crate) fn collect_delayed_triggers_into_deferred(state: &mut GameState, events: &[GameEvent]) {
+    let (pending, consumed_events) =
+        collect_matching_delayed_triggers(state, events, DelayedTriggerEventScope::Any);
+    state.deferred_triggers.extend(pending);
+    state
+        .consumed_before_priority_trigger_events
+        .extend(consumed_events);
 }
 
 pub(crate) fn trigger_event_occurrence(events: &[GameEvent], event_index: usize) -> usize {
@@ -21153,6 +21173,20 @@ pub mod tests {
         let waterbend = WardCost::Waterbend(ManaCost::generic(4));
         let result = ward_cost_to_ability_cost(&waterbend);
         assert!(matches!(result, AbilityCost::Mana { cost } if cost == ManaCost::generic(4)));
+
+        // Get player counters (The Serpent Society: "Ward—Get five poison counters.")
+        let poison = WardCost::GetPlayerCounters {
+            counter_kind: crate::types::player::PlayerCounterKind::Poison,
+            count: 5,
+        };
+        let result = ward_cost_to_ability_cost(&poison);
+        assert!(matches!(
+            result,
+            AbilityCost::GetPlayerCounters {
+                counter_kind: crate::types::player::PlayerCounterKind::Poison,
+                count: 5,
+            }
+        ));
     }
 
     #[test]

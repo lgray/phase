@@ -129,6 +129,38 @@ fn initial_logical_zone_change_group_id() -> u64 {
     1
 }
 
+/// A durable product-knowledge disclosure. This is intentionally separate from
+/// rules-visible reveal state: it records who learned an exact card occurrence,
+/// not a continuing reveal effect or a targeting/trigger authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductKnowledgeFact {
+    viewer: PlayerId,
+    owner: PlayerId,
+    zone: Zone,
+    identity: ObjectIncarnationRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    library_epoch: Option<u64>,
+}
+
+/// Rarely-populated product knowledge is boxed so it does not increase the
+/// hot `GameState` stack footprint. Its fields remain flattened in snapshots
+/// for backwards-compatible wire names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ProductKnowledgeState {
+    #[serde(
+        default,
+        rename = "product_knowledge",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub(crate) facts: Vec<ProductKnowledgeFact>,
+    #[serde(
+        default,
+        rename = "library_knowledge_epochs",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub(crate) library_epochs: Vec<u64>,
+}
+
 /// Serde module for `HashMap<(ObjectId, usize), u32>` — JSON requires string keys,
 /// so we serialize the tuple as `"objectId_index"` (e.g. `"42_0"`).
 mod tuple_key_map {
@@ -6104,6 +6136,28 @@ pub enum PendingCostMoveResume {
         resolved: Box<ResolvedAbility>,
         ability_index: usize,
     },
+    /// CR 702.21a + CR 122.1 + CR 616.1: Ward's player-counter unless-cost
+    /// (`AbilityCost::GetPlayerCounters`) paused on a replacement choice for
+    /// the `AddCounter` event it attempted (e.g. an optional "you may
+    /// prevent a player from getting counters" replacement, or a CR 616.1
+    /// ordering choice among several applicable replacements). Retains the
+    /// full `WaitingFor::UnlessPayment` payload so the choice's resolution —
+    /// Applied (paid) via the `ReplacementDelivered` boundary, or Prevented
+    /// (failed) via the `ReplacementPrevented` boundary — can drive the same
+    /// paid/failed tail `handle_unless_payment` uses for every other cost
+    /// shape, instead of resetting to bare priority with the Ward-guarded
+    /// ability's fate undetermined.
+    GetPlayerCountersUnlessPayment {
+        #[serde(deserialize_with = "crate::types::ability::deserialize_ability_cost_compat")]
+        cost: AbilityCost,
+        pending_effect: Box<ResolvedAbility>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger_event: Option<GameEvent>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effect_description: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        remaining: Vec<PlayerId>,
+    },
 }
 
 /// CR 601.2h + CR 616.1: Resume paying a sequential cost after a replacement
@@ -6206,6 +6260,114 @@ impl PendingCast {
 }
 
 impl GameState {
+    /// Records durable product knowledge at the instant a viewer is shown card
+    /// identities. This deliberately does not mutate rules-visible reveal
+    /// markers or any current interaction state.
+    pub(crate) fn remember_card_identities(
+        &mut self,
+        viewers: impl IntoIterator<Item = PlayerId>,
+        cards: &[ObjectId],
+    ) {
+        let viewers: Vec<_> = viewers.into_iter().collect();
+        for &card_id in cards {
+            let Some((owner, zone, identity)) = self.objects.get(&card_id).map(|card| {
+                (
+                    card.owner,
+                    card.zone,
+                    ObjectIncarnationRef::from_object(card),
+                )
+            }) else {
+                continue;
+            };
+            let library_epoch =
+                (zone == Zone::Library).then(|| self.library_knowledge_epoch(owner));
+            let viewer_facts = viewers.iter().copied().map(|viewer| ProductKnowledgeFact {
+                viewer,
+                owner,
+                zone,
+                identity,
+                library_epoch,
+            });
+            for fact in viewer_facts {
+                if !self.product_knowledge_state.facts.contains(&fact) {
+                    self.product_knowledge_state.facts.push(fact);
+                }
+            }
+        }
+    }
+
+    /// Returns whether `viewer` learned this exact still-current card
+    /// occurrence. A library fact is valid only for the library generation in
+    /// which it was disclosed; other-zone facts are unaffected by library churn.
+    pub fn viewer_knows_card_identity(&self, viewer: PlayerId, card_id: ObjectId) -> bool {
+        let Some(card) = self.objects.get(&card_id) else {
+            return false;
+        };
+        self.product_knowledge_state.facts.iter().any(|fact| {
+            fact.viewer == viewer
+                && fact.owner == card.owner
+                && fact.zone == card.zone
+                && fact.identity == ObjectIncarnationRef::from_object(card)
+                && fact.library_epoch.is_none_or(|epoch| {
+                    card.zone == Zone::Library && epoch == self.library_knowledge_epoch(card.owner)
+                })
+        })
+    }
+
+    pub(crate) fn advance_library_knowledge_epoch(&mut self, owner: PlayerId) {
+        let index = owner.0 as usize;
+        if self.product_knowledge_state.library_epochs.len() <= index {
+            self.product_knowledge_state
+                .library_epochs
+                .resize(index + 1, 0);
+        }
+        self.product_knowledge_state.library_epochs[index] =
+            self.product_knowledge_state.library_epochs[index].wrapping_add(1);
+        // CR 701.20d: Reordering a library invalidates every disclosed library
+        // occurrence for that owner. Drop the now-unobservable facts immediately
+        // rather than retaining stale generations in authoritative state.
+        self.product_knowledge_state
+            .facts
+            .retain(|fact| !(fact.owner == owner && fact.zone == Zone::Library));
+        self.canonicalize_library_knowledge_epoch(owner);
+    }
+
+    fn library_knowledge_epoch(&self, owner: PlayerId) -> u64 {
+        self.product_knowledge_state
+            .library_epochs
+            .get(owner.0 as usize)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Removes an epoch once no current library fact relies on it, keeping
+    /// equivalent product-knowledge states equal and serialized identically.
+    fn canonicalize_library_knowledge_epoch(&mut self, owner: PlayerId) {
+        let current_epoch = self.library_knowledge_epoch(owner);
+        let has_live_library_fact = self.product_knowledge_state.facts.iter().any(|fact| {
+            fact.owner == owner
+                && fact.zone == Zone::Library
+                && fact.library_epoch == Some(current_epoch)
+        });
+        if !has_live_library_fact {
+            if let Some(epoch) = self
+                .product_knowledge_state
+                .library_epochs
+                .get_mut(owner.0 as usize)
+            {
+                *epoch = 0;
+            }
+        }
+        while self
+            .product_knowledge_state
+            .library_epochs
+            .last()
+            .is_some_and(|epoch| *epoch == 0)
+        {
+            self.product_knowledge_state.library_epochs.pop();
+        }
+    }
+
     /// Temporarily removes the activation-local trigger transaction from the
     /// pending cast that currently owns it.
     ///
@@ -14928,10 +15090,17 @@ declare_game_state! {
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_set")]
     pub revealed_cards: HashSet<ObjectId>,
     /// Cards that have been publicly revealed at least once. Unlike
-    /// `revealed_cards`, this is not cleared at the next action boundary.
+    /// `revealed_cards`, this is not cleared at the next action boundary. This
+    /// sparse, long-lived disclosure set is boxed to preserve the `GameState`
+    /// stack budget.
     #[serde(default)]
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_set")]
-    pub public_revealed_cards: HashSet<ObjectId>,
+    pub public_revealed_cards: Box<HashSet<ObjectId>>,
+    /// Durable card identities learned by a particular audience. Product
+    /// knowledge affects only viewer projection and AI determinization; it is
+    /// never consulted by rules execution, legality, or prompts.
+    #[serde(flatten)]
+    pub(crate) product_knowledge_state: Box<ProductKnowledgeState>,
 
     /// Typed suspended-resolution authority. Families move here one at a
     /// time; an empty stack is omitted from raw live-state snapshots until the
@@ -18560,11 +18729,18 @@ impl GameState {
         &mut self,
         occurrence: ObjectIncarnationRef,
     ) {
-        let controller = self
+        let (controller, owner) = self
             .objects
             .get(&occurrence.object_id)
-            .map(|object| object.controller)
+            .map(|object| (object.controller, object.owner))
             .expect("zone-exit reveal clear must reference a live object");
+        // Product knowledge is exact-occurrence scoped too. Unlike the
+        // rules-visible reveal sets below, this removes every entitled viewer's
+        // fact, never just the object's current controller.
+        self.product_knowledge_state
+            .facts
+            .retain(|fact| fact.identity != occurrence);
+        self.canonicalize_library_knowledge_epoch(owner);
         for (audience, lifetime) in [
             (
                 ResolvedInformationAudience::Controller(controller),
@@ -19279,7 +19455,8 @@ impl GameState {
             modal_modes_chosen_this_turn: HashSet::new(),
             modal_modes_chosen_this_game: HashSet::new(),
             revealed_cards: HashSet::new(),
-            public_revealed_cards: HashSet::new(),
+            public_revealed_cards: Box::default(),
+            product_knowledge_state: Box::default(),
             resolution_stack: Box::default(),
             resolving_continuation_attach_host: None,
             merged_card_component_route: None,
@@ -20982,6 +21159,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         modal_modes_chosen_this_game: _,
         revealed_cards: _,
         public_revealed_cards: _,
+        product_knowledge_state: _,
         resolution_stack: _,
         resolving_continuation_attach_host: _,
         merged_card_component_route: _,
@@ -21281,6 +21459,7 @@ impl PartialEq for GameState {
             && self.modal_modes_chosen_this_game == other.modal_modes_chosen_this_game
             && self.revealed_cards == other.revealed_cards
             && self.public_revealed_cards == other.public_revealed_cards
+            && self.product_knowledge_state == other.product_knowledge_state
             && self.resolution_stack.game_state_eq(&other.resolution_stack)
             && self.pending_resolution_completion == other.pending_resolution_completion
             // CR 104.4b: volatile resolution-scoped flip result. A flip already

@@ -1099,6 +1099,14 @@
       "returnToHand_one": "restituisci un permanente alla mano",
       "returnToHand_other": "restituisci {{count}} permanenti alla mano",
       "energy": "{{amount}} energia",
+      "playerCounters_one": "ottieni {{count}} segnalino {{kind}}",
+      "playerCounters_other": "ottieni {{count}} segnalini {{kind}}",
+      "playerCounterKind": {
+        "Poison": "veleno",
+        "Experience": "esperienza",
+        "Rad": "radiazione",
+        "Ticket": "ticket"
+      },
       "generic": "un costo",
       "pay": "Paga {{cost}}"
     },

@@ -1099,6 +1099,14 @@
       "returnToHand_one": "renvoyer un permanent en main",
       "returnToHand_other": "renvoyer {{count}} permanents en main",
       "energy": "{{amount}} énergie",
+      "playerCounters_one": "obtenir {{count}} marqueur {{kind}}",
+      "playerCounters_other": "obtenir {{count}} marqueurs {{kind}}",
+      "playerCounterKind": {
+        "Poison": "poison",
+        "Experience": "expérience",
+        "Rad": "rad",
+        "Ticket": "ticket"
+      },
       "generic": "un coût",
       "pay": "Payer {{cost}}"
     },

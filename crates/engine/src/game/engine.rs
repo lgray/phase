@@ -5583,6 +5583,15 @@ fn remember_public_reveals(state: &mut GameState, events: &[GameEvent], journal_
                     ResolvedInformationEdit::Reveal,
                 )
                 .expect("published reveal occurrences must be live and distinct");
+            // A public reveal is durable product knowledge for every player.
+            // Keep this centralized at the event boundary so individual effect
+            // resolvers cannot publish duplicate or divergent facts.
+            let audience = state
+                .players
+                .iter()
+                .map(|player| player.id)
+                .collect::<Vec<_>>();
+            state.remember_card_identities(audience, &unpublished);
         }
     }
 }
@@ -5732,12 +5741,15 @@ pub(crate) fn drain_pending_cost_move_resume(
                     | PendingCostMoveResume::ManaAbilityPayment { .. }
                     | PendingCostMoveResume::ActivationMillPayment { .. }
                     | PendingCostMoveResume::LoyaltyActivation { .. }
+                    | PendingCostMoveResume::GetPlayerCountersUnlessPayment { .. }
             )
         ),
         // CR 606.4 + CR 616.1: a fully-prevented loyalty counter add (e.g. an
         // opponent's Solemnity would prevent the counters) must still complete the
         // parked activation instead of wedging, so `LoyaltyActivation` is eligible
-        // at the Prevented boundary as well.
+        // at the Prevented boundary as well. `GetPlayerCountersUnlessPayment` is
+        // eligible here too: a prevented Ward player-counter payment is a FAILED
+        // cost (CR 702.21a) that must counter the guarded ability, not wedge.
         CostMoveDrainBoundary::ReplacementPrevented { .. } => matches!(
             state.pending_cost_move_resume,
             Some(
@@ -5752,6 +5764,7 @@ pub(crate) fn drain_pending_cost_move_resume(
                     | PendingCostMoveResume::ManaAbilityPayment { .. }
                     | PendingCostMoveResume::ActivationMillPayment { .. }
                     | PendingCostMoveResume::LoyaltyActivation { .. }
+                    | PendingCostMoveResume::GetPlayerCountersUnlessPayment { .. }
             )
         ),
         CostMoveDrainBoundary::PriorityBoundary => matches!(
@@ -5823,6 +5836,15 @@ pub(crate) fn drain_pending_cost_move_resume(
         Some(PendingCostMoveResume::LoyaltyActivation { .. })
     ) {
         super::planeswalker::resume_loyalty_activation(state, events)?
+    } else if matches!(
+        state.pending_cost_move_resume,
+        Some(PendingCostMoveResume::GetPlayerCountersUnlessPayment { .. })
+    ) {
+        engine_payment_choices::resume_get_player_counters_unless_payment(
+            state,
+            events,
+            matches!(boundary, CostMoveDrainBoundary::ReplacementDelivered { .. }),
+        )?
     } else {
         unreachable!("eligible cost-move root must remain parked")
     };
@@ -6778,6 +6800,21 @@ fn apply_action(
     ) {
         state.private_look_ids.clear();
         state.private_look_player = None;
+    }
+
+    // A ScryChoice has already disclosed its cards to the deciding player. The
+    // choice response is the first reducer boundary at which that private view
+    // can become durable product knowledge; this never changes the prompt or
+    // rules-visible Scry state.
+    if matches!(&action, GameAction::SelectCards { .. }) {
+        if let WaitingFor::ScryChoice { player, cards } = &state.waiting_for {
+            let player = *player;
+            let cards = cards.clone();
+            state.remember_card_identities(
+                turn_control::decision_audience_for_player(state, player),
+                &cards,
+            );
+        }
     }
 
     let mut events = Vec::new();
@@ -15971,7 +16008,32 @@ mod stage2_injector_tests {
                 // and `game/effects/scoped_library_search.rs`, neither of which this change touches,
                 // and the inserted expression adds no line matching the needle — total still 37,
                 // partition still 5/7/25.
-                "game/engine.rs:11837".to_string(),
+                //
+                // The Ward continuation port independently inserts +13 lines above the same
+                // producer, while this branch's durable-knowledge hooks add another 24, so the
+                // combined tree is `:11828 - 7 + 13 + 24 = :11858`.
+                //
+                // MERGE OF `upstream/main` 117b430c2 INTO THIS BRANCH: `:11837` / `:11858` => `:11874`.
+                // This is the case the COLLISION NOTE above was written for, and it arrived as a real
+                // conflict rather than a silent auto-merge. BOTH incoming numbers were stale, each
+                // correct only for its own side: this branch's `:11837` counts the search-observer `-7`,
+                // the axis-scoped `-7` and the CR 500.5 `+23`, but not upstream's insertions; upstream's
+                // `:11858` counts the Ward continuation `+13` and the durable-knowledge hooks `+24`, but
+                // not this branch's. The shifts are INDEPENDENT and COMPOSE, so accepting either side
+                // verbatim would have been wrong by `37` or `16` respectively.
+                //
+                // Resolved BY CONTENT FIRST, arithmetic afterwards as a CHECK, per the doctrine at the
+                // head of this log. The line whose sha256 (WITH trailing newline) is
+                // `8a544e878d3e77fb80391b95af8f74059540d5ce4ad6fb83559f364df5cc7d63` sits at `:11874`
+                // in the merged tree; that digest matches exactly ONE line under a whole-file scan, and
+                // the literal text is likewise unique, so the coordinate is unambiguous. The check:
+                // `11828 -7 (search-observer) -7 (axis-scoped) +23 (CR 500.5) +13 (Ward) +24 (durable
+                // knowledge) = 11874`, which equals the located coordinate exactly. The conflict markers
+                // sat BELOW the producer, so resolving them could not have shifted it.
+                //
+                // SET PRESERVATION: unchanged. Upstream adds no line matching the needle to this file and
+                // neither does this branch — total still 37, partition still 5/7/25.
+                "game/engine.rs:11874".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \

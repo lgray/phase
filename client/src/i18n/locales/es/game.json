@@ -1099,6 +1099,14 @@
       "returnToHand_one": "devuelve un permanente a la mano",
       "returnToHand_other": "devuelve {{count}} permanentes a la mano",
       "energy": "{{amount}} de energía",
+      "playerCounters_one": "consigue {{count}} contador de {{kind}}",
+      "playerCounters_other": "consigue {{count}} contadores de {{kind}}",
+      "playerCounterKind": {
+        "Poison": "veneno",
+        "Experience": "experiencia",
+        "Rad": "rad",
+        "Ticket": "ticket"
+      },
       "generic": "un coste",
       "pay": "Pagar {{cost}}"
     },
