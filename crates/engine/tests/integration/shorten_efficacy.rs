@@ -1510,10 +1510,12 @@ fn give_sol_ring(state: &mut GameState, player: PlayerId) -> ObjectId {
 /// is exactly what the priority window buys, and CR 601.2g / CR 117.1d are the
 /// rules that make the mana available to pay a cost the moment it is produced.
 ///
-/// The row does NOT assert the post-resolution board: reaching it would require
-/// driving the Ritual through the stack, and the row's discriminating power does
-/// not depend on it. The arithmetic is carried by the verbatim texts — the
-/// Ritual adds `{B}{B}{B}`, the Bolt is printed at `{B}{B}{B}`.
+/// BOTH halves of "otherwise-unaffordable" are measured, as in `v10b`. The
+/// negative half is assertion 1 above, in both arms. The positive half is the
+/// QUARANTINED funding lemma at the end of the row: the Ritual is driven through
+/// the stack on the `apply()` boundary and the SAME Bolt is re-probed, so the
+/// arithmetic (`{B}{B}{B}` added against `{B}{B}{B}` printed) is read off the
+/// engine's castability gate rather than off the verbatim texts.
 ///
 /// MUTANT: restoring `Effect::Mana {..} => WindowReach::OwnResourcesOnly` as
 /// `effect_window_reach`'s first arm flips the SHORTEN arm to `Accept`. Under it
@@ -1578,6 +1580,18 @@ fn v10a_a_cast_mana_spell_that_funds_an_unaffordable_answer_keeps_its_window() {
         non_pass_actions(&shorten_arm, P2)
     );
 
+    let shorten_non_pass = non_pass_actions(&shorten_arm, P2);
+    assert_eq!(
+        shorten_non_pass.len(),
+        2,
+        "ATTRIBUTION + THRESHOLD SENTINEL, mirroring `v10b`'s: the SHORTEN arm must be the \
+         ACCEPT arm's single fetchland PLUS the Ritual cast, and nothing else. The Ritual sits \
+         in `Zone::Hand`, which the battlefield-scoped `feasible_mana_capacity` cannot see, so \
+         it unlocks no third action — but that is DERIVED, and a fixture or capacity change \
+         that added one `MayInterfere` action here would over-determine this row silently \
+         instead of reddening. MEASURED at 2 on the committed fixture; got {shorten_non_pass:?}"
+    );
+
     let accept_non_pass = non_pass_actions(&accept_arm, P2);
     assert_eq!(
         accept_non_pass.len(),
@@ -1604,6 +1618,54 @@ fn v10a_a_cast_mana_spell_that_funds_an_unaffordable_answer_keeps_its_window() {
         ShortcutResponse::Shorten { at_iteration: 0 },
         "the pair's positive arm: producing mana is REACH (CR 106.1 / CR 106.4 / CR 601.2g). \
          The ritual is the one object that differs, and accepting here surrenders a live out"
+    );
+
+    // ── FUNDING LEMMA (CR 117.1d + CR 601.2g), deliberately QUARANTINED ──
+    //
+    // The negative half is already asserted above: the `{B}{B}{B}` Bolt is NOT
+    // castable in EITHER arm at poll time. This is the positive half — the half
+    // this row's title claims ("funds an unaffordable answer") — measured on the
+    // production instrument rather than left to the verbatim texts' arithmetic.
+    //
+    // QUARANTINE, mirroring `v10b`'s lemma: this clone NEVER reaches
+    // `smart_shortcut_response`. Both verdicts above are already taken; resolving
+    // the Ritual inside an arm would change the very action set they were taken
+    // on, and the funded board additionally unlocks the Angel's `{2}` cycling
+    // (`give_lotus_petal`'s capacity note), which carries `MayInterfere` on a
+    // route this pair does not model.
+    let (probe, probe_list) = engine::ai_support::shortcut_probe(&shorten_arm, P2);
+    let cast_ritual = probe_list
+        .iter()
+        .find(|a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == ritual))
+        .cloned()
+        .expect("the funder is castable — the reach-guard above asserts exactly this");
+    let mut funded = probe.state().clone();
+    apply(&mut funded, P2, cast_ritual).expect("the funder casts at P2's own probe priority");
+    // Pass beats until the Ritual leaves the stack: it is on top, so the first
+    // full pass round resolves it (MEASURED: 4 beats on this 4p board).
+    for _ in 0..40 {
+        if !funded.stack.iter().any(|entry| entry.id == ritual) {
+            break;
+        }
+        dump_drive_one_beat(&mut funded).expect("passing priority resolves the top of the stack");
+    }
+    assert_eq!(
+        funded.objects.get(&ritual).map(|o| o.zone),
+        Some(Zone::Graveyard),
+        "reach-guard: the Ritual must have RESOLVED, not merely been cast — CR 608.2n puts a \
+         resolved instant into its owner's graveyard, so this is the observable that separates \
+         'it resolved' from 'the drive capped out' and would otherwise red the funding \
+         assertion below for the wrong reason"
+    );
+    assert!(
+        probe_actions(&funded, P2)
+            .iter()
+            .any(|a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == bolt)),
+        "FUNDING: with the Ritual resolved, the engine's own castability gate says the SAME \
+         `{{B}}{{B}}{{B}}` Bolt that is unaffordable in BOTH arms above IS payable. That is the \
+         two-step the priority window buys (CR 117.1d / CR 601.2g), measured rather than \
+         inferred from the printed texts; got {:?}",
+        non_pass_actions(&funded, P2)
     );
 }
 
@@ -1773,6 +1835,24 @@ fn v10b_an_actor_owned_sacrifice_for_mana_seat_keeps_its_window() {
     let mut ordinary = polled.clone();
     let sol_ring = give_sol_ring(&mut ordinary, P2);
     let (ordinary_probe, ordinary_flat) = engine::ai_support::shortcut_probe(&ordinary, P2);
+    // REACH-GUARD — the assertion the two negatives below rest on. `stage_two_action_set`
+    // filters `activatable_object_mana_actions`, and on a probe state parked at
+    // `Priority { player }` that IS
+    // `mana_sources::activatable_mana_actions_for_player(state, player)` — the same call,
+    // routed through `mana_action_player`'s `Priority` arm. Asserting the Sol Ring is IN
+    // that sweep is what makes "absent from the stage-2 set" attributable to the penalty
+    // filter; without it, the two negatives below cannot tell `ManaSourcePenalty::None`
+    // apart from "this object was never swept as a mana source at all".
+    assert!(
+        engine::game::mana_sources::activatable_mana_actions_for_player(ordinary_probe.state(), P2)
+            .contains(&GameAction::ActivateAbility {
+                source_id: sol_ring,
+                ability_index: 0,
+            }),
+        "REACH-GUARD: the Sol Ring must reach the sweep stage 2 filters, or the negatives \
+         below pass because nothing was ever there to re-admit — which is not the \
+         `None`-vs-`Sacrifices` penalty distinction this control claims to measure"
+    );
     assert!(
         !ordinary_flat.iter().any(
             |a| matches!(a, GameAction::ActivateAbility { source_id, .. } if *source_id == sol_ring)
@@ -1789,10 +1869,21 @@ fn v10b_an_actor_owned_sacrifice_for_mana_seat_keeps_its_window() {
     // NO verdict assertion here, deliberately. Sol Ring contributes 2 to
     // `feasible_mana_capacity`, which is enough to pay Angel of the Ruins'
     // hand-zone plainscycling already sitting in P2's hand on this fixture. That
-    // activation enters the FLAT list and is `MayInterfere` on two independent
-    // legs (`AbilityCost::Discard` is not allowlisted; its `sub_ability` moves a
-    // card to a HAND, which the anaphoric fetch disjunct does not cover), so
-    // this seat answers Shorten — through candidate affordability, a route this
-    // control does not model and claims nothing about. Asserting Accept here
-    // would assert a false fact about the board.
+    // activation enters the FLAT list — MEASURED, because the withheld verdict
+    // rests on it and a stale fixture could silently make it false:
+    let ordinary_non_pass = non_pass_actions(&ordinary, P2);
+    assert!(
+        ordinary_non_pass
+            .iter()
+            .any(|a| a.contains("Angel of the Ruins")),
+        "the Sol Ring's 2 mana must unlock the Angel's {{2}} plainscycling — this is the fact \
+         that makes withholding a verdict assertion correct rather than evasive; got \
+         {ordinary_non_pass:?}"
+    );
+    // It is `MayInterfere` on two independent legs (`AbilityCost::Discard` is not
+    // allowlisted; its `sub_ability` moves a card to a HAND, which the anaphoric
+    // fetch disjunct does not cover), so this seat answers Shorten — through
+    // candidate affordability, a route this control does not model and claims
+    // nothing about. Asserting Accept here would assert a false fact about the
+    // board.
 }
