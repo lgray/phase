@@ -876,6 +876,7 @@ mod self_destruct_target_power;
 mod sensei_golden_tail_5950;
 mod sentinel_sliver_vigilance_grant;
 mod serras_emissary_chosen_card_type_protection;
+mod shorten_efficacy;
 mod sin_spiras_punishment_repeat;
 mod skullwinder_chosen_opponent;
 mod slaughter_the_strong_total_power_4380;
