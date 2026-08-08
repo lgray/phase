@@ -617,7 +617,8 @@ fn plus_one_counter_growth_registers_a_target_the_bearer_does_not_yet_carry() {
     );
 }
 
-/// CROSS-SEAT DEDUPE — one `(object, counter)` pair registered by TWO seats projects ONE row.
+/// CROSS-SEAT DEDUPE — one `(object, counter)` pair registered by TWO seats projects ONE row,
+/// and a DISTINCT pair on the same object survives that collapse.
 ///
 /// THE DEFECT THIS PINS. `GameState::unbounded_counter_targets` is
 /// `BTreeMap<PlayerId, BTreeSet<(ObjectId, CounterType)>>`: the `BTreeSet` dedupes WITHIN a seat
@@ -639,8 +640,17 @@ fn plus_one_counter_growth_registers_a_target_the_bearer_does_not_yet_carry() {
 /// concurrent loop accepts would exercise the offer machinery, not this projection. The
 /// registrations below therefore go through that same production write authority; only the
 /// scheduling around them is harness-built.
+///
+/// THE NEGATIVE CONTROL IS IN THIS FIXTURE, NOT A SIBLING. A dedupe is only half-tested by a
+/// state where every seat holds the SAME pair: that pins "collapses enough" while leaving
+/// "collapses too much" free, so narrowing the set key to `ObjectId` alone would red nothing.
+/// One seat here therefore also holds a DISTINCT pair on the SAME object, which must survive
+/// alongside the collapsed one. Both directions are live against one state: dropping the dedupe
+/// yields three rows, narrowing the key to the object yields one, and the assertion below names
+/// exactly two. It also pins the merged multi-seat ORDERING — rows arrive sorted by
+/// `(ObjectId, CounterType)`, which nothing else asserts beyond a single seat.
 #[test]
-fn one_pair_registered_by_two_seats_projects_a_single_row() {
+fn two_seats_collapse_the_shared_pair_and_keep_the_distinct_one() {
     use engine::game::derived_views::derive_views;
     use engine::game::zones::create_object;
     use engine::types::identifiers::CardId;
@@ -656,22 +666,29 @@ fn one_pair_registered_by_two_seats_projects_a_single_row() {
         "Shared Bearer".to_string(),
         Zone::Battlefield,
     );
-    // NONZERO on purpose: it makes the surviving row's `count` a discriminating value, so a
-    // "dedupe" that dropped both rows and re-invented one from thin air cannot pass.
-    state
+    // NONZERO and DISTINCT on purpose: the counts make each surviving row discriminating, so a
+    // "dedupe" that dropped rows and re-invented one from thin air cannot pass, and a collapse
+    // that kept the wrong one of the two pairs cannot pass either.
+    let charge = CounterType::Generic("charge".to_string());
+    let bearer_counters = &mut state
         .objects
         .get_mut(&bearer)
         .expect("the bearer is on the board")
-        .counters
-        .insert(CounterType::Plus1Plus1, 3);
+        .counters;
+    bearer_counters.insert(CounterType::Plus1Plus1, 3);
+    bearer_counters.insert(charge.clone(), 7);
 
-    // Both seats register the SAME pair, through the store's real single write authority.
+    // Both seats register the SAME pair, through the store's real single write authority; one of
+    // them also registers a DISTINCT pair on the SAME object (the over-collapse control).
     state.register_unbounded_counter_targets(P0, vec![(bearer, CounterType::Plus1Plus1)]);
-    state.register_unbounded_counter_targets(P1, vec![(bearer, CounterType::Plus1Plus1)]);
+    state.register_unbounded_counter_targets(
+        P1,
+        vec![(bearer, CounterType::Plus1Plus1), (bearer, charge.clone())],
+    );
 
     // REACH-GUARD (the positive control). Without this, a registration that silently dropped the
-    // second seat would make the single-row assertion below pass vacuously — it would be asserting
-    // that one row came from one entry, which was never in doubt.
+    // second seat would make the collapse assertion below pass vacuously — the shared pair would
+    // be projecting one row from one entry, which was never in doubt.
     let seats: Vec<PlayerId> = state
         .unbounded_counter_targets
         .iter()
@@ -683,17 +700,34 @@ fn one_pair_registered_by_two_seats_projects_a_single_row() {
         vec![P0, P1],
         "reach-guard: BOTH seats must really hold the pair, or the dedupe below is untested"
     );
+    // REACH-GUARD (the over-collapse control's own positive control). If the distinct pair never
+    // landed in the store, "it survives the collapse" below would be asserting nothing.
+    assert!(
+        state.unbounded_counter_targets[&P1].contains(&(bearer, charge.clone())),
+        "reach-guard: the distinct pair must really be stored, or the over-collapse control is \
+         vacuous"
+    );
 
-    // THE ASSERTION. Exactly one row — not two identical ones sharing a React key.
+    // THE ASSERTION. Exactly two rows: the shared pair collapsed to ONE (not two identical rows
+    // sharing a React key), the distinct pair NOT collapsed away with it, both sorted by
+    // `(ObjectId, CounterType)` — `Plus1Plus1` is declared before `Generic`, so it comes first.
     let views = derive_views(&state, None);
     assert_eq!(
         views.unbounded_counters.get(&bearer),
-        Some(&vec![UnboundedCounterView {
-            counter: CounterType::Plus1Plus1,
-            count: 3,
-        }]),
-        "one (object, counter) pair held by two seats must project ONE row carrying the live \
-         count; duplicates collide on the counter-type React key at every render site. Got {:?}",
+        Some(&vec![
+            UnboundedCounterView {
+                counter: CounterType::Plus1Plus1,
+                count: 3,
+            },
+            UnboundedCounterView {
+                counter: charge.clone(),
+                count: 7,
+            },
+        ]),
+        "the (object, counter) pair held by two seats must project ONE row carrying the live \
+         count (duplicates collide on the counter-type React key at every render site), while a \
+         DISTINCT pair on the same object must survive that collapse in `(ObjectId, CounterType)` \
+         order. Got {:?}",
         views.unbounded_counters
     );
 }

@@ -390,9 +390,9 @@ pub struct UnboundedFamilyView {
 /// forbids (see [`UnboundedFamilyView`]): it may leave an `∞` standing one boundary too long,
 /// never hide a real one.
 ///
-/// DISPLAY-only — never written back to `GameState`. Carries data only; `isUnbounded` stays a
-/// render-time distinction and never becomes an engine-published boolean, per this file's
-/// NO-SURFACE-IS-FILTERED invariant ("no row carries a flag").
+/// DISPLAY-only — never written back to `GameState`. Carries data only: the row's PRESENCE in
+/// this channel is the entire unboundedness claim, so `isUnbounded` stays a render-time
+/// distinction and never becomes an engine-published boolean field on the row.
 ///
 /// Derive list matches its siblings [`UnboundedResourceView`] / [`UnboundedFamilyView`] exactly.
 /// `Eq` is not optional: [`DerivedViews`] itself derives `Eq`.
@@ -667,7 +667,7 @@ pub struct DerivedViews {
     pub unbounded_pile: Vec<ObjectId>,
 
     /// CR 732.2a / CR 701.34a: the per-object `∞` COUNTER channel — for each
-    /// battlefield object, one ROW per PRESERVED BENEFICIAL counter that an accepted
+    /// battlefield object, one ROW per BENEFICIAL-MATERIALIZABLE counter that an accepted
     /// counter-growth loop (proliferate charge on Pentad Prism, burden on
     /// The One Ring, a +1/+1 or loyalty pump loop) pumps unboundedly (projected from
     /// `GameState::unbounded_counter_targets`, filtered to objects still on the
@@ -1371,7 +1371,7 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     }
 
     // CR 732.2a / CR 701.34a: project the accepted counter-growth loop's per-object ∞
-    // counter targets — the objects whose PRESERVED BENEFICIAL counters (charge / burden /
+    // counter targets — the objects whose BENEFICIAL-MATERIALIZABLE counters (charge / burden /
     // +1/+1 / loyalty / defense, per `analysis::resource::counter_is_beneficial_materializable`)
     // the certified-unbounded loop pumps each cycle — dropping any that have since left
     // the battlefield (stale member). Display-only per-object channel mirroring
@@ -1410,9 +1410,8 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
         // carries none. Publishing only the type left such a pair unrenderable. Dropping it
         // instead would trade a display over-KEEP for an over-DROP, which this subsystem's
         // stated polarity forbids. Row existence is decided by the ∞ stores and live
-        // battlefield membership — never by `objects[..].counters`; see the
-        // NO-SURFACE-IS-FILTERED invariant (stated in this file and mirrored above
-        // `GameState::scheduled_collapse_axes`).
+        // battlefield membership — never by `objects[..].counters`, which supplies only the
+        // count once the row's existence is already settled.
         let count = state
             .objects
             .get(id)
