@@ -83,7 +83,8 @@
 //! resources — would be structurally invisible.
 
 use crate::types::ability::{
-    AbilityCost, AbilityDefinition, ControllerRef, Effect, FilterProp, PlayerFilter, TargetFilter,
+    AbilityCost, AbilityDefinition, ControllerRef, Effect, FilterProp, PlayerFilter,
+    SearchDestinationSplit, TargetFilter,
 };
 use crate::types::actions::GameAction;
 use crate::types::game_state::GameState;
@@ -169,6 +170,41 @@ fn filter_is_actor_owned(filter: &TargetFilter) -> bool {
     }
 }
 
+/// Is a landing zone confined — i.e. can the seat NOT act on what arrives there,
+/// inside the window the Shorten hands back?
+///
+/// This is the single authority for that question, and it exists because the two
+/// doors out of a library drifted apart exactly once: the `ChangeZone` arm gated
+/// `Zone::Hand` while the `SearchLibrary` split arm gated only `Zone::Battlefield`,
+/// so a `SearchDestinationSplit` routing cards to hand stayed classified confined.
+/// MEASURED at that point: all twelve split carriers in `card-data.json` route
+/// something to hand — nine via `rest_destination` (the Cultivate class: land to
+/// the battlefield tapped, the REST to hand) and three via `primary_destination`
+/// (Final Parting, Fork in the Road, Jarad's Orders). Two call sites answering one
+/// question is how that happens, so there is now one function and no second answer.
+///
+/// * `Zone::Battlefield` — CR 110.5b: permanents enter untapped unless something
+///   says otherwise, and an untapped permanent taps for mana during the very cast
+///   it funds (CR 601.2g). Only a PROVABLY tapped arrival is confined.
+/// * `Zone::Hand` — a card in hand is a castable card. After the spell that put it
+///   there resolves the active player receives priority (CR 117.3b) and priority
+///   then passes in turn order (CR 117.3d), so the responding seat gets it back
+///   still inside this window. The AST carries nothing that could prove the card
+///   uncastable.
+/// * Everything else — graveyard, library, exile, command — puts the card where the
+///   actor needs some FURTHER permission to use it, and that permission would itself
+///   be an ability this fold already reads.
+///
+/// Callers still apply their own extra conjuncts (the battlefield riders on
+/// `ChangeZone`); this answers the destination question only.
+fn landing_zone_is_confined(destination: Zone, tapped: EtbTapState) -> bool {
+    match destination {
+        Zone::Battlefield => matches!(tapped, EtbTapState::Tapped),
+        Zone::Hand => false,
+        _ => true,
+    }
+}
+
 /// Reach of one effect node. Three allowlisted shapes; everything else is
 /// interference by default (see the module doc, §2).
 fn effect_window_reach(effect: &Effect) -> WindowReach {
@@ -217,11 +253,26 @@ fn effect_window_reach(effect: &Effect) -> WindowReach {
             selection_constraint: _,
             split,
         } => {
-            let split_entry_is_confined = split.as_ref().is_none_or(|split| {
-                (split.primary_destination != Zone::Battlefield
-                    || matches!(split.primary_enter_tapped, EtbTapState::Tapped))
-                    && split.rest_destination != Zone::Battlefield
-            });
+            // Destructured `..`-free for the same reason `Effect::ChangeZone` is: a
+            // new field on `SearchDestinationSplit` (a `rest_enter_tapped`, say) must
+            // be a COMPILE ERROR here rather than a silently ignored arrival modifier.
+            // Reading the split by `.field` is exactly how the `Hand` hole survived.
+            let split_entry_is_confined = split.as_ref().is_none_or(
+                |SearchDestinationSplit {
+                     primary_destination,
+                     primary_count: _,
+                     primary_enter_tapped,
+                     rest_destination,
+                 }| {
+                    // Both destinations go through the SAME authority as the
+                    // `ChangeZone` arm. `rest_destination` carries no tap state at
+                    // all, so it is asked with `Unspecified` and can never be proven
+                    // tapped — a battlefield `rest_destination` is reach by
+                    // construction, and a hand one is reach because hand always is.
+                    landing_zone_is_confined(*primary_destination, *primary_enter_tapped)
+                        && landing_zone_is_confined(*rest_destination, EtbTapState::Unspecified)
+                },
+            );
             WindowReach::of(target_player.is_none() && split_entry_is_confined)
         }
 
@@ -262,12 +313,39 @@ fn effect_window_reach(effect: &Effect) -> WindowReach {
         // tapped from the AST and is therefore reach, which is the direction
         // this module's §2 default exists to take.
         //
-        // The gate is keyed on `destination` because tap state is meaningless
-        // anywhere else: a move to a hand, graveyard, library or exile is
-        // unaffected. It applies to BOTH disjuncts, not just the anaphoric one —
-        // proven ownership does not stop an untapped land from producing mana,
-        // so a graveyard-recursion shape reaching the battlefield untapped is
-        // the same defect through the other door.
+        // TWO destinations are gated, for the same reason and by different
+        // evidence. The question this module asks is never "is the moved card
+        // the actor's own?" — the deleted `Effect::Mana` arm is what happens when
+        // ownership is mistaken for confinement. It is "can the seat DO something
+        // with the result inside the window the Shorten hands back?"
+        //
+        // * `Battlefield` — an untapped permanent taps for mana during the very
+        //   cast it funds (CR 601.2g), so only a PROVABLY tapped arrival is
+        //   confined. This applies to BOTH disjuncts, not just the anaphoric one:
+        //   proven ownership does not stop an untapped land producing mana, so a
+        //   graveyard-recursion shape reaching the battlefield untapped is the
+        //   same defect through the other door.
+        // * `Hand` — a card put into hand is a CASTABLE card. When the spell that
+        //   put it there finishes resolving, the active player receives priority
+        //   (CR 117.3b) and priority then passes in turn order (CR 117.3d), so the
+        //   responding seat gets it back still inside this window and can cast it.
+        //   That is the `Effect::Mana` argument with one extra step, exactly as the
+        //   untapped fetch was, and the AST carries nothing that could prove the
+        //   returned card uncastable. MEASURED with the hand gate held off, 327
+        //   abilities are confined and 176 of them move a card to hand — 166
+        //   through this arm and 10 through the `SearchLibrary` split, which is
+        //   why both doors now share `landing_zone_is_confined`. The witnesses are
+        //   instant-speed: `Auroral Procession` returns ANY graveyard card,
+        //   including an instant. Gating both doors leaves 151 confined abilities,
+        //   102 of which reach the battlefield, so the flagship tapped-fetch
+        //   Accept is untouched: this closes a door, it does not vacate the
+        //   feature.
+        //
+        // No other destination is gated, and that is a claim about what the seat
+        // can act with, not an oversight: a move to graveyard, library or exile
+        // puts the card somewhere the actor cannot cast or activate it from
+        // inside this window without some FURTHER permission, which would itself
+        // be an ability this fold already reads.
         //
         // PROVABLY tapped, not NOMINALLY tapped. Three more of this variant's
         // fields decide what actually arrives, and each one is read here rather
@@ -307,11 +385,11 @@ fn effect_window_reach(effect: &Effect) -> WindowReach {
                 || (matches!(target, TargetFilter::Any)
                     && *origin == Some(Zone::Library)
                     && *destination == Zone::Battlefield);
-            let entry_is_confined = *destination != Zone::Battlefield
-                || (matches!(enter_tapped, EtbTapState::Tapped)
-                    && enters_modified_if.is_none()
-                    && !*enters_attacking
-                    && matches!(enters_under, None | Some(ControllerRef::You)));
+            let entry_is_confined = landing_zone_is_confined(*destination, *enter_tapped)
+                && (*destination != Zone::Battlefield
+                    || (enters_modified_if.is_none()
+                        && !*enters_attacking
+                        && matches!(enters_under, None | Some(ControllerRef::You))));
             WindowReach::of(object_is_confined && entry_is_confined)
         }
 
@@ -482,11 +560,45 @@ fn ability_window_reach(def: &AbilityDefinition) -> WindowReach {
 /// Fold every ability an object carries. A missing object, or one carrying no
 /// abilities at all, is `MayInterfere` — the fail-closed direction, and the one
 /// that keeps an empty fold from being proven confined by its identity element.
+///
+/// `abilities` is NOT the whole of an object's rules content. `game::printed_cards`
+/// splits a card face across four collections — `obj.abilities`,
+/// `obj.trigger_definitions`, `obj.replacement_definitions` and
+/// `obj.static_definitions` — and this module can only classify the first, because
+/// `ability_window_reach` destructures an `AbilityDefinition` and the other three
+/// carry different types entirely. Folding only `abilities` and returning
+/// `OwnResourcesOnly` would therefore prove a card confined from whichever fraction
+/// of it happens to be ability-shaped.
+///
+/// That is not hypothetical. MEASURED on `data/card-data.json`: `Stunning Reversal`
+/// projects `abilities` = one `ChangeZone { destination: Exile, target: SelfRef }`
+/// — actor-owned, non-battlefield, hence confined on every conjunct this module
+/// reads — while its entire function lives in `replacements[0]`, a `GameLoss`
+/// replacement ("The next time you would lose the game this turn, instead draw
+/// seven cards and your life total becomes 1"). A seat holding it would have read
+/// `OwnResourcesOnly` and Accepted the very shortcut the card exists to survive.
+/// Per this module's §2 that is the losing direction, and it is the same defect
+/// class as the deleted `Effect::Mana` arm: reasoning from the part of the card the
+/// classifier can see instead of from what the seat can do.
+///
+/// So a non-empty unreadable collection is `MayInterfere` — not because those
+/// definitions are known to interfere, but because this module cannot prove they
+/// do not, which is the only warrant `OwnResourcesOnly` ever has. Reading them
+/// properly (classifying `TriggerDefinition` / `ReplacementDefinition` /
+/// `StaticDefinition` the way `ability_window_reach` classifies an
+/// `AbilityDefinition`) is the named upgrade path; until then the gate is
+/// presence, and presence is conservative.
 fn object_window_reach(state: &GameState, object_id: ObjectId) -> WindowReach {
     let Some(object) = state.objects.get(&object_id) else {
         return WindowReach::MayInterfere;
     };
     if object.abilities.is_empty() {
+        return WindowReach::MayInterfere;
+    }
+    if !object.trigger_definitions.is_empty()
+        || !object.replacement_definitions.is_empty()
+        || !object.static_definitions.is_empty()
+    {
         return WindowReach::MayInterfere;
     }
     object
@@ -499,15 +611,31 @@ fn object_window_reach(state: &GameState, object_id: ObjectId) -> WindowReach {
 
 /// Reach of one indexed activated ability. An unresolvable object or an
 /// out-of-range index is `MayInterfere`.
+///
+/// Carries the same unreadable-collection gate as `object_window_reach`, and for a
+/// reason specific to this path rather than by symmetry: activating an ability is
+/// itself a game event, so a trigger on the SAME object can fire off the activation
+/// (CR 603.2) or off the cost being paid, and a static ability can change what the
+/// activation is allowed to do. This module cannot classify any of those three
+/// collections, so an object carrying one is not provably confined no matter how
+/// confined the indexed ability reads on its own.
 fn indexed_ability_window_reach(
     state: &GameState,
     source_id: ObjectId,
     ability_index: usize,
 ) -> WindowReach {
-    state
-        .objects
-        .get(&source_id)
-        .and_then(|object| object.abilities.get(ability_index))
+    let Some(object) = state.objects.get(&source_id) else {
+        return WindowReach::MayInterfere;
+    };
+    if !object.trigger_definitions.is_empty()
+        || !object.replacement_definitions.is_empty()
+        || !object.static_definitions.is_empty()
+    {
+        return WindowReach::MayInterfere;
+    }
+    object
+        .abilities
+        .get(ability_index)
         .map_or(WindowReach::MayInterfere, ability_window_reach)
 }
 
@@ -567,6 +695,7 @@ pub(crate) fn any_action_may_interfere(state: &GameState, actions: &[GameAction]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::zones::create_object;
     use crate::parser::oracle::parse_oracle_text;
 
     /// A card as the pipeline sees it: its REAL printed name plus its verbatim
@@ -742,6 +871,10 @@ mod tests {
         oracle: "Search your library for up to two basic land cards, reveal those cards, put one \
                  onto the battlefield tapped and the other into your hand, then shuffle.",
     };
+    const SPREADING_SEAS: Card = Card {
+        name: "Spreading Seas",
+        oracle: "Enchant land\nWhen this Aura enters, draw a card.\nEnchanted land is an Island.",
+    };
     const DARK_RITUAL: Card = Card {
         name: "Dark Ritual",
         oracle: "Add {B}{B}{B}.",
@@ -749,6 +882,15 @@ mod tests {
     const LOTUS_PETAL: Card = Card {
         name: "Lotus Petal",
         oracle: "{T}, Sacrifice this artifact: Add one mana of any color.",
+    };
+
+    /// Verbatim from the pinned MTGJSON `AtomicCards.json` (`{3}{B}`, Instant),
+    /// not from memory. The two lines matter in opposite directions: the SECOND
+    /// is all this module can read, and the FIRST is the entire card.
+    const STUNNING_REVERSAL: Card = Card {
+        name: "Stunning Reversal",
+        oracle: "The next time you would lose the game this turn, instead draw seven cards \
+                 and your life total becomes 1.\nExile Stunning Reversal.",
     };
 
     /// V8 — the classifier is correct across the whole class, in BOTH
@@ -1039,6 +1181,227 @@ mod tests {
             WindowReach::MayInterfere,
             "an unparsed effect is the Surveyor's Scope path — never confined"
         );
+    }
+
+    /// An object is not the same thing as its ability list, and proving the
+    /// ability list confined proves nothing about the object.
+    ///
+    /// `game::printed_cards` splits one card face across four collections. This
+    /// module can classify exactly one of them. Before the gate in
+    /// `object_window_reach`, a card whose ability list was the confined fraction
+    /// and whose real content sat in another collection read `OwnResourcesOnly`.
+    ///
+    /// The witness is real, not constructed: `Stunning Reversal` parses to one
+    /// ability — `Exile ~`, i.e. `ChangeZone { destination: Exile, target: SelfRef
+    /// }`, actor-owned and off the battlefield, so confined on every conjunct this
+    /// module reads — plus one `GameLoss` replacement carrying the whole card. A
+    /// seat holding it would have Accepted the shortcut the card exists to
+    /// survive, which is the direction §2 calls the one that loses games.
+    ///
+    /// Discrimination is measured, not asserted, and by construction rather than
+    /// by a second fixture: the two objects below differ in exactly one field.
+    /// The CONTROL clears `replacement_definitions` and nothing else, and it must
+    /// return `OwnResourcesOnly` — so the guarded verdict cannot be a constant,
+    /// and it is attributable to that field alone.
+    ///
+    /// Revert-probe: delete the three `is_empty()` checks from
+    /// `object_window_reach` and this row's first assertion reds while the control
+    /// stays green.
+    #[test]
+    fn an_object_whose_rules_content_this_module_cannot_read_is_never_confined() {
+        let parsed = parse_oracle_text(
+            STUNNING_REVERSAL.oracle,
+            STUNNING_REVERSAL.name,
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            parsed.abilities.len(),
+            1,
+            "PREMISE: the card projects exactly one ability; got {:?}",
+            parsed.abilities
+        );
+        assert_eq!(
+            parsed.replacements.len(),
+            1,
+            "PREMISE: and exactly one replacement — the half this module cannot read; got {:?}",
+            parsed.replacements
+        );
+        assert_eq!(
+            ability_window_reach(&parsed.abilities[0]),
+            WindowReach::OwnResourcesOnly,
+            "PREMISE: the ability half really is confined on its own, so the verdict below is \
+             produced by the GATE and not by the ability list"
+        );
+
+        // `game::zones::create_object` is the shared primitive for this: it allocates the id,
+        // builds the object AND registers it in its zone. Hand-rolling the insert here would
+        // duplicate it and, worse, would leave the object absent from the hand's own id list.
+        let mut state = GameState::default();
+        let id = create_object(
+            &mut state,
+            crate::types::identifiers::CardId(1),
+            crate::types::player::PlayerId(0),
+            STUNNING_REVERSAL.name.to_string(),
+            Zone::Hand,
+        );
+        let object = state.objects.get_mut(&id).expect("just created");
+        object.abilities = std::sync::Arc::new(parsed.abilities.clone());
+        object.replacement_definitions = parsed.replacements.clone().into();
+
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::MayInterfere,
+            "a GameLoss replacement this module cannot classify is not proof of confinement"
+        );
+        assert_eq!(
+            indexed_ability_window_reach(&state, id, 0),
+            WindowReach::MayInterfere,
+            "the activation path takes the same gate: a trigger or replacement on the SAME object \
+             can fire off the activation (CR 603.2)"
+        );
+
+        // CONTROL — one field cleared IN PLACE, nothing else touched.
+        state
+            .objects
+            .get_mut(&id)
+            .expect("still present")
+            .replacement_definitions = Vec::new().into();
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::OwnResourcesOnly,
+            "REACH-GUARD: with the unreadable collection gone the SAME object is confined, so the \
+             two verdicts above are attributable to that one field and are not a constant"
+        );
+
+        // The TRIGGER disjunct, exercised through the real materialization path rather than
+        // asserted from reading it. The three collections are not wired alike: `printed_cards`
+        // assigns `replacement_definitions` and `static_definitions` directly, but routes triggers
+        // through `base_trigger_definitions` + `materialize_base_trigger_definitions()`. A gate that
+        // reads the materialized field while the pipeline only ever fills the printed one would be
+        // silently blind to every trigger, so the wiring is the thing under test here, not the
+        // `is_empty()` call.
+        let triggers = parse_oracle_text(
+            SOUL_GUIDE_LANTERN.oracle,
+            SOUL_GUIDE_LANTERN.name,
+            &[],
+            &[],
+            &[],
+        )
+        .triggers;
+        assert_eq!(
+            triggers.len(),
+            1,
+            "PREMISE: Soul-Guide Lantern's ETB is a real parsed trigger; got {triggers:?}"
+        );
+        let object = state.objects.get_mut(&id).expect("still present");
+        object.base_trigger_definitions = std::sync::Arc::new(triggers);
+        object.materialize_base_trigger_definitions();
+        assert!(
+            !object.trigger_definitions.is_empty(),
+            "PREMISE: materializing the printed triggers must populate the field the gate reads — \
+             if this ever fails the gate is blind to triggers no matter what it returns"
+        );
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::MayInterfere,
+            "a trigger this module cannot classify is not proof of confinement either"
+        );
+
+        // The STATIC disjunct — the third of three, and the one a review round
+        // correctly noted had neither a test nor a probe. 7 of the 19 printed cards
+        // this gate flips at today's pool are static-only carriers, so an untested
+        // disjunct here would leave better than a THIRD of the gate's own measured
+        // effect unexercised.
+        let object = state.objects.get_mut(&id).expect("still present");
+        object.base_trigger_definitions = std::sync::Arc::new(Vec::new());
+        object.materialize_base_trigger_definitions();
+        assert!(
+            object.trigger_definitions.is_empty(),
+            "PREMISE: triggers cleared, so the next verdict cannot be the trigger clause again"
+        );
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::OwnResourcesOnly,
+            "CONTROL: with every unreadable collection empty the SAME object is confined again"
+        );
+        let parsed_statics =
+            parse_oracle_text(SPREADING_SEAS.oracle, SPREADING_SEAS.name, &[], &[], &[]).statics;
+        assert!(
+            !parsed_statics.is_empty(),
+            "PREMISE: Spreading Seas carries a real parsed static ability; got {parsed_statics:?}"
+        );
+        state
+            .objects
+            .get_mut(&id)
+            .expect("still present")
+            .static_definitions = parsed_statics.into();
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::MayInterfere,
+            "nor is a static ability this module cannot classify proof of confinement"
+        );
+    }
+
+    /// The destination axis, on a REAL parsed node, one field mutated.
+    ///
+    /// `Stunning Reversal`'s ability is `ChangeZone { destination: Exile, target:
+    /// SelfRef }`, so `object_is_confined` holds by ownership alone and does not
+    /// depend on `destination` — which makes `destination` the only thing the
+    /// verdicts below can be measuring. (The anaphoric fetch node cannot serve
+    /// here: its `object_is_confined` disjunct itself requires
+    /// `destination == Battlefield`, so mutating the field would move two things
+    /// at once and the row would prove nothing.)
+    ///
+    /// `Hand` is gated for the same reason a `Battlefield`-untapped arrival is: a
+    /// card put into hand is a CASTABLE card. The spell that put it there
+    /// resolves, the active player receives priority (CR 117.3b) and priority then
+    /// passes in turn order (CR 117.3d), so the responding seat gets it back still
+    /// inside this window and can cast it. Graveyard, library and exile are not gated
+    /// because the actor cannot cast or activate from them without some further
+    /// permission — which would itself be an ability this fold already reads.
+    ///
+    /// Both directions are present, so neither verdict can be a constant.
+    #[test]
+    fn a_destination_is_confined_only_when_the_seat_cannot_act_on_what_lands_there() {
+        let parsed = parse_oracle_text(
+            STUNNING_REVERSAL.oracle,
+            STUNNING_REVERSAL.name,
+            &[],
+            &[],
+            &[],
+        );
+        let node = parsed.abilities[0].effect.as_ref().clone();
+        let Effect::ChangeZone { target, .. } = &node else {
+            panic!("PREMISE: the node must head a ChangeZone; got {node:?}");
+        };
+        assert!(
+            filter_is_actor_owned(target),
+            "PREMISE: the target is actor-owned, so `object_is_confined` holds independently of \
+             `destination` and every verdict below is attributable to the destination alone"
+        );
+
+        for (zone, want) in [
+            (Zone::Exile, WindowReach::OwnResourcesOnly),
+            (Zone::Graveyard, WindowReach::OwnResourcesOnly),
+            (Zone::Library, WindowReach::OwnResourcesOnly),
+            (Zone::Hand, WindowReach::MayInterfere),
+            // `enter_tapped` is `Unspecified` on this node, so the battlefield
+            // arm is reach for the TAP reason, not the destination reason.
+            (Zone::Battlefield, WindowReach::MayInterfere),
+        ] {
+            let mut mutated = node.clone();
+            let Effect::ChangeZone { destination, .. } = &mut mutated else {
+                unreachable!("just matched above")
+            };
+            *destination = zone;
+            assert_eq!(
+                effect_window_reach(&mutated),
+                want,
+                "destination {zone:?} must classify {want:?}"
+            );
+        }
     }
 
     /// V8's hostile edges on the action fold: nothing resolvable, nothing to
@@ -1386,10 +1749,38 @@ mod tests {
             "PREMISE: and the real card prints 'tapped', which is the only reason it stays confined"
         );
         assert_eq!(
+            split.rest_destination,
+            Zone::Hand,
+            "PREMISE: and the REST of the search goes to hand — the door this arm used to leave open"
+        );
+        assert_eq!(
+            effect_window_reach(&search),
+            WindowReach::MayInterfere,
+            "the split arm takes the SAME landing-zone authority as the ChangeZone arm: a rest \
+             destination of hand is a castable card inside the window, so Cultivate is NOT confined \
+             however tapped its primary arrival is"
+        );
+
+        // From here the rest destination is moved OFF hand, which is what makes a
+        // confined split expressible at all: MEASURED on this candidate's own
+        // projection, all TWELVE `SearchDestinationSplit` carriers route something to
+        // hand (nine via `rest_destination`, three via `primary_destination`), so no
+        // real card can serve as the positive control for the tap axis. Single-field
+        // mutation off a real parsed node is the honest way to get one, and saying so
+        // is the point — an inert branch presented as covered is the error this row
+        // exists to avoid.
+        let Effect::SearchLibrary {
+            split: Some(split), ..
+        } = &mut search
+        else {
+            panic!("PREMISE: the mutated node must keep its split");
+        };
+        split.rest_destination = Zone::Graveyard;
+        assert_eq!(
             effect_window_reach(&search),
             WindowReach::OwnResourcesOnly,
-            "POSITIVE CONTROL: the unmutated split IS confined, so the two flips below are \
-             attributable to the mutated field"
+            "CONTROL: one field moved and nothing else, so the verdict above is attributable to \
+             `rest_destination` alone and is not a constant"
         );
 
         for (state, expected) in [
