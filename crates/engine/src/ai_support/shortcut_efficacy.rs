@@ -82,6 +82,7 @@
 //! `ExileMaterials` costs — every one of which can reach another player's
 //! resources — would be structurally invisible.
 
+use crate::game::game_object::GameObject;
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, ControllerRef, Effect, FilterProp, PlayerFilter,
     SearchDestinationSplit, TargetFilter,
@@ -191,17 +192,43 @@ fn filter_is_actor_owned(filter: &TargetFilter) -> bool {
 ///   then passes in turn order (CR 117.3d), so the responding seat gets it back
 ///   still inside this window. The AST carries nothing that could prove the card
 ///   uncastable.
-/// * Everything else — graveyard, library, exile, command — puts the card where the
+/// * `Zone::Stack` — strictly stronger than the hand case, and the one a `_` arm hid.
+///   CR 405.1: a cast spell's card is put on the stack; CR 608.1: the object on top
+///   of the stack resolves once all players pass. A card that LANDS there is past
+///   casting already and resolves inside this very window, so the seat does not even
+///   need priority to get its effect.
+/// * `Zone::Command` — CR 903.8: "A player may cast a commander they own from the
+///   command zone", and CR 114.1 puts emblems there carrying abilities of their own.
+///   It is a zone the seat acts FROM, so it belongs with hand rather than with the
+///   need-further-permission group this doc previously filed it under.
+/// * `Zone::Library` / `Zone::Graveyard` / `Zone::Exile` — the card lands where the
 ///   actor needs some FURTHER permission to use it, and that permission would itself
 ///   be an ability this fold already reads.
 ///
 /// Callers still apply their own extra conjuncts (the battlefield riders on
 /// `ChangeZone`); this answers the destination question only.
 fn landing_zone_is_confined(destination: Zone, tapped: EtbTapState) -> bool {
+    // EXHAUSTIVE ON PURPOSE — no wildcard. `Zone` is a closed seven-variant enum
+    // (CR 400.1), and a `_` arm here is FAIL-OPEN in a module whose every other
+    // default is fail-closed: it answers "confined" for any variant nobody thought
+    // about. That is not hypothetical. This function shipped as
+    // `Battlefield => …, Hand => false, _ => true`, and the `_` silently absorbed
+    // `Zone::Stack` — a live `ChangeZone` destination (`game::zones`) — so a node
+    // landing a card on the stack read as confined, contributing `OwnResourcesOnly` to
+    // a fold whose whole purpose is to decide whether an Accept is safe. (Whether any
+    // one node's verdict becomes an Accept depends on the rest of the fold; what is
+    // certain is that this arm was voting the wrong way.) MEASURED at this candidate's
+    // projection: 0 `Stack` destinations and 1 `Command` (Hellkite Courser, whose node
+    // lives in `triggers` and is therefore never folded), so the fix is latent today
+    // and is rated on what it does when reached, not on how often it is reached.
+    // The doc above listed "graveyard, library, exile, command" as the remainder and
+    // never mentioned Stack, which is exactly what a wildcard costs you: the arm list
+    // stops being a claim the compiler checks. Adding a `Zone` variant must break this
+    // build.
     match destination {
         Zone::Battlefield => matches!(tapped, EtbTapState::Tapped),
-        Zone::Hand => false,
-        _ => true,
+        Zone::Hand | Zone::Stack | Zone::Command => false,
+        Zone::Library | Zone::Graveyard | Zone::Exile => true,
     }
 }
 
@@ -557,18 +584,75 @@ fn ability_window_reach(def: &AbilityDefinition) -> WindowReach {
     acc.or(WindowReach::of(!conservative_when_present))
 }
 
+/// Does this object carry rules content this module cannot classify?
+///
+/// Single authority for that question — both entry points route through it, because
+/// the previous shape (each entry point spelling out its own three-field check) is how
+/// two answers to one question drift apart, and this module has already paid for that
+/// once with `landing_zone_is_confined`.
+///
+/// The list is deliberately EVERY rules-bearing field `game::printed_cards` writes and
+/// `ability_window_reach` cannot read, not a curated subset of the ones known to be
+/// dangerous. A curated subset is an allowlist maintained by whoever remembers to
+/// update it; MEASURED, the previous three-field version claimed in its own doc comment
+/// to cover what `printed_cards` splits a face into, and was wrong by eight fields.
+/// `obj.keywords` alone carries printed **Cascade** (`game::triggers`: printed Cascade
+/// lives in `obj.keywords` and never reaches `trigger_definitions`), so a Cascade spell
+/// whose printed `abilities` all read confined would have been proven
+/// `OwnResourcesOnly` while resolving it casts a free spell of arbitrary reach inside
+/// the very window the seat just declined to keep.
+///
+/// MEASURED cost of widening from three fields to all of them, on this candidate's own
+/// projection: of the 53 cards that survived the three-field gate, 10 now flip (8 on
+/// `keywords`, 1 `modal`, 1 `additional_cost`), leaving 43. The class this classifier
+/// exists to protect is untouched — Terramorphic Expanse, Evolving Wilds and Rampant
+/// Growth carry none of these fields.
+///
+/// A presence gate is conservative by construction: it can only move a verdict toward
+/// `MayInterfere`, which per §2 is the direction that costs efficacy rather than games.
+fn carries_unreadable_rules_content(object: &GameObject) -> bool {
+    !object.trigger_definitions.is_empty()
+        || !object.replacement_definitions.is_empty()
+        || !object.static_definitions.is_empty()
+        // Keywords are rules text the fold never sees; Cascade is the sharp case.
+        || !object.keywords.is_empty()
+        // Casting-time modifiers: each one changes what resolving the object does or
+        // what the seat may do with it, and none is an `AbilityDefinition`.
+        || object.modal.is_some()
+        || object.additional_cost.is_some()
+        || object.strive_cost.is_some()
+        || object.cleave_variant.is_some()
+        || !object.casting_restrictions.is_empty()
+        || !object.casting_options.is_empty()
+        || !object.spellbook.is_empty()
+        // A back face is an entire second face of rules content that this fold never
+        // descends into. 0 carriers among today's confined set, so gating it is free.
+        || object.back_face.is_some()
+        // The four below were found by WRITING the staleness guard below, not by reading
+        // this list again — which is the argument for the guard existing. All four are
+        // rules-bearing, all four are written by `printed_cards`, and none was gated.
+        // MEASURED at this candidate's projection: each is 0 among the cards that survive
+        // the gate, and real document-wide (solve conditions 15, Class 38, Case 15,
+        // Attraction 35), so they are latent holes rather than live ones — the same shape
+        // as the `Zone::Stack` arm, and closed for the same reason.
+        || object.case_state.is_some()
+        || object.class_level.is_some()
+        || object.intensity != 0
+        || !object.attraction_lights.is_empty()
+}
+
 /// Fold every ability an object carries. A missing object, or one carrying no
 /// abilities at all, is `MayInterfere` — the fail-closed direction, and the one
 /// that keeps an empty fold from being proven confined by its identity element.
 ///
 /// `abilities` is NOT the whole of an object's rules content. `game::printed_cards`
-/// splits a card face across four collections — `obj.abilities`,
-/// `obj.trigger_definitions`, `obj.replacement_definitions` and
-/// `obj.static_definitions` — and this module can only classify the first, because
-/// `ability_window_reach` destructures an `AbilityDefinition` and the other three
-/// carry different types entirely. Folding only `abilities` and returning
-/// `OwnResourcesOnly` would therefore prove a card confined from whichever fraction
-/// of it happens to be ability-shaped.
+/// spreads a card face across many more rules-bearing fields than this module can
+/// classify — `carries_unreadable_rules_content` below is the enumerated authority on
+/// which, and the one place to look; a count written here would only drift out of step
+/// with it. This module classifies exactly one of them, because `ability_window_reach`
+/// destructures an `AbilityDefinition` and the rest carry different types entirely.
+/// Folding only `abilities` and returning `OwnResourcesOnly` would therefore prove a
+/// card confined from whichever fraction of it happens to be ability-shaped.
 ///
 /// That is not hypothetical. MEASURED on `data/card-data.json`: `Stunning Reversal`
 /// projects `abilities` = one `ChangeZone { destination: Exile, target: SelfRef }`
@@ -581,13 +665,12 @@ fn ability_window_reach(def: &AbilityDefinition) -> WindowReach {
 /// class as the deleted `Effect::Mana` arm: reasoning from the part of the card the
 /// classifier can see instead of from what the seat can do.
 ///
-/// So a non-empty unreadable collection is `MayInterfere` — not because those
-/// definitions are known to interfere, but because this module cannot prove they
-/// do not, which is the only warrant `OwnResourcesOnly` ever has. Reading them
-/// properly (classifying `TriggerDefinition` / `ReplacementDefinition` /
-/// `StaticDefinition` the way `ability_window_reach` classifies an
-/// `AbilityDefinition`) is the named upgrade path; until then the gate is
-/// presence, and presence is conservative.
+/// So a non-empty unreadable field is `MayInterfere` — not because its contents are
+/// known to interfere, but because this module cannot prove they do not, which is the
+/// only warrant `OwnResourcesOnly` ever has. Reading them properly (classifying
+/// `TriggerDefinition` / `ReplacementDefinition` / `StaticDefinition` the way
+/// `ability_window_reach` classifies an `AbilityDefinition`) is the named upgrade
+/// path; until then the gate is presence, and presence is conservative.
 fn object_window_reach(state: &GameState, object_id: ObjectId) -> WindowReach {
     let Some(object) = state.objects.get(&object_id) else {
         return WindowReach::MayInterfere;
@@ -595,10 +678,7 @@ fn object_window_reach(state: &GameState, object_id: ObjectId) -> WindowReach {
     if object.abilities.is_empty() {
         return WindowReach::MayInterfere;
     }
-    if !object.trigger_definitions.is_empty()
-        || !object.replacement_definitions.is_empty()
-        || !object.static_definitions.is_empty()
-    {
+    if carries_unreadable_rules_content(object) {
         return WindowReach::MayInterfere;
     }
     object
@@ -612,13 +692,13 @@ fn object_window_reach(state: &GameState, object_id: ObjectId) -> WindowReach {
 /// Reach of one indexed activated ability. An unresolvable object or an
 /// out-of-range index is `MayInterfere`.
 ///
-/// Carries the same unreadable-collection gate as `object_window_reach`, and for a
+/// Carries the same unreadable-content gate as `object_window_reach`, and for a
 /// reason specific to this path rather than by symmetry: activating an ability is
 /// itself a game event, so a trigger on the SAME object can fire off the activation
 /// (CR 603.2) or off the cost being paid, and a static ability can change what the
-/// activation is allowed to do. This module cannot classify any of those three
-/// collections, so an object carrying one is not provably confined no matter how
-/// confined the indexed ability reads on its own.
+/// activation is allowed to do. This module cannot classify any of that, so an object
+/// carrying it is not provably confined no matter how confined the indexed ability
+/// reads on its own.
 fn indexed_ability_window_reach(
     state: &GameState,
     source_id: ObjectId,
@@ -627,10 +707,7 @@ fn indexed_ability_window_reach(
     let Some(object) = state.objects.get(&source_id) else {
         return WindowReach::MayInterfere;
     };
-    if !object.trigger_definitions.is_empty()
-        || !object.replacement_definitions.is_empty()
-        || !object.static_definitions.is_empty()
-    {
+    if carries_unreadable_rules_content(object) {
         return WindowReach::MayInterfere;
     }
     object
@@ -697,6 +774,8 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::parser::oracle::parse_oracle_text;
+    use crate::types::card::CardFace;
+    use crate::types::keywords::Keyword;
 
     /// A card as the pipeline sees it: its REAL printed name plus its verbatim
     /// Oracle text. The name is load-bearing, not decoration — `~`
@@ -1204,9 +1283,11 @@ mod tests {
     /// return `OwnResourcesOnly` — so the guarded verdict cannot be a constant,
     /// and it is attributable to that field alone.
     ///
-    /// Revert-probe: delete the three `is_empty()` checks from
+    /// Revert-probe: delete the `carries_unreadable_rules_content` call from
     /// `object_window_reach` and this row's first assertion reds while the control
-    /// stays green.
+    /// stays green. Cutting a single disjunct out of that function instead reds only
+    /// the row for that disjunct, which is how each one is shown to carry its own
+    /// weight rather than riding the first.
     #[test]
     fn an_object_whose_rules_content_this_module_cannot_read_is_never_confined() {
         let parsed = parse_oracle_text(
@@ -1342,6 +1423,176 @@ mod tests {
             WindowReach::MayInterfere,
             "nor is a static ability this module cannot classify proof of confinement"
         );
+
+        // The KEYWORD disjunct. This is the one a review round caught: the gate used to
+        // read three collections while `printed_cards` writes far more, and printed
+        // Cascade lives in `obj.keywords` and never reaches `trigger_definitions` — so a
+        // Cascade spell whose printed abilities all read confined was provably
+        // `OwnResourcesOnly` while resolving it casts a free spell of arbitrary reach.
+        let object = state.objects.get_mut(&id).expect("still present");
+        object.static_definitions = Vec::new().into();
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::OwnResourcesOnly,
+            "CONTROL: statics cleared, so the keyword verdict below is the keyword's alone"
+        );
+        state
+            .objects
+            .get_mut(&id)
+            .expect("still present")
+            .keywords
+            .push(Keyword::Cascade);
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::MayInterfere,
+            "a keyword is rules text this fold never reads; Cascade resolves a free spell of \
+             arbitrary reach inside the window the seat would have declined to keep"
+        );
+        assert_eq!(
+            indexed_ability_window_reach(&state, id, 0),
+            WindowReach::MayInterfere,
+            "and the activation path takes the same widened gate, not the old three-field one"
+        );
+
+        // A CASTING-TIME MODIFIER, to show the widening is not keyword-specific.
+        let object = state.objects.get_mut(&id).expect("still present");
+        object.keywords.clear();
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::OwnResourcesOnly,
+            "CONTROL: keyword cleared and the SAME object is confined again, so neither verdict \
+             above is a constant"
+        );
+        state
+            .objects
+            .get_mut(&id)
+            .expect("still present")
+            .spellbook
+            .push("Lightning Bolt".to_string());
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::MayInterfere,
+            "a spellbook names cards this object can reach for, and it is not an \
+             AbilityDefinition either — the gate is over unreadable CONTENT, not over one field"
+        );
+
+        // The four fields the STALENESS GUARD surfaced. They are inert at today's pool
+        // (0 carriers among the cards that survive the gate), which is exactly why they
+        // need a witness here: an inert disjunct with no test is indistinguishable from a
+        // disjunct that does nothing, and the next person to tidy this function would have
+        // no way to tell. Each is set on the SAME object with every other unreadable field
+        // cleared first, so each verdict is attributable to that one field.
+        // Named rather than written inline: `clippy::type_complexity` rejects the tuple-of-fn-ptr
+        // array form, and the alias is the lint's own suggested remedy.
+        type FieldSetter = fn(&mut GameObject);
+        let setters: [(&str, FieldSetter); 4] = [
+            ("case_state", |o| {
+                o.case_state = Some(crate::game::game_object::CaseState {
+                    is_solved: false,
+                    solve_condition: crate::types::ability::SolveCondition::Text {
+                        description: "probe".to_string(),
+                    },
+                })
+            }),
+            ("class_level", |o| o.class_level = Some(1)),
+            ("intensity", |o| o.intensity = 1),
+            ("attraction_lights", |o| o.attraction_lights = vec![1]),
+        ];
+        for (field, set) in setters {
+            let object = state.objects.get_mut(&id).expect("still present");
+            object.spellbook.clear();
+            object.case_state = None;
+            object.class_level = None;
+            object.intensity = 0;
+            object.attraction_lights.clear();
+            assert_eq!(
+                object_window_reach(&state, id),
+                WindowReach::OwnResourcesOnly,
+                "CONTROL before {field}: with every unreadable field cleared the SAME object \
+                 is confined again, so the verdict below is attributable to {field} alone"
+            );
+            set(state.objects.get_mut(&id).expect("still present"));
+            assert_eq!(
+                object_window_reach(&state, id),
+                WindowReach::MayInterfere,
+                "{field} is rules content this fold cannot read, so it is not proof of confinement"
+            );
+        }
+    }
+
+    /// STALENESS GUARD. Every printed rules field is either folded or gated.
+    ///
+    /// The defect this exists to prevent has now happened twice on this one gate: it
+    /// shipped reading three collections while `printed_cards` wrote eleven fields, and a
+    /// review round found `keywords` (printed Cascade) that way. Writing THIS test then
+    /// found four more — `case_state`, `class_level`, `intensity`, `attraction_lights` —
+    /// which no amount of re-reading the gate by hand had surfaced. An enumerated list is
+    /// only ever correct on the day it is written; a `..`-free destructure is correct
+    /// until the compiler says otherwise.
+    ///
+    /// **Why `CardFace` and not `GameObject`.** `GameObject` has 149 fields, most of them
+    /// runtime state (zone, damage, counters, attachments) with no bearing on what a card
+    /// can do. Destructuring it here would be a churn magnet that every unrelated field
+    /// addition breaks, and it would be blanket-`..`'d back within a round. `CardFace` has
+    /// 33 and is the actual source `printed_cards` reads to populate object rules content,
+    /// so it guards the defect class that occurred rather than the largest surface
+    /// available.
+    ///
+    /// **Honest scope limit:** this guards fields that reach an object THROUGH
+    /// `printed_cards`. A `GameObject` field written by some other path is not covered —
+    /// `game::stickers` is the live example, and it writes only the three definition
+    /// collections, which are gated.
+    #[test]
+    fn every_printed_rules_field_is_either_folded_or_gated() {
+        // `..`-free ON PURPOSE. A new `CardFace` field is a COMPILE ERROR here until
+        // someone sorts it into one of the three buckets. The sort IS the assertion:
+        // there is nothing to run, and that is the point — this fires at build time,
+        // when it can still be cheap, rather than at review time.
+        let CardFace {
+            // ---- FOLDED: this module classifies these itself.
+            abilities: _,
+
+            // ---- GATED: unreadable rules content. `carries_unreadable_rules_content`
+            // returns true on the corresponding `GameObject` field.
+            keywords: _,
+            triggers: _,
+            static_abilities: _,
+            replacements: _,
+            cleave_variant: _,
+            modal: _,
+            additional_cost: _,
+            casting_restrictions: _,
+            casting_options: _,
+            strive_cost: _,
+            solve_condition: _, // lands as `obj.case_state`
+            attraction_lights: _,
+            // `metadata` is mixed: its `spellbook` is gated; `related_token_ids` is not
+            // rules-bearing (it names tokens a card can make, and making them runs
+            // through abilities this fold already reads).
+            metadata: _,
+
+            // ---- NOT RULES-BEARING. One reason each, because an unjustified entry here
+            // is exactly where the next lazy re-bucket lands.
+            name: _,               // identity, not behaviour
+            mana_cost: _,          // cost to cast, not what resolving does
+            card_type: _,          // types/subtypes gate other rules, carry none alone
+            power: _,              // combat statistic
+            toughness: _,          // combat statistic
+            loyalty: _,            // resource counter, abilities that spend it are in `abilities`
+            defense: _,            // battle counter, same argument as loyalty
+            oracle_text: _,        // the SOURCE the parser reads; the parse is the rules content
+            non_ability_text: _,   // by definition not an ability
+            flavor_name: _,        // cosmetic
+            color_override: _,     // colour is a characteristic, not an action
+            color_identity: _,     // deck construction (CR 903.4), not in-game behaviour
+            scryfall_oracle_id: _, // external identifier
+            brawl_commander: _,    // format eligibility
+            is_commander: _,       // format eligibility
+            is_oathbreaker: _,     // format eligibility
+            deck_copy_limit: _,    // deck construction
+            parse_warnings: _,     // parser diagnostics, never consulted at runtime
+            rarities: _,           // printing metadata
+        } = CardFace::default();
     }
 
     /// The destination axis, on a REAL parsed node, one field mutated.
@@ -1382,15 +1633,57 @@ mod tests {
              `destination` and every verdict below is attributable to the destination alone"
         );
 
-        for (zone, want) in [
+        // Every one of `Zone`'s seven variants (CR 400.1) appears here. The previous
+        // table listed five and the production match closed the gap with `_ => true`,
+        // so `Zone::Stack` was classified confined by a wildcard and no row noticed.
+        let table = [
             (Zone::Exile, WindowReach::OwnResourcesOnly),
             (Zone::Graveyard, WindowReach::OwnResourcesOnly),
             (Zone::Library, WindowReach::OwnResourcesOnly),
             (Zone::Hand, WindowReach::MayInterfere),
+            // Already past casting (CR 405.1) and resolves inside the window
+            // (CR 608.1) — strictly stronger reach than the hand row above.
+            (Zone::Stack, WindowReach::MayInterfere),
+            // CR 903.8: a commander may be cast from here.
+            (Zone::Command, WindowReach::MayInterfere),
             // `enter_tapped` is `Unspecified` on this node, so the battlefield
             // arm is reach for the TAP reason, not the destination reason.
             (Zone::Battlefield, WindowReach::MayInterfere),
+        ];
+
+        // COMPLETENESS GUARD, compile-time half: this match is exhaustive over `Zone`,
+        // so adding a variant breaks THIS test's build and forces a row decision here
+        // as well as in the production match. The runtime half below then catches a
+        // variant that compiles but was left out of `table`. Deliberately NOT a mirror
+        // of the production match — it asserts coverage only, never a verdict, so it
+        // cannot pass by agreeing with a wrong implementation.
+        for zone in [
+            Zone::Library,
+            Zone::Hand,
+            Zone::Battlefield,
+            Zone::Graveyard,
+            Zone::Stack,
+            Zone::Exile,
+            Zone::Command,
         ] {
+            match zone {
+                Zone::Library
+                | Zone::Hand
+                | Zone::Battlefield
+                | Zone::Graveyard
+                | Zone::Stack
+                | Zone::Exile
+                | Zone::Command => {}
+            }
+            assert!(
+                table.iter().any(|(z, _)| *z == zone),
+                "Zone::{zone:?} has no row in the destination table — every zone must be \
+                 classified explicitly, because the failure this test exists for is a \
+                 destination nobody wrote a row for"
+            );
+        }
+
+        for (zone, want) in table {
             let mut mutated = node.clone();
             let Effect::ChangeZone { destination, .. } = &mut mutated else {
                 unreachable!("just matched above")
