@@ -1401,6 +1401,29 @@ const LOTUS_PETAL: &str = "{T}, Sacrifice this artifact: Add one mana of any col
 /// stage-2 widening must not re-admit it.
 const SOL_RING: &str = "{T}: Add {C}{C}.";
 
+/// Crop Rotation, verbatim, BOTH lines. CARD PROVENANCE (MTGJSON
+/// `.data["Crop Rotation"][0].text`). The UNTAPPED fetch — the residual the
+/// `enter_tapped` gate closes, and the class `Terramorphic Expanse` is NOT.
+///
+/// MEASURED on the live parser: this text yields exactly ONE ability with
+/// `cost: None` — the additional-cost line is not carried — heading
+/// `SearchLibrary { filter: Typed[Land], target_player: None }` over a
+/// `ChangeZone { Library -> Battlefield, target: Any, enter_tapped: Unspecified }`
+/// over `Shuffle { Controller }`. So every leg but the tap state reads confined,
+/// which is precisely why this card was allowlisted before the gate. Its search
+/// filter is ANY land card, which is what lets the funding lemma below find a
+/// real basic Swamp in P2's own recorded library instead of staging one.
+const CROP_ROTATION: &str = "As an additional cost to cast this spell, sacrifice a land.\n\
+                             Search your library for a land card, put that card onto the \
+                             battlefield, then shuffle.";
+
+/// Rampant Growth, verbatim. CARD PROVENANCE. The TAPPED sibling and the whole
+/// point of the matched pair: one printed word apart from Crop Rotation on every
+/// axis this classifier reads, and the fetched land arrives unable to pay for
+/// anything.
+const RAMPANT_GROWTH: &str = "Search your library for a basic land card, put that card onto \
+                              the battlefield tapped, then shuffle.";
+
 /// Stage a real card with its abilities taken from the REAL parser, not
 /// hand-built: every verdict below is a function of the AST, so a hand-written
 /// `AbilityDefinition` would let this section pass against a shape the pipeline
@@ -1483,6 +1506,102 @@ fn give_lotus_petal(state: &mut GameState, player: PlayerId) -> ObjectId {
         LOTUS_PETAL,
         CoreType::Artifact,
         Zone::Battlefield,
+    )
+}
+
+/// Both fetches are staged as INSTANTS with no printed mana cost, for
+/// `give_dark_ritual`'s reasons: without a core type the sorcery-timing gate
+/// refuses the cast at this window and the funder never enters the action set,
+/// and P2 controls no mana source so a printed cost would make the funder itself
+/// uncastable and the row would measure an empty board twice.
+///
+/// The type is card-faithful for Crop Rotation (a real instant) and is NOT for
+/// Rampant Growth (a real sorcery). That deviation is deliberate and stated: the
+/// control's subject is the TAP STATE of the fetched land, and putting the two
+/// fetches on different timing rails would confound exactly that axis.
+fn give_crop_rotation(state: &mut GameState, player: PlayerId) -> ObjectId {
+    give_parsed_card(
+        state,
+        player,
+        "Crop Rotation",
+        CROP_ROTATION,
+        CoreType::Instant,
+        Zone::Hand,
+    )
+}
+
+/// The tapped half of `v10c`'s pair. See `give_crop_rotation` for the staging.
+fn give_rampant_growth(state: &mut GameState, player: PlayerId) -> ObjectId {
+    give_parsed_card(
+        state,
+        player,
+        "Rampant Growth",
+        RAMPANT_GROWTH,
+        CoreType::Instant,
+        Zone::Hand,
+    )
+}
+
+/// Cast `fetch` at P2's OWN probe priority and drive real `apply()` beats until
+/// it resolves, selecting a basic **Swamp** at the search prompt. Returns the
+/// resulting state and the fetched land.
+///
+/// The Swamp is chosen by NAME rather than taken as the prompt's first offer:
+/// several of the lands in P2's recorded library carry their own "enters tapped"
+/// clause (Path of Ancestry, Goldmire Bridge, Temple of Silence, ...), and one of
+/// those would make the funding lemma measure the FETCHED CARD's printed text
+/// instead of the fetch effect's `enter_tapped` rider — the very axis under test.
+fn resolve_fetch_choosing_a_swamp(arm: &GameState, fetch: ObjectId) -> (GameState, ObjectId) {
+    let (probe, list) = engine::ai_support::shortcut_probe(arm, P2);
+    let cast = list
+        .iter()
+        .find(|a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == fetch))
+        .cloned()
+        .expect("reach-guard: the fetch must be castable at P2's own probe priority");
+    let mut state = probe.state().clone();
+    // This drive is the first thing in this file to reach a library SHUFFLE, and
+    // a shuffle is the one operation that reads the live ChaCha20 stream.
+    // `restore_dump` above decodes through `into_game_state()`, which does NOT
+    // reseed the `#[serde(skip)]` `rng` — production's restore does that in a
+    // SECOND step (`engine-wasm`'s `restore_game_state` calls
+    // `GameState::rehydrate_rng` right after decoding, issue #5466). Without it
+    // the live stream sits at offset 0 while this dump's `rng_word_pos` is 313,
+    // and `game::library`'s `capture_rng_word_pos` fails the entropy-high-water
+    // invariant. Doing it here rather than in `restore_dump` keeps every other
+    // row in this file byte-identical: the reseed lands only on this quarantined
+    // funding clone, which no verdict is ever taken on.
+    state.rehydrate_rng();
+    apply(&mut state, P2, cast).expect("the fetch casts at P2's own probe priority");
+
+    let mut chosen: Option<ObjectId> = None;
+    for _ in 0..60 {
+        let prompt = match &state.waiting_for {
+            WaitingFor::SearchChoice { player, cards, .. } => Some((*player, cards.clone())),
+            _ => None,
+        };
+        if let Some((player, cards)) = prompt {
+            let swamp = cards
+                .iter()
+                .copied()
+                .find(|id| state.objects.get(id).is_some_and(|o| o.name == "Swamp"))
+                .expect("P2's recorded library must offer a basic Swamp to this search");
+            apply(
+                &mut state,
+                player,
+                GameAction::SelectCards { cards: vec![swamp] },
+            )
+            .expect("the searcher selects the Swamp");
+            chosen = Some(swamp);
+            continue;
+        }
+        if chosen.is_some() && !state.stack.iter().any(|entry| entry.id == fetch) {
+            break;
+        }
+        dump_drive_one_beat(&mut state).expect("passing priority resolves the top of the stack");
+    }
+    (
+        state,
+        chosen.expect("reach-guard: the fetch must have PROMPTED a library search"),
     )
 }
 
@@ -1925,4 +2044,225 @@ fn v10b_an_actor_owned_sacrifice_for_mana_seat_keeps_its_window() {
     // candidate affordability, a route this control does not model and claims
     // nothing about. Asserting Accept here would assert a false fact about the
     // board.
+}
+
+/// V10c — an UNTAPPED fetch is the `Effect::Mana` case with one extra step, so
+/// the seat must keep its window; the TAPPED sibling still Accepts.
+///
+/// `v10a`/`v10b` closed mana production. This row closes the residual one arm
+/// over: `effect_window_reach`'s `ChangeZone` arm allowlisted ANY
+/// `Library -> Battlefield` move, and a land that arrives untapped (CR 110.5b —
+/// permanents enter untapped "unless a spell or ability says otherwise") taps for
+/// mana inside the window the Shorten hands back. CR 302.6's summoning-sickness
+/// bar is a CREATURE rule and never reaches a land, and CR 601.2g runs the mana
+/// ability during the cast it funds.
+///
+/// **The pair varies exactly one object** on the flagship board: a Crop Rotation
+/// in P2's hand. Its four-legged AST is confined on every axis but the tap state
+/// (MEASURED — see `CROP_ROTATION`), so the Shorten below is attributable to the
+/// gate and to nothing else.
+///
+/// **Otherwise-unaffordable, both halves, on the production instrument.** The
+/// negative half is asserted in BOTH arms at poll time: the `{1}` answer is not
+/// castable, because `feasible_mana_capacity` is battlefield-scoped and P2's
+/// battlefield is one Terramorphic Expanse (capacity 0). The positive half is the
+/// QUARANTINED funding lemma: the Rotation is driven through the stack on the
+/// `apply()` boundary, a real basic Swamp from P2's own recorded library enters
+/// UNTAPPED, and the SAME answer is re-probed against the engine's own
+/// castability gate.
+///
+/// **The tapped control is the load-bearing half of the pair.** The same drive
+/// with Rampant Growth puts a land on the battlefield TAPPED, the answer stays
+/// uncastable, and the seat still Accepts. That is what makes this gate a
+/// distinction rather than a blanket flip — and it is the measurement that keeps
+/// `v1`/`v1b`'s Terramorphic Accept correct rather than merely surviving.
+///
+/// MUTANT: in `effect_window_reach`'s `ChangeZone` arm, replace
+/// `object_is_confined && entry_is_confined` with `object_is_confined` alone (the
+/// pre-fix expression) — the SHORTEN arm flips to `Accept` (the shipped defect
+/// this row exists to catch). The ACCEPT arm and
+/// the tapped control are unaffected by that mutation by construction — neither
+/// carries an untapped battlefield entry at all — so the row cannot pass by
+/// trivializing in either direction.
+///
+/// Every `GameAction::CastSpell` matcher binds `{ object_id, .. }` and must NOT
+/// name `payment_mode`, for `v10a`'s reason.
+#[test]
+fn v10c_an_untapped_fetch_that_funds_an_unaffordable_answer_keeps_its_window() {
+    let mut board = live_path_board();
+    drive_to_offer(&mut board, 400).expect("CR 732.2a: the offer must fire on this real 4p drain");
+    let polled = declare_and_poll(&board, P2);
+
+    let mut base = polled.clone();
+    // `{1}` generic, sized as in `v10b`: a generic residual is decided by
+    // comparing summed battlefield capacity against it, so ONE untapped Swamp is
+    // exactly enough and one tapped Swamp is exactly not — zero slack on both
+    // halves, decided on one read path.
+    let answer = give_bolt_with_cost(&mut base, P2, ManaCost::generic(1));
+
+    // ── arm ACCEPT: the answer alone ──
+    let accept_arm = base.clone();
+    // ── arm SHORTEN: same board, same answer, PLUS the untapped fetch ──
+    let mut shorten_arm = base.clone();
+    let rotation = give_crop_rotation(&mut shorten_arm, P2);
+
+    for (label, arm) in [("ACCEPT", &accept_arm), ("SHORTEN", &shorten_arm)] {
+        assert!(
+            !probe_actions(arm, P2).iter().any(
+                |a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == answer)
+            ),
+            "PREMISE ({label} arm): the answer must be OTHERWISE-UNAFFORDABLE at poll time — P2's \
+             battlefield is one Terramorphic Expanse, which contributes 0 to the \
+             battlefield-scoped capacity scan, and the scan cannot see the fetch-then-tap two-step \
+             the window buys; got {:?}",
+            non_pass_actions(arm, P2)
+        );
+        assert!(
+            stage_one_meaningful(arm, P2),
+            "reach-guard ({label} arm): stage 1 must return true, or the seat answers at stage 1 \
+             and the fold under test never runs"
+        );
+    }
+
+    assert!(
+        probe_actions(&shorten_arm, P2).iter().any(
+            |a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == rotation)
+        ),
+        "reach-guard: the FUNDER must really be castable, or the SHORTEN arm is the ACCEPT arm \
+         with extra steps; got {:?}",
+        non_pass_actions(&shorten_arm, P2)
+    );
+
+    let shorten_non_pass = non_pass_actions(&shorten_arm, P2);
+    assert_eq!(
+        shorten_non_pass.len(),
+        2,
+        "ATTRIBUTION + THRESHOLD SENTINEL, mirroring `v10a`'s: the SHORTEN arm must be the ACCEPT \
+         arm's single fetchland PLUS the Rotation cast, and nothing else. A fixture or capacity \
+         change that added a third `MayInterfere` action would over-determine this row silently \
+         instead of reddening; got {shorten_non_pass:?}"
+    );
+
+    let accept_non_pass = non_pass_actions(&accept_arm, P2);
+    assert_eq!(
+        accept_non_pass.len(),
+        1,
+        "ATTRIBUTION: the ACCEPT arm's action set must be the flagship's exactly, so its Accept is \
+         the already-shipped verdict and the pair's ONLY variable is the Rotation; got \
+         {accept_non_pass:?}"
+    );
+    assert!(
+        accept_non_pass[0].contains("Terramorphic Expanse")
+            && accept_non_pass[0].contains("zone=Some(Battlefield)")
+            && accept_non_pass[0].contains("controller=Some(PlayerId(2))"),
+        "ATTRIBUTION: that one action must be P2's OWN battlefield fetchland; got \
+         {accept_non_pass:?}"
+    );
+
+    // MEMBERSHIP, not just cardinality — `v10a`'s partition, for its reasons.
+    let (_rotation_leg, other_legs): (Vec<&String>, Vec<&String>) = shorten_non_pass
+        .iter()
+        .partition(|a| a.starts_with(&format!("CastSpell {{ object_id: {rotation:?},")));
+    assert_eq!(
+        other_legs,
+        vec![&accept_non_pass[0]],
+        "ATTRIBUTION: the SHORTEN arm's set MINUS the Rotation must be the ACCEPT arm's set \
+         EXACTLY — same fetchland object, same zone, same controller; got {shorten_non_pass:?}"
+    );
+
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&accept_arm, P2),
+        ShortcutResponse::Accept,
+        "the pair's negative arm: an unaffordable answer and a confined TAPPED fetchland buy \
+         nothing"
+    );
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&shorten_arm, P2),
+        ShortcutResponse::Shorten { at_iteration: 0 },
+        "the pair's positive arm: a fetch that puts a land onto the battlefield UNTAPPED \
+         (CR 110.5b) hands the seat mana inside its own window, so accepting here surrenders a \
+         live out. The Rotation is the one object that differs"
+    );
+
+    // ── FUNDING LEMMA (CR 110.5b + CR 117.1d + CR 601.2g), QUARANTINED ──
+    //
+    // Both verdicts above are already taken; resolving the fetch inside an arm
+    // would change the very action set they were taken on, and the funded board
+    // additionally unlocks the Angel's `{2}` cycling (`give_lotus_petal`'s
+    // capacity note), which carries `MayInterfere` on a route this pair does not
+    // model. Same quarantine as `v10a`/`v10b`.
+    let (funded, fetched) = resolve_fetch_choosing_a_swamp(&shorten_arm, rotation);
+    let land = funded
+        .objects
+        .get(&fetched)
+        .expect("the fetched Swamp is a real object on this board");
+    assert_eq!(
+        land.zone,
+        Zone::Battlefield,
+        "reach-guard: the Rotation must have RESOLVED and MOVED the land, not merely been cast — \
+         otherwise the funding assertion below would red for the wrong reason"
+    );
+    assert!(
+        !land.tapped,
+        "CR 110.5b: the fetched land enters UNTAPPED because this fetch says nothing otherwise. \
+         This is the game-level fact the AST's `enter_tapped` stands for, measured on the object \
+         rather than inferred from the printed text"
+    );
+    assert!(
+        probe_actions(&funded, P2)
+            .iter()
+            .any(|a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == answer)),
+        "FUNDING: with the fetched Swamp untapped, the engine's own castability gate says the SAME \
+         `{{1}}` answer that is unaffordable in BOTH arms above IS payable. That is the two-step \
+         the priority window buys (CR 117.1d / CR 601.2g), measured rather than inferred; got {:?}",
+        non_pass_actions(&funded, P2)
+    );
+
+    // ── THE TAPPED CONTROL — the half that makes this a distinction ──
+    //
+    // Same board, same answer, same drive, same chosen Swamp: only the fetch's
+    // printed tap rider differs. The land arrives tapped, funds nothing, and the
+    // seat still Accepts — which is `v1`/`v1b`'s Terramorphic verdict, measured
+    // here on the funding mechanism itself instead of assumed to survive.
+    let mut tapped_arm = base.clone();
+    let growth = give_rampant_growth(&mut tapped_arm, P2);
+    assert_eq!(
+        non_pass_actions(&tapped_arm, P2).len(),
+        2,
+        "reach-guard: the tapped fetch must be castable too, or its Accept below is produced by an \
+         absent action rather than by a confined one; got {:?}",
+        non_pass_actions(&tapped_arm, P2)
+    );
+
+    let (tapped_funded, tapped_fetched) = resolve_fetch_choosing_a_swamp(&tapped_arm, growth);
+    let tapped_land = tapped_funded
+        .objects
+        .get(&tapped_fetched)
+        .expect("the fetched Swamp is a real object on this board");
+    assert_eq!(
+        tapped_land.zone,
+        Zone::Battlefield,
+        "reach-guard: the tapped fetch must have resolved and moved the land as well"
+    );
+    assert!(
+        tapped_land.tapped,
+        "CR 110.5b: 'unless a spell or ability says otherwise' — this one says otherwise, and this \
+         assertion is what separates the pair"
+    );
+    assert!(
+        !probe_actions(&tapped_funded, P2)
+            .iter()
+            .any(|a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == answer)),
+        "FUNDING, negative half: a TAPPED land pays for nothing, so the identical answer stays \
+         uncastable after the identical drive. Together with the assertion above, the tap state — \
+         not the fetch shape — is what funds the out; got {:?}",
+        non_pass_actions(&tapped_funded, P2)
+    );
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&tapped_arm, P2),
+        ShortcutResponse::Accept,
+        "…and the classifier agrees with the board: a tapped fetch buys the seat nothing, so the \
+         gate is a DISTINCTION on the tap axis and not a blanket flip of the fetch class. This is \
+         the assertion an over-broad version of this fix destroys first"
+    );
 }
