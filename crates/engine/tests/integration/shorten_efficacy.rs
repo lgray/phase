@@ -1608,6 +1608,36 @@ fn v10a_a_cast_mana_spell_that_funds_an_unaffordable_answer_keeps_its_window() {
          {accept_non_pass:?}"
     );
 
+    // IDENTITY, not just cardinality. The sentinel above bounds the SHORTEN
+    // arm's COUNT; this bounds its MEMBERSHIP, which is what that sentinel's
+    // prose actually claims ("the ACCEPT arm's single fetchland PLUS the Ritual
+    // cast, and nothing else"). Without this pair, a fixture or capacity change
+    // that DROPPED the fetchland and added some unrelated `MayInterfere` action
+    // still satisfies `len() == 2` AND the ritual reach-guard, and the row
+    // silently measures the wrong pair.
+    //
+    // The fetchland is the same fixture object in both arms — both are clones
+    // of one `base`, and only the Ritual is staged on top — so
+    // `accept_non_pass[0]` is reusable verbatim instead of re-typing the three
+    // `contains` substrings. MEASURED: the two formatted strings are byte-equal
+    // (`ObjectId(203)` in both arms).
+    //
+    // The Ritual leg is matched on `object_id` ONLY. It must NOT name
+    // `payment_mode`, for the reason this test's doc comment gives.
+    let (_ritual_leg, other_legs): (Vec<&String>, Vec<&String>) = shorten_non_pass
+        .iter()
+        .partition(|a| a.starts_with(&format!("CastSpell {{ object_id: {ritual:?},")));
+    assert_eq!(
+        other_legs,
+        vec![&accept_non_pass[0]],
+        "ATTRIBUTION: the SHORTEN arm's set MINUS the Ritual must be the ACCEPT arm's set \
+         EXACTLY — same fetchland object, same zone, same controller. Anything else means the \
+         pair varies more than the single object it claims to vary, and the Shorten verdict below \
+         is no longer attributable to the Ritual. This one equality also pins the Ritual leg: if \
+         the partition matched nothing, `other_legs` carries both members and reddens; if it \
+         matched both, `other_legs` is empty and reddens; got {shorten_non_pass:?}"
+    );
+
     assert_eq!(
         engine::ai_support::smart_shortcut_response(&accept_arm, P2),
         ShortcutResponse::Accept,
@@ -1873,12 +1903,21 @@ fn v10b_an_actor_owned_sacrifice_for_mana_seat_keeps_its_window() {
     // rests on it and a stale fixture could silently make it false:
     let ordinary_non_pass = non_pass_actions(&ordinary, P2);
     assert!(
-        ordinary_non_pass
-            .iter()
-            .any(|a| a.contains("Angel of the Ruins")),
+        ordinary_non_pass.iter().any(|a| {
+            a.contains("Angel of the Ruins")
+                && a.contains("#0 zone=Some(Hand)")
+                && a.contains("controller=Some(PlayerId(2))")
+        }),
         "the Sol Ring's 2 mana must unlock the Angel's {{2}} plainscycling — this is the fact \
-         that makes withholding a verdict assertion correct rather than evasive; got \
-         {ordinary_non_pass:?}"
+         that makes withholding a verdict assertion correct rather than evasive. Ability index 0 \
+         is MEASURED off this fixture, never assumed: the Angel (object 210) carries EXACTLY ONE \
+         parsed ability and it is the plainscycling one — `ability_tag: Cycling`, \
+         `activation_zone: Hand`, cost `Composite[Mana{{generic 2}}, Discard{{self_ref}}]`, \
+         effect `SearchLibrary` filtered to `Subtype(Plains)`. A bare name match would also be \
+         satisfied by some OTHER Angel activated ability, or by an Angel in a zone whose \
+         activation this Sol Ring does not pay for, neither of which supports the withheld \
+         verdict. If this reddens, first check whether the INDEX shifted (a newly parsed second \
+         ability) before concluding the semantics changed; got {ordinary_non_pass:?}"
     );
     // It is `MayInterfere` on two independent legs (`AbilityCost::Discard` is not
     // allowlisted; its `sub_ability` moves a card to a HAND, which the anaphoric
