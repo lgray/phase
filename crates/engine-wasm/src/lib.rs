@@ -125,10 +125,28 @@ fn format_diagnostic_value(value: &serde_json::Value) -> String {
     }
 }
 
-fn decode_restored_game_state(json_str: &str) -> Result<GameState, JsValue> {
-    serde_json::from_str::<PersistedGameState>(json_str)
+#[derive(Debug)]
+struct DecodedRestoredGameState {
+    state: GameState,
+    debug_permitted_was_serialized: bool,
+}
+
+fn decode_restored_game_state(json_str: &str) -> Result<DecodedRestoredGameState, String> {
+    let serialized = serde_json::from_str::<serde_json::Value>(json_str)
+        .map_err(|error| format!("Failed to deserialize GameState: {error}"))?;
+    let state = serialized
+        .get("state")
+        .and_then(serde_json::Value::as_object)
+        .or_else(|| serialized.as_object());
+    let debug_permitted_was_serialized =
+        state.is_some_and(|state| state.contains_key("debug_permitted"));
+    let state = serde_json::from_value::<PersistedGameState>(serialized)
         .map(PersistedGameState::into_game_state)
-        .map_err(|e| JsValue::from_str(&format!("Failed to deserialize GameState: {e}")))
+        .map_err(|error| format!("Failed to deserialize GameState: {error}"))?;
+    Ok(DecodedRestoredGameState {
+        state,
+        debug_permitted_was_serialized,
+    })
 }
 
 /// Bind the engine's interaction authority for the one game this module hosts.
@@ -914,18 +932,7 @@ pub fn initialize_game(
     }
 
     let mut state = GameState::new(format_config.clone(), count, seed);
-    state.debug_mode = true;
-    // Sandbox capability: in a P2P-host (WASM-authoritative) game, the
-    // `submit_action` gate checks `debug_permitted`, mirroring server-core's
-    // WebSocket gate. server-core seeds every seat when `allow_debug_actions`
-    // is set (session.rs); the WASM host must do the same or sandbox Debug
-    // actions are rejected for everyone — the host included. Every seat is
-    // permitted by default; the host's grant/revoke flow still narrows it.
-    if state.format_config.allow_debug_actions {
-        for i in 0..count {
-            state.debug_permitted.insert(PlayerId(i));
-        }
-    }
+    initialize_debug_permissions(&mut state, is_multiplayer_mode());
     let match_config = if !match_config_js.is_null() && !match_config_js.is_undefined() {
         serde_wasm_bindgen::from_value::<MatchConfig>(match_config_js)
             .unwrap_or_else(|_| MatchConfig::default())
@@ -1566,8 +1573,8 @@ pub fn legal_targets_for_castables_js(object_ids: JsValue) -> JsValue {
 /// the TS side accepts it via structural typing.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ViewerSnapshot {
-    state: GameState,
+struct ViewerSnapshot<'a> {
+    state: engine::game::derived_views::ClientGameStateRef<'a>,
     actions: Vec<GameAction>,
     auto_pass_recommended: bool,
     end_continuous_effect_offers: Vec<GameAction>,
@@ -1608,6 +1615,7 @@ fn legal_actions_result_for_viewer(state: &GameState, viewer: PlayerId) -> Legal
 #[cfg(test)]
 mod viewer_priority_tests {
     use super::*;
+    use engine::types::format::FormatConfig;
     use engine::types::game_state::{PriorityPassingMode, WaitingFor};
     use engine::types::phase::Phase;
 
@@ -1646,6 +1654,23 @@ mod viewer_priority_tests {
             "the controlled viewer is not authorized to act and must receive false"
         );
     }
+
+    #[test]
+    fn local_debug_permission_is_explicit_but_non_sandbox_p2p_stays_empty() {
+        let mut local = GameState::new(FormatConfig::standard(), 2, 42);
+        initialize_debug_permissions(&mut local, false);
+        assert!(local.debug_mode);
+        assert!(local.debug_permitted.contains(&PlayerId(0)));
+        assert!(!local.debug_permitted.contains(&PlayerId(1)));
+
+        let mut p2p = GameState::new(FormatConfig::standard(), 2, 42);
+        initialize_debug_permissions(&mut p2p, true);
+        assert!(p2p.debug_mode);
+        assert!(
+            p2p.debug_permitted.is_empty(),
+            "normal P2P must not receive the debug-library capability"
+        );
+    }
 }
 
 #[wasm_bindgen]
@@ -1658,7 +1683,11 @@ pub fn get_viewer_snapshot_js(player_id: u32) -> JsValue {
         let viewer_interaction =
             engine::game::interaction::derive_viewer_interaction(state, &filtered, viewer);
         to_js(&ViewerSnapshot {
-            state: filtered,
+            state: engine::game::derived_views::ClientGameStateRef::wrap_filtered(
+                state,
+                &filtered,
+                Some(viewer),
+            ),
             actions: legal.actions,
             auto_pass_recommended: legal.auto_pass_recommended,
             end_continuous_effect_offers: legal.end_continuous_effect_offers,
@@ -1796,6 +1825,70 @@ pub fn export_game_state_json() -> Result<String, JsValue> {
     })?
 }
 
+fn rehydrate_restored_state_from_card_db(state: &mut GameState) -> Result<(), String> {
+    CARD_DB.with(|cell| {
+        let db = cell.borrow();
+        let db = db.as_ref().ok_or_else(|| {
+            "Cannot restore game state: card database is not loaded. Call load_card_database first."
+                .to_string()
+        })?;
+        rehydrate_game_from_card_db(state, db);
+        Ok(())
+    })
+}
+
+fn decode_and_rehydrate_restored_game_state(
+    json_str: &str,
+) -> Result<DecodedRestoredGameState, String> {
+    let mut restored = decode_restored_game_state(json_str)?;
+    rehydrate_restored_state_from_card_db(&mut restored.state)?;
+    Ok(restored)
+}
+
+/// Sets the explicit debug capability that client projections consume. Local
+/// games authorize their perspective seat; multiplayer reserves debug access
+/// for the sandbox permission set so ordinary P2P games cannot expose it.
+fn initialize_debug_permissions(state: &mut GameState, multiplayer: bool) {
+    state.debug_mode = true;
+    if state.format_config.allow_debug_actions {
+        state
+            .debug_permitted
+            .extend(state.players.iter().map(|player| player.id));
+    } else if !multiplayer {
+        state.debug_permitted.insert(PlayerId(0));
+    }
+}
+
+/// Reconstructs the capability set omitted by saves created before
+/// `debug_permitted` was persisted. Current saves carry the field even when
+/// its intentionally empty, so their grant/revoke state remains authoritative.
+fn backfill_legacy_debug_permissions(
+    state: &mut GameState,
+    debug_permitted_was_serialized: bool,
+    multiplayer: bool,
+) {
+    if debug_permitted_was_serialized {
+        return;
+    }
+    if state.format_config.allow_debug_actions {
+        state
+            .debug_permitted
+            .extend(state.players.iter().map(|player| player.id));
+    } else if !multiplayer {
+        state.debug_permitted.insert(PlayerId(0));
+    }
+}
+
+#[cfg(test)]
+fn load_minimal_test_card_database() {
+    CARD_DB.with(|cell| {
+        *cell.borrow_mut() = Some(
+            CardDatabase::from_json_str("{}")
+                .expect("an empty test card database must deserialize"),
+        );
+    });
+}
+
 /// Restore the game state from a JSON string.
 /// Uses serde_json which handles string-keyed maps (from localStorage round-trip)
 /// correctly deserializing into HashMap<ObjectId, V>.
@@ -1810,7 +1903,9 @@ pub fn restore_game_state(json_str: &str) -> Result<(), JsValue> {
             "restore_game_state refused: undo is disabled in multiplayer sessions",
         ));
     }
-    let mut state = decode_restored_game_state(json_str)?;
+    let restored = decode_and_rehydrate_restored_game_state(json_str)
+        .map_err(|error| JsValue::from_str(&error))?;
+    let mut state = restored.state;
     // Reseed the skipped `rng` and fast-forward it to the offset captured at
     // export (issue #5466) so the restored game draws the values that would have
     // come NEXT rather than replaying from origin. The engine owns this logic
@@ -1818,11 +1913,7 @@ pub fn restore_game_state(json_str: &str) -> Result<(), JsValue> {
     // and reproduce the previous rewind-to-origin behavior.
     state.rehydrate_rng();
     state.debug_mode = true;
-    CARD_DB.with(|cell| {
-        if let Some(db) = cell.borrow().as_ref() {
-            rehydrate_game_from_card_db(&mut state, db);
-        }
-    });
+    backfill_legacy_debug_permissions(&mut state, restored.debug_permitted_was_serialized, false);
     finalize_public_state(&mut state);
     bind_interaction_session(&mut state);
     GAME_STATE.with(|cell| cell.set(Some(state)));
@@ -1875,7 +1966,10 @@ pub fn resume_multiplayer_host_state(json_str: &str) -> Result<(), JsValue> {
         ));
     }
 
-    let mut state = decode_restored_game_state(json_str)?;
+    let restored = decode_and_rehydrate_restored_game_state(json_str)
+        .map_err(|error| JsValue::from_str(&error))?;
+    let mut state = restored.state;
+    backfill_legacy_debug_permissions(&mut state, restored.debug_permitted_was_serialized, true);
 
     // Deliberately re-roll a fresh seed on multiplayer host resume so continued
     // play diverges from any pre-save sequence (mirrors server-core). This is a
@@ -1888,11 +1982,6 @@ pub fn resume_multiplayer_host_state(json_str: &str) -> Result<(), JsValue> {
     state.rng = ChaCha20Rng::seed_from_u64(fresh_seed);
     state.rng_word_pos = 0;
 
-    CARD_DB.with(|cell| {
-        if let Some(db) = cell.borrow().as_ref() {
-            rehydrate_game_from_card_db(&mut state, db);
-        }
-    });
     finalize_public_state(&mut state);
     bind_interaction_session(&mut state);
 
@@ -1905,6 +1994,91 @@ pub fn resume_multiplayer_host_state(json_str: &str) -> Result<(), JsValue> {
     REPLAY_LOG.with(|cell| cell.set(None));
     invalidate_ai_proposals();
     Ok(())
+}
+
+#[cfg(test)]
+mod restored_card_db_requirements_tests {
+    use super::*;
+
+    #[test]
+    fn decoded_restore_requires_a_card_database_before_state_mutation() {
+        clear_game_state();
+        set_multiplayer_mode(false);
+        CARD_DB.with(|cell| *cell.borrow_mut() = None);
+        let json = serde_json::to_string(&GameState::new_two_player(17)).unwrap();
+
+        let error = decode_and_rehydrate_restored_game_state(&json)
+            .expect_err("restore must require CARD_DB");
+        assert!(error.contains("card database"));
+        assert!(GAME_STATE.with(|cell| cell.replace(None).is_none()));
+        assert!(!is_multiplayer_mode());
+    }
+}
+
+#[cfg(test)]
+mod legacy_debug_permission_restore_tests {
+    use super::*;
+
+    fn legacy_save_without_debug_permissions(state: GameState) -> String {
+        let mut serialized = serde_json::to_value(PersistedGameState::capture(state))
+            .expect("persisted test state must serialize");
+        serialized
+            .get_mut("state")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("trusted persisted state must contain a state object")
+            .remove("debug_permitted");
+        serde_json::to_string(&serialized).expect("legacy persisted test state must serialize")
+    }
+
+    #[test]
+    fn legacy_sandbox_save_backfills_every_seat() {
+        let json = legacy_save_without_debug_permissions(GameState::new(
+            FormatConfig::standard().with_sandbox(),
+            2,
+            42,
+        ));
+
+        let mut restored = decode_restored_game_state(&json).expect("legacy save must decode");
+        assert!(!restored.debug_permitted_was_serialized);
+        backfill_legacy_debug_permissions(&mut restored.state, false, false);
+
+        assert_eq!(
+            restored.state.debug_permitted,
+            [PlayerId(0), PlayerId(1)].into_iter().collect(),
+            "legacy sandbox saves predate per-seat grants and must retain sandbox access"
+        );
+    }
+
+    #[test]
+    fn current_empty_sandbox_permission_set_remains_revoked() {
+        let mut state = GameState::new(FormatConfig::standard().with_sandbox(), 2, 42);
+        state.debug_permitted.clear();
+        let json = serde_json::to_string(&PersistedGameState::capture(state))
+            .expect("current persisted state must serialize");
+
+        let mut restored = decode_restored_game_state(&json).expect("current save must decode");
+        assert!(restored.debug_permitted_was_serialized);
+        backfill_legacy_debug_permissions(&mut restored.state, true, false);
+
+        assert!(
+            restored.state.debug_permitted.is_empty(),
+            "an explicit empty set records intentional sandbox revocation"
+        );
+    }
+
+    #[test]
+    fn legacy_normal_p2p_save_does_not_gain_debug_access() {
+        let json =
+            legacy_save_without_debug_permissions(GameState::new(FormatConfig::standard(), 2, 42));
+
+        let mut restored = decode_restored_game_state(&json).expect("legacy save must decode");
+        backfill_legacy_debug_permissions(&mut restored.state, false, true);
+
+        assert!(
+            restored.state.debug_permitted.is_empty(),
+            "normal P2P restores must not gain a debug projection"
+        );
+    }
 }
 
 // ── Replay system ───────────────────────────────────────────────────────
@@ -2644,11 +2818,12 @@ mod tests {
     use std::sync::Arc;
 
     use engine::game::deck_loading::create_object_from_card_face;
+    use engine::game::scenario::{GameScenario, P0, P1};
     use engine::game::zones::create_object;
     use engine::types::ability::{
         AbilityCost, AbilityDefinition, AbilityKind, ChoiceType, ChosenAttribute,
         ContinuousModification, Duration, Effect, QuantityExpr, QuantityRef, ResolvedAbility,
-        TargetFilter,
+        TargetFilter, TargetRef,
     };
     use engine::types::card::CardFace;
     use engine::types::card_type::{CardType, CoreType};
@@ -2660,7 +2835,7 @@ mod tests {
     };
     use engine::types::identifiers::{CardId, ObjectId};
     use engine::types::keywords::Keyword;
-    use engine::types::mana::{ManaColor, ManaCost, ManaCostShard};
+    use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
     use engine::types::phase::Phase;
     use engine::types::player::PlayerId;
 
@@ -2736,6 +2911,122 @@ mod tests {
         let action = submit_public_proposal(&proposal);
         clear_game_state();
         action
+    }
+
+    fn load_disruptor_flute_database() {
+        load_card_database(
+            r#"{
+                "disruptor flute": {
+                    "name": "Disruptor Flute",
+                    "mana_cost": { "type": "NoCost" },
+                    "card_type": { "supertypes": [], "core_types": ["Artifact"], "subtypes": [] },
+                    "power": null,
+                    "toughness": null,
+                    "loyalty": null,
+                    "defense": null,
+                    "oracle_text": "Flash\\nAs this artifact enters, choose a card name.",
+                    "abilities": [],
+                    "triggers": [],
+                    "static_abilities": [],
+                    "replacements": [],
+                    "keywords": []
+                }
+            }"#,
+        )
+        .expect("Disruptor Flute fixture database must load");
+    }
+
+    fn disruptor_flute_card_name_state() -> GameState {
+        let mut state = GameState::new_two_player(42);
+        create_object(
+            &mut state,
+            CardId(880),
+            PlayerId(0),
+            "Disruptor Flute".to_string(),
+            Zone::Battlefield,
+        );
+        state.waiting_for = WaitingFor::NamedChoice {
+            player: PlayerId(0),
+            choice_type: ChoiceType::CardName,
+            options: Vec::new(),
+            source: None,
+            persist_player: None,
+        };
+        state
+    }
+
+    fn fireball_final_target_state(pool: usize) -> (GameState, TargetRef) {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let first_target = scenario.add_creature(P1, "Fireball Target One", 3, 3).id();
+        let final_target = scenario.add_creature(P1, "Fireball Target Two", 3, 3).id();
+        let spell = scenario
+            .add_spell_to_hand(P0, "Fireball", true)
+            .with_mana_cost(ManaCost::Cost {
+                shards: vec![ManaCostShard::X, ManaCostShard::Red],
+                generic: 0,
+            })
+            .with_strive_cost(ManaCost::Cost {
+                shards: Vec::new(),
+                generic: 1,
+            })
+            .with_ability_definition(
+                AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::DealDamage {
+                        amount: QuantityExpr::Ref {
+                            qty: QuantityRef::CostXPaid,
+                        },
+                        target: TargetFilter::Any,
+                        damage_source: None,
+                        excess: None,
+                    },
+                )
+                .sub_ability(AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::DealDamage {
+                        amount: QuantityExpr::Ref {
+                            qty: QuantityRef::CostXPaid,
+                        },
+                        target: TargetFilter::Any,
+                        damage_source: None,
+                        excess: None,
+                    },
+                )),
+            )
+            .id();
+        scenario.with_mana_pool(
+            P0,
+            (0..pool)
+                .map(|_| ManaUnit::new(ManaType::Red, ObjectId(0), false, Vec::new()))
+                .collect(),
+        );
+
+        let mut state = scenario.build().state().clone();
+        engine::game::engine::apply_as_current(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: spell,
+                card_id: CardId(spell.0),
+                targets: Vec::new(),
+                payment_mode: engine::types::game_state::CastPaymentMode::Auto,
+            },
+        )
+        .expect("Fireball announcement must reach ChooseX");
+        engine::game::engine::apply_as_current(&mut state, GameAction::ChooseX { value: 3 })
+            .expect("Fireball X announcement must reach target selection");
+        engine::game::engine::apply_as_current(
+            &mut state,
+            GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(first_target)),
+            },
+        )
+        .expect("first Fireball target must leave the final target slot pending");
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::TargetSelection { .. }
+        ));
+        (state, TargetRef::Object(final_target))
     }
 
     /// The contract is only useful if every member can cross the public
@@ -2866,6 +3157,121 @@ mod tests {
             proposition_truth: Some(true),
         };
         state
+    }
+
+    #[test]
+    fn restored_disruptor_flute_card_name_proposal_applies_after_rehydration() {
+        clear_game_state();
+        set_multiplayer_mode(false);
+        load_disruptor_flute_database();
+        let json = serde_json::to_string(&disruptor_flute_card_name_state()).unwrap();
+
+        restore_game_state(&json).expect("restore must rehydrate CardName metadata");
+        let proposal: serde_json::Value = serde_wasm_bindgen::from_value(
+            get_ai_action_proposal("Medium", PlayerId(0).0)
+                .expect("public issuer must answer restored Flute prompt"),
+        )
+        .unwrap();
+        assert!(matches!(
+            serde_json::from_value::<GameAction>(proposal["action"].clone()),
+            Ok(GameAction::ChooseOption { ref choice }) if choice == "Disruptor Flute"
+        ));
+        submit_public_proposal(&proposal);
+        with_state(|state| assert!(matches!(state.waiting_for, WaitingFor::Priority { .. })))
+            .expect("applied card-name choice must leave a live successor");
+        clear_game_state();
+    }
+
+    #[test]
+    fn resumed_disruptor_flute_card_name_proposal_applies_after_rehydration() {
+        clear_game_state();
+        set_multiplayer_mode(false);
+        load_disruptor_flute_database();
+        let json = serde_json::to_string(&disruptor_flute_card_name_state()).unwrap();
+
+        resume_multiplayer_host_state(&json).expect("resume must rehydrate CardName metadata");
+        let proposal: serde_json::Value = serde_wasm_bindgen::from_value(
+            get_ai_action_proposal("Medium", PlayerId(0).0)
+                .expect("public issuer must answer resumed Flute prompt"),
+        )
+        .unwrap();
+        assert!(matches!(
+            serde_json::from_value::<GameAction>(proposal["action"].clone()),
+            Ok(GameAction::ChooseOption { ref choice }) if choice == "Disruptor Flute"
+        ));
+        submit_public_proposal(&proposal);
+        with_state(|state| assert!(matches!(state.waiting_for, WaitingFor::Priority { .. })))
+            .expect("applied card-name choice must leave a live successor");
+        assert!(is_multiplayer_mode());
+        clear_game_state();
+        set_multiplayer_mode(false);
+    }
+
+    #[test]
+    fn public_fireball_final_target_filters_unpayable_surcharge_and_keeps_payable_sibling() {
+        clear_game_state();
+        // {X}{R} with X=3 costs four mana for one target. The final second
+        // target adds the pinned Fireball/Strive-shaped {1} surcharge, so this
+        // exact reducer transition is rejected from a four-mana pool.
+        let (doomed_state, doomed_target) = fireball_final_target_state(4);
+        let doomed_action = GameAction::ChooseTarget {
+            target: Some(doomed_target.clone()),
+        };
+        let mut direct_doomed_state = doomed_state.clone();
+        let error =
+            engine::game::engine::apply_as_current(&mut direct_doomed_state, doomed_action.clone())
+                .expect_err(
+                    "reach guard: the final target must hit the unpayable payment boundary",
+                );
+        assert!(
+            error.to_string().contains("Cannot pay mana cost"),
+            "expected the production payment rejection, got {error}"
+        );
+        let doomed_contract = AiDecisionContract::issue(&doomed_state, P0);
+        assert!(
+            !doomed_contract.contains_action(&doomed_state, &doomed_action),
+            "the unpayable final target must not enter the issued contract"
+        );
+        assert!(doomed_contract.contains_action(&doomed_state, &GameAction::CancelCast));
+        assert!(
+            !engine::ai_support::legal_actions(&doomed_state).contains(&doomed_action),
+            "public legal actions must share the contract's filtered target domain"
+        );
+        GAME_STATE.with(|cell| cell.set(Some(doomed_state)));
+        let doomed_proposal: serde_json::Value = serde_wasm_bindgen::from_value(
+            get_ai_action_proposal("Medium", P0.0)
+                .expect("public issuer must expose the issued cancellation"),
+        )
+        .expect("proposal must serialize");
+        assert!(matches!(
+            serde_json::from_value::<GameAction>(doomed_proposal["action"].clone()),
+            Ok(GameAction::CancelCast)
+        ));
+        submit_public_proposal(&doomed_proposal);
+        clear_game_state();
+
+        let (payable_state, payable_target) = fireball_final_target_state(5);
+        let payable_action = GameAction::ChooseTarget {
+            target: Some(payable_target),
+        };
+        let payable_contract = AiDecisionContract::issue(&payable_state, P0);
+        assert!(
+            payable_contract.contains_action(&payable_state, &payable_action),
+            "the same final target must remain issued once its target-dependent cost is payable"
+        );
+        assert!(engine::ai_support::legal_actions(&payable_state).contains(&payable_action));
+        GAME_STATE.with(|cell| cell.set(Some(payable_state)));
+        let payable_proposal: serde_json::Value = serde_wasm_bindgen::from_value(
+            get_ai_action_proposal("Medium", P0.0)
+                .expect("public issuer must retain the payable target"),
+        )
+        .expect("proposal must serialize");
+        assert!(matches!(
+            serde_json::from_value::<GameAction>(payable_proposal["action"].clone()),
+            Ok(GameAction::ChooseTarget { target: Some(_) })
+        ));
+        submit_public_proposal(&payable_proposal);
+        clear_game_state();
     }
 
     #[test]
@@ -3684,6 +4090,7 @@ mod tests {
 
     #[test]
     fn multiplayer_mode_refuses_restore_game_state() {
+        load_minimal_test_card_database();
         // Single-player baseline: restore succeeds.
         let state = GameState::new_two_player(7);
         let json = serde_json::to_string(&state).unwrap();
@@ -3713,6 +4120,7 @@ mod tests {
         // thread-local state.
         clear_game_state();
         set_multiplayer_mode(false);
+        load_minimal_test_card_database();
 
         // Seed a game so `resume_` sees it as "already initialized".
         let state = GameState::new_two_player(7);
@@ -3755,6 +4163,7 @@ mod tests {
     fn resume_multiplayer_host_state_stamps_fresh_rng_seed_and_enables_flag() {
         clear_game_state();
         set_multiplayer_mode(false);
+        load_minimal_test_card_database();
 
         let mut state = GameState::new_two_player(42);
         // Force a known "stale" seed so we can prove it was replaced.
@@ -3782,6 +4191,7 @@ mod tests {
 
     #[test]
     fn restore_keeps_legacy_state_without_printed_ref() {
+        load_minimal_test_card_database();
         let mut state = GameState::new_two_player(42);
         let object_id = ObjectId(1);
         state.objects.insert(
@@ -3888,6 +4298,7 @@ mod replay_bridge_tests {
     #[test]
     fn restore_game_state_invalidates_the_in_progress_recording() {
         clear_game_state();
+        load_minimal_test_card_database();
 
         let state = GameState::new_two_player(7);
         REPLAY_LOG.with(|cell| {
@@ -4057,6 +4468,7 @@ mod rng_restore_bridge_tests {
         // `state.rehydrate_rng()` in restore turns it red. Asserts on consumed
         // randomness, not the stored `rng_word_pos` integer.
         clear_game_state();
+        load_minimal_test_card_database();
 
         // Seed a live game and consume randomness as gameplay would.
         let mut state = GameState::new_two_player(0x51A7_C0DE);

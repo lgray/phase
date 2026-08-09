@@ -335,7 +335,7 @@ fn priority_announcement_to_action(announcement: PriorityAnnouncement) -> GameAc
             object_id: announcement.object_id(&_access),
             card_id: announcement.card_id(&_access),
             targets: Vec::new(),
-            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+            payment_mode: announcement.payment_mode(&_access),
         },
         PriorityAnnouncement::Foretell(announcement) => GameAction::Foretell {
             object_id: announcement.object_id(&_access),
@@ -382,14 +382,14 @@ fn priority_announcement_to_action(announcement: PriorityAnnouncement) -> GameAc
             hand_object: announcement.hand_object(&_access),
             card_id: announcement.card_id(&_access),
             creature_to_return: announcement.creature_to_return(&_access),
-            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+            payment_mode: announcement.payment_mode(&_access),
         },
         PriorityAnnouncement::CastSpellAsWebSlinging(announcement) => {
             GameAction::CastSpellAsWebSlinging {
                 hand_object: announcement.hand_object(&_access),
                 card_id: announcement.card_id(&_access),
                 creature_to_return: announcement.creature_to_return(&_access),
-                payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+                payment_mode: announcement.payment_mode(&_access),
             }
         }
         PriorityAnnouncement::CastSpellForFree(announcement) => GameAction::CastSpellForFree {
@@ -1190,7 +1190,7 @@ fn finish_action_boundary_with_lifecycle(
     if matches!(mode, PublicFinalizeMode::Immediate) {
         finalize_display_state(state);
     }
-    result.log_entries = super::log::resolve_log_entries(&result.events, state);
+    result.log_entries = super::log::resolve_log_entries(&result.events, &boundary_snapshot, state);
     if preserve_interaction && !auto_pass_advanced {
         interaction::preserve_interaction_slots(state, previous_interaction_slots);
     } else {
@@ -13648,6 +13648,7 @@ fn build_contest_rounds(
 /// `start_game_with_starting_player` directly — that path runs no contest and
 /// emits no `StartingPlayerContest` event.
 pub fn start_game(state: &mut GameState) -> ActionResult {
+    let before = state.clone();
     if state.seat_order.is_empty() {
         return start_game_with_starting_player(state, PlayerId(0));
     }
@@ -13678,6 +13679,7 @@ pub fn start_game(state: &mut GameState) -> ActionResult {
             winner: starting_player,
         },
     );
+    result.log_entries = super::log::resolve_log_entries(&result.events, &before, state);
     result
 }
 
@@ -13686,6 +13688,7 @@ pub fn start_game_with_starting_player(
     state: &mut GameState,
     starting_player: PlayerId,
 ) -> ActionResult {
+    let before = state.clone();
     let mut events = Vec::new();
     state.outside_game_cards_brought_in.clear();
     let starting_player = super::topology::archenemy(state).unwrap_or(starting_player);
@@ -13739,7 +13742,7 @@ pub fn start_game_with_starting_player(
     mark_public_state_all_dirty(state);
     finalize_public_state(state);
 
-    let log_entries = super::log::resolve_log_entries(&events, state);
+    let log_entries = super::log::resolve_log_entries(&events, &before, state);
     ActionResult {
         events,
         waiting_for,
@@ -13749,6 +13752,7 @@ pub fn start_game_with_starting_player(
 
 /// Start game without mulligan (for backward compatibility with existing tests).
 pub fn start_game_skip_mulligan(state: &mut GameState) -> ActionResult {
+    let before = state.clone();
     let mut events = Vec::new();
     state.outside_game_cards_brought_in.clear();
     let starting_player = super::topology::archenemy(state).unwrap_or(PlayerId(0));
@@ -13773,7 +13777,7 @@ pub fn start_game_skip_mulligan(state: &mut GameState) -> ActionResult {
     mark_public_state_all_dirty(state);
     finalize_public_state(state);
 
-    let log_entries = super::log::resolve_log_entries(&events, state);
+    let log_entries = super::log::resolve_log_entries(&events, &before, state);
     ActionResult {
         events,
         waiting_for,
@@ -14086,15 +14090,89 @@ mod priority_facade_boundary_tests {
 mod priority_principal_tests {
     use super::{
         apply_actionless_priority_pass_for_prospective, preflight_priority_window,
+        priority_announcement_to_action, priority_preflight_candidates,
         priority_principal_for_preflight, PriorityPreflight, PriorityPreflightBlock,
-        PriorityPreflightIndeterminate, PriorityReducerFamily,
+        PriorityPreflightCandidate, PriorityPreflightIndeterminate, PriorityReducerFamily,
     };
+    use crate::game::game_object::BackFaceData;
+    use crate::game::scenario::{GameScenario, P0};
     use crate::game::zones;
-    use crate::types::card_type::CoreType;
+    use crate::types::ability::{
+        AbilityDefinition, AbilityKind, Effect, QuantityExpr, TargetFilter,
+    };
+    use crate::types::card_type::{CardType, CoreType};
     use crate::types::game_state::{GameState, WaitingFor};
-    use crate::types::identifiers::CardId;
+    use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
+    use crate::types::phase::Phase;
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
+
+    fn issue_4001_alternative_face_fixture(mana_count: usize) -> (GameState, ObjectId) {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::DeclareAttackers);
+        let object_id = scenario
+            .add_creature_to_hand(P0, "Frolicking Familiar", 2, 2)
+            .with_mana_cost(ManaCost::Cost {
+                shards: vec![ManaCostShard::Red],
+                generic: 2,
+            })
+            .id();
+        let mut runner = scenario.build();
+        runner
+            .state_mut()
+            .objects
+            .get_mut(&object_id)
+            .unwrap()
+            .back_face = Some(BackFaceData {
+            name: "Blow Off Steam".to_string(),
+            power: None,
+            toughness: None,
+            loyalty: None,
+            printed_loyalty: None,
+            defense: None,
+            card_types: {
+                let mut card_types = CardType::default();
+                card_types.core_types.push(CoreType::Instant);
+                card_types.subtypes.push("Adventure".to_string());
+                card_types
+            },
+            mana_cost: ManaCost::Cost {
+                shards: vec![ManaCostShard::Red],
+                generic: 1,
+            },
+            keywords: Vec::new(),
+            abilities: vec![AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 2 },
+                    target: TargetFilter::Any,
+                    damage_source: None,
+                    excess: None,
+                },
+            )],
+            trigger_definitions: Default::default(),
+            replacement_definitions: Default::default(),
+            static_definitions: Default::default(),
+            color: vec![ManaColor::Red],
+            printed_ref: None,
+            modal: None,
+            additional_cost: None,
+            strive_cost: None,
+            casting_restrictions: Vec::new(),
+            casting_options: Vec::new(),
+            layout_kind: None,
+        });
+        for _ in 0..mana_count {
+            runner.state_mut().players[0].mana_pool.add(ManaUnit::new(
+                ManaType::Red,
+                ObjectId(0),
+                false,
+                Vec::new(),
+            ));
+        }
+        (runner.state().clone(), object_id)
+    }
 
     #[test]
     fn principal_preserves_the_controlled_priority_seat() {
@@ -14161,6 +14239,44 @@ mod priority_principal_tests {
             preflight_priority_window(&state),
             PriorityPreflight::Actionless
         );
+    }
+
+    #[test]
+    fn priority_preflight_keeps_cast_legal_only_through_alternative_face() {
+        let (state, object_id) = issue_4001_alternative_face_fixture(2);
+        let before = state.clone();
+
+        assert!(
+            crate::game::casting::effective_spell_cost(&state, P0, object_id).is_none(),
+            "the creature front face must remain unpreparable outside a main phase"
+        );
+        assert!(
+            crate::game::casting::can_cast_object_now(&state, P0, object_id),
+            "the instant Adventure face must make the object castable"
+        );
+        assert_eq!(
+            preflight_priority_window(&state),
+            PriorityPreflight::Actionable {
+                family: PriorityReducerFamily::CastSpell,
+            }
+        );
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn priority_preflight_stays_actionless_when_neither_face_is_castable() {
+        let (state, object_id) = issue_4001_alternative_face_fixture(0);
+        let before = state.clone();
+
+        assert!(
+            !crate::game::casting::can_cast_object_now(&state, P0, object_id),
+            "neither the front face nor the Adventure face is currently castable"
+        );
+        assert_eq!(
+            preflight_priority_window(&state),
+            PriorityPreflight::Actionless
+        );
+        assert_eq!(state, before);
     }
 
     #[test]
@@ -14251,6 +14367,130 @@ mod priority_principal_tests {
             }
         );
         assert_eq!(state, before);
+    }
+
+    #[test]
+    fn priority_play_face_down_candidate_is_reachable_but_not_an_exact_legal_action_candidate() {
+        use crate::types::actions::GameAction;
+        use crate::types::keywords::Keyword;
+        use crate::types::mana::{ManaCost, ManaType, ManaUnit};
+
+        let player = PlayerId(0);
+        let mut state = GameState::new_two_player(42);
+        state.active_player = player;
+        state.priority_player = player;
+        state.phase = crate::types::phase::Phase::PreCombatMain;
+        state.waiting_for = WaitingFor::Priority { player };
+        let morph = zones::create_object(
+            &mut state,
+            CardId(7_301),
+            player,
+            "Preflight Morph".to_string(),
+            Zone::Hand,
+        );
+        {
+            let object = state.objects.get_mut(&morph).unwrap();
+            object.card_types.core_types.push(CoreType::Creature);
+            object.base_card_types = object.card_types.clone();
+            object.mana_cost = ManaCost::generic(8);
+            object.base_mana_cost = object.mana_cost.clone();
+            object.keywords = vec![Keyword::Morph(ManaCost::generic(5))];
+            object.base_keywords = object.keywords.clone();
+        }
+        let sibling_spell = zones::create_object(
+            &mut state,
+            CardId(7_303),
+            player,
+            "Preflight Sibling Spell".to_string(),
+            Zone::Hand,
+        );
+        {
+            let object = state.objects.get_mut(&sibling_spell).unwrap();
+            object.card_types.core_types.push(CoreType::Creature);
+            object.base_card_types = object.card_types.clone();
+            object.mana_cost = ManaCost::zero();
+            object.base_mana_cost = object.mana_cost.clone();
+        }
+        let sibling_action = GameAction::CastSpell {
+            object_id: sibling_spell,
+            card_id: state.objects[&sibling_spell].card_id,
+            targets: Vec::new(),
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        };
+        let prohibition = zones::create_object(
+            &mut state,
+            CardId(7_302),
+            PlayerId(1),
+            "Preflight Name Prohibition".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            use crate::types::ability::{ChosenAttribute, StaticDefinition, TargetFilter};
+            use crate::types::statics::{ProhibitionScope, StaticMode};
+
+            let object = state.objects.get_mut(&prohibition).unwrap();
+            object.card_types.core_types.push(CoreType::Enchantment);
+            object.base_card_types = object.card_types.clone();
+            object
+                .chosen_attributes
+                .push(ChosenAttribute::CardName("Preflight Morph".to_string()));
+            object.static_definitions.push(
+                StaticDefinition::new(StaticMode::CantBeCast {
+                    who: ProhibitionScope::AllPlayers,
+                })
+                .affected(TargetFilter::HasChosenName),
+            );
+        }
+        for _ in 0..3 {
+            state.players[0].mana_pool.add(ManaUnit::new(
+                ManaType::Colorless,
+                morph,
+                false,
+                vec![],
+            ));
+        }
+        let principal = priority_principal_for_preflight(&state)
+            .expect("the synchronized priority window has a principal");
+        let play_face_down = priority_preflight_candidates(&state, &principal)
+            .into_iter()
+            .find(|candidate| candidate.family() == PriorityReducerFamily::PlayFaceDown)
+            .expect("the family-specific face-down candidate must be reachable");
+        assert_eq!(play_face_down.family(), PriorityReducerFamily::PlayFaceDown);
+        assert_eq!(
+            preflight_priority_window(&state),
+            PriorityPreflight::Actionable {
+                family: PriorityReducerFamily::CastSpell,
+            },
+            "the unchanged first-wins aggregate must report the earlier CastSpell family"
+        );
+        let candidates = crate::ai_support::candidate_actions(&state);
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.action == sibling_action));
+        assert!(candidates
+            .iter()
+            .all(|candidate| !matches!(candidate.action, GameAction::PlayFaceDown { .. })));
+        let legal_actions = crate::ai_support::legal_actions(&state);
+        assert!(legal_actions.contains(&sibling_action));
+        assert!(legal_actions
+            .iter()
+            .all(|action| !matches!(action, GameAction::PlayFaceDown { .. })));
+
+        let PriorityPreflightCandidate::Announcement(announcement) = play_face_down else {
+            panic!("the reachable face-down family must carry a reducer announcement")
+        };
+        let action = priority_announcement_to_action(announcement);
+        assert!(matches!(
+            action,
+            GameAction::PlayFaceDown { object_id, .. } if object_id == morph
+        ));
+        let mut projected = state.clone();
+        super::apply_as_current(&mut projected, action)
+            .expect("the reconstructed face-down announcement must reduce successfully");
+        assert!(projected.waiting_for.pending_cast_ref().is_none());
+        assert!(projected.pending_cast.is_none());
+        assert_eq!(projected.objects[&morph].zone, Zone::Battlefield);
+        assert!(projected.objects[&morph].face_down);
     }
 
     #[test]
