@@ -639,6 +639,16 @@ fn carries_unreadable_rules_content(object: &GameObject) -> bool {
         || object.class_level.is_some()
         || object.intensity != 0
         || !object.attraction_lights.is_empty()
+        // CR 709.5: a shared type line is two static abilities that remove the name, mana
+        // cost and RULES TEXT of each locked half; CR 709.5c names the unlocked
+        // designations, and CR 709.5e lets any player unlock a half as a special action at
+        // any priority. So which halves are unlocked decides what rules text the permanent
+        // has, `obj.abilities` is a flat list that cannot express that, and an opponent can
+        // change the answer inside the very window this fold is deciding about.
+        // Found by the same review round that caught the `card_type` bucket below, and it
+        // is the fourth subtype-derived field of four — the other three were already here,
+        // which is what made this one's absence a curated subset rather than a set.
+        || object.room_unlocks.is_some()
 }
 
 /// Fold every ability an object carries. A missing object, or one carrying no
@@ -774,7 +784,7 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::parser::oracle::parse_oracle_text;
-    use crate::types::card::CardFace;
+    use crate::types::card::{CardFace, CardMetadata};
     use crate::types::keywords::Keyword;
 
     /// A card as the pipeline sees it: its REAL printed name plus its verbatim
@@ -1566,16 +1576,45 @@ mod tests {
             strive_cost: _,
             solve_condition: _, // lands as `obj.case_state`
             attraction_lights: _,
-            // `metadata` is mixed: its `spellbook` is gated; `related_token_ids` is not
-            // rules-bearing (it names tokens a card can make, and making them runs
-            // through abilities this fold already reads).
-            metadata: _,
+            // `metadata` is MIXED, so it is DESTRUCTURED rather than bound whole. Binding
+            // it was a hole in the guard that the guard's own comment declared and did not
+            // close: `spellbook` is exactly a rules-bearing field that arrived inside this
+            // struct, so "mixed" is the reason to open it, not the reason to wave it past.
+            metadata:
+                CardMetadata {
+                    // GATED as `obj.spellbook`.
+                    spellbook: _,
+                    // Parser-provenance counters: how many abilities came from Forge
+                    // scripts rather than the Oracle parser. The abilities themselves are
+                    // in the collections above; these are counts of them.
+                    forge_abilities: _,
+                    forge_triggers: _,
+                    forge_statics: _,
+                    forge_replacements: _,
+                    // Names tokens this card can make; MAKING one runs through
+                    // `Effect::Token` in `abilities`, which this fold already reads.
+                    related_token_ids: _,
+                    // Image/catalog identifiers.
+                    source_printing_ids: _,
+                    // CR 202.3d + CR 709.4b: a split card's combined off-stack mana value,
+                    // read by deck-construction checks. A cost, not what resolving does.
+                    off_stack_mana_value_override: _,
+                },
 
             // ---- NOT RULES-BEARING. One reason each, because an unjustified entry here
             // is exactly where the next lazy re-bucket lands.
-            name: _,               // identity, not behaviour
-            mana_cost: _,          // cost to cast, not what resolving does
-            card_type: _,          // types/subtypes gate other rules, carry none alone
+            name: _,      // identity, not behaviour
+            mana_cost: _, // cost to cast, not what resolving does
+            // NOT inert, and the earlier reason here ("types/subtypes gate other rules,
+            // carry none alone") was measurably WRONG. `printed_cards` derives four
+            // object-level rules fields from `subtypes` ALONE, with no CardFace field
+            // behind them: `Class` => `class_level` (:206), `Case` => `case_state` (:238),
+            // `Room` => `room_unlocks` (:246), `Attraction` => `attraction_lights` (:250).
+            // The face's own field is therefore safe to skip only BECAUSE all four
+            // derived fields are gated — and `room_unlocks` was not, until the review
+            // round that read this line. A wrong reason in this bucket is worse than no
+            // reason: it certifies that no gate is needed.
+            card_type: _,
             power: _,              // combat statistic
             toughness: _,          // combat statistic
             loyalty: _,            // resource counter, abilities that spend it are in `abilities`
@@ -1593,6 +1632,158 @@ mod tests {
             parse_warnings: _,     // parser diagnostics, never consulted at runtime
             rarities: _,           // printing metadata
         } = CardFace::default();
+    }
+
+    /// Every GATED bucket entry above must actually REACH the gate, through the pipeline
+    /// that really populates it.
+    ///
+    /// This exists because a review round measured that seven of the gate's disjuncts had
+    /// no test and no revert-probe — `modal`, `additional_cost`, `strive_cost`,
+    /// `cleave_variant`, `casting_restrictions`, `casting_options`, `back_face` — each
+    /// occurring exactly once in the whole file, in the gate itself. Deleting any of them
+    /// left the entire suite green. The sting: `modal` and `additional_cost` are 2 of the
+    /// 10 cards the widening actually flips, so the disjuncts with no coverage were the
+    /// LIVE ones while the four that had witnesses were the inert ones. The guard above is
+    /// a compile-time claim that each field is classified; this is the runtime claim that
+    /// the classification is TRUE.
+    ///
+    /// It also turns the guard's `CardFace` → `GameObject` mapping from a comment into an
+    /// assertion. Each case mutates a **`CardFace`** and runs the real
+    /// `apply_card_face_to_object`, so a rename or a dropped copy in `printed_cards` reds
+    /// here instead of silently un-gating the field — which is the failure the `spellbook`
+    /// and `keywords` holes both took to get in.
+    #[test]
+    fn every_gated_card_face_field_reaches_the_gate_through_printed_cards() {
+        use crate::game::printed_cards::apply_card_face_to_object;
+
+        // `clippy::type_complexity` rejects the inline tuple-of-fn-ptr array; the alias is
+        // the lint's own suggested remedy.
+        type FaceSetter = fn(&mut CardFace);
+        let cases: [(&str, FaceSetter); 12] = [
+            // --- carried on the face itself.
+            ("keywords", |f| f.keywords = vec![Keyword::Cascade]),
+            ("cleave_variant", |f| {
+                f.cleave_variant = Some(crate::types::card::CleaveVariant::default())
+            }),
+            ("modal", |f| {
+                f.modal = Some(crate::types::ability::ModalChoice::default())
+            }),
+            ("additional_cost", |f| {
+                f.additional_cost = Some(crate::types::ability::AdditionalCost::Kicker {
+                    costs: vec![],
+                    repeatability: crate::types::ability::AdditionalCostRepeatability::Once,
+                })
+            }),
+            ("casting_restrictions", |f| {
+                f.casting_restrictions = vec![crate::types::ability::CastingRestriction::AsSorcery]
+            }),
+            ("casting_options", |f| {
+                f.casting_options = vec![crate::types::ability::SpellCastingOption::free_cast()]
+            }),
+            ("strive_cost", |f| {
+                f.strive_cost = Some(crate::types::mana::ManaCost::default())
+            }),
+            ("metadata.spellbook", |f| {
+                f.metadata.spellbook = vec!["Lightning Bolt".to_string()]
+            }),
+            // --- DERIVED FROM `card_type.subtypes` ALONE, with no face field behind them.
+            // These four are why the guard's `card_type` bucket reason had to be rewritten:
+            // the face's own `card_type` is safe to skip only because all four landing
+            // fields are gated, and `room_unlocks` was not until this round.
+            ("card_type: Class → class_level", |f| {
+                f.card_type.subtypes = vec!["Class".to_string()]
+            }),
+            ("card_type: Case → case_state", |f| {
+                f.card_type.subtypes = vec!["Case".to_string()];
+                f.solve_condition = Some(crate::types::ability::SolveCondition::Text {
+                    description: "probe".to_string(),
+                });
+            }),
+            ("card_type: Room → room_unlocks", |f| {
+                f.card_type.subtypes = vec!["Room".to_string()]
+            }),
+            ("card_type: Attraction → attraction_lights", |f| {
+                f.card_type.subtypes = vec!["Attraction".to_string()]
+            }),
+        ];
+
+        for (field, set) in cases {
+            // CONTROL and WITNESS are SEPARATE freshly-created objects rather than one
+            // object applied twice. `printed_cards` seeds `class_level` only when
+            // `base_characteristics_initialized` is still false (CR 716.2b), so re-applying
+            // to the same object would silently skip the very field the Class case tests —
+            // and the case would pass for the wrong reason on the three cases beside it.
+            let mut face = CardFace {
+                name: "Probe".to_string(),
+                ..CardFace::default()
+            };
+            let mut state = GameState::default();
+
+            let control = create_object(
+                &mut state,
+                crate::types::identifiers::CardId(1),
+                crate::types::player::PlayerId(0),
+                face.name.clone(),
+                Zone::Hand,
+            );
+            apply_card_face_to_object(
+                state.objects.get_mut(&control).expect("just created"),
+                &face,
+            );
+            assert!(
+                !carries_unreadable_rules_content(
+                    state.objects.get(&control).expect("just created")
+                ),
+                "CONTROL for {field}: a default face lands no unreadable content, so the \
+                 verdict below is produced by {field} and not by the face it rides on"
+            );
+
+            set(&mut face);
+            let witness = create_object(
+                &mut state,
+                crate::types::identifiers::CardId(2),
+                crate::types::player::PlayerId(0),
+                face.name.clone(),
+                Zone::Hand,
+            );
+            apply_card_face_to_object(
+                state.objects.get_mut(&witness).expect("just created"),
+                &face,
+            );
+            assert!(
+                carries_unreadable_rules_content(
+                    state.objects.get(&witness).expect("just created")
+                ),
+                "CardFace {field} is rules content this fold cannot read, so `printed_cards` \
+                 must land it somewhere the gate looks — either the gate lost a disjunct or \
+                 the copy into `GameObject` was renamed out from under it"
+            );
+        }
+
+        // `back_face` is the one gated field with no `apply_card_face_to_object` route:
+        // `printed_cards::apply_card_face_to_back_face` fills a `BackFaceData` on the
+        // transform path instead. Asserted directly, and reusing `game::specialize`'s
+        // existing empty constructor rather than hand-rolling a 22-field literal that would
+        // go stale the moment `BackFaceData` gains a field.
+        let mut state = GameState::default();
+        let id = create_object(
+            &mut state,
+            crate::types::identifiers::CardId(3),
+            crate::types::player::PlayerId(0),
+            "Probe".to_string(),
+            Zone::Hand,
+        );
+        assert!(
+            !carries_unreadable_rules_content(state.objects.get(&id).expect("just created")),
+            "CONTROL for back_face: a bare object carries nothing the gate reads"
+        );
+        state.objects.get_mut(&id).expect("just created").back_face =
+            Some(crate::game::specialize::empty_back_face());
+        assert!(
+            carries_unreadable_rules_content(state.objects.get(&id).expect("just created")),
+            "a back face is an entire second face of rules content this fold never descends \
+             into, so its presence is not proof of confinement"
+        );
     }
 
     /// The destination axis, on a REAL parsed node, one field mutated.
