@@ -219,19 +219,25 @@ describe("AttackTargetPicker", () => {
         derived: {
           counter_display: {
             "101": {
+              // Row order is the engine's, not this file's: `counter_display_views` runs the
+              // `Unbounded` pass first, then the `Finite` one through a `BTreeMap`, so
+              // `Unbounded` rows lead and each class is ordered by `CounterType`'s DECLARATION
+              // `Ord` — where `Lore` precedes `Generic(_)`. No assertion below depends on it
+              // (order is pinned engine-side), but a fixture in a different order than the
+              // engine can ever emit is a false picture of the frame this site receives.
               pills: [
-                { counter: "charge", count: 4 },
+                // CR 122.1: a zero-count UNBOUNDED row IS a shape the engine emits — the
+                // unbounded pass publishes its live count with no zero filter, so this is the
+                // `0 → 1` case. It must still render (as ∞), which is what fails if this site
+                // ever reintroduces a `count > 0` filter over the projected rows.
+                { counter: "quest", count: 0, magnitude: "Unbounded" },
                 // CR 122.1: engine-supplied row with NO entry in the raw map, so it is
                 // unreachable by any client-side derivation from `obj.counters`. Count is
                 // nonzero on purpose: the FINITE pass of `counter_display_views` runs
                 // `positive_counter_entries`, so a zero-count Finite row is a shape the engine
                 // provably never emits.
                 { counter: "lore", count: 3 },
-                // CR 122.1: a zero-count UNBOUNDED row IS a shape the engine emits — the
-                // unbounded pass publishes its live count with no zero filter, so this is the
-                // `0 → 1` case. It must still render (as ∞), which is what fails if this site
-                // ever reintroduces a `count > 0` filter over the projected rows.
-                { counter: "quest", count: 0, magnitude: "Unbounded" },
+                { counter: "charge", count: 4 },
               ],
             },
           },
