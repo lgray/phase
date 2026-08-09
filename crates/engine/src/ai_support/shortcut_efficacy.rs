@@ -52,15 +52,19 @@
 //! shape here at all, so the ability this module is handed looks strictly MORE
 //! confined than the printed card is — and narrowing apparent reach is the
 //! dangerous direction, because it produces a false `Accept`, not a false
-//! `Shorten`. MEASURED at this base, via `parse_oracle_text` on the verbatim
-//! MTGJSON text: `Invoke Justice[0]` parses to a lone [`Effect::ChangeZone`]
-//! (`origin: Graveyard`, `target: Typed{controller: You}`) with no cost, no
-//! `sub_ability` and every conservative-when-present field absent, so it
-//! classifies `OwnResourcesOnly` — while the card's sentence continues "then
+//! `Shorten`. The residual is stated structurally rather than pinned to a card,
+//! because a card witness is only valid until the classifier moves under it:
+//! this doc previously named `Invoke Justice[0]` — a lone
+//! [`Effect::ChangeZone`] (`origin: Graveyard`, `target: Typed{controller:
+//! You}`, no cost, no `sub_ability`) whose printed sentence continues "then
 //! distribute four +1/+1 counters among any number of creatures and/or Vehicles
-//! target player controls". No widening of this module can close that: it
-//! cannot read a clause that never reached it, so the residual is owned by the
-//! parser, not by the classifier.
+//! target player controls" — and the entry gate added below has since
+//! reclassified it `MayInterfere`, because its battlefield entry is not
+//! provably tapped. That narrowed the residual; it did not close it. What
+//! remains live is the same shape at a destination the entry gate does not
+//! constrain: a non-battlefield destination, or a provably tapped entry. No
+//! widening of this module can reach any of it — it cannot read a clause that
+//! never arrived, so the residual is owned by the parser, not the classifier.
 //!
 //! The structural guard is the compiler, not a test:
 //! [`ability_window_reach`] destructures [`AbilityDefinition`] **without
@@ -84,7 +88,7 @@ use crate::types::ability::{
 use crate::types::actions::GameAction;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
-use crate::types::zones::Zone;
+use crate::types::zones::{EtbTapState, Zone};
 
 /// How far a single available action can reach, relative to the player who
 /// would take it.
@@ -193,6 +197,17 @@ fn effect_window_reach(effect: &Effect) -> WindowReach {
         //
         // CR 400.1 is cited here only for why a bare `Zone::Library`
         // reference is ambiguous in the first place.
+        //
+        // `split` IS read, and it is the second door into the battlefield. A
+        // cultivate-class search moves its own found cards
+        // (`SearchDestinationSplit { primary_destination, primary_enter_tapped,
+        // rest_destination }`) WITHOUT any `ChangeZone` sub-ability, so the tap
+        // gate on that arm cannot see it. Same rule (CR 110.5b), same
+        // fail-closed direction: a split may reach the battlefield only through
+        // its `primary_destination` and only when `primary_enter_tapped` proves
+        // `Tapped`. `rest_destination` carries NO tap state at all, so it can
+        // never be proven tapped and a battlefield `rest_destination` is reach
+        // by construction.
         Effect::SearchLibrary {
             source_zones: _,
             filter: _,
@@ -200,8 +215,15 @@ fn effect_window_reach(effect: &Effect) -> WindowReach {
             reveal: _,
             target_player,
             selection_constraint: _,
-            split: _,
-        } => WindowReach::of(target_player.is_none()),
+            split,
+        } => {
+            let split_entry_is_confined = split.as_ref().is_none_or(|split| {
+                (split.primary_destination != Zone::Battlefield
+                    || matches!(split.primary_enter_tapped, EtbTapState::Tapped))
+                    && split.rest_destination != Zone::Battlefield
+            });
+            WindowReach::of(target_player.is_none() && split_entry_is_confined)
+        }
 
         // CR 400.1: a library is a per-player zone, so shuffling is
         // confined exactly when the shuffled player is proven to be the actor.
@@ -217,26 +239,81 @@ fn effect_window_reach(effect: &Effect) -> WindowReach {
         // `Library -> Battlefield / Any` node and still folds to
         // `MayInterfere` because its parent search carries
         // `target_player: Typed{controller: Opponent}`.
+        //
+        // OWNERSHIP IS NOT ENOUGH WHEN THE DESTINATION IS THE BATTLEFIELD.
+        // CR 110.5b: "Permanents enter the battlefield untapped, unflipped, face
+        // up, and phased in unless a spell or ability says otherwise." A land
+        // that arrives UNTAPPED taps for mana in the very window the Shorten
+        // hands the responder — CR 601.2g runs mana abilities during the cast
+        // they fund, and CR 302.6's summoning-sickness bar is a CREATURE rule
+        // that never applies to a land. So an untapped fetch is the
+        // `Effect::Mana` case below with one extra step, and the reasoning that
+        // refuses to allowlist mana production refuses this too. MEASURED at
+        // this base on the live parser: `Terramorphic Expanse[0]` and
+        // `Evolving Wilds[0]` carry `enter_tapped: Tapped`, while
+        // `Crop Rotation[0]` and `Nature's Lore[0]` — same anaphoric
+        // `Library -> Battlefield / Any` node, same absent cost — carry
+        // `Unspecified` and were allowlisted here until this gate.
+        //
+        // Fail-closed on the tap axis: ONLY a provably `Tapped` entry stays
+        // confined, so `Unspecified` (the serde default, i.e. the AST said
+        // nothing) and `Untapped` both fall out. A conditionally-untapped entry
+        // (a shock land's pay-life choice, a land-count gate) cannot be proven
+        // tapped from the AST and is therefore reach, which is the direction
+        // this module's §2 default exists to take.
+        //
+        // The gate is keyed on `destination` because tap state is meaningless
+        // anywhere else: a move to a hand, graveyard, library or exile is
+        // unaffected. It applies to BOTH disjuncts, not just the anaphoric one —
+        // proven ownership does not stop an untapped land from producing mana,
+        // so a graveyard-recursion shape reaching the battlefield untapped is
+        // the same defect through the other door.
+        //
+        // PROVABLY tapped, not NOMINALLY tapped. Three more of this variant's
+        // fields decide what actually arrives, and each one is read here rather
+        // than ignored, because `enter_tapped` alone is not proof:
+        //
+        // * `enters_modified_if: Some(filter)` makes the tapped rider
+        //   CONDITIONAL on the moved object's characteristics (CR 614.12: check
+        //   the characteristics of the permanent as it would exist on the
+        //   battlefield; CR 614.12a: any choice it requires is made first), so
+        //   an object that fails the filter enters untapped while the field
+        //   still reads `Tapped`. Unprovable from the AST ⇒ reach.
+        // * `enters_under` (CR 110.2a: "that object enters the battlefield under
+        //   that player's control unless the effect states otherwise") routes the
+        //   entering permanent to whatever controller it names. Anything but the
+        //   actor puts a permanent on ANOTHER player's board, which is reach by
+        //   definition — tapped or not.
+        // * `enters_attacking` (CR 508.4) puts the creature into combat against
+        //   a defending player, planeswalker or battle. That is the clearest
+        //   possible touch outside the actor's own resources, and a tapped
+        //   attacker is still an attacker.
         Effect::ChangeZone {
             origin,
             destination,
             target,
             owner_library: _,
             enter_transformed: _,
-            enters_under: _,
-            enter_tapped: _,
-            enters_attacking: _,
+            enters_under,
+            enter_tapped,
+            enters_attacking,
             up_to: _,
             enter_with_counters: _,
             conditional_enter_with_counters: _,
             face_down_profile: _,
-            enters_modified_if: _,
-        } => WindowReach::of(
-            filter_is_actor_owned(target)
+            enters_modified_if,
+        } => {
+            let object_is_confined = filter_is_actor_owned(target)
                 || (matches!(target, TargetFilter::Any)
                     && *origin == Some(Zone::Library)
-                    && *destination == Zone::Battlefield),
-        ),
+                    && *destination == Zone::Battlefield);
+            let entry_is_confined = *destination != Zone::Battlefield
+                || (matches!(enter_tapped, EtbTapState::Tapped)
+                    && enters_modified_if.is_none()
+                    && !*enters_attacking
+                    && matches!(enters_under, None | Some(ControllerRef::You)));
+            WindowReach::of(object_is_confined && entry_is_confined)
+        }
 
         // NOT allowlisted — and `Effect::Mana` is the case that has to be NAMED
         // here rather than left to the reader, because an earlier revision of
@@ -446,12 +523,20 @@ fn indexed_ability_window_reach(
 /// Missing an action here is an Accept by OMISSION — the direction that loses
 /// games.
 ///
-/// ponytail: a fetched permanent that itself enables interference is not
-/// modelled. Using it needs a further priority window, and this design does NOT
-/// claim one is guaranteed — CR 732.1b says only that the shortcut rules *can
-/// be used* on a loop, and CR 732.2a makes proposing
-/// permissive ("may suggest").
-/// Scope, stated on BOTH axes:
+/// ponytail: a fetched permanent that itself enables interference is modelled
+/// only through its ARRIVAL STATE, never by walking its abilities.
+/// `effect_window_reach` keeps a battlefield entry confined only when the AST
+/// proves it arrives tapped (CR 110.5b), so the mana axis — the fetched land
+/// that taps for mana inside this same window — is closed: an untapped entry
+/// reads `MayInterfere`.
+///
+/// What remains unmodelled, stated precisely rather than as a blanket: a
+/// permanent that arrives TAPPED and still enables interference, via an ability
+/// whose cost is not tapping (e.g. sacrifice-for-mana). Reaching that needs a
+/// further priority window, and this design does NOT claim one is guaranteed —
+/// CR 732.1b says only that the shortcut rules *can be used* on a loop, and
+/// CR 732.2a makes proposing permissive ("may suggest").
+/// Scope of that remainder, on BOTH axes:
 ///   - across windows: a bounded miss — a seat's fetched answer goes unused for
 ///     THIS shortcut;
 ///   - within the window: the worst case is NOT bounded by "one shortcut". On
@@ -459,9 +544,10 @@ fn indexed_ability_window_reach(
 ///     in-window cost of a missed out is elimination.
 ///
 /// Accepted because the miss requires the out to be reachable ONLY through the
-/// fetched permanent; a directly-castable answer is already caught by the
-/// top-level fold. Upgrade path: walk the fetched object's own abilities if a
-/// real game shows a missed out. Owner: this lane, deferral burndown.
+/// fetched permanent AND that permanent to arrive tapped; a directly-castable
+/// answer is already caught by the top-level fold. Upgrade path: walk the
+/// fetched object's own abilities if a real game shows a missed out. Owner:
+/// this lane, deferral burndown.
 pub(crate) fn any_action_may_interfere(state: &GameState, actions: &[GameAction]) -> bool {
     actions.iter().any(|action| match action {
         GameAction::PassPriority => false,
@@ -625,6 +711,36 @@ mod tests {
         name: "Path to Exile",
         oracle: "Exile target creature. Its controller may search their library for a basic land \
         card, put that card onto the battlefield tapped, then shuffle.",
+    };
+    /// Nature's Lore, verbatim (MTGJSON `.data["Nature's Lore"][0].text`). The
+    /// MINIMAL PAIR against `RAMPANT_GROWTH` above: same sentence shape, same
+    /// absent cost, same anaphoric `Library -> Battlefield / Any` node — and it
+    /// differs by the ONE printed word (`tapped`) the gate reads.
+    const NATURES_LORE: Card = Card {
+        name: "Nature's Lore",
+        oracle: "Search your library for a Forest card, put that card onto the battlefield, \
+                 then shuffle.",
+    };
+    /// Crop Rotation, verbatim (MTGJSON, both lines). The reviewer's named
+    /// residual. MEASURED on the live parser: the additional-cost line is NOT
+    /// carried (`cost: None`, one ability), so its verdict rides the zone-change
+    /// node alone — which is exactly why it was allowlisted before this gate.
+    const CROP_ROTATION: Card = Card {
+        name: "Crop Rotation",
+        oracle: "As an additional cost to cast this spell, sacrifice a land.\n\
+                 Search your library for a land card, put that card onto the battlefield, \
+                 then shuffle.",
+    };
+    /// Cultivate, verbatim (MTGJSON). The SECOND door onto the battlefield: its
+    /// search carries a `SearchDestinationSplit` and moves the found cards
+    /// ITSELF, with no `ChangeZone` sub-ability for the tap gate to read.
+    /// MEASURED over the corpus: 12 abilities carry a split at all, and every
+    /// battlefield-primary one prints "tapped" — so this fixture is the class,
+    /// not an example of it.
+    const CULTIVATE: Card = Card {
+        name: "Cultivate",
+        oracle: "Search your library for up to two basic land cards, reveal those cards, put one \
+                 onto the battlefield tapped and the other into your hand, then shuffle.",
     };
     const DARK_RITUAL: Card = Card {
         name: "Dark Ritual",
@@ -1078,5 +1194,237 @@ mod tests {
         // Reach-guard: the classifier can still return OwnResourcesOnly, so the
         // two MayInterfere verdicts above are attributable and not a constant.
         assert_eq!(reach(&RAMPANT_GROWTH, 0), WindowReach::OwnResourcesOnly);
+    }
+
+    /// The tap-state gate (CR 110.5b), on the MINIMAL PAIR. `Rampant Growth` and
+    /// `Nature's Lore` differ by one printed word, and every other axis this
+    /// classifier reads is identical: no cost, a `SearchLibrary` head with
+    /// `target_player: None`, and one anaphoric
+    /// `ChangeZone { Library -> Battlefield, target: Any }` sub-ability. So the
+    /// verdicts below are attributable to `enter_tapped` and to nothing else —
+    /// the first two assertions MEASURE that premise rather than assert it.
+    ///
+    /// Why the untapped one is reach: the fetched land arrives ready (CR 302.6's
+    /// summoning-sickness bar is a creature rule), taps for mana inside the
+    /// window the Shorten hands back, and CR 601.2g runs that mana ability during
+    /// the cast it funds. `v10c` in `tests/integration/shorten_efficacy.rs`
+    /// measures that whole chain on the real 4p board; this row pins the AST
+    /// premise it rests on.
+    ///
+    /// Revert-probe: in `effect_window_reach`'s `ChangeZone` arm, replace
+    /// `object_is_confined && entry_is_confined` with `object_is_confined` alone
+    /// (the pre-fix expression) — BOTH untapped rows flip to `OwnResourcesOnly`.
+    #[test]
+    fn an_untapped_fetch_is_reach_and_a_tapped_one_stays_confined() {
+        for card in [&NATURES_LORE, &CROP_ROTATION] {
+            let name = card.name;
+            assert!(
+                !head_is_unparsed(card, 0),
+                "VACUITY GUARD: {name}[0] must PARSE, or the row measures the fail-closed arm \
+                 instead of the zone-change node's own semantics"
+            );
+            let def = ability(card, 0);
+            assert!(
+                def.cost.is_none(),
+                "PREMISE: {name}[0] carries no cost, so no cost leg can carry the verdict; got \
+                 {:?}",
+                def.cost
+            );
+            assert_eq!(
+                effect_window_reach(&def.effect),
+                WindowReach::OwnResourcesOnly,
+                "PREMISE: {name}[0]'s SearchLibrary head is confined ON ITS OWN, so the verdict \
+                 below is produced by the zone-change sub-ability and by nothing else"
+            );
+            assert_eq!(
+                reach(card, 0),
+                WindowReach::MayInterfere,
+                "{name}[0] puts a land onto the battlefield UNTAPPED (CR 110.5b), which taps for \
+                 mana inside the window the Shorten hands back — the Effect::Mana case with one \
+                 extra step"
+            );
+        }
+
+        // The tapped half of the pair, and the reach-guard that keeps the two
+        // MayInterfere verdicts above from being a constant.
+        assert_eq!(
+            reach(&RAMPANT_GROWTH, 0),
+            WindowReach::OwnResourcesOnly,
+            "the gate is on the TAP STATE, not on the fetch shape: the same sentence with \
+             'tapped' printed in it stays confined"
+        );
+
+        // Fail-closed direction, on all THREE `EtbTapState` variants, measured on
+        // the REAL parsed node rather than a hand-built one. Only a provably
+        // `Tapped` entry is allowlisted; `Unspecified` (the AST said nothing) and
+        // `Untapped` are both reach — which is what makes a conditionally-untapped
+        // entry (a shock land's pay-life choice, a land-count gate) safe by
+        // default instead of a shape this predicate would have to model.
+        let mut node = ability(&NATURES_LORE, 0)
+            .sub_ability
+            .as_ref()
+            .expect("PREMISE: Nature's Lore[0] carries the zone change as its sub_ability")
+            .effect
+            .as_ref()
+            .clone();
+        for (state, expected) in [
+            (EtbTapState::Tapped, WindowReach::OwnResourcesOnly),
+            (EtbTapState::Unspecified, WindowReach::MayInterfere),
+            (EtbTapState::Untapped, WindowReach::MayInterfere),
+        ] {
+            let Effect::ChangeZone { enter_tapped, .. } = &mut node else {
+                panic!("PREMISE: the sub-ability must head a ChangeZone; got {node:?}");
+            };
+            *enter_tapped = state;
+            assert_eq!(
+                effect_window_reach(&node),
+                expected,
+                "fail-closed on the tap axis: {state:?} must classify {expected:?}"
+            );
+        }
+    }
+
+    /// PROVABLY tapped, not NOMINALLY tapped — the three riders that decide what
+    /// actually arrives, plus the split that reaches the battlefield without a
+    /// `ChangeZone` node at all.
+    ///
+    /// Every row mutates ONE field of a REAL parsed node and re-measures, so the
+    /// unmutated verdict is each row's own positive control: the base node is
+    /// asserted `OwnResourcesOnly` first, which is what makes each flip
+    /// attributable to the field and not to the fixture.
+    ///
+    /// The corpus is why these are fixtures rather than hypotheticals: MEASURED
+    /// over every card in the pinned MTGJSON projection, 12 abilities carry a
+    /// `SearchDestinationSplit`, and NO ability that classifies
+    /// `OwnResourcesOnly` carries `enters_under`, `enters_attacking` or
+    /// `enters_modified_if` today. So these guards change no card's verdict at
+    /// this base — they close the door before a parser improvement or a new card
+    /// walks through it, in the one direction (toward `MayInterfere`) that can
+    /// never produce a false Accept.
+    #[test]
+    fn a_battlefield_entry_must_be_provably_tapped_actor_controlled_and_not_attacking() {
+        // ── the three ChangeZone riders, on Terramorphic's real fetch node ──
+        let base_node = ability(&TERRAMORPHIC, 0)
+            .sub_ability
+            .as_ref()
+            .expect("PREMISE: Terramorphic Expanse[0] carries the zone change as its sub_ability")
+            .effect
+            .as_ref()
+            .clone();
+        assert_eq!(
+            effect_window_reach(&base_node),
+            WindowReach::OwnResourcesOnly,
+            "POSITIVE CONTROL: the unmutated tapped fetch node IS confined, so every flip below is \
+             attributable to the single field it mutates"
+        );
+
+        let mut attacking = base_node.clone();
+        let mut foreign = base_node.clone();
+        let mut conditional = base_node.clone();
+        let Effect::ChangeZone {
+            enters_attacking, ..
+        } = &mut attacking
+        else {
+            panic!("PREMISE: the fetch node must head a ChangeZone");
+        };
+        *enters_attacking = true;
+        let Effect::ChangeZone { enters_under, .. } = &mut foreign else {
+            panic!("PREMISE: the fetch node must head a ChangeZone");
+        };
+        *enters_under = Some(ControllerRef::Opponent);
+        let Effect::ChangeZone {
+            enters_modified_if, ..
+        } = &mut conditional
+        else {
+            panic!("PREMISE: the fetch node must head a ChangeZone");
+        };
+        *enters_modified_if = Some(TargetFilter::Any);
+
+        for (label, node) in [
+            (
+                "enters_attacking (CR 508.4): a tapped attacker is still an attacker",
+                &attacking,
+            ),
+            (
+                "enters_under (CR 110.2a): the permanent lands on ANOTHER player's board",
+                &foreign,
+            ),
+            (
+                "enters_modified_if (CR 614.12 + CR 614.12a): the tapped rider is CONDITIONAL, so \
+                 enter_tapped == Tapped is not proof of a tapped entry",
+                &conditional,
+            ),
+        ] {
+            assert_eq!(
+                effect_window_reach(node),
+                WindowReach::MayInterfere,
+                "{label}"
+            );
+        }
+
+        // ── the split door, on Cultivate's real search node ──
+        assert!(
+            !head_is_unparsed(&CULTIVATE, 0),
+            "VACUITY GUARD: Cultivate[0] must PARSE, or this half measures the fail-closed arm"
+        );
+        let mut search = ability(&CULTIVATE, 0).effect.as_ref().clone();
+        let Effect::SearchLibrary { split, .. } = &search else {
+            panic!("PREMISE: Cultivate[0] must head a SearchLibrary; got {search:?}");
+        };
+        let split = split.as_ref().expect(
+            "PREMISE: Cultivate[0] carries a SearchDestinationSplit — this is the shape \
+                     that reaches the battlefield with no ChangeZone node for the tap gate to read",
+        );
+        assert_eq!(
+            split.primary_destination,
+            Zone::Battlefield,
+            "PREMISE: the split's PRIMARY destination is the battlefield"
+        );
+        assert_eq!(
+            split.primary_enter_tapped,
+            EtbTapState::Tapped,
+            "PREMISE: and the real card prints 'tapped', which is the only reason it stays confined"
+        );
+        assert_eq!(
+            effect_window_reach(&search),
+            WindowReach::OwnResourcesOnly,
+            "POSITIVE CONTROL: the unmutated split IS confined, so the two flips below are \
+             attributable to the mutated field"
+        );
+
+        for (state, expected) in [
+            (EtbTapState::Tapped, WindowReach::OwnResourcesOnly),
+            (EtbTapState::Unspecified, WindowReach::MayInterfere),
+            (EtbTapState::Untapped, WindowReach::MayInterfere),
+        ] {
+            let Effect::SearchLibrary {
+                split: Some(split), ..
+            } = &mut search
+            else {
+                panic!("PREMISE: the mutated node must keep its split");
+            };
+            split.primary_enter_tapped = state;
+            assert_eq!(
+                effect_window_reach(&search),
+                expected,
+                "the split reaches the battlefield WITHOUT a ChangeZone node, so it takes the same \
+                 fail-closed tap gate: {state:?} must classify {expected:?}"
+            );
+        }
+
+        let Effect::SearchLibrary {
+            split: Some(split), ..
+        } = &mut search
+        else {
+            panic!("PREMISE: the mutated node must keep its split");
+        };
+        split.primary_enter_tapped = EtbTapState::Tapped;
+        split.rest_destination = Zone::Battlefield;
+        assert_eq!(
+            effect_window_reach(&search),
+            WindowReach::MayInterfere,
+            "`rest_destination` carries NO tap state of its own, so a battlefield rest can never be \
+             proven tapped and is reach by construction"
+        );
     }
 }
