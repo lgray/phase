@@ -338,6 +338,29 @@ describe("ArtCropCard", () => {
     expect(screen.queryByText("2")).not.toBeInTheDocument();
   });
 
+  // CR 122.1: a ZERO-count unbounded row is a shape the engine really emits — the unbounded pass
+  // of `counter_display_views` publishes its live count with no zero filter (only the finite pass
+  // runs `positive_counter_entries`). That is the `0 → 1` case, so it must still render as ∞; a
+  // `count > 0` filter over the projected rows here would silently delete real ∞ badges.
+  it("renders ∞ for a zero-count unbounded counter (CR 122.1 art-crop mode)", () => {
+    mockUseCardImage.mockReturnValue({ src: "card.png", isLoading: false, isRotated: false, isFlip: false });
+    const permanent = pentadWithCharge();
+    useGameStore.setState({
+      gameState: {
+        objects: { [permanent.id]: permanent },
+        derived: {
+          counter_display: {
+            [permanent.id]: { pills: [{ counter: "charge", count: 0, magnitude: "Unbounded" }] },
+          },
+        },
+      } as never,
+    });
+
+    render(<ArtCropCard objectId={101} />);
+
+    expect(screen.getByText("∞")).toBeInTheDocument();
+  });
+
   it("renders the finite count when the counter is NOT marked unbounded (discriminator)", () => {
     mockUseCardImage.mockReturnValue({ src: "card.png", isLoading: false, isRotated: false, isFlip: false });
     const permanent = pentadWithCharge();

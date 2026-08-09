@@ -225,9 +225,13 @@ describe("AttackTargetPicker", () => {
                 // unreachable by any client-side derivation from `obj.counters`. Count is
                 // nonzero on purpose: the FINITE pass of `counter_display_views` runs
                 // `positive_counter_entries`, so a zero-count Finite row is a shape the engine
-                // provably never emits. (Zero-count UNBOUNDED rows are real and are covered in
-                // `hud/__tests__/DialogAttachmentCard.test.tsx`.)
+                // provably never emits.
                 { counter: "lore", count: 3 },
+                // CR 122.1: a zero-count UNBOUNDED row IS a shape the engine emits — the
+                // unbounded pass publishes its live count with no zero filter, so this is the
+                // `0 → 1` case. It must still render (as ∞), which is what fails if this site
+                // ever reintroduces a `count > 0` filter over the projected rows.
+                { counter: "quest", count: 0, magnitude: "Unbounded" },
               ],
             },
           },
@@ -249,6 +253,8 @@ describe("AttackTargetPicker", () => {
     expect(screen.queryAllByText("charge x99")).toHaveLength(0);
     // Projection-only row renders even though the raw map has no such key.
     expect(screen.getAllByText("lore x3").length).toBeGreaterThan(0);
+    // Zero-count unbounded row survives to the screen as ∞ — a `count > 0` filter deletes it.
+    expect(screen.getAllByText("quest ∞").length).toBeGreaterThan(0);
     // Raw-map-only entry the projection dropped must NOT render.
     expect(screen.queryAllByText("stun x2")).toHaveLength(0);
   });
