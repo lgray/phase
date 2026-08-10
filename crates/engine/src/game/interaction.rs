@@ -16,6 +16,7 @@ use crate::analysis::decision_template::{
     declaration_conforms, DecisionGroupKey, DecisionKind, DecisionTemplate, IterationCount,
     PinnedDecision, ReplayMode, TargetPin,
 };
+use crate::analysis::resource::ResourceAxis;
 use crate::types::ability::{
     AggregateFunction, ChoiceType, ChooseFromZoneConstraint, Comparator, CounterCostSelection,
     DoorLockOp, EffectKind, ObjectProperty, SearchSelectionConstraint, TapCreaturesAggregateStat,
@@ -49,7 +50,8 @@ use crate::types::interaction::{
     InteractionRelationConstraint, InteractionRelationSourceConstraint, InteractionResponse,
     InteractionResponseSpec, InteractionRoleCode, InteractionSessionId,
     InteractionShortcutCountSpec, InteractionShortcutDecision, InteractionShortcutPoint,
-    InteractionShortcutPointKind, InteractionShortcutReply, InteractionShortcutResponseCode,
+    InteractionShortcutPointKind, InteractionShortcutPreview, InteractionShortcutPreviewEntry,
+    InteractionShortcutPreviewFamily, InteractionShortcutReply, InteractionShortcutResponseCode,
     InteractionSlotKind, InteractionSubmission, InteractionSummaryCode, InteractionWaitingForCode,
     InteractionWaitingForKind, InteractionZoneCode, SelectionConstraint, SimultaneousDecisionKind,
     ViewerInteraction, MAX_INTERACTION_LIST_LEN,
@@ -63,6 +65,7 @@ use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
 use super::combat::AttackTarget;
+use super::derived_views::{family_of, UnboundedFamily};
 use super::dungeon::DungeonId;
 use super::engine::{
     apply_interaction, apply_interaction_for_simulation, EngineError, MAX_SHORTCUT_CYCLES,
@@ -1115,6 +1118,7 @@ struct LoopShortcutPointProjection {
 #[derive(Debug, Clone)]
 struct LoopShortcutProjection {
     count: InteractionShortcutCountSpec,
+    preview: Option<InteractionShortcutPreview>,
     points: Vec<LoopShortcutPointProjection>,
     candidates: Vec<LoopShortcutCandidateValue>,
 }
@@ -2430,12 +2434,119 @@ fn number_projection(waiting_for: &WaitingFor) -> Option<NumberProjection> {
     }
 }
 
+/// Rename `game::derived_views::UnboundedFamily` into its projection-layer code.
+///
+/// A pure rename on purpose: `family_of` stays the SINGLE authority for which axis groups
+/// into which family, so this function makes no grouping decision of its own and cannot
+/// drift from it. Exhaustive with no wildcard — a new family must choose a code here.
+///
+/// Mirrors `comparator_dto` above: the engine owns the fact, and the projection layer owns
+/// the name it crosses the wire under.
+fn preview_family(family: UnboundedFamily) -> InteractionShortcutPreviewFamily {
+    match family {
+        UnboundedFamily::Mana => InteractionShortcutPreviewFamily::Mana,
+        UnboundedFamily::Life => InteractionShortcutPreviewFamily::Life,
+        UnboundedFamily::Damage => InteractionShortcutPreviewFamily::Damage,
+        UnboundedFamily::Mill => InteractionShortcutPreviewFamily::Mill,
+        UnboundedFamily::Counters => InteractionShortcutPreviewFamily::Counters,
+        UnboundedFamily::Tokens => InteractionShortcutPreviewFamily::Tokens,
+        UnboundedFamily::Cards => InteractionShortcutPreviewFamily::Cards,
+        UnboundedFamily::Casts => InteractionShortcutPreviewFamily::Casts,
+        UnboundedFamily::Combats => InteractionShortcutPreviewFamily::Combats,
+        UnboundedFamily::Turns => InteractionShortcutPreviewFamily::Turns,
+        UnboundedFamily::Triggers => InteractionShortcutPreviewFamily::Triggers,
+    }
+}
+
+/// CR 119.3 + CR 120.1 + CR 401 + CR 704.5c: the seat a resource axis lands ON, for the four
+/// axes that name one. Every other axis is a whole-game quantity with no seat.
+///
+/// This is a different question from "who controls the loop" and it is deliberately not
+/// answered from the proposer: a drain's magnitude belongs to the player LOSING the life,
+/// which is exactly the seat `ResourceVector`'s per-player maps are keyed by.
+fn preview_subject(axis: ResourceAxis) -> Option<PlayerId> {
+    match axis {
+        ResourceAxis::Life(player)
+        | ResourceAxis::DamageDealt(player)
+        | ResourceAxis::LibraryDelta(player)
+        | ResourceAxis::Poison(player) => Some(player),
+        ResourceAxis::Mana(_)
+        | ResourceAxis::Counter(_, _)
+        | ResourceAxis::Trigger(_)
+        | ResourceAxis::TokensCreated
+        | ResourceAxis::CardsDrawn
+        | ResourceAxis::Casts
+        | ResourceAxis::LandfallTriggers
+        | ResourceAxis::CombatPhases
+        | ResourceAxis::ExtraTurns
+        | ResourceAxis::DeathTriggers
+        | ResourceAxis::EtbTriggers
+        | ResourceAxis::LtbTriggers
+        | ResourceAxis::SacTriggers => None,
+    }
+}
+
+/// CR 732.2a: the finished magnitude of repeating `count` cycles of a measured per-period
+/// delta — "the predictable results of the sequence of choices", stated per display family
+/// and per affected seat.
+///
+/// **This is arithmetic over the certificate's `per_cycle.delta`, and nothing else.** It
+/// applies no game action, resolves nothing, and touches no `GameState`: the multiplication
+/// `n × δ` is the whole computation. In particular it is NOT
+/// `interaction::preview_interaction`, which answers a different question (is this response
+/// submittable) by cloning the state and applying to the clone. A clone-apply cannot answer
+/// this one anyway — the count may be up to `MAX_SHORTCUT_CYCLES`, and the point of a CR
+/// 732.2a shortcut is that the sequence is *not* played out.
+///
+/// The fold is over families, not axes: `ResourceVector` distinguishes mana by color and
+/// counters by `(kind, bearer class)`, and summing those into one labelled magnitude per seat
+/// is the aggregation the display layer is forbidden to do for itself. Losses are included
+/// (signed), which is why this reads `axis_components()` rather than `unbounded_components()` —
+/// the latter reports only what a cycle accrues, so a lethal drain would preview as nothing.
+///
+/// ponytail: magnitudes clamp to `i32`, so a per-cycle delta above ~2.1M would be reported
+/// short. No such delta exists — one period's delta is a difference of two game-state
+/// readings — and `i32` is exact in the JS number the binding generates, which `i64` is not.
+fn shortcut_preview_entries(
+    delta: &crate::analysis::resource::ResourceVector,
+    count: u32,
+) -> Vec<InteractionShortcutPreviewEntry> {
+    let mut per_cycle_totals: BTreeMap<(InteractionShortcutPreviewFamily, Option<u8>), i64> =
+        BTreeMap::new();
+    for (axis, magnitude) in delta.axis_components() {
+        let key = (
+            preview_family(family_of(axis)),
+            preview_subject(axis).map(|player| player.0),
+        );
+        let total = per_cycle_totals.entry(key).or_insert(0);
+        *total = total.saturating_add(magnitude);
+    }
+    per_cycle_totals
+        .into_iter()
+        .filter_map(|((family, player), per_cycle)| {
+            // Families that cancel to zero across their axes (a cycle that gains and spends
+            // the same mana) state nothing and are dropped rather than shown as `0`.
+            let amount = per_cycle.saturating_mul(i64::from(count));
+            (amount != 0).then_some(InteractionShortcutPreviewEntry {
+                family,
+                player,
+                amount: amount.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            })
+        })
+        .collect()
+}
+
 fn loop_shortcut_projection(
     waiting_for: &WaitingFor,
 ) -> Result<LoopShortcutProjection, InteractionReasonCode> {
     use crate::analysis::decision_template::DecisionPointKind;
 
-    let WaitingFor::LoopShortcut { schema, .. } = waiting_for else {
+    let WaitingFor::LoopShortcut {
+        schema,
+        certificate,
+        ..
+    } = waiting_for
+    else {
         return Err(InteractionReasonCode::UnsupportedResponse);
     };
     if schema.points.len() > MAX_INTERACTION_LIST_LEN {
@@ -2513,6 +2624,35 @@ fn loop_shortcut_projection(
         crate::analysis::decision_template::IterationCount::UntilLethal => {
             InteractionShortcutCountSpec::UntilLethal
         }
+    };
+    // CR 732.2a: state what the offer's own count DOES, so the picker's number carries its
+    // consequence instead of standing alone. Two authorities have to agree before there is
+    // anything to state, and both are the offer's own:
+    //
+    //   * `per_cycle` — published only by the producer that measured a per-period signature
+    //     (`certified_bounded_cycle_offer`). Every other mint carries `None`, and so does
+    //     every save written before the field existed.
+    //   * a FINITE count — `UntilLethal` names no number to multiply by. It is the
+    //     determinate-drain mode, where the count is the drain's own arithmetic, not a
+    //     player's choice.
+    //
+    // Those two coincide by construction rather than by luck: the bounded producer is the
+    // one that both narrows `max_iterations` and mints `Fixed(max_iterations)`, so a preview
+    // exists exactly on the offers whose count is worth picking.
+    //
+    // `suggested` is the stated count, and the ONLY count these magnitudes describe — which
+    // is why it travels with them in `InteractionShortcutPreview.count` rather than being
+    // left for a renderer to assume.
+    let preview = match (&count, &certificate.per_cycle) {
+        (InteractionShortcutCountSpec::Fixed { suggested, .. }, Some(periodic)) => {
+            let entries = shortcut_preview_entries(&periodic.delta, *suggested);
+            (!entries.is_empty()).then_some(InteractionShortcutPreview {
+                count: *suggested,
+                entries,
+            })
+        }
+        (InteractionShortcutCountSpec::Fixed { .. }, None)
+        | (InteractionShortcutCountSpec::UntilLethal, _) => None,
     };
     let mut candidates = Vec::new();
     let mut points = Vec::with_capacity(schema.points.len());
@@ -2667,6 +2807,7 @@ fn loop_shortcut_projection(
     }
     Ok(LoopShortcutProjection {
         count,
+        preview,
         points,
         candidates,
     })
@@ -7019,6 +7160,7 @@ fn opportunity_for_slot(
                             count: projection.count,
                             points,
                             allow_decline: true,
+                            preview: projection.preview.clone(),
                             confirm: ConfirmSemantics::Explicit,
                         },
                         candidates,
