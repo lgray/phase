@@ -2662,7 +2662,7 @@ fn pinned_decisions_to_points(
 /// CR 115.2 + CR 732.2a: does the ability's HEAD effect declare the "target opponent" PLAYER
 /// filter — a `Typed` filter with no type constraints, no object properties, and
 /// `controller: Opponent`, the shape `game::targeting::find_legal_targets` collapses to
-/// players-only (`crates/engine/src/game/targeting.rs:192-193`)?
+/// players-only?
 ///
 /// SHAPE ACCEPTANCE ONLY, and the `bool` return is what enforces it: the published legal
 /// set must come from the announcement authority (`ability_utils::build_target_slots`), never
@@ -3817,8 +3817,9 @@ fn shortcut_drive_period(
         .unwrap_or(1)
         // CR 732.2a SAFETY LIMIT: the drive period is STRUCTURALLY unbounded in the engine —
         // its length is the client template schedule's own length. On the WS transport the
-        // 8 KB inbound-frame cap (phase-server/src/main.rs:409/1420) already bounds a hostile
-        // schedule to a few hundred entries (~1-2 s stall, not a million-cycle remote DoS),
+        // inbound-frame cap (`phase-server`'s `MAX_WS_MESSAGE_BYTES`, 64 KB, applied at its
+        // `ws.max_message_size`) already bounds a hostile schedule to a finite entry count
+        // (a bounded stall, not a million-cycle remote DoS),
         // but in-process callers (WASM/Tauri/local) bypass that cap, so clamp here AT THE
         // SOURCE for every caller. Real schedules rotate over a handful of object sources
         // (period ≪ cap), so this is invisible to every legitimate loop; a clamped-shorter
@@ -4181,10 +4182,10 @@ fn inject_pinned_answer(
 /// the prompt carrying `source_id`?
 ///
 /// [`crate::analysis::decision_template::resolve_source`] is deliberately BATTLEFIELD-ONLY,
-/// and that filter IS the CR 608.2b (`docs/MagicCompRules.txt:2789`) legality re-check for
+/// and that filter IS the CR 608.2b legality re-check for
 /// `ByIdentity` **target** pins — a pinned target that left the battlefield must stop
 /// matching. It must not be widened. But a SLOT's source only identifies WHICH ability
-/// instance prompts, and CR 114.2 (`:828`) puts a planeswalker EMBLEM — "both owned and
+/// instance prompts, and CR 114.2 puts a planeswalker EMBLEM — "both owned and
 /// controlled by that player" — in the **command zone**, where it stays for the whole game
 /// and raises its triggers from. So the command-zone disjunct lives HERE, at the caller,
 /// scoped to object identity + the pinned CR 400.7 incarnation.
@@ -5816,11 +5817,13 @@ struct LoopShortcutOffer<'a> {
     schema: &'a crate::analysis::decision_template::ShortcutDecisionSchema,
 }
 
-/// CR 732.2a (MagicCompRules.txt:6372) + CR 800.4a (MagicCompRules.txt:6408): reject a
+/// CR 732.2a + CR 800.4a: reject a
 /// shortcut declaration and hand priority back to the next living seat — the manual-play
 /// handback every reject path in `handle_declare_shortcut` lands on. Single
-/// authority: a sixth reject path added later cannot forget to sync
-/// `result.waiting_for`.
+/// authority: a SEVENTH reject path added later cannot forget to sync
+/// `result.waiting_for` — six exist today (the sixth is the `template.owner` firewall).
+/// Cited by CR number, not by `MagicCompRules.txt` line: that file is gitignored and
+/// re-fetched, so its line coordinates rot on every rules release.
 fn reject_shortcut_declaration(state: &mut GameState, result: &mut ActionResult) {
     priority::reset_priority(state);
     state.waiting_for = WaitingFor::Priority {
@@ -5876,7 +5879,8 @@ fn handle_declare_shortcut(
     // the single authority — BEFORE the proposal is built — into the same fail-closed
     // manual-play handback the pin validation above uses. This is THE catastrophic remote
     // vector: `Fixed(u32)` scalar-encodes up to ~4.3e9 cycles in ~10 bytes, sailing through
-    // the 8 KB WS frame cap → one GameState clone + drive per cycle. Both confirmation paths
+    // the WS frame cap (`phase-server`'s `MAX_WS_MESSAGE_BYTES`, 64 KB) → one GameState clone +
+    // drive per cycle. Both confirmation paths
     // (solitaire-immediate below, APNAP Accept) consume this one proposal, and both drive
     // helpers (materialize_fixed_shortcut / materialize_object_growth_shortcut) read `n` from
     // it, so this one check bounds every Fixed drive on every transport. The drive helpers do
@@ -6029,9 +6033,13 @@ fn handle_declare_shortcut(
 /// Re-offer suppression, by seam:
 /// - Interactive bridge (Seam 1, `find_live_loop_winner` reads `loop_detect_ring`, gated by
 ///   `!stack.is_empty()`): suppressed by the GENERAL deliberate-action invariant, not by this
-///   handler. `apply_action` (engine.rs:3006-3011) invalidates `loop_detect_ring` for every
-///   deliberate (non-`PassPriority`/`OrderTriggers`) action; `DeclineShortcut` is a deliberate
-///   break, so the ring is already empty before this handler runs. Seam-1 suppression is the
+///   handler. `apply_action`'s deliberate-action ring clear invalidates `loop_detect_ring` for
+///   every action that is neither `PassPriority`/`OrderTriggers` nor the answer to a
+///   `WaitingFor::is_forced_cascade_window` window; `LoopShortcut` is in neither exemption (it
+///   is not a member of that window class — see the `forced_cascade_window_class` test), so
+///   `DeclineShortcut` is a deliberate break and the ring is already empty before this handler
+///   runs. Cited by SYMBOL, not by line: this reference named a hard coordinate that rotted
+///   twice, so a fresh number would only schedule a third rot. Seam-1 suppression is the
 ///   shared invariant every cast/activate/play-land relies on — the handler does NOT re-clear
 ///   the ring (re-clearing would special-case `DeclineShortcut` to distrust an engine-wide
 ///   invariant). The interactive e2e's "no re-offer" assertion guards this end-to-end: a future
@@ -6068,8 +6076,8 @@ fn handle_decline_shortcut(
         waiting_for: state.waiting_for.clone(),
         log_entries: vec![],
     };
-    // Seam 1 (loop_detect_ring) is already invalidated by apply_action's deliberate-action
-    // ring-clear (engine.rs:3006-3011) — see doc. Only Seam 2 is the handler's gap, and only
+    // Seam 1 (loop_detect_ring) is already invalidated by `apply_action`'s deliberate-action
+    // ring clear — see doc. Only Seam 2 is the handler's gap, and only
     // for the decliner's OWN period (CR 732.2a):
     if state.loop_period_controller() == Some(proposer) {
         state.last_loop_action_sequence.clear();
@@ -7026,7 +7034,7 @@ fn finish_completed_or_interrupted_until_stack_empty_sessions(state: &mut GameSt
 // against an absurd/hostile count — NOT a rules constraint. It bounds both a `Fixed(n)`
 // cycle count (handle_declare_shortcut) and a template drive period (shortcut_drive_period).
 // Motivating vector: a `u32` count scalar-encodes up to ~4.3e9 cycles in ~10 JSON bytes, so
-// it sails through the 8 KB inbound WS frame cap (phase-server/src/main.rs:409/1420) yet
+// it sails through the inbound WS frame cap (`phase-server`'s `MAX_WS_MESSAGE_BYTES`, 64 KB) yet
 // would force ~4.3e9 GameState clones — a byte cap cannot see it, only this count cap can.
 // 1_000 is generous vs any honest Fixed count (~10x KCI-style loops); worst-case bounded
 // cost is 1_000 cycles x <=10_000 beats = 1e7.
@@ -12173,14 +12181,14 @@ fn apply_action(
         //
         // BLAST RADIUS. Nothing this leaves in `state` survives to a consumer unrecomputed:
         // `finish_action_boundary` runs the SAME `sync_waiting_for` over `result.waiting_for`
-        // (`:1171`) and copies the outcome back into the result (`:1189`), and the reorder
+        // and copies the outcome back into the result, and the reorder
         // never changes `ActionResult.waiting_for` itself. That is an argument about
         // RE-DERIVATION, not reachability, because `apply_action_boundary` is not the only
         // route: `inject_pinned_answer`'s three dispatches and `drive_loop_action_iteration`'s
         // ten reach `apply_action` directly, and
         // `apply_interaction_pre_reconciliation_for_life_safety` returns `raw.result` without
-        // ever calling `finish_action_boundary` (`apply_action_boundary_core`'s own comment at
-        // `:1119` records it). All three drive a CLONE — `drive_one_shortcut_cycle`'s `work`,
+        // ever calling `finish_action_boundary` (`apply_action_boundary_core`'s own comment
+        // records it). All three drive a CLONE — `drive_one_shortcut_cycle`'s `work`,
         // the drive's `clone`, `preview_candidate_life_safety`'s `preview` — never the settled
         // board. MEASURED pre-reorder by an instrumented `debug_assert_eq!` census over the
         // full lib + integration corpus (per-site counts in PR #7005's history; one unit =
@@ -16544,7 +16552,7 @@ mod stage2_injector_tests {
     /// row is what fails when ONE conjunct is dropped.
     ///
     /// Why each matters: `find_legal_targets` collapses a `Typed` filter to PLAYERS ONLY
-    /// when both `type_filters` and `properties` are empty (`targeting.rs:192-193`, issue
+    /// when both `type_filters` and `properties` are empty (issue
     /// #2004). A type- or property-bearing filter therefore falls through to OBJECT
     /// enumeration — publishing it would put a point whose legal set is object refs into
     /// player-pin machinery. `controller: You` does collapse to players, but to exactly ONE
@@ -17870,18 +17878,20 @@ mod stage2_injector_tests {
                 // intervening `fn`. Checks computed AFTER locating it: `12302 + 123 = 12425` for the producer
                 // and `12168 + 123 = 12291` for the function's opening line — the SAME `+123`.
                 //
-                // FOURTH re-derivation of this one coordinate (`:12052 → :12132 → :12302 → :12425`), and the
-                // reason it keeps moving is that it is a LINE NUMBER in the most-edited function's file. Every
-                // move has been resolved BY CONTENT FIRST — the digest above has been this producer's identity
-                // since `a6d1a0e62` and has never itself changed — with arithmetic used only as a check that
-                // agrees afterwards. A coordinate re-derived four times without the content ever moving is
-                // evidence the pin is tracking the right line, not evidence the pin is fragile.
+                // FOURTH re-derivation of this one coordinate (`:12052 → :12132 → :12302 → :12425`),
+                // and the reason it keeps moving is that it is a LINE NUMBER in the most-edited function
+                // of the most-edited file. Every move has been resolved BY CONTENT FIRST — the digest
+                // above has been this producer's identity since `a6d1a0e62` and has never itself changed
+                // — with arithmetic used only as a check that agrees afterwards. A coordinate re-derived
+                // four times to the same content is evidence the pin tracks the right line, not evidence
+                // the pin is fragile.
                 //
-                // SET PRESERVATION: this round adds a withhold CONDITION, not a prompt producer.
-                // `entry_announces` reports an announcement; it does not assign `state.waiting_for`, so no
-                // line matching the needle is added or removed (grep-counted 0 on both the `+` and `-` sets).
-                // Total (38) and partition (5/8/25) both fire GREEN first; the panic was on the third assert
-                // alone, which is what makes this a coordinate shift rather than a population change.
+                // SET PRESERVATION (C2a round 4): that round adds a withhold CONDITION, not a prompt
+                // producer. `entry_announces` reports an announcement; it does not assign
+                // `state.waiting_for`, so no line matching the needle is added or removed (grep-counted 0
+                // on both the `+` and `-` sets). Total (38) and partition (5/8/25) both fire GREEN first;
+                // the panic was on the third assert alone, which is what makes it a coordinate shift
+                // rather than a population change.
                 //
                 // item-4 C2b (`WaitingFor::LoopShortcut.declaration`), base `1bc45bb8c`: `:12425 ⇒ :12552`,
                 // `+127`, and ONLY this entry moved — the other four live in `effects/` and
@@ -17928,9 +17938,38 @@ mod stage2_injector_tests {
                 // neither assigns `state.waiting_for` an `OptionalEffectChoice`, so no line matching
                 // the needle is added or removed. The total (38) and the partition (5/8/25) both fired
                 // GREEN on the run that caught this; the panic was on this third assert alone.
-                // ⚠ REBASE #3: `:12644 ⇒ :12643`, located by content digest, offset from
+                //
+                // ⚠ C3 (the stale-coordinate comment sweep), REBASED ONTO THE C2b FIX ROUND — the
+                // coordinate below is a PLACEHOLDER and is deliberately invalid until measured. C3's own
+                // hunks above this producer are unchanged and have always summed to `+8`: `+1` in
+                // `shortcut_drive_period` and `+1` in `handle_declare_shortcut` (both replacing a
+                // measured-wrong "8 KB" WS frame cap with `phase-server`'s `MAX_WS_MESSAGE_BYTES`,
+                // 64 KB), `+2` on `reject_shortcut_declaration`'s doc (rotted `MagicCompRules.txt` line
+                // numbers dropped in favour of the CR numbers, which are the stable identifiers), and
+                // `+4` on `handle_decline_shortcut`'s doc (the twice-rotted `engine.rs:3006-3011`
+                // ring-clear coordinate replaced by a SYMBOL reference). `engine.rs`'s entire delta in
+                // C3 is COMMENT HUNKS and nothing else, so a comment round cannot mint a prompt.
+                //
+                // THIS ENTRY'S BASE HAS NOW BEEN RE-DERIVED SIX TIMES, and recording that is the point.
+                // C3 was authored against `70fcd851a` (`:11977 ⇒ :11985`); successive rebases moved its
+                // base to C2a's `:12052`, then `:12132`, then `:12302`, then C2a round 4's `:12425`,
+                // then C2b's `:12552`, and now the C2b fix round's `:12582`. Every stored number was
+                // correct only for the parent it was written against, and every time the CONTENT was
+                // unchanged. **A coordinate is a fact about a tree, not a property of this commit** —
+                // which is exactly why C3 replaces line coordinates with SYMBOL references everywhere
+                // else, and why this row's own pin is the one place that cannot take its own advice.
+                //
+                // Resolved BY CONTENT FIRST, arithmetic afterwards as a CHECK: the line whose sha256
+                // (WITH trailing newline) is `8a544e878d3e77fb80391b95af8f74059540d5ce4ad6fb83559f364df5cc7d63`,
+                // which must match exactly ONE line under a whole-file scan and must still sit inside
+                // `begin_pending_trigger_target_selection` with no intervening `fn`.
+                //
+                // SET PRESERVATION (C3): unchanged. The other four entries live in `game/effects/mod.rs`
+                // and `game/effects/scoped_library_search.rs`, neither of which C3 touches, and a comment
+                // round adds no line matching the needle — total still 38, partition still 5/8/25.
+                // ⚠ REBASE #3: `:12652 ⇒ :12651`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
-                "game/engine.rs:12643".to_string(),
+                "game/engine.rs:12651".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
@@ -18983,7 +19022,7 @@ mod kilo_interruptibility_tests {
     /// combo-interruptibility-acceptance-criterion). A declined `Counters`/`Life` axis leaves its
     /// ∞ capability marker in `unbounded_resources` intentionally (CR 732.2b never forces a
     /// shortcut). This test guards the MEASURED retirement path (a) documented at the boundary
-    /// seam: the empty-stack offer hook `try_offer_object_growth_shortcut` (engine.rs:472) is NOT
+    /// seam: the empty-stack offer hook `try_offer_object_growth_shortcut` is NOT
     /// gated by existing ∞ marks, so a later genuine re-detection RE-OFFERS the loop and can
     /// re-collapse the declined axis once the observer is gone.
     ///
