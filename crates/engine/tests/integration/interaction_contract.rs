@@ -34,7 +34,8 @@ use engine::types::interaction::{
     InteractionPreviewRequest, InteractionPreviewStatus, InteractionReasonCode,
     InteractionResponse, InteractionResponseSpec, InteractionRoleCode, InteractionSessionId,
     InteractionShortcutCountSpec, InteractionShortcutDecision, InteractionShortcutPin,
-    InteractionShortcutPointKind, InteractionShortcutResponseCode, InteractionSubmission,
+    InteractionShortcutPointKind, InteractionShortcutPreview, InteractionShortcutPreviewEntry,
+    InteractionShortcutPreviewFamily, InteractionShortcutResponseCode, InteractionSubmission,
     PreviewRequestId, MAX_INTERACTION_LIST_LEN,
 };
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
@@ -2500,6 +2501,280 @@ fn loop_shortcut_number_schema_accepts_a_fixed_count_above_one() {
         },
     );
     assert_eq!(preview.status, InteractionPreviewStatus::Confirmable);
+}
+
+/// The per-period signature the C4 preview rows multiply out. Chosen so that three separate
+/// ways of getting the preview wrong all show up as a value mismatch:
+///
+/// * **two mana colors**, so a preview that published raw axes instead of folding them into
+///   one engine-side family total would emit two `Mana` rows;
+/// * **a life LOSS on a seat that is not the proposer**, which `unbounded_components` drops
+///   entirely (it reports only what a cycle accrues) and which a proposer-keyed subject
+///   mapping would attribute to the wrong player;
+/// * **a whole-game axis** (`tokens_created`) with no seat, so the `Option<u8>` subject is
+///   exercised on both sides.
+fn preview_period_delta() -> engine::analysis::resource::ResourceVector {
+    let mut delta = engine::analysis::resource::ResourceVector::default();
+    // `MANA_INDEX` is `[W, U, B, R, G, C]`.
+    delta.mana[0] = 1;
+    delta.mana[1] = 2;
+    delta.life.insert(P1, -2);
+    delta.tokens_created = 4;
+    delta
+}
+
+/// A `LoopShortcut` offer stated exactly the way `certified_bounded_cycle_offer` states one:
+/// `Fixed(max_iterations)` as the suggestion and the same number as the ceiling, with the
+/// measured period on the certificate.
+fn preview_offer(
+    iteration_count: IterationCount,
+    max_iterations: u32,
+    per_cycle: Option<engine::analysis::resource::ResourceVector>,
+) -> GameState {
+    let mut state = GameState::new_two_player(42);
+    state.waiting_for = WaitingFor::LoopShortcut {
+        proposer: P0,
+        predicted_winner: Some(P0),
+        certificate: engine::analysis::loop_check::LoopCertificate {
+            unbounded: Vec::new(),
+            win_kind: engine::analysis::loop_check::WinKind::Advantage,
+            mandatory: false,
+            residual_board_delta: engine::analysis::resource::BoardDelta::default(),
+            per_cycle: per_cycle.map(|delta| engine::analysis::resource::PeriodicDelta {
+                frames_per_period: 1,
+                delta,
+                victim_slot: Vec::new(),
+            }),
+        },
+        schema: ShortcutDecisionSchema {
+            iteration_count,
+            max_iterations,
+            ..Default::default()
+        },
+    };
+    bind(&mut state, "loop-preview");
+    state
+}
+
+fn shortcut_preview_of(state: &GameState) -> Option<InteractionShortcutPreview> {
+    let view = priority_view(state);
+    let InteractionOpportunityResponse::Schema {
+        spec: InteractionResponseSpec::Shortcut { preview, .. },
+        ..
+    } = &view.opportunities[0].response
+    else {
+        panic!("loop shortcut uses a shortcut schema");
+    };
+    preview.clone()
+}
+
+fn preview_entry(
+    family: InteractionShortcutPreviewFamily,
+    player: Option<u8>,
+    amount: i32,
+) -> InteractionShortcutPreviewEntry {
+    InteractionShortcutPreviewEntry {
+        family,
+        player,
+        amount,
+    }
+}
+
+/// C4a — CR 732.2a: the offer publishes what its stated count actually DOES, computed by the
+/// engine as `n × δ` over the certificate's measured per-period delta. Without this the count
+/// picker C5 wires up is a number with no displayed consequence, and the only other way to
+/// show one is `× count` arithmetic in the display layer, which the layer rule forbids.
+///
+/// **Asserted at TWO distinct counts, and that is the point of the row.** A single count is
+/// satisfiable by an implementation that ignores `count` entirely and publishes the raw
+/// per-cycle delta, or by one that hardcodes a constant. Only the pair pins the
+/// multiplication.
+///
+/// REVERT-PROBES, both RUN:
+/// * drop the `count` factor (`per_cycle` instead of `per_cycle.saturating_mul(count)`) ⇒
+///   both arms fail on values;
+/// * hardcode the factor to `3` ⇒ the `n = 3` arm still PASSES and the `n = 5` arm fails,
+///   which is exactly the "one value is satisfiable by a constant" hole the second count
+///   closes.
+#[test]
+fn loop_shortcut_preview_states_the_finished_magnitude_for_the_declared_count() {
+    use engine::analysis::resource::ResourceAxis;
+
+    // ── REACH-GUARDS on the fixture, before any preview is read. Each one names the wrong
+    //    implementation it makes observable; without them this row could pass while the
+    //    preview was built on the wrong fold or aggregated in the wrong layer.
+    let delta = preview_period_delta();
+    assert!(
+        !delta
+            .unbounded_components()
+            .iter()
+            .any(|(axis, _)| matches!(axis, ResourceAxis::Life(_))),
+        "reach-guard: the victim's life LOSS is INVISIBLE to `unbounded_components`, so a \
+         preview rebuilt on that fold would silently publish a lethal drain as producing \
+         nothing. The `Life` expectations below are what detect it"
+    );
+    assert_eq!(
+        delta
+            .axis_components()
+            .iter()
+            .filter(|(axis, _)| matches!(axis, ResourceAxis::Mana(_)))
+            .count(),
+        2,
+        "reach-guard: the period moves TWO mana axes, so the single `Mana` entry expected \
+         below is proof the engine folded them — not proof that only one existed"
+    );
+    assert_ne!(
+        P1.0, P0.0,
+        "reach-guard: the victim is not the proposer, so a subject mapping keyed off the \
+         proposer resolves to the wrong seat"
+    );
+
+    let at = |n: u32| {
+        shortcut_preview_of(&preview_offer(
+            IterationCount::Fixed(n),
+            n,
+            Some(preview_period_delta()),
+        ))
+        .expect("a bounded offer with a measured period states a preview")
+    };
+
+    let three = at(3);
+    assert_eq!(
+        three.count, 3,
+        "the count travels WITH the magnitudes, so a renderer cannot attach them to another"
+    );
+    assert_eq!(
+        three.entries,
+        vec![
+            preview_entry(InteractionShortcutPreviewFamily::Mana, None, 9),
+            preview_entry(InteractionShortcutPreviewFamily::Life, Some(P1.0), -6),
+            preview_entry(InteractionShortcutPreviewFamily::Tokens, None, 12),
+        ],
+        "CR 732.2a: three repetitions of (+1W +2U, P1 -2 life, +4 tokens) finish at +9 mana, \
+         P1 at -6 life, +12 tokens"
+    );
+
+    let five = at(5);
+    assert_eq!(five.count, 5);
+    assert_eq!(
+        five.entries,
+        vec![
+            preview_entry(InteractionShortcutPreviewFamily::Mana, None, 15),
+            preview_entry(InteractionShortcutPreviewFamily::Life, Some(P1.0), -10),
+            preview_entry(InteractionShortcutPreviewFamily::Tokens, None, 20),
+        ],
+        "the SECOND count is what makes this row unsatisfiable by a constant: an \
+         implementation pinned to 3 passes the arm above and fails here"
+    );
+}
+
+/// C4a, negative half — a preview is published only when the offer supplies BOTH authorities
+/// it multiplies: a measured per-period signature and a finite count. Every arm is paired
+/// with the positive control on the same builder, so none of them can pass because the whole
+/// window failed to project.
+#[test]
+fn loop_shortcut_preview_is_absent_without_both_a_period_and_a_finite_count() {
+    // ── PAIRED POSITIVE, first.
+    assert!(
+        shortcut_preview_of(&preview_offer(
+            IterationCount::Fixed(4),
+            4,
+            Some(preview_period_delta()),
+        ))
+        .is_some(),
+        "control: both authorities present must publish a preview, else every arm below \
+         passes for an unrelated reason"
+    );
+
+    // ── No measured period: every mint except the bounded one carries `per_cycle: None`,
+    //    as does every save written before that field existed.
+    assert_eq!(
+        shortcut_preview_of(&preview_offer(IterationCount::Fixed(4), 4, None)),
+        None,
+        "an offer that states no per-period signature has nothing to multiply"
+    );
+
+    // ── CR 704.5a: `UntilLethal` is the determinate-drain mode. It names no number, so
+    //    there is no declared count to state a finished magnitude for — even though the
+    //    period here IS measured, which is what keeps this arm distinct from the one above.
+    assert_eq!(
+        shortcut_preview_of(&preview_offer(
+            IterationCount::UntilLethal,
+            4,
+            Some(preview_period_delta()),
+        )),
+        None,
+        "`UntilLethal` states no finite count to multiply the period by"
+    );
+
+    // ── A period whose every family nets to zero (one W gained and one W spent) states
+    //    nothing, and is dropped rather than published as a row of zeroes.
+    let mut inert = engine::analysis::resource::ResourceVector::default();
+    inert.mana[0] = 1;
+    inert.mana[5] = -1;
+    assert_eq!(
+        inert.axis_components().len(),
+        2,
+        "reach-guard: the inert period really does move two axes, so the `None` below is the \
+         family fold cancelling them — not an empty vector arriving empty"
+    );
+    assert_eq!(
+        shortcut_preview_of(&preview_offer(IterationCount::Fixed(4), 4, Some(inert))),
+        None,
+        "a period that nets to nothing on every family publishes no preview at all"
+    );
+}
+
+/// C4a's hostile guard — the preview is ARITHMETIC, and must never become a clone-apply.
+///
+/// `game::interaction::preview_interaction` answers a different question (is this response
+/// submittable) by cloning the whole `GameState` and applying to the clone. It cannot answer
+/// this one: a CR 732.2a shortcut's declared count may reach `MAX_SHORTCUT_CYCLES`, and the
+/// entire point of the rule is that the sequence is NOT played out to find out what it does.
+/// A future rewrite that reached for the previewer would be quietly quadratic and quietly
+/// wrong, and no value assertion would catch it — so this row reads the source.
+///
+/// REVERT-PROBE, RUN: add the line `// preview_interaction` inside the function body ⇒ this
+/// row fails on the assert (it still compiles, so the probe discriminates on the assertion
+/// rather than on the build).
+#[test]
+fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/game/interaction.rs");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+
+    // ── POSITIVE CONTROL: the banned symbol IS in this file. Without this the "does not
+    //    contain" assertions below would pass just as happily against an empty read, a
+    //    renamed file, or a search that never matched anything.
+    assert!(
+        text.contains("pub fn preview_interaction("),
+        "positive control: `preview_interaction` must exist in this file, else the absence \
+         asserted below is the absence of the whole search"
+    );
+
+    let marker = "\nfn shortcut_preview_entries(";
+    let start = text
+        .find(marker)
+        .expect("reach-guard: the preview function must be found by name, or this row is vacuous")
+        + 1;
+    let rest = &text[start..];
+    let end = rest[1..]
+        .find("\nfn ")
+        .map_or(rest.len(), |offset| offset + 1);
+    let body = &rest[..end];
+
+    assert!(
+        body.contains("saturating_mul"),
+        "reach-guard: the extracted span must be the real body — the multiplication is the \
+         function's entire job, so its absence means the span is wrong"
+    );
+    for banned in ["preview_interaction", "state.clone()", "GameState"] {
+        assert!(
+            !body.contains(banned),
+            "CR 732.2a: the shortcut preview is `n × δ` over the certificate's measured \
+             period. It must not reach `{banned}` — a clone-apply cannot state the result of \
+             a sequence that is deliberately never played out"
+        );
+    }
 }
 
 #[test]

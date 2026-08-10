@@ -877,49 +877,57 @@ impl ResourceVector {
         any_increase || mills
     }
 
-    /// The component axes that strictly increased over this delta — the
-    /// candidate **unbounded** resources a `WinKind` classifier (PR-2) reads to
-    /// name the loop's win condition. A mill axis surfaces here as a negative
-    /// `library_delta`, so it is reported separately via its sign.
+    /// EVERY axis this delta moved, in either direction, as a [`ResourceAxis`] tag with its
+    /// signed magnitude — the unfiltered fold [`Self::unbounded_components`] narrows.
     ///
-    /// Returns each increasing axis as a [`ResourceAxis`] tag with its signed
-    /// magnitude.
-    pub fn unbounded_components(&self) -> Vec<(ResourceAxis, i64)> {
+    /// Named `axis_components` because [`Self::components`] is taken by a different fold over
+    /// the same fields: that one yields the [`Component`] CONSUMED/GAINED classification with
+    /// no axis identity, for [`Self::is_net_progress`].
+    ///
+    /// The distinction from that method is the SIGN, and it is the whole reason this exists:
+    /// `unbounded_components` reports only what a loop *accrues*, so a drain loop's defining
+    /// term — the victim's NEGATIVE `life` — is invisible through it. A consumer that has to
+    /// state what a repetition COSTS, rather than what it gains, cannot be built on that
+    /// method. The one such consumer today is `game::interaction`'s CR 732.2a shortcut
+    /// preview, which states the finished magnitude of a declared repeat count and would
+    /// otherwise show a lethal drain as producing nothing.
+    ///
+    /// Order is fixed (mana, life, damage, library, poison, counters, triggers, then the
+    /// scalar axes) and every map is a `BTreeMap`, so the result is deterministic.
+    pub fn axis_components(&self) -> Vec<(ResourceAxis, i64)> {
         let mut out = Vec::new();
         for (i, &n) in self.mana.iter().enumerate() {
-            if n > 0 {
+            if n != 0 {
                 out.push((ResourceAxis::Mana(MANA_INDEX[i]), n));
             }
         }
         for (pid, &n) in &self.life {
-            if n > 0 {
+            if n != 0 {
                 out.push((ResourceAxis::Life(*pid), n));
             }
         }
         for (pid, &n) in &self.damage_dealt {
-            if n > 0 {
+            if n != 0 {
                 out.push((ResourceAxis::DamageDealt(*pid), n));
             }
         }
-        // CR 401: a mill loop is unbounded *downward* on library size.
         for (pid, &n) in &self.library_delta {
             if n != 0 {
                 out.push((ResourceAxis::LibraryDelta(*pid), n));
             }
         }
-        // CR 704.5c: rising poison on a victim is an unbounded loss axis.
         for (pid, &n) in &self.poison {
-            if n > 0 {
+            if n != 0 {
                 out.push((ResourceAxis::Poison(*pid), n));
             }
         }
         for (&key, &n) in &self.counters {
-            if n > 0 {
+            if n != 0 {
                 out.push((ResourceAxis::Counter(key.0, key.1), n));
             }
         }
         for (&kind, &n) in &self.generic_triggers {
-            if n > 0 {
+            if n != 0 {
                 out.push((ResourceAxis::Trigger(kind), n));
             }
         }
@@ -935,11 +943,29 @@ impl ResourceVector {
             (ResourceAxis::LtbTriggers, self.ltb_triggers),
             (ResourceAxis::SacTriggers, self.sac_triggers),
         ] {
-            if n > 0 {
+            if n != 0 {
                 out.push((axis, n));
             }
         }
         out
+    }
+
+    /// The component axes that strictly increased over this delta — the
+    /// candidate **unbounded** resources a `WinKind` classifier (PR-2) reads to
+    /// name the loop's win condition. A mill axis surfaces here as a negative
+    /// `library_delta`, so it is reported separately via its sign.
+    ///
+    /// Returns each increasing axis as a [`ResourceAxis`] tag with its signed
+    /// magnitude.
+    ///
+    /// CR 401: the `LibraryDelta` exemption is what keeps a mill loop — unbounded
+    /// *downward* on library size — in the result while every other axis is required to
+    /// have risen.
+    pub fn unbounded_components(&self) -> Vec<(ResourceAxis, i64)> {
+        self.axis_components()
+            .into_iter()
+            .filter(|&(axis, n)| n > 0 || matches!(axis, ResourceAxis::LibraryDelta(_)))
+            .collect()
     }
 
     /// CR 732.2a + CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: the largest number of
