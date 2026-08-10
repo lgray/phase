@@ -179,6 +179,7 @@ pub fn guard_client_message_before_dispatch(
             password,
             timer_seconds,
             pod_size,
+            kind,
             ..
         } => guard_create_draft_with_settings(
             display_name,
@@ -186,6 +187,7 @@ pub fn guard_client_message_before_dispatch(
             password,
             *timer_seconds,
             *pod_size,
+            *kind,
         ),
         ClientMessage::JoinDraftWithPassword {
             draft_code,

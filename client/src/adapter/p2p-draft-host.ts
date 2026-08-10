@@ -34,6 +34,10 @@ import {
   clearDraftHostSession,
   type PersistedDraftHostSession,
 } from "../services/draftPersistence";
+
+function matchConfigForView(view: DraftPlayerView): MatchConfig {
+  return view.match_config;
+}
 import {
   commandAcknowledgement,
   draftIntergameDigest,
@@ -248,7 +252,7 @@ export class P2PDraftHost {
       handler: (conn: DataConnection) => void,
     ) => () => void,
     private readonly poolInput: PoolInput,
-    private readonly kind: "Premier" | "Traditional",
+    private readonly kind: "Premier" | "Traditional" | "Sealed",
     private readonly podSize: number,
     private readonly hostDisplayName: string,
     private readonly tournamentFormat: TournamentFormat,
@@ -560,7 +564,10 @@ export class P2PDraftHost {
     this.draftCode = draftCode;
     this.activePodSize = seats.length;
     this.picksThisRound.clear();
-    await this.resolveBotPicks({ emit: false, persist: false });
+    const startView = await this.adapter.getViewForSeat(0);
+    if (startView.status === "Drafting") {
+      await this.resolveBotPicks({ emit: false, persist: false });
+    }
 
     // Send each guest their filtered view
     for (const [seat, session] of this.guestSessions) {
@@ -575,7 +582,9 @@ export class P2PDraftHost {
     this.persistSession();
     const freshHostView = await this.adapter.getViewForSeat(0);
     this.emit({ type: "draftStarted", view: freshHostView });
-    this.startPickTimer(0);
+    if (freshHostView.status === "Drafting") {
+      this.startPickTimer(0);
+    }
   }
 
   /**
@@ -1110,7 +1119,7 @@ export class P2PDraftHost {
           botSeat,
           botName,
           deckPayload,
-          matchConfig: this.matchConfig(),
+          matchConfig: matchConfigForView(view),
           binding,
       });
       return;
@@ -1139,7 +1148,7 @@ export class P2PDraftHost {
         opponentName: hostOpponentName,
         matchHostPeerId: matchRoomCode,
         deckPayload,
-        matchConfig: this.matchConfig(),
+        matchConfig: matchConfigForView(view),
         binding,
     });
     this.sendMatchLaunch(guestSeat, {
@@ -1152,7 +1161,7 @@ export class P2PDraftHost {
         opponentName: guestOpponentName,
         matchHostPeerId: matchRoomCode,
         localDeck: guestDeck,
-        matchConfig: this.matchConfig(),
+        matchConfig: matchConfigForView(view),
         binding,
     });
   }
@@ -1245,9 +1254,6 @@ export class P2PDraftHost {
     );
   }
 
-  private matchConfig(): MatchConfig {
-    return { match_type: this.kind === "Traditional" ? "Bo3" : "Bo1" };
-  }
 
   /**
    * Report a match result. Called when a guest sends draft_match_result.
@@ -2020,6 +2026,7 @@ export class P2PDraftHost {
       tournament_format: "Swiss",
       pod_policy: "Competitive",
       pairings: [],
+      match_config: { match_type: this.kind === "Traditional" ? "Bo3" : "Bo1" },
     };
   }
 

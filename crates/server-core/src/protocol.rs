@@ -1953,11 +1953,11 @@ mod tests {
     }
 
     #[test]
-    fn client_message_create_draft_with_settings_roundtrips() {
+    fn client_message_create_sealed_draft_with_settings_roundtrips() {
         let msg = ClientMessage::CreateDraftWithSettings {
             display_name: "Alice".to_string(),
             set_code: "MKM".to_string(),
-            kind: draft_core::types::DraftKind::Premier,
+            kind: draft_core::types::DraftKind::Sealed,
             public: true,
             password: Some("secret".to_string()),
             timer_seconds: Some(75),
@@ -1980,7 +1980,7 @@ mod tests {
             } => {
                 assert_eq!(display_name, "Alice");
                 assert_eq!(set_code, "MKM");
-                assert_eq!(kind, draft_core::types::DraftKind::Premier);
+                assert_eq!(kind, draft_core::types::DraftKind::Sealed);
                 assert!(public);
                 assert_eq!(password, Some("secret".to_string()));
                 assert_eq!(timer_seconds, Some(75));
@@ -2106,6 +2106,7 @@ mod tests {
             tournament_format: TournamentFormat::Swiss,
             pod_policy: PodPolicy::Competitive,
             pairings: Vec::new(),
+            match_config: DraftKind::Premier.match_config(),
         };
         let msg = ServerMessage::DraftStateUpdate { view: view.clone() };
         let json = serde_json::to_string(&msg).unwrap();
@@ -2244,6 +2245,7 @@ mod tests {
             tournament_format: TournamentFormat::Swiss,
             pod_policy: PodPolicy::Competitive,
             pairings: Vec::new(),
+            match_config: DraftKind::Premier.match_config(),
             pools: None,
             current_packs: None,
         };
@@ -2261,8 +2263,8 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_26() {
-        assert_eq!(PROTOCOL_VERSION, 26);
+    fn protocol_version_is_27() {
+        assert_eq!(PROTOCOL_VERSION, 27);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -2272,7 +2274,7 @@ mod tests {
     /// understand.
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
-    /// this guards — and this test reds while `protocol_version_is_26` stays
+    /// this guards — and this test reds while `protocol_version_is_27` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {
