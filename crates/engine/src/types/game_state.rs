@@ -3614,7 +3614,7 @@ pub enum PersistentAxisMaterialization {
     /// (the `TokensCreated` axis). Carries NO per-cycle count because the per-cycle
     /// fodder count k is STRUCTURALLY ≡ 1: this stash is only registered when
     /// `materialize_object_growth_shortcut`'s `derived_fodder_class`
-    /// (engine.rs:1991-2005) found EXACTLY one new battlefield object per period
+    /// found EXACTLY one new battlefield object per period
     /// (a two+-object period returns `None` ⇒ no `Tokens` stash), so the boundary
     /// mint of `count: amount` == k·amount is EXACT. (Contrast `Counters`/`Life`,
     /// which carry a measured `per_cycle_delta` to handle k>1.)
@@ -21206,7 +21206,7 @@ impl GameState {
     /// shorter slice, so a short snapshot would silently skip tail seats and RETAIN the
     /// ring — the one direction the "clearing can only SHRINK the prior set" guarantee
     /// forbids. One comparison keeps that guarantee structural instead of contractual.
-    /// (CR 119.3, `MagicCompRules.txt:1065`, is the rule the life comparison implements.)
+    /// (CR 119.3 is the rule the life comparison implements.)
     pub(crate) fn invalidate_loop_ring_on_unobserved_life_move(&mut self, lives_before: &[i32]) {
         if self.players.len() != lives_before.len()
             || self
@@ -22132,9 +22132,11 @@ fn _gamestate_partition_is_total(s: &GameState) {
         //     legitimate loop; a heterogeneous/reordered period is correctly caught and rejected).
         last_loop_action_sequence: _,
         //   - `resolution_source_relatch` (CR 400.7j self-move re-latch): EXCLUDED-REQUIRED (measured
-        //     by ordering trace, not doc-trust). The clear at stack.rs:194 fires at the START of the
+        //     by ordering trace, not doc-trust). The `stack.rs` clears (`resolution_source_relatch =
+        //     None`, one at each resolution-start site) fire at the START of the
         //     NEXT resolution, while `record_loop_detect_sample` fires at the Priority window AFTER
-        //     this resolution's self-move SET it (zones.rs:610) — so at the sample beat it HOLDS this
+        //     this resolution's self-move SET it (`zones::record_resolution_source_relatch`) — so at
+        //     the sample beat it HOLDS this
         //     iteration's `current_incarnation`, which bumps every iteration. COMPARING it would make
         //     every self-moving loop compare UNEQUAL (a false-negative — it would make the 4d
         //     Sprout-Swarm buyback loop undetectable). It is an incarnation/timestamp identity, and

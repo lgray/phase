@@ -2131,7 +2131,9 @@ fn b3_materialize_stop_short() {
 /// PR-7 DoS cap (CR 732.2a SAFETY LIMIT): a `Fixed` count over `MAX_SHORTCUT_CYCLES` is
 /// handed back to manual play with NO drive. This is the engine-side count cap that stops the
 /// catastrophic 4-byte remote vector — `Fixed(u32)` scalar-encodes ~4.3e9 cycles in ~10 bytes,
-/// sailing through the 8 KB WS frame cap. The count is HARDCODED as `Fixed(u32::MAX)`; the cap
+/// sailing through the WS frame cap (`phase-server`'s `MAX_WS_MESSAGE_BYTES`, 64 KB). The count
+/// is HARDCODED as
+/// `Fixed(u32::MAX)`; the cap
 /// const is private to the engine crate and invisible across this integration-test boundary.
 ///
 /// VACUITY TRAP (PR-7): a handback lands on `WaitingFor::Priority`, and so does the cap-ABSENT
