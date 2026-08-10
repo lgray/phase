@@ -508,8 +508,8 @@ fn natural_balance_collects_two_local_x_searches_before_one_shuffle_each() {
 ///
 /// # Discrimination
 ///
-/// Collapse the journal key to the bare `DecisionSource` (keep both signatures; build the
-/// key from `source` alone in `record_loop_answer`/`loop_answer`) and the two writes land
+/// Collapse the journal key to the bare `DecisionSlot` (keep both signatures; build the
+/// key from `slot` alone in `record_loop_answer`/`loop_answer`) and the two writes land
 /// in ONE entry: `loop_answers_recorded()` is 1, not 2, and the second write's differing
 /// value latches `Conflicted`, so the per-seat lookups no longer hold either. The
 /// cardinality assertion is value-independent and is asserted FIRST, so an empty journal —
@@ -517,7 +517,9 @@ fn natural_balance_collects_two_local_x_searches_before_one_shuffle_each() {
 /// content assertion can pass vacuously.
 #[test]
 fn natural_balance_two_scoped_seats_journal_one_may_source_under_two_independent_keys() {
-    use engine::analysis::decision_template::{LoopAnswer, MayChoiceOption};
+    use engine::analysis::decision_template::{
+        DecisionSlot, LoopAnswer, LoopAnswerValue, MayChoiceOption,
+    };
     use engine::types::game_state::{LoopDetectionMode, YieldTarget};
 
     let mut scenario = GameScenario::new_n_player(3, 42);
@@ -563,11 +565,16 @@ fn natural_balance_two_scoped_seats_journal_one_may_source_under_two_independent
     // identical and every journal assertion below would pass on an empty map.
     runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
 
-    // ── the shared source, captured at the prompt beats rather than reconstructed ──
-    let decision_source = |state: &GameState, id: ObjectId| YieldTarget::ThisObject {
-        source_id: id,
-        incarnation: Some(state.objects[&id].incarnation),
-        trigger_description: None,
+    // ── the shared slot, captured at the prompt beats rather than reconstructed ──
+    // The CR 400.7 source half is still hand-rolled (`object_decision_source` is
+    // `pub(crate)`), but the CR 603.5 sub-index now routes through the engine's own
+    // `DecisionSlot::may`, so this key cannot drift from the publisher's.
+    let decision_source = |state: &GameState, id: ObjectId| {
+        DecisionSlot::may(YieldTarget::ThisObject {
+            source_id: id,
+            incarnation: Some(state.objects[&id].incarnation),
+            trigger_description: None,
+        })
     };
 
     let outcome = runner.cast(natural_balance).resolve();
@@ -645,16 +652,16 @@ fn natural_balance_two_scoped_seats_journal_one_may_source_under_two_independent
     );
     assert_eq!(
         runner.state().loop_answer(&first_key, first_seat),
-        Some(LoopAnswer::Uniform {
-            take: MayChoiceOption::Take
-        }),
+        Some(LoopAnswer::Uniform(LoopAnswerValue::May(
+            MayChoiceOption::Take
+        ))),
         "the accepting seat's own entry records Take"
     );
     assert_eq!(
         runner.state().loop_answer(&second_key, second_seat),
-        Some(LoopAnswer::Uniform {
-            take: MayChoiceOption::Decline
-        }),
+        Some(LoopAnswer::Uniform(LoopAnswerValue::May(
+            MayChoiceOption::Decline
+        ))),
         "the declining seat's own entry records Decline, uncorrupted by the other seat's \
          differing answer — under a source-only key this second write would instead latch \
          Conflicted over the first"
