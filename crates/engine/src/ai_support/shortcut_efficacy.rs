@@ -436,6 +436,52 @@ fn effect_window_reach(effect: &Effect) -> WindowReach {
         //   a defending player, planeswalker or battle. That is the clearest
         //   possible touch outside the actor's own resources, and a tapped
         //   attacker is still an attacker.
+        //
+        // A FOURTH battlefield conjunct, on a different axis than the three
+        // above: `origin == Some(Zone::Library)`. Those three ask what ARRIVES;
+        // this one asks what the arriving CARD is, and it is the only conjunct
+        // that can be discharged from this seam's inputs at all.
+        //
+        // A permanent entering the battlefield brings its whole printed text
+        // with it, and `carries_unreadable_rules_content` is this module's
+        // authority on which of that text the fold cannot classify. For the
+        // object performing the action, both entry points already run that gate
+        // (`object_window_reach`, `indexed_ability_window_reach`) — so a
+        // `target: SelfRef` recursion, where the card that arrives IS the source,
+        // is already covered by it. For every other target shape the arriving
+        // card is a DIFFERENT object, and the gate has never been run on it.
+        //
+        // `Library` is the one origin where that is not a hole. CR 400.2 makes a
+        // library a hidden zone, and the card is an unchosen member of it: the
+        // seam is handed a `GameState` and a list of `GameAction`s, and the card
+        // is the subject of neither, so there is nothing to read and nothing is
+        // being skipped. `board_observer_may_react` agrees for the CR 113.6
+        // reason — `trigger_definition_functions_in_zone` correctly answers
+        // "does not function" for a library card.
+        //
+        // A `Graveyard`, `Hand` or `Exile` origin is a DIFFERENT situation and
+        // was previously admitted on the same warrant. There the arriving card
+        // IS in `state.objects`, its rules content is readable, and the fold
+        // simply never looked — so `OwnResourcesOnly` was asserted over text
+        // nobody had classified. Helping Hand ("Return target creature card with
+        // mana value 3 or less from your graveyard to the battlefield tapped.",
+        // Oracle text verified on Scryfall) read `OwnResourcesOnly` while a
+        // Fleshbag-Marauder-class creature sat in the actor's graveyard, and
+        // Accepting it hands back a window in which every player sacrifices.
+        //
+        // Gating on `Library` closes that without threading state into an
+        // AST-only function: it can only move a verdict toward `MayInterfere`,
+        // per §2 the direction that costs efficacy rather than games, and it is
+        // the same trade the `Hand` destination gate above already made.
+        // MEASURED on `data/card-data.json`, over every node in the document
+        // (not the narrower top-level `abilities` list the fold reads) whose
+        // shape is a tapped, non-attacking, unconditional, You-controlled
+        // battlefield entry: 493 total — Library 247, origin ABSENT 140,
+        // Graveyard 74, Hand 25, Exile 6, Battlefield 1. So the flagship
+        // library-fetch class keeps half the population outright, and the
+        // absent-origin bucket falls the same way as the named non-library ones,
+        // for the stronger version of the same reason: the seam cannot even name
+        // the zone the card comes from.
         Effect::ChangeZone {
             origin,
             destination,
@@ -457,7 +503,8 @@ fn effect_window_reach(effect: &Effect) -> WindowReach {
                     && *destination == Zone::Battlefield);
             let entry_is_confined = landing_zone_is_confined(*destination, *enter_tapped)
                 && (*destination != Zone::Battlefield
-                    || (enters_modified_if.is_none()
+                    || (*origin == Some(Zone::Library)
+                        && enters_modified_if.is_none()
                         && !*enters_attacking
                         && matches!(enters_under, None | Some(ControllerRef::You))));
             WindowReach::of(object_is_confined && entry_is_confined)
@@ -1067,15 +1114,25 @@ fn board_observer_may_react(state: &GameState, actor: PlayerId) -> bool {
 /// What that leaves outside the seam's description, stated as a property of the
 /// inputs rather than as a blanket: a permanent that arrives TAPPED and still
 /// enables interference through an ability whose cost is not tapping (a
-/// sacrifice-for-mana, say). This function is handed a `GameState` and a list of
-/// `GameAction`s. The card that would arrive is, at the moment of the decision,
-/// still IN THE LIBRARY — it is not on the board and it is not the subject of any
-/// enumerated action — so neither input contains it and neither the per-action
-/// fold nor the board scan below has an object to read. `board_observer_may_react`
-/// specifically cannot see it: `trigger_definition_functions_in_zone` correctly
-/// answers "does not function" for a library card, which is the CR 113.6 rule and
-/// not an omission. Reaching it at all would require resolving the search — a
-/// different kind of input than this seam takes.
+/// sacrifice-for-mana, say).
+///
+/// That residual is scoped to ONE origin, and the scoping is enforced in code
+/// rather than promised here. `effect_window_reach`'s `ChangeZone` arm admits a
+/// battlefield entry only when `origin == Some(Zone::Library)`, so the card that
+/// would arrive is always an unchosen member of a hidden zone (CR 400.2): this
+/// function is handed a `GameState` and a list of `GameAction`s, and the card is
+/// the subject of neither, so neither input contains it and neither the
+/// per-action fold nor the board scan below has an object to read.
+/// `board_observer_may_react` specifically cannot see it —
+/// `trigger_definition_functions_in_zone` correctly answers "does not function"
+/// for a library card, which is the CR 113.6 rule and not an omission. Reaching
+/// it at all would require resolving the search, a different kind of input than
+/// this seam takes.
+///
+/// A `Graveyard`, `Hand` or `Exile` origin is NOT that situation — the arriving
+/// card is in `state.objects` and its rules content is readable — and it is not
+/// in this residual because the arm no longer admits it. See that arm's fourth
+/// battlefield conjunct for the measurement and the efficacy trade.
 ///
 /// Its cost, on both axes, for the reader deciding whether that matters:
 ///   - across windows: a bounded miss — a seat's fetched answer goes unused for
@@ -1181,6 +1238,17 @@ mod tests {
         name: "Terramorphic Expanse",
         oracle: "{T}, Sacrifice this land: Search your library for a basic land \
                                 card, put it onto the battlefield tapped, then shuffle.",
+    };
+    /// Helping Hand, verbatim (Oracle text verified on Scryfall,
+    /// `api.scryfall.com/cards/named?exact=Helping+Hand`). The witness for the
+    /// origin gate: a tapped, You-controlled, unconditional, non-attacking
+    /// battlefield entry — confined on every axis the arm reads EXCEPT that the
+    /// arriving card comes from a graveyard, where it is a real object whose
+    /// rules content the fold has never classified.
+    const HELPING_HAND: Card = Card {
+        name: "Helping Hand",
+        oracle: "Return target creature card with mana value 3 or less from your \
+                 graveyard to the battlefield tapped.",
     };
     const EVOLVING_WILDS: Card = Card {
         name: "Evolving Wilds",
@@ -2499,6 +2567,99 @@ mod tests {
         }
     }
 
+    /// **The origin gate** — a battlefield entry is confined only when the card
+    /// that arrives comes from a LIBRARY.
+    ///
+    /// The three riders in the row below ask what ARRIVES. This one asks what the
+    /// arriving CARD is, and it is the axis on which `OwnResourcesOnly` was
+    /// previously asserted over rules text nobody had classified: a graveyard,
+    /// hand or exile card is a real object in `state.objects`, and neither
+    /// `object_window_reach`'s `carries_unreadable_rules_content` gate (which
+    /// runs on the SOURCE) nor `board_observer_may_react` (CR 113.6 — an ETB does
+    /// not function in a graveyard) ever reads it.
+    ///
+    /// **Attribution: exactly one field varies.** Helping Hand's REAL parsed node
+    /// is measured `MayInterfere`, then the SAME node with `origin` rewritten to
+    /// `Library` and nothing else touched is measured `OwnResourcesOnly`. Every
+    /// other axis the arm reads — target filter, tap state, the three riders — is
+    /// held byte-identical across the pair, so the flip is the origin field's and
+    /// cannot be the fixture's.
+    ///
+    /// The `None` row is the stronger case of the same argument: an absent origin
+    /// does not even name the zone the card comes from.
+    #[test]
+    fn a_battlefield_entry_is_confined_only_from_a_library() {
+        assert!(
+            !head_is_unparsed(&HELPING_HAND, 0),
+            "VACUITY GUARD: Helping Hand[0] must PARSE, or this row measures the fail-closed arm \
+             instead of the origin axis"
+        );
+        let node = ability(&HELPING_HAND, 0).effect.as_ref().clone();
+        let Effect::ChangeZone {
+            origin,
+            destination,
+            enter_tapped,
+            target,
+            ..
+        } = &node
+        else {
+            panic!("PREMISE: Helping Hand[0] must head a ChangeZone; got {node:?}");
+        };
+        assert_eq!(
+            (*origin, *destination, *enter_tapped),
+            (
+                Some(Zone::Graveyard),
+                Zone::Battlefield,
+                EtbTapState::Tapped
+            ),
+            "PREMISE: the real card prints a TAPPED graveyard-to-battlefield return, which is what \
+             makes the origin the only axis left to decide the verdict"
+        );
+        assert!(
+            filter_is_actor_owned(target),
+            "PREMISE: the target is proven actor-controlled, so `object_is_confined` holds and the \
+             verdict below is decided by `entry_is_confined` alone"
+        );
+
+        assert_eq!(
+            effect_window_reach(&node),
+            WindowReach::MayInterfere,
+            "a graveyard card entering the battlefield IS a readable object this fold never \
+             classified — Accepting here hands back a window in which a Fleshbag-Marauder-class \
+             ETB makes every player sacrifice"
+        );
+
+        for (label, rewritten) in [
+            (
+                "Library: the card is an unchosen member of a hidden zone (CR 400.2), so there is \
+                 nothing to read and nothing is skipped",
+                Some(Zone::Library),
+            ),
+            ("Hand: readable, and never classified", Some(Zone::Hand)),
+            ("Exile: readable, and never classified", Some(Zone::Exile)),
+            (
+                "None: the seam cannot even name the zone the card comes from",
+                None,
+            ),
+        ] {
+            let mut mutated = node.clone();
+            let Effect::ChangeZone { origin, .. } = &mut mutated else {
+                unreachable!("just destructured above");
+            };
+            *origin = rewritten;
+            let expected = if rewritten == Some(Zone::Library) {
+                WindowReach::OwnResourcesOnly
+            } else {
+                WindowReach::MayInterfere
+            };
+            assert_eq!(
+                effect_window_reach(&mutated),
+                expected,
+                "ONE FIELD VARIES from the node asserted above — {label}"
+            );
+        }
+    }
+
     /// PROVABLY tapped, not NOMINALLY tapped — the three riders that decide what
     /// actually arrives, plus the split that reaches the battlefield without a
     /// `ChangeZone` node at all.
@@ -2986,13 +3147,16 @@ mod tests {
         // change), but it IS this row's to disclose: none of the six is in the
         // relieved list above, so the reverse containment below covers 165 of the
         // enum's 171 variants and this constant names the remaining six.
-        // Declaration order, so a reordering of the enum is visible here too.
+        // Sorted, and compared as a SET: this row's subject is which variants are
+        // undecodable, not where they sit in the declaration. Pinning declaration
+        // order would red this `ai_support` row on a no-op reordering of
+        // `TriggerMode` — a failure that says nothing about either module.
         const UNCONSTRUCTIBLE: [&str; 6] = [
-            "KeywordAbilityActivated", // payload
-            "Explored",                // no `FromStr` arm
-            "Planeswalked",            // payload
             "Copied",                  // no `FromStr` arm
+            "Explored",                // no `FromStr` arm
             "HauntedCreatureDies",     // no `FromStr` arm
+            "KeywordAbilityActivated", // payload
+            "Planeswalked",            // payload
             "Unknown",                 // payload
         ];
         let mut undecodable = Vec::new();
@@ -3032,6 +3196,7 @@ mod tests {
             }
         }
 
+        undecodable.sort_unstable();
         assert_eq!(
             undecodable, UNCONSTRUCTIBLE,
             "the set of `TriggerMode` variants this enumeration cannot construct changed. If a \

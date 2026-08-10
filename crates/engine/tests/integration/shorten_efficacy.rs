@@ -2713,3 +2713,185 @@ fn t3_5_the_new_parse_warnings_field_keeps_dumps_byte_identical() {
          in every committed dump gains a `\"parse_warnings\":[]` key and every stored game grows"
     );
 }
+
+/// Helping Hand, verbatim (Oracle text verified on Scryfall,
+/// `api.scryfall.com/cards/named?exact=Helping+Hand`). Confined on every axis
+/// `effect_window_reach`'s `ChangeZone` arm reads EXCEPT the origin: the card it
+/// returns is a real object in the actor's graveyard whose rules content the fold
+/// never classified.
+const HELPING_HAND: &str = "Return target creature card with mana value 3 or less from your \
+                            graveyard to the battlefield tapped.";
+
+/// Stage a vanilla creature card in `player`'s graveyard. VANILLA on purpose:
+/// with no abilities of its own it cannot itself move any verdict — not through
+/// `board_observer_may_react` (nothing to observe with), not through the fold
+/// (it is not the subject of any action). It exists only so the Helping Hand
+/// below has a legal target, and it is staged in BOTH arms so it is held
+/// constant rather than varied.
+fn give_graveyard_creature(state: &mut GameState, player: PlayerId) -> ObjectId {
+    let id = engine::game::zones::create_object(
+        state,
+        CardId(state.next_object_id),
+        player,
+        "Grizzly Bears".to_string(),
+        Zone::Graveyard,
+    );
+    let obj = state.objects.get_mut(&id).expect("just created");
+    obj.card_types.core_types.push(CoreType::Creature);
+    obj.base_card_types = obj.card_types.clone();
+    obj.power = Some(2);
+    obj.toughness = Some(2);
+    state.layers_dirty = LayersDirty::full();
+    id
+}
+
+/// V10d — a TAPPED battlefield entry from a GRAVEYARD keeps the seat's window;
+/// the tapped LIBRARY sibling still Accepts.
+///
+/// `v10c` closed the tap axis on a library fetch. This row closes the residual
+/// one axis over: `effect_window_reach`'s `ChangeZone` arm allowlisted a tapped
+/// battlefield entry from ANY origin, and the argument that made that safe —
+/// stated in `any_action_may_interfere`'s doc — is an argument about a card that
+/// is still IN THE LIBRARY: an unchosen member of a hidden zone (CR 400.2), which
+/// neither the per-action fold nor the board scan has an object to read.
+///
+/// That argument does not transfer to a graveyard. The returned card IS in
+/// `state.objects`, its trigger/replacement/static definitions are readable, and
+/// nothing reads them: `object_window_reach`'s `carries_unreadable_rules_content`
+/// gate runs on the SOURCE (the Helping Hand), never on the card it returns, and
+/// `board_observer_may_react` correctly answers "does not function" for a
+/// graveyard ETB (CR 113.6). So a Fleshbag-Marauder-class creature in the actor's
+/// own graveyard — "When this creature enters, each player sacrifices a creature
+/// of their choice" — arrives inside the very window the seat declined to keep.
+///
+/// **The pair varies exactly one object** on the flagship board, and both halves
+/// of that object are the SAME SHAPE on every axis but origin: two spells staged
+/// identically (`give_parsed_card`, instant, no printed cost), each heading a
+/// `ChangeZone` to the battlefield with `enter_tapped: Tapped`, no
+/// `enters_attacking`, no `enters_modified_if`, and a You-controlled target. The
+/// graveyard creature is present in BOTH arms. So the Shorten is attributable to
+/// the origin field and to nothing else.
+///
+/// **The control is the load-bearing half.** Rampant Growth's tapped LIBRARY
+/// fetch must still Accept — that is what keeps this gate a distinction rather
+/// than a blanket flip, and it is the same measurement that keeps `v1`/`v1b`'s
+/// Terramorphic Accept correct.
+///
+/// **Conservative by construction, and the cost is stated.** Grizzly Bears is
+/// vanilla, so this seat surrenders its window over a recursion that could not
+/// have interfered. That is the gate's shape: it reads the ORIGIN, not the
+/// returned card, so it is uniform over what the graveyard happens to hold. Per
+/// the module's §2 that is the direction that costs efficacy rather than games,
+/// and it is the same trade the `Hand` destination gate already made. MEASURED on
+/// `data/card-data.json`, of the 493 document-wide tapped/non-attacking/
+/// unconditional/You-controlled battlefield entries, 247 come from a library and
+/// keep their classification; 74 graveyard, 25 hand, 6 exile and 140
+/// absent-origin nodes lose it.
+///
+/// MUTANT: in `effect_window_reach`'s `ChangeZone` arm, delete the
+/// `*origin == Some(Zone::Library)` conjunct from `entry_is_confined` (the
+/// pre-fix expression) — the SHORTEN arm flips to `Accept`. The ACCEPT arm is
+/// unaffected by that mutation by construction: its origin already IS
+/// `Library`, so the conjunct it deletes was true there anyway.
+///
+/// Every `GameAction::CastSpell` matcher binds `{ object_id, .. }` and must NOT
+/// name `payment_mode`, for `v10a`'s reason.
+#[test]
+fn v10d_a_tapped_graveyard_return_keeps_its_window_and_the_library_sibling_accepts() {
+    let mut board = live_path_board();
+    drive_to_offer(&mut board, 400).expect("CR 732.2a: the offer must fire on this real 4p drain");
+    let polled = declare_and_poll(&board, P2);
+
+    let mut base = polled.clone();
+    give_graveyard_creature(&mut base, P2);
+
+    // ── arm ACCEPT: the tapped LIBRARY fetch ──
+    let mut accept_arm = base.clone();
+    let growth = give_rampant_growth(&mut accept_arm, P2);
+    // ── arm SHORTEN: same board, same graveyard, the tapped GRAVEYARD return ──
+    let mut shorten_arm = base.clone();
+    let helping_hand = give_parsed_card(
+        &mut shorten_arm,
+        P2,
+        "Helping Hand",
+        HELPING_HAND,
+        CoreType::Instant,
+        Zone::Hand,
+    );
+
+    for (label, arm, staged) in [
+        ("ACCEPT", &accept_arm, growth),
+        ("SHORTEN", &shorten_arm, helping_hand),
+    ] {
+        assert!(
+            stage_one_meaningful(arm, P2),
+            "reach-guard ({label} arm): stage 1 must return true, or the seat answers at stage 1 \
+             and the fold under test never runs"
+        );
+        assert!(
+            probe_actions(arm, P2).iter().any(
+                |a| matches!(a, GameAction::CastSpell { object_id, .. } if *object_id == staged)
+            ),
+            "reach-guard ({label} arm): the staged spell must really be castable at this window, \
+             or the arm is the base board with extra steps and the pair measures nothing; got {:?}",
+            non_pass_actions(arm, P2)
+        );
+    }
+
+    // ATTRIBUTION: both arms must be the flagship's action set PLUS exactly the
+    // one staged cast. A third `MayInterfere` action in either arm would
+    // over-determine the row silently instead of reddening.
+    let accept_non_pass = non_pass_actions(&accept_arm, P2);
+    let shorten_non_pass = non_pass_actions(&shorten_arm, P2);
+    assert_eq!(
+        accept_non_pass.len(),
+        2,
+        "ATTRIBUTION: the ACCEPT arm must be the flagship fetchland PLUS the Rampant Growth cast, \
+         and nothing else; got {accept_non_pass:?}"
+    );
+    assert_eq!(
+        shorten_non_pass.len(),
+        2,
+        "ATTRIBUTION: the SHORTEN arm must be the flagship fetchland PLUS the Helping Hand cast, \
+         and nothing else; got {shorten_non_pass:?}"
+    );
+
+    // MEMBERSHIP, not just cardinality: the two arms MINUS their staged cast must
+    // be the same single flagship action, so the pair really does vary one object.
+    let accept_rest: Vec<&String> = accept_non_pass
+        .iter()
+        .filter(|a| !a.starts_with(&format!("CastSpell {{ object_id: {growth:?},")))
+        .collect();
+    let shorten_rest: Vec<&String> = shorten_non_pass
+        .iter()
+        .filter(|a| !a.starts_with(&format!("CastSpell {{ object_id: {helping_hand:?},")))
+        .collect();
+    assert_eq!(
+        accept_rest, shorten_rest,
+        "ATTRIBUTION: each arm's set MINUS its staged cast must be the SAME flagship action — same \
+         object, same zone, same controller; got {accept_non_pass:?} vs {shorten_non_pass:?}"
+    );
+    assert!(
+        accept_rest.len() == 1
+            && accept_rest[0].contains("Terramorphic Expanse")
+            && accept_rest[0].contains("zone=Some(Battlefield)")
+            && accept_rest[0].contains("controller=Some(PlayerId(2))"),
+        "ATTRIBUTION: that shared action must be P2's OWN battlefield fetchland; got \
+         {accept_rest:?}"
+    );
+
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&accept_arm, P2),
+        ShortcutResponse::Accept,
+        "the pair's negative arm: a tapped LIBRARY fetch stays confined — the card it puts onto \
+         the battlefield is an unchosen member of a hidden zone (CR 400.2), so there is nothing \
+         the fold skipped reading"
+    );
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&shorten_arm, P2),
+        ShortcutResponse::Shorten { at_iteration: 0 },
+        "the pair's positive arm: the returned card is a REAL object in the actor's graveyard \
+         whose rules content this fold never classified, so `OwnResourcesOnly` would be a proof it \
+         cannot discharge. The Helping Hand is the one object that differs"
+    );
+}
