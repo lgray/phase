@@ -549,6 +549,34 @@ pub struct GameObject {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spellbook: Vec<String>,
 
+    /// Parser diagnostics for this face, copied verbatim from
+    /// `CardFace::parse_warnings` by `game::printed_cards`.
+    ///
+    /// NOT a rules field, and it does not change how anything resolves. It is
+    /// carried onto the object because a diagnostic is EVIDENCE ABOUT the rules
+    /// content: it records that the parser saw printed text it could not turn
+    /// into an `AbilityDefinition`. `game::coverage` already reads the same list
+    /// off the face to decide whether a card is supported. Any consumer that
+    /// wants to prove an object's printed rules text is fully modelled has to be
+    /// able to see that the parse was lossy, and before this field existed that
+    /// evidence stopped at the card database.
+    ///
+    /// `skip_serializing_if` keeps every existing dump byte-identical: the field
+    /// is empty for a clean parse, which is the overwhelming majority of objects.
+    ///
+    /// DELIBERATELY ABSENT FROM `CopiableValues`. CR 707.2 gives a copy the
+    /// copiable values of the original's CHARACTERISTICS, and CR 707.2a says why
+    /// the abilities come along: "those values are derived from its rules text".
+    /// A parse diagnostic is not derived from the rules text — it is a statement
+    /// about this engine's READING of it — so it is not a characteristic and a
+    /// copy does not acquire it. The consequence, stated rather than left to be
+    /// discovered: a token copy carries the source's `abilities` but its own
+    /// (empty) diagnostics. That is exactly the coverage a copy had before this
+    /// field existed; the field narrows the gap for printed objects and leaves
+    /// the copy case where it already was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parse_warnings: Vec<crate::parser::oracle_ir::diagnostic::OracleDiagnostic>,
+
     // Back face data for double-faced cards (DFCs)
     pub back_face: Option<BackFaceData>,
 
@@ -1270,6 +1298,15 @@ fn _gameobject_partition_is_total(o: &GameObject) {
         token_image_ref: _,
         source_related_token_ids: _,
         spellbook: _,
+        // IMMUTABLE. Written exactly once, by `printed_cards::apply_card_face_to_object`,
+        // as a verbatim clone of the face's own diagnostics; nothing mutates it
+        // afterwards. MEASURED by `grep -rn 'parse_warnings\s*=' crates/engine/src/`:
+        // the only assignments in the crate are `parser::oracle`'s write to a
+        // `ParsedCard` result and a local `bool` in `game::coverage` — neither is a
+        // `GameObject` field write. Two objects with the same printed face therefore
+        // always agree here, so it cannot carry a per-object divergence the CR 104.4b
+        // comparator would need to see.
+        parse_warnings: _,
         back_face: _,
         specialize_faces: _,
         specialized_color: _,
@@ -2144,6 +2181,7 @@ impl GameObject {
             token_image_ref: None,
             source_related_token_ids: Vec::new(),
             spellbook: Vec::new(),
+            parse_warnings: Vec::new(),
             back_face: None,
             specialize_faces: None,
             specialized_color: None,

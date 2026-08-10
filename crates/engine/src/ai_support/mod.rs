@@ -1591,6 +1591,7 @@ pub fn smart_shortcut_response(
     // flat list alone would silently Accept.
     if shortcut_efficacy::any_action_may_interfere(
         probe.state(),
+        polled_player,
         &stage_two_action_set(probe.state(), &actions),
     ) {
         // CR 732.2b: name an earlier stopping point — take my window instead of losing.

@@ -90,6 +90,7 @@ use crate::types::ability::{
 use crate::types::actions::GameAction;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
+use crate::types::player::PlayerId;
 use crate::types::zones::{EtbTapState, Zone};
 
 /// How far a single available action can reach, relative to the player who
@@ -145,6 +146,15 @@ impl WindowReach {
 ///
 /// Unproven is not owned: everything else (`Any`, `None`, `Player`, `Opponent`,
 /// `ParentTarget*`, anaphors, specific ids) is `false`.
+///
+/// SCOPE, and the name is wider than what this proves. Both `true` arms are
+/// CONTROL arms, not ownership arms: CR 109.5 defines "you"/"your" on an object
+/// as its CONTROLLER, so `SelfRef`, `Controller` and `Typed{controller: You}` all
+/// resolve through control, and CR 110.2 makes owner and controller
+/// independent. Ownership is proven separately and at BOARD level by
+/// [`actor_owns_everything_they_control`], which
+/// [`any_action_may_interfere`] applies before it folds any action; this
+/// predicate is sound only underneath that conjunct.
 fn filter_is_actor_owned(filter: &TargetFilter) -> bool {
     match filter {
         TargetFilter::SelfRef | TargetFilter::Controller => true,
@@ -169,6 +179,39 @@ fn filter_is_actor_owned(filter: &TargetFilter) -> bool {
         TargetFilter::And { filters } => filters.iter().any(filter_is_actor_owned),
         _ => false,
     }
+}
+
+/// Does the actor OWN every permanent they control?
+///
+/// [`filter_is_actor_owned`] proves CONTROL, because CR 109.5 defines "you" and
+/// "your" on an object as its controller. CR 110.2 makes owner and controller
+/// independent axes ("A permanent's owner is the same as the owner of the card
+/// that represents it"), so a controlled-but-not-owned permanent breaks every
+/// place this module treats a control proof as a confinement proof. The sharp
+/// one is CR 701.21a: "To sacrifice a permanent, its controller moves it from the
+/// battlefield directly to its OWNER'S graveyard" — so the allowlisted
+/// `AbilityCost::Sacrifice` of a permanent the actor controls but does not own
+/// puts a card into ANOTHER player's graveyard, which is that player's own zone
+/// per CR 400.1 ("Each player has their own library, hand, and graveyard") and
+/// therefore reach by construction.
+///
+/// SET-LEVEL BY NECESSITY, not by preference. Threading ownership per matched
+/// object is structurally impossible at the filter layer: `TargetFilter::Controller`
+/// is a bare unit variant carrying no id at all, and `TargetFilter::Typed` is a
+/// SET PREDICATE describing a class rather than naming a member, so neither can be
+/// resolved to the objects it would match without evaluating it against the board.
+/// The single variant that does carry an id — `SpecificObject { id }` — already
+/// falls to `filter_is_actor_owned`'s `_` arm and returns `false`. So the only
+/// place the ownership fact can be discharged is the board, once, over every
+/// object the actor controls.
+///
+/// Board facts are action-independent, so the caller evaluates this ONCE rather
+/// than per action.
+fn actor_owns_everything_they_control(state: &GameState, actor: PlayerId) -> bool {
+    state
+        .objects
+        .values()
+        .all(|o| o.controller != actor || o.owner == actor)
 }
 
 /// Is a landing zone confined — i.e. can the seat NOT act on what arrives there,
@@ -649,6 +692,16 @@ fn carries_unreadable_rules_content(object: &GameObject) -> bool {
         // is the fourth subtype-derived field of four — the other three were already here,
         // which is what made this one's absence a curated subset rather than a set.
         || object.room_unlocks.is_some()
+        // THE PARSER SAID IT COULD NOT READ THIS CARD. Every other disjunct above gates a
+        // field whose CONTENTS this fold cannot classify; this one gates the parser's own
+        // report that some printed clause never became a field at all. That is the exact
+        // residual the module doc's §2 names as the one thing the fail-closed default
+        // cannot cover — "a clause the PARSER silently swallows never becomes a shape here,
+        // so the ability this module is handed looks strictly MORE confined than the
+        // printed card is" — and a diagnostic is the seat's only in-band evidence that it
+        // happened. Reading `abilities` and ignoring the note saying `abilities` is
+        // incomplete is proving confinement from the fraction of the card that parsed.
+        || !object.parse_warnings.is_empty()
 }
 
 /// Fold every ability an object carries. A missing object, or one carrying no
@@ -726,6 +779,271 @@ fn indexed_ability_window_reach(
         .map_or(WindowReach::MayInterfere, ability_window_reach)
 }
 
+/// CR 603.2: can a CONFINED action's event stream ever match this trigger's
+/// trigger event? Returns `true` iff it PROVABLY cannot.
+///
+/// # This predicate is NOT a fact about the trigger
+///
+/// It is a fact about the trigger RELATIVE TO the confined-action allowlists this
+/// module defines, and it lives here for exactly that reason. Relief is not
+/// intrinsic to a `TriggerMode`; every arm below is discharged by reading what
+/// [`cost_window_reach`] and [`effect_window_reach`] admit, so the premise has to
+/// live where those allowlists live. Moving it to `game::triggers` would present
+/// it as a CR-grounded property of a trigger and invite reuse by a caller with a
+/// different action set, for which every arm below is unproven.
+///
+/// ## The soundness contract, named in full
+///
+/// Relief holds only while BOTH allowlists stay exactly as they are today:
+///
+/// * [`cost_window_reach`] admits `AbilityCost::Tap`, `AbilityCost::Mana`,
+///   an actor-owned `AbilityCost::Sacrifice`, and `AbilityCost::Composite` of
+///   those. Everything else is `MayInterfere`.
+/// * [`effect_window_reach`] admits `Effect::SearchLibrary`, `Effect::Shuffle`
+///   and a gated `Effect::ChangeZone`. Everything else is `MayInterfere`.
+///
+/// **WIDEN EITHER ALLOWLIST AND YOU MUST RE-AUDIT EVERY ARM BELOW.** The witness
+/// that makes that concrete, and the reason the Life family's relief is
+/// CONTINGENT rather than structural: `AbilityCost::PayLife` exists
+/// (`types::ability`) and a Polluted-Delta-class fetchland pays it — "{T}, Pay 1
+/// life, Sacrifice this land: Search your library …" — squarely inside this
+/// predicate's own event boundary, which counts cost payment. Such a card is
+/// `MayInterfere` today ONLY because `PayLife` falls to `cost_window_reach`'s
+/// fail-closed `_` arm. Allowlist `PayLife` and a Bloodthirsty Conqueror
+/// ("Whenever an opponent loses life, you gain that much life") fires through a
+/// mode this function has RELIEVED — which is the precise defect the board scan
+/// exists to prevent.
+///
+/// ## Boundary
+///
+/// The classified action set is `GameAction::CastSpell` and
+/// `GameAction::ActivateAbility` only; every other `GameAction` already returns
+/// `true` in [`any_action_may_interfere`] without consulting this. Events are
+/// counted from announcement through full resolution, INCLUDING cost payment
+/// (CR 601.2b–i for a spell, CR 602.2b for an activated ability, which routes to
+/// the same process). `GameAction::PassPriority` is excluded by construction (it
+/// returns `false` before the fold), so phase advance is out of domain and a
+/// beginning-of-phase trigger cannot be reached through this predicate's callers.
+///
+/// ## Fail-closed
+///
+/// Exhaustive dispatch with a `_ => false` arm, mirroring
+/// [`crate::game::triggers::trigger_event_unreachable_in_phase`]: a mode this
+/// predicate cannot classify KEEPS its veto. A future mode is swallowed into
+/// conservatism, never into relief.
+fn trigger_event_unreachable_by_confined_action(
+    def: &crate::types::ability::TriggerDefinition,
+) -> bool {
+    use crate::types::triggers::TriggerMode;
+
+    match def.mode {
+        // LIFE — CR 119.3: "If an effect causes a player to gain life or lose
+        // life, that player's life total is adjusted accordingly." No allowlisted
+        // effect adjusts a life total, and no allowlisted COST pays life. See the
+        // `AbilityCost::PayLife` witness above: this family is the contingent one.
+        // `PayEcho`/`PayCumulativeUpkeep` additionally route to `match_phase`
+        // (`game::trigger_matchers`), i.e. they key on `GameEvent::PhaseChanged`,
+        // which the turn-structure argument below covers independently.
+        TriggerMode::LifeGained
+        | TriggerMode::LifeLost
+        | TriggerMode::LifeLostAll
+        | TriggerMode::LifeChanged
+        | TriggerMode::PayLife
+        | TriggerMode::PayCumulativeUpkeep
+        | TriggerMode::PayEcho => true,
+
+        // DAMAGE — CR 120.1: "Objects can deal damage to battles, creatures,
+        // planeswalkers, and players." Searching, shuffling and moving a card
+        // deal no damage, and no allowlisted cost does either. `Fight`/`FightOnce`
+        // are in this family by CR 701.14a (each fighting creature "deals damage equal to its
+        // power to the other creature") and are
+        // additionally keyed on `EffectKind::Fight` in `game::trigger_matchers`,
+        // which no allowlisted effect produces.
+        TriggerMode::DamageDone
+        | TriggerMode::DamageDoneOnce
+        | TriggerMode::DamageAll
+        | TriggerMode::DamageDealtOnce
+        | TriggerMode::DamageDoneOnceByController
+        | TriggerMode::DamageReceived
+        | TriggerMode::DamagePreventedOnce
+        | TriggerMode::ExcessDamage
+        | TriggerMode::ExcessDamageAll
+        | TriggerMode::Fight
+        | TriggerMode::FightOnce => true,
+
+        // COMBAT — CR 508.1 and CR 509.1 both open "this turn-based action doesn't
+        // use the stack": attackers and blockers are declared by the turn-based
+        // actions of CR 506.1's declare-attackers and declare-blockers steps, not
+        // by any spell or ability. MEASURED in `game::trigger_matchers`: every mode
+        // below keys on `GameEvent::AttackersDeclared` or
+        // `GameEvent::BlockersDeclared`, neither of which a cast or an activation
+        // emits.
+        //
+        // The one allowlisted effect that could otherwise put a creature into
+        // combat is `Effect::ChangeZone`'s `enters_attacking` rider (CR 508.4),
+        // and `effect_window_reach` already requires `!enters_attacking` for a
+        // battlefield arrival to be confined — so this family depends on that
+        // conjunct and not merely on the turn-based-action argument.
+        //
+        // `TriggerMode::EntersOrAttacks` is DELIBERATELY ABSENT — see the excluded
+        // list below.
+        TriggerMode::Attacks
+        | TriggerMode::AttackersDeclared
+        | TriggerMode::AttackersDeclaredOneTarget
+        | TriggerMode::YouAttack
+        | TriggerMode::YouAttackUnblocked
+        | TriggerMode::AttackerBlocked
+        | TriggerMode::AttackerBlockedOnce
+        | TriggerMode::AttackerBlockedByCreature
+        | TriggerMode::AttackerUnblocked
+        | TriggerMode::AttackerUnblockedOnce
+        | TriggerMode::Blocks
+        | TriggerMode::BlockersDeclared
+        | TriggerMode::BecomesBlocked
+        | TriggerMode::AttacksOrBlocks
+        | TriggerMode::BlocksOrBecomesBlocked => true,
+
+        // TURN STRUCTURE — CR 500.1: "A turn consists of five phases, in this
+        // order …". A phase or turn begins by turn-based action, never because a
+        // player cast a spell or activated an ability. `PassPriority` is the
+        // action that CAN advance a phase and it never reaches this predicate
+        // (see Boundary above).
+        TriggerMode::Phase | TriggerMode::TurnBegin | TriggerMode::NewGame => true,
+
+        // CARD FLOW the allowlist cannot cause.
+        //
+        // * `Drawn` — CR 121.1: "A player draws a card by putting the top card of
+        //   their library into their hand." Doubly unreachable: `match_drawn` keys
+        //   on the dedicated `GameEvent::CardDrawn`, AND no confined action can put
+        //   a card into a hand at all, because `landing_zone_is_confined` answers
+        //   `false` for `Zone::Hand` on both doors out of a library.
+        // * `Discarded`/`DiscardedAll` — CR 701.9a: "To discard a card, move it
+        //   from its owner's hand to that player's graveyard." `match_discarded`
+        //   keys on the dedicated `GameEvent::Discarded`, which
+        //   `game::zone_pipeline` emits only for a recorded discard, not for a
+        //   generic hand-to-graveyard move.
+        // * `TokenCreated`/`TokenCreatedOnce` — CR 111.1: tokens are put onto the
+        //   battlefield by effects that say so. `Effect::Token` is not allowlisted,
+        //   and `match_token_created` keys on the dedicated
+        //   `GameEvent::TokenCreated`.
+        //
+        // `Milled`/`MilledOnce`/`MilledAll` are DELIBERATELY ABSENT — see below.
+        TriggerMode::Drawn
+        | TriggerMode::Discarded
+        | TriggerMode::DiscardedAll
+        | TriggerMode::TokenCreated
+        | TriggerMode::TokenCreatedOnce => true,
+
+        // ── NOT RELIEVED. Each keeps its veto, with the source that reaches it. ──
+        //
+        // Directly produced by casting or activating:
+        //   `SpellCast`            CR 601.2i     — announcing the spell IS the event
+        //   `AbilityActivated`     CR 602.2b     — likewise for an activation
+        //   `Taps` / `TapsForMana` / `ManaAdded` — `AbilityCost::Tap` and the mana
+        //                                          the actor spends
+        //   `PlayerPerformedAction`              — `game::search_library` emits it
+        //   `SearchedLibrary`                    — `Effect::SearchLibrary` itself
+        //   `Shuffled`                           — `Effect::Shuffle` itself
+        // Produced by the allowlisted `ChangeZone` / `Sacrifice`:
+        //   `Exiled`, `Sacrificed`, `Destroyed`, `ChangesZone`, `ChangesZoneAll`,
+        //   `LeavesBattlefield`, `Revealed`, `BecomesTarget`, `CounterAdded`
+        //   (`game::zone_pipeline` puts counters on an entering permanent),
+        //   `ChangesController`, `Attached`, `Unattach`.
+        // Unknowable here:
+        //   `StateCondition` — CR 603.2 state triggers watch a game STATE, not an
+        //                      event, so no event-stream argument can relieve one;
+        //   `Unknown(_)`     — an unclassified Forge mode string, by definition.
+        //
+        // THREE MEASURED EXCLUSIONS from families that otherwise look relieved.
+        // Each was found by reading the matcher rather than the mode name, and
+        // each reads a GENERIC `GameEvent::ZoneChanged` that an allowlisted
+        // `Effect::ChangeZone` really does emit:
+        //
+        // * `Milled` / `MilledOnce` / `MilledAll` — CR 701.17a defines milling as
+        //   library-to-graveyard, and `game::trigger_matchers::match_milled` keys
+        //   on `ZoneChanged { from: Some(Library), to: Graveyard }` rather than on
+        //   any mill-specific event. `Effect::ChangeZone { origin: Some(Library),
+        //   destination: Graveyard, target: <actor-owned> }` is confined here
+        //   (graveyard is a confined landing zone, the target proves control) and
+        //   emits exactly that event, so relieving the family would be unsound.
+        // * `EntersOrAttacks` — `match_enters_or_attacks` reads `ZoneChanged`, so
+        //   the flagship's own tapped fetch fires it. It is a combat mode by name
+        //   only.
+        // * `EntersOrHauntedCreatureDies` — dispatches to `match_changes_zone`
+        //   outright (`game::trigger_matchers`).
+        //
+        // Fail-closed: every mode this predicate cannot classify keeps its veto.
+        _ => false,
+    }
+}
+
+/// CR 603.2: could ANY trigger anywhere on the board fire off a confined action
+/// the actor takes in this window?
+///
+/// [`any_action_may_interfere`]'s per-action fold reads the acting object's own
+/// AST and nothing else, so it cannot see an OBSERVER — a permanent belonging to
+/// somebody else whose triggered ability watches for the very event the confined
+/// action produces. The maintainer witness is Hedron Crab: "Landfall — Whenever a
+/// land you control enters, target player mills three cards." A seat that
+/// confidently cracks its own fetchland in front of an opponent's Crab has just
+/// milled a player, and no amount of reading the fetchland proves otherwise.
+///
+/// Three INDEPENDENT SUFFICIENT reliefs, applied as a DISJUNCTION — a trigger is
+/// inert iff at least one holds. They are ordered cheapest-first, and the zone
+/// gate MUST stay first: MEASURED on the largest board in the enrolled fixture
+/// set it removes 103 of 145 candidate definitions before any other work runs.
+///
+/// 1. **Zone of function** — CR 113.6 / CR 603.6:
+///    [`crate::game::triggers::trigger_definition_functions_in_zone`] is the
+///    single authority. Reading `def.trigger_zones.contains(&zone)` directly is
+///    FAIL-OPEN and must never be done here: an EMPTY `trigger_zones` means
+///    battlefield-only, so a direct `contains` answers "does not function" for
+///    every ordinary battlefield trigger on the board.
+/// 2. **Mode** — [`trigger_event_unreachable_by_confined_action`].
+/// 3. **The self-reference carve-out** — a trigger that watches only ITS OWN
+///    object (CR 109.5: "you"/"your" refer to the object's controller) and whose
+///    object the actor does not own cannot be reached by an action confined to
+///    the actor's own resources. All three conjuncts are load-bearing:
+///    * `zone_change_clauses.is_empty()`, because a non-empty clause list makes
+///      the matcher IGNORE the scalar `valid_card` entirely
+///      (`types::ability::TriggerDefinition`), so reading `valid_card` under a
+///      disjunctive trigger reads a field the engine does not consult;
+///    * `valid_card == Some(TargetFilter::SelfRef)` EXACTLY. This deliberately
+///      does NOT reuse [`filter_is_actor_owned`], which answers `true` for
+///      `Typed { controller: Some(You) }` — precisely Hedron Crab's `valid_card`,
+///      so reusing it would carve out the very trigger this scan exists to catch.
+///      `valid_card: None` means UNRESTRICTED rather than self
+///      (`game::trigger_index`), and `== Some(SelfRef)` rejects it without a
+///      dedicated arm;
+///    * `obj.owner != actor`, because the actor's OWN self-referential observer
+///      is reachable by the actor's own action.
+///
+/// NOT a `TriggerDefinition` destructure, unlike [`ability_window_reach`]'s
+/// `..`-free discipline, and the asymmetry is deliberate. The 30 fields not read
+/// here are inert, effect-side, or NARROWING — a narrowing field can only make a
+/// trigger fire less often, so ignoring it is conservative. The two that can
+/// broaden a trigger within its class, `origin_zones` and `zone_change_clauses`,
+/// belong exclusively to zone-change modes, and no zone-change mode is ever
+/// relieved by arm 2 (`ChangesZone`/`ChangesZoneAll` fall to `_ => false`);
+/// `zone_change_clauses` is additionally read directly by arm 3.
+///
+/// CR 603.10a: this reads live `state.objects` rather than any look-back
+/// snapshot, which is correct here because the question is prospective — what
+/// could fire if the actor acts — not what did fire.
+fn board_observer_may_react(state: &GameState, actor: PlayerId) -> bool {
+    state.objects.values().any(|obj| {
+        crate::game::functioning_abilities::active_trigger_definitions(state, obj).any(|active| {
+            let def = active.definition;
+            let inert = !crate::game::triggers::trigger_definition_functions_in_zone(def, obj.zone)
+                || trigger_event_unreachable_by_confined_action(def)
+                || (def.zone_change_clauses.is_empty()
+                    && def.valid_card == Some(TargetFilter::SelfRef)
+                    && obj.owner != actor);
+            !inert
+        })
+    })
+}
+
 /// Stage 2's predicate: does the polled player hold any action that could reach
 /// past their own resources?
 ///
@@ -738,32 +1056,62 @@ fn indexed_ability_window_reach(
 /// Missing an action here is an Accept by OMISSION — the direction that loses
 /// games.
 ///
-/// ponytail: a fetched permanent that itself enables interference is modelled
-/// only through its ARRIVAL STATE, never by walking its abilities.
-/// `effect_window_reach` keeps a battlefield entry confined only when the AST
-/// proves it arrives tapped (CR 110.5b), so the mana axis — the fetched land
-/// that taps for mana inside this same window — is closed: an untapped entry
-/// reads `MayInterfere`.
+/// # What this seam's inputs can and cannot describe
 ///
-/// What remains unmodelled, stated precisely rather than as a blanket: a
-/// permanent that arrives TAPPED and still enables interference, via an ability
-/// whose cost is not tapping (e.g. sacrifice-for-mana). Reaching that needs a
-/// further priority window, and this design does NOT claim one is guaranteed —
-/// CR 732.1b says only that the shortcut rules *can be used* on a loop, and
-/// CR 732.2a makes proposing permissive ("may suggest").
-/// Scope of that remainder, on BOTH axes:
+/// A fetched permanent that itself enables interference is modelled only through
+/// its ARRIVAL STATE, never by walking its abilities. `effect_window_reach` keeps
+/// a battlefield entry confined only when the AST proves it arrives tapped
+/// (CR 110.5b), so the mana axis — the fetched land that taps for mana inside
+/// this same window — is closed: an untapped entry reads `MayInterfere`.
+///
+/// What that leaves outside the seam's description, stated as a property of the
+/// inputs rather than as a blanket: a permanent that arrives TAPPED and still
+/// enables interference through an ability whose cost is not tapping (a
+/// sacrifice-for-mana, say). This function is handed a `GameState` and a list of
+/// `GameAction`s. The card that would arrive is, at the moment of the decision,
+/// still IN THE LIBRARY — it is not on the board and it is not the subject of any
+/// enumerated action — so neither input contains it and neither the per-action
+/// fold nor the board scan below has an object to read. `board_observer_may_react`
+/// specifically cannot see it: `trigger_definition_functions_in_zone` correctly
+/// answers "does not function" for a library card, which is the CR 113.6 rule and
+/// not an omission. Reaching it at all would require resolving the search — a
+/// different kind of input than this seam takes.
+///
+/// Its cost, on both axes, for the reader deciding whether that matters:
 ///   - across windows: a bounded miss — a seat's fetched answer goes unused for
 ///     THIS shortcut;
-///   - within the window: the worst case is NOT bounded by "one shortcut". On
-///     an `UntilLethal` offer the accepted sequence runs to lethal, so the
-///     in-window cost of a missed out is elimination.
+///   - within the window: NOT bounded by "one shortcut". On an `UntilLethal`
+///     offer the accepted sequence runs to lethal, so the in-window cost of a
+///     missed out is elimination.
 ///
-/// Accepted because the miss requires the out to be reachable ONLY through the
-/// fetched permanent AND that permanent to arrive tapped; a directly-castable
-/// answer is already caught by the top-level fold. Upgrade path: walk the
-/// fetched object's own abilities if a real game shows a missed out. Owner:
-/// this lane, deferral burndown.
-pub(crate) fn any_action_may_interfere(state: &GameState, actions: &[GameAction]) -> bool {
+/// The miss requires the out to be reachable ONLY through the fetched permanent
+/// AND that permanent to arrive tapped; a directly-castable answer is already
+/// caught by the top-level fold, and CR 732.1b makes shortcut use permissive
+/// ("can be used") rather than guaranteed.
+///
+/// # Two board-level conjuncts, evaluated ONCE
+///
+/// Both run BEFORE the action fold, because each is a fact about the BOARD and
+/// not about any action: re-deriving them per action would multiply a whole-board
+/// scan by the action count and produce the identical answer every time.
+///
+/// * [`actor_owns_everything_they_control`] — the fold's filter proofs are
+///   CONTROL proofs (CR 109.5), and CR 701.21a routes a sacrificed permanent to
+///   its OWNER's graveyard.
+/// * [`board_observer_may_react`] — a confined action is still OBSERVED
+///   (CR 603.2); an opponent's Hedron Crab turns the actor's own fetch into a
+///   mill targeting somebody else.
+pub(crate) fn any_action_may_interfere(
+    state: &GameState,
+    actor: PlayerId,
+    actions: &[GameAction],
+) -> bool {
+    if !actor_owns_everything_they_control(state, actor) {
+        return true;
+    }
+    if board_observer_may_react(state, actor) {
+        return true;
+    }
     actions.iter().any(|action| match action {
         GameAction::PassPriority => false,
         GameAction::CastSpell { object_id, .. } => {
@@ -1576,6 +1924,13 @@ mod tests {
             strive_cost: _,
             solve_condition: _, // lands as `obj.case_state`
             attraction_lights: _,
+            // GATED as `obj.parse_warnings`. It was in the NOT-RULES-BEARING bucket
+            // below, reasoned "parser diagnostics, never consulted at runtime". That
+            // reason was TRUE about the field and WRONG about the conclusion: a
+            // diagnostic is not rules text, it is the parser's report that some printed
+            // rules text is MISSING from `abilities`, which is the one thing that makes
+            // an otherwise-confined fold unsound (module doc §2's named residual).
+            parse_warnings: _,
             // `metadata` is MIXED, so it is DESTRUCTURED rather than bound whole. Binding
             // it was a hole in the guard that the guard's own comment declared and did not
             // close: `spellbook` is exactly a rules-bearing field that arrived inside this
@@ -1629,7 +1984,6 @@ mod tests {
             is_commander: _,       // format eligibility
             is_oathbreaker: _,     // format eligibility
             deck_copy_limit: _,    // deck construction
-            parse_warnings: _,     // parser diagnostics, never consulted at runtime
             rarities: _,           // printing metadata
         } = CardFace::default();
     }
@@ -1659,7 +2013,7 @@ mod tests {
         // `clippy::type_complexity` rejects the inline tuple-of-fn-ptr array; the alias is
         // the lint's own suggested remedy.
         type FaceSetter = fn(&mut CardFace);
-        let cases: [(&str, FaceSetter); 12] = [
+        let cases: [(&str, FaceSetter); 13] = [
             // --- carried on the face itself.
             ("keywords", |f| f.keywords = vec![Keyword::Cascade]),
             ("cleave_variant", |f| {
@@ -1685,6 +2039,19 @@ mod tests {
             }),
             ("metadata.spellbook", |f| {
                 f.metadata.spellbook = vec!["Lightning Bolt".to_string()]
+            }),
+            // The parser's own report that some printed clause is NOT in `abilities`.
+            // `IgnoredRemainder` is the cheapest variant to build and the gate is a
+            // presence check, so the variant is not load-bearing — that the field
+            // SURVIVES `apply_card_face_to_object` is.
+            ("parse_warnings", |f| {
+                f.parse_warnings = vec![
+                    crate::parser::oracle_ir::diagnostic::OracleDiagnostic::IgnoredRemainder {
+                        text: "and you gain 2 life".to_string(),
+                        parser: "probe".to_string(),
+                        line_index: 0,
+                    },
+                ]
             }),
             // --- DERIVED FROM `card_type.subtypes` ALONE, with no face field behind them.
             // These four are why the guard's `card_type` bucket reason had to be rewritten:
@@ -1907,6 +2274,7 @@ mod tests {
         assert!(
             any_action_may_interfere(
                 &state,
+                PlayerId(0),
                 &[GameAction::ActivateAbility {
                     source_id: missing,
                     ability_index: 7,
@@ -1915,7 +2283,7 @@ mod tests {
             "an out-of-range ability index is interference, not a confined no-op"
         );
         assert!(
-            !any_action_may_interfere(&state, &[GameAction::PassPriority]),
+            !any_action_may_interfere(&state, PlayerId(0), &[GameAction::PassPriority]),
             "reach-guard: the fold CAN return false, so the trues above are attributable"
         );
     }
@@ -2300,6 +2668,480 @@ mod tests {
             WindowReach::MayInterfere,
             "`rest_destination` carries NO tap state of its own, so a battlefield rest can never be \
              proven tapped and is reach by construction"
+        );
+    }
+
+    // =======================================================================
+    // PR #7101 — the predicates the integration rows exercise through the real
+    // board, asserted here at the level the board cannot reach (all three are
+    // private, and widening them to `pub` for a test would be the wrong trade).
+    // =======================================================================
+
+    use crate::types::ability::TriggerDefinition;
+    use crate::types::triggers::TriggerMode;
+
+    fn trigger(mode: TriggerMode) -> TriggerDefinition {
+        TriggerDefinition::new(mode)
+    }
+
+    /// Put one object carrying one trigger on the board and ask the scan.
+    fn scan_with(
+        owner: crate::types::player::PlayerId,
+        zone: Zone,
+        def: TriggerDefinition,
+        actor: crate::types::player::PlayerId,
+    ) -> bool {
+        let mut state = GameState::default();
+        let id = create_object(
+            &mut state,
+            crate::types::identifiers::CardId(1),
+            owner,
+            "Observer".to_string(),
+            zone,
+        );
+        state
+            .objects
+            .get_mut(&id)
+            .expect("just created")
+            .install_trigger_base_definitions(std::sync::Arc::new(vec![def]))
+            .expect("staging one printed trigger");
+        board_observer_may_react(&state, actor)
+    }
+
+    const ACTOR: crate::types::player::PlayerId = crate::types::player::PlayerId(0);
+    const OPPONENT: crate::types::player::PlayerId = crate::types::player::PlayerId(1);
+
+    /// **T2.3 — the B4a NEGATIVE CONTROL, and the most load-bearing row here.**
+    ///
+    /// The carve-out and [`filter_is_actor_owned`] answer two DIFFERENT questions
+    /// on the identical input, and the whole [HIGH] fix depends on that gap.
+    /// `Typed { controller: Some(You) }` is Hedron Crab's `valid_card`; if the
+    /// carve-out had reused `filter_is_actor_owned` — the obvious reuse, and the
+    /// one this repo's building-block discipline actively invites — the crab
+    /// would have been carved out and the finding would have survived the fix.
+    ///
+    /// Both directions are asserted, so neither can be a constant: the helper
+    /// says `true` and the shipped carve-out says "not relieved" on ONE input.
+    #[test]
+    fn t2_3_the_carve_out_rejects_the_typed_you_shape_that_filter_is_actor_owned_accepts() {
+        let hedron_crab_shape = TargetFilter::Typed(crate::types::ability::TypedFilter {
+            controller: Some(ControllerRef::You),
+            ..Default::default()
+        });
+
+        assert!(
+            filter_is_actor_owned(&hedron_crab_shape),
+            "PREMISE: the helper really does accept this shape. If this ever goes false the \
+             asymmetry below stops being a hazard and this row stops being a control"
+        );
+
+        let mut def = trigger(TriggerMode::ChangesZone);
+        def.valid_card = Some(hedron_crab_shape);
+        assert!(
+            scan_with(OPPONENT, Zone::Battlefield, def, ACTOR),
+            "THE [HIGH] FIX: an opponent-owned `Typed{{controller: You}}` observer must KEEP the \
+             veto. Reusing `filter_is_actor_owned` as the carve-out predicate makes this pass \
+             through as relieved — that is the exact defect, and this assertion is what forbids \
+             the refactor that reintroduces it"
+        );
+
+        let mut self_ref = trigger(TriggerMode::ChangesZone);
+        self_ref.valid_card = Some(TargetFilter::SelfRef);
+        assert!(
+            !scan_with(OPPONENT, Zone::Battlefield, self_ref, ACTOR),
+            "…while the EXACT `SelfRef` shape is relieved. Without this half the row above would \
+             pass under a carve-out that never fires at all"
+        );
+    }
+
+    /// **T2.5 — the relieved-mode table**, one row per family.
+    ///
+    /// The integration-level witness for this table is the flagship board itself:
+    /// Dina, Soul Steeper (`LifeGained`) and Bloodthirsty Conqueror (`LifeLost`)
+    /// are two of its three zone-gate survivors, and they are relieved by the Life
+    /// family alone.
+    ///
+    /// REVERT-PROBE (executed): delete the Life arm ⇒ those two survive the scan,
+    /// `board_observer_may_react` returns true for P2, and
+    /// `v1_live_path_fetchland_seat_accepts_on_the_real_4p_board` flips to
+    /// `Shorten`.
+    #[test]
+    fn t2_5_each_relieved_family_is_relieved_and_its_siblings_are_not() {
+        let relieved = [
+            // CR 119.3 — life.
+            TriggerMode::LifeGained,
+            TriggerMode::LifeLost,
+            TriggerMode::LifeLostAll,
+            TriggerMode::LifeChanged,
+            TriggerMode::PayLife,
+            TriggerMode::PayCumulativeUpkeep,
+            TriggerMode::PayEcho,
+            // CR 120.1 — damage.
+            TriggerMode::DamageDone,
+            TriggerMode::DamageReceived,
+            TriggerMode::ExcessDamage,
+            TriggerMode::Fight,
+            // CR 508.1 / CR 509.1 — combat turn-based actions.
+            TriggerMode::Attacks,
+            TriggerMode::Blocks,
+            TriggerMode::AttackersDeclared,
+            TriggerMode::BlockersDeclared,
+            // CR 500.1 — turn structure.
+            TriggerMode::Phase,
+            TriggerMode::TurnBegin,
+            TriggerMode::NewGame,
+            // Card flow the allowlist cannot cause.
+            TriggerMode::Drawn,
+            TriggerMode::Discarded,
+            TriggerMode::TokenCreated,
+        ];
+        for mode in relieved {
+            let def = trigger(mode.clone());
+            assert!(
+                trigger_event_unreachable_by_confined_action(&def),
+                "{mode:?} must be relieved: no confined action can produce its trigger event"
+            );
+            assert!(
+                !scan_with(OPPONENT, Zone::Battlefield, trigger(mode.clone()), ACTOR),
+                "{mode:?} must also be relieved END TO END, through the scan the caller runs"
+            );
+        }
+
+        // The other direction, on modes a confined action really does produce.
+        for mode in [
+            TriggerMode::SpellCast,
+            TriggerMode::AbilityActivated,
+            TriggerMode::Taps,
+            TriggerMode::TapsForMana,
+            TriggerMode::ManaAdded,
+            TriggerMode::Shuffled,
+            TriggerMode::SearchedLibrary,
+            TriggerMode::PlayerPerformedAction,
+            TriggerMode::Sacrificed,
+            TriggerMode::Destroyed,
+            TriggerMode::Exiled,
+            TriggerMode::ChangesZone,
+            TriggerMode::BecomesTarget,
+            TriggerMode::CounterAdded,
+            TriggerMode::Revealed,
+        ] {
+            assert!(
+                !trigger_event_unreachable_by_confined_action(&trigger(mode.clone())),
+                "{mode:?} IS producible by a confined cast or activation, so it must keep its veto"
+            );
+        }
+    }
+
+    /// **T2.6 — an unclassifiable mode KEEPS its veto.**
+    ///
+    /// The fail-closed direction, and the one an earlier draft of this work had
+    /// backwards. `StateCondition` watches a game STATE rather than an event
+    /// (CR 603.2), so no event-stream argument can ever relieve it, and
+    /// `Unknown(_)` is an unclassified Forge mode string by construction.
+    ///
+    /// REVERT-PROBE (executed): change the predicate's `_ => false` arm to
+    /// `_ => true` ⇒ this row fails.
+    #[test]
+    fn t2_6_a_mode_the_predicate_cannot_classify_keeps_its_veto() {
+        for mode in [
+            TriggerMode::StateCondition,
+            TriggerMode::Unknown("SomeFutureForgeMode".to_string()),
+            // The three MEASURED exclusions from families that read a GENERIC
+            // `GameEvent::ZoneChanged` an allowlisted `Effect::ChangeZone` emits.
+            // `match_milled` keys on `ZoneChanged { from: Library, to: Graveyard }`
+            // (CR 701.17a), which a confined actor-owned self-mill produces.
+            TriggerMode::Milled,
+            TriggerMode::MilledAll,
+            TriggerMode::EntersOrAttacks,
+            TriggerMode::EntersOrHauntedCreatureDies,
+        ] {
+            assert!(
+                !trigger_event_unreachable_by_confined_action(&trigger(mode.clone())),
+                "{mode:?} must NOT be relieved — either it is unclassifiable, or its matcher reads \
+                 a generic zone-change event the confined allowlist really does emit"
+            );
+        }
+    }
+
+    /// **T2.7 — a disjunctive zone-change trigger is not carved out.**
+    ///
+    /// Scrap Trawler's shape: "Whenever this creature dies OR another artifact you
+    /// control is put into a graveyard from the battlefield, …". When
+    /// `zone_change_clauses` is non-empty the matcher IGNORES the scalar
+    /// `valid_card` entirely (`types::ability::TriggerDefinition`), so a `SelfRef`
+    /// sitting in that field describes only the FIRST clause and says nothing
+    /// about the second. Carving out on it would relieve a trigger that fires on
+    /// other objects.
+    ///
+    /// Matched pair on the clause list alone.
+    #[test]
+    fn t2_7_a_disjunctive_zone_change_trigger_is_not_relieved_by_its_scalar_valid_card() {
+        let mut scalar = trigger(TriggerMode::ChangesZone);
+        scalar.valid_card = Some(TargetFilter::SelfRef);
+        assert!(
+            !scan_with(OPPONENT, Zone::Battlefield, scalar, ACTOR),
+            "control: with NO clauses the scalar `valid_card` is what the matcher reads, so the \
+             carve-out applies"
+        );
+
+        let mut disjunctive = trigger(TriggerMode::ChangesZone);
+        disjunctive.valid_card = Some(TargetFilter::SelfRef);
+        disjunctive.zone_change_clauses = vec![crate::types::ability::ZoneChangeClause {
+            origin: crate::types::ability::OriginConstraint::Equals(Zone::Battlefield),
+            destination: Some(Zone::Graveyard),
+            destination_constraint: crate::types::ability::OriginConstraint::any_default(),
+            valid_card: None,
+        }];
+        assert!(
+            scan_with(OPPONENT, Zone::Battlefield, disjunctive, ACTOR),
+            "witness: one clause added and nothing else. The engine now ignores `valid_card`, so \
+             reading it would be reading a field that no longer decides anything"
+        );
+    }
+
+    /// **T2.10 — SHAPE PIN.** The relieved set is asserted against `TriggerMode`'s
+    /// own variant list, so a family that silently widens reds here.
+    ///
+    /// The list below is the COMPLETE set of modes this module relieves. A new
+    /// `TriggerMode` variant defaults to `_ => false` (not relieved) and does not
+    /// break this row — that is the fail-closed direction and it is correct. What
+    /// this catches is the dangerous edit: somebody adding a variant to a relieved
+    /// arm without re-deriving the soundness argument in that arm's comment.
+    #[test]
+    fn t2_10_the_relieved_mode_set_is_exactly_this_list() {
+        let expected: Vec<TriggerMode> = vec![
+            TriggerMode::LifeGained,
+            TriggerMode::LifeLost,
+            TriggerMode::LifeLostAll,
+            TriggerMode::LifeChanged,
+            TriggerMode::PayLife,
+            TriggerMode::PayCumulativeUpkeep,
+            TriggerMode::PayEcho,
+            TriggerMode::DamageDone,
+            TriggerMode::DamageDoneOnce,
+            TriggerMode::DamageAll,
+            TriggerMode::DamageDealtOnce,
+            TriggerMode::DamageDoneOnceByController,
+            TriggerMode::DamageReceived,
+            TriggerMode::DamagePreventedOnce,
+            TriggerMode::ExcessDamage,
+            TriggerMode::ExcessDamageAll,
+            TriggerMode::Fight,
+            TriggerMode::FightOnce,
+            TriggerMode::Attacks,
+            TriggerMode::AttackersDeclared,
+            TriggerMode::AttackersDeclaredOneTarget,
+            TriggerMode::YouAttack,
+            TriggerMode::YouAttackUnblocked,
+            TriggerMode::AttackerBlocked,
+            TriggerMode::AttackerBlockedOnce,
+            TriggerMode::AttackerBlockedByCreature,
+            TriggerMode::AttackerUnblocked,
+            TriggerMode::AttackerUnblockedOnce,
+            TriggerMode::Blocks,
+            TriggerMode::BlockersDeclared,
+            TriggerMode::BecomesBlocked,
+            TriggerMode::AttacksOrBlocks,
+            TriggerMode::BlocksOrBecomesBlocked,
+            TriggerMode::Phase,
+            TriggerMode::TurnBegin,
+            TriggerMode::NewGame,
+            TriggerMode::Drawn,
+            TriggerMode::Discarded,
+            TriggerMode::DiscardedAll,
+            TriggerMode::TokenCreated,
+            TriggerMode::TokenCreatedOnce,
+        ];
+
+        for mode in &expected {
+            assert!(
+                trigger_event_unreachable_by_confined_action(&trigger(mode.clone())),
+                "{mode:?} is in the pinned relieved list but the predicate does not relieve it"
+            );
+        }
+
+        // REVERSE CONTAINMENT, over the enum's own declaration read from source.
+        // `TriggerMode` derives no iteration trait and there is no name table, so
+        // the only total enumeration available is the declaration itself; a
+        // hand-copied list here would be the very drift this row exists to catch.
+        // Each scanned name goes back through `FromStr`, which is the decoder the
+        // card pipeline uses.
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/types/triggers.rs"
+        ))
+        .expect("the enum's own source file is readable");
+        let body = source
+            .split_once("pub enum TriggerMode {")
+            .expect("the enum declaration must be findable")
+            .1;
+        let body = body.split_once("\n}").expect("…and terminated").0;
+
+        // The names this enumeration cannot construct, PINNED so the gap cannot
+        // grow silently. Three carry payloads and have no bare-name spelling for
+        // `FromStr`; the other three are PRE-EXISTING gaps in
+        // `types::triggers`'s own decoder — they are declared on the enum but have
+        // no `FromStr` arm, so `from_str` degrades them to `Unknown`. That gap is
+        // not this module's to fix (and `types/triggers.rs` is outside this
+        // change), but it IS this row's to disclose: none of the six is in the
+        // relieved list above, so the reverse containment below covers 165 of the
+        // enum's 171 variants and this constant names the remaining six.
+        // Declaration order, so a reordering of the enum is visible here too.
+        const UNCONSTRUCTIBLE: [&str; 6] = [
+            "KeywordAbilityActivated", // payload
+            "Explored",                // no `FromStr` arm
+            "Planeswalked",            // payload
+            "Copied",                  // no `FromStr` arm
+            "HauntedCreatureDies",     // no `FromStr` arm
+            "Unknown",                 // payload
+        ];
+        let mut undecodable = Vec::new();
+
+        let mut scanned = 0usize;
+        let mut unexpected = Vec::new();
+        for line in body.lines() {
+            let line = line.trim();
+            // Payload variants FIRST: `Foo(Bar),` would otherwise strip only the
+            // comma and then fail the identifier filter below, silently dropping
+            // the variant from the enumeration entirely.
+            let Some(name) = line
+                .split_once('(')
+                .map(|(head, _)| head)
+                .or_else(|| line.strip_suffix(" {"))
+                .or_else(|| line.strip_suffix(','))
+            else {
+                continue;
+            };
+            let name = name.trim();
+            if name.is_empty()
+                || !name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                || !name.chars().all(|c| c.is_ascii_alphanumeric())
+            {
+                continue;
+            }
+            let mode: TriggerMode = name.parse().expect("FromStr for TriggerMode is Infallible");
+            if matches!(mode, TriggerMode::Unknown(_)) {
+                undecodable.push(name.to_string());
+                continue;
+            }
+            scanned += 1;
+            if trigger_event_unreachable_by_confined_action(&trigger(mode.clone()))
+                && !expected.contains(&mode)
+            {
+                unexpected.push(mode);
+            }
+        }
+
+        assert_eq!(
+            undecodable, UNCONSTRUCTIBLE,
+            "the set of `TriggerMode` variants this enumeration cannot construct changed. If a \
+             variant was ADDED to it, the reverse containment below silently stopped covering \
+             that variant — restore its `FromStr` arm rather than widening this constant"
+        );
+        assert!(
+            scanned >= 165,
+            "the source scan must actually reach the variant list — a parsing change that made it \
+             match nothing, or match only a prefix, would turn this whole row vacuous; scanned \
+             {scanned}"
+        );
+        assert!(
+            unexpected.is_empty(),
+            "these modes are relieved but are NOT in the pinned list — a family widened without \
+             its soundness comment being re-derived: {unexpected:?}"
+        );
+    }
+
+    /// **T2.4b — an EMPTY `trigger_zones` means battlefield, not nowhere.**
+    ///
+    /// CR 113.6: the zone-of-function question has one authority,
+    /// `game::triggers::trigger_definition_functions_in_zone`, and the reason the
+    /// scan must call it rather than read the field is this exact shape. An empty
+    /// list is the engine's spelling of "battlefield only"; a direct
+    /// `def.trigger_zones.contains(&zone)` answers `false` for it and would
+    /// relieve every ordinary battlefield observer on the board — the FAIL-OPEN
+    /// direction, which produces a false `Accept`.
+    ///
+    /// Built here rather than on the real board because it cannot be built there:
+    /// MEASURED, every active trigger definition on the flagship carries an
+    /// explicit `trigger_zones: [Battlefield]`, so the direct read and the
+    /// authority agree across the whole fixture corpus and no integration row can
+    /// tell them apart. Latent, not live — and closed for the same reason this
+    /// module closed its `Zone::Stack` arm.
+    ///
+    /// REVERT-PROBE (executed): swap the authority call for
+    /// `def.trigger_zones.contains(&obj.zone)` ⇒ this row fails.
+    #[test]
+    fn t2_4b_an_empty_trigger_zones_list_means_battlefield_not_nowhere() {
+        let mut def = trigger(TriggerMode::ChangesZone);
+        def.valid_card = Some(TargetFilter::Typed(crate::types::ability::TypedFilter {
+            controller: Some(ControllerRef::You),
+            ..Default::default()
+        }));
+        assert!(
+            def.trigger_zones.is_empty(),
+            "PREMISE: a fresh `TriggerDefinition` carries no zone list, which is the shape under \
+             test"
+        );
+
+        assert!(
+            scan_with(OPPONENT, Zone::Battlefield, def.clone(), ACTOR),
+            "CR 113.6: an empty `trigger_zones` FUNCTIONS on the battlefield, so this observer \
+             keeps its veto. A direct `contains` read answers `false` here and relieves it"
+        );
+        assert!(
+            !scan_with(OPPONENT, Zone::Hand, def, ACTOR),
+            "…and the same definition does NOT function from hand, so the gate is a distinction \
+             and not a constant"
+        );
+    }
+
+    /// **T3.1 — an unread parse warning is not proof of confinement.**
+    ///
+    /// RAMPANT_GROWTH is the clean single-variable discriminator: it carries no
+    /// keywords, no modal, no additional cost, no triggers, no statics and no
+    /// replacements, so every other disjunct of the gate is already false and the
+    /// verdict below can only be produced by `parse_warnings`. (Crop Rotation
+    /// cannot serve — it is over-determined by `additional_cost`.)
+    ///
+    /// Both directions on ONE object, one field mutated.
+    #[test]
+    fn t3_1_a_parse_diagnostic_gates_an_otherwise_confined_object() {
+        let mut state = GameState::default();
+        let id = create_object(
+            &mut state,
+            crate::types::identifiers::CardId(1),
+            crate::types::player::PlayerId(0),
+            RAMPANT_GROWTH.name.to_string(),
+            Zone::Hand,
+        );
+        let parsed = parse_oracle_text(RAMPANT_GROWTH.oracle, RAMPANT_GROWTH.name, &[], &[], &[]);
+        let obj = state.objects.get_mut(&id).expect("just created");
+        obj.abilities = std::sync::Arc::new(parsed.abilities);
+
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::OwnResourcesOnly,
+            "PREMISE: with a clean parse this card is the module's flagship confined shape. If \
+             this direction ever fails the row below stops measuring the diagnostic"
+        );
+
+        state
+            .objects
+            .get_mut(&id)
+            .expect("just created")
+            .parse_warnings = vec![
+            crate::parser::oracle_ir::diagnostic::OracleDiagnostic::IgnoredRemainder {
+                text: "and each opponent loses 2 life".to_string(),
+                parser: "probe".to_string(),
+                line_index: 0,
+            },
+        ];
+        assert_eq!(
+            object_window_reach(&state, id),
+            WindowReach::MayInterfere,
+            "the parser reported that some printed clause never became an `AbilityDefinition`. \
+             Proving confinement from the abilities that DID parse is proving it from the fraction \
+             of the card the classifier can see — the module doc's §2 residual, now in band"
         );
     }
 }

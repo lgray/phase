@@ -2266,3 +2266,450 @@ fn v10c_an_untapped_fetch_that_funds_an_unaffordable_answer_keeps_its_window() {
          the assertion an over-broad version of this fix destroys first"
     );
 }
+
+// ===========================================================================
+// PR #7101 — the two maintainer findings, both on the REAL 4p board.
+//
+// SHARED PREMISE, MEASURED once here rather than re-asserted per row. At the
+// offer beat the flagship board carries 171 active trigger definitions; the
+// CR 113.6 zone-of-function gate removes 168, leaving exactly three:
+//
+//   Dina, Soul Steeper       LifeGained  valid_card=None      owner=P0
+//   Bloodthirsty Conqueror   LifeLost    valid_card=None      owner=P0
+//   Abundant Growth          ChangesZone valid_card=SelfRef   owner=P1
+//
+// Dina and the Conqueror are relieved by the MODE gate (CR 119.3: no confined
+// action adjusts a life total). Abundant Growth is relieved for P2 by the
+// SELF-REFERENCE carve-out and by nothing else — `obj.owner (P1) != actor (P2)`
+// is the whole of it. That is why `v1_live_path_*` still Accepts, and it is why
+// polling P1 on this same board would find a live observer: for P1 the carve-out
+// conjunct is false. P1 is nevertheless safe, and NOT because "no board fires" —
+// it is because `smart_shortcut_response` returns `Accept` from STAGE 1, before
+// `any_action_may_interfere` ever runs, which `v1_live_path_*`'s own sibling
+// control pins via `!stage_one_meaningful(&other, seat)`.
+// ===========================================================================
+
+const HEDRON_CRAB: &str = "Landfall — Whenever a land you control enters, target player mills \
+                           three cards. (They put the top three cards of their library into their \
+                           graveyard.)";
+const BLOODGHAST_LANDFALL: &str = "Landfall — Whenever a land you control enters, you may return \
+                                   this card from your graveyard to the battlefield.";
+
+/// Stage a real parsed OBSERVER — a card whose rules content is a printed
+/// TRIGGER rather than an activated/spell ability — owned and controlled by
+/// `player`.
+///
+/// Distinct from `give_parsed_card` above on purpose: that helper stages the
+/// ACTING object and asserts exactly one parsed *ability*, which is the premise
+/// the V10 rows need and the exact opposite of what an observer carries. Verbatim
+/// Oracle text under the card's REAL name — a paraphrase can take a different
+/// parser branch and green a row while the printed card stays broken.
+fn give_parsed_observer(
+    state: &mut GameState,
+    player: PlayerId,
+    zone: Zone,
+    name: &str,
+    oracle: &str,
+) -> ObjectId {
+    let parsed = engine::parser::oracle::parse_oracle_text(oracle, name, &[], &[], &[]);
+    assert_eq!(
+        parsed.triggers.len(),
+        1,
+        "PREMISE: {name} must parse to exactly one printed trigger, or the row below cannot \
+         attribute its verdict to that trigger; got {:?}",
+        parsed.triggers
+    );
+    let id = engine::game::zones::create_object(
+        state,
+        CardId(state.next_object_id),
+        player,
+        name.to_string(),
+        zone,
+    );
+    let obj = state.objects.get_mut(&id).expect("just created");
+    obj.card_types.core_types.push(CoreType::Creature);
+    obj.base_card_types = obj.card_types.clone();
+    obj.install_trigger_base_definitions(std::sync::Arc::new(parsed.triggers))
+        .expect("staging one printed trigger set on a fresh object");
+    state.layers_dirty = LayersDirty::full();
+    id
+}
+
+/// Every active trigger definition on `object`, rendered for assertions.
+fn trigger_shapes(state: &GameState, object: ObjectId) -> Vec<String> {
+    let obj = state.objects.get(&object).expect("staged object exists");
+    engine::game::functioning_abilities::active_trigger_definitions(state, obj)
+        .map(|a| {
+            format!(
+                "mode={:?} valid_card={:?} trigger_zones={:?} zcc={}",
+                a.definition.mode,
+                a.definition.valid_card,
+                a.definition.trigger_zones,
+                a.definition.zone_change_clauses.len()
+            )
+        })
+        .collect()
+}
+
+/// **T1.2 — the [MED] finding.** `SelfRef` / `Controller` prove CONTROL, never
+/// OWNERSHIP.
+///
+/// CR 110.2 makes owner and controller independent. CR 701.21a: "To sacrifice a
+/// permanent, its controller moves it from the battlefield directly to its
+/// OWNER'S graveyard." So when P2 cracks a Terramorphic Expanse it controls but
+/// does NOT own, the land lands in somebody else's graveyard — a per-player zone
+/// (CR 400.1) — and the action was never confined at all. The fold's
+/// `filter_is_actor_owned(sacrifice.target)` says `true` regardless, because
+/// `TargetFilter::SelfRef` resolves through control (CR 109.5).
+///
+/// ONE VARIABLE against `v1_live_path_fetchland_seat_accepts_on_the_real_4p_board`:
+/// the same board, the same beat, the same offer, the same single action — only
+/// `ObjectId(203).owner` differs. MEASURED: all four seats own everything they
+/// control on this dump naturally, so the violating shape has to be constructed;
+/// it is constructed on the flagship's OWN fetchland rather than on a spare
+/// object so that the mis-owned permanent IS the one being sacrificed.
+///
+/// REVERT-PROBE (executed): trivialize `actor_owns_everything_they_control` to
+/// `true` ⇒ this row returns `Accept` and fails.
+#[test]
+fn t1_2_a_controlled_but_unowned_fetchland_is_not_confined() {
+    let mut board = live_path_board();
+    drive_to_offer(&mut board, 400).expect("the offer must fire");
+    let mut polled = declare_and_poll(&board, P2);
+
+    // REACH-GUARD, before the mutation: an `Accept` produced by an empty seat
+    // would be indistinguishable from an `Accept` produced by the predicate.
+    let non_pass = non_pass_actions(&polled, P2);
+    assert!(
+        !non_pass.is_empty(),
+        "REACH-GUARD: P2 must hold a non-pass action, or stage 1 answers and stage 2 never runs"
+    );
+    assert!(
+        non_pass
+            .iter()
+            .any(|a| a.contains("Terramorphic Expanse") && a.contains("zone=Some(Battlefield)")),
+        "REACH-GUARD: the action under test must be the fetchland activation the finding names; \
+         got {non_pass:?}"
+    );
+    assert!(
+        stage_one_meaningful(&polled, P2),
+        "REACH-GUARD: stage 1 must still pass P2 through to stage 2"
+    );
+
+    let fetch = *polled
+        .objects
+        .values()
+        .find(|o| o.name == "Terramorphic Expanse" && o.controller == P2)
+        .map(|o| &o.id)
+        .expect("P2's fetchland is on this board");
+
+    // CONTROL half — untouched board, unchanged answer.
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&polled, P2),
+        ShortcutResponse::Accept,
+        "matched control (T1.3): with ownership intact the seat still Accepts, so the flip below \
+         is attributable to the owner field and to nothing else about this board"
+    );
+
+    // WITNESS half — one field.
+    polled.objects.get_mut(&fetch).expect("just read").owner = P1;
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&polled, P2),
+        ShortcutResponse::Shorten { at_iteration: 0 },
+        "CR 701.21a: sacrificing a permanent P2 controls but P1 OWNS puts a card into P1's \
+         graveyard. `filter_is_actor_owned` cannot see that — it proves control (CR 109.5) — so \
+         the ownership fact has to be proven at board level or this Accept is unsound"
+    );
+}
+
+/// **T2.1 — the [HIGH] finding.** A confined action is still OBSERVED.
+///
+/// CR 603.2: "Whenever a game event or game state matches a triggered ability's
+/// trigger event, that ability automatically triggers." Reading the ACTING
+/// object's AST proves what that object does; it proves nothing about what the
+/// rest of the board is watching for. Hedron Crab watches for exactly the event
+/// the flagship's confined fetch produces, and its effect targets a PLAYER.
+///
+/// The crab is OPPONENT-owned on purpose. Actor-owned, both the shipped
+/// carve-out and the `filter_is_actor_owned` shape rejected in T2.3 would relieve
+/// it (the `obj.owner != actor` conjunct rescues it), so an actor-owned crab
+/// cannot tell the two apart. Only the opponent-owned one discriminates.
+///
+/// REVERT-PROBE (executed): delete the `board_observer_may_react` conjunct from
+/// `any_action_may_interfere` ⇒ this row returns `Accept` and fails.
+#[test]
+fn t2_1_an_opponent_owned_landfall_observer_defeats_a_confined_fetch() {
+    let mut board = live_path_board();
+    drive_to_offer(&mut board, 400).expect("the offer must fire");
+
+    // MATCHED CONTROL (T2.2) — same board, same beat, no crab.
+    let clean = declare_and_poll(&board, P2);
+    assert!(
+        stage_one_meaningful(&clean, P2),
+        "REACH-GUARD: stage 1 passes P2 through, so both halves below measure stage 2"
+    );
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&clean, P2),
+        ShortcutResponse::Accept,
+        "T2.2 matched control: without an observer the confined fetch still Accepts"
+    );
+
+    // WITNESS — one object added, owned and controlled by an opponent.
+    let mut with_crab = board.clone();
+    let crab = give_parsed_observer(
+        &mut with_crab,
+        P1,
+        Zone::Battlefield,
+        "Hedron Crab",
+        HEDRON_CRAB,
+    );
+
+    // PARSE PIN: if the parser ever stops producing this shape the row must go
+    // RED rather than silently green on a different (or absent) trigger.
+    let shapes = trigger_shapes(&with_crab, crab);
+    assert_eq!(
+        shapes.len(),
+        1,
+        "PREMISE: the crab must carry exactly one active trigger; got {shapes:?}"
+    );
+    assert!(
+        shapes[0].contains("mode=ChangesZone"),
+        "PREMISE: landfall is a CR 603.6a zone-change trigger; got {shapes:?}"
+    );
+    assert!(
+        shapes[0].contains("Land") && shapes[0].contains("You"),
+        "PREMISE: `valid_card` must be the TYPED land-you-control filter, NOT `SelfRef`. This is \
+         the exact shape T2.3 proves `filter_is_actor_owned` accepts — reusing that helper as the \
+         carve-out would relieve this trigger and the [HIGH] finding would survive; got {shapes:?}"
+    );
+    assert!(
+        shapes[0].contains("trigger_zones=[Battlefield]"),
+        "PREMISE: the crab must FUNCTION where it is standing, or the zone gate — not the \
+         carve-out — would be what produces the verdict below; got {shapes:?}"
+    );
+
+    let polled = declare_and_poll(&with_crab, P2);
+    assert!(
+        stage_one_meaningful(&polled, P2),
+        "REACH-GUARD: the crab must not have changed which stage answers"
+    );
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&polled, P2),
+        ShortcutResponse::Shorten { at_iteration: 0 },
+        "CR 603.2: P2's 'confined' fetch makes a land enter, the opponent's Crab triggers on it, \
+         and its effect mills a TARGET PLAYER. The action reached outside P2's own resources \
+         without P2's own AST containing anything that says so"
+    );
+}
+
+/// **T2.4 — the zone-of-function gate, on one axis.** Same card, same trigger,
+/// two zones.
+///
+/// CR 113.6 / CR 603.6: a Bloodghast-shaped landfall trigger functions from the
+/// GRAVEYARD (that is where the ability returns the card from), so a copy sitting
+/// in HAND observes nothing. The pair moves the zone and nothing else, so the
+/// `Accept` cannot be a property of the card and the `Shorten` cannot be a
+/// property of the board.
+///
+/// REVERT-PROBE (executed): delete the `trigger_definition_functions_in_zone`
+/// conjunct from `board_observer_may_react` ⇒ the hand half returns `Shorten`
+/// and this row fails.
+///
+/// SCOPE, measured rather than assumed. The OTHER way this gate can go wrong —
+/// reading `def.trigger_zones.contains(&obj.zone)` directly, which answers
+/// "functions nowhere" for the empty list that means battlefield-only — is NOT
+/// discriminated by this row, and it cannot be discriminated on this board:
+/// MEASURED, every active trigger definition on the flagship carries an explicit
+/// `trigger_zones: [Battlefield]`, so the direct read and the authority agree on
+/// the whole corpus. That fail-open direction is a LATENT hole here, closed for
+/// the same reason as this module's `Zone::Stack` arm, and it is pinned by
+/// `t2_4b_an_empty_trigger_zones_list_means_battlefield_not_nowhere` at unit
+/// level where the shape can actually be built.
+#[test]
+fn t2_4_a_landfall_observer_in_hand_does_not_veto_but_in_its_own_zone_it_does() {
+    let mut board = live_path_board();
+    drive_to_offer(&mut board, 400).expect("the offer must fire");
+
+    for (zone, expected) in [
+        (Zone::Hand, ShortcutResponse::Accept),
+        (
+            Zone::Graveyard,
+            ShortcutResponse::Shorten { at_iteration: 0 },
+        ),
+    ] {
+        let mut staged = board.clone();
+        let ghast = give_parsed_observer(&mut staged, P1, zone, "Bloodghast", BLOODGHAST_LANDFALL);
+        let shapes = trigger_shapes(&staged, ghast);
+        assert!(
+            shapes.iter().any(|s| s.contains("mode=ChangesZone")),
+            "PREMISE at {zone:?}: the landfall trigger must survive parsing; got {shapes:?}"
+        );
+
+        let polled = declare_and_poll(&staged, P2);
+        assert!(
+            stage_one_meaningful(&polled, P2),
+            "REACH-GUARD at {zone:?}: stage 2 must be the stage that answers"
+        );
+        assert_eq!(
+            engine::ai_support::smart_shortcut_response(&polled, P2),
+            expected,
+            "CR 113.6: the SAME trigger on the SAME card must veto from the zone it functions in \
+             and not from the zone it does not; failed at {zone:?}"
+        );
+    }
+}
+
+/// **T2.8 — the scan is not battlefield-only.** A command-zone emblem is scanned.
+///
+/// CR 114.1 puts emblems in the command zone and CR 114.4 is exact — "Abilities
+/// of emblems function in the command zone" — so an observer that never touches
+/// the battlefield
+/// still observes. `active_trigger_definitions` applies the CR 114.4 emblem gate
+/// itself, which is why the scan delegates to it rather than filtering zones.
+///
+/// REVERT-PROBE (executed): restrict `board_observer_may_react` to
+/// `obj.zone == Zone::Battlefield` ⇒ this row returns `Accept` and fails.
+#[test]
+fn t2_8_a_command_zone_emblem_observer_is_scanned() {
+    let mut board = live_path_board();
+    drive_to_offer(&mut board, 400).expect("the offer must fire");
+
+    let emblem = give_parsed_observer(&mut board, P1, Zone::Command, "Hedron Crab", HEDRON_CRAB);
+    {
+        let obj = board.objects.get_mut(&emblem).expect("just staged");
+        obj.is_emblem = true;
+        // CR 114.1: an emblem has no characteristics other than its abilities.
+        obj.card_types.core_types.clear();
+        obj.base_card_types = obj.card_types.clone();
+        // CR 114.4: "Abilities of emblems function in the command zone." The
+        // printed crab trigger parses as battlefield-only, so the zone list is
+        // retargeted — that retarget is the whole staging, and the assertion
+        // below proves it survived into the live set.
+        let mut defs = (*obj.base_trigger_definitions).clone();
+        for d in &mut defs {
+            d.trigger_zones = vec![Zone::Command];
+        }
+        obj.install_trigger_base_definitions(std::sync::Arc::new(defs))
+            .expect("re-staging the emblem's trigger set");
+    }
+    let shapes = trigger_shapes(&board, emblem);
+    assert_eq!(
+        shapes.len(),
+        1,
+        "PREMISE: the emblem must expose exactly one active trigger from the command zone — \
+         `active_trigger_definitions` drops non-emblem command-zone triggers, so an empty list \
+         here would make the row vacuous; got {shapes:?}"
+    );
+
+    let polled = declare_and_poll(&board, P2);
+    assert!(
+        stage_one_meaningful(&polled, P2),
+        "REACH-GUARD: stage 2 must be the stage that answers"
+    );
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&polled, P2),
+        ShortcutResponse::Shorten { at_iteration: 0 },
+        "CR 114.1 + CR 603.2: an observer in the command zone observes. A battlefield-only scan \
+         would miss every emblem and every command-zone trigger"
+    );
+}
+
+/// **T2.9 — the actor's OWN self-referential observer is NOT relieved**, on the
+/// real board's own survivor.
+///
+/// Abundant Growth (`ChangesZone`, `valid_card: SelfRef`) is one of the three
+/// definitions that survive the zone gate on the flagship board, and for P2 it is
+/// relieved by the carve-out's `obj.owner != actor` conjunct alone. Retag it to
+/// P2 — owner AND controller together, so the T1.2 ownership conjunct stays
+/// satisfied and cannot be what moves the verdict — and the same trigger must
+/// stop being relieved.
+///
+/// One variable: the object's seat. This is the row that pins the carve-out to
+/// "somebody ELSE'S self-reference", which is the only version of it that is
+/// sound: an actor's own self-referential trigger is reachable by the actor's own
+/// action.
+///
+/// REVERT-PROBE (executed): drop the `obj.owner != actor` conjunct ⇒ this row
+/// returns `Accept` and fails.
+#[test]
+fn t2_9_the_actors_own_self_referential_observer_keeps_the_veto() {
+    let mut board = live_path_board();
+    drive_to_offer(&mut board, 400).expect("the offer must fire");
+    let mut polled = declare_and_poll(&board, P2);
+
+    let growth = *polled
+        .objects
+        .values()
+        .find(|o| o.name == "Abundant Growth")
+        .map(|o| &o.id)
+        .expect("MEASURED: Abundant Growth is on this board and survives the zone gate");
+    let shapes = trigger_shapes(&polled, growth);
+    assert!(
+        shapes
+            .iter()
+            .any(|s| s.contains("valid_card=Some(SelfRef)")),
+        "PREMISE: this row needs the SelfRef shape the carve-out keys on; got {shapes:?}"
+    );
+    assert_ne!(
+        polled.objects[&growth].owner, P2,
+        "PREMISE: it starts on another seat, which is why the flagship Accepts"
+    );
+
+    // CONTROL — somebody else's self-reference, relieved.
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&polled, P2),
+        ShortcutResponse::Accept,
+        "control: an opponent's SelfRef observer cannot be reached by an action confined to P2's \
+         own resources"
+    );
+
+    // WITNESS — the same trigger, now the actor's own.
+    {
+        let obj = polled.objects.get_mut(&growth).expect("just read");
+        obj.owner = P2;
+        obj.base_controller = Some(P2);
+        obj.controller = P2;
+    }
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&polled, P2),
+        ShortcutResponse::Shorten { at_iteration: 0 },
+        "CR 109.5: 'you' on the observer means ITS controller. Once that is the actor, the actor's \
+         own confined action can reach it, so the carve-out must not apply"
+    );
+}
+
+/// **T3.5 — the new `GameObject::parse_warnings` field changes no committed byte.**
+///
+/// `skip_serializing_if = "Vec::is_empty"` is the whole mechanism, and this is
+/// the assertion that it is actually wired: re-serialize every object of a
+/// committed fixture through the production decoder and compare against the
+/// bytes the fixture shipped with.
+///
+/// REVERT-PROBE (executed): drop `skip_serializing_if` from the field ⇒ every
+/// object gains `"parse_warnings":[]` and this row fails.
+#[test]
+fn t3_5_the_new_parse_warnings_field_keeps_dumps_byte_identical() {
+    let json = gunzip_dump(include_bytes!("../fixtures/dina_noff_turn5_4p.json.gz"));
+    let envelope: serde_json::Value =
+        serde_json::from_str(&json).expect("dump envelope parses as JSON");
+    let before = envelope["gameState"]["objects"].clone();
+    assert!(
+        before.as_object().is_some_and(|m| !m.is_empty()),
+        "PREMISE: the fixture must carry objects, or byte-equality below is vacuous"
+    );
+    assert!(
+        !before.to_string().contains("parse_warnings"),
+        "PREMISE: the committed OBJECTS predate the field, so any occurrence below is new. \
+         (Scoped to `objects` on purpose: the envelope's card-database subtree carries the \
+         face-level `parse_warnings` this field is copied FROM, and has since before this change.)"
+    );
+
+    let state = restore_dump(&json);
+    let after =
+        serde_json::to_value(state.objects.values().collect::<Vec<_>>()).expect("objects reencode");
+    assert!(
+        !after.to_string().contains("parse_warnings"),
+        "an EMPTY diagnostics list must not serialize. Without `skip_serializing_if` every object \
+         in every committed dump gains a `\"parse_warnings\":[]` key and every stored game grows"
+    );
+}
