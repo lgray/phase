@@ -239,6 +239,25 @@ pub struct BackFaceData {
     pub strive_cost: Option<ManaCost>,
     pub casting_restrictions: Vec<CastingRestriction>,
     pub casting_options: Vec<SpellCastingOption>,
+    /// Parser diagnostics for THIS face — the `BackFaceData` half of
+    /// [`GameObject::parse_warnings`], and per-face for the same reason `abilities`
+    /// is: the two faces are parsed independently, so a card whose front reads
+    /// cleanly and whose back does not is the normal case rather than a corner one.
+    ///
+    /// Without this field the diagnostic was not a per-face fact at all. Face
+    /// application copies field by field, so a transform kept the FRONT face's
+    /// diagnostics on the object while displaying the back face's rules text: a
+    /// front-clean card looked clean after transforming into a back face the parser
+    /// could not fully read, and a front-dirty one kept a diagnostic that no longer
+    /// described anything. `ai_support::shortcut_efficacy` reads the object field as
+    /// evidence that the printed rules text is fully modelled, so the stale answer
+    /// was load-bearing in both directions.
+    ///
+    /// `serde(default)` keeps every persisted dump loadable — an older
+    /// `BackFaceData` simply carries no diagnostics — and `skip_serializing_if`
+    /// keeps a clean parse byte-identical on the way out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parse_warnings: Vec<crate::parser::oracle_ir::diagnostic::OracleDiagnostic>,
     /// Source layout kind — distinguishes Modal DFCs from Transform DFCs
     /// so the engine can offer face-choice for MDFCs (CR 712.12).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -549,8 +568,12 @@ pub struct GameObject {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spellbook: Vec<String>,
 
-    /// Parser diagnostics for this face, copied verbatim from
-    /// `CardFace::parse_warnings` by `game::printed_cards`.
+    /// Parser diagnostics for the DISPLAYED face, copied verbatim from
+    /// `CardFace::parse_warnings` by `game::printed_cards`. A transform swaps this
+    /// along with the rest of the face, through [`BackFaceData::parse_warnings`] —
+    /// the two faces parse independently, so a card can be clean on one and not the
+    /// other, and reporting the wrong face's diagnostics is worse than reporting
+    /// none.
     ///
     /// NOT a rules field, and it does not change how anything resolves. It is
     /// carried onto the object because a diagnostic is EVIDENCE ABOUT the rules
@@ -1298,14 +1321,16 @@ fn _gameobject_partition_is_total(o: &GameObject) {
         token_image_ref: _,
         source_related_token_ids: _,
         spellbook: _,
-        // IMMUTABLE. Written exactly once, by `printed_cards::apply_card_face_to_object`,
-        // as a verbatim clone of the face's own diagnostics; nothing mutates it
-        // afterwards. MEASURED by `grep -rn 'parse_warnings\s*=' crates/engine/src/`:
-        // the only assignments in the crate are `parser::oracle`'s write to a
-        // `ParsedCard` result and a local `bool` in `game::coverage` — neither is a
-        // `GameObject` field write. Two objects with the same printed face therefore
-        // always agree here, so it cannot carry a per-object divergence the CR 104.4b
-        // comparator would need to see.
+        // OMITTED, SAFE BY WRITE SITE. Every write is a FACE INSTALL:
+        // `printed_cards::apply_card_face_to_object` (front) and
+        // `apply_back_face_to_object` (the face a transform swaps in), each a verbatim
+        // clone of that face's own diagnostics, plus the two `game::visibility`
+        // redactions which act on a projected copy and never on stored state. So the
+        // field is a function of WHICH FACE IS DISPLAYED, and `transformed` — compared
+        // above — is that same function's discriminator: two states this comparator
+        // calls equal are showing the same face of the same card, and therefore agree
+        // here. Nothing accumulates in it, so it cannot become the per-iteration drift
+        // the §5.2c ADD set exists to catch.
         parse_warnings: _,
         back_face: _,
         specialize_faces: _,

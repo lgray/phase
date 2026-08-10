@@ -98,6 +98,7 @@ pub(crate) fn empty_back_face() -> BackFaceData {
         strive_cost: None,
         casting_restrictions: vec![],
         casting_options: vec![],
+        parse_warnings: vec![],
         layout_kind: None,
     }
 }

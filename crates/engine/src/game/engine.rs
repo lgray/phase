@@ -14230,6 +14230,7 @@ mod priority_principal_tests {
             casting_restrictions: Vec::new(),
             casting_options: Vec::new(),
             layout_kind: None,
+            parse_warnings: vec![],
         });
         for _ in 0..mana_count {
             runner.state_mut().players[0].mana_pool.add(ManaUnit::new(

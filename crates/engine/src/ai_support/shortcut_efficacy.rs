@@ -451,13 +451,35 @@ fn effect_window_reach(effect: &Effect) -> WindowReach {
         // is already covered by it. For every other target shape the arriving
         // card is a DIFFERENT object, and the gate has never been run on it.
         //
-        // `Library` is the one origin where that is not a hole. CR 400.2 makes a
-        // library a hidden zone, and the card is an unchosen member of it: the
+        // `Library` narrows that hole but does NOT close it, and the earlier
+        // version of this comment claimed it did. It argued that CR 400.2 makes a
+        // library a hidden zone and the card an unchosen member of it, so "the
         // seam is handed a `GameState` and a list of `GameAction`s, and the card
-        // is the subject of neither, so there is nothing to read and nothing is
-        // being skipped. `board_observer_may_react` agrees for the CR 113.6
-        // reason — `trigger_definition_functions_in_zone` correctly answers
-        // "does not function" for a library card.
+        // is the subject of neither, so there is nothing to read". The premise is
+        // wrong as a fact about this engine. MEASURED on the enrolled 4p dump at
+        // the exact poll this module decides at: the actor's library is 91 cards
+        // and ALL 91 resolve in `state.objects` carrying full parsed rules
+        // content — 5 of them with triggers, and one of those is **Bojuka Bog**
+        // ("This land enters tapped. / When this land enters, exile target
+        // player's graveyard. / {T}: Add {B}.", Oracle text verified on
+        // Scryfall), whose ETB exiles a graveyard the actor does not own.
+        // CR 701.23a is the rule that makes it reachable: "To search for a card
+        // in a zone, look at all cards in that zone (EVEN IF IT'S A HIDDEN ZONE)
+        // and find a card that matches the given description." Hidden means the
+        // opponents cannot see it; it never meant the searcher cannot choose it.
+        //
+        // `board_observer_may_react` genuinely cannot catch this, and for a
+        // CORRECT reason rather than an omission: CR 113.6, via
+        // `trigger_definition_functions_in_zone`, answers "does not function" for
+        // a card sitting in a library. That predicate scans triggers that
+        // function NOW; the hazard is a trigger that will function once the
+        // search puts the card onto the battlefield.
+        //
+        // So the arriving card is classified where it can be: at the object
+        // level, by `library_arrivals_are_inert`, which runs
+        // `carries_unreadable_rules_content` over exactly the cards the actor
+        // could select. That gate is a board fact, not an AST fact, which is why
+        // it lives at the two entry points instead of in this arm.
         //
         // A `Graveyard`, `Hand` or `Exile` origin is a DIFFERENT situation and
         // was previously admitted on the same warrant. There the arriving card
@@ -751,6 +773,197 @@ fn carries_unreadable_rules_content(object: &GameObject) -> bool {
         || !object.parse_warnings.is_empty()
 }
 
+/// Is every card the actor could SELECT out of a hidden zone and put onto the
+/// battlefield provably inert?
+///
+/// The companion to [`carries_unreadable_rules_content`], on the other object.
+/// That gate asks "can this fold read the rules content of the card TAKING the
+/// action"; this one asks the same question about the card the action would
+/// BRING IN. `effect_window_reach`'s `ChangeZone` arm admits a battlefield
+/// arrival only from `Zone::Library`, and its own comment used to discharge the
+/// arriving card's text with a hidden-zone argument. CR 701.23a refutes it: "To
+/// search for a card in a zone, look at all cards in that zone (even if it's a
+/// hidden zone) and find a card that matches the given description." A hidden
+/// zone hides the cards from the OPPONENTS; the searcher picks whichever member
+/// they like, so the selectable set is readable and this fold has to read it.
+///
+/// # Why this is a board fact and not an AST fact
+///
+/// It lives here, called from the two entry points beside
+/// `carries_unreadable_rules_content`, rather than inside `effect_window_reach`.
+/// The reason is not convenience: the answer is not a function of the ability at
+/// all. Two players holding the identical printed card get opposite verdicts,
+/// because the verdict is about what is in the deck behind it. Threading a
+/// `GameState` into an AST classifier would present a board-dependent answer as
+/// an AST-dependent one.
+///
+/// # The selection set, and the direction each approximation errs
+///
+/// * **Which cards are in the pool** — every object the actor OWNS in a pooled
+///   zone. `game::effects::search_library` reads `owner.library` and matches with
+///   `matches_target_filter_in_owner_zone`, so owner (CR 108.3), not controller,
+///   is the axis, and this scans `state.objects` for the same set. The pool is
+///   `Zone::Library` plus whatever `Effect::SearchLibrary::source_zones` names —
+///   the God-Pharaoh's-Gift class searches graveyard and hand as well, and a card
+///   fetched from there reaches the same battlefield.
+/// * **Which of them are selectable** — the union of every `SearchLibrary`
+///   filter the object carries, plus every library→battlefield `ChangeZone`
+///   target that is not `TargetFilter::Any`. A UNION over the object's searches
+///   rather than a binding of each search to the node that consumes its result:
+///   binding would require threading a "search filter currently in scope" through
+///   the whole recursive fold, and a union is a SUPERSET of any single search's
+///   result, so it errs toward `MayInterfere`. `TargetFilter::Any` is excluded
+///   because it is the serde default on the ANAPHORIC node ("put IT onto the
+///   battlefield") — it states no restriction of its own and its authority is the
+///   parent search, which is already in the union. An object with a
+///   library→battlefield arrival and NO search filter at all leaves the union
+///   empty, and an empty union means the WHOLE pool is selectable.
+/// * **`selection_constraint` and `game::effects::search_library`'s
+///   `library_search_top_limit` are ignored.** Both NARROW what may be chosen, so
+///   ignoring them over-counts the pool, which is the conservative direction.
+///
+/// # The one place this fails closed rather than answering
+///
+/// A non-empty union that matches NOTHING returns `false`. That looks like
+/// throwing away the free case — a deck with no basic land for its own fetch —
+/// and it is deliberate, because this seam cannot tell that case apart from a
+/// filter it is unable to evaluate. `FilterContext::from_source_with_controller`
+/// carries the acting object but no ability instance, so a filter that reads the
+/// ability's own targets matches nothing here for a reason that has nothing to do
+/// with the deck. MEASURED over `data/card-data.json`: 24 cards carry such a
+/// `SearchLibrary` filter (23 `SameNameAsParentTarget` — Infernal Tutor, Surgical
+/// Extraction, Bifurcate, … — and 2 `CanEnchant { target: ParentTarget }`:
+/// Auratouched Mage, Sovereigns of Lost Alara, with Canoptek Wraith carrying
+/// both properties). Answering "empty match set, therefore inert" for those would
+/// be a false `Accept` produced by an unevaluated filter, so the empty result is
+/// treated as the unanswerable it is.
+fn library_arrivals_are_inert(
+    state: &GameState,
+    object: &GameObject,
+    abilities: &[AbilityDefinition],
+) -> bool {
+    let mut reaches_battlefield = false;
+    let mut pool_zones = vec![Zone::Library];
+    let mut selection: Vec<TargetFilter> = Vec::new();
+
+    // `types::ability_visit` is the engine's single complete `AbilityDefinition`
+    // walk, and its `Effect` match is wildcard-free — a future variant carrying a
+    // nested effect is a compile error there rather than a silent miss here. A
+    // hand-rolled second walk beside `ability_window_reach`'s is exactly the
+    // "two answers to one question" shape this module has already paid for twice
+    // (`landing_zone_is_confined`, `carries_unreadable_rules_content`).
+    for def in abilities {
+        // The visitor never breaks — the union needs every node — so the
+        // `ControlFlow` it returns is always `Continue`.
+        let _ = crate::types::ability_visit::visit_ability_def(def, &mut |effect: &Effect| {
+            match effect {
+                // `..`-FREE, exactly like `effect_window_reach`'s two arms and for
+                // the same reason: a new field that changes what a search may FIND
+                // or where it may PUT it must be a compile error here, not a
+                // silently unread modifier. `count`/`reveal`/`selection_constraint`
+                // are bound and unused deliberately — the first two do not change
+                // WHICH cards match, and the third only narrows (see the doc).
+                Effect::SearchLibrary {
+                    source_zones,
+                    filter,
+                    count: _,
+                    reveal: _,
+                    target_player: _,
+                    selection_constraint: _,
+                    split,
+                } => {
+                    selection.push(filter.clone());
+                    for zone in source_zones {
+                        if !pool_zones.contains(zone) {
+                            pool_zones.push(*zone);
+                        }
+                    }
+                    // Both split destinations, for the same reason the reach fold
+                    // reads both: `rest_destination` lands cards too.
+                    if split.as_ref().is_some_and(|split| {
+                        split.primary_destination == Zone::Battlefield
+                            || split.rest_destination == Zone::Battlefield
+                    }) {
+                        reaches_battlefield = true;
+                    }
+                }
+                // The arrival-shape fields are the REACH fold's business; this arm
+                // only needs to know that a library card can land on the
+                // battlefield and which filter picks it.
+                Effect::ChangeZone {
+                    origin: Some(Zone::Library),
+                    destination: Zone::Battlefield,
+                    target,
+                    owner_library: _,
+                    enter_transformed: _,
+                    enters_under: _,
+                    enter_tapped: _,
+                    enters_attacking: _,
+                    up_to: _,
+                    enter_with_counters: _,
+                    conditional_enter_with_counters: _,
+                    face_down_profile: _,
+                    enters_modified_if: _,
+                } => {
+                    reaches_battlefield = true;
+                    if !matches!(target, TargetFilter::Any) {
+                        selection.push(target.clone());
+                    }
+                }
+                // A node this walk does not recognize contributes nothing to the
+                // pool, and that is safe only because it is not the last word:
+                // `effect_window_reach`'s own `_` arm answers `MayInterfere` for
+                // every unrecognized shape, so a future effect that could put a
+                // library card onto the battlefield makes the WHOLE verdict
+                // interference before this pool is ever consulted.
+                _ => {}
+            }
+            std::ops::ControlFlow::Continue(())
+        });
+    }
+
+    if !reaches_battlefield {
+        return true;
+    }
+
+    let actor = object.controller;
+    let pool: Vec<&GameObject> = state
+        .objects
+        .values()
+        .filter(|candidate| candidate.owner == actor && pool_zones.contains(&candidate.zone))
+        .collect();
+    // Nothing can be selected out of an empty pool, so nothing arrives. This is
+    // the one empty set that IS an answer, and it is the opposite of the empty
+    // match set below: here the filter never ran.
+    if pool.is_empty() {
+        return true;
+    }
+
+    let context = crate::game::filter::FilterContext::from_source_with_controller(object.id, actor);
+    let selectable: Vec<&&GameObject> = if selection.is_empty() {
+        pool.iter().collect()
+    } else {
+        pool.iter()
+            .filter(|candidate| {
+                selection.iter().any(|filter| {
+                    crate::game::filter::matches_target_filter_in_owner_zone(
+                        state,
+                        candidate.id,
+                        filter,
+                        &context,
+                    )
+                })
+            })
+            .collect()
+    };
+    if selectable.is_empty() {
+        return false;
+    }
+    selectable
+        .iter()
+        .all(|candidate| !carries_unreadable_rules_content(candidate))
+}
+
 /// Fold every ability an object carries. A missing object, or one carrying no
 /// abilities at all, is `MayInterfere` — the fail-closed direction, and the one
 /// that keeps an empty fold from being proven confined by its identity element.
@@ -791,6 +1004,9 @@ fn object_window_reach(state: &GameState, object_id: ObjectId) -> WindowReach {
     if carries_unreadable_rules_content(object) {
         return WindowReach::MayInterfere;
     }
+    if !library_arrivals_are_inert(state, object, &object.abilities) {
+        return WindowReach::MayInterfere;
+    }
     object
         .abilities
         .iter()
@@ -820,10 +1036,15 @@ fn indexed_ability_window_reach(
     if carries_unreadable_rules_content(object) {
         return WindowReach::MayInterfere;
     }
-    object
-        .abilities
-        .get(ability_index)
-        .map_or(WindowReach::MayInterfere, ability_window_reach)
+    let Some(ability) = object.abilities.get(ability_index) else {
+        return WindowReach::MayInterfere;
+    };
+    // Scoped to the ONE ability being activated, unlike the object-level entry
+    // point: a sibling ability the seat is not activating fetches nothing.
+    if !library_arrivals_are_inert(state, object, std::slice::from_ref(ability)) {
+        return WindowReach::MayInterfere;
+    }
+    ability_window_reach(ability)
 }
 
 /// CR 603.2: can a CONFINED action's event stream ever match this trigger's
@@ -1118,21 +1339,32 @@ fn board_observer_may_react(state: &GameState, actor: PlayerId) -> bool {
 ///
 /// That residual is scoped to ONE origin, and the scoping is enforced in code
 /// rather than promised here. `effect_window_reach`'s `ChangeZone` arm admits a
-/// battlefield entry only when `origin == Some(Zone::Library)`, so the card that
-/// would arrive is always an unchosen member of a hidden zone (CR 400.2): this
-/// function is handed a `GameState` and a list of `GameAction`s, and the card is
-/// the subject of neither, so neither input contains it and neither the
-/// per-action fold nor the board scan below has an object to read.
-/// `board_observer_may_react` specifically cannot see it —
-/// `trigger_definition_functions_in_zone` correctly answers "does not function"
-/// for a library card, which is the CR 113.6 rule and not an omission. Reaching
-/// it at all would require resolving the search, a different kind of input than
-/// this seam takes.
+/// battlefield entry only when `origin == Some(Zone::Library)`, and what the
+/// arriving card can DO is then classified by [`library_arrivals_are_inert`],
+/// which both entry points run.
 ///
-/// A `Graveyard`, `Hand` or `Exile` origin is NOT that situation — the arriving
-/// card is in `state.objects` and its rules content is readable — and it is not
-/// in this residual because the arm no longer admits it. See that arm's fourth
-/// battlefield conjunct for the measurement and the efficacy trade.
+/// The residual is what THAT gate leaves, and it is narrower than the whole
+/// fetch class: `carries_unreadable_rules_content` is a presence check, so a
+/// selectable card with no trigger, replacement, static or keyword passes it
+/// while still carrying an ACTIVATED ability whose cost is not tapping. Such a
+/// card arrives tapped (the arm requires it) and can still be sacrificed for
+/// value inside this window.
+///
+/// This paragraph previously claimed the residual was total and unreachable, on
+/// the argument that CR 400.2 makes the library hidden so "neither input
+/// contains it and neither the per-action fold nor the board scan has an object
+/// to read". That was measurably false — the enrolled 4p dump resolves all 91 of
+/// the actor's library cards in `state.objects` — and CR 701.23a is the rule it
+/// mistook: a search looks at all cards in the zone "even if it's a hidden
+/// zone". `board_observer_may_react` really does miss them, but for the CR 113.6
+/// reason (`trigger_definition_functions_in_zone` answers "does not function" for
+/// a library card), which is why the selection gate is separate from it.
+///
+/// A `Graveyard`, `Hand` or `Exile` origin is a different situation again — the
+/// arriving card is named by the effect's own target rather than chosen out of a
+/// pool — and it is not in this residual because the arm no longer admits it. See
+/// that arm's fourth battlefield conjunct for the measurement and the efficacy
+/// trade.
 ///
 /// Its cost, on both axes, for the reader deciding whether that matters:
 ///   - across windows: a bounded miss — a seat's fetched answer goes unused for
@@ -3308,5 +3540,453 @@ mod tests {
              Proving confinement from the abilities that DID parse is proving it from the fraction \
              of the card the classifier can see — the module doc's §2 residual, now in band"
         );
+    }
+
+    /// Urza's Cave, verbatim, BOTH lines (Oracle text verified on Scryfall,
+    /// `api.scryfall.com/cards/named?exact=Urza's+Cave`). Terramorphic Expanse's
+    /// UNRESTRICTED sibling on the ACTIVATED path: same `{T}` + sacrifice-this
+    /// cost shape, same tapped library arrival, and the search filter is
+    /// `Typed[Land]` where Terramorphic's is `Typed[Land] + HasSupertype(Basic)`.
+    /// Ability `[0]` is its mana ability and `[1]` is the fetch, which is what
+    /// makes it the right card for the INDEXED entry point: folding the whole
+    /// object would be over-determined by `Effect::Mana`.
+    const URZAS_CAVE: Card = Card {
+        name: "Urza's Cave",
+        oracle: "{T}: Add {C}.\n{3}, {T}, Sacrifice this land: Search your library for a land \
+                 card, put it onto the battlefield tapped, then shuffle.",
+    };
+
+    /// Bojuka Bog, verbatim (Oracle text verified on Scryfall,
+    /// `api.scryfall.com/cards/named?exact=Bojuka+Bog`). A LAND whose ETB reaches
+    /// a graveyard belonging to somebody else — the card that makes "an
+    /// unrestricted land search is confined" false.
+    const BOJUKA_BOG: Card = Card {
+        name: "Bojuka Bog",
+        oracle: "This land enters tapped.\nWhen this land enters, exile target player's \
+                 graveyard.\n{T}: Add {B}.",
+    };
+
+    /// Snow-Covered Swamp, verbatim — its entire printed rules text is one mana
+    /// ability. The inert control, and a REAL basic rather than a hand-built
+    /// vanilla stand-in.
+    const SNOW_COVERED_SWAMP: Card = Card {
+        name: "Snow-Covered Swamp",
+        oracle: "({T}: Add {B}.)",
+    };
+
+    /// Put a real parsed card into `player`'s library through the production face
+    /// path, so its trigger/replacement/static/keyword content is whatever the
+    /// pipeline actually produces rather than whatever a fixture remembered to
+    /// set.
+    fn give_library_card(
+        state: &mut GameState,
+        player: PlayerId,
+        card: &Card,
+        supertypes: Vec<crate::types::card_type::Supertype>,
+    ) -> ObjectId {
+        let parsed = parse_oracle_text(card.oracle, card.name, &[], &[], &[]);
+        let face = CardFace {
+            name: card.name.to_string(),
+            oracle_text: Some(card.oracle.to_string()),
+            card_type: crate::types::card_type::CardType {
+                supertypes,
+                core_types: vec![crate::types::card_type::CoreType::Land],
+                subtypes: vec![],
+            },
+            abilities: parsed.abilities,
+            triggers: parsed.triggers,
+            static_abilities: parsed.statics,
+            replacements: parsed.replacements,
+            keywords: parsed.extracted_keywords,
+            parse_warnings: parsed.parse_warnings,
+            ..CardFace::default()
+        };
+        let id = create_object(
+            state,
+            crate::types::identifiers::CardId(state.next_object_id),
+            player,
+            card.name.to_string(),
+            Zone::Library,
+        );
+        crate::game::printed_cards::apply_card_face_to_object(
+            state.objects.get_mut(&id).expect("just created"),
+            &face,
+        );
+        id
+    }
+
+    /// **T3.3 — a tapped library fetch is confined only while every card it could
+    /// SELECT is inert, at BOTH entry points.**
+    ///
+    /// `effect_window_reach`'s `ChangeZone` arm admits a tapped battlefield
+    /// arrival whose origin is a library, and it used to discharge the arriving
+    /// card's rules content with a hidden-zone argument: CR 400.2 makes a library
+    /// hidden, so "the card is the subject of neither input". CR 701.23a says
+    /// otherwise — "To search for a card in a zone, look at all cards in that zone
+    /// (even if it's a hidden zone) and find a card that matches the given
+    /// description" — and the library cards really are in `state.objects`.
+    ///
+    /// TWO AXES, varied one at a time against the same board:
+    /// * **the deck** — Urza's Cave / Reshape the Earth search for ANY land, so a
+    ///   Bojuka Bog in the library is selectable and a Snow-Covered Swamp is not
+    ///   enough to save it;
+    /// * **the printed filter** — Terramorphic Expanse searches for a BASIC land
+    ///   on the identical library, and the Bog is not basic, so it stays confined.
+    ///   This is the row that separates the implemented gate from a
+    ///   "Basic means safe" heuristic: the heuristic passes the filter axis and
+    ///   fails the deck axis.
+    ///
+    /// Both entry points are exercised because they gate independently:
+    /// `object_window_reach` folds every ability (Reshape the Earth, a spell), and
+    /// `indexed_ability_window_reach` folds exactly one (Urza's Cave `[1]`, an
+    /// activation). Dropping the conjunct from either one alone leaves the other
+    /// row green.
+    ///
+    /// REVERT-PROBES (both executed): delete the `library_arrivals_are_inert`
+    /// conjunct from `object_window_reach` ⇒ the Reshape row's `MayInterfere`
+    /// flips; delete it from `indexed_ability_window_reach` ⇒ the Urza's Cave
+    /// row's flips.
+    #[test]
+    fn t3_3_a_library_fetch_is_confined_only_while_every_selectable_card_is_inert() {
+        const RESHAPE_THE_EARTH: Card = Card {
+            name: "Reshape the Earth",
+            oracle: "Search your library for up to ten land cards, put them onto the battlefield \
+                     tapped, then shuffle.",
+        };
+        let actor = crate::types::player::PlayerId(0);
+
+        // One board, built once, then two sources staged on it.
+        let mut state = GameState::default();
+        state.players.push(crate::types::player::Player {
+            id: actor,
+            ..Default::default()
+        });
+        let swamp = give_library_card(
+            &mut state,
+            actor,
+            &SNOW_COVERED_SWAMP,
+            vec![
+                crate::types::card_type::Supertype::Basic,
+                crate::types::card_type::Supertype::Snow,
+            ],
+        );
+        let bog = give_library_card(&mut state, actor, &BOJUKA_BOG, vec![]);
+        for id in [swamp, bog] {
+            state
+                .players
+                .iter_mut()
+                .find(|p| p.id == actor)
+                .expect("seated")
+                .library
+                .push_back(id);
+        }
+        assert!(
+            !carries_unreadable_rules_content(&state.objects[&swamp]),
+            "PREMISE: a basic Snow-Covered Swamp is inert, so it can never be what produces a \
+             `MayInterfere` below"
+        );
+        assert!(
+            carries_unreadable_rules_content(&state.objects[&bog]),
+            "PREMISE: Bojuka Bog carries rules content this fold cannot read — its ETB. Without \
+             this the rows below have no hazard to detect"
+        );
+
+        // ── source A: a SPELL, folded through `object_window_reach` ──
+        let reshape = create_object(
+            &mut state,
+            crate::types::identifiers::CardId(90),
+            actor,
+            RESHAPE_THE_EARTH.name.to_string(),
+            Zone::Hand,
+        );
+        state
+            .objects
+            .get_mut(&reshape)
+            .expect("just created")
+            .abilities = std::sync::Arc::new(vec![ability(&RESHAPE_THE_EARTH, 0)]);
+        assert_eq!(
+            object_window_reach(&state, reshape),
+            WindowReach::MayInterfere,
+            "an unrestricted land search LOOKS AT ALL CARDS (CR 701.23a) and this library holds \
+             Bojuka Bog, whose ETB exiles a graveyard the actor does not own"
+        );
+
+        // ── source B: an ACTIVATION, folded through `indexed_ability_window_reach` ──
+        let cave = create_object(
+            &mut state,
+            crate::types::identifiers::CardId(91),
+            actor,
+            URZAS_CAVE.name.to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&cave)
+            .expect("just created")
+            .abilities =
+            std::sync::Arc::new(vec![ability(&URZAS_CAVE, 0), ability(&URZAS_CAVE, 1)]);
+        assert_eq!(
+            indexed_ability_window_reach(&state, cave, 1),
+            WindowReach::MayInterfere,
+            "the same hazard reached through the ACTIVATED entry point, which gates separately"
+        );
+
+        // ── AXIS 1: vary the DECK, hold the cards fixed ──
+        let inert_library = {
+            let mut inert = state.clone();
+            inert.objects.remove(&bog);
+            inert
+                .players
+                .iter_mut()
+                .find(|p| p.id == actor)
+                .expect("seated")
+                .library
+                .retain(|id| *id != bog);
+            inert
+        };
+        assert_eq!(
+            object_window_reach(&inert_library, reshape),
+            WindowReach::OwnResourcesOnly,
+            "AXIS 1 (deck varies): the identical unrestricted search is confined once every land \
+             it could select is inert. Without this direction the gate could be a constant"
+        );
+        assert_eq!(
+            indexed_ability_window_reach(&inert_library, cave, 1),
+            WindowReach::OwnResourcesOnly,
+            "AXIS 1, activated path"
+        );
+
+        // ── AXIS 2: vary the printed FILTER, hold the deck fixed ──
+        let terramorphic = create_object(
+            &mut state,
+            crate::types::identifiers::CardId(92),
+            actor,
+            TERRAMORPHIC.name.to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&terramorphic)
+            .expect("just created")
+            .abilities = std::sync::Arc::new(vec![ability(&TERRAMORPHIC, 0)]);
+        assert_eq!(
+            object_window_reach(&state, terramorphic),
+            WindowReach::OwnResourcesOnly,
+            "AXIS 2 (filter varies, deck held): a BASIC land search on the very library that \
+             defeats the unrestricted one stays confined — the Bog is not basic. A gate that read \
+             'is there a fetch' rather than 'what can it select' fails here"
+        );
+    }
+
+    /// **T3.4 — a non-empty selection filter that matches nothing fails closed.**
+    ///
+    /// The one place [`library_arrivals_are_inert`] refuses to answer instead of
+    /// answering. A library with cards in it but none matching the search could be
+    /// a deck that genuinely cannot fetch, or it could be a filter this seam
+    /// cannot evaluate — `FilterContext::from_source_with_controller` carries the
+    /// acting object but no ability instance, and MEASURED over
+    /// `data/card-data.json` 24 cards carry a `SearchLibrary` filter that reads
+    /// the ability's own target (`SameNameAsParentTarget`, `CanEnchant {
+    /// ParentTarget }`). Those two cases are indistinguishable here, and one of
+    /// them is a false `Accept`, so neither gets one.
+    ///
+    /// The row is the pair: an EMPTY library is confined (nothing can be
+    /// selected — the filter never ran), a NON-EMPTY library with no match is not.
+    ///
+    /// REVERT-PROBE (executed): change the `selectable.is_empty()` arm to return
+    /// `true` ⇒ the second assertion flips to `OwnResourcesOnly`.
+    #[test]
+    fn t3_4_a_search_filter_that_matches_nothing_is_unanswerable_not_confined() {
+        const RAMPANT_GROWTH: Card = Card {
+            name: "Rampant Growth",
+            oracle: "Search your library for a basic land card, put that card onto the \
+                     battlefield tapped, then shuffle.",
+        };
+        let actor = crate::types::player::PlayerId(0);
+        let mut state = GameState::default();
+        state.players.push(crate::types::player::Player {
+            id: actor,
+            ..Default::default()
+        });
+        let growth = create_object(
+            &mut state,
+            crate::types::identifiers::CardId(1),
+            actor,
+            RAMPANT_GROWTH.name.to_string(),
+            Zone::Hand,
+        );
+        state
+            .objects
+            .get_mut(&growth)
+            .expect("just created")
+            .abilities = std::sync::Arc::new(vec![ability(&RAMPANT_GROWTH, 0)]);
+
+        assert_eq!(
+            object_window_reach(&state, growth),
+            WindowReach::OwnResourcesOnly,
+            "an EMPTY library selects nothing, so nothing arrives. This empty set IS an answer"
+        );
+
+        // One NON-basic land in the library: the pool is non-empty and the
+        // basic-land filter matches none of it.
+        let bog = give_library_card(&mut state, actor, &BOJUKA_BOG, vec![]);
+        state
+            .players
+            .iter_mut()
+            .find(|p| p.id == actor)
+            .expect("seated")
+            .library
+            .push_back(bog);
+        assert_eq!(
+            object_window_reach(&state, growth),
+            WindowReach::MayInterfere,
+            "a non-empty pool that the filter matched NOTHING in is the case this seam cannot \
+             tell apart from a filter it is unable to evaluate, so it does not claim confinement"
+        );
+    }
+
+    /// **T3.2 — a transform carries the DISPLAYED face's parse diagnostics, both
+    /// ways.**
+    ///
+    /// `obj.parse_warnings` documents itself as "diagnostics for the displayed
+    /// face", and before `BackFaceData` carried the field that sentence was false
+    /// the moment a permanent transformed. `printed_cards`' face application
+    /// copies field by field, so the FRONT face's diagnostics stayed on the object
+    /// while the BACK face's rules text was displayed. Both directions are wrong
+    /// and they are wrong in opposite ways, which is why both are asserted here:
+    /// a front-clean/back-dirty card looked clean while showing text the parser
+    /// could not read, and a front-dirty/back-clean one kept a diagnostic that
+    /// described nothing on the object any more.
+    ///
+    /// Driven through the REAL `game::transform::transform_permanent`, not through
+    /// the two face helpers it calls — a test that called `snapshot_object_face`
+    /// and `apply_back_face_to_object` itself would go green even if the transform
+    /// stopped using them.
+    ///
+    /// **What this row does NOT claim.** It is not a `carries_unreadable_rules_content`
+    /// row, and asserting that gate here would be vacuous: the gate has a
+    /// `back_face.is_some()` disjunct, so EVERY double-faced object trips it
+    /// whatever its diagnostics say. The claim is about the state the gate (and
+    /// `game::visibility`'s two redactions) read — that after a transform the
+    /// field describes the face now on top.
+    ///
+    /// REVERT-PROBES (both executed):
+    /// * drop `obj.parse_warnings = back_face.parse_warnings` from
+    ///   `printed_cards::apply_back_face_to_object` ⇒ the post-transform assertion
+    ///   fails in BOTH cases;
+    /// * drop `parse_warnings: obj.parse_warnings.clone()` from
+    ///   `printed_cards::snapshot_object_face` ⇒ the transform-back assertion
+    ///   fails in the front-dirty case (the outgoing face's diagnostics are lost
+    ///   rather than stashed).
+    #[test]
+    fn t3_2_a_transform_carries_the_displayed_faces_parse_diagnostics() {
+        use crate::game::printed_cards::{apply_card_face_to_back_face, apply_card_face_to_object};
+
+        fn diagnostic(text: &str) -> crate::parser::oracle_ir::diagnostic::OracleDiagnostic {
+            crate::parser::oracle_ir::diagnostic::OracleDiagnostic::IgnoredRemainder {
+                text: text.to_string(),
+                parser: "probe".to_string(),
+                line_index: 0,
+            }
+        }
+
+        // Both directions, as a table: neither verdict can be a constant.
+        for (label, front_warnings, back_warnings) in [
+            ("front-clean / back-dirty", vec![], vec![diagnostic("back")]),
+            (
+                "front-dirty / back-clean",
+                vec![diagnostic("front")],
+                vec![],
+            ),
+        ] {
+            let mut state = GameState::default();
+            let id = create_object(
+                &mut state,
+                crate::types::identifiers::CardId(1),
+                crate::types::player::PlayerId(0),
+                "Probe Front".to_string(),
+                Zone::Battlefield,
+            );
+
+            let front = CardFace {
+                name: "Probe Front".to_string(),
+                parse_warnings: front_warnings.clone(),
+                ..CardFace::default()
+            };
+            let back = CardFace {
+                name: "Probe Back".to_string(),
+                parse_warnings: back_warnings.clone(),
+                ..CardFace::default()
+            };
+            apply_card_face_to_object(state.objects.get_mut(&id).expect("just created"), &front);
+            let mut stored_back = crate::game::specialize::empty_back_face();
+            apply_card_face_to_back_face(&mut stored_back, &back);
+            assert_eq!(
+                stored_back.parse_warnings, back_warnings,
+                "PREMISE ({label}): `apply_card_face_to_back_face` must carry the face's own \
+                 diagnostics, or the transform below has nothing to install"
+            );
+            state.objects.get_mut(&id).expect("just created").back_face = Some(stored_back);
+
+            assert_eq!(
+                state.objects[&id].parse_warnings, front_warnings,
+                "PREMISE ({label}): the object starts on its FRONT face"
+            );
+
+            let mut events = Vec::new();
+            crate::game::transform::transform_permanent(&mut state, id, &mut events)
+                .expect("CR 701.27a: a battlefield permanent with a back face transforms");
+            assert!(
+                state.objects[&id].transformed,
+                "PREMISE ({label}): the transform must actually have happened, or the assertion \
+                 below is comparing the front face to itself"
+            );
+            assert_eq!(
+                state.objects[&id].parse_warnings, back_warnings,
+                "({label}) the displayed face is now the BACK face, so its diagnostics are the \
+                 object's. Reporting the front face's here is reporting evidence about text the \
+                 permanent no longer has"
+            );
+
+            crate::game::transform::transform_permanent(&mut state, id, &mut events)
+                .expect("CR 701.27a: and it transforms back");
+            assert!(
+                !state.objects[&id].transformed,
+                "PREMISE ({label}): the round trip must return to the front face"
+            );
+            assert_eq!(
+                state.objects[&id].parse_warnings, front_warnings,
+                "({label}) the return trip restores the FRONT face's diagnostics exactly — a \
+                 stale back-face warning would outlive the text it described"
+            );
+
+            // THE THIRD SNAPSHOT HELPER. `game::effects::turn_face_down` stashes
+            // `snapshot_object_base_face` and the face-up path installs it with
+            // the same `apply_back_face_to_object` the transform above used, so
+            // that restore now READS a field the base snapshot has to write.
+            // MEASURED: `morph::apply_face_down_creature_characteristics` blanks
+            // name, types, abilities, keywords and every definition list but never
+            // touches `parse_warnings`, so a base snapshot that dropped the field
+            // would make turning face UP clear diagnostics that turning face DOWN
+            // had left alone — a regression this change would have introduced.
+            //
+            // Helper-level on purpose and stated as such: the production entry is
+            // an effect resolver needing a `ResolvedAbility` and a legal morph
+            // cost, and those would become the variables the row measures.
+            // REVERT-PROBE (executed): replace `snapshot_object_base_face`'s
+            // `parse_warnings: obj.parse_warnings.clone()` with `Vec::new()` ⇒
+            // this assertion fails in the front-dirty case.
+            let stashed =
+                crate::game::printed_cards::snapshot_object_base_face(&state.objects[&id]);
+            crate::game::printed_cards::apply_back_face_to_object(
+                state.objects.get_mut(&id).expect("just created"),
+                stashed,
+            );
+            assert_eq!(
+                state.objects[&id].parse_warnings, front_warnings,
+                "({label}) the face-down stash/restore pair must round-trip the displayed face's \
+                 diagnostics too"
+            );
+        }
     }
 }

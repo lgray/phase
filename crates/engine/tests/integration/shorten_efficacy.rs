@@ -42,7 +42,7 @@ use engine::game::engine::apply;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::types::ability::{AbilityDefinition, AbilityKind, Effect, QuantityExpr, TargetFilter};
 use engine::types::actions::{GameAction, PrecastCopyShortcutResponse};
-use engine::types::card_type::CoreType;
+use engine::types::card_type::{CoreType, Supertype};
 use engine::types::game_state::{GameState, LayersDirty, LoopDetectionMode, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard};
@@ -1424,6 +1424,30 @@ const CROP_ROTATION: &str = "As an additional cost to cast this spell, sacrifice
 const RAMPANT_GROWTH: &str = "Search your library for a basic land card, put that card onto \
                               the battlefield tapped, then shuffle.";
 
+/// Reshape the Earth, verbatim. CARD PROVENANCE — Oracle text verified on
+/// Scryfall (`/cards/named?exact=Reshape+the+Earth`), a Sorcery whose whole
+/// printed text is this one sentence.
+///
+/// Rampant Growth's UNRESTRICTED sibling, and the second one-word-apart pair in
+/// this file: identical AST on every axis this classifier reads — no cost, one
+/// ability, `SearchLibrary` over `ChangeZone { Library -> Battlefield, target:
+/// Any, enter_tapped: Tapped }` over `Shuffle { Controller }`, no triggers, no
+/// statics, no replacements, no keywords — and the search filter is
+/// `Typed[Land]` where Rampant Growth's is `Typed[Land] + HasSupertype(Basic)`.
+/// So the only thing that can separate their verdicts is WHICH CARDS THE ACTOR
+/// COULD SELECT.
+///
+/// Elvish Reclaimer is the card the review named for this row and it CANNOT
+/// serve, which is worth stating rather than leaving as an unexplained
+/// substitution. Its ability costs "Sacrifice a land" — parsed
+/// `AbilityCost::Sacrifice(Typed[Land])` with `controller: null` — and
+/// `filter_is_actor_owned` proves nothing about an unqualified `Typed`, so
+/// `cost_window_reach` already answers `MayInterfere` for it. It reads
+/// `Shorten` with the selection gate and `Shorten` without it: an
+/// over-determined row that would go green while measuring nothing.
+const RESHAPE_THE_EARTH: &str = "Search your library for up to ten land cards, put them onto \
+                                 the battlefield tapped, then shuffle.";
+
 /// Stage a real card with its abilities taken from the REAL parser, not
 /// hand-built: every verdict below is a function of the AST, so a hand-written
 /// `AbilityDefinition` would let this section pass against a shape the pipeline
@@ -2748,21 +2772,22 @@ fn give_graveyard_creature(state: &mut GameState, player: PlayerId) -> ObjectId 
 /// V10d — a TAPPED battlefield entry from a GRAVEYARD keeps the seat's window;
 /// the tapped LIBRARY sibling still Accepts.
 ///
-/// `v10c` closed the tap axis on a library fetch. This row closes the residual
-/// one axis over: `effect_window_reach`'s `ChangeZone` arm allowlisted a tapped
-/// battlefield entry from ANY origin, and the argument that made that safe —
-/// stated in `any_action_may_interfere`'s doc — is an argument about a card that
-/// is still IN THE LIBRARY: an unchosen member of a hidden zone (CR 400.2), which
-/// neither the per-action fold nor the board scan has an object to read.
-///
-/// That argument does not transfer to a graveyard. The returned card IS in
-/// `state.objects`, its trigger/replacement/static definitions are readable, and
-/// nothing reads them: `object_window_reach`'s `carries_unreadable_rules_content`
-/// gate runs on the SOURCE (the Helping Hand), never on the card it returns, and
+/// `v10c` closed the tap axis on a library fetch. This row closes the ORIGIN
+/// axis: `effect_window_reach`'s `ChangeZone` arm allowlisted a tapped
+/// battlefield entry from ANY origin, so a graveyard recursion read as confined
+/// while the card it returns IS in `state.objects` with readable
+/// trigger/replacement/static definitions that nothing reads.
+/// `object_window_reach`'s `carries_unreadable_rules_content` gate runs on the
+/// SOURCE (the Helping Hand), never on the card it returns, and
 /// `board_observer_may_react` correctly answers "does not function" for a
 /// graveyard ETB (CR 113.6). So a Fleshbag-Marauder-class creature in the actor's
 /// own graveyard — "When this creature enters, each player sacrifices a creature
 /// of their choice" — arrives inside the very window the seat declined to keep.
+///
+/// The LIBRARY sibling below is not confined because its origin excuses it from
+/// being read — v10e is the row that shows a library fetch reading `Shorten` on
+/// this same board — but because `library_arrivals_are_inert` reads the cards
+/// Rampant Growth could actually select and finds them vanilla.
 ///
 /// **The pair varies exactly one object** on the flagship board, and both halves
 /// of that object are the SAME SHAPE on every axis but origin: two spells staged
@@ -2883,9 +2908,10 @@ fn v10d_a_tapped_graveyard_return_keeps_its_window_and_the_library_sibling_accep
     assert_eq!(
         engine::ai_support::smart_shortcut_response(&accept_arm, P2),
         ShortcutResponse::Accept,
-        "the pair's negative arm: a tapped LIBRARY fetch stays confined — the card it puts onto \
-         the battlefield is an unchosen member of a hidden zone (CR 400.2), so there is nothing \
-         the fold skipped reading"
+        "the pair's negative arm: a tapped LIBRARY fetch stays confined — Rampant Growth searches \
+         for a BASIC land and every basic in P2's recorded library is vanilla, so \
+         `library_arrivals_are_inert` really did read the selectable set rather than skip it \
+         (v10e is the row that varies that set)"
     );
     assert_eq!(
         engine::ai_support::smart_shortcut_response(&shorten_arm, P2),
@@ -2894,4 +2920,267 @@ fn v10d_a_tapped_graveyard_return_keeps_its_window_and_the_library_sibling_accep
          whose rules content this fold never classified, so `OwnResourcesOnly` would be a proof it \
          cannot discharge. The Helping Hand is the one object that differs"
     );
+}
+
+/// V10e — a tapped LIBRARY fetch whose search can SELECT an interfering
+/// permanent is not confined, and the two things that could be producing that
+/// verdict are separated by two orthogonal one-variable controls.
+///
+/// The hole this closes was argued, not overlooked. Every earlier revision of
+/// `effect_window_reach`'s `ChangeZone` arm discharged the arriving card with a
+/// hidden-zone argument: CR 400.2 makes a library hidden, the card is an unchosen
+/// member of it, so "the seam is handed a `GameState` and a list of
+/// `GameAction`s, and the card is the subject of neither". CR 701.23a is the rule
+/// that refutes it — "To search for a card in a zone, look at all cards in that
+/// zone (even if it's a hidden zone) and find a card that matches the given
+/// description" — and MEASURED on THIS fixture at THIS poll, all 91 cards of P2's
+/// library resolve in `state.objects` with full parsed rules content. Hidden
+/// means the opponents cannot see it. The searcher picks whichever member they
+/// like.
+///
+/// **`board_observer_may_react` cannot cover this**, and correctly so: CR 113.6,
+/// through `trigger_definition_functions_in_zone`, answers "does not function"
+/// for a card in a library. That scan asks which triggers function NOW; the
+/// hazard is a trigger that functions once the search puts the card onto the
+/// battlefield.
+///
+/// **The witness is on the recorded board, not staged.** P2's own library holds
+/// **Bojuka Bog** — "This land enters tapped. / When this land enters, exile
+/// target player's graveyard. / {T}: Add {B}." (Oracle text verified on Scryfall)
+/// — a LAND whose ETB exiles a graveyard belonging to somebody else. A seat that
+/// Accepts while holding an unrestricted land fetch has declined a window in
+/// which it could have made a live cross-player choice.
+///
+/// **Three arms, two orthogonal controls, one variable each.**
+/// * `SHORTEN` — Reshape the Earth (`Typed[Land]`) on the recorded library.
+/// * `ACCEPT_BY_FILTER` — Rampant Growth (`Typed[Land] + Basic`) on the SAME
+///   library. Holds the board fixed and varies the printed search filter, so the
+///   gate is shown to read the filter and not merely "some land fetch exists".
+/// * `ACCEPT_BY_LIBRARY` — Reshape the Earth again, with the non-inert LANDS
+///   removed from P2's library. Holds the card fixed and varies the deck, which
+///   is the axis the gate actually claims to read. This is the arm that
+///   distinguishes the implemented gate from a filter-text heuristic: a
+///   `Basic`-means-safe shortcut passes `ACCEPT_BY_FILTER` and fails here.
+///
+/// MUTANT (executed): delete the `library_arrivals_are_inert` conjunct from
+/// `object_window_reach` ⇒ the `SHORTEN` arm flips to `Accept`. The two ACCEPT
+/// arms are unaffected by that mutation by construction — their selectable sets
+/// are already inert, so the deleted conjunct was true in both.
+#[test]
+fn v10e_an_unrestricted_land_fetch_that_can_select_bojuka_bog_keeps_its_window() {
+    let mut board = live_path_board();
+    drive_to_offer(&mut board, 400).expect("CR 732.2a: the offer must fire on this real 4p drain");
+    let polled = declare_and_poll(&board, P2);
+
+    // ── PREMISE, read off the recorded library rather than assumed ──
+    let library: Vec<ObjectId> = polled
+        .players
+        .iter()
+        .find(|p| p.id == P2)
+        .expect("P2 is seated on this dump")
+        .library
+        .iter()
+        .copied()
+        .collect();
+    assert!(
+        library.len() > 20,
+        "PREMISE: P2 must have a real recorded library for the selection set to mean anything; \
+         got {}",
+        library.len()
+    );
+    let resolved = library
+        .iter()
+        .filter(|id| polled.objects.contains_key(id))
+        .count();
+    assert_eq!(
+        resolved,
+        library.len(),
+        "PREMISE, and the refutation of the hidden-zone argument this row exists to retire: every \
+         library card must resolve in `state.objects` at the decision point. If this ever fails, \
+         the gate has nothing to read and the row measures nothing"
+    );
+
+    let named = |state: &GameState, id: &ObjectId| {
+        state
+            .objects
+            .get(id)
+            .map(|o| o.name.clone())
+            .unwrap_or_default()
+    };
+    // A land the gate must reject, and the basics it must accept — both real
+    // members of this deck.
+    let bog = library
+        .iter()
+        .copied()
+        .find(|id| named(&polled, id) == "Bojuka Bog")
+        .expect("PREMISE: the recorded library must contain Bojuka Bog — it IS the hazard");
+    let bog_obj = polled.objects.get(&bog).expect("just found");
+    assert!(
+        !bog_obj.trigger_definitions.is_empty(),
+        "PREMISE: Bojuka Bog must carry its ETB trigger, or it is not the card this row names"
+    );
+    assert!(
+        bog_obj.card_types.core_types.contains(&CoreType::Land),
+        "PREMISE: it must be a LAND, or an unrestricted land search cannot select it"
+    );
+    assert!(
+        !bog_obj.card_types.supertypes.contains(&Supertype::Basic),
+        "PREMISE: it must NOT be basic, or the ACCEPT_BY_FILTER control below cannot be a control"
+    );
+    let basics: Vec<ObjectId> = library
+        .iter()
+        .copied()
+        .filter(|id| {
+            polled.objects[id]
+                .card_types
+                .supertypes
+                .contains(&Supertype::Basic)
+        })
+        .collect();
+    assert!(
+        !basics.is_empty(),
+        "PREMISE: ACCEPT_BY_FILTER needs a NON-EMPTY basic-land match set — an empty match set is \
+         the one case `library_arrivals_are_inert` deliberately fails closed on, so it would \
+         produce the wrong verdict for the wrong reason"
+    );
+    for id in &basics {
+        let o = &polled.objects[id];
+        assert!(
+            o.trigger_definitions.is_empty()
+                && o.replacement_definitions.is_empty()
+                && o.static_definitions.is_empty()
+                && o.keywords.is_empty(),
+            "PREMISE: every basic in this deck must be vanilla, or ACCEPT_BY_FILTER would be \
+             asserting the wrong direction; {} is not",
+            o.name
+        );
+    }
+
+    // ── the three arms ──
+    let mut shorten_arm = polled.clone();
+    let reshape_shorten = give_parsed_card(
+        &mut shorten_arm,
+        P2,
+        "Reshape the Earth",
+        RESHAPE_THE_EARTH,
+        CoreType::Instant,
+        Zone::Hand,
+    );
+
+    let mut accept_by_filter = polled.clone();
+    let growth = give_rampant_growth(&mut accept_by_filter, P2);
+
+    // Vary the DECK, not the card: strip every library land the gate would
+    // reject, leaving a pool whose land members are all vanilla.
+    let mut accept_by_library = polled.clone();
+    let stripped = strip_non_inert_library_lands(&mut accept_by_library, P2);
+    assert!(
+        stripped.contains(&bog),
+        "the ACCEPT_BY_LIBRARY arm must actually remove the hazard, or it is the SHORTEN arm with \
+         extra steps; removed {stripped:?}"
+    );
+    let reshape_accept = give_parsed_card(
+        &mut accept_by_library,
+        P2,
+        "Reshape the Earth",
+        RESHAPE_THE_EARTH,
+        CoreType::Instant,
+        Zone::Hand,
+    );
+
+    // ── reach-guards: each arm's staged spell must really be castable here, and
+    //    each arm must be the flagship action set PLUS exactly that one cast ──
+    for (label, arm, staged) in [
+        ("SHORTEN", &shorten_arm, reshape_shorten),
+        ("ACCEPT_BY_FILTER", &accept_by_filter, growth),
+        ("ACCEPT_BY_LIBRARY", &accept_by_library, reshape_accept),
+    ] {
+        assert!(
+            stage_one_meaningful(arm, P2),
+            "reach-guard ({label}): stage 1 must return true, or the seat answers at stage 1 and \
+             the fold under test never runs"
+        );
+        let non_pass = non_pass_actions(arm, P2);
+        assert_eq!(
+            non_pass.len(),
+            2,
+            "ATTRIBUTION ({label}): the arm must be the flagship fetchland PLUS the one staged \
+             cast, and nothing else; got {non_pass:?}"
+        );
+        assert!(
+            non_pass
+                .iter()
+                .any(|a| a.starts_with(&format!("CastSpell {{ object_id: {staged:?},"))),
+            "reach-guard ({label}): the staged spell must be castable at this window; got \
+             {non_pass:?}"
+        );
+        assert!(
+            non_pass.iter().any(|a| a.contains("Terramorphic Expanse")
+                && a.contains("zone=Some(Battlefield)")
+                && a.contains("controller=Some(PlayerId(2))")),
+            "ATTRIBUTION ({label}): the other action must be P2's OWN battlefield fetchland, so \
+             all three arms share it; got {non_pass:?}"
+        );
+    }
+
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&shorten_arm, P2),
+        ShortcutResponse::Shorten { at_iteration: 0 },
+        "CR 701.23a: an unrestricted land search LOOKS AT ALL CARDS in the library, and this one \
+         contains Bojuka Bog, whose ETB exiles a graveyard P2 does not own. Accepting here \
+         declines a window holding a live cross-player choice"
+    );
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&accept_by_filter, P2),
+        ShortcutResponse::Accept,
+        "CONTROL 1 (filter varies, deck held): a basic-land search on this same library can select \
+         only vanilla Plains and Swamps, so the gate is a distinction and not a blanket flip"
+    );
+    assert_eq!(
+        engine::ai_support::smart_shortcut_response(&accept_by_library, P2),
+        ShortcutResponse::Accept,
+        "CONTROL 2 (deck varies, card held): the SAME unrestricted search is confined once every \
+         land it could select is vanilla. This is what proves the gate reads the library rather \
+         than the printed word 'basic'"
+    );
+}
+
+/// Remove from `player`'s library every LAND that carries rules content
+/// `shortcut_efficacy`'s gate cannot classify, and return what was removed.
+///
+/// Lands only, deliberately: the search under test selects lands, so stripping
+/// the rest would vary more than the arm claims to. The predicate mirrors the
+/// public half of `carries_unreadable_rules_content` — if the two ever disagree
+/// the ACCEPT arm reds rather than passing quietly, because a survivor the gate
+/// still rejects keeps the verdict at `Shorten`.
+fn strip_non_inert_library_lands(state: &mut GameState, player: PlayerId) -> Vec<ObjectId> {
+    let doomed: Vec<ObjectId> = state
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .expect("player is seated")
+        .library
+        .iter()
+        .copied()
+        .filter(|id| {
+            state.objects.get(id).is_some_and(|o| {
+                o.card_types.core_types.contains(&CoreType::Land)
+                    && (!o.trigger_definitions.is_empty()
+                        || !o.replacement_definitions.is_empty()
+                        || !o.static_definitions.is_empty()
+                        || !o.keywords.is_empty())
+            })
+        })
+        .collect();
+    for id in &doomed {
+        state.objects.remove(id);
+    }
+    let library = &mut state
+        .players
+        .iter_mut()
+        .find(|p| p.id == player)
+        .expect("player is seated")
+        .library;
+    library.retain(|id| !doomed.contains(id));
+    doomed
 }
