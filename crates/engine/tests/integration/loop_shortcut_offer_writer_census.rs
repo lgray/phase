@@ -230,7 +230,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
 
     assert_eq!(
         (production.len(), in_test.len()),
-        (22, 16),
+        (22, 17),
         "CR 732.2a OFFER-WRITER SURFACE CHANGED (not re-measured — this number is an \
          INVARIANCE pin over the whole 5d U-series).\n\
          The three CERTIFICATION-PATH writers are `reconcile_terminal_result` (object-growth \
@@ -252,8 +252,15 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          real `per_cycle` so the proposer-elimination arm can be driven, and `certificate_of`, \
          a read accessor for the same rows. PRODUCTION STAYED AT 22 across that change, which \
          is the half this pin exists to protect: the new policy arm READS the certificate and \
-         writes no offer); if it moves again, name the new site here too rather than only \
-         moving the number.\n\
+         writes no offer). FOURTH ADJUDICATION, 16 => 17: item-4 C2a's cap-round row \
+         `the_bounded_offer_charges_a_forced_victim_it_publishes_no_point_for` in \
+         `engine/src/analysis/resource.rs`, whose `WaitingFor::LoopShortcut` DESTRUCTURE reads the \
+         offer it minted to assert the combination that decoupling CR 732.2a publication from CR \
+         704.5a charging makes reachable: `schema.points` EMPTY while `victim_slot` still names the \
+         forced victim. A READ, not a writer. PRODUCTION STAYED AT 22 with an IDENTICAL per-file \
+         multiset, and that conjunct is what makes this the benign case rather than a surface \
+         change; if it moves again, name the new site here too rather than only moving the \
+         number.\n\
          measured per-file production multiset: {multiset:?}\n\
          production: {production:?}\n\
          test: {in_test:?}"

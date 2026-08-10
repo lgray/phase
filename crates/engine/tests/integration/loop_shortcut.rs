@@ -5992,6 +5992,19 @@ fn dump_beat_actor(state: &GameState) -> Option<(PlayerId, Vec<GameAction>)> {
 /// Returns the beat's `GameEvent`s so a caller can key on what the beat actually DID
 /// (`CombatDamageDealtToPlayer` / `DamageDealt` for the CR 510.2 rows) instead of
 /// inferring it from phase and life deltas. Callers that only need liveness ignore it.
+///
+/// ⚠ THE `pin` PREFERENCE IS INERT ON EVERY TRACKED DUMP, and that is MEASURED, not
+/// inferred from this function's body. Driving all five tracked 4p dumps for 60 beats each:
+/// only `dellian_emblem_conqueror_4p` reaches a `WaitingFor::TriggerTargetSelection` window
+/// at all (seven of them, at beats 0/9/18/27/36/45/54, all on `ObjectId(541)`), and every
+/// one of those windows enumerates **`GameAction::ChooseTarget` ×3 and
+/// `GameAction::SelectTargets` ×0** — so the `SelectTargets` preference above never fires
+/// and the fallback answers with a `ChooseTarget`. `dina`, `tenacity`,
+/// `witherbloom_sprout_lumaret` and `witherbloom_sprout_lumaret_simple` reach NO
+/// `TriggerTargetSelection` window in 60 beats. This is the same trap
+/// `fantastic_four_bounded_loop.rs` already records for the F4 dump, and it means NO TRACKED
+/// FIXTURE CAN EXERCISE THE `SelectTargets` REDUCER ARM at the wire tier — see
+/// [`c2a_row_t1b_both_trigger_target_selection_arms_route_through_the_single_writer`].
 fn dump_drive_one_beat(
     state: &mut GameState,
     pin: Option<PlayerId>,
@@ -12995,5 +13008,105 @@ fn a_clearing_beat_rebuilds_the_ring_inside_the_same_beat() {
          none of the frames the answer-beat row claims — and where the clear is shallower than \
          the rebuild the scalar is positive but still short. Net growth is `minted - cleared`; \
          it can never name `minted`"
+    );
+}
+
+/// **Row T1b — STRUCTURAL, and the tier is FORCED.** CR 608.2b + CR 601.2c (reached via
+/// CR 603.3d): BOTH `WaitingFor::TriggerTargetSelection` reducer arms route their
+/// announcement through the single write authority `record_trigger_target_answer`.
+///
+/// # ⚠ WHY THIS IS A SOURCE CENSUS AND NOT A WIRE ROW — measured, not conceded
+///
+/// The `ChooseTarget` arm is covered end-to-end at the wire tier by
+/// `fantastic_four_bounded_loop.rs`'s
+/// `c2a_row_t1_the_announced_target_is_journalled_at_the_f4_offers_published_slot` and its
+/// P2 provenance sibling. **The `SelectTargets` arm has NO tracked fixture that reaches it.**
+/// Driving all five tracked 4p dumps in this file for 60 beats each through production
+/// `apply()`: only `dellian_emblem_conqueror_4p` reaches a `TriggerTargetSelection` window,
+/// it reaches seven of them, and every one enumerates `ChooseTarget` ×3 / `SelectTargets` ×0;
+/// the other four reach none. See [`dump_drive_one_beat`]'s doc for the per-dump numbers.
+/// A wire row for that arm is therefore not writable from this repo's fixtures today —
+/// recorded as a BACKLOG item (needs a dump whose trigger declares a multi-slot or
+/// object-target announcement), never as a silently-absent row.
+///
+/// This census covers exactly what it can: that the arm is WIRED. The writer's BEHAVIOUR is
+/// proven separately and at a tier that can carry it — `game::engine`'s
+/// `c2a_row_t5_an_unresolvable_target_abandons_the_whole_journal_write` drives the helper
+/// itself, and both arms call that one helper, which is the point of it being one helper.
+/// It is the same instrument class, and the same reasoning, as
+/// `fantastic_four_bounded_loop.rs`'s ring-clear census.
+///
+/// # Discrimination
+///
+/// Delete the `record_trigger_target_answer(..)` call from EITHER arm ⇒ that arm lands in
+/// `unwired` and this row reds NAMING the arm and its line. The mutation compiles (the other
+/// caller survives), so it reds on the assert, not on a compile error. Without this row, r2's
+/// own finding stands: deleting the `SelectTargets` call reds nothing in the suite.
+///
+/// # Reach-guard
+///
+/// The arm COUNT is asserted first and is independent of the call: a pattern reflow that hid
+/// an arm from this scanner would read 1 or 0 and fail here rather than passing on a census
+/// that found nothing to check.
+#[test]
+fn c2a_row_t1b_both_trigger_target_selection_arms_route_through_the_single_writer() {
+    use std::path::Path;
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("game/engine.rs");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let lines: Vec<&str> = text.lines().collect();
+
+    let (mut wired, mut unwired) = (Vec::new(), Vec::new());
+    for (i, line) in lines.iter().enumerate() {
+        let action = if line.contains("GameAction::SelectTargets {") {
+            "SelectTargets"
+        } else if line.contains("GameAction::ChooseTarget {") {
+            "ChooseTarget"
+        } else {
+            continue;
+        };
+        // A reducer arm's `WaitingFor` half sits a few lines above its `GameAction` half in
+        // the tuple pattern; anything further away is a different construct.
+        if !lines[i.saturating_sub(10)..i]
+            .join("\n")
+            .contains("WaitingFor::TriggerTargetSelection {")
+        {
+            continue;
+        }
+        if lines[i..(i + 14).min(lines.len())]
+            .join("\n")
+            .contains("record_trigger_target_answer(")
+        {
+            wired.push(action);
+        } else {
+            unwired.push(format!("game/engine.rs:{} ({action})", i + 1));
+        }
+    }
+
+    assert_eq!(
+        wired.len() + unwired.len(),
+        2,
+        "reach-guard: `apply_action` has exactly TWO `WaitingFor::TriggerTargetSelection` \
+         reducer arms (`SelectTargets` and `ChooseTarget`). A different count means an arm \
+         was added, removed, or reflowed out of this scanner's reach — re-derive this census, \
+         do not re-number it. wired={wired:?} unwired={unwired:?}"
+    );
+    assert!(
+        unwired.is_empty(),
+        "CR 608.2b: every `TriggerTargetSelection` reducer arm must journal its announcement \
+         through `record_trigger_target_answer`, the single write authority. Unwired: \
+         {unwired:?}"
+    );
+    assert_eq!(
+        {
+            let mut w = wired.clone();
+            w.sort_unstable();
+            w
+        },
+        vec!["ChooseTarget", "SelectTargets"],
+        "both arms by NAME, not just by count: a census that found the same arm twice would \
+         satisfy a bare count while leaving the other one unmeasured"
     );
 }

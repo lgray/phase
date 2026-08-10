@@ -138,6 +138,39 @@ pub struct DecisionSlot {
     pub index: u8,
 }
 
+impl DecisionSlot {
+    /// CR 601.2c (reached for a triggered ability via CR 603.3d) + CR 115.2: the
+    /// ANNOUNCEMENT target slot a BOUNDED-CYCLE ENTRY publishes.
+    ///
+    /// SCOPE OF THE AUTHORITY, stated narrowly because the number 0 is not globally
+    /// reserved: these two constructors are the single authority for the SUB-INDEX SHARED
+    /// BY `game::engine::entry_publishes_pin_slots` AND `GameState::loop_answer_journal` —
+    /// the publisher and the journal writers must agree, the way
+    /// `game::engine::object_decision_source` already makes them agree on the source half.
+    /// The `record_loop_pin` recast-template producer runs its OWN sub-index namespace over
+    /// the same source (0 for its `Targets`/`ConvokeTaps` pin, 1 for its `ManaColor` pin)
+    /// and deliberately does NOT route through here — its indices answer a different
+    /// question and coincide numerically only by accident.
+    ///
+    /// `pub`, not `pub(crate)`: `crates/engine/tests/integration/` is a SEPARATE CRATE, and
+    /// a `pub(crate)` constructor is unnameable there, so the integration rows would
+    /// hand-roll the very literal this constructor exists to delete (the shape
+    /// `object_decision_source`'s `pub(crate)` already forces on `may_source_key` in
+    /// `fantastic_four_bounded_loop.rs` and on `decision_source` in `natural_balance.rs`).
+    /// Every field of this `pub` struct in this `pub` module is already `pub`, so this adds
+    /// no reachability the type does not already have — it only removes the literal.
+    pub fn target(source: DecisionSource) -> Self {
+        Self { source, index: 0 }
+    }
+
+    /// CR 603.5: the "may" gate on the SAME source — a second choice of one ability
+    /// instance, which is exactly what the sub-index exists to disambiguate. Same scoped
+    /// authority and same visibility rationale as [`DecisionSlot::target`].
+    pub fn may(source: DecisionSource) -> Self {
+        Self { source, index: 1 }
+    }
+}
+
 /// CR 603.5: whether a "may" pin takes the optional action or declines it. Typed (not `bool`)
 /// so both outcomes are self-documenting at every construction and match site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -153,9 +186,11 @@ pub enum UnlessPaymentOption {
     Decline,
 }
 
-/// The observed answer to ONE published CR 603.5 "may" source, from ONE seat, across the
-/// current loop-detection window. Journalled under the key `(DecisionSource, PlayerId)`
-/// (`GameState::record_loop_answer`), so a seat can only ever answer for itself.
+/// The observed answer to ONE published decision slot, from ONE seat, across the current
+/// loop-detection window. Journalled under the key `(DecisionSlot, PlayerId)`
+/// (`GameState::record_loop_answer`), so a seat can only ever answer for itself and the
+/// sub-index keeps the two slots one source can publish (CR 601.2c target, CR 603.5 "may")
+/// in two entries rather than collapsing them into one latched conflict.
 ///
 /// CR 732.2a says a shortcut proposal describes "a sequence of game choices, for all
 /// players, that may be legally taken based on the current game state and the predictable
@@ -173,14 +208,41 @@ pub enum UnlessPaymentOption {
 /// only make reactively is one they cannot pin" disposition [`predictability_gate`]'s
 /// CR 732.2a firewall doc already records. Failing to offer is the fail-closed direction:
 /// strictly fewer offers, never a wrong pin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// `Copy` is DROPPED here (and nowhere else): `LoopAnswerValue::Targets` carries a `Vec`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoopAnswer {
-    /// Every observed iteration answered this (source, seat) pair identically.
-    Uniform { take: MayChoiceOption },
-    /// Two observed iterations of the same (source, seat) pair disagreed. Latched:
+    /// Every observed iteration answered this (slot, seat) pair identically.
+    Uniform(LoopAnswerValue),
+    /// Two observed iterations of the same (slot, seat) pair disagreed. Latched:
     /// never returns to `Uniform`. See the type doc — the refusal this produces is this
     /// engine's conservative policy, NOT a CR 732.2a mandate.
     Conflicted,
+}
+
+/// The VALUE of one observed answer. Variants are distinct CR choice KINDS — the same axis
+/// [`PinnedDecision`] and [`DecisionPointKind`] already partition, and under the same
+/// CR 732.2a umbrella ("a sequence of game choices, for all players") that makes each of
+/// those ONE type rather than one type per rule section. It is therefore a PARTIAL
+/// observation-side projection of that kind space (2 of the 6 [`DecisionPointKind`]
+/// variants), TOTALIZED at the consumer's wildcard-free `(DecisionPointKind,
+/// LoopAnswerValue)` match — not an exhaustive peer of either.
+///
+/// Parameterizing [`LoopAnswer::Uniform`] rather than adding a `UniformTargets` sibling is
+/// deliberate: a `X`/`TargetX` sibling pair is CLAUDE.md's sibling-cluster smell, and it
+/// would put the KIND axis on the same enum level as the LATCH axis (`Uniform` vs
+/// `Conflicted`), which is the layer conflation CLAUDE.md's enum-design rule forbids.
+///
+/// DELIBERATELY DERIVES NO `Serialize`/`Deserialize`, exactly as [`LoopAnswer`] does: the
+/// `#[serde(skip)]` on `GameState::loop_answer_journal` is enforced AT COMPILE TIME by the
+/// absence of that derive, and adding one here would silently re-open persistence of a
+/// transient window. ([`TargetPin`] and [`MayChoiceOption`] do derive it; the bar lives on
+/// the two enums above them, which is where it was put.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoopAnswerValue {
+    /// CR 603.5: take the optional action, or decline it.
+    May(MayChoiceOption),
+    /// CR 608.2b + CR 601.2c: the announced targets for one slot, in announcement order.
+    Targets(Vec<TargetPin>),
 }
 
 /// One pinned decision. Variants are distinct CR choice KINDS (ordering / targeting /

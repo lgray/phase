@@ -2071,13 +2071,10 @@ fn certified_bounded_cycle_offer<'a>(
     verdicts: &mut crate::analysis::resource::PeriodVerdicts<'a>,
     cert_out: &mut Option<crate::analysis::resource::PeriodCertification>,
 ) -> Result<WaitingFor, BoundedOfferRefusal> {
-    use crate::analysis::decision_template::{
-        DecisionPoint, DecisionPointKind, DecisionSlot, IterationCount,
-    };
+    use crate::analysis::decision_template::{DecisionPoint, DecisionSlot, IterationCount};
     use crate::analysis::resource::{
         certified_period_touch, PeriodCertification, PeriodTouch, PeriodicDelta, ResourceVector,
     };
-    use crate::types::ability::TargetRef;
 
     let cur = ResourceVector::snapshot(state);
     // Written as an explicit newest-first walk rather than `find_map` because the candidate
@@ -2290,20 +2287,38 @@ fn certified_bounded_cycle_offer<'a>(
         return Err(BoundedOfferRefusal::UnspecifiedChoiceWindow);
     }
 
-    // (7) THE BOUND. `declarable_victims` is the union of the published slots' legal targets
-    // — EMPTY for the untargeted class, where the victims are already in `delta.life`.
+    // (7) THE BOUND, derived from the ANNOUNCEMENT authority — never from `points`.
+    //
+    // ⚠ THE PUBLISHED POINT SET IS THE WRONG INPUT HERE, and reading it from there was a
+    // measured fail-OPEN. Publication answers CR 732.2a ("a sequence of game choices"), so
+    // step (6)'s mint WITHHOLDS the point for a FORCED announcement — correctly, since the
+    // announcing player makes no choice. The bound answers CR 704.5a ("if a player has 0 or
+    // less life, that player loses the game"), and a forced victim loses that life exactly as
+    // a chosen one does. Deriving the bound from `points` therefore made the CR 732.2a
+    // withhold drop the forced victim out of `declarable_victims`, charging it bare
+    // `observed_life_loss` instead of `observed_life_loss.max(0) + declared_life_magnitude` —
+    // so `max_iterations` GREW, and the offer stated more legal repetitions than are legal.
+    // Measured on an ordinary forced 2p targeted drain: 9 charged vs 19 uncharged; on a
+    // victim whose measured period NETS A LIFE GAIN the uncharged form leaves
+    // `elimination_bounds`' `narrow` guard (`magnitude > 0`) unfired and DISARMS the life
+    // axis at `MAX_SHORTCUT_CYCLES` entirely.
+    //
+    // `bounded_cycle_charged_targets_for_window` reads the SAME acceptance authority the
+    // point mint does (`entry_announces`), so the charged SLOT set is a superset of the
+    // published `Targets` slots by construction: on a board where every announcement is the
+    // proposer's own choice — every tracked dump today — this derivation is value-identical to
+    // the one it replaces. ⚠ THE SUPERSET IS OVER SLOTS ONLY. A repeated slot's per-slot LEGAL
+    // set is what `declarable_victims` below reads, and the two mints keep different frames of
+    // a repeat, so that set is made a superset separately, by the charging mint's UNION dedup
+    // (see its doc for the monotonicity proof). Claiming the per-slot legal set is a superset
+    // "by construction" from the shared acceptance authority alone is FALSE.
+    let charged_targets = bounded_cycle_charged_targets_for_window(&touch, proposer);
+    // `declarable_victims` is the union of those announcements' legal PLAYER sets — EMPTY for
+    // the untargeted class, where the victims are already in `delta.life`.
     let declarable_victims: Vec<PlayerId> = {
-        let mut v: Vec<PlayerId> = points
+        let mut v: Vec<PlayerId> = charged_targets
             .iter()
-            .filter_map(|p| match &p.kind {
-                DecisionPointKind::Targets { legal_targets, .. } => Some(legal_targets),
-                _ => None,
-            })
-            .flatten()
-            .filter_map(|t| match t {
-                TargetRef::Player(p) => Some(*p),
-                _ => None,
-            })
+            .flat_map(|(_, victims)| victims.iter().copied())
             .collect();
         v.sort_unstable();
         v.dedup();
@@ -2311,20 +2326,19 @@ fn certified_bounded_cycle_offer<'a>(
     };
     // CR 704.5a: what ONE repetition charges to whichever seat a slot's pin names. The
     // max-vs-sum reasoning, the gain clamp and the fail-closed direction live on the
-    // function; `elimination_bounds` then sums the published slots per declarable victim.
+    // function; `elimination_bounds` then sums the charged slots per declarable victim.
     // Extracted rather than inlined so the fork has a callable seam. ⚠ THE "`victim_slot` IS
     // EMPTY ON EVERY TRAJECTORY THAT OFFERS TODAY" NOTE THAT STOOD HERE IS FALSIFIED, and is
     // replaced rather than softened: the answer-beat sampling site in `apply_action` announces
     // the entries a FORCED pre-priority window puts on the stack, and a CR 608.2b `Targets`
-    // declaration is exactly the shape that resolves across one. On the F4 boards `points` now
-    // carries Torch's `Targets` point, so this value is NOT dropped — it reaches
+    // declaration is exactly the shape that resolves across one. On the F4 boards the
+    // announcement carries Torch's target slot, so this value is NOT dropped — it reaches
     // `elimination_bounds` in production and `r1_the_bounded_offer_fires_on_the_real_f4_dump`
     // re-derives the published bound with a non-zero declared term.
     let worst_seat_life_loss: i64 = periodic.delta.worst_seat_life_loss();
-    periodic.victim_slot = points
+    periodic.victim_slot = charged_targets
         .iter()
-        .filter(|p| matches!(p.kind, DecisionPointKind::Targets { .. }))
-        .map(|p| (p.slot.clone(), worst_seat_life_loss))
+        .map(|(slot, _)| (slot.clone(), worst_seat_life_loss))
         .collect();
     // `.cloned()`, not `.copied()`: `(DecisionSlot, i64)` is not `Copy`.
     let slot_magnitude: std::collections::BTreeMap<DecisionSlot, i64> =
@@ -2531,9 +2545,11 @@ fn declares_opponent_player_target(ability: &crate::types::ability::ResolvedAbil
 /// What ONE accepted stack entry publishes: the slot keys, plus the legal set the
 /// ANNOUNCEMENT authority itself built for the target slot.
 pub(crate) struct EntryPinSlots {
-    /// CR 115.2 target choice — `index: 0`. `None` for shape (B), the may-only entry:
-    /// announcing it surfaces NO choice at all (`targets.is_empty()` and zero built slots),
-    /// so there is no CR 601.2c announcement choice for a pin to specify.
+    /// CR 115.2 target choice — `index: 0`. `None` in TWO shapes, and both are the absence of
+    /// a CR 601.2c *choice* rather than the absence of a target: shape (B), the may-only entry,
+    /// announces NO slot at all (`targets.is_empty()` and zero built slots); shape (A′)
+    /// announces one whose assignment is FORCED (`forced_unique_targeting`), which CR 732.2a
+    /// does not count as a game choice and which the dispatcher answers itself.
     pub(crate) target: Option<crate::analysis::decision_template::DecisionSlot>,
     /// CR 603.5 "may" gate — `index: 1`, `Some` only if `ability.optional` — the mint
     /// additionally refuses on recipient, stored auto-choice and prompt-cardinality grounds
@@ -2546,12 +2562,110 @@ pub(crate) struct EntryPinSlots {
     /// exactly one mandatory choice. Deriving it a second time from the head effect's
     /// filter would let the two disagree about WHICH choice is being published, which is
     /// the same class of divergence the cardinality conjunct closes about HOW MANY.
-    /// Empty for shape (B), which publishes no target slot to carry a legal set for.
+    /// Empty for shapes (B) and (A′), neither of which publishes a target slot to carry a
+    /// legal set for.
     pub(crate) legal_targets: Vec<crate::types::ability::TargetRef>,
 }
 
-/// CR 732.2a: the per-iteration choice slots ONE stack entry publishes for `proposer`, or
+/// CR 601.2c (reached for a triggered ability via CR 603.3d): the ONE target an accepted
+/// entry ANNOUNCES — the slot key, the legal set the announcement authority itself built,
+/// and whether announcing it is a game CHOICE.
+///
+/// THE TWO QUESTIONS THIS TYPE KEEPS APART, because conflating them was a measured
+/// fail-OPEN. PUBLICATION answers CR 732.2a — *is this a game choice the player makes?* —
+/// and shapes the schema. CHARGING answers CR 704.5a — *which seat is charged, and how
+/// much?* — and shapes the bound. A forced announcement is not a choice, so it is withheld
+/// from the schema; its victim still loses the life, so it is still charged. Deriving the
+/// bound from the PUBLISHED point set made the CR 732.2a withhold silently drop the forced
+/// victim into `elimination_bounds`' cheaper arm and RAISE `max_iterations`.
+pub(crate) struct AnnouncedTarget {
+    /// CR 115.2 target choice — `index: 0`, the same key a published point carries, so a
+    /// charge and a publication of the same announcement can never land on different slots.
+    pub(crate) slot: crate::analysis::decision_template::DecisionSlot,
+    /// The legal set of the ONE announcement slot, taken VERBATIM from
+    /// `ability_utils::build_target_slots` — the same authority that decided there is
+    /// exactly one mandatory choice, and the same one `forced_unique_targeting` rebuilds
+    /// slots with. Never a second derivation from the head effect's filter.
+    pub(crate) legal_targets: Vec<crate::types::ability::TargetRef>,
+    pub(crate) announcement: TargetAnnouncement,
+}
+
+/// CR 732.2a: whether announcing an [`AnnouncedTarget`] is a *game choice the PROPOSER makes
+/// at a prompt of their own*.
+///
+/// Not a `bool`: the two arms name two different CR readings, and the whole defect this
+/// type exists to prevent came from a caller re-deriving "was it a choice?" from a
+/// downstream artifact instead of reading the answer.
+///
+/// ⚠ THE QUESTION IS THREE-AXIS, and this type answered ONE of them while carrying the name of
+/// all three. CR 601.2c routes an announcement by WHO announces (`target_chooser`) as well as
+/// by HOW MANY assignments are legal (`forced_unique_targeting`), and CR 115.1 is overridden
+/// outright when the game selects at random (`TargetSelectionMode`). Only the middle axis was
+/// read. The publication BEHAVIOUR that gap produced predates the commit this type ships in —
+/// what was new is a named authority claiming to answer "is announcing this a game choice the
+/// proposer makes" while covering one of its three members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetAnnouncement {
+    /// The PROPOSER announces this target, at a prompt that is really raised for them:
+    /// no other seat announces it (CR 601.2c `target_chooser`), the game does not select it
+    /// (CR 115.1 vs `TargetSelectionMode`), and `forced_unique_targeting` is false — so
+    /// `triggers::prepare_trigger_targets` routes it to `NeedsPlayerChoice`, a
+    /// `WaitingFor::TriggerTargetSelection` comes up under the proposer's own seat, and
+    /// `record_trigger_target_answer` can journal an answer AT THIS SLOT AND UNDER THIS KEY.
+    ///
+    /// ⚠ NOT "two or more legal assignments". That claim stood here and is FALSE: the conjunct
+    /// the code applies is the NEGATION of `forced_unique_targeting`, i.e.
+    /// `auto_select_targets_for_ability != Ok(Some(_))`. Two-or-more is its principal member,
+    /// but `Err` ("No legal target combinations available") negates it too, so this variant
+    /// carries no assignment COUNT — only the "nobody else and nothing else announced it, and
+    /// the dispatcher did not settle it" reading above.
+    Chosen,
+    /// The proposer makes no such announcement, so CR 732.2a publishes no decision point for
+    /// it. THREE DISJOINT ROUTES, each named at the code that takes it:
+    ///
+    /// * `forced_unique_targeting` — exactly one legal assignment, so the announcement is
+    ///   determined rather than chosen and `triggers::prepare_trigger_targets` routes it to
+    ///   `AutoAssigned` without asking anyone.
+    /// * CR 601.2c `target_chooser` ("of an opponent's choice") — a prompt IS raised, but for
+    ///   ANOTHER seat. `ability_utils::auto_select_targets_for_ability` early-returns
+    ///   `Ok(None)` whenever any slot carries a chooser, so `forced_unique_targeting` is false
+    ///   even with ONE legal assignment. The writer journals under the ANNOUNCING seat while
+    ///   the consumer reads `loop_answer(slot, proposer)` — an unanswerable published point,
+    ///   which is the exact undeclarable-offer condition the bounded offer exists to remove.
+    /// * `TargetSelectionMode` other than `Chosen` — the game selects (CR 115.1 is overridden;
+    ///   `triggers::prepare_trigger_targets` calls `random_select_targets_for_ability` and
+    ///   routes to `AutoAssigned`), so no prompt is ever raised and a pin would be a
+    ///   designation the RNG contradicts at drive time.
+    ///
+    /// CHARGED ALL THE SAME: CR 704.5a asks which seat loses how much life, and nobody having
+    /// made the choice changes neither who pays nor how much. Only the CR 732.2a publication
+    /// reader acts on this value.
+    NotProposerChoice,
+}
+
+/// CR 601.2c + CR 603.5: everything ONE accepted stack entry ANNOUNCES for `proposer`,
+/// BEFORE the CR 732.2a question of how much of it is a published game choice.
+///
+/// THE SINGLE ACCEPTANCE AUTHORITY. Both [`entry_publishes_pin_slots`] (publication) and
+/// [`bounded_cycle_charged_targets_for_window`] (CR 704.5a charging) are thin readers of
+/// this one function, so the two can never disagree about WHICH entries are in the cycle —
+/// only about which of their announcements is a published choice. Two independent
+/// acceptance chains that could disagree is exactly the shape gate (3)'s single-authority
+/// rule exists to forbid.
+struct EntryAnnouncement {
+    target: Option<AnnouncedTarget>,
+    may: Option<crate::analysis::decision_template::DecisionSlot>,
+}
+
+/// CR 732.2a: the per-iteration choice slots ONE stack entry PUBLISHES for `proposer`, or
 /// `None` when it publishes none.
+///
+/// A THIN READER of [`entry_announces`], which owns every acceptance conjunct documented
+/// below; this function contributes exactly one thing on top of it — the CR 732.2a
+/// publication decision (a `Forced` announcement is not a game choice, so no point is
+/// published for it). The CR 704.5a charging reader
+/// ([`bounded_cycle_charged_targets_for_window`]) reads the SAME announcement, so the two
+/// cannot disagree about which entries are in the cycle.
 ///
 /// SINGLE AUTHORITY, and that is the whole point of its existence: the MINT
 /// ([`bounded_cycle_pin_slots_for_window`]) maps it over the certified period's announced
@@ -2573,6 +2687,12 @@ pub(crate) struct EntryPinSlots {
 /// `targets.is_empty()` and zero built slots); and its source object still exists, so the
 /// slot can re-bind (CR 400.7 incarnation, fail-closed on absence).
 ///
+/// Shape (A) carries one further conjunct that is a property of the BOARD rather than of the
+/// ability: the announcement must actually be a CHOICE. A slot with exactly one legal
+/// assignment is FORCED (shape (A′)) — `triggers::prepare_trigger_targets` announces it
+/// without asking anyone — so it publishes its CR 603.5 gate alone, or nothing. See the
+/// `forced_unique_targeting` call in the body for why publishing it is the undeclarable case.
+///
 /// SCOPE OF THE ANSWER: because the relief is a `continue` at gate (3), the relief
 /// predicate must be no coarser than EVERY fact `stack_entry_has_no_ordering_input`
 /// rejects on — not just the target one. Correspondence, in that function's own order:
@@ -2585,6 +2705,43 @@ pub(crate) fn entry_publishes_pin_slots(
     entry: &StackEntry,
     proposer: PlayerId,
 ) -> Option<EntryPinSlots> {
+    let announced = entry_announces(state, entry, proposer)?;
+    // CR 732.2a: a shortcut describes "a sequence of game choices", so ONLY a `Chosen`
+    // announcement earns a decision point. `NotProposerChoice` is withheld — see
+    // [`TargetAnnouncement::NotProposerChoice`] and the shape (A′) block in
+    // [`entry_announces`].
+    let published = announced
+        .target
+        .filter(|target| target.announcement == TargetAnnouncement::Chosen);
+    // An entry that publishes NOTHING publishes no slot set at all. This is the fail-closed
+    // reading shapes (B) and (A′) each carried inline as a `Some(may?)`, stated ONCE here
+    // instead of once per shape; the observable result is identical.
+    if published.is_none() && announced.may.is_none() {
+        return None;
+    }
+    let (target, legal_targets) = match published {
+        Some(target) => (Some(target.slot), target.legal_targets),
+        None => (None, vec![]),
+    };
+    Some(EntryPinSlots {
+        target,
+        may: announced.may,
+        legal_targets,
+    })
+}
+
+/// CR 601.2c + CR 603.5 (reached for a triggered ability via CR 603.3d): what ONE stack
+/// entry ANNOUNCES for `proposer`, or `None` when the entry is not one this cycle accepts.
+///
+/// Every acceptance conjunct documented on [`entry_publishes_pin_slots`] lives here. What
+/// does NOT live here is the CR 732.2a publication decision: this function reports whether
+/// the announcement is `Chosen` or `Forced` and lets its two readers apply that fact to the
+/// question each is answering — the schema (publication) or the bound (CR 704.5a charging).
+fn entry_announces(
+    state: &GameState,
+    entry: &StackEntry,
+    proposer: PlayerId,
+) -> Option<EntryAnnouncement> {
     use crate::analysis::decision_template::DecisionSlot;
     if entry.controller != proposer {
         return None;
@@ -2723,10 +2880,7 @@ pub(crate) fn entry_publishes_pin_slots(
             .as_ref()
             .is_none_or(|key| state.may_trigger_auto_choice(key).is_none())
     })
-    .map(|_| DecisionSlot {
-        source: source.clone(),
-        index: 1,
-    });
+    .map(|_| DecisionSlot::may(source.clone()));
     let mut slots = super::ability_utils::build_target_slots(state, ability).ok()?;
     // SHAPE (B) — may-only. The announcement authority surfaced NO choice, so there is no
     // CR 601.2c target for a pin to specify and the entry publishes its CR 603.5 gate
@@ -2734,16 +2888,14 @@ pub(crate) fn entry_publishes_pin_slots(
     // nothing" rather than "declared something the builder declined"; `optional` is
     // inherited from the `may` expression, which is `None` without it. A `may` the three
     // conjunct groups above suppressed leaves shape (B) with NO slot at all, so the whole
-    // entry publishes `None` — the fail-closed direction.
+    // entry publishes `None` — the fail-closed direction, now applied by the publication
+    // reader rather than restated here. Shape (B) also charges NOTHING under CR 704.5a:
+    // there is no announced target, so there is no seat a declaration could aim at.
     if slots.is_empty() {
         if !ability.targets.is_empty() {
             return None;
         }
-        return Some(EntryPinSlots {
-            target: None,
-            may: Some(may?),
-            legal_targets: vec![],
-        });
+        return Some(EntryAnnouncement { target: None, may });
     }
     if slots.len() != 1 {
         return None;
@@ -2766,12 +2918,97 @@ pub(crate) fn entry_publishes_pin_slots(
     if !declares_opponent_player_target(ability) {
         return None;
     }
-    // Shape (A) — targeted. Index 1 is kept for the may slot in BOTH shapes, so slot
-    // identity is stable across them.
-    Some(EntryPinSlots {
-        target: Some(DecisionSlot { source, index: 0 }),
+    // SHAPE (A′) — NOT THE PROPOSER'S CHOICE, so there is no CHOICE OF THEIRS to publish.
+    // CR 732.2a describes a shortcut as "a sequence of game choices, for all players": a
+    // decision point stands for a game choice, and the proposer makes none of these three.
+    // CR 603.3d routes a trigger's announcement through CR 601.2c–d, and CR 601.2c has the
+    // player "announce their choice of an appropriate object or player for each target".
+    //
+    // WITHHOLD, never journal-an-auto-selection, and the difference is observable rather
+    // than stylistic: `triggers::prepare_trigger_targets` sends this exact predicate's
+    // `Ok(Some(..))` to `PreparedTriggerTargets::AutoAssigned`, so no
+    // `WaitingFor::TriggerTargetSelection` is ever raised, so `record_trigger_target_answer`
+    // — whose only two call sites are that prompt's reducer arms — never runs. A point
+    // published here would demand a `predictability_gate` answer no writer can produce, and
+    // one unanswerable point makes the WHOLE offer undeclarable (the gate's `required` set is
+    // every published point). Journalling the auto-selection instead would model a decision
+    // the player never made.
+    //
+    // THE SAME AUTHORITY AS THE RELIEF, exported rather than re-derived: gate (3)'s
+    // `stack_entry_has_no_ordering_input` asks `forced_unique_targeting` about this same
+    // fact, so withholding the point loses no relief — the entry passes gate (3) on the
+    // ordering-input arm instead of the pin arm. Evaluated on `state`, which for a window
+    // mint IS the pair's own carrying frame (`bounded_cycle_pin_slots_for_window` passes
+    // `frame`), the same board `build_target_slots` above enumerated the legal set from; that
+    // function's doc records why the live board would be fail-open here.
+    //
+    // Consistent with the sibling refusal one level up: a `ControllerRef::You` head is
+    // already refused as "a single forced seat, not a per-opponent choice". Forced-unique
+    // targeting is that same condition measured on the legal SET rather than on the filter.
+    // The `may` survives — a CR 603.5 take/decline is a real choice on the same source — and
+    // an entry with neither publishes nothing at all, exactly as shape (B) does.
+    //
+    // ⚠ `forced_unique_targeting` ANSWERS THE ASSIGNMENT-COUNT AXIS ONLY, and CR 601.2c has
+    // two more that decide the same question — WHO announces, and whether anybody does. The
+    // two cheap conjuncts run FIRST because each independently makes the count irrelevant:
+    //
+    // * CR 601.2c `target_chooser` ("of an opponent's choice", e.g. Volcanic Offering). The
+    //   prompt is raised for the CHOOSER, and `record_trigger_target_answer` journals under
+    //   the seat that answered it, while every consumer of a published point reads
+    //   `loop_answer(slot, proposer)`. So the point is unanswerable at the proposer's key and
+    //   one unanswerable point makes the WHOLE offer undeclarable — the same failure the
+    //   forced arm above avoids. Note the count axis CANNOT see this:
+    //   `auto_select_targets_for_ability` early-returns `Ok(None)` when ANY slot carries a
+    //   chooser (`ability_utils.rs`, whose own comment names the `TargetSelectionMode::Random`
+    //   guard as its mirror), so `forced_unique_targeting` is false here even when exactly ONE
+    //   legal assignment exists. `slots.len() == 1` is already enforced above, so this reads
+    //   the single announcement slot. The `!= proposer` half is not redundant with
+    //   `collect_target_slots`' own `player != ability.controller` filter: it keys on the seat
+    //   the CONSUMER reads, which is `entry.controller`, and those two coincide in production
+    //   but are separate fields. Same shape as the sibling `may` mint's
+    //   `.filter(|gate| gate.prompt_player == proposer)` — direction: strictly FEWER offers.
+    // * `TargetSelectionMode` other than `Chosen` — CR 115.1's "require their controller to
+    //   choose" is overridden and the GAME selects. `triggers::prepare_trigger_targets` sends
+    //   this to `random_select_targets_for_ability` and then to `AutoAssigned`, so no prompt
+    //   is raised at all; worse than merely unanswerable, a pin here also RELIEVES gate (3),
+    //   so the offer would be minted because of a designation the RNG contradicts at drive
+    //   time. Written as `!is_chosen()` rather than `is_random()` deliberately: a future
+    //   variant is withheld by DEFAULT, which is this function's documented fail-closed
+    //   contract that the schema can only ever UNDER-publish.
+    //
+    // SCOPING HONESTY: this publication behaviour PREDATES the commit these types ship in.
+    // What is new is [`TargetAnnouncement`] claiming authority over "is announcing this a game
+    // choice the proposer makes" while reading one of the three axes. This is not a repair of
+    // a defect this commit introduced.
+    //
+    // ⚠ WITHHELD FROM THE SCHEMA IS NOT UNCHARGED, and the two used to be the same act.
+    // CR 704.5a asks which seat loses how much life, and a forced victim loses it exactly as
+    // a chosen one does — nobody having made the choice changes who pays, not how much.
+    // Reporting the shape here rather than dropping the announcement is what lets
+    // [`bounded_cycle_charged_targets_for_window`] charge it while
+    // [`entry_publishes_pin_slots`] still withholds it. Before, the shape was destroyed at
+    // this line and the CR 704.5a bound — derived from the surviving PUBLISHED points — read
+    // the withhold as "no victim", charging bare `observed_life_loss` instead of
+    // `observed_life_loss.max(0) + declared_life_magnitude`, so `max_iterations` GREW: the
+    // offer stated more legal repetitions than CR 732.2a permits.
+    let announcement = if slot.chooser.is_some_and(|chooser| chooser != proposer)
+        || !ability.target_selection_mode.is_chosen()
+        || crate::analysis::resource::forced_unique_targeting(state, ability)
+    {
+        TargetAnnouncement::NotProposerChoice
+    } else {
+        TargetAnnouncement::Chosen
+    };
+    // Shape (A) / (A′) — targeted. Index 1 is kept for the may slot in BOTH shapes, so slot
+    // identity is stable across them. Both sub-indices come from `DecisionSlot`'s own
+    // constructors, which the CR 603.5 and CR 601.2c journal writers also use.
+    Some(EntryAnnouncement {
+        target: Some(AnnouncedTarget {
+            slot: DecisionSlot::target(source),
+            legal_targets: slot.legal_targets,
+            announcement,
+        }),
         may,
-        legal_targets: slot.legal_targets,
     })
 }
 
@@ -2914,6 +3151,106 @@ pub(crate) fn bounded_cycle_pin_slots_for_window(
         }
     }
     points
+}
+
+/// CR 704.5a: what ONE CERTIFIED PERIOD CHARGES — the announcement slot of every accepted
+/// entry, paired with the seats that announcement may name, whether or not CR 732.2a
+/// publishes it as a decision point.
+///
+/// DELIBERATELY NOT A FILTER OVER [`bounded_cycle_pin_slots_for_window`]'s OUTPUT, and that
+/// is the entire reason this exists as its own reader. Publication answers CR 732.2a — "a
+/// sequence of game choices, for all players" — so a FORCED announcement publishes nothing.
+/// Charging answers CR 704.5a — "if a player has 0 or less life, that player loses the
+/// game" — and the victim loses that life whether or not anybody chose it. Deriving the
+/// bound from the published set therefore let the CR 732.2a withhold silently drop a forced
+/// victim into `ResourceVector::elimination_bounds`' cheaper `observed_life_loss` arm,
+/// RAISING `max_iterations`: the offer would state more legal repetitions than CR 732.2a
+/// permits, on the very operator whose job is to prove the proposed sequence "may be legally
+/// taken based on the current game state".
+///
+/// SAME ACCEPTANCE AUTHORITY as the publication mint — both read [`entry_announces`] — so
+/// the charged SLOT set is a superset of the published `Targets` slots by construction, never
+/// an independently-derived one that could name an entry the schema does not.
+///
+/// ⚠ THE SUPERSET IS OVER SLOTS, NOT OVER EACH SLOT'S LEGAL SET, and conflating the two is
+/// what the dedup below exists to prevent. The two mints read the same announcements but keep
+/// DIFFERENT ONES of a repeated slot: publication skips a `NotProposerChoice` frame entirely,
+/// charging does not. So a first-wins charge could retain a narrow frame's legal set for a
+/// slot the schema publishes from a WIDER later frame — the schema would offer a pin the bound
+/// never charged, and `max_iterations` would GROW.
+///
+/// PER SOURCE, NOT PER ENTRY, for the reason [`bounded_cycle_pin_slots`] documents at
+/// length: one state-independent designation specifies every instance of that source's
+/// announcement, so its slot is charged ONCE however many entries carry it. On a repeat the
+/// victim lists are UNIONED rather than first-wins.
+///
+/// # Why the union is MONOTONE — it can only tighten the bound, never loosen it
+///
+/// The union changes exactly one input to
+/// [`crate::analysis::resource::ResourceVector::elimination_bounds`]:
+/// `declarable_victims` (its caller's flat union over these victim lists) can only GAIN
+/// members. It cannot change `slot_magnitude`, which is keyed by SLOT and whose value is the
+/// slot-independent `worst_seat_life_loss` — the union adds no slot. And for the one seat `p`
+/// a union adds, that function's per-seat life magnitude moves from `observed_life_loss` to
+/// `observed_life_loss.max(0) + S`, where `S = declared_life_magnitude >= 0` by construction
+/// (its initializer filters `*m > 0` and sums; the empty sum is `0`). For `observed >= 0` that
+/// is `observed + S >= observed`; for `observed < 0` it is `S >= 0 > observed`. So the
+/// magnitude never decreases, and `narrow` — `bound.min(headroom.max(0) / magnitude)` over a
+/// non-negative numerator, fired only when `magnitude > 0` — is monotone non-increasing in its
+/// divisor. Hence the bound can only SHRINK. That is this repo's fail-closed direction.
+///
+/// # Reachability of the shape this closes: NARROW, AND NOT CLOSED
+///
+/// Stated honestly in both directions, because neither the reviewer nor the orchestrator built
+/// the window. Divergent legal sets for ONE slot across a window need the legal PLAYER set to
+/// GROW between frames. ELIMINATION — the realistic mechanism, and the one every tracked dump
+/// exhibits — narrows it MONOTONICALLY (CR 800.4 + CR 102.1), which puts the widest frame
+/// FIRST and lands first-wins fail-CLOSED. The fail-open direction needs a seat's
+/// untargetability to END mid-window: a corpus census measured 14 cards granting a player
+/// untargetability mid-loop, all self-protective and predominantly "until end of turn", which
+/// does not expire mid-turn — so the path additionally needs the granting permanent to LEAVE,
+/// or a shorter duration. `a_repeated_slots_victim_lists_are_unioned_not_first_wins` builds
+/// exactly that board (CR 702.11c player hexproof whose grantor leaves between frames). It is
+/// NOT a claim that a full production trajectory reaches it, and it is NOT "unreachable".
+pub(crate) fn bounded_cycle_charged_targets_for_window(
+    touch: &crate::analysis::resource::PeriodTouch<'_>,
+    proposer: PlayerId,
+) -> Vec<(
+    crate::analysis::decision_template::DecisionSlot,
+    Vec<PlayerId>,
+)> {
+    use crate::analysis::decision_template::DecisionSlot;
+    let mut charged: Vec<(DecisionSlot, Vec<PlayerId>)> = Vec::new();
+    for (frame, entry) in &touch.announced {
+        let Some(target) = entry_announces(frame, entry, proposer).and_then(|a| a.target) else {
+            continue;
+        };
+        // CR 115.2: an object target is not a seat any CR 704 loss threshold applies to, so
+        // only players are collected — the same projection the bound always applied to the
+        // published set, moved to the authority that owns the legal set.
+        let victims: Vec<PlayerId> = target
+            .legal_targets
+            .iter()
+            .filter_map(|t| match t {
+                TargetRef::Player(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        // UNION, NOT FIRST-WINS. `position` (not `iter_mut().find`) so the immutable probe's
+        // borrow ends before the `None` arm pushes.
+        match charged.iter().position(|(slot, _)| *slot == target.slot) {
+            Some(i) => {
+                let seats = &mut charged[i].1;
+                for victim in victims {
+                    if !seats.contains(&victim) {
+                        seats.push(victim);
+                    }
+                }
+            }
+            None => charged.push((target.slot, victims)),
+        }
+    }
+    charged
 }
 
 /// CR 732.2a: assemble a loop-shortcut offer's READ-side schema from its already-reified
@@ -4108,6 +4445,93 @@ pub(crate) fn object_decision_source(
         incarnation: Some(o.incarnation),
         trigger_description: None,
     })
+}
+
+/// CR 608.2b + CR 601.2c (reached for a triggered ability via CR 603.3d) + CR 732.2a:
+/// journal ONE seat's announced target choice for the current loop-detection window. THE
+/// SINGLE WRITE AUTHORITY for the target axis — both `WaitingFor::TriggerTargetSelection`
+/// reducer arms route through here, never inline, so the two cannot drift.
+///
+/// FAIL-CLOSED ON A DEAD IDENTITY, and this DIVERGES DELIBERATELY from the proliferate
+/// `record_loop_pin` site below, which `filter_map`s an unresolvable object away. There a
+/// short pin vector still drives; here it would be journalled as a UNIFORM answer and then
+/// fail `validate_pins` as an illegal pin value at declare time — a WRONG PIN rather than
+/// no offer. `collect::<Option<Vec<_>>>()` makes any unresolvable member abandon the whole
+/// write.
+///
+/// FAIL-CLOSED ON A MULTI-SLOT ANNOUNCEMENT, and the key is why. `DecisionSlot::target`
+/// hard-codes `index: 0` (its own doc: the sub-index disambiguates the two choices of ONE
+/// ability instance — CR 601.2c target vs. CR 603.5 may — and nothing finer), so every slot of
+/// a multi-slot announcement lands on ONE key. `LoopAnswerValue::Targets`' contract is "the
+/// announced targets for one slot, in announcement order", so what gets stored is wrong in two
+/// distinguishable ways: two slots taking DISTINCT targets latch `Conflicted` (fail-closed,
+/// harmless), while two slots taking the SAME target — which CR 601.2c expressly permits, "if
+/// the spell uses the word 'target' in multiple places, the same object or player can be chosen
+/// once for each instance" — store a `Uniform` one-pin vector that LOOKS like a valid answer to
+/// a two-choice announcement. Refusing the whole write is the only reading that cannot hand a
+/// widened publisher a wrong pin. Deriving a real per-slot sub-index is the right long-term
+/// answer and is deliberately NOT attempted here: `DecisionSlot`'s index namespace is shared
+/// with the publisher and with `record_loop_pin`'s own numbering, so widening it is a design
+/// change, not a guard.
+///
+/// The slot count is read from the PROMPT IN HAND rather than passed by the caller. Both reducer
+/// arms run BEFORE the handler replaces `waiting_for` (that is why the seat and source are only
+/// readable there), so `state.waiting_for` here IS the `TriggerTargetSelection` the announcement
+/// answers — the same value the arm matched on, since `apply_action`'s reducer matches a CLONE
+/// and nothing writes the field in between. Reading it makes the guard un-driftable by
+/// construction: a third arm cannot pass a stale or invented count, and a caller holding no
+/// prompt at all has no announcement to journal and is refused. (A `debug_assert!` on the count
+/// is deliberately NOT used: a multi-slot trigger announcement is legal and reachable in
+/// production — `triggers.rs` measures a combat-damage trigger surfacing two target slots — so
+/// asserting would panic a debug build on a correct game.)
+///
+/// Gating is inherited, not restated: `record_loop_answer` carries the
+/// `samples() && !in_simulation_probe()` gate, so this adds no second gate.
+fn record_trigger_target_answer(
+    state: &mut GameState,
+    source_id: Option<ObjectId>,
+    player: PlayerId,
+    targets: &[crate::types::ability::TargetRef],
+) {
+    use crate::analysis::decision_template::{
+        DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
+    };
+    use crate::types::ability::TargetRef;
+    let announced_slots = match &state.waiting_for {
+        WaitingFor::TriggerTargetSelection { target_slots, .. } => target_slots.len(),
+        // No announcement in hand ⇒ nothing to journal.
+        _ => return,
+    };
+    if announced_slots > 1 {
+        return;
+    }
+    let Some(source) = source_id.and_then(|id| object_decision_source(state, id)) else {
+        return;
+    };
+    let Some(pins) = targets
+        .iter()
+        .map(|t| match t {
+            // CR 400.7: bind to the CURRENT incarnation, so a re-entered permanent stops
+            // matching instead of being falsely replayed.
+            TargetRef::Object(id) => object_decision_source(state, *id).map(TargetPin::ByIdentity),
+            // CR 732.2a: a seat is state-independent by construction — it can never denote
+            // "the newest copy" — so no iteration can turn the pin into a conditional
+            // action.
+            TargetRef::Player(pl) => Some(TargetPin::Player(*pl)),
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return;
+    };
+    if pins.is_empty() {
+        // A declined / empty announcement is not an answer a pin can specify.
+        return;
+    }
+    state.record_loop_answer(
+        DecisionSlot::target(source),
+        player,
+        LoopAnswer::Uniform(LoopAnswerValue::Targets(pins)),
+    );
 }
 
 /// FIX-1 (CR 608.2b): the concrete targets of the recorded `Targets` pin whose slot source
@@ -8667,16 +9091,20 @@ fn apply_action(
             // carries the `samples() && !in_simulation_probe()` gate.
             let (answering_player, may_source) = (*player, *source_id);
             if let Some(source) = object_decision_source(state, may_source) {
+                use crate::analysis::decision_template::{
+                    DecisionSlot, LoopAnswer, LoopAnswerValue, MayChoiceOption,
+                };
+                // CR 603.5 rides sub-index 1, via `DecisionSlot::may` — the SAME
+                // constructor `entry_publishes_pin_slots` publishes the gate with, so the
+                // sub-index is a literal on neither side of the journal.
                 state.record_loop_answer(
-                    source,
+                    DecisionSlot::may(source),
                     answering_player,
-                    crate::analysis::decision_template::LoopAnswer::Uniform {
-                        take: if accept {
-                            crate::analysis::decision_template::MayChoiceOption::Take
-                        } else {
-                            crate::analysis::decision_template::MayChoiceOption::Decline
-                        },
-                    },
+                    LoopAnswer::Uniform(LoopAnswerValue::May(if accept {
+                        MayChoiceOption::Take
+                    } else {
+                        MayChoiceOption::Decline
+                    })),
                 );
             }
             engine_payment_choices::handle_optional_effect_choice(state, accept, &mut events)?
@@ -10654,20 +11082,40 @@ fn apply_action(
         (
             WaitingFor::TriggerTargetSelection {
                 player,
+                source_id,
                 target_slots,
                 target_constraints,
                 ..
             },
             GameAction::SelectTargets { targets },
-        ) => engine_stack::handle_trigger_target_selection_select_targets(
-            state,
-            *player,
-            target_slots,
-            target_constraints,
-            targets,
-            &mut events,
-        )?,
-        (WaitingFor::TriggerTargetSelection { .. }, GameAction::ChooseTarget { target }) => {
+        ) => {
+            // CR 608.2b + CR 732.2a: journal the announcement BEFORE the handler runs — it
+            // replaces `waiting_for`, so the prompt's own seat and source are only readable
+            // here, and the key reads the source object's CR 400.7 incarnation, which
+            // resolution can invalidate. `apply_action_boundary_core` snapshots the whole
+            // state and restores it on every `Err` return, so a write made before a handler
+            // that then errors is rolled back with everything else.
+            record_trigger_target_answer(state, *source_id, *player, targets.as_slice());
+            engine_stack::handle_trigger_target_selection_select_targets(
+                state,
+                *player,
+                target_slots,
+                target_constraints,
+                targets,
+                &mut events,
+            )?
+        }
+        (
+            WaitingFor::TriggerTargetSelection {
+                player, source_id, ..
+            },
+            GameAction::ChooseTarget { target },
+        ) => {
+            // Same write authority and same before-the-handler reason as the `SelectTargets`
+            // arm above. `target: None` yields an empty slice, which the helper's
+            // `pins.is_empty()` guard refuses — the fail-closed reading of a no-target
+            // announcement.
+            record_trigger_target_answer(state, *source_id, *player, target.as_slice());
             let waiting_for = state.waiting_for.clone();
             engine_stack::handle_trigger_target_selection_choose_target(
                 state,
@@ -15078,6 +15526,251 @@ mod stage2_injector_tests {
         oid
     }
 
+    /// Stand up the `WaitingFor::TriggerTargetSelection` prompt an announcement answers, with
+    /// `slot_count` announcement slot(s).
+    ///
+    /// `record_trigger_target_answer` reads the slot count off the prompt IN HAND — that is
+    /// production's own instrument, because both reducer arms run before the handler replaces
+    /// `waiting_for` — so a row that drives the writer has to stand the prompt up the way
+    /// production does rather than call the writer against a bare board.
+    fn stand_up_target_prompt(
+        state: &mut GameState,
+        player: PlayerId,
+        source: ObjectId,
+        slot_count: usize,
+    ) {
+        let slot = crate::types::game_state::TargetSelectionSlot {
+            legal_targets: vec![],
+            optional: false,
+            chooser: None,
+            effect_kind: crate::types::ability::EffectKind::NoOp,
+            effect_detail: crate::types::game_state::TargetEffectDetail::None,
+        };
+        state.waiting_for = WaitingFor::TriggerTargetSelection {
+            player,
+            trigger_controller: None,
+            trigger_event: None,
+            trigger_events: vec![],
+            target_slots: vec![slot; slot_count],
+            mode_labels: vec![],
+            target_constraints: vec![],
+            selection: Default::default(),
+            source_id: Some(source),
+            description: None,
+        };
+    }
+
+    /// **Row T5.** CR 608.2b: an announcement one of whose members no longer resolves to a
+    /// live identity abandons the WHOLE journal write, rather than journalling a short
+    /// vector.
+    ///
+    /// This DIVERGES DELIBERATELY from the proliferate `record_loop_pin` site, which
+    /// `filter_map`s an unresolvable object away: there a short pin vector still drives,
+    /// while here a short vector would be journalled as a UNIFORM answer and then fail
+    /// `validate_pins` at declare time — a WRONG PIN rather than no offer.
+    ///
+    /// # Discrimination
+    ///
+    /// Replace `record_trigger_target_answer`'s `collect::<Option<Vec<_>>>()` with
+    /// `filter_map(..).collect::<Vec<_>>()` (the `record_loop_pin` shape) ⇒ the negative
+    /// arm's `loop_answers_recorded()` rises to 1 with a one-pin vector and that assertion
+    /// flips. The mutation reds on the ASSERT, not on a compile error.
+    ///
+    /// # Paired positive / reach-guards
+    ///
+    /// The negative arm alone is satisfied by ANY no-op writer, so the positive arm runs
+    /// FIRST on the same state and asserts BOTH pins are journalled under the CR 601.2c
+    /// slot. The empty-announcement arm is the third case the helper's own guard names.
+    #[test]
+    fn c2a_row_t5_an_unresolvable_target_abandons_the_whole_journal_write() {
+        use crate::analysis::decision_template::{
+            DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
+        };
+        use crate::types::ability::TargetRef;
+
+        let mut state = GameScenario::new_n_player(3, 7).build().state().clone();
+        state.loop_detection = LoopDetectionMode::Interactive;
+        assert_eq!(
+            state.loop_answers_recorded(),
+            0,
+            "reach-guard: the board starts with an EMPTY journal"
+        );
+        let src = place(&mut state, 920, crate::types::zones::Zone::Battlefield);
+        let live = place(&mut state, 921, crate::types::zones::Zone::Battlefield);
+        let dead = ObjectId(922);
+        // The single-slot announcement this row is about — the writer refuses without the
+        // prompt it answers (see `stand_up_target_prompt`).
+        stand_up_target_prompt(&mut state, P0, src, 1);
+        assert!(
+            !state.objects.contains_key(&dead),
+            "reach-guard: the unresolvable member must genuinely be absent from `objects`, \
+             else this row's negative arm tests nothing"
+        );
+        let slot = DecisionSlot::target(
+            object_decision_source(&state, src).expect("the source object is live"),
+        );
+
+        // ── PAIRED POSITIVE: every member resolves ⇒ BOTH pins are journalled ──
+        record_trigger_target_answer(
+            &mut state,
+            Some(src),
+            P0,
+            &[TargetRef::Object(live), TargetRef::Player(P1)],
+        );
+        assert_eq!(
+            state.loop_answers_recorded(),
+            1,
+            "the fully-resolvable announcement must be journalled — without this the \
+             negative arm below is satisfied by any no-op writer"
+        );
+        assert_eq!(
+            state.loop_answer(&slot, P0),
+            Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
+                TargetPin::ByIdentity(
+                    object_decision_source(&state, live).expect("the live target resolves")
+                ),
+                TargetPin::Player(P1),
+            ]))),
+            "CR 601.2c: the pins are journalled in ANNOUNCEMENT ORDER, and CR 400.7 binds \
+             the object member to its current incarnation"
+        );
+
+        // ── THE ROW'S OWN CLAIM: one dead member abandons the whole write ──
+        let before = state.loop_answers_recorded();
+        record_trigger_target_answer(
+            &mut state,
+            Some(src),
+            P1,
+            &[TargetRef::Object(dead), TargetRef::Player(P1)],
+        );
+        assert_eq!(
+            state.loop_answers_recorded(),
+            before,
+            "CR 608.2b: an unresolvable member abandons the WHOLE write. Under a \
+             `filter_map` this rises by one and journals a one-pin vector, which \
+             `validate_pins` would later reject as an illegal pin value — a wrong pin \
+             instead of no offer"
+        );
+
+        // ── the empty announcement the `ChooseTarget` arm's `target: None` produces ──
+        record_trigger_target_answer(&mut state, Some(src), P1, &[]);
+        assert_eq!(
+            state.loop_answers_recorded(),
+            before,
+            "an empty announcement is not an answer a pin can specify, so nothing is \
+             journalled"
+        );
+    }
+
+    /// **Row F2.** CR 601.2c (reached for a triggered ability via CR 603.3d) + CR 608.2b: a
+    /// MULTI-SLOT announcement is refused outright, because `DecisionSlot::target` hard-codes
+    /// `index: 0` and would collapse every slot of it onto ONE journal key.
+    ///
+    /// # The value that makes this a defect rather than a rounding error
+    ///
+    /// Two slots taking DISTINCT targets latch `Conflicted` — fail-closed, harmless. Two slots
+    /// taking the SAME target — which CR 601.2c expressly permits ("if the spell uses the word
+    /// `target` in multiple places, the same object or player can be chosen once for each
+    /// instance") — stored `Uniform(Targets([one pin]))`: a TRUNCATED answer that satisfies
+    /// `LoopAnswerValue::Targets`' own contract ("the announced targets for ONE slot") only by
+    /// accident, and that a widened publisher would spend as a valid pin. Arm (c) below is that
+    /// exact shape.
+    ///
+    /// # Discrimination — and the axis it is keyed to
+    ///
+    /// Arms (a) and (b) differ in EXACTLY ONE fact, the prompt's `target_slots.len()`: the same
+    /// source, the same seat, the same single announced target. So the row cannot pass by
+    /// accident on the announcement's own shape.
+    ///
+    /// A `targets.len() > 1` guard — the plausible wrong reading, keyed to how many targets were
+    /// announced rather than how many slots were asked — passes (a) and FAILS (b) and (c),
+    /// because the `ChooseTarget` walk announces ONE target per beat no matter how many slots
+    /// the prompt carries. That is why (b)/(c) announce a single target against a two-slot
+    /// prompt rather than two targets at once.
+    ///
+    /// REVERT-PROBE (measured, in the fix report): delete the `announced_slots > 1` early return
+    /// ⇒ (b) and (c) FLIP TO FAILING, (c) with the truncated one-pin `Uniform` value named
+    /// above. Delete the `WaitingFor::TriggerTargetSelection` read instead ⇒ that is a compile
+    /// error, since `announced_slots` has no other source.
+    ///
+    /// # Reach-guard
+    ///
+    /// Arm (a) runs FIRST and asserts a POSITIVE write, so none of the refusals below is
+    /// satisfied by a writer that journals nothing at all.
+    #[test]
+    fn c2a_row_f2_a_multi_slot_announcement_is_refused_rather_than_collapsed() {
+        use crate::analysis::decision_template::{
+            DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
+        };
+        use crate::types::ability::TargetRef;
+
+        let mut state = GameScenario::new_n_player(3, 7).build().state().clone();
+        state.loop_detection = LoopDetectionMode::Interactive;
+        let src = place(&mut state, 930, crate::types::zones::Zone::Battlefield);
+        let slot = DecisionSlot::target(
+            object_decision_source(&state, src).expect("the source object is live"),
+        );
+
+        // ── (a) POSITIVE CONTROL: one announcement slot ⇒ the answer is journalled ──
+        stand_up_target_prompt(&mut state, P0, src, 1);
+        record_trigger_target_answer(&mut state, Some(src), P0, &[TargetRef::Player(P1)]);
+        assert_eq!(
+            state.loop_answer(&slot, P0),
+            Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
+                TargetPin::Player(P1)
+            ]))),
+            "a single-slot announcement is exactly what this journal key describes"
+        );
+        let after_positive = state.loop_answers_recorded();
+        assert_eq!(
+            after_positive, 1,
+            "reach-guard: exactly one key exists so far"
+        );
+
+        // ── (b) THE CLAIM: the SAME announcement under a TWO-slot prompt is refused ──
+        stand_up_target_prompt(&mut state, P1, src, 2);
+        record_trigger_target_answer(&mut state, Some(src), P1, &[TargetRef::Player(P2)]);
+        assert_eq!(
+            state.loop_answer(&slot, P1),
+            None,
+            "CR 601.2c: two announcement slots are two choices, and `DecisionSlot::target`'s \
+             `index: 0` can key only one of them — refuse rather than collapse"
+        );
+        assert_eq!(
+            state.loop_answers_recorded(),
+            after_positive,
+            "and no key is created at all: the whole write is abandoned"
+        );
+
+        // ── (c) THE DANGEROUS SHAPE: two slots, the SAME target, answered slot by slot ──
+        // Pre-fix this stored `Uniform(Targets([Player(P2)]))` — a one-pin answer to a
+        // two-choice announcement, indistinguishable from a legitimate single-slot answer.
+        for _ in 0..2 {
+            record_trigger_target_answer(&mut state, Some(src), P2, &[TargetRef::Player(P2)]);
+        }
+        assert_eq!(
+            state.loop_answer(&slot, P2),
+            None,
+            "CR 601.2c permits the same target for each instance of `target`, so repeating it \
+             must not read as a UNIFORM answer to the whole announcement"
+        );
+        assert_eq!(
+            state.loop_answers_recorded(),
+            after_positive,
+            "(c) creates no key either"
+        );
+
+        // ── (d) no prompt in hand ⇒ no announcement to journal ──
+        state.waiting_for = WaitingFor::Priority { player: P0 };
+        record_trigger_target_answer(&mut state, Some(src), P1, &[TargetRef::Player(P2)]);
+        assert_eq!(
+            state.loop_answers_recorded(),
+            after_positive,
+            "the writer is the `TriggerTargetSelection` reducer's authority; with no such \
+             prompt there is no announced choice for it to record"
+        );
+    }
+
     /// CR 114.2 + CR 608.2b: a pinned SLOT whose source is a command-zone emblem must match
     /// the prompt that emblem raised; a graveyard or exile source must NOT.
     ///
@@ -16505,12 +17198,107 @@ mod stage2_injector_tests {
                 // `begin_pending_trigger_target_selection`.
                 //
                 // TO BE UNAMBIGUOUS FOR THE NEXT READER: the `+1` in `apply_action`'s
-                // `DecideOptionalEffect` arm is a READER, NOT A SIXTH PRODUCER. It destructures the
-                // cloned `state.waiting_for` scrutinee to journal the answer and never assigns
-                // `state.waiting_for`; the producer count in this vec is still five and this branch
-                // mints no new prompt. Total moves 37 => 38 and the partition 5/7/25 => 5/8/25 for
-                // the READER half only — adjudicated in this row's doc.
-                "game/engine.rs:12038".to_string(),
+                // `DecideOptionalEffect` arm is a READER, NOT A SIXTH PRODUCER. It destructures the cloned `state.waiting_for`
+                // scrutinee to journal the answer and never assigns `state.waiting_for`; the
+                // producer count in this vec is still five and this branch mints no new prompt.
+                //
+                // ⚠ RE-ADJUDICATED BY C2a (the CR 608.2b target axis on the same journal), NOT
+                // RELAXED. `:11977 ⇒ :12052`, **+75**, and ONLY this entry moved — the three
+                // `effects/mod.rs` pins and `scoped_library_search.rs:452` are in files C2a does
+                // not touch and did not move at all, which is the set-preservation evidence. The
+                // total stays **38** and the partition **5/8/25**: both of those asserts ran and
+                // fired GREEN on the run that caught this, so no producer or reader was gained.
+                // The `+75` is fully accounted for by C2a's own hunks ABOVE this line, measured
+                // with `git diff -U0 70fcd851a -- game/engine.rs`: `-3` (`entry_publishes_pin_slots`'s
+                // may-slot literal collapsing into `DecisionSlot::may`), `+1` (its target-slot
+                // comment), `+53` (`record_trigger_target_answer` and its doc), `+6`/`-2` (the
+                // `DecideOptionalEffect` arm re-expressed over `DecisionSlot::may` +
+                // `LoopAnswerValue::May`), `+1` (`source_id` bound in the `SelectTargets` arm) and
+                // `+19` (both `TriggerTargetSelection` arms' journal calls and their comments) —
+                // summing to exactly `+75`, so predicted `11977 + 75 = 12052` equals the observed
+                // coordinate. EVERY OTHER HUNK IN THIS FILE IS BELOW THIS PRODUCER — row T5 and
+                // this comment block, both inside `mod stage2_injector_tests` — which is why the
+                // shift equals the sum above it exactly. (No whole-file total is quoted here on
+                // purpose: this comment is itself part of that total, so the number could not be
+                // stated without falsifying itself.) Identity
+                // re-established rather than assumed: the line is sha256-identical
+                // (`8a544e87…5cc7d63` — the SAME digest this doc already recorded above) and is
+                // still inside `begin_pending_trigger_target_selection` (`:11843 ⇒ :11918`, the
+                // same `+75`). The diff instrument discriminates: the NEW tree at the OLD
+                // coordinate `:11977` holds a bare `source_id,` struct-field line, which mints
+                // nothing. C2a adds NO line matching the needle in a producing position.
+                //
+                // ⚠ C2a FIX ROUND (round 2/3, closing an independent review's F1/F2): `:12052 ⇒ :12132`,
+                // **+80**. RE-ADJUDICATED BY THE ORCHESTRATOR, NOT BY THE IMPLEMENTER — the executor was
+                // instructed to REPORT the shift and leave the literal alone, precisely so the number could
+                // not be nudged until the row passed. It complied; this line is the orchestrator's.
+                //
+                // Located BY CONTENT FIRST, arithmetic afterwards as a CHECK, per the doctrine at the head of
+                // this log. The line whose sha256 (WITH trailing newline) is
+                // `8a544e878d3e77fb80391b95af8f74059540d5ce4ad6fb83559f364df5cc7d63` sits at `:12132`; that
+                // digest matches exactly ONE line under a whole-file scan, so the coordinate is unambiguous.
+                // It is still inside `begin_pending_trigger_target_selection`, which opens at `:11998` with no
+                // intervening `fn`. The checks, computed AFTER locating the line and never used as its source:
+                // `12052 + 80 = 12132` for the producer and `11918 + 80 = 11998` for the function's opening
+                // line — the SAME `+80`, which is what a set of hunks lying wholly above one producer requires.
+                //
+                // The `+80` is accounted for by six hunks above this producer: `+2` (`EntryPinSlots.target`
+                // doc), `+1` (`legal_targets` doc), `+6` (fn doc), `+37` (the forced-target withhold), `+26`
+                // (writer doc) and `+8` (the writer's multi-slot guard). The remaining hunks are inside
+                // `mod stage2_injector_tests` and therefore below it.
+                //
+                // SET PRESERVATION: unchanged, and this is the conjunct that makes the move a SHIFT rather
+                // than a census drift. The other four entries are byte-identical AND unmoved
+                // (`effects/mod.rs:6252/6329/9522`, `scoped_library_search.rs:452`) — this round touches
+                // neither file. The total (**38**) and partition (**5/8/25**) asserts both ran FIRST and fired
+                // GREEN; the panic was on the third assert alone. Withholding a published `Targets` point
+                // removes a DECISION POINT, not a prompt producer, so no line matching the needle is added or
+                // removed by this round.
+                //
+                // ⚠ C2a FIX ROUND 3 (the cap round, closing the CR 704.5a bound regression the round-2 review
+                // found): `:12132 ⇒ :12302`, **+170**. Orchestrator's adjudication; the executor reported the
+                // shift and left the literal alone, as instructed.
+                //
+                // PURELY POSITIONAL, and that is measured rather than asserted: every hunk this round adds
+                // sits above `engine.rs:3133` (the announcement/charging split — `entry_announces`,
+                // `AnnouncedTarget`/`TargetAnnouncement`/`EntryAnnouncement`, and
+                // `bounded_cycle_charged_targets_for_window`), and there is NO hunk between there and this
+                // producer. The other four entries are byte-identical AND unmoved.
+                //
+                // Located BY CONTENT FIRST, arithmetic afterwards as a CHECK. The line whose sha256 (WITH
+                // trailing newline) is `8a544e878d3e77fb80391b95af8f74059540d5ce4ad6fb83559f364df5cc7d63`
+                // sits at `:12425`, and that digest matches exactly ONE line under a whole-file scan. It is
+                // still inside `begin_pending_trigger_target_selection`, which opens at `:12291` with no
+                // intervening `fn`. Checks computed AFTER locating it: `12302 + 123 = 12425` for the producer
+                // and `12168 + 123 = 12291` for the function's opening line — the SAME `+123`.
+                //
+                // FOURTH re-derivation of this one coordinate (`:12052 → :12132 → :12302 → :12425`), and the
+                // reason it keeps moving is that it is a LINE NUMBER in the most-edited function's file. Every
+                // move has been resolved BY CONTENT FIRST — the digest above has been this producer's identity
+                // since `a6d1a0e62` and has never itself changed — with arithmetic used only as a check that
+                // agrees afterwards. A coordinate re-derived four times without the content ever moving is
+                // evidence the pin is tracking the right line, not evidence the pin is fragile.
+                //
+                // SET PRESERVATION: this round adds a withhold CONDITION, not a prompt producer.
+                // `entry_announces` reports an announcement; it does not assign `state.waiting_for`, so no
+                // line matching the needle is added or removed (grep-counted 0 on both the `+` and `-` sets).
+                // Total (38) and partition (5/8/25) both fire GREEN first; the panic was on the third assert
+                // alone, which is what makes this a coordinate shift rather than a population change.
+                //
+                // ⚠ REBASE #3 (onto upstream/main): `:12487 ⇒ :12486`. The only shift is the
+                // **-1** upstream #7303 round 3 introduced ABOVE this producer (the
+                // `ReturnAsAuraTarget` resume arm's two raw attach calls collapsing into one call
+                // to the entering-Aura attachment authority, `-8 +7`). It was already folded into
+                // this entry at the C1 replay earlier in this same rebase; this commit's replay
+                // re-states it on top of the accumulated record rather than replacing that record,
+                // because the record is the evidence and the shift is one line of it.
+                //
+                // FIFTH re-derivation, same method: located BY CONTENT FIRST. The line whose
+                // sha256 is `8a544e878d3e77fb80391b95af8f74059540d5ce4ad6fb83559f364df5cc7d63`
+                // still matches exactly ONE line under a whole-file scan, and it is still inside
+                // `begin_pending_trigger_target_selection` with no intervening `fn`. Arithmetic
+                // afterwards as a CHECK only: `12487 - 1`.
+                "game/engine.rs:12486".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \

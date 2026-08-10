@@ -218,9 +218,14 @@ fn resolve_by_name(state: &GameState, name: &str) -> ObjectId {
 /// One beat of the F4 drive policy, every beat crossing the public `apply()` boundary.
 ///
 /// At `Priority` ALWAYS pass: the mandatory chain resolves and re-triggers, and that IS the
-/// loop — casting here wanders off it. At Torch's CR 608.2b target choice aim **P1** (a
+/// loop — casting here wanders off it. At Torch's CR 608.2b target choice aim `seat` (a
 /// CONSTANT seat, so the cycle is board-stable and the detector can certify it); at either
 /// CR 603.5 "may" prompt TAKE (declining Sue's token breaks the chain to Reed).
+///
+/// The aimed seat is a PARAMETER, not a constant, so a row can prove the journal FOLLOWS the
+/// announcement instead of coinciding with one hard-coded seat. MEASURED: constant P1,
+/// constant P2 and constant P3 all certify and reach the offer; it is the VARIATION between
+/// iterations, not the seat, that blocks certification.
 ///
 /// ⚠ This is deliberately NOT `loop_shortcut.rs`'s shared `dump_drive_one_beat`: that helper's
 /// victim preference matches `GameAction::SelectTargets`, and this dump raises
@@ -228,6 +233,10 @@ fn resolve_by_name(state: &GameState, name: &str) -> ObjectId {
 /// action" fallback answers Sue's "may" with whichever `DecideOptionalEffect` is enumerated
 /// first. MEASURED: under that policy this dump reaches no offering beat at all.
 fn f4_drive_one_beat(state: &mut GameState) -> Result<(), String> {
+    f4_drive_one_beat_at(state, P1)
+}
+
+fn f4_drive_one_beat_at(state: &mut GameState, seat: PlayerId) -> Result<(), String> {
     let who = state
         .waiting_for
         .acting_player()
@@ -244,7 +253,7 @@ fn f4_drive_one_beat(state: &mut GameState) -> Result<(), String> {
             .find(|a| {
                 matches!(
                     a,
-                    GameAction::ChooseTarget { target: Some(TargetRef::Player(p)) } if *p == P1
+                    GameAction::ChooseTarget { target: Some(TargetRef::Player(p)) } if *p == seat
                 )
             })
             .or_else(|| {
@@ -269,11 +278,15 @@ fn f4_drive_one_beat(state: &mut GameState) -> Result<(), String> {
 /// beat index. The beat is SEARCHED, never hardcoded — a hardcoded index is a fixture that
 /// drifts silently when the drive policy moves.
 fn drive_f4_to_offer(state: &mut GameState, cap: u32) -> Option<u32> {
+    drive_f4_to_offer_at(state, cap, P1)
+}
+
+fn drive_f4_to_offer_at(state: &mut GameState, cap: u32, seat: PlayerId) -> Option<u32> {
     for beat in 0..cap {
         if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
             return Some(beat);
         }
-        f4_drive_one_beat(state).ok()?;
+        f4_drive_one_beat_at(state, seat).ok()?;
     }
     None
 }
@@ -1378,20 +1391,25 @@ fn r27_a1_the_f4_dumps_recorded_sample_keeps_a_live_half_normalization_would_hav
 // at a minted-or-refused declaration.
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
-/// The key the journal uses, built the way `game::engine::object_decision_source` builds it
-/// (CR 400.7: `ThisObject` bound to the object's CURRENT incarnation, `trigger_description`
-/// held `None`). Reconstructed here rather than called because the engine's helper is
-/// `pub(crate)`; every row that uses it asserts the reconstruction is faithful by requiring
-/// the production write site to have stored something under it.
+/// The CR 603.5 "may" SLOT the journal keys on. The source half is built the way
+/// `game::engine::object_decision_source` builds it (CR 400.7: `ThisObject` bound to the
+/// object's CURRENT incarnation, `trigger_description` held `None`) and is reconstructed
+/// here rather than called because the engine's helper is `pub(crate)`; every row that uses
+/// it asserts the reconstruction is faithful by requiring the production write site to have
+/// stored something under it. The SUB-INDEX half is not reconstructed at all — it comes from
+/// the engine's own `DecisionSlot::may`, the same constructor the publisher and the
+/// `DecideOptionalEffect` writer use, so this key cannot drift from theirs.
 fn may_source_key(
     state: &GameState,
     source_id: ObjectId,
-) -> engine::types::game_state::YieldTarget {
-    engine::types::game_state::YieldTarget::ThisObject {
-        source_id,
-        incarnation: Some(state.objects[&source_id].incarnation),
-        trigger_description: None,
-    }
+) -> engine::analysis::decision_template::DecisionSlot {
+    engine::analysis::decision_template::DecisionSlot::may(
+        engine::types::game_state::YieldTarget::ThisObject {
+            source_id,
+            incarnation: Some(state.objects[&source_id].incarnation),
+            trigger_description: None,
+        },
+    )
 }
 
 /// How the drive answers CR 603.5 "may" prompts. Typed rather than a pair of `bool`s: the
@@ -1409,7 +1427,7 @@ enum MayPolicy {
 
 /// One answered "may" prompt, as the drive saw it.
 struct MayBeat {
-    key: engine::types::game_state::YieldTarget,
+    key: engine::analysis::decision_template::DecisionSlot,
     seat: PlayerId,
     take: bool,
     /// The journal entry for this (source, seat) pair BEFORE this beat was answered — the
@@ -1489,7 +1507,7 @@ fn drive_f4_may_beats(state: &mut GameState, cap: u32, policy: MayPolicy) -> Vec
 ///   below is empty and the row would pass on a board it never tested.
 #[test]
 fn c1_row1_the_may_journal_is_populated_at_the_f4_offer_under_the_proposers_own_key() {
-    use engine::analysis::decision_template::{LoopAnswer, MayChoiceOption};
+    use engine::analysis::decision_template::{LoopAnswer, LoopAnswerValue, MayChoiceOption};
 
     let mut state = load_f4();
     assert_eq!(
@@ -1506,14 +1524,17 @@ fn c1_row1_the_may_journal_is_populated_at_the_f4_offer_under_the_proposers_own_
     );
 
     let (proposer, _certificate, schema) = offer_parts(&state);
-    let may_sources: Vec<_> = schema
+    // The WHOLE published slot, sub-index included — the journal is keyed on it, so
+    // projecting it down to `slot.source` here would test a coarser identity than the one
+    // production writes and reads.
+    let may_slots: Vec<_> = schema
         .points
         .iter()
         .filter(|p| matches!(p.kind, DecisionPointKind::MayChoice))
-        .map(|p| p.slot.source.clone())
+        .map(|p| p.slot.clone())
         .collect();
     assert!(
-        !may_sources.is_empty(),
+        !may_slots.is_empty(),
         "reach-guard: the offer must publish at least one MayChoice point (r1b measures \
          three points on this board), else the per-point assertions below are vacuous"
     );
@@ -1521,15 +1542,201 @@ fn c1_row1_the_may_journal_is_populated_at_the_f4_offer_under_the_proposers_own_
         state.loop_answers_recorded() > 0,
         "CR 603.5: the offer beat must carry the answers the drive gave"
     );
-    for source in &may_sources {
+    for slot in &may_slots {
         assert_eq!(
-            state.loop_answer(source, proposer),
-            Some(LoopAnswer::Uniform {
-                take: MayChoiceOption::Take
-            }),
-            "every published may point's source must be journalled under the PROPOSER's own \
-             key; source {source:?}, proposer {proposer:?}, journal holds {} entries",
+            state.loop_answer(slot, proposer),
+            Some(LoopAnswer::Uniform(LoopAnswerValue::May(
+                MayChoiceOption::Take
+            ))),
+            "every published may point's slot must be journalled under the PROPOSER's own \
+             key; slot {slot:?}, proposer {proposer:?}, journal holds {} entries",
             state.loop_answers_recorded()
+        );
+    }
+}
+
+/// **Row T1 — WIRE / JOURNAL TIER.** CR 608.2b + CR 601.2c (reached via CR 603.3d) +
+/// CR 732.2a: at the real F4 bounded offer, the published `Targets` point's SLOT carries the
+/// announcement the proposer actually made, under the proposer's own key.
+///
+/// Every beat crosses the public `apply()` boundary; the slot is bound from `schema.points`
+/// and the pinned seat from the drive policy's own aim, so a re-dump that renumbers objects
+/// flows through without edit.
+///
+/// # Discrimination
+///
+/// Delete the `record_trigger_target_answer(..)` call from `apply_action`'s
+/// `(TriggerTargetSelection, ChooseTarget)` arm ⇒ the `Targets` slot is never journalled and
+/// the value assertion reads `None`. The helper and its `SelectTargets` caller survive, so
+/// the mutation COMPILES and reds on the assert. The `SelectTargets` arm is covered at a
+/// DIFFERENT TIER by `loop_shortcut.rs`'s
+/// `c2a_row_t1b_both_trigger_target_selection_arms_route_through_the_single_writer`, which is
+/// a SOURCE CENSUS: it asserts that both reducer arms are WIRED to the single writer, and
+/// structurally cannot observe an announced seat (no fixture in this repo reaches the
+/// `SelectTargets` arm — that row's own doc records the per-dump measurement and the backlog
+/// item). The two deletions are ASYMMETRIC, and the asymmetry is the usable part: deleting the
+/// `SelectTargets` call reds ONLY the census, while deleting the `ChooseTarget` call reds BOTH —
+/// so a red census names the arm, and this row disambiguates which one moved. The census cannot
+/// be blind to either arm: it asserts `unwired.is_empty()` across both.
+///
+/// # Sibling (T1-sib), asserted in this same body
+///
+/// After that mutation the two `MayChoice` points still read `Uniform(May(Take))`, so the
+/// deletion is TARGET-SPECIFIC and cannot be confused with a journal that stopped working.
+///
+/// # Reach-guards, all asserted BEFORE the claim
+///
+/// * the restored dump starts with an EMPTY journal, so every entry is one this drive wrote;
+/// * the drive really reaches the CR 732.2a offer beat (searched, never hardcoded);
+/// * the offer really publishes a `Targets` point — without this the loop below is empty;
+/// * the drive's aimed seat is NOT the proposer's own seat, so a writer that journalled the
+///   proposer instead of the announcement could not pass.
+///
+/// # What this row does NOT claim
+///
+/// It is a WRITER row. C2a ships no declaration consumer, so nothing here asserts that a
+/// declaration is built from these entries.
+#[test]
+fn c2a_row_t1_the_announced_target_is_journalled_at_the_f4_offers_published_slot() {
+    use engine::analysis::decision_template::{
+        LoopAnswer, LoopAnswerValue, MayChoiceOption, TargetPin,
+    };
+
+    let mut state = load_f4();
+    assert_eq!(
+        state.loop_answers_recorded(),
+        0,
+        "reach-guard: the restored dump starts with an EMPTY journal"
+    );
+
+    let beat = drive_f4_to_offer(&mut state, 400)
+        .expect("reach-guard: the F4 drive must reach the CR 732.2a bounded offer");
+    let (proposer, _certificate, schema) = offer_parts(&state);
+
+    let target_slots: Vec<_> = schema
+        .points
+        .iter()
+        .filter(|p| matches!(p.kind, DecisionPointKind::Targets { .. }))
+        .map(|p| p.slot.clone())
+        .collect();
+    assert!(
+        !target_slots.is_empty(),
+        "reach-guard: the offer must publish at least one CR 601.2c Targets point at beat \
+         {beat}, else the per-point assertion below is vacuous"
+    );
+    // `P1` is the seat `f4_drive_one_beat` aims Torch's "target opponent" at. It must not be
+    // the proposer, or a writer that journalled the PROMPT'S OWN SEAT rather than the
+    // ANNOUNCED target would satisfy this row.
+    assert_ne!(
+        P1, proposer,
+        "reach-guard: the drive's aimed seat must differ from the proposer's own seat"
+    );
+
+    for slot in &target_slots {
+        assert_eq!(
+            state.loop_answer(slot, proposer),
+            Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
+                TargetPin::Player(P1)
+            ]))),
+            "CR 608.2b: the published Targets slot must hold the announcement the drive made \
+             (a constant CR 115.2 player target), under the PROPOSER's own key; slot \
+             {slot:?}, proposer {proposer:?}, journal holds {} entries",
+            state.loop_answers_recorded()
+        );
+    }
+
+    // ── T1-sib: the CR 603.5 axis is untouched by the target axis's write ──
+    let may_slots: Vec<_> = schema
+        .points
+        .iter()
+        .filter(|p| matches!(p.kind, DecisionPointKind::MayChoice))
+        .map(|p| p.slot.clone())
+        .collect();
+    assert!(
+        !may_slots.is_empty(),
+        "reach-guard: this board publishes MayChoice points too, else the sibling assertion \
+         below is vacuous"
+    );
+    for slot in &may_slots {
+        assert_eq!(
+            state.loop_answer(slot, proposer),
+            Some(LoopAnswer::Uniform(LoopAnswerValue::May(
+                MayChoiceOption::Take
+            ))),
+            "T1-sib: deleting the target write must leave C1's CR 603.5 axis green — the two \
+             axes share one journal but not one entry"
+        );
+    }
+}
+
+/// **Row T1-P — WIRE / PROVENANCE.** The journalled pin FOLLOWS THE ANNOUNCEMENT, not a
+/// constant: driving the SAME dump with the SAME policy but a different aimed seat produces a
+/// different journal value at the same published slot.
+///
+/// # Why this row exists at all — the vacuity it closes
+///
+/// [`c2a_row_t1_the_announced_target_is_journalled_at_the_f4_offers_published_slot`] drives
+/// the shipped policy, which aims at P1. A writer that IGNORED the announcement and stored
+/// the constant `TargetPin::Player(P1)` would satisfy it exactly. Only a second seat
+/// discriminates that, and it must be a REAL drive: the seat is announced through production
+/// `apply()` at Torch's CR 601.2c choice, never injected.
+///
+/// # Discrimination
+///
+/// In `record_trigger_target_answer`, replace the mapped `targets` with
+/// `vec![TargetPin::Player(PlayerId(1))]` ⇒ this row reds on the value while T1 stays GREEN.
+/// That asymmetry is the point: T1 alone cannot see this mutation.
+///
+/// # Reach-guards
+///
+/// The P2 drive must reach the offer (MEASURED: constant P1, P2 and P3 all certify — it is
+/// the variation between iterations, not the seat, that blocks certification), the offer must
+/// publish a `Targets` point, and the aimed seat must differ from T1's.
+#[test]
+fn c2a_row_t1p_the_journalled_pin_follows_the_announced_seat_not_a_constant() {
+    use engine::analysis::decision_template::{LoopAnswer, LoopAnswerValue, TargetPin};
+
+    const AIMED: PlayerId = PlayerId(2);
+    assert_ne!(
+        AIMED, P1,
+        "reach-guard: this row's aimed seat must differ from the shipped policy's, else it \
+         re-runs T1 and discriminates nothing"
+    );
+
+    let mut state = load_f4();
+    assert_eq!(
+        state.loop_answers_recorded(),
+        0,
+        "reach-guard: the restored dump starts with an EMPTY journal"
+    );
+    let beat = drive_f4_to_offer_at(&mut state, 400, AIMED).expect(
+        "reach-guard: a CONSTANT non-P1 target still certifies — it is the VARIATION between \
+         iterations, not the seat, that blocks the CR 732.2a offer",
+    );
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    assert_ne!(
+        AIMED, proposer,
+        "reach-guard: the aimed seat must not be the proposer's own"
+    );
+
+    let target_slots: Vec<_> = schema
+        .points
+        .iter()
+        .filter(|p| matches!(p.kind, DecisionPointKind::Targets { .. }))
+        .map(|p| p.slot.clone())
+        .collect();
+    assert!(
+        !target_slots.is_empty(),
+        "reach-guard: the offer at beat {beat} must publish a CR 601.2c Targets point"
+    );
+    for slot in &target_slots {
+        assert_eq!(
+            state.loop_answer(slot, proposer),
+            Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
+                TargetPin::Player(AIMED)
+            ]))),
+            "PROVENANCE: the journal must hold the seat this drive ANNOUNCED ({AIMED:?}), not \
+             the seat the shipped policy happens to aim at; slot {slot:?}"
         );
     }
 }
@@ -1560,7 +1767,7 @@ fn c1_row1_the_may_journal_is_populated_at_the_f4_offer_under_the_proposers_own_
 /// satisfy this row.
 #[test]
 fn c1_row2b_one_seat_answering_one_source_two_ways_latches_conflicted() {
-    use engine::analysis::decision_template::{LoopAnswer, MayChoiceOption};
+    use engine::analysis::decision_template::{LoopAnswer, LoopAnswerValue, MayChoiceOption};
 
     let mut state = load_f4();
     let beats = drive_f4_may_beats(&mut state, 400, MayPolicy::DeclineOnRepeat);
@@ -1585,10 +1792,10 @@ fn c1_row2b_one_seat_answering_one_source_two_ways_latches_conflicted() {
     );
     assert_eq!(
         last.before,
-        Some(LoopAnswer::Uniform {
-            take: MayChoiceOption::Take
-        }),
-        "paired positive: the FIRST answer was journalled as Uniform{{Take}} before the \
+        Some(LoopAnswer::Uniform(LoopAnswerValue::May(
+            MayChoiceOption::Take
+        ))),
+        "paired positive: the FIRST answer was journalled as Uniform(May(Take)) before the \
          differing one landed"
     );
     assert_eq!(
@@ -1610,7 +1817,7 @@ fn c1_row2b_one_seat_answering_one_source_two_ways_latches_conflicted() {
 /// `o.insert(LoopAnswer::Conflicted)` ⇒ this row reds while row 2b stays green.
 #[test]
 fn c1_row2b_sibling_an_identical_second_answer_stays_uniform() {
-    use engine::analysis::decision_template::{LoopAnswer, MayChoiceOption};
+    use engine::analysis::decision_template::{LoopAnswer, LoopAnswerValue, MayChoiceOption};
 
     let mut state = load_f4();
     let beats = drive_f4_may_beats(&mut state, 400, MayPolicy::TakeUntilRepeat);
@@ -1619,17 +1826,17 @@ fn c1_row2b_sibling_an_identical_second_answer_stays_uniform() {
         .expect("the drive must have answered at least one `may` prompt");
     assert_eq!(
         last.before,
-        Some(LoopAnswer::Uniform {
-            take: MayChoiceOption::Take
-        }),
+        Some(LoopAnswer::Uniform(LoopAnswerValue::May(
+            MayChoiceOption::Take
+        ))),
         "reach-guard: the last beat must be a REPEAT of an already-journalled pair, else this \
          row asserts idempotence over a single write"
     );
     assert_eq!(
         state.loop_answer(&last.key, last.seat),
-        Some(LoopAnswer::Uniform {
-            take: MayChoiceOption::Take
-        }),
+        Some(LoopAnswer::Uniform(LoopAnswerValue::May(
+            MayChoiceOption::Take
+        ))),
         "an identical second answer must not latch Conflicted"
     );
 }
@@ -1645,7 +1852,7 @@ fn c1_row2b_sibling_an_identical_second_answer_stays_uniform() {
 ///
 /// Site 5 (`apply_action`'s pre-action clear, a `state` receiver) is driven directly.
 /// Sites 1–4 and 8 are covered structurally instead, by
-/// [`c1_every_ring_clear_site_also_clears_the_may_journal`] — stated here so the coverage of
+/// [`c1_every_ring_clear_site_also_clears_the_loop_answer_journal`] — stated here so the coverage of
 /// this row is not read as more than it is.
 ///
 /// # Discrimination
@@ -1704,8 +1911,10 @@ fn c1_row7b_the_may_journal_follows_the_ring_on_the_same_receiver() {
 /// payload, and a decode of a populated board restores an empty journal.
 ///
 /// Discrimination: drop `skip` from the field's serde attribute ⇒ the key appears in the
-/// encoded value ⇒ the first assertion flips (and `LoopAnswer` derives no `Serialize`, so
-/// that edit does not even compile — which is the point of the note on the field).
+/// encoded value ⇒ the first assertion flips (and NEITHER `LoopAnswer` NOR `LoopAnswerValue`
+/// derives `Serialize`, so that edit does not even compile — which is the point of the note
+/// on the field; the compile-time bar had to be re-checked when the value type grew a second
+/// axis, and this row is the runtime half of it).
 #[test]
 fn c1_row7c_the_may_journal_does_not_cross_save_load() {
     let mut state = load_f4();
@@ -1743,7 +1952,7 @@ fn c1_row7c_the_may_journal_does_not_cross_save_load() {
 /// Discrimination: delete any one `loop_answer_journal = None;` that follows a ring clear ⇒
 /// the pairing count drops and this row reds naming the file and line.
 #[test]
-fn c1_every_ring_clear_site_also_clears_the_may_journal() {
+fn c1_every_ring_clear_site_also_clears_the_loop_answer_journal() {
     use std::path::Path;
 
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -1769,7 +1978,8 @@ fn c1_every_ring_clear_site_also_clears_the_may_journal() {
     }
     assert!(
         unpaired.is_empty(),
-        "every ring-clear site must also clear the CR 603.5 may-answer journal; unpaired: \
+        "every ring-clear site must also clear the CR 603.5 + CR 608.2b loop-answer journal; \
+         unpaired: \
          {unpaired:?}"
     );
     assert_eq!(

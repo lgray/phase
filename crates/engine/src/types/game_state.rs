@@ -14519,11 +14519,28 @@ declare_game_state! {
     /// dedup on semantically-identical positions is unaffected.
     #[serde(skip, default)]
     pub loop_detect_ring: std::collections::VecDeque<std::sync::Arc<LoopDetectSample>>,
-    /// CR 603.5 + CR 732.2a: the answers given to published "may" sources during the
-    /// window `loop_detect_ring` is sampling, so the CR 732.2a declaration can pin the
-    /// choice each iteration actually made instead of guessing one.
+    /// CR 603.5 + CR 608.2b + CR 732.2a: the answers given to published decision SLOTS
+    /// during the window `loop_detect_ring` is sampling, so the CR 732.2a declaration can
+    /// pin the choice each iteration actually made instead of guessing one. Both published
+    /// axes ride ONE journal: the CR 603.5 "may" gate and the CR 601.2c target
+    /// announcement, distinguished by the value's own kind ([`LoopAnswerValue`]) and by the
+    /// slot's sub-index — a parallel target journal would double the eight ring-clear
+    /// sites and widen their census for no capability this field lacks.
     ///
-    /// KEYED BY THE PAIR `(source, seat)`, not by the source alone. CR 603.5 routes a
+    /// KEYED BY THE PAIR `(slot, seat)`, not by the source alone. The SUB-INDEX half is
+    /// what keeps the two slots one source can publish apart: `entry_publishes_pin_slots`
+    /// binds `source` ONCE and builds both `DecisionSlot::target(source)` (CR 601.2c) and
+    /// `DecisionSlot::may(source)` (CR 603.5) from it, and the shipped unit test
+    /// `bounded_cycle_pin_slots_publishes_the_may_gate_of_an_optional_trigger` asserts an
+    /// optional targeted trigger publishes both. Under a source-only key those two writes
+    /// would land in ONE entry with different values and latch `Conflicted`. NON-CLAIM,
+    /// measured: no board in this lane exercises that collision — every published point on
+    /// the three tracked F4 dumps carries a distinct source — so the sub-index is adopted
+    /// because it aligns the journal's identity with the engine's own published one
+    /// (`DecisionPoint.slot`, which is what the consumer looks up), never because a
+    /// measured board needs it.
+    ///
+    /// The SEAT half: CR 603.5 routes a
     /// "may" to whichever seat the effect names, and `game::effects` really does prompt
     /// several seats for ONE source inside one window (the scoped-search acceptance
     /// cascade). A seat can therefore only ever answer for itself: no seat's answer can
@@ -14546,8 +14563,9 @@ declare_game_state! {
     /// semantically-identical positions), and cleared at every one of the ring's clear
     /// sites on the same receiver. `#[serde(skip)]` is also load-bearing rather than
     /// merely tidy: a `BTreeMap` with a tuple key has no JSON object form and
-    /// [`LoopAnswer`] deliberately derives no `Serialize`, so a future attempt to
-    /// persist this fails at compile time instead of silently emitting a stale window.
+    /// [`LoopAnswer`] AND [`LoopAnswerValue`] both deliberately derive no `Serialize`, so a
+    /// future attempt to persist this fails at compile time instead of silently emitting a
+    /// stale window.
     ///
     /// `Option<Box<..>>` for `game_state_size.rs`'s stated reason — "box it if it is a
     /// large rarely-populated one" — costing 8 B inline like the `life_safety_probe`
@@ -14558,7 +14576,7 @@ declare_game_state! {
     pub(crate) loop_answer_journal: Option<
         Box<
             std::collections::BTreeMap<
-                (crate::analysis::decision_template::DecisionSource, PlayerId),
+                (crate::analysis::decision_template::DecisionSlot, PlayerId),
                 crate::analysis::decision_template::LoopAnswer,
             >,
         >,
@@ -21166,18 +21184,47 @@ impl GameState {
         }
     }
 
-    /// CR 603.5: record ONE seat's answer to ONE "may" source for the current
-    /// loop-detection window. A second, DIFFERENT answer from THE SAME SEAT for THE SAME
-    /// SOURCE latches [`LoopAnswer::Conflicted`] (see that type — an engine-capability
-    /// refusal, not a CR mandate). A different seat occupies a DIFFERENT KEY and can
-    /// neither conflict with, nor be read in place of, this seat's answer.
+    /// CR 603.5 + CR 608.2b: record ONE seat's answer to ONE published decision SLOT for
+    /// the current loop-detection window. A second, DIFFERENT answer from THE SAME SEAT for
+    /// THE SAME SLOT latches [`LoopAnswer::Conflicted`] (see that type — an
+    /// engine-capability refusal, not a CR mandate). A different seat, or the same source's
+    /// OTHER slot, occupies a DIFFERENT KEY and can neither conflict with, nor be read in
+    /// place of, this entry.
+    ///
+    /// The latch arm is axis-agnostic by construction: it compares whole
+    /// [`LoopAnswer`] values, so widening the value to carry CR 601.2c target vectors added
+    /// no second conflict rule. Equality for `Targets` is derived `Vec<TargetPin>`
+    /// equality — order-sensitive, which is STRICTER than set equality and therefore
+    /// fail-closed (strictly fewer offers, never a wrong pin). Order-sensitivity cannot bite
+    /// on the BOUNDED-CYCLE schema, whose producer
+    /// (`game::engine::bounded_cycle_pin_slots_for_window`) hard-codes `min_targets: 1,
+    /// max_targets: 1, ordered: false` — a one-pin answer has no order to disagree about.
+    /// That is the SCOPE of the claim, not a whole-value-space one: a published `Targets`
+    /// point has a SECOND production producer, `game::engine::pinned_decisions_to_points`,
+    /// which emits `ordered: true` with `min/max = targets.len()` from a carried pin list;
+    /// and the writer (`game::engine::record_trigger_target_answer`) can journal a MULTI-PIN
+    /// vector for one slot. That stays FAIL-CLOSED on the stricter-than-set-equality reading
+    /// above rather than unreachable.
+    ///
+    /// ⚠ THE MECHANISM NAMED HERE WAS WRONG, and is corrected rather than dropped because the
+    /// CONCLUSION above survives it. The claim used to be that the writer "journals whatever
+    /// the announcement carried, which for one `multi_target` slot is several pins" — true on
+    /// ONE of its two reducer arms only. `GameAction::SelectTargets` hands the whole announced
+    /// vector over at once, so a multi-pin `Targets` value really is written in a single call.
+    /// `GameAction::ChooseTarget` does not: `engine_stack`'s
+    /// `handle_trigger_target_selection_choose_target` re-raises the SAME
+    /// `WaitingFor::TriggerTargetSelection` with the same one-element `target_slots` and only
+    /// `selection` advanced, and the writer reads its slot count off the prompt in hand — so a
+    /// two-pick single slot arrives as `Targets([A])` and then `Targets([B])` on ONE key, and
+    /// the latch above answers `Conflicted` rather than storing an ordered pair. Both routes
+    /// are fail-closed; only the second one is a conflict rather than an order comparison.
     ///
     /// Gated exactly like `game::engine::record_loop_pin`
     /// (`samples() && !in_simulation_probe()`), so the #4603-Off build never records and
     /// the detection/materialize drive replays without re-recording.
     pub(crate) fn record_loop_answer(
         &mut self,
-        source: crate::analysis::decision_template::DecisionSource,
+        slot: crate::analysis::decision_template::DecisionSlot,
         player: PlayerId,
         answer: crate::analysis::decision_template::LoopAnswer,
     ) {
@@ -21189,7 +21236,7 @@ impl GameState {
         match self
             .loop_answer_journal
             .get_or_insert_default()
-            .entry((source, player))
+            .entry((slot, player))
         {
             Entry::Vacant(v) => {
                 v.insert(answer);
@@ -21202,25 +21249,26 @@ impl GameState {
         }
     }
 
-    /// The observed answer for one published may-source AS ANSWERED BY `player`. `None` =
-    /// that seat never answered this source in this window ⇒ a declaration must refuse,
-    /// exactly as [`LoopAnswer::Conflicted`] does.
+    /// The observed answer for one published SLOT AS ANSWERED BY `player`. `None` = that
+    /// seat never answered this slot in this window ⇒ a declaration must refuse, exactly as
+    /// [`LoopAnswer::Conflicted`] does.
     pub fn loop_answer(
         &self,
-        source: &crate::analysis::decision_template::DecisionSource,
+        slot: &crate::analysis::decision_template::DecisionSlot,
         player: PlayerId,
     ) -> Option<crate::analysis::decision_template::LoopAnswer> {
         // `BTreeMap` keys by the owned tuple and no `Borrow` shape spans a tuple, so the
         // key is built. This is the seam's own idiom — `entry_publishes_pin_slots` builds
-        // its slot with `source: source.clone()`. One clone per published may point at
-        // declaration-build time, never per iteration.
+        // its slot with `source: source.clone()`. One clone per published point at
+        // declaration-build time, never per iteration. `.cloned()` rather than `.copied()`
+        // because `LoopAnswer` gave up `Copy` when its value grew a `Vec<TargetPin>`.
         self.loop_answer_journal
             .as_ref()?
-            .get(&(source.clone(), player))
-            .copied()
+            .get(&(slot.clone(), player))
+            .cloned()
     }
 
-    /// How many distinct (source, seat) pairs this window has answered. `None` and an
+    /// How many distinct (slot, seat) pairs this window has answered. `None` and an
     /// empty map are indistinguishable here BY DESIGN — no caller may branch on the
     /// `Option`.
     pub fn loop_answers_recorded(&self) -> usize {
@@ -30124,5 +30172,254 @@ mod tests {
             moved_state.loop_detect_ring.is_empty(),
             "an observed life move on a full-length snapshot still clears the ring"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────
+    // C2a — the loop-answer journal's STORAGE CONTRACT on the widened `(slot, seat)` key.
+    //
+    // ⚠ TIER, stated rather than implied: these three rows are IN-CRATE STORAGE-CONTRACT
+    // rows, NOT wire rows. They assert what the map does with the keys and values it is
+    // handed; that the PRODUCTION reducer arms hand it the right ones is asserted at the
+    // wire tier by `tests/integration/fantastic_four_bounded_loop.rs` (the CR 603.5 arm
+    // and the CR 608.2b `ChooseTarget` arm) and `tests/integration/loop_shortcut.rs` (the
+    // CR 608.2b `SelectTargets` arm).
+    // ─────────────────────────────────────────────────────────────────────────────────
+
+    /// A `GameState` whose detector SAMPLES, which is `record_loop_answer`'s own gate. A
+    /// state built without this records nothing and every row below would pass vacuously
+    /// on an empty map — which is why each row asserts a CARDINALITY first.
+    fn journal_state() -> GameState {
+        let mut state = GameState::new_two_player(42);
+        state.loop_detection = LoopDetectionMode::Interactive;
+        state
+    }
+
+    fn journal_source(id: u64) -> crate::analysis::decision_template::DecisionSource {
+        YieldTarget::ThisObject {
+            source_id: ObjectId(id),
+            incarnation: Some(1),
+            trigger_description: None,
+        }
+    }
+
+    /// **Row T2 — the SUB-INDEX half of the key.** CR 601.2c and CR 603.5 are two choices
+    /// of ONE ability instance, and `entry_publishes_pin_slots` publishes both from a
+    /// single bound `source`. They must occupy TWO journal entries.
+    ///
+    /// # Discrimination
+    ///
+    /// Collapse the key to `(slot.source, player)` in `record_loop_answer`'s `entry(..)`
+    /// and `loop_answer`'s `get(..)` (keep both signatures) ⇒ the two writes land in ONE
+    /// entry, the second differs from the first, and the `Entry::Occupied` arm latches
+    /// `Conflicted`: the cardinality assertion reads 1 and both value lookups read
+    /// `Conflicted`.
+    ///
+    /// # Reach-guard
+    ///
+    /// The cardinality is asserted FIRST and is value-independent, so an unsampled
+    /// detector — an empty map — fails this row before any content assertion can pass on
+    /// nothing.
+    ///
+    /// # NON-CLAIM, measured and shipped in the row rather than in a report
+    ///
+    /// NO REAL BOARD IN THIS LANE EXERCISES THIS COLLISION: every published point on all
+    /// three tracked F4 dumps carries a DISTINCT source, so collapsing the sub-index
+    /// leaves those declarations intact. The card class is real (Scryfall: ≥8 cards
+    /// phrased "you may have target opponent …", e.g. Disciple of the Vault) and the
+    /// two-slots-from-one-source publisher shape is asserted in-tree by
+    /// `game::engine`'s `bounded_cycle_pin_slots_publishes_the_may_gate_of_an_optional_trigger`,
+    /// but the end-to-end board is UNMEASURED. This row is the storage invariant only.
+    #[test]
+    fn c2a_row_t2_one_source_two_sub_indices_occupy_two_journal_entries() {
+        use crate::analysis::decision_template::{
+            DecisionSlot, LoopAnswer, LoopAnswerValue, MayChoiceOption, TargetPin,
+        };
+
+        let mut state = journal_state();
+        assert_eq!(
+            state.loop_answers_recorded(),
+            0,
+            "reach-guard: a fresh board starts with an EMPTY journal, so every entry below \
+             is one this row wrote"
+        );
+        let source = journal_source(910);
+        let seat = PlayerId(0);
+
+        state.record_loop_answer(
+            DecisionSlot::may(source.clone()),
+            seat,
+            LoopAnswer::Uniform(LoopAnswerValue::May(MayChoiceOption::Take)),
+        );
+        state.record_loop_answer(
+            DecisionSlot::target(source.clone()),
+            seat,
+            LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(PlayerId(
+                1,
+            ))])),
+        );
+
+        assert_eq!(
+            state.loop_answers_recorded(),
+            2,
+            "CR 601.2c and CR 603.5 are two choices of ONE ability instance: the sub-index \
+             must keep them in two entries. A source-only key holds 1"
+        );
+        assert_eq!(
+            state.loop_answer(&DecisionSlot::may(source.clone()), seat),
+            Some(LoopAnswer::Uniform(LoopAnswerValue::May(
+                MayChoiceOption::Take
+            ))),
+            "the CR 603.5 gate's own answer survives the CR 601.2c write on the same source"
+        );
+        assert_eq!(
+            state.loop_answer(&DecisionSlot::target(source), seat),
+            Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
+                TargetPin::Player(PlayerId(1))
+            ]))),
+            "and the CR 601.2c announcement's own answer survives the CR 603.5 write"
+        );
+    }
+
+    /// **Row T3 — the LATCH, on the target axis.** CR 732.2a: two observed iterations of
+    /// one (slot, seat) pair that DISAGREE latch [`LoopAnswer::Conflicted`], and the latch
+    /// is idempotent and seat-local.
+    ///
+    /// # Discrimination
+    ///
+    /// Narrow the `Entry::Occupied` arm to the may axis —
+    /// `if *o.get() != answer && !matches!(answer, LoopAnswer::Uniform(LoopAnswerValue::Targets(_)))`
+    /// ⇒ this row reds while C1's existing may-conflict row
+    /// (`c1_row2b_one_seat_answering_one_source_two_ways_latches_conflicted`) stays GREEN.
+    /// The mutation is therefore discriminating rather than shared.
+    ///
+    /// # Paired positive / reach-guards
+    ///
+    /// The first write is read back as `Uniform` BEFORE the differing one lands, so a
+    /// writer that recorded nothing cannot satisfy this row; and the sibling seat's entry
+    /// is asserted still `Uniform` afterwards, so a latch that fired globally fails too.
+    ///
+    /// # NON-CLAIM, measured and shipped in the row
+    ///
+    /// THE TARGET LATCH HAS NO MEASURED WIRE-TIER REACHABILITY: driving the three tracked
+    /// F4 dumps under an ALTERNATING-target policy through production `apply()` reaches NO
+    /// OFFER AT ALL (a varying player target moves a different seat's resources, so the
+    /// period's signature never repeats and certification refuses upstream), while
+    /// constant P1, constant P2 and constant P3 all certify. It is the VARIATION, not the
+    /// seat, that blocks certification. This latch is defence in depth.
+    #[test]
+    fn c2a_row_t3_a_differing_target_answer_latches_conflicted_idempotently_and_seat_locally() {
+        use crate::analysis::decision_template::{
+            DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
+        };
+
+        let mut state = journal_state();
+        assert_eq!(
+            state.loop_answers_recorded(),
+            0,
+            "reach-guard: a fresh board starts with an EMPTY journal"
+        );
+        let slot = DecisionSlot::target(journal_source(911));
+        let (seat, other_seat) = (PlayerId(0), PlayerId(1));
+        let aimed_at_1 = LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(
+            PlayerId(1),
+        )]));
+        let aimed_at_0 = LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(
+            PlayerId(0),
+        )]));
+
+        state.record_loop_answer(slot.clone(), seat, aimed_at_1.clone());
+        state.record_loop_answer(slot.clone(), other_seat, aimed_at_1.clone());
+        assert_eq!(
+            state.loop_answer(&slot, seat),
+            Some(aimed_at_1.clone()),
+            "paired positive: the FIRST answer is journalled as Uniform before any \
+             disagreement, so a writer that stored nothing cannot reach the latch"
+        );
+
+        // The disagreement.
+        state.record_loop_answer(slot.clone(), seat, aimed_at_0);
+        assert_eq!(
+            state.loop_answer(&slot, seat),
+            Some(LoopAnswer::Conflicted),
+            "CR 732.2a: this engine refuses on a differing answer — an ENGINE-CAPABILITY \
+             limit, not a rule the CR states"
+        );
+        assert_eq!(
+            state.loop_answer(&slot, other_seat),
+            Some(aimed_at_1.clone()),
+            "seat-local: the other seat's entry is a DIFFERENT key and is untouched by the \
+             latch"
+        );
+
+        // Idempotence: the latch fires on DISAGREEMENT, not on repetition, and never
+        // returns to `Uniform`.
+        state.record_loop_answer(slot.clone(), seat, aimed_at_1);
+        assert_eq!(
+            state.loop_answer(&slot, seat),
+            Some(LoopAnswer::Conflicted),
+            "the latch never returns to Uniform, even when a later answer matches the first"
+        );
+    }
+
+    /// **Row T4 — the SEAT half of the key, on the target axis.** A seat can only ever
+    /// answer for itself: two seats announcing DIFFERENT targets for one slot occupy two
+    /// entries and neither can be read in place of the other.
+    ///
+    /// # Discrimination
+    ///
+    /// Drop `player` from the key in `record_loop_answer`/`loop_answer` ⇒ ONE entry, the
+    /// second write disagrees with the first, and the latch makes both lookups
+    /// `Conflicted`: the cardinality reads 1 and both value assertions flip.
+    ///
+    /// # Reach-guard
+    ///
+    /// The two seats are asserted DISTINCT and their two answers asserted DIFFERENT before
+    /// the lookups — two identical answers would occupy two entries under either key shape
+    /// and prove nothing.
+    #[test]
+    fn c2a_row_t4_two_seats_answering_one_target_slot_occupy_two_independent_entries() {
+        use crate::analysis::decision_template::{
+            DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
+        };
+
+        let mut state = journal_state();
+        assert_eq!(
+            state.loop_answers_recorded(),
+            0,
+            "reach-guard: a fresh board starts with an EMPTY journal"
+        );
+        let slot = DecisionSlot::target(journal_source(912));
+        let (seat_a, seat_b) = (PlayerId(0), PlayerId(1));
+        assert_ne!(
+            seat_a, seat_b,
+            "reach-guard: the two answering seats must differ, else there is no seat axis"
+        );
+        let answer_a = LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(
+            PlayerId(1),
+        )]));
+        let answer_b = LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(
+            PlayerId(0),
+        )]));
+        assert_ne!(
+            answer_a, answer_b,
+            "reach-guard: the two answers must DIFFER, else a collapsed key would also hold \
+             two consistent entries and this row would not discriminate"
+        );
+
+        state.record_loop_answer(slot.clone(), seat_a, answer_a.clone());
+        state.record_loop_answer(slot.clone(), seat_b, answer_b.clone());
+
+        assert_eq!(
+            state.loop_answers_recorded(),
+            2,
+            "the seat is part of the key: two seats answering one slot hold TWO entries. A \
+             seat-less key holds 1"
+        );
+        assert_eq!(
+            state.loop_answer(&slot, seat_a),
+            Some(answer_a),
+            "each seat reads back its OWN announcement, uncorrupted by the other's"
+        );
+        assert_eq!(state.loop_answer(&slot, seat_b), Some(answer_b));
     }
 }
