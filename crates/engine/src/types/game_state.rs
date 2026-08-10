@@ -14529,6 +14529,50 @@ declare_game_state! {
     /// dedup on semantically-identical positions is unaffected.
     #[serde(skip, default)]
     pub loop_detect_ring: std::collections::VecDeque<std::sync::Arc<LoopDetectSample>>,
+    /// CR 603.5 + CR 732.2a: the answers given to published "may" sources during the
+    /// window `loop_detect_ring` is sampling, so the CR 732.2a declaration can pin the
+    /// choice each iteration actually made instead of guessing one.
+    ///
+    /// KEYED BY THE PAIR `(source, seat)`, not by the source alone. CR 603.5 routes a
+    /// "may" to whichever seat the effect names, and `game::effects` really does prompt
+    /// several seats for ONE source inside one window (the scoped-search acceptance
+    /// cascade). A seat can therefore only ever answer for itself: no seat's answer can
+    /// fill another's slot, and no two seats can manufacture a false disagreement. The
+    /// seat authority lives in the key type rather than in a consumer-side guard.
+    ///
+    /// STATED SO IT IS NOT OVER-READ: this is DEFENSE IN DEPTH PLUS A CODE DELETION, NOT
+    /// A LIVE-BUG FIX. Both harms a source-only key could produce are already firewalled
+    /// downstream — the pin injector reads the recipient off the prompt in hand and aborts
+    /// the replay when it does not match the template owner (`game::engine`'s
+    /// `WaitingFor::OptionalEffectChoice` arm, `if *player != template.owner`). NO BOARD
+    /// HAS BEEN MEASURED on which the seat component changes an offer; the multi-seat
+    /// board that does exist journals two seats and mints no offer at all
+    /// (`tests/integration/natural_balance.rs`). The claim this key earns is "cannot be
+    /// worse, and removes a runtime guard", not "prevents a reachable wrong declaration".
+    ///
+    /// TRANSIENT DERIVED STATE with `loop_detect_ring`'s exact treatment — same
+    /// `#[serde(skip, default)]`, same omission from `impl PartialEq for GameState`
+    /// (rebuilt from play; comparing it would break AI-search dedup on
+    /// semantically-identical positions), and cleared at every one of the ring's clear
+    /// sites on the same receiver. `#[serde(skip)]` is also load-bearing rather than
+    /// merely tidy: a `BTreeMap` with a tuple key has no JSON object form and
+    /// [`LoopAnswer`] deliberately derives no `Serialize`, so a future attempt to
+    /// persist this fails at compile time instead of silently emitting a stale window.
+    ///
+    /// `Option<Box<..>>` for `game_state_size.rs`'s stated reason — "box it if it is a
+    /// large rarely-populated one" — costing 8 B inline like the `life_safety_probe`
+    /// neighbour below. NOTHING TESTS THE BOXING: at the current ceiling an unboxed
+    /// `BTreeMap` (24 B inline) also fits, so this rationale is a convention here, not a
+    /// guarded invariant.
+    #[serde(skip, default)]
+    pub(crate) loop_answer_journal: Option<
+        Box<
+            std::collections::BTreeMap<
+                (crate::analysis::decision_template::DecisionSource, PlayerId),
+                crate::analysis::decision_template::LoopAnswer,
+            >,
+        >,
+    >,
     /// Live-only authority for the finite pre-cast shortcut. It is absent from
     /// raw/public serialization; trusted persistence uses the explicit codec
     /// envelope in `game::precast_copy_shortcut`.
@@ -19977,6 +20021,7 @@ impl GameState {
             static_source_index: StaticSourceIndex::default(),
             static_mode_presence: crate::types::statics::StaticModePresence::all_present(),
             loop_detect_ring: std::collections::VecDeque::new(),
+            loop_answer_journal: None,
             precast_shortcut_runtime: PrecastShortcutRuntime::default(),
             life_safety_probe: Box::default(),
             next_timestamp: 1,
@@ -20873,6 +20918,9 @@ impl GameState {
         // the live ring → recursive/quadratic growth. Cleared ⇒ every stored snapshot
         // has clone depth 1. Does not affect any comparison (the ring is eq-excluded).
         clone.loop_detect_ring.clear();
+        // CR 603.5: the "may"-answer journal belongs to the LIVE window, not to a stored
+        // position sample. Cleared with the ring, on this same receiver.
+        clone.loop_answer_journal = None;
         // Private shortcut capabilities are live interaction state, never part
         // of a CR 104.4b position sample.
         clone.precast_shortcut_runtime = PrecastShortcutRuntime::default();
@@ -21063,11 +21111,15 @@ impl GameState {
     ///
     /// The ring clear is mandatory and is `normalize_for_loop`'s own reason: samples are
     /// produced from the live state, so without it each stored sample would carry a clone
-    /// of the live ring ⇒ recursive/quadratic growth. **Nothing else is touched** — every
-    /// other field is what makes this half the evaluable one.
+    /// of the live ring ⇒ recursive/quadratic growth. The CR 603.5 `loop_answer_journal`
+    /// is cleared alongside it for a DIFFERENT reason — not recursion, but ownership: the
+    /// journal records the live window's answers, and a stored sample must not carry them.
+    /// **Nothing else is touched** — every other field is what makes this half the
+    /// evaluable one.
     pub(crate) fn loop_detect_live_sample(&self) -> GameState {
         let mut clone = self.clone();
         clone.loop_detect_ring.clear();
+        clone.loop_answer_journal = None;
         clone
     }
 
@@ -21119,7 +21171,70 @@ impl GameState {
                 .any(|(p, &before)| p.life != before)
         {
             self.loop_detect_ring.clear();
+            // CR 603.5: the answers belong to the window the ring just lost.
+            self.loop_answer_journal = None;
         }
+    }
+
+    /// CR 603.5: record ONE seat's answer to ONE "may" source for the current
+    /// loop-detection window. A second, DIFFERENT answer from THE SAME SEAT for THE SAME
+    /// SOURCE latches [`LoopAnswer::Conflicted`] (see that type — an engine-capability
+    /// refusal, not a CR mandate). A different seat occupies a DIFFERENT KEY and can
+    /// neither conflict with, nor be read in place of, this seat's answer.
+    ///
+    /// Gated exactly like `game::engine::record_loop_pin`
+    /// (`samples() && !in_simulation_probe()`), so the #4603-Off build never records and
+    /// the detection/materialize drive replays without re-recording.
+    pub(crate) fn record_loop_answer(
+        &mut self,
+        source: crate::analysis::decision_template::DecisionSource,
+        player: PlayerId,
+        answer: crate::analysis::decision_template::LoopAnswer,
+    ) {
+        use crate::analysis::decision_template::LoopAnswer;
+        use std::collections::btree_map::Entry;
+        if !self.loop_detection.samples() || crate::game::engine::in_simulation_probe() {
+            return;
+        }
+        match self
+            .loop_answer_journal
+            .get_or_insert_default()
+            .entry((source, player))
+        {
+            Entry::Vacant(v) => {
+                v.insert(answer);
+            }
+            Entry::Occupied(mut o) => {
+                if *o.get() != answer {
+                    o.insert(LoopAnswer::Conflicted);
+                }
+            }
+        }
+    }
+
+    /// The observed answer for one published may-source AS ANSWERED BY `player`. `None` =
+    /// that seat never answered this source in this window ⇒ a declaration must refuse,
+    /// exactly as [`LoopAnswer::Conflicted`] does.
+    pub fn loop_answer(
+        &self,
+        source: &crate::analysis::decision_template::DecisionSource,
+        player: PlayerId,
+    ) -> Option<crate::analysis::decision_template::LoopAnswer> {
+        // `BTreeMap` keys by the owned tuple and no `Borrow` shape spans a tuple, so the
+        // key is built. This is the seam's own idiom — `entry_publishes_pin_slots` builds
+        // its slot with `source: source.clone()`. One clone per published may point at
+        // declaration-build time, never per iteration.
+        self.loop_answer_journal
+            .as_ref()?
+            .get(&(source.clone(), player))
+            .copied()
+    }
+
+    /// How many distinct (source, seat) pairs this window has answered. `None` and an
+    /// empty map are indistinguishable here BY DESIGN — no caller may branch on the
+    /// `Option`.
+    pub fn loop_answers_recorded(&self) -> usize {
+        self.loop_answer_journal.as_ref().map_or(0, |m| m.len())
     }
 
     /// CR 732.2a: record that an unbounded (net-progress) loop under `controller`
@@ -21669,6 +21784,13 @@ fn _gamestate_partition_is_total(s: &GameState) {
         static_source_index: _,
         static_mode_presence: _,
         loop_detect_ring: _,
+        // CR 603.5 + CR 732.2a "may"-answer journal: EXCLUDED from `impl PartialEq for
+        // GameState` for `loop_detect_ring`'s reason — transient derived state rebuilt
+        // from play, and comparing it would split two semantically-identical positions
+        // in AI-search dedup. It cannot become a hidden per-cycle accumulator riding a
+        // covering pair: `project_out_resources` opens with `normalize_for_loop`, which
+        // is one of the ring-clear sites this field follows, so the projection clears it.
+        loop_answer_journal: _,
         precast_shortcut_runtime: _,
         life_safety_probe: _,
         next_timestamp: _,
