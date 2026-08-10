@@ -1370,6 +1370,417 @@ fn r27_a1_the_f4_dumps_recorded_sample_keeps_a_live_half_normalization_would_hav
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────
+// C1 — the CR 603.5 "may"-answer journal
+//
+// TIER, stated so no row here is read as covering more than it does: C1 ships the journal
+// (record + read) and nothing that CONSUMES it. `build_bounded_declaration` and the offer's
+// published `declaration` arrive with C2, so every row below asserts at the JOURNAL, never
+// at a minted-or-refused declaration.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// The key the journal uses, built the way `game::engine::object_decision_source` builds it
+/// (CR 400.7: `ThisObject` bound to the object's CURRENT incarnation, `trigger_description`
+/// held `None`). Reconstructed here rather than called because the engine's helper is
+/// `pub(crate)`; every row that uses it asserts the reconstruction is faithful by requiring
+/// the production write site to have stored something under it.
+fn may_source_key(
+    state: &GameState,
+    source_id: ObjectId,
+) -> engine::types::game_state::YieldTarget {
+    engine::types::game_state::YieldTarget::ThisObject {
+        source_id,
+        incarnation: Some(state.objects[&source_id].incarnation),
+        trigger_description: None,
+    }
+}
+
+/// How the drive answers CR 603.5 "may" prompts. Typed rather than a pair of `bool`s: the
+/// three rows below need three genuinely different drive shapes, and each is named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MayPolicy {
+    /// Take every prompt and drive on to the bounded offer — the shipped F4 policy.
+    TakeAll,
+    /// Take every prompt, and STOP at the first prompt that repeats a (source, seat) pair.
+    TakeUntilRepeat,
+    /// Take every prompt, then DECLINE the first prompt that repeats a (source, seat) pair,
+    /// and stop there.
+    DeclineOnRepeat,
+}
+
+/// One answered "may" prompt, as the drive saw it.
+struct MayBeat {
+    key: engine::types::game_state::YieldTarget,
+    seat: PlayerId,
+    take: bool,
+    /// The journal entry for this (source, seat) pair BEFORE this beat was answered — the
+    /// evidence that a "repeat" beat really is a repeat.
+    before: Option<engine::analysis::decision_template::LoopAnswer>,
+}
+
+/// Drive the F4 dump under `policy`, answering "may" prompts directly (so the row controls
+/// the answer) and delegating every other beat to [`f4_drive_one_beat`].
+///
+/// The repeat-stopping policies stop AT the beat that lands, deliberately: a later
+/// deliberate action or non-forced window would clear the ring, and the journal follows it.
+fn drive_f4_may_beats(state: &mut GameState, cap: u32, policy: MayPolicy) -> Vec<MayBeat> {
+    let mut beats: Vec<MayBeat> = Vec::new();
+    for _ in 0..cap {
+        if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
+            return beats;
+        }
+        let prompt = match &state.waiting_for {
+            WaitingFor::OptionalEffectChoice {
+                player, source_id, ..
+            } => Some((*player, *source_id)),
+            _ => None,
+        };
+        let Some((seat, source_id)) = prompt else {
+            if f4_drive_one_beat(state).is_err() {
+                return beats;
+            }
+            continue;
+        };
+        let key = may_source_key(state, source_id);
+        let repeat = beats.iter().any(|b| b.key == key && b.seat == seat);
+        let take = !(repeat && policy == MayPolicy::DeclineOnRepeat);
+        let before = state.loop_answer(&key, seat);
+        if apply(
+            state,
+            seat,
+            GameAction::DecideOptionalEffect { accept: take },
+        )
+        .is_err()
+        {
+            return beats;
+        }
+        beats.push(MayBeat {
+            key,
+            seat,
+            take,
+            before,
+        });
+        if repeat && policy != MayPolicy::TakeAll {
+            return beats;
+        }
+    }
+    beats
+}
+
+/// **Row 1′.** CR 603.5 + CR 732.2a: at the real F4 bounded offer, every published
+/// `MayChoice` point's source has a journal entry UNDER THE PROPOSER'S OWN KEY.
+///
+/// `proposer` is bound from the minted `WaitingFor::LoopShortcut`, never hard-coded: the
+/// publisher filters the published may slot on `gate.prompt_player == proposer`, so
+/// `(source, proposer)` is precisely the key that is supposed to exist, and a hard-coded
+/// seat would read `None` and red this row for the wrong reason.
+///
+/// # Discrimination
+///
+/// Delete the `record_loop_answer` call from the `DecideOptionalEffect` reducer arm ⇒ the
+/// journal stays empty ⇒ `loop_answers_recorded() > 0` fails and every lookup returns
+/// `None`. Weaken the gate the other way (record under a fixed seat) ⇒ the per-point
+/// lookups fail for any board whose prompt seat is not the proposer.
+///
+/// # Reach-guards
+///
+/// * the restored dump starts with an EMPTY journal, so every entry is one this drive wrote;
+/// * the drive really answered at least one "may" prompt;
+/// * the offer really published at least one `MayChoice` point — without this the `for` loop
+///   below is empty and the row would pass on a board it never tested.
+#[test]
+fn c1_row1_the_may_journal_is_populated_at_the_f4_offer_under_the_proposers_own_key() {
+    use engine::analysis::decision_template::{LoopAnswer, MayChoiceOption};
+
+    let mut state = load_f4();
+    assert_eq!(
+        state.loop_answers_recorded(),
+        0,
+        "reach-guard: the restored dump starts with an EMPTY journal"
+    );
+
+    let beats = drive_f4_may_beats(&mut state, 400, MayPolicy::TakeAll);
+    assert!(
+        !beats.is_empty(),
+        "reach-guard: the drive must have answered at least one CR 603.5 `may` prompt, else \
+         there is no write for this row to observe"
+    );
+
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    let may_sources: Vec<_> = schema
+        .points
+        .iter()
+        .filter(|p| matches!(p.kind, DecisionPointKind::MayChoice))
+        .map(|p| p.slot.source.clone())
+        .collect();
+    assert!(
+        !may_sources.is_empty(),
+        "reach-guard: the offer must publish at least one MayChoice point (r1b measures \
+         three points on this board), else the per-point assertions below are vacuous"
+    );
+    assert!(
+        state.loop_answers_recorded() > 0,
+        "CR 603.5: the offer beat must carry the answers the drive gave"
+    );
+    for source in &may_sources {
+        assert_eq!(
+            state.loop_answer(source, proposer),
+            Some(LoopAnswer::Uniform {
+                take: MayChoiceOption::Take
+            }),
+            "every published may point's source must be journalled under the PROPOSER's own \
+             key; source {source:?}, proposer {proposer:?}, journal holds {} entries",
+            state.loop_answers_recorded()
+        );
+    }
+}
+
+/// **Row 2b — JOURNAL TIER.** CR 603.5: ONE seat answering ONE source two different ways
+/// inside one detection window latches [`LoopAnswer::Conflicted`].
+///
+/// ⚠ TIER LIMIT, stated rather than implied: C1 ships no declaration consumer, so this row
+/// asserts the LATCH, not a refused declaration. The declaration-tier half — that a
+/// `Conflicted` entry makes `build_bounded_declaration` return `None` on this same board —
+/// belongs to C2 and is NOT covered here.
+///
+/// The same-seat constraint is asserted in the body, not assumed: under the pair key two
+/// DIFFERENT seats answering one source land in two entries and the `Entry::Occupied` arm is
+/// never entered at all, which would make this row vacuous.
+///
+/// # Discrimination
+///
+/// Delete `record_loop_answer`'s `Entry::Occupied` conflict arm (let a second write be
+/// ignored, or overwrite) ⇒ the entry stays `Uniform { take: Take }` ⇒ the final assertion
+/// flips. MEASURED, not predicted — see this row's companion probe in the implementation
+/// report.
+///
+/// # Paired positive / reach-guard
+///
+/// `before` on the conflicting beat must already be `Uniform { Take }`: that proves the beat
+/// really was a REPEAT of an already-journalled pair, so a drive that never repeated cannot
+/// satisfy this row.
+#[test]
+fn c1_row2b_one_seat_answering_one_source_two_ways_latches_conflicted() {
+    use engine::analysis::decision_template::{LoopAnswer, MayChoiceOption};
+
+    let mut state = load_f4();
+    let beats = drive_f4_may_beats(&mut state, 400, MayPolicy::DeclineOnRepeat);
+    let last = beats
+        .last()
+        .expect("the drive must have answered at least one `may` prompt");
+    assert!(
+        !last.take,
+        "reach-guard: the drive must have REACHED a repeated (source, seat) prompt and \
+         declined it; it answered {} prompts and the last was a Take",
+        beats.len()
+    );
+
+    let first = beats
+        .iter()
+        .find(|b| b.key == last.key && b.seat == last.seat && b.take)
+        .expect("the repeat's own first answer must be in the drive's record");
+    assert_eq!(
+        first.seat, last.seat,
+        "SAME-SEAT CONSTRAINT: both answers must come from one seat. Two seats occupy two \
+         keys, never enter the conflict arm, and would make this row vacuous"
+    );
+    assert_eq!(
+        last.before,
+        Some(LoopAnswer::Uniform {
+            take: MayChoiceOption::Take
+        }),
+        "paired positive: the FIRST answer was journalled as Uniform{{Take}} before the \
+         differing one landed"
+    );
+    assert_eq!(
+        state.loop_answer(&last.key, last.seat),
+        Some(LoopAnswer::Conflicted),
+        "CR 603.5: a second, DIFFERENT answer from the same seat for the same source latches \
+         Conflicted (an engine-capability refusal, not a CR 732.2a mandate)"
+    );
+}
+
+/// **Row 2b sibling — idempotence.** The latch fires on DISAGREEMENT, not on repetition: the
+/// same seat answering the same source the same way twice stays `Uniform`.
+///
+/// Without this sibling, a `record_loop_answer` that latched `Conflicted` on EVERY repeat
+/// would pass row 2b and destroy every real board — the F4 drive answers each may source
+/// once per iteration.
+///
+/// Discrimination: replace the conflict arm's `if *o.get() != answer` with an unconditional
+/// `o.insert(LoopAnswer::Conflicted)` ⇒ this row reds while row 2b stays green.
+#[test]
+fn c1_row2b_sibling_an_identical_second_answer_stays_uniform() {
+    use engine::analysis::decision_template::{LoopAnswer, MayChoiceOption};
+
+    let mut state = load_f4();
+    let beats = drive_f4_may_beats(&mut state, 400, MayPolicy::TakeUntilRepeat);
+    let last = beats
+        .last()
+        .expect("the drive must have answered at least one `may` prompt");
+    assert_eq!(
+        last.before,
+        Some(LoopAnswer::Uniform {
+            take: MayChoiceOption::Take
+        }),
+        "reach-guard: the last beat must be a REPEAT of an already-journalled pair, else this \
+         row asserts idempotence over a single write"
+    );
+    assert_eq!(
+        state.loop_answer(&last.key, last.seat),
+        Some(LoopAnswer::Uniform {
+            take: MayChoiceOption::Take
+        }),
+        "an identical second answer must not latch Conflicted"
+    );
+}
+
+/// **Row 7b″.** The journal is invalidated with `loop_detect_ring`, ON THE SAME RECEIVER.
+///
+/// Three of the eight ring-clear sites act on a `clone`/`self` rather than on `state`, so a
+/// journal clear applied to the wrong receiver would leave a stored sample carrying the live
+/// window's answers. Sites 6 and 7 are only observable downstream, through
+/// `LoopDetectSample`'s `pub normalized` / `pub live` halves on the ring — this row asserts
+/// there, simultaneously with the LIVE state being non-empty, so no single-receiver bug
+/// satisfies both halves.
+///
+/// Site 5 (`apply_action`'s pre-action clear, a `state` receiver) is driven directly.
+/// Sites 1–4 and 8 are covered structurally instead, by
+/// [`c1_every_ring_clear_site_also_clears_the_may_journal`] — stated here so the coverage of
+/// this row is not read as more than it is.
+///
+/// # Discrimination
+///
+/// Delete `clone.loop_answer_journal = None;` from `normalize_for_loop` or from
+/// `loop_detect_live_sample` ⇒ the corresponding per-sample assertion flips. Delete it from
+/// `apply_action`'s clear block ⇒ the final assertion flips.
+#[test]
+fn c1_row7b_the_may_journal_follows_the_ring_on_the_same_receiver() {
+    let mut state = load_f4();
+    drive_f4_may_beats(&mut state, 400, MayPolicy::TakeAll);
+    let (proposer, _certificate, _schema) = offer_parts(&state);
+
+    assert!(
+        state.loop_answers_recorded() > 0,
+        "paired positive: the LIVE state must carry answers at the offer beat, else every \
+         zero below is satisfied by a journal that was never written"
+    );
+    assert!(
+        !state.loop_detect_ring.is_empty(),
+        "reach-guard: there must be stored samples to inspect"
+    );
+    for (i, sample) in state.loop_detect_ring.iter().enumerate() {
+        assert_eq!(
+            sample.normalized.loop_answers_recorded(),
+            0,
+            "site 6 (`normalize_for_loop`, CLONE receiver): stored sample {i}'s normalized \
+             half must not carry the live window's answers"
+        );
+        assert_eq!(
+            sample.live.loop_answers_recorded(),
+            0,
+            "site 7 (`loop_detect_live_sample`, CLONE receiver): stored sample {i}'s live \
+             half must not carry the live window's answers"
+        );
+    }
+
+    apply(&mut state, proposer, GameAction::DeclineShortcut)
+        .expect("declining the offer is always legal for the proposer");
+    assert!(
+        state.loop_detect_ring.is_empty(),
+        "reach-guard: site 5's ring clear must actually have fired on this action, else the \
+         journal zero below is not evidence about that clear"
+    );
+    assert_eq!(
+        state.loop_answers_recorded(),
+        0,
+        "site 5 (`apply_action`, STATE receiver): the journal follows the ring"
+    );
+}
+
+/// **Row 7c.** The journal never crosses save/load as stale data.
+///
+/// `last_loop_action_sequence` fell into exactly this trap once; `#[serde(skip, default)]`
+/// is the bar, and this row asserts BOTH halves of it — the field is absent from the encoded
+/// payload, and a decode of a populated board restores an empty journal.
+///
+/// Discrimination: drop `skip` from the field's serde attribute ⇒ the key appears in the
+/// encoded value ⇒ the first assertion flips (and `LoopAnswer` derives no `Serialize`, so
+/// that edit does not even compile — which is the point of the note on the field).
+#[test]
+fn c1_row7c_the_may_journal_does_not_cross_save_load() {
+    let mut state = load_f4();
+    drive_f4_may_beats(&mut state, 400, MayPolicy::TakeAll);
+    assert!(
+        state.loop_answers_recorded() > 0,
+        "reach-guard: the board being serialized must have a POPULATED journal, else the \
+         empty restore below proves nothing"
+    );
+
+    let encoded = serde_json::to_value(&state).expect("a live GameState serializes");
+    assert!(
+        encoded.get("loop_answer_journal").is_none(),
+        "`#[serde(skip)]`: the journal must be absent from the encoded payload entirely"
+    );
+    let restored = serde_json::from_value::<PersistedGameState>(encoded)
+        .expect("the encoded board decodes through the production decoder")
+        .into_game_state();
+    assert_eq!(
+        restored.loop_answers_recorded(),
+        0,
+        "a restored board must start its own window with no inherited answers"
+    );
+}
+
+/// **Row 7b″, structural half.** EVERY production `loop_detect_ring.clear()` is paired with
+/// a `loop_answer_journal = None` on the same receiver, at all eight sites.
+///
+/// The driven row above reaches sites 5, 6 and 7 on the F4 board; sites 1–4 and 8 need
+/// materialize / until-lethal / pipeline / unobserved-life-move boards that this fixture does
+/// not produce. A source-level census covers the whole set at the only tier that can, and
+/// fails loudly if a NINTH clear site is added without the journal, which is the actual
+/// regression this guards.
+///
+/// Discrimination: delete any one `loop_answer_journal = None;` that follows a ring clear ⇒
+/// the pairing count drops and this row reds naming the file and line.
+#[test]
+fn c1_every_ring_clear_site_also_clears_the_may_journal() {
+    use std::path::Path;
+
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut unpaired: Vec<String> = Vec::new();
+    let mut paired = 0usize;
+    for rel in ["game/engine.rs", "types/game_state.rs"] {
+        let path = src.join(rel);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("loop_detect_ring.clear()") {
+                continue;
+            }
+            // The journal assignment sits within the same block, immediately after the ring
+            // clear (a comment line may separate them).
+            let window = lines[i + 1..(i + 5).min(lines.len())].join("\n");
+            if window.contains("loop_answer_journal = None") {
+                paired += 1;
+            } else {
+                unpaired.push(format!("{rel}:{}", i + 1));
+            }
+        }
+    }
+    assert!(
+        unpaired.is_empty(),
+        "every ring-clear site must also clear the CR 603.5 may-answer journal; unpaired: \
+         {unpaired:?}"
+    );
+    assert_eq!(
+        paired, 8,
+        "the ring has EIGHT production clear sites (5 in game/engine.rs, 3 in \
+         types/game_state.rs). A different count means a site was added or removed and this \
+         census must be re-derived, not re-numbered"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
 // helpers used by more than one row
 // ─────────────────────────────────────────────────────────────────────────────────────────
 

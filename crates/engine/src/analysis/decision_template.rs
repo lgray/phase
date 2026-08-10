@@ -153,6 +153,36 @@ pub enum UnlessPaymentOption {
     Decline,
 }
 
+/// The observed answer to ONE published CR 603.5 "may" source, from ONE seat, across the
+/// current loop-detection window. Journalled under the key `(DecisionSource, PlayerId)`
+/// (`GameState::record_loop_answer`), so a seat can only ever answer for itself.
+///
+/// CR 732.2a says a shortcut proposal describes "a sequence of game choices, for all
+/// players, that may be legally taken based on the current game state and the predictable
+/// results of the sequence of choices", and that this sequence "may be a non-repetitive
+/// series of choices, a loop that repeats a specified number of times, multiple loops, or
+/// nested loops, and may even cross multiple turns". A series whose answers DIFFER between
+/// iterations is therefore not, by itself, the conditional action the rule bars; what the
+/// rule actually bars is narrower — "It can't include conditional actions, where the
+/// outcome of a game event determines the next action a player takes."
+///
+/// This engine refuses on a differing answer anyway. That is an ENGINE-CAPABILITY LIMIT,
+/// DELIBERATELY MORE CONSERVATIVE THAN CR 732.2a REQUIRES — not a rule the CR states.
+/// [`DecisionTemplate`] pins exactly one `MayChoice` per published slot per cycle, so a
+/// non-uniform series has no representation here; it is the same "a choice a player could
+/// only make reactively is one they cannot pin" disposition [`predictability_gate`]'s
+/// CR 732.2a firewall doc already records. Failing to offer is the fail-closed direction:
+/// strictly fewer offers, never a wrong pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopAnswer {
+    /// Every observed iteration answered this (source, seat) pair identically.
+    Uniform { take: MayChoiceOption },
+    /// Two observed iterations of the same (source, seat) pair disagreed. Latched:
+    /// never returns to `Uniform`. See the type doc — the refusal this produces is this
+    /// engine's conservative policy, NOT a CR 732.2a mandate.
+    Conflicted,
+}
+
 /// One pinned decision. Variants are distinct CR choice KINDS (ordering / targeting /
 /// modal / optional-"may" / "[A] unless [B]" break), not a parameterization axis.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

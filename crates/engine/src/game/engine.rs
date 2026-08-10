@@ -3272,6 +3272,8 @@ fn until_lethal_fallback(
     // sampler with no seat semantics, so it clears unconditionally; the period is evidence about
     // the seat that recorded it, so only the proposer's own is theirs to discard.
     state.loop_detect_ring.clear();
+    // CR 603.5: the recorded "may" answers describe the window that just ended.
+    state.loop_answer_journal = None;
     if state.loop_period_controller() == Some(proposer) {
         state.last_loop_action_sequence.clear();
     }
@@ -3949,6 +3951,8 @@ fn materialize_fixed_shortcut(
     // beat re-detects genuinely.
     *state = committed;
     state.loop_detect_ring.clear();
+    // CR 603.5: the recorded "may" answers describe the window that just ended.
+    state.loop_answer_journal = None;
     priority::reset_priority(state);
     state.waiting_for = WaitingFor::Priority {
         player: living_priority_seat(state),
@@ -5128,6 +5132,8 @@ fn materialize_object_growth_shortcut(
         }
     }
     state.loop_detect_ring.clear();
+    // CR 603.5: the recorded "may" answers describe the window that just ended.
+    state.loop_answer_journal = None;
     state.last_loop_action_sequence.clear();
     priority::reset_priority(state);
     state.waiting_for = WaitingFor::Priority {
@@ -6340,6 +6346,8 @@ fn pass_priority_once_with_pipeline(
             state.record_loop_detect_sample();
         } else if !wf.is_forced_cascade_window() {
             state.loop_detect_ring.clear();
+            // CR 603.5: the recorded "may" answers describe the window that just ended.
+            state.loop_answer_journal = None;
         }
         // CR 603.3b/603.3d/603.5/608.2/903.9a + CR 703.1/117.3a + CR 732.2a: leave the
         // ring intact on every FORCED PRE-PRIORITY window, not just trigger ordering.
@@ -7168,6 +7176,8 @@ fn apply_action(
     ) && !answering_forced_window
     {
         state.loop_detect_ring.clear();
+        // CR 603.5: the recorded "may" answers describe the window that just ended.
+        state.loop_answer_journal = None;
     }
 
     // Keep the semantic owner of the prompt before reducing it. Under turn
@@ -8643,7 +8653,32 @@ fn apply_action(
             GameAction::CancelCast,
         ) => engine_casting::cancel_pending_cast(state, *player, pending_cast, &mut events)?,
         // CR 608.2d: Player decided whether to perform an optional effect ("You may X").
-        (WaitingFor::OptionalEffectChoice { .. }, GameAction::DecideOptionalEffect { accept }) => {
+        (
+            WaitingFor::OptionalEffectChoice {
+                player, source_id, ..
+            },
+            GameAction::DecideOptionalEffect { accept },
+        ) => {
+            // CR 603.5 + CR 732.2a: journal the answer BEFORE the handler runs — it
+            // replaces `waiting_for`, so the prompt's own seat and source are only
+            // readable here. The key comes from `object_decision_source`, the same
+            // producer `entry_publishes_pin_slots` uses, so publish-side and record-side
+            // keys agree by construction rather than by coincidence. `record_loop_answer`
+            // carries the `samples() && !in_simulation_probe()` gate.
+            let (answering_player, may_source) = (*player, *source_id);
+            if let Some(source) = object_decision_source(state, may_source) {
+                state.record_loop_answer(
+                    source,
+                    answering_player,
+                    crate::analysis::decision_template::LoopAnswer::Uniform {
+                        take: if accept {
+                            crate::analysis::decision_template::MayChoiceOption::Take
+                        } else {
+                            crate::analysis::decision_template::MayChoiceOption::Decline
+                        },
+                    },
+                );
+            }
             engine_payment_choices::handle_optional_effect_choice(state, accept, &mut events)?
         }
         (
@@ -15901,6 +15936,29 @@ mod stage2_injector_tests {
     /// adds nothing below; (3) the total stays **37** and the partition stays **5/7/25**, so
     /// neither a producer nor a reader was gained or lost. Same set, one new line number ⇒
     /// benign, re-baselined here.
+    ///
+    /// ⚠ **RE-ADJUDICATED BY C1 (the CR 603.5 may-answer journal), NOT RELAXED.** `37 ⇒ 38`,
+    /// partition `5/7/25 ⇒ 5/8/25`. The PRODUCER half is unchanged at **5** and four of the
+    /// five coordinates did not move at all. The `+1` READER is **`game/engine.rs:8626`** —
+    /// `apply_action`'s `(OptionalEffectChoice, DecideOptionalEffect)` arm, which C1 widened
+    /// from `{ .. }` to bind `player` and `source_id` so it can journal the answer under
+    /// `(DecisionSource, PlayerId)`. It READS the (cloned) `state.waiting_for` scrutinee and
+    /// never writes it, so it is a reader by this instrument's own rule, and it is the same
+    /// benign class as U4's `inject_pinned_answer` arm. Note WHY it became visible at all:
+    /// the instrument deliberately skips multi-line read destructures by excluding lines
+    /// containing `..`, and rustfmt puts `..` on the needle's own line only while the
+    /// pattern body is narrow — adding two bindings pushes it to the next line. The
+    /// exclusion is an approximation, and this is it losing one case, not a new prompt.
+    ///
+    /// The fifth producer's coordinate moved `engine.rs:11942 ⇒ :11977`, and the shift is
+    /// measured rather than assumed: `git diff -U0 <C0f tip> HEAD -- game/engine.rs` has
+    /// exactly six hunks above it — five `+2` journal clears paired with the ring clears at
+    /// `:3274/:3951/:5130/:6334/:7139`, and `+25` for the reducer arm above — summing to
+    /// **+35**, so predicted `11942 + 35 = 11977` equals the observed coordinate exactly.
+    /// Identity re-established, not assumed: the line is **sha256-identical**
+    /// (`8a544e87…5cc7d63`) at the old coordinate in the pre-C1 tree and at the new one
+    /// here, and it is still inside `begin_pending_trigger_target_selection`. C1 adds no
+    /// line matching the needle in a producing position anywhere.
     #[test]
     fn the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event() {
         /// Every `.rs` under the crate's `src`, and the `#[cfg(test)]`-attributed
@@ -15996,7 +16054,7 @@ mod stage2_injector_tests {
 
         assert_eq!(
             producers.len() + readers.len() + in_test,
-            37,
+            38,
             "CR 603.5 prompt census drifted. A new PRODUCER must have its recipient bound \
              somewhere — the mint's conjunct (a) covers exactly ONE of them. A new READER is \
              the benign case (U4's own consumption arm was one): adjudicate it in this doc and \
@@ -16005,10 +16063,11 @@ mod stage2_injector_tests {
         );
         assert_eq!(
             (producers.len(), readers.len(), in_test),
-            (5, 7, 25),
-            "the partition, not just the total: five PRODUCTION producers, seven PRODUCTION \
+            (5, 8, 25),
+            "the partition, not just the total: five PRODUCTION producers, eight PRODUCTION \
              readers (they read `state.waiting_for` and never write it — the seventh is U4's \
-             `inject_pinned_answer` arm), 25 `#[cfg(test)]` lines.\nproducers={producers:#?}\n\
+             `inject_pinned_answer` arm, the eighth is C1's journalling `apply_action` arm), \
+             25 `#[cfg(test)]` lines.\nproducers={producers:#?}\n\
              readers={readers:#?}"
         );
         assert_eq!(
@@ -16427,25 +16486,31 @@ mod stage2_injector_tests {
                 // card entry boundary. The producer remains byte-identical; only its coordinate moves.
                 //
                 // SET PRESERVATION: unchanged. Upstream adds no line matching the needle to this file and
-                // neither does this branch — total still 37, partition still 5/7/25.
+                // neither does this branch.
                 //
-                // #7303 fix round 3: `:12004 ⇒ :12003`, −1, and ONLY this entry moved.
-                //   Re-derived, not assumed. `git diff -U0` on this file has exactly ONE hunk,
-                //   `@@ -9943,8 +9943,7 @@` inside `apply_action` — the `ReturnAsAuraTarget`
-                //   resume arm's two raw attach calls replaced by one call to the entering-Aura
-                //   attachment authority plus its four-line rationale (`-8 +7`). It sits ABOVE
-                //   this producer, and the whole-file delta is also `-1`, so nothing was
-                //   inserted or removed below it. Predicted `12004-1` equals the observed
-                //   coordinate exactly. IDENTITY re-established rather than assumed: the
-                //   producer at its new coordinate is md5-identical to `a0bca5197:engine.rs`
-                //   at its old one, and so is its ±6-line window (`4f7522fc…`) — the window is
-                //   what discriminates here, since the same one-line mint text appears at
-                //   several coordinates in the crate. The other four entries did not move and
-                //   were re-read in place. SET PRESERVATION: the two asserts above this one ran
-                //   FIRST and both fired GREEN on the run that caught this — total still 37,
-                //   partition still 5/7/25. The change constructs no `WaitingFor` of any kind;
-                //   it threads an attachment-legality authority through an existing call.
-                "game/engine.rs:12003".to_string(),
+                // REBASE #3 — this coordinate absorbed TWO independent shifts and both are folded
+                // here rather than one overwriting the other. From the merge base at `:12004`:
+                //   upstream #7303 round 3: -1  (the `ReturnAsAuraTarget` resume arm's two raw
+                //     attach calls became one call to the entering-Aura attachment authority,
+                //     `-8 +7`, in a hunk ABOVE this producer)
+                //   lane C1 (CR 603.5 may-answer journal): +35  (five `+2` journal clears paired
+                //     with the five ring clears, plus `+25` for the `DecideOptionalEffect` arm)
+                // The two hunks do not overlap, so the shifts compose. The value below is
+                // MEASURED in the rebased file, not computed from that sum; the sum is retained
+                // only as the prediction it agreed with.
+                //
+                // Producer identity re-established rather than assumed: the line at the new
+                // coordinate is byte-identical to the base's `:12004` and to upstream's `:12003`
+                // (`return Ok(Some(WaitingFor::OptionalEffectChoice {`), and it is still inside
+                // `begin_pending_trigger_target_selection`.
+                //
+                // TO BE UNAMBIGUOUS FOR THE NEXT READER: the `+1` in `apply_action`'s
+                // `DecideOptionalEffect` arm is a READER, NOT A SIXTH PRODUCER. It destructures the
+                // cloned `state.waiting_for` scrutinee to journal the answer and never assigns
+                // `state.waiting_for`; the producer count in this vec is still five and this branch
+                // mints no new prompt. Total moves 37 => 38 and the partition 5/7/25 => 5/8/25 for
+                // the READER half only — adjudicated in this row's doc.
+                "game/engine.rs:12038".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
