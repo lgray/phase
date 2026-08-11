@@ -313,7 +313,7 @@ fn offer_parts(
 /// point, `owner` and `count` supplied by the caller.
 ///
 /// This is the shape `handle_declare_shortcut` ACCEPTS (measured in
-/// [`u6_no_declaration_the_generator_can_emit_opens_the_window_while_the_accepted_shape_is_one_it_never_builds`]),
+/// [`u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_measured`]),
 /// so every row that needs either an accepted declaration or a one-axis hostile variant of one
 /// builds it here rather than re-deriving the mapping. Keyed off `schema.points` — never off a
 /// hard-coded slot — so a re-dump that renumbers objects, or a remedy that widens the announced
@@ -1741,6 +1741,207 @@ fn c2a_row_t1p_the_journalled_pin_follows_the_announced_seat_not_a_constant() {
     }
 }
 
+/// The declaration the live offer PUBLISHES. A separate accessor rather than a fourth element
+/// on [`offer_parts`], so the ~20 existing callers of that helper are untouched.
+fn offer_declaration(
+    state: &GameState,
+) -> Option<engine::analysis::decision_template::DecisionTemplate> {
+    match &state.waiting_for {
+        WaitingFor::LoopShortcut { declaration, .. } => declaration.clone(),
+        other => panic!("expected the CR 732.2a bounded offer, got {other:?}"),
+    }
+}
+
+/// **Row D1 — WIRE / CONFORMANCE.** The bounded offer publishes a `Some` declaration that
+/// CONFORMS to the reference shape this suite already accepts, on all three tracked dumps.
+///
+/// ⚠ **THIS IS A CONFORMANCE ORACLE, NEVER A PROVENANCE ONE.** [`f4_pin_template`] is a pure
+/// function of `(schema, owner, count)` — it hard-codes `MayChoiceOption::Take` and
+/// `TargetPin::Player(P1)` and never reads the journal — so a consumer that ignored the journal
+/// entirely and emitted those same constants passes this row. That is exactly what
+/// [`d1p_the_published_pin_follows_the_journal_not_a_constant`] and its P3 sibling are for.
+///
+/// # The count trap, measured
+///
+/// The reference must be built with `count = schema.max_iterations`, NOT the `1` every other
+/// declare row in this file passes: `build_bounded_declaration` sets
+/// `replay: Scheduled { count: schema.iteration_count }`, and `certified_bounded_cycle_offer`
+/// builds the schema with `IterationCount::Fixed(max_iterations)`. Measured on all three boards:
+/// `REAL == f4_pin_template(count = 1)` is FALSE and `REAL == f4_pin_template(count = max)` is
+/// TRUE.
+///
+/// # Reach-guards, asserted BEFORE the claim
+///
+/// The journal holds at least one answer per published point (else `declaration.is_some()`
+/// could only ever be the empty-schema path), the point count is the board's known one, and the
+/// bound is the board's measured `max_iterations` — which is also the reference's count.
+///
+/// REVERT-PROBE: make `build_bounded_declaration`'s `(Targets, Targets)` arm `return None` ⇒
+/// `is_some()` flips on all three boards.
+#[test]
+fn d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump() {
+    use engine::analysis::decision_template::{predictability_gate, validate_pins};
+
+    for (label, mut state, expected_points, expected_max) in [
+        ("F4", load_f4(), 3usize, 18u32),
+        ("MODE1", load_mode1(), 2, 17),
+        ("MODE2", load_mode2(), 3, 16),
+    ] {
+        let beat = drive_f4_to_offer(&mut state, 400)
+            .unwrap_or_else(|| panic!("[{label}] REACH-GUARD: the bounded offer must FIRE"));
+        let (proposer, _certificate, schema) = offer_parts(&state);
+        let schema = schema.clone();
+
+        assert!(
+            state.loop_answers_recorded() >= schema.points.len(),
+            "[{label}] REACH-GUARD: every published point must have an answer in the journal, \
+             else a `Some` declaration below could not be about this schema at all. recorded={} \
+             points={}",
+            state.loop_answers_recorded(),
+            schema.points.len()
+        );
+        assert_eq!(
+            schema.points.len(),
+            expected_points,
+            "[{label}] REACH-GUARD: the published point count at beat {beat}"
+        );
+        assert_eq!(
+            schema.max_iterations, expected_max,
+            "[{label}] REACH-GUARD: the CR 704.5a-derived bound — and the count the reference \
+             below must be built with"
+        );
+
+        let declaration = offer_declaration(&state)
+            .unwrap_or_else(|| panic!("[{label}] the offer publishes a declaration"));
+        assert_eq!(
+            declaration,
+            f4_pin_template(&schema, proposer, schema.max_iterations),
+            "[{label}] CR 732.2a: the published declaration must CONFORM to the shape this \
+             suite's accepted declarations take — one pin per published point, owner == \
+             proposer, `replay.count` == the offer's own suggestion"
+        );
+
+        let required: Vec<_> = schema.points.iter().map(|p| p.slot.clone()).collect();
+        assert!(
+            predictability_gate(&declaration, &required).is_ok(),
+            "[{label}] the published declaration covers every published slot — the coverage half \
+             of the declare-time firewall"
+        );
+        assert!(
+            validate_pins(&schema, &declaration, 1, &state).is_ok(),
+            "[{label}] and its pin VALUES are legal at iteration 1"
+        );
+        assert!(
+            validate_pins(&schema, &declaration, schema.max_iterations, &state).is_ok(),
+            "[{label}] and at the full declared range — the count the AI's candidate carries"
+        );
+    }
+}
+
+/// **Row D1-P — WIRE / PROVENANCE.** The declaration's pinned target FOLLOWS THE JOURNAL, not a
+/// constant: driving the SAME dump with the SAME policy but a different aimed seat publishes a
+/// different pin at the same published slot.
+///
+/// This is the CONSUMER-tier sibling of
+/// [`c2a_row_t1p_the_journalled_pin_follows_the_announced_seat_not_a_constant`] (the WRITER-tier
+/// row) and reuses its two helpers, so the drive is production `apply()` and the seat is
+/// ANNOUNCED at Torch's CR 601.2c choice, never injected.
+///
+/// # The asymmetry IS the row
+///
+/// On the shipped P1 board, replacing the journalled targets with the constant
+/// `vec![TargetPin::Player(PlayerId(1))]` is GREEN — that mutant is indistinguishable there.
+/// At a second seat it is RED. Only a second seat discriminates a journal-blind consumer.
+///
+/// # Reach-guards, asserted BEFORE the claim
+///
+/// The offer fires at the aimed seat, the point set is the known one, the aimed seat is not the
+/// proposer's own (or a writer that stored the PROMPT's seat would satisfy the row), and the
+/// `Targets` point's journal entry already reads the aimed seat before the consumer is called.
+///
+/// REVERT-PROBE: in `build_bounded_declaration`'s `(Targets, Targets)` arm, replace the
+/// journalled `targets` with `vec![TargetPin::Player(PlayerId(1))]` ⇒ this row flips on the pin
+/// VALUE while D1 stays green.
+///
+/// *What wrong implementation would still pass this row?* One that reads the journal but ignores
+/// `point.slot` — there is one `Targets` point here, so the slot axis is D1-P-may's and D3's.
+#[test]
+fn d1p_the_published_pin_follows_the_journal_not_a_constant() {
+    d1p_provenance_at_seat(PlayerId(2));
+}
+
+/// **Row D1-P-sib** — the same claim at a THIRD seat, so the provenance cannot be a coincidence
+/// of one seat's numbering.
+#[test]
+fn d1p_sib_the_published_pin_provenance_is_not_specific_to_one_second_seat() {
+    d1p_provenance_at_seat(PlayerId(3));
+}
+
+fn d1p_provenance_at_seat(aimed: PlayerId) {
+    use engine::analysis::decision_template::{
+        validate_pins, LoopAnswer, LoopAnswerValue, PinnedDecision, TargetPin,
+    };
+
+    assert_ne!(
+        aimed, P1,
+        "reach-guard: the aimed seat must differ from the shipped policy's, else this re-runs D1 \
+         and discriminates nothing"
+    );
+    let mut state = load_f4();
+    let beat = drive_f4_to_offer_at(&mut state, 400, aimed).expect(
+        "reach-guard: a CONSTANT non-P1 target still certifies — it is the VARIATION between \
+         iterations, not the seat, that blocks the CR 732.2a offer",
+    );
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    let schema = schema.clone();
+    assert_ne!(
+        aimed, proposer,
+        "reach-guard: the aimed seat must not be the proposer's own"
+    );
+    assert_eq!(
+        schema.points.len(),
+        3,
+        "reach-guard: the published point set at beat {beat}"
+    );
+
+    let target_slot = schema
+        .points
+        .iter()
+        .find(|p| matches!(p.kind, DecisionPointKind::Targets { .. }))
+        .map(|p| p.slot.clone())
+        .expect("reach-guard: the offer publishes a CR 601.2c Targets point");
+    // The WRITER's own output, asserted BEFORE the consumer runs: without this the row could not
+    // tell "the consumer ignored the journal" from "the journal never held the aimed seat".
+    assert_eq!(
+        state.loop_answer(&target_slot, proposer),
+        Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
+            TargetPin::Player(aimed)
+        ]))),
+        "reach-guard: the journal holds the ANNOUNCED seat {aimed:?} at the published slot"
+    );
+
+    let declaration = offer_declaration(&state).expect("the offer publishes a declaration");
+    let pinned = declaration
+        .decisions
+        .iter()
+        .find_map(|pin| match pin {
+            PinnedDecision::Targets { slot, targets } if *slot == target_slot => Some(targets),
+            _ => None,
+        })
+        .expect("the declaration pins the published Targets slot");
+    assert_eq!(
+        *pinned,
+        vec![TargetPin::Player(aimed)],
+        "PROVENANCE: the declaration must pin the seat this drive ANNOUNCED ({aimed:?}), not the \
+         seat the shipped policy happens to aim at"
+    );
+    assert!(
+        validate_pins(&schema, &declaration, 1, &state).is_ok(),
+        "and the journal-derived pin is LEGAL against the offer's own schema — otherwise a \
+         provenance-correct consumer could still be publishing an unusable declaration"
+    );
+}
+
 /// **Row 2b — JOURNAL TIER.** CR 603.5: ONE seat answering ONE source two different ways
 /// inside one detection window latches [`LoopAnswer::Conflicted`].
 ///
@@ -2028,48 +2229,41 @@ fn optional_entries(state: &GameState) -> usize {
 // never emits — they do not assert the planned prediction.
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
-/// §5 U6 (i) — MEASURED: at the real F4 bounded offer the engine's AI candidate generator
-/// emits exactly ONE action, `DeclineShortcut`. It offers no declaration at all.
+/// **Row D6 — WIRE / POSITIVE.** At the real F4 bounded offer the AI candidate generator now
+/// emits `DeclareShortcut { Fixed(max_iterations), Some(declaration) }` beside the decline, and
+/// the `template` it carries IS THE OFFER'S OWN published declaration — not one the AI built.
 ///
-/// Both declare candidates are excluded, each by a different conjunct, and this board trips
-/// both at once:
+/// ⚠ **THIS ROW'S PREVIOUS CLAIM WAS THE OPPOSITE, AND IT IS SUPERSEDED, NOT BROKEN.** As
+/// `u6_the_ai_candidate_set_at_the_f4_offer_is_decline_only` it asserted
+/// `assert_eq!(actions, vec![GameAction::DeclineShortcut])` — that the generator could offer no
+/// declaration at all, because its only `Fixed` candidate carried `template: None` and a
+/// published pin set fail-closes on that. Publishing the offer's own declaration is exactly the
+/// capability item-4 C2b adds, so the old assertion asserted the ABSENCE of this commit's
+/// subject. The name had to change with it: "decline only" is now false on this board.
 ///
-/// * `UntilLethal` is gated on `!schema.is_bounded()`. CR 732.2a: a count-free declaration
-///   names no legal repetition number against an offer that narrowed the bound, and
-///   `handle_declare_shortcut` refuses it — measured in
-///   [`u6_no_declaration_the_generator_can_emit_opens_the_window_while_the_accepted_shape_is_one_it_never_builds`].
-/// * `Fixed(max_iterations)` is gated on `schema.points.is_empty()` — it carries
-///   `template: None`, and a published pin set fail-closes on that. F4 publishes THREE points
-///   (`r1b`), so the gate is closed with room to spare; ONE would already have closed it.
+/// # What is kept, and why
 ///
-/// So the AI declines because it has nothing else it can legally say, not because it emitted a
-/// declaration the engine then accepted-and-discarded.
+/// Both reach-guards survive verbatim and have flipped from exclusion conjuncts to POSITIVE
+/// ones: `is_bounded()` is the count gate, and a NON-empty `points` set is what makes the
+/// declaration (rather than the empty-schema `None`) the reason the candidate appears. The
+/// `predicted_winner == None` guard stays as a measured property of this board.
 ///
-/// # Reach-guards (each excludes a way this could pass degenerately)
+/// # Non-vacuity
 ///
-/// * the offer is BOUNDED (`is_bounded()`, bound narrowed below the ceiling) — that is the
-///   `UntilLethal` gate's conjunct; on an unbounded offer that candidate would be PRESENT, so
-///   without this guard the row could pass on a board where it was never at issue;
-/// * `schema.points` is NON-empty — that is the `Fixed` gate's conjunct, and symmetrically the
-///   row would otherwise pass on a board where `Fixed` was never at issue;
-/// * `predicted_winner` is `None`. Recorded as a measured property of this board, NOT as
-///   reachability for `phase_ai::policies::loop_shortcut::LoopShortcutPolicy`'s
-///   `(None, UntilLethal) => reject` arm: since the bounded gate landed, this generator can no
-///   longer put that pair in front of the policy from a bounded offer, and
-///   `declare_until_lethal_with_no_predicted_winner_is_rejected` covers the arm directly.
+/// The template is asserted EQUAL to `offer_declaration(&state)`, never merely `Some(_)`: a
+/// generator that fabricated its own conformant-looking template would satisfy `is_some()` and
+/// fail this. `d6n_a_points_carrying_offer_without_a_declaration_enumerates_only_decline`
+/// (in-crate, `ai_support/candidates.rs`) is the paired negative — with `declaration: None` the
+/// candidate must NOT appear.
 ///
-/// REVERT-PROBE — one per excluded candidate, because a single probe would leave the OTHER
-/// exclusion holding the assertion up and report a false pass:
-///
-/// * drop `!schema.is_bounded()` from the `UntilLethal` push in `ai_support/candidates.rs`
-///   ⇒ `DeclareShortcut { UntilLethal, None }` reappears ⇒ this row FLIPS on the equality;
-/// * drop `schema.points.is_empty() &&` from the `Fixed` push ⇒ `Fixed(max_iterations)`
-///   appears ⇒ this row FLIPS on the equality.
+/// REVERT-PROBE: drop the `|| declaration.is_some()` disjunct from the generator's gate ⇒ the
+/// candidate disappears against this points-carrying offer ⇒ the equality flips.
 #[test]
-fn u6_the_ai_candidate_set_at_the_f4_offer_is_decline_only() {
+fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
     let mut state = load_f4();
     drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
     let (proposer, _certificate, schema) = offer_parts(&state);
+    let schema = schema.clone();
     let WaitingFor::LoopShortcut {
         predicted_winner, ..
     } = &state.waiting_for
@@ -2079,31 +2273,39 @@ fn u6_the_ai_candidate_set_at_the_f4_offer_is_decline_only() {
 
     assert!(
         schema.is_bounded() && schema.max_iterations < MAX_SHORTCUT_CYCLES_MIRROR,
-        "reach-guard: the generator's `Fixed` candidate is gated on `is_bounded()` too, so an \
-         unbounded offer would exclude it for the wrong reason. bounded={} max_it={}",
+        "reach-guard: the generator's `Fixed` candidate is gated on `is_bounded()`, so an \
+         unbounded offer would decide this row for the wrong reason. bounded={} max_it={}",
         schema.is_bounded(),
         schema.max_iterations
     );
     assert!(
         !schema.points.is_empty(),
-        "reach-guard: a NON-empty published pin set is the conjunct this row is about"
+        "reach-guard: a NON-empty published pin set is the conjunct this row is about — with \
+         `points` empty the candidate appears regardless of the declaration"
     );
     assert_eq!(
         *predicted_winner, None,
-        "reach-guard + REACHABILITY for `phase_ai::policies::loop_shortcut`: the F4 offer \
-         latches NO predicted winner, which is what routes its `(None, UntilLethal)` reject arm"
+        "reach-guard: the F4 offer latches NO predicted winner (a measured property of this \
+         board, recorded so a future board swap is visible)"
+    );
+    let declaration = offer_declaration(&state).expect(
+        "reach-guard: the offer PUBLISHES a declaration — that is the generator's new input",
     );
 
     // ── the seam: `phase-ai/src/search.rs` `WaitingFor::LoopShortcut { .. } =>` calls this ──
     let actions = engine::ai_support::legal_actions(&state);
     assert_eq!(
         actions,
-        vec![GameAction::DeclineShortcut],
-        "MEASURED: exactly one candidate. No `UntilLethal` declaration (gated on \
-         `!schema.is_bounded()`, and this offer narrowed its bound to {}), no `Fixed` \
-         declaration (gated on `schema.points.is_empty()`, and this schema publishes {} \
-         point(s)), and no declaration carrying a template at all — so the AI cannot pin the \
-         point the offer DID publish",
+        vec![
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(schema.max_iterations),
+                template: Some(declaration.clone()),
+            },
+            GameAction::DeclineShortcut,
+        ],
+        "CR 732.2a: exactly two candidates. No `UntilLethal` declaration (gated on \
+         `!schema.is_bounded()`, and this offer narrowed its bound to {}), and the `Fixed` \
+         declaration carries the ENGINE'S OWN pin set for the {} published point(s)",
         schema.max_iterations,
         schema.points.len()
     );
@@ -2111,24 +2313,15 @@ fn u6_the_ai_candidate_set_at_the_f4_offer_is_decline_only() {
     // Stated separately from the equality above so a future generator change that adds an
     // unrelated candidate reports the interesting fact rather than a diff of two long vectors.
     assert!(
-        !actions.iter().any(|a| matches!(
+        actions.iter().any(|a| matches!(
             a,
             GameAction::DeclareShortcut {
-                count: IterationCount::Fixed(_),
-                ..
-            }
+                count: IterationCount::Fixed(n),
+                template: Some(t),
+            } if *n == schema.max_iterations && *t == declaration
         )),
-        "no `Fixed` candidate is generated against a points-carrying offer"
-    );
-    assert!(
-        !actions.iter().any(|a| matches!(
-            a,
-            GameAction::DeclareShortcut {
-                template: Some(_),
-                ..
-            }
-        )),
-        "the generator never builds a pin template — that is the capability §5 U6 asks about"
+        "the candidate's template is the offer's own declaration, VALUE-EQUAL — a fabricated \
+         template of the same shape would fail here and pass an `is_some()` check"
     );
     assert_eq!(
         proposer, P0,
@@ -2136,11 +2329,25 @@ fn u6_the_ai_candidate_set_at_the_f4_offer_is_decline_only() {
     );
 }
 
-/// §5 U6 (ii) — the branch that fires, and the MEASURED reason it fires.
+/// §5 U6 (ii) — the generator's OWN candidate now opens the CR 732.2b window, and the four
+/// one-axis declare drives that say why.
 ///
-/// Every action the AI can take at this offer hands priority straight back; the accepted shape
-/// is one the generator never emits. Four declarations are driven through `apply()` on the SAME
-/// real offer board, differing one axis at a time:
+/// ⚠ **THIS ROW'S PREVIOUS CLAIM WAS THAT THE CAPABILITY WAS ABSENT, AND IT IS SUPERSEDED, NOT
+/// BROKEN.** As `u6_no_declaration_the_generator_can_emit_opens_the_window_while_the_accepted_
+/// shape_is_one_it_never_builds` its candidate loop asserted that EVERY AI candidate lands on
+/// `WaitingFor::Priority` — *"a `RespondToShortcut` here would mean the AI CAN open the
+/// CR 732.2b window, which is the capability this row measures absent"*. That capability is
+/// exactly what item-4 C2b adds, so the loop now asserts the complementary fact, still
+/// RE-DERIVED from the generator rather than hand-named: the declare candidate opens the window
+/// and the decline hands priority back.
+///
+/// **The four one-axis drives below are UNCHANGED and remain the engine-side guards the
+/// generator's gate depends on** — in particular `Fixed(max) + None ⇒ Priority`, which is a
+/// LIVE fail-closed guard (resolving a `template: None` declaration against the offer's own
+/// declaration is a declare-handler change deliberately out of this commit's partition).
+///
+/// Four declarations are driven through `apply()` on the SAME real offer board, differing one
+/// axis at a time:
 ///
 /// | declaration | measured |
 /// |---|---|
@@ -2159,7 +2366,7 @@ fn u6_the_ai_candidate_set_at_the_f4_offer_is_decline_only() {
 /// Reed's `may` was unpublished). Splitting the two keeps this row a DECLARE-time matrix.
 ///
 /// The `UntilLethal` rows are what justifies the generator's `!schema.is_bounded()` gate
-/// ([`u6_the_ai_candidate_set_at_the_f4_offer_is_decline_only`]): the engine refuses that count
+/// ([`d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration`]): the engine refuses that count
 /// against a narrowed bound on a real board, so emitting it was offering the search layer an
 /// action that is accepted-then-discarded. These rows keep measuring the ENGINE guard directly,
 /// which is the fact the generator gate depends on and must not be allowed to rot.
@@ -2178,8 +2385,7 @@ fn u6_the_ai_candidate_set_at_the_f4_offer_is_decline_only() {
 /// The row asserts both arms for exactly that reason: a single-guard probe would report the
 /// AI's candidate as still-refused and hide the change.
 #[test]
-fn u6_no_declaration_the_generator_can_emit_opens_the_window_while_the_accepted_shape_is_one_it_never_builds(
-) {
+fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_measured() {
     let mut state = load_f4();
     drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
     let (proposer, _certificate, schema) = offer_parts(&state);
@@ -2194,27 +2400,43 @@ fn u6_no_declaration_the_generator_can_emit_opens_the_window_while_the_accepted_
         state.last_loop_action_sequence.len()
     );
 
-    // Every AI candidate, driven through the public boundary. Since the bounded gate landed this
-    // set is `[DeclineShortcut]` alone, so on its own the loop is a WEAK statement — it is the
-    // four one-axis drives below that carry this row. Kept because it is the only assertion here
-    // that re-derives the candidate set from the generator rather than naming shapes by hand: a
-    // future generator change that reintroduces a declaration at this node has to survive it.
+    // Every AI candidate, driven through the public boundary and dispatched on its own SHAPE,
+    // so the expectation is re-derived from the generator rather than named by hand: a future
+    // generator change at this node has to survive it.
     let candidates = engine::ai_support::legal_actions(&state);
     assert!(
         !candidates.is_empty(),
         "positive control: an EMPTY candidate set would satisfy the loop below vacuously"
     );
+    let mut opened_the_window = 0usize;
     for action in candidates {
         let mut probe = state.clone();
         apply(&mut probe, proposer, action.clone()).expect("dispatched — refusal is a HANDBACK");
-        assert!(
-            matches!(probe.waiting_for, WaitingFor::Priority { .. }),
-            "CR 800.4a: the AI candidate {action:?} hands priority back. A \
-             `RespondToShortcut` here would mean the AI CAN open the CR 732.2b window, which \
-             is the capability this row measures absent. got {:?}",
-            probe.waiting_for
-        );
+        match &action {
+            GameAction::DeclareShortcut { .. } => {
+                opened_the_window += 1;
+                assert!(
+                    matches!(probe.waiting_for, WaitingFor::RespondToShortcut { .. }),
+                    "CR 732.2b: the generator's own declare candidate {action:?} must OPEN the \
+                     accept-or-shorten window — it carries the engine's published declaration, \
+                     which is the shape the accepted-control arm below proves the engine takes. \
+                     A `Priority` here means the AI is enumerating an action the engine refuses. \
+                     got {:?}",
+                    probe.waiting_for
+                );
+            }
+            _ => assert!(
+                matches!(probe.waiting_for, WaitingFor::Priority { .. }),
+                "CR 800.4a: the decline candidate {action:?} hands priority back, got {:?}",
+                probe.waiting_for
+            ),
+        }
     }
+    assert_eq!(
+        opened_the_window, 1,
+        "reach-guard for the loop above: EXACTLY ONE candidate is a declaration, so neither arm \
+         of the match is vacuous"
+    );
 
     let outcome = |count: IterationCount, template: Option<_>| {
         let mut probe = state.clone();

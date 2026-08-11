@@ -1079,12 +1079,14 @@ fn loop_shortcut_acting_player_reads_proposer() {
         predicted_winner: Some(P0),
         certificate: cert.clone(),
         schema: ShortcutDecisionSchema::default(),
+        declaration: None,
     };
     let wf_b = WaitingFor::LoopShortcut {
         proposer: P2,
         predicted_winner: None,
         certificate: cert.clone(),
         schema: ShortcutDecisionSchema::default(),
+        declaration: None,
     };
     assert_eq!(wf_a.acting_player(), Some(P1));
     assert_eq!(wf_b.acting_player(), Some(P2));
@@ -1118,6 +1120,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         predicted_winner: Some(P0),
         certificate: cert.clone(),
         schema: ShortcutDecisionSchema::default(),
+        declaration: None,
     };
     apply(&mut delegated, P0, GameAction::DeclineShortcut)
         .expect("the turn controller may submit the priority holder's decline");
@@ -1691,6 +1694,7 @@ fn injected_3p_one_faller_no_crown() {
         predicted_winner: Some(P0),
         certificate: synthetic_lethal_cert(),
         schema: ShortcutDecisionSchema::default(),
+        declaration: None,
     };
     runner
         .act(GameAction::DeclareShortcut {
@@ -1832,6 +1836,7 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
         predicted_winner: Some(P0),
         certificate: synthetic_lethal_cert(),
         schema: schema.clone(),
+        declaration: None,
     };
     runner
         .act(GameAction::DeclareShortcut {
@@ -1852,6 +1857,7 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
         predicted_winner: Some(P0),
         certificate: synthetic_lethal_cert(),
         schema,
+        declaration: None,
     };
     runner2
         .act(GameAction::DeclareShortcut {
@@ -1908,6 +1914,7 @@ fn injected_3p_unequal_life_pin_all_no_crown() {
             predicted_winner: Some(P0),
             certificate: synthetic_lethal_cert(),
             schema: ShortcutDecisionSchema::default(),
+            declaration: None,
         };
         runner
             .act(GameAction::DeclareShortcut {
@@ -4297,6 +4304,7 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
         predicted_winner: Some(P0),
         certificate: cert,
         schema,
+        declaration: None,
     };
 
     let targets_of = |wf: &WaitingFor| -> Vec<TargetRef> {
@@ -6513,6 +6521,7 @@ fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
             predicted_winner: Some(P0),
             certificate: synthetic_lethal_cert(),
             schema: schema.clone(),
+            declaration: None,
         };
         runner
             .act(GameAction::DeclareShortcut {
@@ -8356,6 +8365,7 @@ fn bounded_offer_parts(
             predicted_winner: None,
             certificate,
             schema,
+            declaration: _,
         } => (*proposer, certificate, schema),
         other => panic!("expected a bounded LoopShortcut offer, got {other:?}"),
     }
@@ -11301,6 +11311,7 @@ fn g1_declare_verdict(
         predicted_winner: Some(P0),
         certificate: synthetic_lethal_cert(),
         schema,
+        declaration: None,
     };
     runner
         .act(GameAction::DeclareShortcut {
@@ -11988,6 +11999,7 @@ fn r28_empty_schema_offer(runner: &mut GameRunner) {
         predicted_winner,
         certificate,
         schema,
+        declaration: _,
     } = runner.state().waiting_for.clone()
     else {
         panic!("staged from the live offer, never from thin air");
@@ -12000,6 +12012,11 @@ fn r28_empty_schema_offer(runner: &mut GameRunner) {
             points: vec![],
             ..schema
         },
+        // `None` is a RULING, not a default. Passing the live field through would stage the R5
+        // board's measured `Some` declaration into a control whose whole purpose is to be
+        // declaration-free — and it would contradict the invariant that an empty schema
+        // publishes no declaration, at the very fixture that stages an empty schema.
+        declaration: None,
     };
 }
 
@@ -12015,6 +12032,7 @@ fn r28_nonempty_schema_offer(runner: &mut GameRunner, slot: DecisionSlot) {
         predicted_winner,
         certificate,
         schema,
+        declaration: _,
     } = runner.state().waiting_for.clone()
     else {
         panic!("staged from the live offer, never from thin air");
@@ -12039,6 +12057,10 @@ fn r28_nonempty_schema_offer(runner: &mut GameRunner, slot: DecisionSlot) {
             }],
             ..schema
         },
+        // Same ruling as [`r28_empty_schema_offer`]: both helpers exist to stage `schema.points`
+        // and NOTHING else, so the two must keep differing in exactly one field. Staging a live
+        // `Some` here would add a second axis to a pair whose whole value is being one apart.
+        declaration: None,
     };
 }
 
@@ -12361,22 +12383,41 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
 /// candidate was emitted), and the answer-beat sampling site now announces the Bond's trigger
 /// entry, so it publishes one `Targets` point. This row is the pin for that transition.
 ///
-/// * **arm (a), the live board:** one published point ⇒ the candidate set is `DeclineShortcut`
-///   alone, and specifically carries NO `Fixed` declaration.
+/// * **arm (a), the live board:** one published point, and the offer carries the engine's own
+///   declaration for it ⇒ the `Fixed` candidate is emitted CARRYING THAT DECLARATION.
 /// * **arm (b), the POSITIVE CONTROL, same board one field apart:** stage the schema's `points`
-///   empty ([`r28_empty_schema_offer`]) ⇒ the `Fixed` candidate RETURNS. Without this arm,
-///   arm (a) would be satisfied by a generator that had stopped emitting `Fixed` for any
-///   reason at all — including not running.
+///   empty ([`r28_empty_schema_offer`]) ⇒ the `Fixed` candidate is emitted with `template: None`.
+///   Without this arm, arm (a) would be satisfied by a generator that emitted `Fixed`
+///   unconditionally.
+///
+/// ⚠ **ARM (a)'S PREVIOUS CLAIM WAS THE OPPOSITE, AND IT IS SUPERSEDED, NOT BROKEN.** As
+/// `ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin` it asserted
+/// `assert_eq!(live, vec![GameAction::DeclineShortcut])` — that a published pin set WITHDREW the
+/// declare candidate, because the only declaration the generator could emit carried
+/// `template: None` and would be accepted-then-discarded. item-4 C2b gives the generator the
+/// offer's own declaration to carry, so the withdrawal is exactly the behaviour this commit
+/// replaces, and the name had to stop saying "withdraws".
+///
+/// **ARM (b) IS BYTE-IDENTICAL AND THAT IS EARNED, NOT LUCK.** [`r28_empty_schema_offer`] is a
+/// rest-less destructure plus a rebuild literal, so C2b had to CHOOSE a value for `declaration`
+/// there; it passes `None`. Threading the live field through would stage this board's measured
+/// `Some` declaration into a control that exists to be declaration-free, and arm (b)'s
+/// `template: None` match would fail. See that helper's own comment.
 ///
 /// Both arms read the ENGINE's candidate set through `legal_actions`, the same seam
 /// `phase-ai`'s search calls, so this is not a re-implementation of the gate agreeing with
 /// itself. The row is deliberately NOT `#[ignore]`d: the two pre-existing `phase-ai` bounded
 /// rows are, and an ignored row reports `ok` while executing nothing.
 #[test]
-fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() {
+fn ai1_the_bounded_declare_candidate_carries_the_offers_own_pin_when_one_is_published() {
     // ── arm (a): the LIVE offer, which now publishes one point ──
     let (mut runner, _slot, _bond, _hexproof, _lives) = r5_reach_offer();
-    let WaitingFor::LoopShortcut { schema, .. } = runner.state().waiting_for.clone() else {
+    let WaitingFor::LoopShortcut {
+        schema,
+        declaration,
+        ..
+    } = runner.state().waiting_for.clone()
+    else {
         panic!("r5_reach_offer returns at the offer");
     };
     assert!(
@@ -12390,13 +12431,23 @@ fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() 
         "REACH-GUARD: the published pin set is the conjunct this row is about; got {:?}",
         schema.points
     );
+    let declaration = declaration.expect(
+        "REACH-GUARD: this board's proposer answered its one published point, so the offer \
+         publishes a declaration — without one arm (a) would measure the fail-closed path \
+         `d6n_a_points_carrying_offer_without_a_declaration_enumerates_only_decline` covers",
+    );
     let live = engine::ai_support::legal_actions(runner.state());
     assert_eq!(
         live,
-        vec![GameAction::DeclineShortcut],
-        "AI1(a): against a points-carrying bounded offer the ONLY legal candidate is the \
-         decline — a `template: None` declaration is accepted and then discarded by \
-         `handle_declare_shortcut`, which is worse than no candidate at all"
+        vec![
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(schema.max_iterations),
+                template: Some(declaration),
+            },
+            GameAction::DeclineShortcut,
+        ],
+        "AI1(a): against a points-carrying bounded offer that HAS a declaration, the generator \
+         emits it — carrying the ENGINE's own pin set, never one the AI built"
     );
 
     // ── arm (b): the POSITIVE CONTROL — the same board with an EMPTY point set ──
@@ -12418,6 +12469,110 @@ fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() 
         staged.contains(&GameAction::DeclineShortcut),
         "AI1(b): the decline stays legal on both arms — only the `Fixed` candidate moves, which \
          is what makes the pair one axis apart"
+    );
+}
+
+/// **Row D7 — a PRE-DECLARATION save decodes with `declaration: None`, i.e. today's refusal.**
+///
+/// CR 732.2a. `WaitingFor::LoopShortcut.declaration` carries `#[serde(default)]`, following
+/// `schema`'s precedent on the same variant. The consequence is CHOSEN, not discovered: a
+/// snapshot written before this field existed decodes with `None`, the AI's declare candidate
+/// stays withheld (`declaration.is_some()` is false) and the human path is unchanged — the same
+/// behaviour that shipped before the field. Fail-closed by construction.
+///
+/// # Non-vacuity
+///
+/// The positive control is the round-trip WITH the key present: a decoder that always produced
+/// `None` — or a `declaration` that never serialized at all — fails it. And the key's removal is
+/// asserted to have actually removed something, so a typo in the field name cannot make the
+/// "old save" arm pass by decoding an unmodified payload.
+///
+/// # ⚠ REVERT-PROBE, MEASURED — and the OBVIOUS probe is INERT, which is why it is named here
+///
+/// Deleting `#[serde(default)]` from the field does **NOT** red this row: measured, the stripped
+/// payload still decodes and this test still passes. `serde_derive` routes a missing field
+/// through `serde::__private::de::missing_field`, whose deserializer answers `deserialize_option`
+/// with `visit_none` — so an `Option<T>` field is already missing-tolerant, and the attribute is
+/// belt-and-braces here (it follows `schema`'s precedent on the same variant and states the
+/// intent explicitly; it becomes load-bearing the moment the field stops being an `Option`).
+///
+/// The two probes that DO red this row, one per arm, both RUN:
+///
+/// * `#[serde(skip)]` in place of `#[serde(default)]` ⇒ the declaration never reaches the wire
+///   ⇒ the POSITIVE CONTROL round-trip fails (a `Some(..)` decodes back as `None`);
+/// * `#[serde(default = "…")]` pointing at a function returning `Some(..)` ⇒ the stripped
+///   payload decodes with a fabricated declaration ⇒ the old-save arm's `matches!` fails.
+#[test]
+fn d7_a_pre_declaration_save_decodes_with_no_declaration() {
+    let slot = DecisionSlot::target(YieldTarget::ThisObject {
+        source_id: ObjectId(881),
+        incarnation: Some(1),
+        trigger_description: None,
+    });
+    let offer = WaitingFor::LoopShortcut {
+        proposer: P0,
+        predicted_winner: None,
+        certificate: synthetic_lethal_cert(),
+        schema: ShortcutDecisionSchema {
+            iteration_count: IterationCount::Fixed(3),
+            max_iterations: 3,
+            points: vec![DecisionPoint {
+                slot: slot.clone(),
+                kind: DecisionPointKind::Targets {
+                    legal_targets: vec![TargetRef::Player(P1)],
+                    min_targets: 1,
+                    max_targets: 1,
+                    ordered: false,
+                },
+            }],
+            convoke_tappable_count: 0,
+        },
+        declaration: Some(DecisionTemplate {
+            owner: P0,
+            decisions: vec![PinnedDecision::Targets {
+                slot: slot.clone(),
+                targets: vec![TargetPin::Player(P1)],
+            }],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::Fixed(3),
+            },
+            key: DecisionGroupKey::from_sources(&[slot.source], DecisionKind::LoopChoice),
+        }),
+    };
+
+    let mut json = serde_json::to_value(&offer).expect("the offer serializes");
+    // POSITIVE CONTROL: with the key present the declaration survives the wire intact.
+    assert_eq!(
+        serde_json::from_value::<WaitingFor>(json.clone()).expect("round-trips"),
+        offer,
+        "a live offer's declaration must survive serialization — otherwise the `None` below \
+         would prove nothing about the DEFAULT"
+    );
+
+    // The pre-C2b payload: the same offer with no `declaration` key at all.
+    let removed = json["data"]
+        .as_object_mut()
+        .expect("the adjacently-tagged payload is an object")
+        .remove("declaration");
+    assert!(
+        removed.is_some(),
+        "reach-guard: the key must have been present to remove, else the 'old save' arm below \
+         decodes an unmodified payload and asserts nothing"
+    );
+    let decoded: WaitingFor = serde_json::from_value(json).expect(
+        "an OLD save must still decode (CR 732.2a offers \
+             predate this field)",
+    );
+    assert!(
+        matches!(
+            decoded,
+            WaitingFor::LoopShortcut {
+                declaration: None,
+                ..
+            }
+        ),
+        "the forward-compatible default is `None`, which is today's refusal — fail-closed. got \
+         {decoded:?}"
     );
 }
 

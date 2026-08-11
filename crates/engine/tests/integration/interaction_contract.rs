@@ -2365,6 +2365,7 @@ fn loop_shortcut_zero_max_iterations_is_rejected_not_clamped() {
                 max_iterations,
                 ..Default::default()
             },
+            declaration: None,
         };
         bind(&mut state, "loop-zero-bound");
         state
@@ -2426,6 +2427,7 @@ fn loop_shortcut_narrowed_max_iterations_bounds_the_picker() {
             max_iterations: 3,
             ..Default::default()
         },
+        declaration: None,
     };
     bind(&mut state, "loop-narrowed-bound");
 
@@ -2474,6 +2476,7 @@ fn loop_shortcut_number_schema_accepts_a_fixed_count_above_one() {
             // No narrowed CR 732.2a bound — `Default` carries the global cap.
             ..Default::default()
         },
+        declaration: None,
     };
     bind(&mut state, "loop-count");
     let view = priority_view(&state);
@@ -2570,6 +2573,7 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
             ],
             convoke_tappable_count: 1,
         },
+        declaration: None,
     };
     bind(runner.state_mut(), "loop-point-kinds");
 

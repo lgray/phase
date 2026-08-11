@@ -230,7 +230,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
 
     assert_eq!(
         (production.len(), in_test.len()),
-        (22, 17),
+        (22, 21),
         "CR 732.2a OFFER-WRITER SURFACE CHANGED (not re-measured — this number is an \
          INVARIANCE pin over the whole 5d U-series).\n\
          The three CERTIFICATION-PATH writers are `reconcile_terminal_result` (object-growth \
@@ -261,6 +261,27 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          multiset, and that conjunct is what makes this the benign case rather than a surface \
          change; if it moves again, name the new site here too rather than only moving the \
          number.\n\
+         FIFTH ADJUDICATION, 17 => 21: item-4 C2b publishes the bounded offer's own CR 732.2a \
+         `declaration` on `WaitingFor::LoopShortcut`, and its two in-crate rows spell the anchor \
+         FOUR times between them. Named individually, because this census counts LINES (its \
+         `classify()` is `line.contains(needle)`, deliberately replacing a construction-shaped \
+         detector), so a mint and a read of the same fixture are two counted sites: (1) \
+         `engine/src/game/visibility.rs` row D5-h's MINT, `d5h_offer` — one local helper called \
+         twice, staging a declaration whose pins are all-seat vs. one naming a hidden object; \
+         (2) `engine/src/game/visibility.rs` row D5-h's READ, `d5h_projected_declaration` — one \
+         local helper destructuring `filter_state_for_viewer(..).waiting_for`, called three \
+         times (hidden/viewer, hidden/proposer, public); (3) \
+         `engine/src/ai_support/candidates.rs` row D6-n's MINT, `d6n_offer` — one local helper \
+         called twice, `declaration: None` vs `Some(..)` and nothing else; (4) \
+         `engine/src/ai_support/candidates.rs` row D6-n's READ — the reach-guard destructure \
+         that asserts the staged offer really `is_bounded()` and really publishes a point \
+         BEFORE the negative claim, without which that row would pass on the wrong conjunct. \
+         Site (4) was NOT predicted (the plan budgeted 20 on the reading that D6-n's assertions \
+         touch only `legal_actions`); the measurement wins and the site is named rather than the \
+         row contorted to hit the budget. ALL FOUR ARE `#[cfg(test)]` FIXTURES: none writes an \
+         offer the period machinery can certify. PRODUCTION STAYED AT 22 with an IDENTICAL \
+         per-file multiset — C2b adds the field INSIDE existing literals and patterns and \
+         introduces no new production anchor line.\n\
          measured per-file production multiset: {multiset:?}\n\
          production: {production:?}\n\
          test: {in_test:?}"

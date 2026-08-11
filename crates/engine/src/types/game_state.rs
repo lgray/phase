@@ -11087,6 +11087,33 @@ pub enum WaitingFor {
         /// forward-compatible deserialization of pre-schema snapshots.
         #[serde(default)]
         schema: crate::analysis::decision_template::ShortcutDecisionSchema,
+        /// CR 732.2a: the declaration the ENGINE itself can already specify from what this
+        /// window's proposer actually did — one pin per published point of `schema`, read out
+        /// of the `(DecisionSlot, PlayerId)` answer journal at offer construction, or `None`
+        /// when any published point has no single answer under the proposer's own key.
+        /// Built by `game::engine::build_bounded_declaration`; `None` on every other mint.
+        ///
+        /// LATCHED at offer time, not a live view: it is a snapshot of the answers the
+        /// detection window observed. `TargetPin::Player` is state-independent and
+        /// `TargetPin::ByIdentity` re-resolves live per iteration inside
+        /// `analysis::decision_template::resolve` (CR 608.2b), so latching the pin SET here
+        /// latches no per-iteration outcome.
+        ///
+        /// `#[serde(default)]` follows `schema`'s precedent on this same variant. Consequence,
+        /// chosen rather than discovered: a pre-declaration save decodes with `None`, which is
+        /// exactly today's refusal — fail-closed. ⚠ MEASURED: the attribute is BELT-AND-BRACES
+        /// on an `Option` field, not the mechanism — `serde_derive` routes a missing field
+        /// through `missing_field`, whose deserializer answers `deserialize_option` with
+        /// `visit_none`, so removing it changes no decode today. It is kept because it states
+        /// the intent at the field and becomes load-bearing the moment this stops being an
+        /// `Option`. Either way this field IS a client INGRESS — a restored save can carry a
+        /// hostile declaration, and the AI generator hands whatever it finds straight to
+        /// `GameAction::DeclareShortcut`. That is safe today only
+        /// because `handle_declare_shortcut` runs the owner firewall, `predictability_gate`
+        /// and `validate_pins` on EVERY declaration regardless of origin, and nothing here
+        /// adds a path around them.
+        #[serde(default)]
+        declaration: Option<crate::analysis::decision_template::DecisionTemplate>,
     },
     /// CR 732.2b/c: the APNAP accept-or-shorten window. After the proposer declares the
     /// shortcut, each other living player is prompted in turn order (drain-one-advance
@@ -22888,6 +22915,7 @@ mod forced_cascade_window_tests {
                     predicted_winner: Some(PlayerId(0)),
                     certificate: certificate(),
                     schema: Default::default(),
+                    declaration: None,
                 },
             ),
             (
