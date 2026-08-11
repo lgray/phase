@@ -831,13 +831,20 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                     _ => None,
                 })
                 .sum();
-            // CR 732.2b + CR 115.2: the responder's right is to name a place where they will
-            // make "a choice that's different than what's been proposed", so the proposal they
-            // see must be the whole proposal or none of it. A partially-redacted pin set is a
-            // LIE about what was proposed — it would show a shortened sequence the proposer
-            // never suggested — so this is ALL-OR-NOTHING: one pin naming an object this viewer
-            // may not see drops the entire declaration. A `TargetPin::Player` names a seat,
-            // which CR 115.2 makes a public legal target, and carries no hidden identity.
+            // CR 732.2b: the responder's right is to name a place where they will make "a
+            // choice that's different than what's been proposed", so the proposal they see must
+            // be the whole proposal or none of it. A partially-redacted pin set is a LIE about
+            // what was proposed — it would show a shortened sequence the proposer never
+            // suggested — so this is ALL-OR-NOTHING: one pin naming an object this viewer may
+            // not see drops the entire declaration.
+            //
+            // A `TargetPin::Player` needs no redaction, and that is an ENGINE property rather
+            // than a CR one — no rule makes seat identity public. This projection hides card
+            // identities and hidden-zone contents; the seat list itself is never per-viewer
+            // filtered (`filtered.players[..]` is redacted in place, never removed), so a
+            // `PlayerId` names something every viewer already has. CR 115.2 is cited for the
+            // narrower thing it actually says: a spell or ability may target a player when it
+            // specifies so, which is what makes a seat a legal pin value at all.
             //
             // Reuses `target_hidden` above rather than re-deriving the composite: the
             // declaration's object identities and the schema's legal targets must be answerable
@@ -5973,8 +5980,9 @@ mod tests {
     /// where they will make a game choice that's different than what's been proposed" — so what
     /// they receive must be the whole proposal or none of it. A partially-redacted pin set would
     /// show a sequence the proposer never suggested, which is why this is ALL-OR-NOTHING rather
-    /// than a per-pin filter. CR 115.2 makes a player a legal target in the open, so a
-    /// `TargetPin::Player` carries no hidden identity and travels unredacted.
+    /// than a per-pin filter. A `TargetPin::Player` travels unredacted because seat identity is
+    /// public IN THIS ENGINE — no CR rule states that, and the redaction comment says so; CR
+    /// 115.2 only establishes that a seat can be a targeted (hence pinnable) value.
     ///
     /// # This path is UNREACHABLE through today's publisher, and the row says so
     ///
@@ -6026,7 +6034,7 @@ mod tests {
              declaration — a partial pin set would state a proposal that was never made"
         );
 
-        // ── the paired positive: every pin is a CR 115.2 seat ──
+        // ── the paired positive: every pin is a seat, which carries no hidden identity ──
         let public_state = d5h_offer(|_hidden| vec![TargetPin::Player(D5H_VIEWER)]);
         assert_eq!(
             d5h_projected_declaration(&public_state, D5H_VIEWER),

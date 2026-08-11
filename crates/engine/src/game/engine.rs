@@ -2420,6 +2420,28 @@ fn certified_bounded_cycle_offer<'a>(
 /// ENGINE'S OWN observed answers. Two inputs, one shape; a reviewer reading only the shape
 /// would otherwise see duplication.
 ///
+/// # PUBLISHED IS VALIDATED — `is_some()` means "the declare handler will take this"
+///
+/// `ai_support::candidates` gates its `DeclareShortcut` candidate on `declaration.is_some()`
+/// and hands this very template to `handle_declare_shortcut`, which validates it. So the
+/// publisher must not be able to emit anything that handler would refuse: step (5) runs the
+/// SHARED [`crate::analysis::decision_template::declaration_conforms`] — the same coverage +
+/// value-legality predicate that handler and the human ingress run — rather than a third
+/// derivation of `required` alongside theirs.
+///
+/// The range is `shortcut_validated_range(&schema.iteration_count, ..)`, i.e. this offer's own
+/// ceiling, because it is the WIDEST count any declarer may name against this schema
+/// (`is_bounded()` publishers set `iteration_count == Fixed(max_iterations)` and the handler
+/// rejects anything above the cap). `validate_pins` re-checks `0..range`, so passing at the
+/// ceiling implies passing at every shorter `Fixed(n)` the handler could be given.
+///
+/// LATENT, NOT LIVE, and the distinction is not decoration: no tracked board reaches a
+/// declaration this refuses — row D1 measures both gates passing at the full range on all
+/// three dumps — because the publisher copies `legal_targets` from the same announcement the
+/// journal answer came from, and `record_trigger_target_answer` bails above one announced
+/// slot while this schema hard-codes `min/max: 1`. That agreement is an accident of two
+/// functions with two predicates; step (5) is what makes it an invariant.
+///
 /// FAIL-CLOSED on every uncertainty, because a wrong pin is worse than no offer:
 ///
 /// * an empty point set publishes no declaration at all — a declaration against an empty
@@ -2492,7 +2514,7 @@ fn build_bounded_declaration(
     // (4) The template. `replay.count` carries the offer's own SUGGESTION; the driving count
     // comes off `GameAction::DeclareShortcut` and nothing reads this copy (see
     // `build_recast_template`'s note and `analysis::decision_template::resolve`'s doc).
-    Some(DecisionTemplate {
+    let template = DecisionTemplate {
         owner: proposer,
         decisions,
         replay: ReplayMode::Scheduled {
@@ -2506,7 +2528,17 @@ fn build_bounded_declaration(
                 .collect::<Vec<_>>(),
             DecisionKind::LoopChoice,
         ),
-    })
+    };
+    // (5) VALIDATE BEFORE PUBLISHING — the same authority `handle_declare_shortcut` accepts
+    // under. See this function's "Published is validated" doc section for why the range is the
+    // schema's OWN count and why this is not a third derivation.
+    crate::analysis::decision_template::declaration_conforms(
+        schema,
+        &template,
+        shortcut_validated_range(&schema.iteration_count, Some(&template)),
+        state,
+    )
+    .then_some(template)
 }
 
 /// CR 704.5a / CR 704.5c: a determinate lethal drain (0-or-less life / 10-poison) repeats
@@ -5907,8 +5939,6 @@ fn handle_declare_shortcut(
     if !offer.schema.points.is_empty() {
         match &template {
             Some(t) => {
-                let required: Vec<crate::analysis::decision_template::DecisionSlot> =
-                    offer.schema.points.iter().map(|p| p.slot.clone()).collect();
                 // CR 732.2a: validate over the range the ACCEPTED COUNT will drive, not
                 // over the schedule's own period. `shortcut_drive_period` answers a
                 // different question (how many cycles one measurement must aggregate), and
@@ -5916,15 +5946,15 @@ fn handle_declare_shortcut(
                 // set at an index the count reaches, and REFUSED conforming declarations
                 // whose count is shorter than the schedule.
                 let validated_range = shortcut_validated_range(&count, Some(t));
-                if crate::analysis::decision_template::predictability_gate(t, &required).is_err()
-                    || crate::analysis::decision_template::validate_pins(
-                        offer.schema,
-                        t,
-                        validated_range,
-                        state,
-                    )
-                    .is_err()
-                {
+                // Coverage + value legality via the shared authority, so the predicate this
+                // handler ACCEPTS under is the same one `build_bounded_declaration` PUBLISHES
+                // under and the human ingress EMITS under. The range is this site's own.
+                if !crate::analysis::decision_template::declaration_conforms(
+                    offer.schema,
+                    t,
+                    validated_range,
+                    state,
+                ) {
                     reject_shortcut_declaration(state, &mut result);
                     return Ok(result);
                 }
@@ -15601,6 +15631,145 @@ mod bounded_declaration_tests {
             "CR 732.2a: an offer that publishes no choice states no declaration"
         );
     }
+
+    /// **Row D8 — the PUBLISHER cannot publish what the HANDLER would refuse.**
+    ///
+    /// `ai_support::candidates` reads `declaration.is_some()` as *"`handle_declare_shortcut`
+    /// will accept this"* and hands the published template straight to `DeclareShortcut`. That
+    /// reading was unenforced: the publisher ran neither firewall half, and the two sides agreed
+    /// only because the publisher copies `legal_targets` from the same announcement the journal
+    /// answer came from. This row pins the implication itself.
+    ///
+    /// # The two halves are measured on DIFFERENT instruments, so this is not circular
+    ///
+    /// The "handler refuses it" half is measured by calling `validate_pins` DIRECTLY on the
+    /// template the pre-fix publisher would have emitted — the handler's own value-legality
+    /// firewall, at the range that handler validates a `Fixed(max_iterations)` declaration over.
+    /// Only then is the publisher asked. A row that asserted `is_none()` alone would pass on a
+    /// publisher that refuses for any unrelated reason.
+    ///
+    /// # Reach-guards, asserted BEFORE the claim
+    ///
+    /// The journal really holds the hostile answer (else the publisher exits one step earlier at
+    /// `loop_answer(..)?` and the refusal is not this one), and `predictability_gate` PASSES on
+    /// that template (both published slots are pinned) — so the refusal is attributable to the
+    /// VALUE half, not to coverage.
+    ///
+    /// # LATENT, not live — the row says so rather than implying a bug was shipped
+    ///
+    /// No tracked board reaches this: `record_trigger_target_answer` journals the seat it
+    /// ANNOUNCED, and the publisher's `legal_targets` come from that same announcement, so the
+    /// disagreement staged here is fixture-made. Reachability is NOT claimed.
+    ///
+    /// REVERT-PROBE: delete step (5)'s `declaration_conforms(..)` call (return `Some(template)`)
+    /// ⇒ the hostile arm's `is_none()` flips while the control stays green.
+    ///
+    /// *What wrong implementation would still pass this row?* One that validates COVERAGE only —
+    /// `predictability_gate` alone passes here, which is why the reach-guard asserts it. And one
+    /// that refuses everything, which the control arm refuses.
+    #[test]
+    fn d8_the_publisher_refuses_a_declaration_the_declare_handler_would_reject() {
+        use crate::analysis::decision_template::{
+            declaration_conforms, predictability_gate, validate_pins, DecisionGroupKey,
+            DecisionKind, DecisionTemplate, ReplayMode,
+        };
+
+        let schema = may_and_target_schema();
+        let [may_point, target_point] = &schema.points[..] else {
+            panic!("the fixture publishes exactly two points");
+        };
+        // CR 608.2b: the published legal set names AIMED only, so a pin naming PROPOSER is
+        // outside the offer's own legal set — an illegal pin VALUE at a legally exposed slot.
+        assert!(
+            !matches!(&target_point.kind, DecisionPointKind::Targets { legal_targets, .. }
+                if legal_targets.contains(&TargetRef::Player(PROPOSER))),
+            "reach-guard: PROPOSER must NOT be a published legal target, or the hostile pin \
+             below is a conforming one and this row measures nothing"
+        );
+
+        for (label, pinned, expect_published) in [
+            ("hostile", TargetPin::Player(PROPOSER), false),
+            ("control", TargetPin::Player(AIMED), true),
+        ] {
+            let mut state = recording_state();
+            state.record_loop_answer(
+                may_point.slot.clone(),
+                PROPOSER,
+                LoopAnswer::Uniform(LoopAnswerValue::May(MayChoiceOption::Take)),
+            );
+            state.record_loop_answer(
+                target_point.slot.clone(),
+                PROPOSER,
+                LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![pinned.clone()])),
+            );
+            assert_eq!(
+                state.loop_answer(&target_point.slot, PROPOSER),
+                Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
+                    pinned.clone()
+                ]))),
+                "[{label}] reach-guard: the answer must be journalled, or the publisher exits at \
+                 `loop_answer(..)?` and the verdict below is the 'never answered' one"
+            );
+
+            // The template the UNVALIDATED publisher would have emitted, spelled out here so the
+            // handler-side half below is measured on it rather than on whatever the publisher
+            // now returns.
+            let as_published = DecisionTemplate {
+                owner: PROPOSER,
+                decisions: vec![
+                    PinnedDecision::MayChoice {
+                        slot: may_point.slot.clone(),
+                        take: MayChoiceOption::Take,
+                    },
+                    PinnedDecision::Targets {
+                        slot: target_point.slot.clone(),
+                        targets: vec![pinned.clone()],
+                    },
+                ],
+                replay: ReplayMode::Scheduled {
+                    count: schema.iteration_count.clone(),
+                },
+                key: DecisionGroupKey::from_sources(
+                    &schema
+                        .points
+                        .iter()
+                        .map(|point| point.slot.source.clone())
+                        .collect::<Vec<_>>(),
+                    DecisionKind::LoopChoice,
+                ),
+            };
+            let required: Vec<_> = schema.points.iter().map(|p| p.slot.clone()).collect();
+            assert!(
+                predictability_gate(&as_published, &required).is_ok(),
+                "[{label}] reach-guard: COVERAGE passes on this template — every published slot \
+                 is pinned — so the handler's verdict below is the VALUE half's"
+            );
+
+            // ── HALF 1, on the handler's own instrument: would `handle_declare_shortcut` take
+            //    it, at the range it validates the AI's `Fixed(max_iterations)` candidate over?
+            let handler_accepts =
+                validate_pins(&schema, &as_published, schema.max_iterations, &state).is_ok();
+            assert_eq!(
+                handler_accepts, expect_published,
+                "[{label}] the declare-time pin firewall's verdict on the published shape"
+            );
+            assert_eq!(
+                declaration_conforms(&schema, &as_published, schema.max_iterations, &state),
+                handler_accepts,
+                "[{label}] and the shared authority agrees with its own value half — it is the \
+                 conjunction of the two gates, not a third predicate"
+            );
+
+            // ── HALF 2: the PUBLISHER's verdict must be the same one ──
+            assert_eq!(
+                build_bounded_declaration(&state, PROPOSER, &schema).is_some(),
+                handler_accepts,
+                "[{label}] CR 732.2a: `declaration.is_some()` is read as 'the declare handler \
+                 will accept this'. A template the handler refuses must NOT be published, and a \
+                 template it accepts must be"
+            );
+        }
+    }
 }
 
 /// PR-7 Combo-UI Stage 2: the mid-drive pin injector (item 4) + the drive-period seam (item 6).
@@ -17737,9 +17906,31 @@ mod stage2_injector_tests {
                 // and the partition (5/8/25) both fired GREEN on the run that caught this; the panic was on
                 // this third assert alone, which is what makes it a coordinate shift rather than a
                 // population change.
-                // ⚠ REBASE #3: `:12614 ⇒ :12613`, located by content digest, offset from
+                //
+                // item-4 C2b FIX ROUND (F1: `declaration_conforms`, the shared declare-legality
+                // authority), base `908720e6f`: `:12552 ⇒ :12582`, `+30`, and ONLY this entry moved —
+                // the other four live in `effects/` and `scoped_library_search.rs`, untouched here.
+                // LOCAL, not upstream, so the CI-vs-local diagnosis in the header does not apply.
+                //
+                // LOCATED BY CONTENT FIRST, as this log requires: the line at `:12582` is
+                // sha256-identical (`8a544e878d3e77fb80391b95…`, the digest this producer has carried
+                // since `a6d1a0e62`) to `908720e6f:game/engine.rs:12552`, and it is still inside
+                // `begin_pending_trigger_target_selection`, which moved by the same `+30` (opens
+                // `:12418 ⇒ :12448`). Arithmetic afterwards as a CHECK: `git diff -U0` on this file has
+                // five hunks above the producer — `+22` (`build_bounded_declaration`'s "PUBLISHED IS
+                // VALIDATED" doc section), `0` (the `Some(..)` tail rebound to `let template = ..`),
+                // `+10` (step (5)'s `declaration_conforms` call), `-2` (the `required` derivation
+                // DELETED from `handle_declare_shortcut`, now derived once inside the authority) and
+                // `0` (that site's condition rewritten in place) — summing to exactly `+30`. The
+                // file's remaining hunk (row D8 in `mod bounded_declaration_tests`, `+139`) is BELOW.
+                //
+                // SET PRESERVATION: this round adds one validation call and one `#[cfg(test)]` row;
+                // neither assigns `state.waiting_for` an `OptionalEffectChoice`, so no line matching
+                // the needle is added or removed. The total (38) and the partition (5/8/25) both fired
+                // GREEN on the run that caught this; the panic was on this third assert alone.
+                // ⚠ REBASE #3: `:12644 ⇒ :12643`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
-                "game/engine.rs:12613".to_string(),
+                "game/engine.rs:12643".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \

@@ -203,13 +203,17 @@ fn census(needle: &str) -> Vec<Hit> {
 /// machinery certify. The PRODUCTION half is unchanged at 22 and so is the
 /// per-file multiset below, which is the half §10 ruling condition (2) is about.
 ///
-/// R8 CONJUNCT 2, same test — every production `validate_pins(` site is a
-/// declare-time gate paired with `predictability_gate`.
+/// R8 CONJUNCT 2, same test — pin VALUE-legality has exactly ONE production
+/// consumer (`analysis::decision_template::declaration_conforms`), that consumer
+/// also runs `predictability_gate`'s COVERAGE half, and every production site
+/// that publishes or accepts a declaration routes through it. Superseded shape,
+/// recorded at the assert: a per-call-site `validate_pins`/`predictability_gate`
+/// pairing rule, which could not see a site that ran neither.
 ///
 /// ON FAILURE, the named consequence (§10 ruling condition (2)): a new
-/// production site in a certification-path file, or a declare site without its
-/// `validate_pins` pairing, means the period machinery may have created a path
-/// that CERTIFIES WITHOUT DECLARING OR DRIVING. That converts
+/// production site in a certification-path file, or a declare site that does not
+/// route through the shared authority, means the period machinery may have
+/// created a path that CERTIFIES WITHOUT DECLARING OR DRIVING. That converts
 /// answer-legality-at-certification from a doc note into owed work, and the
 /// U-series stops until it is carried. Adjudication is a human step; this is not
 /// a test to relax. A new *read* site is the benign case and the message says so.
@@ -304,45 +308,88 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          certification-path file, so the per-file multiset is pinned too"
     );
 
-    // ── CONJUNCT 2: every production `validate_pins(` site is a declare-time gate ──
-    // UNQUALIFIED anchor, deliberately: the fully-qualified
+    // ── CONJUNCT 2: pin VALUE-legality has exactly ONE production consumer, and it
+    //    is the one that also runs the COVERAGE half ──
+    //
+    // ⚠ THE SHAPE OF THIS CONJUNCT CHANGED, AND THE OLD ONE IS RECORDED RATHER
+    // THAN OVERWRITTEN. It used to pin `validate_pins(` at 3 production sites (1
+    // definition + 2 declare-time call sites) and assert each CALL SITE had a
+    // `predictability_gate(` hit within two lines. That pairing rule was a
+    // per-call-site *convention*: it could only catch a site that forgot the
+    // coverage half, never a site that ran BOTH gates against a differently-derived
+    // `required` list — and it could not see `build_bounded_declaration`, which
+    // PUBLISHED a declaration while running NEITHER gate (the C2b review's finding
+    // F1). The two gates are now composed once, in
+    // `analysis::decision_template::declaration_conforms`, and the invariant this
+    // conjunct pins is the stronger one: production validates pin values in exactly
+    // ONE place, that place runs both halves, and every declare-time site routes
+    // through it. A relapse — a second `validate_pins(` consumer, or a declare site
+    // that stops routing through the authority — fails the counts below.
+    //
+    // UNQUALIFIED anchors, deliberately: the fully-qualified
     // `crate::analysis::decision_template::validate_pins(` form matches only the
     // `engine.rs` site and under-counts by one — this plan's own finding 5,
     // applied symmetrically.
     let pins = census("validate_pins(");
     let pins_production: Vec<&Hit> = pins.iter().filter(|h| !h.in_test).collect();
+    let pins_files: Vec<&str> = pins_production.iter().map(|h| h.file.as_str()).collect();
     assert_eq!(
-        pins_production.len(),
-        3,
-        "expected 1 definition (`analysis/decision_template.rs`) + 2 declare-time call sites \
-         (`game/engine.rs::handle_declare_shortcut`, \
-         `game/interaction.rs::materialize_loop_shortcut_response`); got {pins_production:?}"
+        pins_files,
+        vec![
+            "engine/src/analysis/decision_template.rs",
+            "engine/src/analysis/decision_template.rs"
+        ],
+        "expected `validate_pins(` to appear in production exactly twice, BOTH in \
+         `analysis/decision_template.rs`: its own definition and its single consumer, \
+         `declaration_conforms`. A hit in any other file is a declare-time site that \
+         re-derives the pin firewall instead of routing through the shared authority — the \
+         divergence C2b's F1 closed, where a PUBLISHER emitted a declaration under a weaker \
+         predicate than the HANDLER accepts under. got {pins_production:?}"
     );
-    let definition = pins_production
-        .iter()
-        .filter(|h| h.file == "engine/src/analysis/decision_template.rs")
-        .count();
-    assert_eq!(definition, 1, "exactly one definition: {pins_production:?}");
 
-    // Each CALL SITE is paired with `predictability_gate` — the coverage half of
-    // the same declare-time gate. Pairing is asserted WITHIN the enclosing
-    // statement, i.e. a `predictability_gate` hit within two lines of the call.
+    // The one consumer runs the COVERAGE half too, asserted the way the old
+    // per-call-site rule did: a `predictability_gate` hit within two lines.
     let gates = census("predictability_gate(");
-    for site in pins_production
+    let consumer = pins_production
         .iter()
-        .filter(|h| h.file != "engine/src/analysis/decision_template.rs")
-    {
-        let paired = gates
+        .max_by_key(|h| h.line)
+        .expect("the assert above proves two hits");
+    assert!(
+        gates
             .iter()
-            .any(|g| g.file == site.file && g.line.abs_diff(site.line) <= 2);
-        assert!(
-            paired,
-            "CR 732.2a: a declare site that validates pin VALUES without also running \
-             `predictability_gate`'s COVERAGE check can accept a proposal that leaves a \
-             published choice unpinned — the certifies-without-declaring shape §10 condition \
-             (2) names. Unpaired site: {site:?}; gates: {gates:?}"
-        );
+            .any(|g| g.file == consumer.file && g.line.abs_diff(consumer.line) <= 2),
+        "CR 732.2a: validating pin VALUES without also running `predictability_gate`'s \
+         COVERAGE check can accept a proposal that leaves a published choice unpinned — the \
+         certifies-without-declaring shape §10 condition (2) names. Unpaired: {consumer:?}; \
+         gates: {gates:?}"
+    );
+
+    // Every production site that asks "is this declaration legal?" — the declare
+    // handler, the human ingress, and the bounded PUBLISHER — routes through the
+    // authority. The publisher is the site F1 added: it is what makes
+    // `declaration.is_some()`, the predicate `ai_support::candidates` gates its
+    // `DeclareShortcut` candidate on, mean "the handler will accept this".
+    let authority = census("declaration_conforms(");
+    let authority_production: Vec<&Hit> = authority.iter().filter(|h| !h.in_test).collect();
+    let mut authority_per_file: BTreeMap<&str, usize> = BTreeMap::new();
+    for h in &authority_production {
+        *authority_per_file.entry(h.file.as_str()).or_default() += 1;
     }
+    assert_eq!(
+        authority_per_file.into_iter().collect::<Vec<_>>(),
+        vec![
+            ("engine/src/analysis/decision_template.rs", 1),
+            ("engine/src/game/engine.rs", 2),
+            ("engine/src/game/interaction.rs", 1),
+        ],
+        "expected 1 definition + 3 call sites: \
+         `game/engine.rs::handle_declare_shortcut` (accept), \
+         `game/engine.rs::build_bounded_declaration` (publish), \
+         `game/interaction.rs::materialize_loop_shortcut_response` (human emit). A MISSING \
+         call site is a path that publishes or accepts a declaration under its own predicate; \
+         a NEW one is benign but must be named here rather than absorbed. \
+         got {authority_production:?}"
+    );
 }
 
 /// R8 ANTI-VACUITY ARM 2 — THE FOREIGN-FORM PLANT.

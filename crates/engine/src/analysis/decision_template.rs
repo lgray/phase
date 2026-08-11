@@ -1034,6 +1034,53 @@ pub fn validate_pins(
     Ok(())
 }
 
+/// CR 732.2a: THE SINGLE AUTHORITY for *"is this declaration a legal answer to this offer's
+/// schema?"* — [`predictability_gate`]'s COVERAGE half and [`validate_pins`]' VALUE half, run
+/// together against a `required` slot list derived HERE from `schema.points` rather than by
+/// each caller.
+///
+/// Three sites ask that question — `game::engine::handle_declare_shortcut` (the declare
+/// firewall), `game::interaction::materialize_loop_shortcut_response` (the human ingress) and
+/// `game::engine::build_bounded_declaration` (the engine's own publisher) — and a declaration
+/// PUBLISHED under one predicate but ACCEPTED under another is the divergence this exists to
+/// make unrepresentable: `declaration.is_some()` is read by `ai_support::candidates` as "the
+/// declare handler will take this", and only a shared predicate makes that true.
+///
+/// # `validated_range` STAYS A PARAMETER, and that is a measurement, not a hedge
+///
+/// The two pre-existing call sites did NOT pass the same range, so folding one in would adopt
+/// one site's semantics for the other:
+///
+/// * the declare firewall passes `game::engine::shortcut_validated_range(&count, template)` —
+///   the range the ACCEPTED COUNT will drive;
+/// * the interaction decoder passes `1`, correct by construction there because it emits only
+///   `TargetPin::Player` and `TargetPin::ByIdentity` pins, and `resolve_target` resolves both
+///   WITHOUT reading `iteration` (only `TargetPin::Scheduled` consults it). Its verdict is
+///   therefore identical at any range ≥ 1.
+///
+/// Ranges are nested rather than contradictory — `0..n` re-checks are a superset of `0..m` for
+/// `m <= n`, so a wider range is strictly stricter — which is why a PUBLISHER must validate at
+/// the widest range it could be declared with: passing there implies passing at every count a
+/// declarer may name.
+///
+/// # Returns `bool`, deliberately
+///
+/// All three callers discard the failure KIND (they already spelled `.is_err() || .is_err()`)
+/// and their dispositions have nothing in common: manual-play handback via
+/// `reject_shortcut_declaration`, `InteractionReasonCode::ConstraintUnsatisfied`, and "publish
+/// no declaration". A union error type would have no reader. [`predictability_gate`] and
+/// [`validate_pins`] stay public and typed for the rows that assert on the specific violation.
+pub fn declaration_conforms(
+    schema: &ShortcutDecisionSchema,
+    template: &DecisionTemplate,
+    validated_range: IterationIndex,
+    state: &GameState,
+) -> bool {
+    let required: Vec<DecisionSlot> = schema.points.iter().map(|p| p.slot.clone()).collect();
+    predictability_gate(template, &required).is_ok()
+        && validate_pins(schema, template, validated_range, state).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
