@@ -2761,11 +2761,22 @@ fn loop_shortcut_preview_is_absent_without_both_a_period_and_a_finite_count() {
 /// that computes the right numbers by some other expensive means. This is a routing guard; the
 /// value rows above pin the arithmetic.
 ///
-/// REVERT-PROBES, BOTH RUN:
+/// The likeliest instance of that first gap is closed by TYPE rather than by text (fix round 3,
+/// G4): the cheapest way to reach a `GameState` from the preview is to widen
+/// `loop_shortcut_projection` to accept one, which contains none of the banned strings and
+/// lives in a span this row does not read. Its parameter list is pinned below, so the
+/// projection can see the waiting-for state and nothing else — and neither can anything it
+/// calls. What remains uncovered is a clone reached through some OTHER existing binding, which
+/// no signature can rule out.
+///
+/// REVERT-PROBES, ALL THREE RUN:
 /// * add the line `// preview_interaction` inside `shortcut_preview_entries` ⇒ FAILS on the
 ///   assert (it still compiles, so the probe discriminates on the assertion, not the build);
 /// * insert `let mut probe_clone = authoritative_state.clone();` immediately above the
-///   `loop_shortcut_projection` call in the arm — the reviewer's exact probe ⇒ FAILS.
+///   `loop_shortcut_projection` call in the arm — the reviewer's exact probe ⇒ FAILS;
+/// * widen `loop_shortcut_projection` to `(waiting_for: &WaitingFor, _state: &GameState)` —
+///   the exact evasion the textual ban misses ⇒ FAILS on the signature pin (and on nothing
+///   else, which is the point).
 #[test]
 fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/game/interaction.rs");
@@ -2833,6 +2844,28 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
         attach.contains("filtered_state"),
         "constructibility, second half: the arm must actually USE one of those `&GameState` \
          bindings, so a clone is writable at the exact point the reviewer's probe inserted one"
+    );
+
+    // ── TYPE-LEVEL PIN: the ban below is TEXTUAL, so its cheapest evasion is to widen
+    //    `loop_shortcut_projection` to take a `&GameState` and clone it THERE — a third span
+    //    this row does not read, and one that would contain none of the three banned strings.
+    //    The projection's parameter list closes that route by TYPE rather than by text: with
+    //    only a `&WaitingFor` in scope, no callee it reaches can be handed a `GameState`
+    //    either, so "the preview computation cannot see game state" stops being a search
+    //    result and becomes a fact about the signature.
+    let projection_signature = extract(&text, "\nfn loop_shortcut_projection(", ") -> ");
+    let projection_params = projection_signature
+        .strip_prefix("\nfn loop_shortcut_projection(")
+        .expect("`extract` re-emits its own marker, so the prefix is always present")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(
+        projection_params.trim_end_matches(','),
+        "waiting_for: &WaitingFor",
+        "type-level pin: the shortcut preview is computed from the WAITING-FOR state alone. \
+         Adding a parameter here — a `&GameState`, or anything reaching one — reopens the \
+         clone-apply route through a span the textual ban below never reads"
     );
 
     for (span_name, body) in [
