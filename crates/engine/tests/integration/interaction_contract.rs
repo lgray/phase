@@ -2551,6 +2551,12 @@ fn preview_offer(
             max_iterations,
             ..Default::default()
         },
+        // `points` is empty here (`..Default::default()`), and an empty schema never publishes a
+        // declaration — the same invariant row D4 asserts against `build_bounded_declaration`. So
+        // `None` is what the engine itself would stage, not merely what makes the literal compile.
+        // These rows exercise the PREVIEW projection, which reads the certificate and schema; a
+        // declaration here would stage a state the producer cannot emit.
+        declaration: None,
     };
     bind(&mut state, "loop-preview");
     state

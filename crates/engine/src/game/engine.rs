@@ -17953,8 +17953,8 @@ mod stage2_injector_tests {
                 // the needle is added or removed. The total (38) and the partition (5/8/25) both fired
                 // GREEN on the run that caught this; the panic was on this third assert alone.
                 //
-                // ⚠ C3 (the stale-coordinate comment sweep), REBASED ONTO THE C2b FIX ROUND — the
-                // coordinate below is a PLACEHOLDER and is deliberately invalid until measured. C3's own
+                // ⚠ C3 (the stale-coordinate comment sweep), REBASED ONTO THE C2b FIX ROUND:
+                // `:12582 ⇒ :12590`, `+8`, LOCAL — measured at this tip, not carried. C3's own
                 // hunks above this producer are unchanged and have always summed to `+8`: `+1` in
                 // `shortcut_drive_period` and `+1` in `handle_declare_shortcut` (both replacing a
                 // measured-wrong "8 KB" WS frame cap with `phase-server`'s `MAX_WS_MESSAGE_BYTES`,
