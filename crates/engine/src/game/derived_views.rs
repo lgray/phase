@@ -1845,9 +1845,9 @@ fn scheduled_display_axes(
 /// **This is the SINGLE authority for that partition.** Both consumers derive from it rather
 /// than restating it: [`attribution_player`] below (which resolves `None` to the loop's
 /// controller for the HUD badge) and `game::interaction`'s CR 732.2a shortcut preview (which
-/// publishes `None` as "no seat"). Two exhaustive matches over the same 15 arms would force a
-/// future payload-keyed axis to make two decisions but not the SAME decision, and the offer
-/// could then attribute a seat the HUD does not.
+/// publishes `None` as "no seat"). Two exhaustive matches over the same 17 `ResourceAxis`
+/// variants would force a future payload-keyed axis to make two decisions but not the SAME
+/// decision, and the offer could then attribute a seat the HUD does not.
 ///
 /// Exhaustive by design (no wildcard) — a new `ResourceAxis` variant must make a deliberate
 /// seat choice here, never silently inherit a default.

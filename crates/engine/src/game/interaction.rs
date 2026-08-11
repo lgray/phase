@@ -7959,7 +7959,7 @@ fn bound_outbound_spec(
                     budget.string(candidate_id.as_str())?;
                 }
             }
-            // CR 732.2a: the preview's entries are a published outbound list like every other
+            // The preview's entries are a published outbound list like every other
             // list on this spec (at most one per display family per seat), so they are charged
             // to the same ceiling rather than crossing uncounted.
             if let Some(preview) = preview {
@@ -9658,10 +9658,14 @@ mod tests {
     /// `derived_views::UnboundedFamily` is `rename_all = "lowercase"`. All eleven variants are
     /// single words today, so both spell `mana`, `life`, ... and the agreement reads as design
     /// when it is coincidence. A future two-word family would cross as `extraTurns` on the
-    /// offer and `extraturns` on the HUD, and the client's family-keyed lookups
-    /// (`UNBOUNDED_FAMILY_GLYPH` and `UNBOUNDED_FAMILY_LABEL_KEY`, both
-    /// `Record<UnboundedFamily, _>` in `client/src/components/hud/HudBadges.tsx`) would
-    /// silently miss on the offer while still resolving on the HUD.
+    /// offer and `extraturns` on the HUD — one grouping published in two wire vocabularies,
+    /// and THIS row is what catches it. Nothing on the client does: no client code reads the
+    /// preview's `family` today (the generated `InteractionShortcutPreviewFamily` in
+    /// `client/src/adapter/generated/interaction/index.ts` has no consumer), and the HUD's
+    /// family-keyed lookups (`UNBOUNDED_FAMILY_GLYPH` / `UNBOUNDED_FAMILY_LABEL_KEY`, both
+    /// `Record<UnboundedFamily, _>` in `client/src/components/hud/HudBadges.tsx`) are keyed by
+    /// the SEPARATELY declared hand-written `UnboundedFamily` union — so a future consumer that
+    /// crossed the two would break as a TypeScript type error, not miss silently.
     ///
     /// `preview_family`'s exhaustive match pins the GROUPING, not the STRING — a new family
     /// build-breaks it, a renamed WIRE STRING does not. This row pins the string.
