@@ -2740,9 +2740,32 @@ fn loop_shortcut_preview_is_absent_without_both_a_period_and_a_finite_count() {
 /// A future rewrite that reached for the previewer would be quietly quadratic and quietly
 /// wrong, and no value assertion would catch it — so this row reads the source.
 ///
-/// REVERT-PROBE, RUN: add the line `// preview_interaction` inside the function body ⇒ this
-/// row fails on the assert (it still compiles, so the probe discriminates on the assertion
-/// rather than on the build).
+/// ⚠ TWO SPANS, AND THE SECOND ONE IS WHY THIS ROW CAN FAIL AT ALL (fix round 2, F1).
+///
+/// The first revision read only `shortcut_preview_entries`, whose signature is
+/// `(&ResourceVector, u32)` — no `GameState` is in scope anywhere in it, and neither is one in
+/// its only caller `loop_shortcut_projection(&WaitingFor)`. The banned construct was therefore
+/// not CONSTRUCTIBLE in the span, so the row could not fail no matter what regressed. MEASURED
+/// by the reviewer: inserting `let mut probe_clone = authoritative_state.clone();` immediately
+/// above the `loop_shortcut_projection` call left all three C4 rows green.
+///
+/// The clone-apply can only originate where the spec is BUILT: `opportunity_for_slot`'s
+/// `LoopShortcut` arm, which holds `authoritative_state` and `filtered_state`, both
+/// `&GameState`. Both spans are read now, and the arm span proves its OWN constructibility —
+/// the enclosing signature binds two `&GameState` parameters and the span uses one — so it
+/// cannot silently degrade into another span where the ban is unwritable. A positive control
+/// proves the SEARCH is real; only the constructibility guard proves the SPAN is right.
+///
+/// WHAT WRONG IMPLEMENTATION WOULD STILL PASS THIS ROW? One that clones the state inside a
+/// THIRD function called from the arm — the ban is textual, not a call-graph closure — and one
+/// that computes the right numbers by some other expensive means. This is a routing guard; the
+/// value rows above pin the arithmetic.
+///
+/// REVERT-PROBES, BOTH RUN:
+/// * add the line `// preview_interaction` inside `shortcut_preview_entries` ⇒ FAILS on the
+///   assert (it still compiles, so the probe discriminates on the assertion, not the build);
+/// * insert `let mut probe_clone = authoritative_state.clone();` immediately above the
+///   `loop_shortcut_projection` call in the arm — the reviewer's exact probe ⇒ FAILS.
 #[test]
 fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/game/interaction.rs");
@@ -2757,29 +2780,73 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
          asserted below is the absence of the whole search"
     );
 
-    let marker = "\nfn shortcut_preview_entries(";
-    let start = text
-        .find(marker)
-        .expect("reach-guard: the preview function must be found by name, or this row is vacuous")
-        + 1;
-    let rest = &text[start..];
-    let end = rest[1..]
-        .find("\nfn ")
-        .map_or(rest.len(), |offset| offset + 1);
-    let body = &rest[..end];
+    // The span from `marker` up to the next `terminator`, both anchored at a line start.
+    let extract = |scope: &str, marker: &str, terminator: &str| -> String {
+        let start = scope.find(marker).unwrap_or_else(|| {
+            panic!("reach-guard: `{marker}` must be found by name, or this row is vacuous")
+        });
+        let rest = &scope[start + marker.len()..];
+        let end = rest.find(terminator).unwrap_or(rest.len());
+        format!("{marker}{}", &rest[..end])
+    };
 
+    // ── SPAN 1: the arithmetic itself.
+    let arithmetic = extract(&text, "\nfn shortcut_preview_entries(", "\nfn ");
     assert!(
-        body.contains("saturating_mul"),
+        arithmetic.contains("saturating_mul"),
         "reach-guard: the extracted span must be the real body — the multiplication is the \
          function's entire job, so its absence means the span is wrong"
     );
-    for banned in ["preview_interaction", "state.clone()", "GameState"] {
-        assert!(
-            !body.contains(banned),
-            "CR 732.2a: the shortcut preview is `n × δ` over the certificate's measured \
-             period. It must not reach `{banned}` — a clone-apply cannot state the result of \
-             a sequence that is deliberately never played out"
-        );
+
+    // ── SPAN 2: the attach site, where the spec carrying the preview is built.
+    let builder = "\nfn opportunity_for_slot(";
+    let builder_start = text.find(builder).expect(
+        "reach-guard: the spec builder must be found by name — it is the only scope holding a \
+         `GameState` on the preview's path",
+    );
+    let builder_scope = &text[builder_start..];
+    let signature_end = builder_scope
+        .find(") -> ")
+        .expect("reach-guard: the builder's signature must be delimited");
+    let signature = &builder_scope[..signature_end];
+    // ── CONSTRUCTIBILITY: the ban below is only a guard where the banned thing can be
+    //    WRITTEN. This span sits inside a function that binds two `&GameState` parameters,
+    //    so `authoritative_state.clone()` — the reviewer's exact probe — compiles here.
+    assert!(
+        signature.contains("authoritative_state: &GameState")
+            && signature.contains("filtered_state: &GameState"),
+        "constructibility: the arm span guards nothing unless a `GameState` is IN SCOPE to be \
+         cloned. `shortcut_preview_entries` takes `(&ResourceVector, u32)`, which is exactly \
+         why reading only that function produced a row that could not fail"
+    );
+    let attach = extract(
+        builder_scope,
+        "\n        HumanResponseModel::LoopShortcut => {",
+        "\n        HumanResponseModel::",
+    );
+    assert!(
+        attach.contains("loop_shortcut_projection(") && attach.contains("projection.preview"),
+        "reach-guard: the extracted arm must be the one that projects the offer AND publishes \
+         the preview onto the spec, else the ban is being applied to the wrong arm"
+    );
+    assert!(
+        attach.contains("filtered_state"),
+        "constructibility, second half: the arm must actually USE one of those `&GameState` \
+         bindings, so a clone is writable at the exact point the reviewer's probe inserted one"
+    );
+
+    for (span_name, body) in [
+        ("shortcut_preview_entries", &arithmetic),
+        ("opportunity_for_slot's LoopShortcut arm", &attach),
+    ] {
+        for banned in ["preview_interaction", "state.clone()", "GameState"] {
+            assert!(
+                !body.contains(banned),
+                "CR 732.2a: the shortcut preview is `n × δ` over the certificate's measured \
+                 period. {span_name} must not reach `{banned}` — a clone-apply cannot state \
+                 the result of a sequence that is deliberately never played out"
+            );
+        }
     }
 }
 

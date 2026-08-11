@@ -16,7 +16,6 @@ use crate::analysis::decision_template::{
     declaration_conforms, DecisionGroupKey, DecisionKind, DecisionTemplate, IterationCount,
     PinnedDecision, ReplayMode, TargetPin,
 };
-use crate::analysis::resource::ResourceAxis;
 use crate::types::ability::{
     AggregateFunction, ChoiceType, ChooseFromZoneConstraint, Comparator, CounterCostSelection,
     DoorLockOp, EffectKind, ObjectProperty, SearchSelectionConstraint, TapCreaturesAggregateStat,
@@ -65,7 +64,7 @@ use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
 use super::combat::AttackTarget;
-use super::derived_views::{family_of, UnboundedFamily};
+use super::derived_views::{family_of, payload_seat, UnboundedFamily};
 use super::dungeon::DungeonId;
 use super::engine::{
     apply_interaction, apply_interaction_for_simulation, EngineError, MAX_SHORTCUT_CYCLES,
@@ -2458,34 +2457,6 @@ fn preview_family(family: UnboundedFamily) -> InteractionShortcutPreviewFamily {
     }
 }
 
-/// CR 119.3 + CR 120.1 + CR 401 + CR 704.5c: the seat a resource axis lands ON, for the four
-/// axes that name one. Every other axis is a whole-game quantity with no seat.
-///
-/// This is a different question from "who controls the loop" and it is deliberately not
-/// answered from the proposer: a drain's magnitude belongs to the player LOSING the life,
-/// which is exactly the seat `ResourceVector`'s per-player maps are keyed by.
-fn preview_subject(axis: ResourceAxis) -> Option<PlayerId> {
-    match axis {
-        ResourceAxis::Life(player)
-        | ResourceAxis::DamageDealt(player)
-        | ResourceAxis::LibraryDelta(player)
-        | ResourceAxis::Poison(player) => Some(player),
-        ResourceAxis::Mana(_)
-        | ResourceAxis::Counter(_, _)
-        | ResourceAxis::Trigger(_)
-        | ResourceAxis::TokensCreated
-        | ResourceAxis::CardsDrawn
-        | ResourceAxis::Casts
-        | ResourceAxis::LandfallTriggers
-        | ResourceAxis::CombatPhases
-        | ResourceAxis::ExtraTurns
-        | ResourceAxis::DeathTriggers
-        | ResourceAxis::EtbTriggers
-        | ResourceAxis::LtbTriggers
-        | ResourceAxis::SacTriggers => None,
-    }
-}
-
 /// CR 732.2a: the finished magnitude of repeating `count` cycles of a measured per-period
 /// delta — "the predictable results of the sequence of choices", stated per display family
 /// and per affected seat.
@@ -2514,9 +2485,14 @@ fn shortcut_preview_entries(
     let mut per_cycle_totals: BTreeMap<(InteractionShortcutPreviewFamily, Option<u8>), i64> =
         BTreeMap::new();
     for (axis, magnitude) in delta.axis_components() {
+        // Both halves of the key are `derived_views`' decisions, not this layer's: `family_of`
+        // owns the grouping and `payload_seat` owns the seat. The seat in particular is NOT
+        // keyed from the proposer — a drain's magnitude belongs to the player LOSING the life
+        // — and sharing the authority with `attribution_player` is what keeps the offer from
+        // attributing a seat the HUD badge does not.
         let key = (
             preview_family(family_of(axis)),
-            preview_subject(axis).map(|player| player.0),
+            payload_seat(axis).map(|player| player.0),
         );
         let total = per_cycle_totals.entry(key).or_insert(0);
         *total = total.saturating_add(magnitude);
@@ -7973,13 +7949,21 @@ fn bound_outbound_spec(
                 }
             }
         }
-        InteractionResponseSpec::Shortcut { points, .. } => {
+        InteractionResponseSpec::Shortcut {
+            points, preview, ..
+        } => {
             budget.list(points.len())?;
             for point in points {
                 budget.list(point.candidate_ids.len())?;
                 for candidate_id in &point.candidate_ids {
                     budget.string(candidate_id.as_str())?;
                 }
+            }
+            // CR 732.2a: the preview's entries are a published outbound list like every other
+            // list on this spec (at most one per display family per seat), so they are charged
+            // to the same ceiling rather than crossing uncounted.
+            if let Some(preview) = preview {
+                budget.list(preview.entries.len())?;
             }
         }
         InteractionResponseSpec::Select { .. }
@@ -9594,4 +9578,138 @@ pub fn submit_interaction(
         },
     )?;
     Ok(AppliedInteraction { action, result })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F4 — the preview's entry list is budgeted like every other outbound list on the
+    /// shortcut spec.
+    ///
+    /// `bound_outbound_spec` counted `points` and each point's `candidate_ids` but not
+    /// `preview.entries`, so the one list added by the CR 732.2a preview crossed the boundary
+    /// uncounted. It is bounded small in practice (at most one entry per display family per
+    /// seat), so this is a CONSISTENCY row and not a live payload-exhaustion row — which is
+    /// why it drives the budget to its last free slot rather than building a giant preview.
+    ///
+    /// PAIRED CONTROL FIRST: the same spec at the same starting budget WITHOUT a preview must
+    /// fit. Without it, the failure below could come from the spec's other lists, or from a
+    /// budget that was already over before the preview was ever read.
+    ///
+    /// WHAT WRONG IMPLEMENTATION WOULD STILL PASS THIS ROW? One that budgets the preview's
+    /// entries but not a future second list added to the same spec — the row pins the field it
+    /// names, not "every field is budgeted". One that charged the entries to the STRING budget
+    /// instead would fail here, because the control proves the LIST budget is what moved.
+    ///
+    /// REVERT-PROBE, RUN: drop the `preview` budget call ⇒ the second assertion gets `Ok`.
+    #[test]
+    fn the_shortcut_preview_entry_list_is_counted_against_the_outbound_budget() {
+        let spec = |preview| InteractionResponseSpec::Shortcut {
+            count: InteractionShortcutCountSpec::Fixed {
+                min: 1,
+                max: 3,
+                suggested: 3,
+            },
+            points: Vec::new(),
+            allow_decline: true,
+            preview,
+            confirm: ConfirmSemantics::Explicit,
+        };
+        let preview = InteractionShortcutPreview {
+            count: 3,
+            entries: vec![
+                InteractionShortcutPreviewEntry {
+                    family: InteractionShortcutPreviewFamily::Life,
+                    player: Some(1),
+                    amount: -6,
+                },
+                InteractionShortcutPreviewEntry {
+                    family: InteractionShortcutPreviewFamily::Mana,
+                    player: None,
+                    amount: 9,
+                },
+            ],
+        };
+        let at_last_free_slot = || OutboundBudget {
+            entries: MAX_INTERACTION_LIST_LEN - 1,
+            string_bytes: 0,
+        };
+
+        let mut budget = at_last_free_slot();
+        assert!(
+            bound_outbound_spec(&spec(None), &mut budget).is_ok(),
+            "control: with one slot free and no preview, this spec's own lists fit — so the \
+             refusal below is the preview being counted, not the spec being oversized"
+        );
+
+        let mut budget = at_last_free_slot();
+        assert_eq!(
+            bound_outbound_spec(&spec(Some(preview)), &mut budget),
+            Err(InteractionReasonCode::PayloadTooLarge),
+            "CR 732.2a: the preview's entries are published outbound, so they are charged to \
+             the same ceiling as every other list on the spec"
+        );
+    }
+
+    /// F5 — the offer channel and the HUD channel must SPELL each display family identically.
+    ///
+    /// `InteractionShortcutPreviewFamily` is `rename_all = "camelCase"`; its grouping authority
+    /// `derived_views::UnboundedFamily` is `rename_all = "lowercase"`. All eleven variants are
+    /// single words today, so both spell `mana`, `life`, ... and the agreement reads as design
+    /// when it is coincidence. A future two-word family would cross as `extraTurns` on the
+    /// offer and `extraturns` on the HUD, and the client's family-keyed lookups
+    /// (`UNBOUNDED_FAMILY_GLYPH` and `UNBOUNDED_FAMILY_LABEL_KEY`, both
+    /// `Record<UnboundedFamily, _>` in `client/src/components/hud/HudBadges.tsx`) would
+    /// silently miss on the offer while still resolving on the HUD.
+    ///
+    /// `preview_family`'s exhaustive match pins the GROUPING, not the STRING — a new family
+    /// build-breaks it, a renamed WIRE STRING does not. This row pins the string.
+    ///
+    /// It takes its family list from `unbounded-family-tags.json`, the same golden the client's
+    /// `Record<ResourceAxisTag, UnboundedFamily>` is checked against, so one chain now runs
+    /// engine grouping ⇒ HUD string ⇒ offer string. That also makes the list forced rather than
+    /// hand-maintained: an 18th `ResourceAxis` reds `family_tag_table_matches_the_client_golden`
+    /// until the golden is regenerated, and a regenerated golden carries the new family here.
+    ///
+    /// THIS ROW PASSES TODAY BY CONSTRUCTION, AND THAT IS THE POINT — it is written to fail on
+    /// a two-word variant, which is the only way the divergence can ship.
+    ///
+    /// WHAT WRONG IMPLEMENTATION WOULD STILL PASS THIS ROW? One that mis-GROUPS an axis (that
+    /// is `family_tag_table_matches_the_client_golden`'s question, not this one), and one that
+    /// adds a family reachable from no `ResourceAxis` at all, which the golden cannot see and
+    /// no client lookup can receive.
+    ///
+    /// REVERT-PROBE, RUN: rename the `Turns` variant of BOTH enums to `ExtraTurns` and
+    /// regenerate the golden ⇒ `extraturns` vs `extraTurns` ⇒ this row FAILS.
+    #[test]
+    fn every_preview_family_spells_the_same_wire_string_as_its_unbounded_family() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../client/src/test/fixtures/unbounded-family-tags.json"
+        );
+        let golden: BTreeMap<String, UnboundedFamily> =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("committed family golden"))
+                .expect("the family golden parses as tag -> UnboundedFamily");
+        let families: std::collections::BTreeSet<UnboundedFamily> =
+            golden.values().copied().collect();
+        assert_eq!(
+            families.len(),
+            11,
+            "reach-guard: every display family must be reachable from the golden, else this \
+             row silently checks a subset of the wire surface"
+        );
+
+        for family in families {
+            let hud = serde_json::to_string(&family).expect("UnboundedFamily serializes");
+            let offer =
+                serde_json::to_string(&preview_family(family)).expect("preview family serializes");
+            assert_eq!(
+                hud, offer,
+                "the shortcut offer and the HUD badge must cross the wire under the SAME \
+                 string for this display family — the client keys both into one \
+                 `Record<UnboundedFamily, _>`, so a divergence is a silent lookup miss"
+            );
+        }
+    }
 }

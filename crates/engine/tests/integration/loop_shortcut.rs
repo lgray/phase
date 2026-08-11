@@ -8608,6 +8608,92 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
          must not be written by raising a bounded offer; got {:?}",
         state.unbounded_resources
     );
+
+    // ── F6: THE PREVIEW REACHES A REAL GAME ──
+    //
+    // Every other row that asserts anything about the CR 732.2a count preview hand-builds a
+    // `WaitingFor` and projects it. That leaves one hole none of them can see: the preview is
+    // published only when the offer pairs `per_cycle: Some` with a FINITE count, and the
+    // producer that pairs them is the bounded one. Route the bound through
+    // `shortcut_iteration_count` — which returns `UntilLethal` for `LethalDamage | PoisonLoss`,
+    // and this fixture's `win_kind` is exactly `LethalDamage` — and the preview vanishes from
+    // EVERY real game while all three hand-built rows stay green. This row closes that by
+    // reading the preview off the real 4p dump the engine itself raised the offer on.
+    //
+    // WHAT WRONG IMPLEMENTATION WOULD STILL PASS THIS ROW? One that publishes the preview only
+    // on this fixture's exact per-period shape (the hand-built rows cover the shape space), and
+    // one that previews the right numbers for a count the player did not pick — the reserved
+    // per-selected-count question, deliberately not answered here.
+    //
+    // REVERT-PROBE, RUN: mint this offer's count through `shortcut_iteration_count` (i.e.
+    // `UntilLethal` for a lethal drain) ⇒ `preview` is `None` ⇒ the expect below FAILS.
+    let suggested = i64::from(schema.max_iterations);
+    let life_deltas: Vec<(PlayerId, i64)> = per_cycle
+        .delta
+        .life
+        .iter()
+        .filter(|(_, delta)| **delta != 0)
+        .map(|(seat, delta)| (*seat, *delta))
+        .collect();
+    assert!(
+        life_deltas.len() >= 2,
+        "reach-guard: the preview's per-seat fold only discriminates when the period moves \
+         MORE THAN ONE seat's life — a single-seat period is satisfiable by an implementation \
+         that keys every entry to the proposer; measured {life_deltas:?}"
+    );
+
+    engine::game::interaction::bind_interaction_authority(
+        &mut state,
+        engine::types::interaction::InteractionSessionId("dina-preview".to_string()),
+    )
+    .expect("the offer beat binds an interaction authority");
+    let filtered = engine::game::visibility::filter_state_for_viewer(&state, proposer);
+    let view = engine::game::interaction::derive_viewer_interaction(&state, &filtered, proposer);
+    let engine::types::interaction::InteractionOpportunityResponse::Schema {
+        spec: engine::types::interaction::InteractionResponseSpec::Shortcut { preview, .. },
+        ..
+    } = &view.opportunities[0].response
+    else {
+        panic!("the bounded offer publishes a shortcut schema to its proposer");
+    };
+    let preview = preview.as_ref().expect(
+        "CR 732.2a: the offer the engine raised on a REAL 4p drain must publish what its \
+         declared count does. A `None` here means every preview has vanished from every real \
+         game while the hand-built projection rows stayed green.",
+    );
+    assert_eq!(
+        i64::from(preview.count),
+        suggested,
+        "the magnitudes are stated for the offer's own suggested count and no other"
+    );
+
+    let mut expected: Vec<(Option<u8>, i32)> = life_deltas
+        .iter()
+        .map(|(seat, delta)| (Some(seat.0), (delta * suggested) as i32))
+        .collect();
+    let mut published: Vec<(Option<u8>, i32)> = preview
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.family == engine::types::interaction::InteractionShortcutPreviewFamily::Life
+        })
+        .map(|entry| (entry.player, entry.amount))
+        .collect();
+    expected.sort_unstable();
+    published.sort_unstable();
+    assert_eq!(
+        published, expected,
+        "CR 119.3: every seat the certified period moves life on is previewed at that seat, \
+         multiplied out by the declared count — recomputed here from the offer-beat certificate"
+    );
+    for (seat, _, loss) in losses.iter().filter(|(id, _, _)| *id != proposer) {
+        assert!(
+            published.contains(&(Some(seat.0), (-loss * suggested) as i32)),
+            "CR 704.5a: victim seat {seat:?} loses {loss} per cycle, so its previewed life \
+             entry must be the NEGATIVE finished magnitude on that seat's own key — a \
+             proposer-keyed subject map publishes it on the wrong HUD; got {published:?}"
+        );
+    }
 }
 
 /// The dina 4p drain DRIVEN through `apply()` to the beat the engine itself raises the
