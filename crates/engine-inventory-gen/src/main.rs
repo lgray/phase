@@ -74,12 +74,16 @@ struct ClusterSmell {
     cluster: SiblingCluster,
 }
 
-const TARGET_DIR: &str = "crates/engine/src/types";
+/// Every directory whose `pub enum`s are engine surface a variant proposal must be able to
+/// discover. `types/` alone is not that set: CLAUDE.md makes an inventory grep the mandatory
+/// discoverability gate before proposing a variant, and `analysis/` holds public rules-bearing
+/// enums (`TargetSchedule`, `PinnedDecision`, `ReplayMode`, …) that the gate structurally could
+/// not see while this was a single directory.
+const TARGET_DIRS: &[&str] = &["crates/engine/src/types", "crates/engine/src/analysis"];
 const OUTPUT: &str = "data/engine-inventory.json";
 
 fn main() -> Result<()> {
     let workspace_root = find_workspace_root()?;
-    let target = workspace_root.join(TARGET_DIR);
     let output = workspace_root.join(OUTPUT);
 
     let cr_re = Regex::new(r"CR \d{3}(?:\.\d+[a-z]?)?")?;
@@ -87,28 +91,31 @@ fn main() -> Result<()> {
     let mut enums: BTreeMap<String, EnumEntry> = BTreeMap::new();
     let mut sources: Vec<String> = Vec::new();
 
-    for entry in WalkDir::new(&target).into_iter().filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if path.extension().is_none_or(|ext| ext != "rs") {
-            continue;
-        }
-        let rel = path.strip_prefix(&workspace_root).unwrap_or(path);
-        sources.push(rel.display().to_string());
+    for dir in TARGET_DIRS {
+        let target = workspace_root.join(dir);
+        for entry in WalkDir::new(&target).into_iter().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let rel = path.strip_prefix(&workspace_root).unwrap_or(path);
+            sources.push(rel.display().to_string());
 
-        let content =
-            fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        let file = match syn::parse_file(&content) {
-            Ok(f) => f,
-            Err(_) => continue, // skip unparseable files (likely WIP)
-        };
+            let content =
+                fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+            let file = match syn::parse_file(&content) {
+                Ok(f) => f,
+                Err(_) => continue, // skip unparseable files (likely WIP)
+            };
 
-        for item in &file.items {
-            if let Item::Enum(e) = item {
-                if !is_pub(&e.vis) {
-                    continue;
+            for item in &file.items {
+                if let Item::Enum(e) = item {
+                    if !is_pub(&e.vis) {
+                        continue;
+                    }
+                    let entry = build_enum_entry(e, &content, rel, &cr_re);
+                    enums.insert(e.ident.to_string(), entry);
                 }
-                let entry = build_enum_entry(e, &content, rel, &cr_re);
-                enums.insert(e.ident.to_string(), entry);
             }
         }
     }
