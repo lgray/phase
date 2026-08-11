@@ -13,8 +13,8 @@ use crate::ai_support::{
     FilterPipeline, TacticalClass,
 };
 use crate::analysis::decision_template::{
-    predictability_gate, validate_pins, DecisionGroupKey, DecisionKind, DecisionTemplate,
-    IterationCount, PinnedDecision, ReplayMode, TargetPin,
+    declaration_conforms, DecisionGroupKey, DecisionKind, DecisionTemplate, IterationCount,
+    PinnedDecision, ReplayMode, TargetPin,
 };
 use crate::types::ability::{
     AggregateFunction, ChoiceType, ChooseFromZoneConstraint, Comparator, CounterCostSelection,
@@ -8919,11 +8919,6 @@ fn materialize_loop_shortcut_response(
         key: DecisionGroupKey::from_sources(&sources, DecisionKind::LoopChoice),
     });
     if let Some(template) = &template {
-        let required = authoritative_schema
-            .points
-            .iter()
-            .map(|point| point.slot.clone())
-            .collect::<Vec<_>>();
         // TRAP REMOVAL, NOT A BUG FIX — recorded so the next reader does not "correct" this
         // literal into `shortcut_validated_range(..)` and then wonder what changed. This
         // decoder emits only `Player` and `ByIdentity` pins, both of which resolve
@@ -8934,11 +8929,13 @@ fn materialize_loop_shortcut_response(
         // `Fixed(0)` either: the count-spec projection's `Fixed` arm hard-codes `min: 1`
         // beside its `debug_assert!(schema.max_iterations >= 1, ..)` and its clamp.
         // ⚠ Navigation trap: `shortcut_drive_period`'s doc enumerates its own consumers, and
-        // this site consumes `validate_pins` WITHOUT consuming that helper, so it is
+        // this site consumes the pin firewall WITHOUT consuming that helper, so it is
         // invisible from there.
-        if predictability_gate(template, &required).is_err()
-            || validate_pins(authoritative_schema, template, 1, authoritative_state).is_err()
-        {
+        //
+        // The `required` slot list is no longer derived here: `declaration_conforms` derives
+        // it from the SAME `authoritative_schema` this site already passed, so the coverage
+        // half and the value half can no longer drift apart per call site.
+        if !declaration_conforms(authoritative_schema, template, 1, authoritative_state) {
             return Err(InteractionReasonCode::ConstraintUnsatisfied);
         }
     }

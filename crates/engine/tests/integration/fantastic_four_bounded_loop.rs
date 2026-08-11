@@ -2427,7 +2427,11 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
             }
             _ => assert!(
                 matches!(probe.waiting_for, WaitingFor::Priority { .. }),
-                "CR 800.4a: the decline candidate {action:?} hands priority back, got {:?}",
+                // CR 732.2a: a shortcut is a SUGGESTION made by the player who already has
+                // priority, so refusing it takes no game action and that player still has
+                // priority — `handle_decline_shortcut` re-seats `WaitingFor::Priority` and
+                // cites the same rule. (Not CR 800.4a, which is player-elimination.)
+                "CR 732.2a: the decline candidate {action:?} hands priority back, got {:?}",
                 probe.waiting_for
             ),
         }
@@ -2537,7 +2541,7 @@ fn u6_the_declare_owner_firewall_holds_on_the_real_f4_offer() {
         vec![("RespondToShortcut", 0), ("Priority", 0)],
         "CR 732.2a + CR 603.5: the declaration owned by the engine-issued proposer opens the \
          APNAP window; the byte-identical declaration owned by {hostile:?} is refused into the \
-         CR 800.4a manual handback. `handle_declare_shortcut` pushes no events on either path, \
+         manual handback. `handle_declare_shortcut` pushes no events on either path, \
          so the event counts are exact rather than wildcards"
     );
 }
