@@ -4351,6 +4351,228 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
     );
 }
 
+/// R0-a ⭐ (SECURITY): the RESPONDER-facing copy of a declared template is redacted too.
+///
+/// `handle_declare_shortcut` moves the proposer's `DecisionTemplate` VERBATIM onto
+/// `ShortcutProposal.template` one state transition after the `LoopShortcut` offer whose
+/// `declaration` is redacted by `d5h_a_hidden_object_pin_drops_the_whole_declaration_for_a_non_proposer`
+/// (`engine/src/game/visibility.rs`). Before this row, `grep -c RespondToShortcut
+/// crates/engine/src/game/visibility.rs` was 0: the identical pin vector was public to every
+/// responder and spectator.
+///
+/// CR 732.2b, ALL-OR-NOTHING: the responder's right is to shorten "by naming a place where they
+/// will make a game choice that's different than what's been proposed", so a half-shown pin set
+/// would state a proposal that was never made. The hostile fixture pins ONE hidden hand card and
+/// ONE public seat, and the assertion is `template.is_none()` — an implementation that merely
+/// trimmed the hidden pin would hand back `Some` with a one-pin vector and fail here.
+///
+/// # Non-vacuity
+///
+/// The board is FOUR seats so that the pinned card's owner is neither the proposer nor a
+/// responder, which separates three properties a 2-seat fixture conflates. Paired positives,
+/// because a redactor that simply dropped every template would satisfy the negative for free:
+/// (1) the PROPOSER (P0) keeps it — the guard is keyed to the viewer boundary; (2) the OWNER of
+/// the pinned hand card (P3) keeps it even though they are not the proposer — so the drop is
+/// keyed to what the viewer may actually see, not to "everyone but the proposer"; (3) an all-seat
+/// template reaches the responder unchanged and byte-equal to the proposer's. The negative is
+/// asserted for the QUEUED responder P2 as well as the current one P1, which is what makes the
+/// guard's keying on `proposal.proposer` (not on the prompted `player`) observable.
+///
+/// REVERT-PROBE: delete the `WaitingFor::RespondToShortcut` arm in `filter_state_for_viewer` ⇒
+/// P1/P2 see the hidden-hand pin ⇒ the two `is_none()` assertions FAIL while all positives stay
+/// green. Flipping the shared `pins_name_hidden_source`'s inner `any` to `all` fails this row AND
+/// the pre-existing `LoopShortcut` row D5-h — which is the proof that the extraction left ONE
+/// authority behind rather than two copies.
+///
+/// *What wrong implementation would still pass this row?* One that redacts `proposal.template`
+/// but leaks the same identity through the `LoopShortcut` offer it came from — that surface is
+/// covered by D5-h and by `loop_shortcut_schema_redacts_hidden_targets_for_non_controller` above.
+#[test]
+fn respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers() {
+    const P3: PlayerId = PlayerId(3);
+
+    let mut scenario = GameScenario::new_n_player(4, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    // The pinned card sits in a hand belonging to NEITHER the proposer (P0) nor either
+    // responder (P1 current, P2 queued), so "cannot see it" and "is not the proposer" are
+    // distinguishable properties of a viewer on this one board.
+    let hidden_hand = scenario.add_bolt_to_hand(P3);
+    let runner = scenario.build();
+
+    let source = YieldTarget::ThisObject {
+        source_id: ObjectId(999),
+        incarnation: None,
+        trigger_description: None,
+    };
+    let window = |pins: Vec<TargetPin>| -> GameState {
+        let mut state = runner.state().clone();
+        state.waiting_for = WaitingFor::RespondToShortcut {
+            player: P1,
+            remaining_players: vec![P2],
+            proposal: ShortcutProposal {
+                proposer: P0,
+                predicted_winner: Some(P0),
+                count: IterationCount::Fixed(3),
+                unbounded: vec![],
+                win_kind: WinKind::LethalDamage,
+                template: Some(DecisionTemplate {
+                    owner: P0,
+                    decisions: vec![PinnedDecision::Targets {
+                        slot: DecisionSlot {
+                            source: source.clone(),
+                            index: 0,
+                        },
+                        targets: pins,
+                    }],
+                    replay: ReplayMode::Scheduled {
+                        count: IterationCount::Fixed(3),
+                    },
+                    key: DecisionGroupKey::from_sources(
+                        std::slice::from_ref(&source),
+                        DecisionKind::LoopChoice,
+                    ),
+                }),
+                per_cycle: None,
+            },
+        };
+        state
+    };
+    let projected = |state: &GameState, viewer: PlayerId| -> Option<DecisionTemplate> {
+        match engine::game::visibility::filter_state_for_viewer(state, viewer).waiting_for {
+            WaitingFor::RespondToShortcut { proposal, .. } => proposal.template,
+            other => panic!("the fixture parks on the CR 732.2b response window, got {other:?}"),
+        }
+    };
+
+    // ── the hostile arm: one hidden hand card + one public seat in the SAME pin vector ──
+    let hidden_state = window(vec![
+        TargetPin::ByIdentity(YieldTarget::ThisObject {
+            source_id: hidden_hand,
+            incarnation: None,
+            trigger_description: None,
+        }),
+        TargetPin::Player(P1),
+    ]);
+    assert!(
+        projected(&hidden_state, P0).is_some(),
+        "reach-guard + positive: the PROPOSER's own projection keeps the template, so the drops \
+         below are keyed to the viewer boundary rather than to the fixture"
+    );
+    assert!(
+        projected(&hidden_state, P1).is_none(),
+        "CR 732.2b: the CURRENT responder must not receive a proposal whose pin names a card in \
+         a hand they cannot see — and all-or-nothing means the public seat pin goes with it"
+    );
+    assert!(
+        projected(&hidden_state, P2).is_none(),
+        "the QUEUED responder is projected the same way: the guard keys on `proposal.proposer`, \
+         not on the prompted `player`"
+    );
+    assert!(
+        projected(&hidden_state, P3).is_some(),
+        "positive: the OWNER of the pinned hand card keeps the template even though they are not \
+         the proposer — the drop is keyed to what this viewer may actually see, so a redactor \
+         that dropped the template for every non-proposer fails here"
+    );
+
+    // ── the paired positive: an all-seat template carries no hidden identity ──
+    let public_state = window(vec![TargetPin::Player(P1)]);
+    assert_eq!(
+        projected(&public_state, P1),
+        projected(&public_state, P0),
+        "an all-seat template reaches the responder UNCHANGED — without this arm a redactor that \
+         dropped every template would pass the negatives above"
+    );
+    assert!(
+        projected(&public_state, P1).is_some(),
+        "and it is genuinely present, not two matching `None`s"
+    );
+}
+
+/// F4 (review finding): the THIRD carrier of the same `Vec<PinnedDecision>` —
+/// `GameState::last_loop_action_sequence[].pins` — routes through the same authority.
+///
+/// It is serialized whenever non-empty (`skip_serializing_if = "Vec::is_empty"`, not `skip`) and
+/// had zero hits in `visibility.rs` before this change. Its three production writers (the
+/// `record_loop_pin` call sites: a mana-ability tap cost, a mana-color choice, a proliferate
+/// target) can only name battlefield permanents and seats, so no board the engine mints today
+/// reaches the redaction — this row constructs the pin a fourth writer would produce, which is
+/// the only way to hold the seam closed before that writer exists.
+///
+/// # Non-vacuity
+///
+/// The owner arm (P1 sees their own hand card) is the paired positive: a sweep that cleared every
+/// recorded pin would satisfy the negative and fail it. The step itself is asserted to survive in
+/// both arms, so "the whole sequence was dropped" cannot masquerade as a pass.
+///
+/// REVERT-PROBE: delete the `for step in &mut filtered.last_loop_action_sequence` sweep ⇒ P2 keeps
+/// the hidden-hand pin ⇒ the `is_empty()` assertion FAILS while both positives stay green.
+///
+/// *What wrong implementation would still pass this row?* One that clears `pins` unconditionally
+/// for every non-owner — the owner arm is what rejects it.
+#[test]
+fn recorded_loop_pins_are_redacted_for_a_viewer_who_cannot_see_the_pinned_object() {
+    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+    let mut scenario = GameScenario::new_n_player(3, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    let hidden_hand = scenario.add_bolt_to_hand(P1); // a hidden card in P1's hand
+    let runner = scenario.build();
+
+    let mut state = runner.state().clone();
+    let card_id = state.objects[&hidden_hand].card_id;
+    state.last_loop_action_sequence = vec![LoopActionContext {
+        card_id,
+        controller: P1,
+        action: LoopAction::Recast {
+            from_zone: engine::types::zones::Zone::Hand,
+            uses_buyback: BuybackUsage::NotUsed,
+        },
+        convoke: None,
+        pins: vec![PinnedDecision::Targets {
+            slot: DecisionSlot {
+                source: YieldTarget::ThisObject {
+                    source_id: ObjectId(999),
+                    incarnation: None,
+                    trigger_description: None,
+                },
+                index: 0,
+            },
+            targets: vec![
+                TargetPin::ByIdentity(YieldTarget::ThisObject {
+                    source_id: hidden_hand,
+                    incarnation: None,
+                    trigger_description: None,
+                }),
+                TargetPin::Player(P1),
+            ],
+        }],
+    }];
+
+    let pins_for = |viewer: PlayerId| -> Vec<PinnedDecision> {
+        let seq = engine::game::visibility::filter_state_for_viewer(&state, viewer)
+            .last_loop_action_sequence;
+        assert_eq!(
+            seq.len(),
+            1,
+            "the recorded step itself is never dropped — only its pin vector is redacted"
+        );
+        seq[0].pins.clone()
+    };
+
+    assert_eq!(
+        pins_for(P1).len(),
+        1,
+        "positive: the hand's OWNER keeps the recorded pin — `target_hidden` answers false for a \
+         card this viewer may privately see"
+    );
+    assert!(
+        pins_for(P2).is_empty(),
+        "a viewer who cannot see P1's hand receives no pin naming that card — all-or-nothing, so \
+         the public seat pin in the same vector goes with it"
+    );
+}
+
 /// T6 (serde): the schema rides the `WaitingFor::LoopShortcut` serialization as `data.schema`
 /// (tag/content) and round-trips equal — the FE contract that lets the frontend read the offer's
 /// decision schema off the wire without any engine-side special casing.

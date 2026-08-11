@@ -97,6 +97,82 @@ pub(crate) fn capture_library_search_card_view(
     }
 }
 
+/// CR 732.2b: the responder's right is to name a place where they will make "a choice that's
+/// different than what's been proposed", so the proposal they see must be the whole proposal or
+/// none of it. A partially-redacted pin set is a LIE about what was proposed — it would show a
+/// shortened sequence the proposer never suggested — so this is ALL-OR-NOTHING: one pin naming an
+/// object this viewer may not see drops the entire pin vector.
+///
+/// THE SINGLE AUTHORITY for that decision. It is keyed on `[PinnedDecision]` rather than on
+/// `DecisionTemplate` because this engine has THREE viewer-visible carriers of that same vector,
+/// and a per-carrier copy of the predicate is exactly what let them drift before:
+///
+/// 1. `WaitingFor::LoopShortcut.declaration.decisions` — the proposer-facing offer.
+/// 2. `WaitingFor::RespondToShortcut.proposal.template.decisions` — the responder-facing copy.
+///    `game::engine::handle_declare_shortcut` moves the identical template verbatim onto
+///    `ShortcutProposal.template` one state transition later, where every responder and spectator
+///    reads it.
+/// 3. `GameState::last_loop_action_sequence[].pins` — the recorded loop period. It is serialized
+///    whenever non-empty (`skip_serializing_if = "Vec::is_empty"`, not `skip`) and has no other
+///    redaction seam. Its three writers (the `game::engine::record_loop_pin` call sites: a
+///    mana-ability tap cost, a mana-color choice, a proliferate target) can only name battlefield
+///    permanents and seats today, so that call redacts nothing on any board the engine currently
+///    mints — it is wired so a fourth writer cannot open the leak silently.
+///
+/// `GameState::decision_templates` is the fourth carrier and deliberately does NOT route here: it
+/// is redacted by owner-retain (`filtered.decision_templates.retain(|t| t.owner == viewer)`), so a
+/// template the viewer does not own is REMOVED entirely and there is nothing left for this
+/// predicate to answer about it.
+///
+/// A `TargetPin::Player` needs no redaction, and that is an ENGINE property rather than a CR one —
+/// no rule makes seat identity public. This projection hides card identities and hidden-zone
+/// contents; the seat list itself is never per-viewer filtered (`filtered.players[..]` is redacted
+/// in place, never removed), so a `PlayerId` names something every viewer already has. CR 115.2 is
+/// cited for the narrower thing it actually says: a spell or ability may target a player when it
+/// specifies so, which is what makes a seat a legal pin value at all.
+///
+/// `target_hidden` is passed in rather than re-derived so that the declaration's object identities
+/// and the offer schema's legal targets are answered by ONE hidden-info authority; two derivations
+/// could disagree about the same object.
+fn pins_name_hidden_source(
+    pins: &[crate::analysis::decision_template::PinnedDecision],
+    target_hidden: &dyn Fn(ObjectId) -> bool,
+) -> bool {
+    use crate::analysis::decision_template::{
+        DecisionSource, PinnedDecision, TargetPin, TargetSchedule,
+    };
+    let source_hidden = |source: &DecisionSource| match source {
+        crate::types::game_state::YieldTarget::ThisObject { source_id, .. } => {
+            target_hidden(*source_id)
+        }
+        // A card identity, not a live object: it names no zone occupant to hide.
+        crate::types::game_state::YieldTarget::AllCopies { .. } => false,
+    };
+    let pin_hidden = |pin: &TargetPin| match pin {
+        TargetPin::ByIdentity(source) => source_hidden(source),
+        TargetPin::Player(_) => false,
+        TargetPin::Scheduled(schedule) => match schedule {
+            TargetSchedule::Constant(source) => source_hidden(source),
+            TargetSchedule::RoundRobin(sources) => sources.iter().any(&source_hidden),
+            TargetSchedule::Piecewise(steps) => {
+                steps.iter().any(|(_, source)| source_hidden(source))
+            }
+        },
+    };
+    // Wildcard-free over `PinnedDecision`, so a future variant that carries an object
+    // identity gets a compile-time visit here instead of leaking silently. Every
+    // slot-only variant is already published unredacted as `point.slot`.
+    pins.iter().any(|pin| match pin {
+        PinnedDecision::Targets { targets, .. } => targets.iter().any(&pin_hidden),
+        PinnedDecision::Order { source, .. } => source_hidden(source),
+        PinnedDecision::Mode { .. }
+        | PinnedDecision::MayChoice { .. }
+        | PinnedDecision::UnlessBreak { .. }
+        | PinnedDecision::ConvokeTaps { .. }
+        | PinnedDecision::ManaColor { .. } => false,
+    })
+}
+
 /// Returns a filtered copy of the game state for the given viewer.
 /// Hides all opponents' hand contents and all library contents except where the
 /// viewer is explicitly allowed to see them.
@@ -736,6 +812,22 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         }
     }
 
+    // A target object is hidden from this viewer iff it sits in a private zone whose
+    // owner the viewer can't privately view AND it isn't otherwise revealed/peeked.
+    // Hoisted above the CR 732.2a/b blocks below because all THREE pin carriers
+    // (`LoopShortcut.declaration`, `RespondToShortcut.proposal.template`,
+    // `last_loop_action_sequence[].pins`) must answer "may this viewer see that object?" the
+    // same way; a per-arm copy is what let the first two drift apart.
+    let target_hidden = |id: ObjectId| -> bool {
+        state.objects.get(&id).is_some_and(|obj| {
+            matches!(obj.zone, Zone::Hand | Zone::Library)
+                && !can_view_private_for_player(obj.owner)
+                && !is_visible_revealed_card(state, viewer, id)
+                && !state.viewer_knows_card_identity(viewer, id)
+                && !private_look_visible.contains(&id)
+        })
+    };
+
     // CR 732.2a: redact hidden-info legal targets in a `LoopShortcut` OFFER for a viewer who is
     // NOT the schema's proposer. The schema is built for the offer's public declaration; this
     // is the SOLE seam that removes a hidden-zone (hand/library) legal target from a viewer who
@@ -753,21 +845,9 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     {
         if !can_view_private_for_player(proposer) {
             use crate::analysis::decision_template::{
-                DecisionPoint, DecisionPointKind, DecisionSource, PinnedDecision,
-                ShortcutDecisionSchema, TargetPin, TargetSchedule,
+                DecisionPoint, DecisionPointKind, ShortcutDecisionSchema,
             };
             use crate::types::ability::TargetRef;
-            // A target object is hidden from this viewer iff it sits in a private zone whose
-            // owner the viewer can't privately view AND it isn't otherwise revealed/peeked.
-            let target_hidden = |id: ObjectId| -> bool {
-                state.objects.get(&id).is_some_and(|obj| {
-                    matches!(obj.zone, Zone::Hand | Zone::Library)
-                        && !can_view_private_for_player(obj.owner)
-                        && !is_visible_revealed_card(state, viewer, id)
-                        && !state.viewer_knows_card_identity(viewer, id)
-                        && !private_look_visible.contains(&id)
-                })
-            };
             let points: Vec<DecisionPoint> = schema
                 .points
                 .iter()
@@ -831,56 +911,13 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                     _ => None,
                 })
                 .sum();
-            // CR 732.2b: the responder's right is to name a place where they will make "a
-            // choice that's different than what's been proposed", so the proposal they see must
-            // be the whole proposal or none of it. A partially-redacted pin set is a LIE about
-            // what was proposed — it would show a shortened sequence the proposer never
-            // suggested — so this is ALL-OR-NOTHING: one pin naming an object this viewer may
-            // not see drops the entire declaration.
-            //
-            // A `TargetPin::Player` needs no redaction, and that is an ENGINE property rather
-            // than a CR one — no rule makes seat identity public. This projection hides card
-            // identities and hidden-zone contents; the seat list itself is never per-viewer
-            // filtered (`filtered.players[..]` is redacted in place, never removed), so a
-            // `PlayerId` names something every viewer already has. CR 115.2 is cited for the
-            // narrower thing it actually says: a spell or ability may target a player when it
-            // specifies so, which is what makes a seat a legal pin value at all.
-            //
-            // Reuses `target_hidden` above rather than re-deriving the composite: the
-            // declaration's object identities and the schema's legal targets must be answerable
-            // by ONE hidden-info authority or the two could disagree about the same object.
-            let source_hidden = |source: &DecisionSource| match source {
-                crate::types::game_state::YieldTarget::ThisObject { source_id, .. } => {
-                    target_hidden(*source_id)
-                }
-                // A card identity, not a live object: it names no zone occupant to hide.
-                crate::types::game_state::YieldTarget::AllCopies { .. } => false,
-            };
-            let pin_hidden = |pin: &TargetPin| match pin {
-                TargetPin::ByIdentity(source) => source_hidden(source),
-                TargetPin::Player(_) => false,
-                TargetPin::Scheduled(schedule) => match schedule {
-                    TargetSchedule::Constant(source) => source_hidden(source),
-                    TargetSchedule::RoundRobin(sources) => sources.iter().any(&source_hidden),
-                    TargetSchedule::Piecewise(steps) => {
-                        steps.iter().any(|(_, source)| source_hidden(source))
-                    }
-                },
-            };
-            // Wildcard-free over `PinnedDecision`, so a future variant that carries an object
-            // identity gets a compile-time visit here instead of leaking silently. Every
-            // slot-only variant is already published unredacted as `point.slot`.
-            let declaration = declaration.clone().filter(|template| {
-                !template.decisions.iter().any(|pin| match pin {
-                    PinnedDecision::Targets { targets, .. } => targets.iter().any(&pin_hidden),
-                    PinnedDecision::Order { source, .. } => source_hidden(source),
-                    PinnedDecision::Mode { .. }
-                    | PinnedDecision::MayChoice { .. }
-                    | PinnedDecision::UnlessBreak { .. }
-                    | PinnedDecision::ConvokeTaps { .. }
-                    | PinnedDecision::ManaColor { .. } => false,
-                })
-            });
+            // CR 732.2b, ALL-OR-NOTHING: one pin naming an object this viewer may not see drops
+            // the entire declaration. The predicate itself is `pins_name_hidden_source` (this
+            // file), the single authority shared with the `RespondToShortcut` projection below,
+            // which receives this very template verbatim one state transition later.
+            let declaration = declaration
+                .clone()
+                .filter(|template| !pins_name_hidden_source(&template.decisions, &target_hidden));
             filtered.waiting_for = WaitingFor::LoopShortcut {
                 proposer,
                 predicted_winner,
@@ -897,6 +934,37 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                     convoke_tappable_count,
                 },
             };
+        }
+    }
+
+    // CR 732.2b: the RESPONDER-facing copy of the very declaration redacted above.
+    // `game::engine::handle_declare_shortcut` moves the proposer's template verbatim onto
+    // `ShortcutProposal.template` and installs it here, so without this arm every identity the
+    // `LoopShortcut` block drops is public to every responder and spectator one transition later.
+    // Same authority, same all-or-nothing: the template is dropped whole, never trimmed.
+    //
+    // Guarded on the PROPOSER's private access (`proposal.proposer`), not on the responder
+    // (`player`), because the offer's declaration is the proposer's hidden information and every
+    // seat but theirs — the current responder, the queued ones, and spectators — receives this
+    // same projection.
+    if let WaitingFor::RespondToShortcut { proposal, .. } = &mut filtered.waiting_for {
+        if !can_view_private_for_player(proposal.proposer)
+            && proposal
+                .template
+                .as_ref()
+                .is_some_and(|t| pins_name_hidden_source(&t.decisions, &target_hidden))
+        {
+            proposal.template = None;
+        }
+    }
+
+    // CR 732.2a: the THIRD carrier of the same pin vector — the recorded loop period, which
+    // serializes whenever non-empty and has no other redaction seam. All-or-nothing per recorded
+    // step, for the reason spelled on `pins_name_hidden_source`: a half-shown period states a
+    // sequence that was never played.
+    for step in &mut filtered.last_loop_action_sequence {
+        if pins_name_hidden_source(&step.pins, &target_hidden) {
+            step.pins.clear();
         }
     }
 
