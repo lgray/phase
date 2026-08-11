@@ -961,6 +961,15 @@ impl ResourceVector {
     /// CR 401: the `LibraryDelta` exemption is what keeps a mill loop — unbounded
     /// *downward* on library size — in the result while every other axis is required to
     /// have risen.
+    ///
+    /// CR 704.5c: rising poison on a victim is an unbounded loss axis — and unlike mill it
+    /// needs no exemption, because poison RISES toward the ten-counter loss, so `Poison(p)`
+    /// is carried by the `n > 0` term itself. RELOCATED, not re-derived: this annotation sat
+    /// above the poison arm of this method's own loop until the `axis_components` split moved
+    /// that loop out, and it belongs beside the CR 401 term because the pair is what states
+    /// WHICH loss axes survive the filter and why. Re-verified against
+    /// `docs/MagicCompRules.txt`: "704.5c If a player has ten or more poison counters, that
+    /// player loses the game."
     pub fn unbounded_components(&self) -> Vec<(ResourceAxis, i64)> {
         self.axis_components()
             .into_iter()
