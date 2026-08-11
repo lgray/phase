@@ -13721,6 +13721,7 @@ mod tests {
             predicted_winner: None,
             certificate: cert.clone(),
             schema: ShortcutDecisionSchema::default(),
+            declaration: None,
         };
         let offer_json =
             serde_json::to_string(&offer).expect("the LoopShortcut payload carrying it must too");
@@ -13739,6 +13740,7 @@ mod tests {
                 ..cert
             },
             schema: ShortcutDecisionSchema::default(),
+            declaration: None,
         };
         let shipped_json = serde_json::to_string(&shipped).expect("serializes");
         assert!(

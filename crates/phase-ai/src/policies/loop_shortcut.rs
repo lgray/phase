@@ -138,6 +138,10 @@ impl TacticalPolicy for LoopShortcutPolicy {
             predicted_winner,
             schema,
             certificate,
+            // Scoring reads the offer's BOUND and its certificate, never its pins: the
+            // engine-published declaration is what the candidate already carries, so re-reading
+            // it here would score the same value twice.
+            declaration: _,
         } = &ctx.state.waiting_for
         else {
             return na();
@@ -439,6 +443,7 @@ mod tests {
             predicted_winner,
             certificate: cert(),
             schema: ShortcutDecisionSchema::default(),
+            declaration: None,
         };
         state
     }
@@ -629,6 +634,7 @@ mod tests {
                 max_iterations,
                 ..Default::default()
             },
+            declaration: None,
         };
         state
     }
@@ -649,6 +655,7 @@ mod tests {
                 max_iterations,
                 ..Default::default()
             },
+            declaration: None,
         };
         state
     }

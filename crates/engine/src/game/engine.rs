@@ -1451,6 +1451,10 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
                 predicted_winner: None,
                 certificate,
                 schema,
+                // CR 732.2a: the object-growth path re-derives its pins at materialize time
+                // from the carried recast template, so this offer states no engine-side
+                // declaration of its own.
+                declaration: None,
             };
             result.waiting_for = state.waiting_for.clone();
         }
@@ -1527,6 +1531,9 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                 predicted_winner: Some(winner),
                 certificate,
                 schema,
+                // CR 732.2a: Path A publishes no decision points at all (the pin list above is
+                // empty), so there is nothing for a declaration to pin.
+                declaration: None,
             };
             result.waiting_for = state.waiting_for.clone();
         }
@@ -2379,11 +2386,126 @@ fn certified_bounded_cycle_offer<'a>(
         IterationCount::Fixed(max_iterations),
         max_iterations,
     );
+    // (10) The DECLARATION the engine can already specify for this offer, read out of the
+    // answer journal the same window populated. Built AFTER the schema because `points` is
+    // moved into `build_shortcut_schema`, and taking `&schema` keeps one point list rather
+    // than two.
+    let declaration = build_bounded_declaration(state, proposer, &schema);
     Ok(WaitingFor::LoopShortcut {
         proposer,
         predicted_winner: None,
         certificate,
         schema,
+        declaration,
+    })
+}
+
+/// CR 732.2a: the declaration THIS offer can already state, derived from what the proposer
+/// actually answered at each published point — never from a constant and never from the
+/// declaring client.
+///
+/// CR 732.2a describes a shortcut proposal as "a sequence of game choices, for all players,
+/// that may be legally taken based on the current game state and the predictable results of
+/// the sequence of choices". Every published point of `schema` is one such choice; the
+/// `(DecisionSlot, PlayerId)` journal holds the answer the proposer gave it during the
+/// detection window (CR 601.2c announcements via `record_trigger_target_answer`, CR 603.5
+/// "may" answers via the `DecideOptionalEffect` arm). This function is the single authority
+/// for turning that observation into a [`DecisionTemplate`], so the AI candidate generator and
+/// the per-viewer projection read ONE value instead of each deriving their own.
+///
+/// **Not a duplicate authority.** `game::interaction::materialize_loop_shortcut_response`
+/// builds a conformant `DecisionTemplate` of the same shape (same `owner` / `decisions` /
+/// `ReplayMode::Scheduled` / `DecisionGroupKey::from_sources` / `(!points.is_empty())` guard),
+/// but from the CLIENT'S OWN submitted pins — a human's picks. This one is built from the
+/// ENGINE'S OWN observed answers. Two inputs, one shape; a reviewer reading only the shape
+/// would otherwise see duplication.
+///
+/// FAIL-CLOSED on every uncertainty, because a wrong pin is worse than no offer:
+///
+/// * an empty point set publishes no declaration at all — a declaration against an empty
+///   schema would be the one shape `handle_declare_shortcut` validates neither
+///   `predictability_gate` nor `validate_pins` against (both live inside its
+///   `if !offer.schema.points.is_empty()` block);
+/// * `None` (that seat never answered this slot) and [`LoopAnswer::Conflicted`] (it answered
+///   two ways — see that type: an engine-capability refusal, NOT a CR 732.2a mandate) are the
+///   SAME disposition here, because neither names a single answer to pin;
+/// * the `(kind, value)` match is WILDCARD-FREE, so a future `DecisionPointKind` or
+///   `LoopAnswerValue` variant gets a compile-time visit here instead of a silent pin. The
+///   two kind/value MISMATCH groups return `None` rather than `unreachable!` because what
+///   makes them unreachable is a key-shape agreement between publisher and writer, not a type
+///   guarantee.
+fn build_bounded_declaration(
+    state: &GameState,
+    proposer: PlayerId,
+    schema: &crate::analysis::decision_template::ShortcutDecisionSchema,
+) -> Option<crate::analysis::decision_template::DecisionTemplate> {
+    use crate::analysis::decision_template::{
+        DecisionGroupKey, DecisionKind, DecisionPointKind, DecisionTemplate, LoopAnswer,
+        LoopAnswerValue, PinnedDecision, ReplayMode,
+    };
+    // (1) D4's grounds: an empty schema publishes no declaration.
+    if schema.points.is_empty() {
+        return None;
+    }
+    let mut decisions = Vec::with_capacity(schema.points.len());
+    for point in &schema.points {
+        // (2) The journal read, under the PROPOSER's own key — the same key
+        // `record_trigger_target_answer` and the `DecideOptionalEffect` arm write under.
+        let LoopAnswer::Uniform(value) = state.loop_answer(&point.slot, proposer)? else {
+            return None;
+        };
+        // (3) The wildcard-free (kind, value) match.
+        decisions.push(match (&point.kind, value) {
+            // CR 603.5: the "may" gate, answered Take or Decline.
+            (DecisionPointKind::MayChoice, LoopAnswerValue::May(take)) => {
+                PinnedDecision::MayChoice {
+                    slot: point.slot.clone(),
+                    take,
+                }
+            }
+            // CR 601.2c + CR 608.2b: the announced targets for this slot, in announcement
+            // order, re-checked for legality at every resolution.
+            (DecisionPointKind::Targets { .. }, LoopAnswerValue::Targets(targets)) => {
+                PinnedDecision::Targets {
+                    slot: point.slot.clone(),
+                    targets,
+                }
+            }
+            // Kind/value MISMATCH — the publisher and the journal writer disagree about what
+            // this slot is. Fail closed.
+            (DecisionPointKind::MayChoice, LoopAnswerValue::Targets(_))
+            | (DecisionPointKind::Targets { .. }, LoopAnswerValue::May(_)) => return None,
+            // CR 700.2 modal / CR 732.6 "[A] unless [B]" / CR 601.2h + CR 702.51a convoke /
+            // CR 608.2d + CR 605.3b mana color: kinds this offer's publisher
+            // (`bounded_cycle_pin_slots_for_window`, which mints only `Targets` and
+            // `MayChoice`) cannot produce today. `LoopAnswerValue` carries no answer shape for
+            // any of them, so there is nothing to pin even when the slot IS journalled.
+            (
+                DecisionPointKind::Mode { .. }
+                | DecisionPointKind::UnlessBreak
+                | DecisionPointKind::ConvokeTaps { .. }
+                | DecisionPointKind::ManaColor { .. },
+                LoopAnswerValue::May(_) | LoopAnswerValue::Targets(_),
+            ) => return None,
+        });
+    }
+    // (4) The template. `replay.count` carries the offer's own SUGGESTION; the driving count
+    // comes off `GameAction::DeclareShortcut` and nothing reads this copy (see
+    // `build_recast_template`'s note and `analysis::decision_template::resolve`'s doc).
+    Some(DecisionTemplate {
+        owner: proposer,
+        decisions,
+        replay: ReplayMode::Scheduled {
+            count: schema.iteration_count.clone(),
+        },
+        key: DecisionGroupKey::from_sources(
+            &schema
+                .points
+                .iter()
+                .map(|point| point.slot.source.clone())
+                .collect::<Vec<_>>(),
+            DecisionKind::LoopChoice,
+        ),
     })
 }
 
@@ -9168,6 +9290,11 @@ fn apply_action(
                 predicted_winner,
                 certificate,
                 schema,
+                // NOT threaded, deliberately: resolving a `template: None` declaration against
+                // the offer's own `declaration` is a change to the DECLARE handler's proposal
+                // shape, with its own hostile-fixture obligations (foreign period, restore
+                // ingress). `_` rather than a bind so nothing here implies otherwise.
+                declaration: _,
             },
             GameAction::DeclareShortcut { count, template },
         ) => {
@@ -15174,6 +15301,308 @@ mod shortcut_schema_tests {
     }
 }
 
+/// item-4 C2b — `build_bounded_declaration`, the consumer that turns the window's observed
+/// answers into the offer's own CR 732.2a declaration.
+///
+/// TIER NOTE, stated because it is FORCED rather than chosen: rows D1 / D1-P / D1-P-sib drive
+/// the real F4 dump through production `apply()` and live in
+/// `crates/engine/tests/integration/fantastic_four_bounded_loop.rs`. The three rows HERE are the
+/// ones no tracked board can reach — a `Decline`d CR 603.5 answer at a certifying offer, and a
+/// point kind the bounded publisher cannot mint — so each states its own unreachability rather
+/// than implying a wire row was available and skipped.
+#[cfg(test)]
+mod bounded_declaration_tests {
+    use super::{build_bounded_declaration, build_shortcut_schema};
+    use crate::analysis::decision_template::{
+        DecisionPoint, DecisionPointKind, DecisionSlot, IterationCount, LoopAnswer,
+        LoopAnswerValue, MayChoiceOption, PinnedDecision, ShortcutDecisionSchema, TargetPin,
+    };
+    use crate::types::ability::TargetRef;
+    use crate::types::game_state::{GameState, LoopDetectionMode, YieldTarget};
+    use crate::types::identifiers::ObjectId;
+    use crate::types::mana::ManaColor;
+    use crate::types::player::PlayerId;
+
+    const PROPOSER: PlayerId = PlayerId(0);
+    const AIMED: PlayerId = PlayerId(1);
+
+    /// A CR 400.7-stable source identity, built the way `object_decision_source` builds one.
+    fn source(id: u64) -> YieldTarget {
+        YieldTarget::ThisObject {
+            source_id: ObjectId(id),
+            incarnation: Some(1),
+            trigger_description: None,
+        }
+    }
+
+    /// A board whose journal ACCEPTS writes: `record_loop_answer` is gated on
+    /// `loop_detection.samples()`, so a default board would silently record nothing and every
+    /// row below would measure the "seat never answered" path instead of its own subject.
+    fn recording_state() -> GameState {
+        let mut state = GameState::new_two_player(7);
+        state.loop_detection = LoopDetectionMode::Interactive;
+        state
+    }
+
+    fn targets_kind() -> DecisionPointKind {
+        DecisionPointKind::Targets {
+            legal_targets: vec![TargetRef::Player(AIMED)],
+            min_targets: 1,
+            max_targets: 1,
+            ordered: false,
+        }
+    }
+
+    /// The two-kind schema the bounded publisher actually mints: one CR 603.5 `may` gate and one
+    /// CR 601.2c target slot, on two distinct sources.
+    fn may_and_target_schema() -> ShortcutDecisionSchema {
+        build_shortcut_schema(
+            vec![
+                DecisionPoint {
+                    slot: DecisionSlot::may(source(100)),
+                    kind: DecisionPointKind::MayChoice,
+                },
+                DecisionPoint {
+                    slot: DecisionSlot::target(source(200)),
+                    kind: targets_kind(),
+                },
+            ],
+            IterationCount::Fixed(4),
+            4,
+        )
+    }
+
+    /// **Row D1-P-may — the `MayChoice` pin FOLLOWS THE JOURNAL, not a constant.**
+    ///
+    /// CR 603.5: an optional trigger's answer is `Take` or `Decline`, and the declaration must
+    /// state the one the proposer actually gave. A consumer that hard-codes
+    /// `MayChoiceOption::Take` is indistinguishable from this one on every tracked board, which
+    /// is exactly the vacuity this row closes.
+    ///
+    /// # Why this tier is FORCED, and not a shortcut
+    ///
+    /// A wire-tier may-provenance drive is measured UNREACHABLE: answering every CR 603.5 prompt
+    /// `Decline` on the tracked F4 board reaches NO offer at all (declining Sue's token breaks
+    /// the chain to Reed, so the loop never certifies — the drive policy's own doc records it).
+    /// The residual is filed rather than hidden: it needs a bounded board on which the proposer
+    /// DECLINES and the loop still certifies, and the lane's real-fixtures rule bars
+    /// synthesizing one.
+    ///
+    /// # Non-vacuity
+    ///
+    /// The `Take` case is asserted in the SAME test from the SAME fixture one field apart, so a
+    /// consumer that returned `None` — or that dropped the may pin entirely — fails the positive
+    /// arm rather than passing the negative one by omission.
+    ///
+    /// REVERT-PROBE: hard-code `take: MayChoiceOption::Take` in the `(MayChoice, May)` arm ⇒ the
+    /// `Decline` arm's assertion flips (`Take != Decline`) while the `Take` arm stays green.
+    /// That asymmetry is the row.
+    ///
+    /// *What wrong implementation would still pass this row?* One that reads the journal for the
+    /// may axis but pins a CONSTANT target — D1-P and D1-P-sib cover that axis on the real dump.
+    #[test]
+    fn d1p_may_the_may_pin_follows_the_journal_not_a_constant() {
+        let schema = may_and_target_schema();
+        let [may_point, target_point] = &schema.points[..] else {
+            panic!("the fixture publishes exactly two points");
+        };
+
+        for answered in [MayChoiceOption::Decline, MayChoiceOption::Take] {
+            let mut state = recording_state();
+            state.record_loop_answer(
+                may_point.slot.clone(),
+                PROPOSER,
+                LoopAnswer::Uniform(LoopAnswerValue::May(answered)),
+            );
+            state.record_loop_answer(
+                target_point.slot.clone(),
+                PROPOSER,
+                LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(AIMED)])),
+            );
+
+            // Reach-guard: the journal really holds the answer, under the PROPOSER's own key.
+            // Without this a gated-off `record_loop_answer` would make every arm below measure
+            // the "never answered" refusal instead.
+            assert_eq!(
+                state.loop_answer(&may_point.slot, PROPOSER),
+                Some(LoopAnswer::Uniform(LoopAnswerValue::May(answered))),
+                "reach-guard: the CR 603.5 answer must be journalled before the consumer runs"
+            );
+
+            let declaration = build_bounded_declaration(&state, PROPOSER, &schema)
+                .expect("both published points are answered, so the declaration is complete");
+            assert_eq!(
+                declaration.decisions[0],
+                PinnedDecision::MayChoice {
+                    slot: may_point.slot.clone(),
+                    take: answered,
+                },
+                "CR 603.5: the pinned option must be the one the proposer ANSWERED ({answered:?}), \
+                 not a constant"
+            );
+            assert_eq!(
+                declaration.owner, PROPOSER,
+                "the declaration is the proposer's own, which is what the declare-time owner \
+                 firewall compares against"
+            );
+        }
+    }
+
+    /// **Row D3 — the consumer is TOTAL and FAIL-CLOSED over the four `DecisionPointKind`s the
+    /// bounded producer cannot mint.**
+    ///
+    /// CR 700.2 (`Mode`), CR 732.6 (`UnlessBreak`), CR 601.2h + CR 702.51a (`ConvokeTaps`) and
+    /// CR 608.2d + CR 605.3b (`ManaColor`) are real choice kinds with no observation-side answer
+    /// shape in `LoopAnswerValue`, so there is nothing to pin for them and the declaration must
+    /// refuse rather than guess.
+    ///
+    /// # ⚠ THE JOURNAL ENTRY ON THE FOUR-KIND POINT IS LOAD-BEARING, NOT DECORATION
+    ///
+    /// `build_bounded_declaration`'s body order is (1) empty check, (2) `state.loop_answer(..)?`,
+    /// (3) the `(kind, value)` match. An UNJOURNALLED four-kind point exits at step (2)'s `?` —
+    /// before control ever reaches the arm this row is about — and the reddening mutation returns
+    /// `None` there too, so real and mutant AGREE and nothing can red. Each case therefore
+    /// journals its own point and ASSERTS the entry is present before the consumer runs.
+    ///
+    /// # Unreachable today, and the row says so
+    ///
+    /// `bounded_cycle_pin_slots_for_window` constructs only `Targets` and `MayChoice` points. The
+    /// other four have one producer, `pinned_decisions_to_points`, which serves the two mints that
+    /// publish `declaration: None`. The row exists so a publisher relaxation gets a red test
+    /// instead of a silent pin.
+    ///
+    /// REVERT-PROBE: replace the four-kind arm with `_ => continue` ⇒ each case builds a
+    /// `Some(template)` with the four-kind point silently dropped ⇒ every `is_none()` flips while
+    /// the control stays green.
+    ///
+    /// *What wrong implementation would still pass this row?* One that returns `None` for
+    /// EVERYTHING — which the control arm (the same fixture with only mintable kinds) refuses.
+    #[test]
+    fn d3_the_consumer_fail_closes_on_every_kind_the_bounded_publisher_cannot_mint() {
+        let unmintable = [
+            DecisionPointKind::Mode {
+                available_modes: vec![0, 1],
+                min_modes: 1,
+                max_modes: 1,
+                allow_repeats: false,
+            },
+            DecisionPointKind::UnlessBreak,
+            DecisionPointKind::ConvokeTaps {
+                tappable: vec![ObjectId(31)],
+            },
+            DecisionPointKind::ManaColor {
+                color: ManaColor::Blue,
+            },
+        ];
+
+        // ── CONTROL, first: the same shape with only MINTABLE kinds yields `Some` ──
+        let control_schema = may_and_target_schema();
+        let mut control = recording_state();
+        control.record_loop_answer(
+            control_schema.points[0].slot.clone(),
+            PROPOSER,
+            LoopAnswer::Uniform(LoopAnswerValue::May(MayChoiceOption::Take)),
+        );
+        control.record_loop_answer(
+            control_schema.points[1].slot.clone(),
+            PROPOSER,
+            LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(AIMED)])),
+        );
+        assert!(
+            build_bounded_declaration(&control, PROPOSER, &control_schema).is_some(),
+            "CONTROL: a fully-answered two-kind schema DOES publish a declaration — without this \
+             a consumer that refused everything would pass all four cases below"
+        );
+
+        for kind in unmintable {
+            let odd_slot = DecisionSlot::target(source(300));
+            let schema = build_shortcut_schema(
+                vec![
+                    DecisionPoint {
+                        slot: DecisionSlot::may(source(100)),
+                        kind: DecisionPointKind::MayChoice,
+                    },
+                    DecisionPoint {
+                        slot: odd_slot.clone(),
+                        kind: kind.clone(),
+                    },
+                ],
+                IterationCount::Fixed(4),
+                4,
+            );
+            let mut state = recording_state();
+            // The OTHER point is answered, so the refusal cannot be attributed to it.
+            state.record_loop_answer(
+                schema.points[0].slot.clone(),
+                PROPOSER,
+                LoopAnswer::Uniform(LoopAnswerValue::May(MayChoiceOption::Take)),
+            );
+            // `LoopAnswerValue` has exactly two variants and `May` pairs with NONE of the four
+            // kinds under test, so this entry is answerable and still unpinnable — which is the
+            // fail-closed disposition the row measures.
+            state.record_loop_answer(
+                odd_slot.clone(),
+                PROPOSER,
+                LoopAnswer::Uniform(LoopAnswerValue::May(MayChoiceOption::Take)),
+            );
+            assert_eq!(
+                state.loop_answer(&odd_slot, PROPOSER),
+                Some(LoopAnswer::Uniform(LoopAnswerValue::May(
+                    MayChoiceOption::Take
+                ))),
+                "⚠ VACUITY GUARD for kind {kind:?}: an UNJOURNALLED point exits at the \
+                 `loop_answer(..)?` one step EARLIER, where the reddening mutation also returns \
+                 `None` — real and mutant would agree and this row could never fire"
+            );
+
+            assert!(
+                build_bounded_declaration(&state, PROPOSER, &schema).is_none(),
+                "CR 732.2a: {kind:?} has no `LoopAnswerValue` shape, so the declaration must \
+                 refuse rather than pin a guess or silently drop the point"
+            );
+        }
+    }
+
+    /// **Row D4 — an empty schema publishes NO declaration.**
+    ///
+    /// LOAD-BEARING, not tidiness: `predictability_gate` and `validate_pins` both live inside
+    /// `handle_declare_shortcut`'s `if !offer.schema.points.is_empty()` block, so a declaration
+    /// minted against an empty schema would travel the one declare path that runs NEITHER gate.
+    /// The invariant is also staged at fixture level by
+    /// `tests/integration/loop_shortcut.rs::r28_empty_schema_offer`, which passes
+    /// `declaration: None` for this reason.
+    ///
+    /// REVERT-PROBE: delete the `schema.points.is_empty()` early return ⇒ the loop body never
+    /// runs, step (4) builds a template with ZERO decisions ⇒ `is_none()` flips.
+    ///
+    /// *What wrong implementation would still pass this row?* One that also refuses a
+    /// fully-answered NON-empty schema — which D1-P-may's positive arm and D3's control refuse.
+    #[test]
+    fn d4_an_empty_schema_publishes_no_declaration() {
+        let empty = build_shortcut_schema(Vec::new(), IterationCount::Fixed(4), 4);
+        assert!(
+            empty.points.is_empty(),
+            "reach-guard: this fixture is the empty-schema case"
+        );
+        let mut state = recording_state();
+        // Journalled anyway: the refusal must be keyed on the EMPTY POINT SET, not on an empty
+        // journal, and a populated journal is the only way to tell those two apart.
+        state.record_loop_answer(
+            DecisionSlot::may(source(100)),
+            PROPOSER,
+            LoopAnswer::Uniform(LoopAnswerValue::May(MayChoiceOption::Take)),
+        );
+        assert!(
+            state.loop_answers_recorded() > 0,
+            "reach-guard: the journal is NON-empty, so the refusal below is the point set's"
+        );
+        assert!(
+            build_bounded_declaration(&state, PROPOSER, &empty).is_none(),
+            "CR 732.2a: an offer that publishes no choice states no declaration"
+        );
+    }
+}
+
 /// PR-7 Combo-UI Stage 2: the mid-drive pin injector (item 4) + the drive-period seam (item 6).
 #[cfg(test)]
 mod stage2_injector_tests {
@@ -17285,20 +17714,32 @@ mod stage2_injector_tests {
                 // Total (38) and partition (5/8/25) both fire GREEN first; the panic was on the third assert
                 // alone, which is what makes this a coordinate shift rather than a population change.
                 //
-                // ⚠ REBASE #3 (onto upstream/main): `:12487 ⇒ :12486`. The only shift is the
-                // **-1** upstream #7303 round 3 introduced ABOVE this producer (the
-                // `ReturnAsAuraTarget` resume arm's two raw attach calls collapsing into one call
-                // to the entering-Aura attachment authority, `-8 +7`). It was already folded into
-                // this entry at the C1 replay earlier in this same rebase; this commit's replay
-                // re-states it on top of the accumulated record rather than replacing that record,
-                // because the record is the evidence and the shift is one line of it.
+                // item-4 C2b (`WaitingFor::LoopShortcut.declaration`), base `1bc45bb8c`: `:12425 ⇒ :12552`,
+                // `+127`, and ONLY this entry moved — the other four live in `effects/` and
+                // `scoped_library_search.rs`, which this commit does not touch. LOCAL, not upstream, so the
+                // CI-vs-local diagnosis in the header does not apply.
                 //
-                // FIFTH re-derivation, same method: located BY CONTENT FIRST. The line whose
-                // sha256 is `8a544e878d3e77fb80391b95af8f74059540d5ce4ad6fb83559f364df5cc7d63`
-                // still matches exactly ONE line under a whole-file scan, and it is still inside
-                // `begin_pending_trigger_target_selection` with no intervening `fn`. Arithmetic
-                // afterwards as a CHECK only: `12487 - 1`.
-                "game/engine.rs:12486".to_string(),
+                // LOCATED BY CONTENT FIRST, as this log requires: the line at `:12552` is sha256-identical
+                // (`8a544e878d3e77fb80391b95…`, the digest this producer has carried since `a6d1a0e62`) to
+                // `1bc45bb8c:game/engine.rs:12425`, and it is still inside
+                // `begin_pending_trigger_target_selection`, which moved by the same `+127` (opens
+                // `:12291 ⇒ :12418`). Arithmetic afterwards as a CHECK: `git diff -U0` on this file has five
+                // hunks above the producer — `+4` and `+3` (the two `declaration: None` mints with their
+                // reasons, in `reconcile_terminal_result` and `interactive_loop_bridge`), `+5` (the mint
+                // wiring in `certified_bounded_cycle_offer`), `+110` (`build_bounded_declaration` and its
+                // doc), and `+5` (`apply_action`'s `declaration: _` discharge and its deferral note) — which
+                // sum to exactly `+127`. The file's remaining two hunks (`mod bounded_declaration_tests`,
+                // `+302`, and one `#[cfg(test)]` field, `+1`) sit BELOW it.
+                //
+                // SET PRESERVATION: this commit adds a FIELD to `WaitingFor::LoopShortcut` and one
+                // declaration consumer; neither assigns `state.waiting_for` to an
+                // `OptionalEffectChoice`, so no line matching the needle is added or removed. The total (38)
+                // and the partition (5/8/25) both fired GREEN on the run that caught this; the panic was on
+                // this third assert alone, which is what makes it a coordinate shift rather than a
+                // population change.
+                // ⚠ REBASE #3: `:12614 ⇒ :12613`, located by content digest, offset from
+                // `begin_pending_trigger_target_selection` unchanged at 134.
+                "game/engine.rs:12613".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
@@ -17919,6 +18360,7 @@ mod stage2_injector_tests {
                 per_cycle: None,
             },
             schema: ShortcutDecisionSchema::default(),
+            declaration: None,
         };
     }
 

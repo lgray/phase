@@ -748,11 +748,13 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         predicted_winner,
         ref certificate,
         ref schema,
+        ref declaration,
     } = state.waiting_for
     {
         if !can_view_private_for_player(proposer) {
             use crate::analysis::decision_template::{
-                DecisionPoint, DecisionPointKind, ShortcutDecisionSchema,
+                DecisionPoint, DecisionPointKind, DecisionSource, PinnedDecision,
+                ShortcutDecisionSchema, TargetPin, TargetSchedule,
             };
             use crate::types::ability::TargetRef;
             // A target object is hidden from this viewer iff it sits in a private zone whose
@@ -829,10 +831,54 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                     _ => None,
                 })
                 .sum();
+            // CR 732.2b + CR 115.2: the responder's right is to name a place where they will
+            // make "a choice that's different than what's been proposed", so the proposal they
+            // see must be the whole proposal or none of it. A partially-redacted pin set is a
+            // LIE about what was proposed — it would show a shortened sequence the proposer
+            // never suggested — so this is ALL-OR-NOTHING: one pin naming an object this viewer
+            // may not see drops the entire declaration. A `TargetPin::Player` names a seat,
+            // which CR 115.2 makes a public legal target, and carries no hidden identity.
+            //
+            // Reuses `target_hidden` above rather than re-deriving the composite: the
+            // declaration's object identities and the schema's legal targets must be answerable
+            // by ONE hidden-info authority or the two could disagree about the same object.
+            let source_hidden = |source: &DecisionSource| match source {
+                crate::types::game_state::YieldTarget::ThisObject { source_id, .. } => {
+                    target_hidden(*source_id)
+                }
+                // A card identity, not a live object: it names no zone occupant to hide.
+                crate::types::game_state::YieldTarget::AllCopies { .. } => false,
+            };
+            let pin_hidden = |pin: &TargetPin| match pin {
+                TargetPin::ByIdentity(source) => source_hidden(source),
+                TargetPin::Player(_) => false,
+                TargetPin::Scheduled(schedule) => match schedule {
+                    TargetSchedule::Constant(source) => source_hidden(source),
+                    TargetSchedule::RoundRobin(sources) => sources.iter().any(&source_hidden),
+                    TargetSchedule::Piecewise(steps) => {
+                        steps.iter().any(|(_, source)| source_hidden(source))
+                    }
+                },
+            };
+            // Wildcard-free over `PinnedDecision`, so a future variant that carries an object
+            // identity gets a compile-time visit here instead of leaking silently. Every
+            // slot-only variant is already published unredacted as `point.slot`.
+            let declaration = declaration.clone().filter(|template| {
+                !template.decisions.iter().any(|pin| match pin {
+                    PinnedDecision::Targets { targets, .. } => targets.iter().any(&pin_hidden),
+                    PinnedDecision::Order { source, .. } => source_hidden(source),
+                    PinnedDecision::Mode { .. }
+                    | PinnedDecision::MayChoice { .. }
+                    | PinnedDecision::UnlessBreak { .. }
+                    | PinnedDecision::ConvokeTaps { .. }
+                    | PinnedDecision::ManaColor { .. } => false,
+                })
+            });
             filtered.waiting_for = WaitingFor::LoopShortcut {
                 proposer,
                 predicted_winner,
                 certificate: certificate.clone(),
+                declaration,
                 schema: ShortcutDecisionSchema {
                     iteration_count: schema.iteration_count.clone(),
                     // CR 732.2a: the count bound is derived from PUBLIC board state (life,
@@ -5834,5 +5880,163 @@ mod tests {
         let back = snapshot.back_face.expect("stored back face is captured");
         assert_eq!(back.name, "Back Face");
         assert_eq!(back.printed_ref, Some(back_ref));
+    }
+
+    // ── item-4 C2b row D5-h — the offer's own `declaration` never crosses the viewer boundary
+    //    carrying an object identity the viewer may not see ──
+
+    const D5H_PROPOSER: PlayerId = PlayerId(0);
+    const D5H_VIEWER: PlayerId = PlayerId(1);
+
+    /// One `LoopShortcut` offer whose declaration pins whatever `pins` builds from the HIDDEN
+    /// card's id. The card sits in the PROPOSER's hand, so the non-proposer viewer cannot
+    /// privately view its owner and `target_hidden` answers `true` for it.
+    ///
+    /// Called twice — once hidden, once all-`Player` — so the mint spells the
+    /// `WaitingFor::LoopShortcut` anchor exactly once (this is a counted site in
+    /// `tests/integration/loop_shortcut_offer_writer_census.rs`).
+    fn d5h_offer(
+        pins: impl FnOnce(ObjectId) -> Vec<crate::analysis::decision_template::TargetPin>,
+    ) -> GameState {
+        use crate::analysis::decision_template::{
+            DecisionGroupKey, DecisionKind, DecisionPoint, DecisionPointKind, DecisionSlot,
+            DecisionTemplate, IterationCount, PinnedDecision, ReplayMode, ShortcutDecisionSchema,
+        };
+        let mut state = GameState::new_two_player(42);
+        let hidden = create_object(
+            &mut state,
+            CardId(4242),
+            D5H_PROPOSER,
+            "Secret Card".to_string(),
+            Zone::Hand,
+        );
+        let slot = DecisionSlot::target(crate::types::game_state::YieldTarget::ThisObject {
+            source_id: ObjectId(777),
+            incarnation: Some(1),
+            trigger_description: None,
+        });
+        state.waiting_for = WaitingFor::LoopShortcut {
+            proposer: D5H_PROPOSER,
+            predicted_winner: None,
+            certificate: crate::analysis::loop_check::LoopCertificate {
+                unbounded: vec![],
+                win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
+                mandatory: false,
+                residual_board_delta: crate::analysis::resource::BoardDelta::default(),
+                per_cycle: None,
+            },
+            schema: ShortcutDecisionSchema {
+                iteration_count: IterationCount::Fixed(3),
+                max_iterations: 3,
+                points: vec![DecisionPoint {
+                    slot: slot.clone(),
+                    kind: DecisionPointKind::Targets {
+                        legal_targets: vec![crate::types::ability::TargetRef::Player(D5H_VIEWER)],
+                        min_targets: 1,
+                        max_targets: 1,
+                        ordered: false,
+                    },
+                }],
+                convoke_tappable_count: 0,
+            },
+            declaration: Some(DecisionTemplate {
+                owner: D5H_PROPOSER,
+                decisions: vec![PinnedDecision::Targets {
+                    slot: slot.clone(),
+                    targets: pins(hidden),
+                }],
+                replay: ReplayMode::Scheduled {
+                    count: IterationCount::Fixed(3),
+                },
+                key: DecisionGroupKey::from_sources(&[slot.source], DecisionKind::LoopChoice),
+            }),
+        };
+        state
+    }
+
+    /// The declaration AS PROJECTED for `viewer`. Both arms of D5-h read through here, so the
+    /// read also spells the census anchor exactly once.
+    fn d5h_projected_declaration(
+        state: &GameState,
+        viewer: PlayerId,
+    ) -> Option<crate::analysis::decision_template::DecisionTemplate> {
+        match filter_state_for_viewer(state, viewer).waiting_for {
+            WaitingFor::LoopShortcut { declaration, .. } => declaration,
+            other => panic!("the fixture parks on the CR 732.2a offer, got {other:?}"),
+        }
+    }
+
+    /// **Row D5-h — a `ByIdentity` pin naming a hidden object drops the WHOLE declaration for a
+    /// non-proposer viewer.**
+    ///
+    /// CR 732.2b gives each other player the right to "shorten [the proposal] by naming a place
+    /// where they will make a game choice that's different than what's been proposed" — so what
+    /// they receive must be the whole proposal or none of it. A partially-redacted pin set would
+    /// show a sequence the proposer never suggested, which is why this is ALL-OR-NOTHING rather
+    /// than a per-pin filter. CR 115.2 makes a player a legal target in the open, so a
+    /// `TargetPin::Player` carries no hidden identity and travels unredacted.
+    ///
+    /// # This path is UNREACHABLE through today's publisher, and the row says so
+    ///
+    /// `record_trigger_target_answer` mints `ByIdentity` only for `TargetRef::Object`, and the
+    /// bounded publisher's own conjuncts (`TargetAnnouncement::Chosen`, and player-valued legal
+    /// sets on every tracked board — measured `any ByIdentity pin? false` on all five drives)
+    /// keep object pins out of a published slot today. The row exists so a publisher relaxation
+    /// cannot silently open the leak; it is not evidence that the leak is live.
+    ///
+    /// # Non-vacuity
+    ///
+    /// The all-`Player` arm is the paired positive from the SAME fixture one pin apart: a
+    /// redactor that dropped EVERY declaration would satisfy the hidden arm and fail this one.
+    /// The proposer's own projection is asserted too, so "drop it for everybody" fails twice.
+    ///
+    /// REVERT-PROBE: make the redaction's `TargetPin::ByIdentity(_)` arm answer `false` (pass
+    /// through unfiltered) ⇒ the hidden arm's `is_none()` flips while both positives stay green.
+    ///
+    /// *What wrong implementation would still pass this row?* One that redacts the declaration
+    /// but leaks the same identity through `schema.points` — that surface has its own row,
+    /// `loop_shortcut_schema_redacts_hidden_targets_for_non_controller`.
+    #[test]
+    fn d5h_a_hidden_object_pin_drops_the_whole_declaration_for_a_non_proposer() {
+        use crate::analysis::decision_template::TargetPin;
+
+        // ── the hidden arm ──
+        let hidden_state = d5h_offer(|hidden| {
+            vec![
+                TargetPin::ByIdentity(crate::types::game_state::YieldTarget::ThisObject {
+                    source_id: hidden,
+                    incarnation: Some(1),
+                    trigger_description: None,
+                }),
+                TargetPin::Player(D5H_VIEWER),
+            ]
+        });
+        // Reach-guards: the UNPROJECTED offer really carries a declaration (else `is_none()`
+        // below would be satisfied by a fixture that never had one), and the viewer really is a
+        // non-proposer (else the redaction block never runs at all).
+        assert!(
+            d5h_projected_declaration(&hidden_state, D5H_PROPOSER).is_some(),
+            "reach-guard + positive: the PROPOSER's own projection keeps the declaration, so the \
+             drop below is keyed to the viewer boundary rather than to the fixture"
+        );
+        assert_ne!(D5H_VIEWER, D5H_PROPOSER);
+        assert!(
+            d5h_projected_declaration(&hidden_state, D5H_VIEWER).is_none(),
+            "CR 732.2b: one pin naming an object this viewer may not see drops the ENTIRE \
+             declaration — a partial pin set would state a proposal that was never made"
+        );
+
+        // ── the paired positive: every pin is a CR 115.2 seat ──
+        let public_state = d5h_offer(|_hidden| vec![TargetPin::Player(D5H_VIEWER)]);
+        assert_eq!(
+            d5h_projected_declaration(&public_state, D5H_VIEWER),
+            d5h_projected_declaration(&public_state, D5H_PROPOSER),
+            "an all-seat declaration is public and reaches the opponent UNCHANGED — without this \
+             arm a redactor that dropped everything would pass the hidden arm above"
+        );
+        assert!(
+            d5h_projected_declaration(&public_state, D5H_VIEWER).is_some(),
+            "and it is genuinely present, not two matching `None`s"
+        );
     }
 }
