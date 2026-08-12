@@ -274,6 +274,67 @@ fn harness() {
     assert!(verdict::observe("P1", &run, &target(), &[]).is_ok());
 }
 
+/// Row 8's neighbour, and the classification it was swallowing. The isolation script resolves
+/// `mount`, `cmp` and `timeout` through `PATH` under `set -eu` — and a shell that dies before
+/// `exec` produces EMPTY stdout with a non-zero code, which is byte-for-byte the shape of a
+/// target that died before its first record. Measured on the shipping script with `timeout` off
+/// `PATH`: exit 127, `probe-pin: line 10: exec: timeout: not found` on stderr, no reserved code
+/// fired, and the abort raised was `HarnessIncomplete { SuiteStarted }` — whose message tells
+/// the operator to raise `RUST_MIN_STACK` through `[target].env`, which cannot make `timeout`
+/// exist. The script now names the cause with reserved code 96.
+///
+/// The real script raising 96 is `isolation_e2e::script_failure_is_named_not_inferred`; this is
+/// the classification half, where the DROP arm (the reserved code absent, i.e. exactly the
+/// measurement above) is a literal `Run`.
+#[test]
+fn script_failure_is_named_not_inferred() {
+    let t = target();
+    let script_failed = Run {
+        rc: 96,
+        stdout: String::new(),
+        stderr: "probe-pin: ISOLATION SCRIPT FAILED before the target ran".to_string(),
+    };
+    let e = verdict::observe("P1", &script_failed, &t, &[]).unwrap_err();
+    assert!(
+        matches!(e, Abort::IsolationScriptFailed { rc: 96, .. }),
+        "{e}"
+    );
+    assert!(e.to_string().contains("PATH"), "{e}");
+    assert!(
+        !e.to_string().contains("RUST_MIN_STACK"),
+        "the remedy must not name a stack size: {e}"
+    );
+
+    // DROP — the same failure WITHOUT the reserved code, which is what was measured before it
+    // existed. It classifies as the harness dying mid-run, and names the wrong remedy.
+    let unreserved = Run {
+        rc: 127,
+        stdout: String::new(),
+        stderr: "probe-pin: line 10: exec: timeout: not found".to_string(),
+    };
+    let e = verdict::observe("P1", &unreserved, &t, &[]).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Abort::HarnessIncomplete {
+                missing: HarnessMarker::SuiteStarted,
+                ..
+            }
+        ),
+        "{e}"
+    );
+    assert!(e.to_string().contains("RUST_MIN_STACK"), "{e}");
+
+    // and 96 is trusted only with EMPTY stdout, exactly like 97: a target that emitted records
+    // reached `exec`, so the code is the target's own
+    let with_records = Run {
+        rc: 96,
+        stdout: stream(1, &[], "ok"),
+        stderr: String::new(),
+    };
+    assert!(verdict::observe("P1", &with_records, &t, &[]).is_ok());
+}
+
 // ------------------------------------------------------------------ row 9
 
 /// Row 9: no anchor may embed a source line number. Measured on the real corpus: 0 of 10
@@ -821,6 +882,51 @@ fn target_resolve_pins_cargo_to_the_workspace_root() {
     );
 }
 
+/// The workspace root is CANONICAL at its one producer, because every consumer compares it
+/// against a path that has been: `main`'s `manifest_rel` strips it from
+/// `manifest_path.canonicalize()`, `resolve_contained` canonicalizes `base`, `scratch_dir`
+/// canonicalizes both sides. A non-canonical root turns each of those realpath assertions back
+/// into a lexical string comparison — the shape this crate has already repaired twice.
+///
+/// DISCLOSURE, measured: no input reaching `cargo locate-project --workspace` produces a
+/// non-canonical root today. Cargo starts from `getcwd`, which the kernel answers physically,
+/// so a workspace reached through a symlink still prints the resolved path (measured: run
+/// through `/tmp/<link> -> the worktree`, exit 0, every row rendered). Arm 2 is therefore the
+/// GUARD's shape measured on a synthetic pair, not a live escape — a found hole is a lower
+/// bound, and this one is "not reached today", not "cannot be reached".
+#[test]
+fn workspace_root_is_canonical() {
+    let root = target::workspace_root().expect("workspace root");
+    assert_eq!(
+        root,
+        root.canonicalize().expect("the root resolves"),
+        "workspace_root must return a canonical path"
+    );
+
+    // arm 2 — the shape: a non-canonical base fails the prefix comparison that IS satisfied
+    let base = tempfile::tempdir().unwrap();
+    let real = base.path().join("real");
+    std::fs::create_dir_all(real.join("crates")).unwrap();
+    std::fs::write(real.join("crates/m.toml"), "version = 1\n").unwrap();
+    let link = base.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let manifest_real = link.join("crates/m.toml").canonicalize().unwrap();
+    assert!(
+        manifest_real.strip_prefix(&link).is_err(),
+        "the phenomenon: a canonicalized manifest path does not start with a symlinked root, so \
+         the guard would report 'manifest is not inside the workspace root' for one that is"
+    );
+    assert!(
+        manifest_real
+            .strip_prefix(link.canonicalize().unwrap())
+            .is_ok(),
+        "and canonicalizing the root is what makes the comparison realpath-to-realpath"
+    );
+    // and the same rule already governs the other containment assertion, from the same base
+    assert!(manifest::resolve_contained(&link, "crates/m.toml").is_ok());
+}
+
 /// The Tier-2 suite is `#[ignore]`d because GitHub's runners deny unprivileged user namespaces,
 /// so GH CI never executes a real mount. That is a measured accommodation, and an accommodation
 /// with nothing watching it decays: a Tier-2 test added without the attribute turns CI red for a
@@ -857,7 +963,7 @@ fn tier2_suite_is_uniformly_ignored_with_the_measured_reason() {
         .collect();
     assert_eq!(
         tests.len(),
-        15,
+        17,
         "the Tier-2 suite changed size. Every test here needs the #[ignore] attribute (CI cannot \
          create a mount namespace); update this count deliberately, and keep the Tilt \
          `probe-pin-e2e` resource as the venue that actually runs them."
@@ -1738,6 +1844,64 @@ fn manifest_outside_the_workspace_is_refused() {
     );
 }
 
+/// The same comparison, from the other side: the refusal above must fire for a manifest that IS
+/// outside the root, and must NOT fire for one that is inside it by a path whose components
+/// include a symlink. `strip_prefix` between a canonicalized manifest path and an unresolved
+/// root is a lexical comparison wearing a realpath's clothes, and its failure mode is a refusal
+/// no manifest edit can satisfy.
+///
+/// DISCLOSURE: not reached through cargo today — `cargo locate-project --workspace` starts from
+/// `getcwd`, which the kernel answers physically, so the root it prints is already resolved
+/// (measured: a run through `/tmp/<link> -> the worktree` exited 0 with every row rendered).
+/// `target::workspace_root` canonicalizes at the producer anyway, and this is that rule stated
+/// where a test can drive it: arm 1 below is the escaping pair, and it is refused by the shape
+/// this replaced.
+#[test]
+fn manifest_rel_compares_realpaths() {
+    let base = tempfile::tempdir().unwrap();
+    let real = base.path().join("real");
+    std::fs::create_dir_all(real.join("crates")).unwrap();
+    std::fs::write(real.join("crates/m.toml"), "version = 1\n").unwrap();
+    let link = base.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    // arm 1 — the phenomenon: a canonicalized manifest path shares no prefix with a root
+    // reached through a symlink, so the lexical comparison rejects a manifest that is inside it
+    assert!(
+        link.join("crates/m.toml")
+            .canonicalize()
+            .unwrap()
+            .strip_prefix(&link)
+            .is_err(),
+        "the escaping pair must be lexically unrelated, or this arm is vacuous"
+    );
+    // the guard canonicalizes BOTH sides, so the same pair resolves — through the symlink and
+    // through the real path alike
+    assert_eq!(
+        manifest::workspace_relative(&link.join("crates/m.toml"), &link).unwrap(),
+        "crates/m.toml"
+    );
+    assert_eq!(
+        manifest::workspace_relative(&real.join("crates/m.toml"), &real).unwrap(),
+        "crates/m.toml"
+    );
+
+    // and a manifest that really is outside the root is still refused, by name
+    let outside = base.path().join("outside.toml");
+    std::fs::write(&outside, "version = 1\n").unwrap();
+    let e = manifest::workspace_relative(&outside, &link).unwrap_err();
+    assert!(
+        e.to_string().contains("is not inside the workspace root"),
+        "{e}"
+    );
+    // as is one that does not exist at all: `canonicalize` is the existence check too
+    let e = manifest::workspace_relative(&real.join("crates/gone.toml"), &real).unwrap_err();
+    assert!(
+        e.to_string().contains("is not inside the workspace root"),
+        "{e}"
+    );
+}
+
 // ------------------------------------- §8 message fidelity on the two sentinel-free paths
 
 /// §8's texts are the contract, and each of these rows promised a value the run never measured
@@ -2016,6 +2180,20 @@ fn argv_surface_is_one_authority() {
             "{token} is on the argv and is neither probe-pin's nor the manifest's"
         );
     }
+    // arm 4 — the ownership allowlist and the argv builder are ONE list: `--exact` is the
+    // conditional head, `UNCONDITIONAL_FLAGS` is the tail `argv` emits verbatim. Respelling the
+    // tail inline (as it was) lets a flag reach libtest that the allowlist does not name.
+    assert_eq!(isolate::OWNED_FLAGS[0], "--exact");
+    assert_eq!(isolate::UNCONDITIONAL_FLAGS, &isolate::OWNED_FLAGS[1..]);
+    let emitted: Vec<&str> = argv
+        .iter()
+        .map(String::as_str)
+        .filter(|a| isolate::UNCONDITIONAL_FLAGS.contains(a))
+        .collect();
+    assert_eq!(emitted, isolate::UNCONDITIONAL_FLAGS);
+    // and the conditional one is still conditional
+    t.filter_match = manifest::FilterMatch::Substring;
+    assert!(!isolate::argv(&t).contains(&"--exact".to_string()));
 }
 
 // ------------------------------------------------------------------ surface 2: env
@@ -2261,6 +2439,373 @@ fn anchor_surface_refuses_a_blank_anchor() {
     assert!(e.to_string().contains("empty anchor list"), "{e}");
     // positive: the shipping anchors validate
     assert!(manifest::validate(&load("dogfood.toml")).is_ok());
+}
+
+// ------------------------------------------------- surface 5: the text the block is made of
+
+/// Replace every string LEAF of a serialized manifest with a unique sentinel, so the census
+/// below measures the struct's real string surface instead of a hand-kept list. The four keys
+/// skipped are serde's enum TAGS (`mode`, `filter_match`, `kind`, `outcome`) — sentinelling one
+/// makes the value fail to deserialize, which is what the round-trip `expect` reports.
+fn sentinel_strings(v: &mut serde_json::Value, key: &str, out: &mut Vec<String>) {
+    const TAG_KEYS: &[&str] = &["mode", "filter_match", "kind", "outcome"];
+    match v {
+        serde_json::Value::String(s) if !TAG_KEYS.contains(&key) => {
+            *s = format!("PPSENT{:03}_{key}", out.len());
+            out.push(s.clone());
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                sentinel_strings(item, key, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (k, value) in map.iter_mut() {
+                let k = k.clone();
+                sentinel_strings(value, &k, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The BLOCK-TEXT surface, with a CENSUS of its producers.
+///
+/// The block is a line-oriented, marker-delimited artifact — `block::locate` counts
+/// `<marker>:BEGIN`/`<marker>:END` per LINE — and `cell()` escapes only `|`. Measured on the
+/// shipping binary: `anchor = ["PROBE-PIN:END"]` rendered into the firing-assertion cell,
+/// `run --write` exited 0, and the spliced file then carried TWO END markers, after which every
+/// `check` aborts `MarkerNotUnique` (found 1/2). The pin could only be recovered by hand.
+///
+/// Arm 1 is the census and the reason this is a SURFACE and not four field checks: it
+/// sentinels every string in the manifest through serde, renders a block, and asserts that the
+/// set of sentinels that REACH the block is exactly the set `rendered_block_values` enumerates.
+/// A future field that starts rendering is either in the enumeration or fails this test —
+/// which is the property the argv surface got after `[target].filter` was found reaching
+/// libtest with only `[target].args` validated.
+#[test]
+fn block_text_surface_is_one_authority() {
+    // ---- arm 1: the census
+    let mut m = load("dogfood.toml");
+    m.projections = load("projection.toml").projections;
+    let mut json = serde_json::to_value(&m).expect("manifest serializes");
+    let mut sentinels: Vec<String> = Vec::new();
+    sentinel_strings(&mut json, "", &mut sentinels);
+    let m: Manifest = serde_json::from_value(json).expect(
+        "the sentinelled manifest must round-trip. If this failed, a new serde enum TAG field \
+         exists and must be added to TAG_KEYS in sentinel_strings",
+    );
+    assert!(
+        sentinels.len() > 12,
+        "instrument check: the walk must find the manifest's strings, found {}",
+        sentinels.len()
+    );
+    // `manifest_rel` is not a manifest value, but it is a caller string stamped on the BEGIN
+    // line, so it belongs to this surface and carries a sentinel like everything else.
+    let manifest_rel = "PPSENT999_manifest_rel";
+    let outcomes: Vec<Outcome> = m
+        .probes
+        .iter()
+        .map(|p| Outcome {
+            id: p.id.clone(),
+            rc: 101,
+            verdict: match &p.expect {
+                probe_pin::manifest::Expect::Pass {} => Verdict::Pass { mounts_reached: 1 },
+                // a Fail verdict is what renders the anchors; without one they are off-surface
+                probe_pin::manifest::Expect::Fail { .. } => Verdict::Fail {
+                    provenance: Vec::new(),
+                },
+            },
+        })
+        .collect();
+    let counts: Vec<ProjectionCount> = m
+        .projections
+        .iter()
+        .map(|p| ProjectionCount {
+            id: p.id.clone(),
+            count: 3,
+        })
+        .collect();
+    let rendered = block::render(&m, manifest_rel, "d1g357", &[], &outcomes, &counts);
+
+    let appearing: Vec<&str> = sentinels
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(manifest_rel))
+        .filter(|s| rendered.contains(*s))
+        .collect();
+    let mut covered: Vec<&str> = manifest::rendered_block_values(&m, manifest_rel)
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect();
+    covered.sort_unstable();
+    covered.dedup();
+    let mut appearing_sorted = appearing.clone();
+    appearing_sorted.sort_unstable();
+    assert_eq!(
+        appearing_sorted, covered,
+        "the block-text census moved. Every manifest string that reaches the rendered block \
+         must be in `manifest::rendered_block_values`, which is what `validate_block_text` \
+         refuses control characters and marker tags in. rendered:\n{rendered}"
+    );
+    // instrument check: the census must be able to see a value that is NOT rendered, or a
+    // pass proves nothing about the enumeration's tightness
+    assert!(
+        sentinels.len() > appearing.len(),
+        "instrument check: some manifest strings ([target].package, [output].file, claim, \
+         assert_count.file) are NOT rendered; if all of them appear, this census cannot fail"
+    );
+
+    // ---- arm 2: every producer on the surface refuses the same hostile shapes
+    let mut base = load("dogfood.toml");
+    base.projections = load("projection.toml").projections;
+    let rel = "crates/probe-pin/tests/fixtures/dogfood.toml";
+    manifest::validate_block_text(&base, rel).expect("the shipping manifests render a safe block");
+
+    for hostile in [
+        "PROBE-PIN:END",
+        "PROBE-PIN:BEGIN",
+        "two\nlines",
+        "nul\0byte",
+    ] {
+        let mut m = base.clone();
+        m.probes[1].expect = probe_pin::manifest::Expect::Fail {
+            anchor: vec![hostile.to_string()],
+        };
+        let e = manifest::validate_block_text(&m, rel).expect_err(&format!(
+            "the anchor {hostile:?} was ACCEPTED into the block"
+        ));
+        assert!(e.to_string().contains("anchor"), "anchor {hostile:?}: {e}");
+
+        let mut m = base.clone();
+        m.projections[0].sentence = format!("{hostile} {{count}}");
+        let e = manifest::validate_block_text(&m, rel).expect_err(&format!(
+            "the sentence {hostile:?} was ACCEPTED into the block"
+        ));
+        assert!(
+            e.to_string().contains("sentence"),
+            "sentence {hostile:?}: {e}"
+        );
+
+        let mut m = base.clone();
+        m.probes[1].mutations = vec![probe_pin::manifest::Mutation::Replace {
+            file: format!("crates/{hostile}/x.rs"),
+            find: "a".into(),
+            replace: "b".into(),
+        }];
+        let e = manifest::validate_block_text(&m, rel).expect_err(&format!(
+            "the mutation path {hostile:?} was ACCEPTED into the block"
+        ));
+        assert!(
+            e.to_string().contains("mutation file"),
+            "mutation file {hostile:?}: {e}"
+        );
+
+        let e = manifest::validate_block_text(&base, &format!("crates/{hostile}/m.toml"))
+            .expect_err(&format!(
+                "the manifest path {hostile:?} was ACCEPTED into the block"
+            ));
+        assert!(
+            e.to_string().contains("the manifest path"),
+            "manifest path {hostile:?}: {e}"
+        );
+    }
+
+    // ---- arm 3: the marker itself, which is the structure the rest is checked against
+    for hostile in ["", " ", "\t", "PROBE PIN", "PROBE-PIN:END"] {
+        let mut m = base.clone();
+        m.output.marker = hostile.to_string();
+        let e = manifest::validate_block_text(&m, rel).expect_err(&format!(
+            "the marker {hostile:?} was ACCEPTED as the block's tag"
+        ));
+        assert!(
+            e.to_string().contains("is not a plain name"),
+            "marker {hostile:?} was accepted: {e}"
+        );
+    }
+    // positive: the shipping marker, and an ordinary alternative one, both validate
+    for benign in ["PROBE-PIN", "PIN_2"] {
+        let mut m = base.clone();
+        m.output.marker = benign.to_string();
+        assert!(
+            manifest::validate_block_text(&m, rel).is_ok(),
+            "{benign} was refused"
+        );
+    }
+    // positive: a real anchor with punctuation, quotes and a colon still validates — the
+    // refusal is about control characters and the marker, not about anchor text being rich
+    let mut m = base.clone();
+    m.probes[1].expect = probe_pin::manifest::Expect::Fail {
+        anchor: vec!["CENSUS VIOLATED: expected 2 sites, got 1".into()],
+    };
+    assert!(manifest::validate_block_text(&m, rel).is_ok());
+}
+
+/// The `[[projection]]` producer checks. A projection is a block-row producer exactly like a
+/// probe, and it had only its path keys checked. All three refusals below were measured on the
+/// shipping binary rendering a block at exit 0.
+#[test]
+fn projection_surface_gets_the_producer_checks_its_siblings_get() {
+    let base = load("projection.toml");
+    manifest::validate(&base).expect("the shipping projection fixture validates");
+
+    // duplicate id: counts are looked up BY ID, so the second sentence renders the first
+    // projection's number (measured: a 1-match pattern rendered as "7 sites")
+    let mut m = base.clone();
+    let mut twin = base.projections[0].clone();
+    twin.pattern = "Abort::$V".into();
+    twin.sentence = "`Abort` is named at {count} sites.".into();
+    m.projections.push(twin);
+    let e = manifest::validate(&m).expect_err("a duplicate projection id was ACCEPTED");
+    assert!(e.to_string().contains("duplicate"), "{e}");
+    assert!(e.to_string().contains("instrument_sites"), "{e}");
+    // the phenomenon itself, so the refusal is not merely stylistic: with two ids equal, the
+    // render of the SECOND projection carries the FIRST one's count
+    let counts = vec![ProjectionCount {
+        id: "instrument_sites".into(),
+        count: 7,
+    }];
+    let rendered = block::render(&m, "m.toml", "d", &[], &[], &counts);
+    assert_eq!(
+        rendered.matches("at 7 sites").count(),
+        2,
+        "the duplicate id must render the same number twice:\n{rendered}"
+    );
+
+    // a non-plain id, exactly as a probe id is refused
+    let mut m = base.clone();
+    m.projections[0].id = "no placeholder".into();
+    let e = manifest::validate(&m).expect_err("a non-plain projection id was ACCEPTED");
+    assert!(e.to_string().contains("is not a plain name"), "{e}");
+
+    // an empty path list: ast-grep with no operand scans the whole cwd, so the rendered number
+    // is a measurement of a tree the manifest never named (measured: 15 against the meant 7)
+    let mut m = base.clone();
+    m.projections[0].paths = Vec::new();
+    let e = manifest::validate(&m).expect_err("an empty projection path list was ACCEPTED");
+    assert!(e.to_string().contains("names no path"), "{e}");
+
+    // a sentence with no substitution point renders a complete-looking claim with no number
+    let mut m = base.clone();
+    m.projections[0].sentence = "`Instrument` is named at every site that needs one.".into();
+    let e = manifest::validate(&m)
+        .expect_err("a sentence with no {count} placeholder was ACCEPTED into the block");
+    assert!(e.to_string().contains("{count}"), "{e}");
+    assert_eq!(
+        project::sentence(&m.projections[0], 7),
+        "`Instrument` is named at every site that needs one.",
+        "the phenomenon: the count is substituted nowhere, and the sentence still renders"
+    );
+
+    // positive: the shipping projection, and one with the placeholder anywhere in the sentence
+    let mut m = base.clone();
+    m.projections[0].sentence = "{count} sites name `Instrument`.".into();
+    assert!(manifest::validate(&m).is_ok());
+}
+
+/// The mutant's SIZE is a manifest-controlled product, and `Prepend` is the only unbounded one.
+/// Measured on the shipping binary: `repeat = 4294967295` of a 14-byte pad asked for
+/// 60,129,542,130 bytes, and an allocation failure is not a catchable panic — probe-pin died
+/// with SIGABRT (exit 134, core dumped), outside its documented 0/1/2/101 exit contract and
+/// after a full control run had already been spent.
+#[test]
+fn prepend_pad_is_bounded() {
+    let mut m = load("dogfood.toml");
+    let probe_pin::manifest::Mutation::Prepend { text, repeat, .. } = &mut m.probes[2].mutations[0]
+    else {
+        panic!("dogfood.toml's P2 is the Prepend probe; the fixture moved");
+    };
+    assert_eq!(text.len(), 14, "the shipping pad is 14 bytes");
+    *repeat = u32::MAX;
+    let e = manifest::validate(&m)
+        .expect_err("a 60 GB pad was ACCEPTED — the run dies with SIGABRT, not a refusal");
+    assert!(e.to_string().contains("60129542130 bytes"), "{e}");
+    assert!(e.to_string().contains("P2_pad_reaches_target"), "{e}");
+
+    // the boundary, from both sides, on the exact cap
+    let cap = probe_pin::manifest::MAX_PREPEND_BYTES;
+    let probe_pin::manifest::Mutation::Prepend { text, repeat, .. } = &mut m.probes[2].mutations[0]
+    else {
+        unreachable!()
+    };
+    *text = "x".to_string();
+    *repeat = cap as u32;
+    assert!(
+        manifest::validate(&m).is_ok(),
+        "the cap itself must be allowed"
+    );
+    let probe_pin::manifest::Mutation::Prepend { repeat, .. } = &mut m.probes[2].mutations[0]
+    else {
+        unreachable!()
+    };
+    *repeat = cap as u32 + 1;
+    assert!(manifest::validate(&m).is_err(), "one byte over must refuse");
+
+    // positive: the shipping 200 × 14 B pad is four orders of magnitude under the cap
+    assert!(manifest::validate(&load("dogfood.toml")).is_ok());
+}
+
+/// Fixture manifests may not name a COMMITTED block file. `projection.toml` is driven with
+/// `run --write`, and measured on the shipping binary with ast-grep installed it exited 0 and
+/// replaced the committed dogfood block — the one `dogfood.toml`, `isolation_e2e::dogfood_check`
+/// and the Tilt `probe-pin-check` resource all validate — with a projection block of its own.
+///
+/// Written as a census over the whole fixture directory rather than as an edit to the two
+/// manifests that had the property: the risk belongs to "a fixture the binary is DRIVEN on",
+/// not to those two files, and a new fixture gets the rule for free. The census found two more
+/// than the review named — and it also found the honest exception: `p7.toml`/`p8.toml` are
+/// archived corpus manifests, verbatim in shape (`schema_adequacy`), parsed and validated but
+/// never handed to the binary, so what they name is an artifact of the archive.
+#[test]
+fn a_driven_fixture_never_names_a_committed_block() {
+    const TMP: &str = "crates/probe-pin/tests/fixtures/tmp/";
+    // The one file that runs the binary: `probe_pin_bin` is defined there and nowhere else, so
+    // "named in it" IS "driven through the real pipeline".
+    let e2e = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/isolation_e2e.rs"),
+    )
+    .expect("the Tier-2 suite is readable");
+    assert_eq!(
+        e2e.matches("fn probe_pin_bin(").count(),
+        1,
+        "instrument check: the binary is driven from exactly one helper, in this file. If it \
+         moved, this census is reading the wrong source."
+    );
+
+    let (mut checked, mut driven) = (0, 0);
+    for entry in std::fs::read_dir(fixtures()).expect("fixtures/ readable") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let m = Manifest::load(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        checked += 1;
+        if !e2e.contains(&name) {
+            continue; // archived corpus: parsed and validated, never run
+        }
+        driven += 1;
+        if name == "dogfood.toml" {
+            assert_eq!(
+                m.output.file, "crates/probe-pin/tests/fixtures/dogfood_block.md",
+                "the dogfood manifest is the one that owns the committed block"
+            );
+        } else {
+            assert!(
+                m.output.file.starts_with(TMP),
+                "{name} is driven through the real binary and names [output].file = {:?}, which \
+                 is not under the gitignored {TMP}. Measured: `run --write` on projection.toml \
+                 exited 0 and replaced the committed dogfood block. Where a manifest happens to \
+                 abort is not protection — it moves.",
+                m.output.file
+            );
+        }
+    }
+    assert!(
+        checked >= 8 && driven >= 5,
+        "instrument check: {checked} fixture manifests, {driven} driven. If nothing is driven, \
+         this census cannot fail."
+    );
 }
 
 // ------------------------------------------------------- assert_count says what it measured

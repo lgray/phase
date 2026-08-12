@@ -201,6 +201,20 @@ pub enum Abort {
     #[error("probe-pin: 'unshare --map-root-user --mount' {}: {stderr}. probe-pin cannot isolate mutations and will NOT fall back to writing your worktree. See docs/probe-pin.md.", match rc { Some(rc) => format!("failed (exit {rc})"), None => "could not be spawned".to_string() })]
     IsolationUnavailable { rc: Option<i32>, stderr: String },
 
+    /// The other half of `MountNotReached`'s reserved-code pair. Everything the isolation
+    /// script does before `exec` — resolving `mount`, `cmp` and `timeout` through `PATH`,
+    /// expanding the `PP_*` variables, the `exec` itself — fails with EMPTY stdout and a
+    /// non-zero code, which is byte-for-byte the shape of a target that died before its first
+    /// libtest record. Measured: with `timeout` off `PATH` the child exits 127 with
+    /// `exec: timeout: not found` on stderr, and the classification that fired was
+    /// `HarnessIncomplete`, whose message tells the operator to raise `RUST_MIN_STACK`.
+    #[error("probe-pin: {probe}: the isolation script FAILED before the target ran (exit {rc}). This is an instrument failure, not a probe verdict, and it is not a stack-size problem: the script resolves `mount`, `cmp` and `timeout` through PATH under `set -eu` inside `unshare --map-root-user --mount`, so a missing or non-executable one of those, an unset PP_* variable, or a `mount --bind` onto a path that does not exist all land here. Captured stderr: {stderr}. Aborting.")]
+    IsolationScriptFailed {
+        probe: String,
+        rc: i32,
+        stderr: String,
+    },
+
     #[error("probe-pin: {probe} MOUNT NOT REACHED: {}. The mutant was materialized but the target inside the namespace still saw the ORIGINAL bytes. Every 'pass' verdict in this run would be a lie about an unmounted file. Captured stderr: {stderr}. Aborting.", path.display())]
     MountNotReached {
         probe: String,

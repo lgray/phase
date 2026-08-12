@@ -102,6 +102,13 @@ fn one() -> u32 {
     1
 }
 
+/// The largest `Prepend` pad probe-pin will materialize, 64 MiB. Not a tuned number: the pad is
+/// held in memory, written to disk and read back by the target as source text, and the largest
+/// pad any manifest in this repository declares is 200 × 14 B = 2.8 kB, so this is four orders
+/// of magnitude of headroom over the shape it exists to allow and still refuses the shape that
+/// killed the process.
+pub const MAX_PREPEND_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Output {
@@ -386,6 +393,110 @@ pub fn positional_argv_values(m: &Manifest) -> Vec<(String, &str)> {
     out
 }
 
+/// The manifest's path RELATIVE to the workspace root — the string that reaches the BEGIN line
+/// AND the digest, so an absolute one would pin a block no other checkout can reproduce.
+///
+/// BOTH sides are canonicalized, like every other containment assertion in this crate:
+/// `resolve_contained` canonicalizes `base`, `isolate::scratch_dir` canonicalizes both sides.
+/// A prefix comparison between a resolved path and an unresolved base is a LEXICAL comparison
+/// wearing a realpath's clothes, and its failure mode is a refusal no manifest edit can satisfy —
+/// "manifest … is not inside the workspace root" for a manifest that is. `target::workspace_root`
+/// already canonicalizes at the producer; this is the same rule stated at the guard, where it is
+/// measurable (`pure_logic::manifest_rel_compares_realpaths`).
+pub fn workspace_relative(
+    manifest_path: &std::path::Path,
+    root: &std::path::Path,
+) -> anyhow::Result<String> {
+    let real_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    manifest_path
+        .canonicalize()
+        .ok()
+        .and_then(|p| {
+            p.strip_prefix(&real_root)
+                .ok()
+                .map(|rel| rel.display().to_string())
+        })
+        .with_context(|| {
+            format!(
+                "probe-pin: manifest {} is not inside the workspace root {}. Its path is stamped into the block's BEGIN line and into the digest, so an absolute one would pin a block that no other checkout can reproduce. Move the manifest into the workspace and name it relative to the root. Aborting.",
+                manifest_path.display(),
+                root.display()
+            )
+        })
+}
+
+/// Every manifest-supplied string that is RENDERED INTO the block, tagged with its field and in
+/// render order. The third single-authority enumeration, beside `Target::manifest_argv` (argv)
+/// and `isolate::is_probe_pin_owned_env` (environment) — and `tests/pure_logic.rs`'s
+/// `block_text_surface_is_one_authority` measures the enumeration against what `block::render`
+/// actually emits, so a field that starts reaching the block is covered or the census fails.
+///
+/// The block is a LINE-oriented, marker-delimited artifact: `block::locate` counts
+/// `<marker>:BEGIN` and `<marker>:END` per line, and `--check` re-verifies exactly the span
+/// between them. A value carrying a newline or a marker tag therefore does not describe the
+/// artifact, it RESHAPES it. Measured on the shipping binary: `anchor = ["PROBE-PIN:END"]`
+/// rendered into the firing-assertion cell, `run --write` exited 0, and the spliced file then
+/// carried two END markers — every later `check` aborts `MarkerNotUnique` (found 1/2), so the
+/// pin can never be re-measured again without a hand edit.
+///
+/// `manifest_rel` is in the list because it is stamped on the BEGIN line: it is not a manifest
+/// VALUE, but it is a caller-supplied string that reaches the same surface.
+///
+/// Mutation paths are checked whole, though `block::mutation_cell` renders only their file
+/// name — over-refusing a directory component costs nothing and keeps this list readable as
+/// "the fields", not "the substrings of the fields".
+pub fn rendered_block_values<'a>(m: &'a Manifest, manifest_rel: &'a str) -> Vec<(String, &'a str)> {
+    let mut out = vec![
+        ("the manifest path".to_string(), manifest_rel),
+        ("[output].marker".to_string(), m.output.marker.as_str()),
+    ];
+    for p in &m.probes {
+        out.push((format!("[[probe]] '{}' id", p.id), p.id.as_str()));
+        for file in p.mutations.iter().flat_map(Mutation::files) {
+            out.push((format!("[[probe]] '{}' mutation file", p.id), file));
+        }
+        for anchor in p.anchors() {
+            out.push((format!("[[probe]] '{}' anchor", p.id), anchor.as_str()));
+        }
+    }
+    for pj in &m.projections {
+        out.push((
+            format!("[[projection]] '{}' sentence", pj.id),
+            pj.sentence.as_str(),
+        ));
+    }
+    out
+}
+
+/// §7 step 1b. The block-text refusals. Split from `validate` for the same reason
+/// `validate_paths` is — it needs a value step 1 does not have, here the workspace-relative
+/// manifest path — and it runs in the same place, before the target binary is resolved, so a
+/// refusal still costs zero target runs.
+pub fn validate_block_text(m: &Manifest, manifest_rel: &str) -> anyhow::Result<()> {
+    // The marker is the block's only structural tag, so it gets the ACCEPTED-charset treatment
+    // a probe id gets rather than a list of the values someone thought of. Measured on the
+    // shipping binary: `marker = ""` was accepted, and its `:BEGIN`/`:END` tags then matched the
+    // `PROBE-PIN:BEGIN`/`PROBE-PIN:END` lines of an UNRELATED manifest's committed block —
+    // `run --write` exited 0 and replaced that block with one keyed on a tag so short that any
+    // line containing it is a match.
+    if !is_plain_name(&m.output.marker) {
+        bail!("probe-pin: [output].marker '{}' is not a plain name. The marker IS the block's structure: probe-pin locates the pin by counting lines containing '<marker>:BEGIN' and '<marker>:END', so a blank or whitespace-only marker degenerates to ':BEGIN'/':END', which matches any line that happens to contain them — measured: a blank marker spliced over an unrelated manifest's committed block at exit 0. Use ASCII letters, digits, '_' and '-' (conventionally PROBE-PIN). Aborting.", m.output.marker);
+    }
+    let (begin_tag, end_tag) = (
+        format!("{}:BEGIN", m.output.marker),
+        format!("{}:END", m.output.marker),
+    );
+    for (field, value) in rendered_block_values(m, manifest_rel) {
+        if let Some(c) = value.chars().find(|c| c.is_control()) {
+            bail!("probe-pin: {field} = {value:?} carries the control character {c:?}. It is rendered into the block, which is a LINE-oriented artifact — a newline splits one measured row into two, and every other control character lands verbatim in a committed file that `check` must re-measure byte for byte. Anchor on printable text. Aborting.");
+        }
+        if value.contains(&begin_tag) || value.contains(&end_tag) {
+            bail!("probe-pin: {field} = {value:?} contains the marker tag '{begin_tag}' or '{end_tag}'. probe-pin finds the block by counting those tags, so rendering one INSIDE the block writes a second marker: measured on the shipping binary, `run --write` exited 0 and the spliced file then held two END markers, after which every `check` aborts with 'expected exactly one {} pair … found 1/2' and the pin can only be recovered by editing the file by hand. Anchor on text that does not contain the marker. Aborting.", m.output.marker);
+        }
+    }
+    Ok(())
+}
+
 /// §7 step 1b. The path refusals that need the workspace ROOT, which step 1 does not have.
 ///
 /// Split from `validate` by necessity, not by taste: containment is a realpath assertion and a
@@ -502,6 +613,19 @@ pub fn validate(m: &Manifest) -> anyhow::Result<()> {
             if mutation.files().is_empty() {
                 bail!("probe-pin: {} mutation[{index}] names no file. A mutation with an empty file list mutates nothing and mounts nothing, so this probe would measure the unmodified tree and render it as a mutant's verdict. Name the file(s) to mutate, or delete the probe. Aborting.", p.id);
             }
+            // The size of the mutant is a manifest-controlled PRODUCT, and the only one:
+            // `Replace` is bounded by the file it edits, `Prepend` is `text.len() × repeat`
+            // with `repeat` a full u32. Measured on the shipping binary: `repeat = 4294967295`
+            // of a 14-byte pad asked `str::repeat` for 60,129,542,130 bytes, and an allocation
+            // failure is not a panic — `handle_alloc_error` ABORTS, so probe-pin died with
+            // SIGABRT (exit 134, core dumped) outside its documented 0/1/2/101 exit contract,
+            // after a full control run had already been spent.
+            if let Mutation::Prepend { text, repeat, .. } = mutation {
+                let bytes = text.len().saturating_mul(*repeat as usize);
+                if bytes > MAX_PREPEND_BYTES {
+                    bail!("probe-pin: {} mutation[{index}] prepends {} bytes ({} × repeat {repeat}), over probe-pin's {MAX_PREPEND_BYTES}-byte cap. The pad is materialized in memory, written to the scratch dir, bind-mounted and then READ by the target, so this is a mutant no probe can measure — and past the allocator's limit it is not even a refusal: probe-pin aborts on allocation failure (measured: 60,129,542,130 bytes requested, SIGABRT). The shipping pads in this repository are ~2.8 kB. Lower `repeat`, or shorten `text`. Aborting.", p.id, bytes, text.len());
+                }
+            }
         }
         for file in p
             .mutations
@@ -558,6 +682,33 @@ pub fn validate(m: &Manifest) -> anyhow::Result<()> {
                 collides_with: twin.id.clone(),
             }
             .into());
+        }
+    }
+    // A `[[projection]]` is a producer of block rows exactly like a `[[probe]]`, and it had only
+    // its path keys checked. The three refusals below are the projection spelling of three the
+    // probe loop above already makes — a row key must be a plain name and unique, and a
+    // declaration that cannot carry a measurement must not reach the block.
+    for (i, pj) in m.projections.iter().enumerate() {
+        if !is_plain_name(&pj.id) {
+            bail!("probe-pin: [[projection]] id '{}' is not a plain name. A projection id is a block row key and one of the digest's ordering keys, exactly like a probe id. Use ASCII letters, digits, '_' and '-'. Aborting.", pj.id);
+        }
+        // Measured on the shipping binary: two projections sharing an id rendered the FIRST
+        // one's count under BOTH sentences, because the count is looked up by id — `Abort` was
+        // measured at 1 site and the block said 7, which is the other pattern's number.
+        if m.projections[..i].iter().any(|q| q.id == pj.id) {
+            bail!("probe-pin: duplicate [[projection]] id '{}'. Counts are looked up by id when the block is rendered and when the digest is computed, so the second projection would render the FIRST one's number under its own sentence — measured: a pattern with 1 match rendered as 7. Projection ids must be unique. Aborting.", pj.id);
+        }
+        // Measured: `paths = []` made ast-grep scan its whole CWD (the workspace root) and
+        // probe-pin rendered "named at 15 sites" for a projection whose declared scan set was
+        // empty, where the paths this crate's own projection names hold 7.
+        if pj.paths.is_empty() {
+            bail!("probe-pin: [[projection]] '{}' names no path. ast-grep with no path operand scans probe-pin's whole working directory — the workspace root — so the rendered count would be a measurement of a tree this projection never declared (measured: 15 sites rendered for an empty path list, against 7 in the paths the manifest meant). Name the directories to scan. Aborting.", pj.id);
+        }
+        // The projection half of this crate's thesis: prose in the block is a TRANSCRIPTION of
+        // a measured number. A sentence with no substitution point is an assertion, and it is
+        // rendered inside the span `check` re-verifies, where it reads as measured.
+        if !pj.sentence.contains("{count}") {
+            bail!("probe-pin: [[projection]] '{}' has a sentence with no '{{count}}' placeholder: {:?}. The count is substituted into that placeholder, so this sentence would be rendered into the block — inside the span `check` re-verifies — carrying no measured number at all, which is the one thing this tool exists to refuse. Put {{count}} where the number belongs. Aborting.", pj.id, pj.sentence);
         }
     }
     Ok(())

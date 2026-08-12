@@ -103,23 +103,15 @@ fn pipeline(manifest_path: &Path, mode: Mode) -> anyhow::Result<u8> {
     // absolute path stamps a machine-specific value into a committed artifact — the exact
     // reproducibility the digest exists to provide (docs/probe-pin.md: "Excluded: … absolute
     // paths"), and the treatment `is_workspace_relative` already gives every other path key.
-    let manifest_rel = manifest_path
-        .canonicalize()
-        .ok()
-        .and_then(|p| p.strip_prefix(&root).ok().map(Path::to_path_buf))
-        .with_context(|| {
-            format!(
-                "probe-pin: manifest {} is not inside the workspace root {}. Its path is stamped into the block's BEGIN line and into the digest, so an absolute one would pin a block that no other checkout can reproduce. Move the manifest into the workspace and name it relative to the root. Aborting.",
-                manifest_path.display(),
-                root.display()
-            )
-        })?
-        .display()
-        .to_string();
+    // The comparison itself lives in `manifest`, realpath against realpath, beside the other
+    // containment assertions rather than inline here where nothing can measure it.
+    let manifest_rel = manifest::workspace_relative(manifest_path, &root)?;
 
-    // 2b. the path refusals that need the root. Between resolving the root and building the
-    // target, so containment is asserted at zero target runs — a refusal must never cost one.
+    // 2b. the refusals that need something step 1 does not have — the workspace root for path
+    // containment, the workspace-relative manifest path for the block's own text. Between
+    // resolving the root and building the target, so both are asserted at zero target runs.
     manifest::validate_paths(&m, &root)?;
+    manifest::validate_block_text(&m, &manifest_rel)?;
 
     // 3. resolve the target binary — outside the namespace, on the pristine tree
     let testbin = target::resolve(&root, &m.target.package, &m.target.test)?;

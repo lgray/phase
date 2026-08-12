@@ -36,8 +36,11 @@ pub struct Observed {
 }
 
 /// Classification is ORDERED, not a set: reserved script exit codes first, then stream shape,
-/// then verdict. Both a timeout and an unreached mount satisfy a `HarnessIncomplete` condition
-/// too, and `HarnessIncomplete`'s `RUST_MIN_STACK` hint is actively misleading for either.
+/// then verdict. A timeout, an unreached mount and a script that failed before `exec` all
+/// satisfy a `HarnessIncomplete` condition too — every one of them produces empty stdout and a
+/// non-zero code — and `HarnessIncomplete`'s `RUST_MIN_STACK` hint is actively misleading for
+/// all three. The script raises a RESERVED code for the two it can name (97 mount readback,
+/// 96 script-level), so the cause stays typed instead of being inferred from a stderr prefix.
 pub fn observe(
     probe: &str,
     run: &Run,
@@ -57,6 +60,15 @@ pub fn observe(
         return Err(Abort::MountNotReached {
             probe: probe.to_string(),
             path,
+            stderr: run.stderr.trim().to_string(),
+        });
+    }
+    // Same guard as 97, for the same reason: a script that reached `exec` cannot have produced
+    // this code, and a target that emitted records cannot have failed before it ran.
+    if run.rc == 96 && run.stdout.trim().is_empty() {
+        return Err(Abort::IsolationScriptFailed {
+            probe: probe.to_string(),
+            rc: run.rc,
             stderr: run.stderr.trim().to_string(),
         });
     }

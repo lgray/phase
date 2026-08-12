@@ -18,13 +18,18 @@ use crate::{sha256_hex, Abort};
 /// bytes the target can see at `$TARGET` are the mutant's, inside the namespace, after the
 /// mount. `set -eu` makes a missing `timeout`/`mount`/`cmp` a non-zero exit, never a silent
 /// unmounted run.
+///
+/// Two exit codes are RESERVED for the script itself, and `verdict::observe` classifies both
+/// before it ever looks at the record stream: 97 = the mount readback failed, 96 = the script
+/// failed before the target was reached at all.
 pub const SCRIPT: &str = r#"set -eu
+trap 'printf "probe-pin: ISOLATION SCRIPT FAILED before the target ran\n" >&2; exit 96' EXIT
 i=0
 while [ "$i" -lt "$PP_MOUNTS" ]; do
   m="PP_MUTANT_$i"; t="PP_TARGET_$i"
   MUTANT=${!m}; TARGET=${!t}
   mount --bind "$MUTANT" "$TARGET"
-  cmp -s "$MUTANT" "$TARGET" || { printf 'probe-pin: MOUNT NOT REACHED: %s (mutant %s)\n' "$TARGET" "$MUTANT" >&2; exit 97; }
+  cmp -s "$MUTANT" "$TARGET" || { printf 'probe-pin: MOUNT NOT REACHED: %s (mutant %s)\n' "$TARGET" "$MUTANT" >&2; trap - EXIT; exit 97; }
   i=$((i + 1))
 done
 exec timeout -k 5 "$TIMEOUT" "$TESTBIN" "$@"
@@ -49,8 +54,13 @@ pub fn exit_rc(status: &std::process::ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
-/// The flags probe-pin itself puts on the target's argv. Everything else on that command line
-/// came from `Target::manifest_argv`, which is what `manifest::validate` checks.
+/// The flags probe-pin itself puts on the target's argv — the OWNERSHIP allowlist. Everything
+/// else on that command line came from `Target::manifest_argv`, which is what
+/// `manifest::validate` checks.
+///
+/// Token 0 is the one CONDITIONAL flag (`--exact`, iff `filter_match = "exact"`); the rest are
+/// unconditional and `argv` iterates `UNCONDITIONAL_FLAGS` rather than respelling them, so the
+/// allowlist and the argv it authorizes cannot drift apart.
 pub const OWNED_FLAGS: &[&str] = &[
     "--exact",
     "--test-threads=1",
@@ -59,6 +69,9 @@ pub const OWNED_FLAGS: &[&str] = &[
     "-Z",
     "unstable-options",
 ];
+
+/// `OWNED_FLAGS` minus the conditional `--exact`, in argv order — derived, never restated.
+pub const UNCONDITIONAL_FLAGS: &[&str] = OWNED_FLAGS.split_at(1).1;
 
 /// `[filter] + ["--exact"] iff Exact + [the flags probe-pin owns] + [target].args`.
 ///
@@ -75,15 +88,7 @@ pub fn argv(target: &Target) -> Vec<String> {
     if target.filter_match == FilterMatch::Exact {
         v.push("--exact".to_string());
     }
-    for flag in [
-        "--test-threads=1",
-        "--format",
-        "json",
-        "-Z",
-        "unstable-options",
-    ] {
-        v.push(flag.to_string());
-    }
+    v.extend(UNCONDITIONAL_FLAGS.iter().map(|f| (*f).to_string()));
     v.extend(args.iter().map(|(_, a)| (*a).to_string()));
     v
 }

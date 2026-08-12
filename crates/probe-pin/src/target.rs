@@ -10,6 +10,17 @@ use std::process::Command;
 use crate::Abort;
 
 /// `cargo locate-project --workspace` — authoritative, and it replaces a walk-up heuristic.
+///
+/// CANONICALIZED here, at the one producer, because every consumer compares it against a path
+/// that has been: `main`'s `manifest_rel` strips it from `manifest_path.canonicalize()`,
+/// `manifest::resolve_contained` canonicalizes `base`, and `isolate::scratch_dir` canonicalizes
+/// both sides. A root that is not itself canonical turns each of those realpath assertions back
+/// into a LEXICAL string comparison — the shape this crate has already had to repair twice — and
+/// the failure mode is a refusal the operator cannot satisfy: "manifest … is not inside the
+/// workspace root" for a manifest that is. Not reached through cargo today (measured: with the
+/// root reached through a symlink, `cargo locate-project --workspace` still prints the resolved
+/// path, because cargo starts from `getcwd`, which the kernel answers physically) — so this is
+/// the guard matching the semantics of its surface, not a repair of a live escape.
 pub fn workspace_root() -> Result<PathBuf, Abort> {
     let out = Command::new("cargo")
         .args(["locate-project", "--workspace", "--message-format", "plain"])
@@ -23,11 +34,16 @@ pub fn workspace_root() -> Result<PathBuf, Abort> {
         });
     }
     let manifest = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string());
-    manifest
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| Abort::WorkspaceRootUnresolved {
-            stderr: format!("'{}' has no parent directory", manifest.display()),
+    let root =
+        manifest
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| Abort::WorkspaceRootUnresolved {
+                stderr: format!("'{}' has no parent directory", manifest.display()),
+            })?;
+    root.canonicalize()
+        .map_err(|e| Abort::WorkspaceRootUnresolved {
+            stderr: format!("'{}' cannot be resolved: {e}", root.display()),
         })
 }
 

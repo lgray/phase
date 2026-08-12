@@ -100,8 +100,19 @@ fn sha_of(rel: &str) -> String {
 
 /// Every probe-pin child shells its own NESTED `cargo test --test pure_logic --no-run` into the
 /// shared `CARGO_TARGET_DIR`; the three §7 wiring arms take the count of such children from four
-/// to seven, so they run one at a time rather than contending on cargo's build lock. This is
-/// hygiene, NOT MAJOR-3's fix: that flake's mechanism was isolated to the mutation harness (a
+/// to seven, so they run one at a time rather than contending on cargo's build lock.
+///
+/// The lock is IN-PROCESS, and that is the whole guarantee: it serializes these calls under
+/// libtest — one process, threads — which is the venue the Tilt `probe-pin-e2e` resource uses
+/// (`cargo test … -- --ignored`). It does NOT serialize across processes, so a nextest run would
+/// contend instead. Measured, and deliberately not configured around: `cargo nextest list -p
+/// probe-pin --test isolation_e2e` schedules ZERO of these tests, because they are `#[ignore]`d
+/// and CI's `cargo nextest run --profile ci --workspace` never passes `--run-ignored`; forcing it
+/// with `--run-ignored all` still ran 17/17 green in 4.4s against 3.2s under libtest. A
+/// `probe-pin-serial` group in `.config/nextest.toml` would be configuration for a venue nothing
+/// uses, and it would go stale silently.
+///
+/// This is hygiene, NOT MAJOR-3's fix: that flake's mechanism was isolated to the mutation harness (a
 /// `cp -p` restore preserves the pre-mutation mtime, so cargo keeps the artifact built from the
 /// mutant and the NEXT run measures the PREVIOUS mutant — reproduced deterministically, and
 /// cleared by one `touch`). Poisoning is ignored on purpose: a panicking arm must report ITS OWN
@@ -608,19 +619,41 @@ fn tmp_manifest(name: &str, text: &str) -> (PathBuf, String) {
 #[test]
 #[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn execution_floor_aborts_a_zero_run() {
-    let base = std::fs::read_to_string(root().join("crates/probe-pin/tests/fixtures/dogfood.toml"))
-        .unwrap()
+    let dogfood =
+        std::fs::read_to_string(root().join("crates/probe-pin/tests/fixtures/dogfood.toml"))
+            .unwrap();
+    // Each edit is asserted to APPLY, by the same rule the hostile loop below already uses. The
+    // reach guard cannot see a no-op edit: an UNEDITED dogfood.toml also exits 0 here, so three
+    // replaces silently becoming no-ops (one space of formatting drift is enough) would leave
+    // this test green while both hostile arms measured a manifest of a different shape.
+    let mut base = dogfood.clone();
+    for (what, find, replace) in [
         // a probe whose mutant leaves the census passing: the shape that renders a green `pass`
         // row, which is what a skipped run forges
-        .replace(
+        (
+            "the census-preserving mutation",
             "  find    = \"SITE-TWO marker beta\\n\"\n  replace = \"\"",
             "  find    = \"alpha\"\n  replace = \"gamma\"",
-        )
-        .replace("  text  = \"marker\"\n  count = 1", "  text  = \"gamma\"\n  count = 1")
-        .replace(
+        ),
+        (
+            "its assert_count",
+            "  text  = \"marker\"\n  count = 1",
+            "  text  = \"gamma\"\n  count = 1",
+        ),
+        (
+            "P1's expectation",
             "  outcome = \"fail\"\n  anchor  = [\"CENSUS VIOLATED: expected 2 sites, got 1\",\n             \"text: \\\"SITE-ONE marker alpha\\\\n\\\"\"]",
             "  outcome = \"pass\"",
+        ),
+    ] {
+        let edited = base.replace(find, replace);
+        assert_ne!(
+            edited, base,
+            "{what}: the edit must apply — dogfood.toml's formatting drifted, and without it \
+             this test measures the committed manifest instead of the floor's shape"
         );
+        base = edited;
+    }
     // the reach guard: this manifest must be GREEN when the target really runs, or every arm
     // below aborts for a reason that has nothing to do with the floor
     let (_, arg) = tmp_manifest("floor_base.toml", &base);
@@ -725,6 +758,160 @@ fn wiring_validate_paths() {
     ] {
         std::fs::remove_file(root().join(TMP).join(name)).ok();
     }
+}
+
+/// §7 step 1b's block-text half is CALLED. An anchor carrying the END marker is lexically clean
+/// everywhere else — it is not an id, not a path, and `cell()` escapes only `|`. Measured on the
+/// shipping binary before the refusal: `run --write` exited 0, the spliced file then held TWO
+/// END markers, and every subsequent `check` aborted with `expected exactly one
+/// PROBE-PIN:BEGIN/END pair … found 1/2`, so the pin could only be recovered by hand.
+///
+/// Revert-probe: delete the `validate_block_text` call from `main.rs` and the hostile arm goes
+/// to rc 0 with two END markers in the written file — which the arm asserts on directly.
+#[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
+fn wiring_validate_block_text() {
+    let block = root().join(TMP).join("marker_block.md");
+    let manifest = |anchor: &str| {
+        format!(
+            "version = 1\n\
+             [target]\n\
+             mode         = \"runtime-read\"\n\
+             package      = \"probe-pin\"\n\
+             test         = \"pure_logic\"\n\
+             filter       = \"ppfixture_census\"\n\
+             filter_match = \"substring\"\n\
+             timeout_secs = 60\n\
+             [output]\n\
+             file   = \"crates/probe-pin/tests/fixtures/tmp/marker_block.md\"\n\
+             marker = \"PROBE-PIN\"\n\
+             [[probe]]\n\
+             id = \"P0_control\"\n\
+             [probe.expect]\n\
+             outcome = \"pass\"\n\
+             [[probe]]\n\
+             id = \"P1_marker_anchor\"\n\
+             [[probe.mutation]]\n\
+             kind   = \"prepend\"\n\
+             files  = [\"crates/probe-pin/tests/fixtures/prod.txt\"]\n\
+             text   = \"PROBE-PIN:END marker\\n\"\n\
+             repeat = 1\n\
+             [probe.expect]\n\
+             outcome = \"fail\"\n\
+             anchor  = [\"{anchor}\"]\n"
+        )
+    };
+    let fresh = || {
+        std::fs::create_dir_all(root().join(TMP)).unwrap();
+        std::fs::write(
+            &block,
+            "prose above\n// PROBE-PIN:BEGIN placeholder\n// PROBE-PIN:END\nprose below\n",
+        )
+        .unwrap();
+    };
+    let end_markers = || {
+        std::fs::read_to_string(&block)
+            .unwrap()
+            .matches("PROBE-PIN:END")
+            .count()
+    };
+
+    // hostile: the anchor names the END marker, and the anchor really does hit — the mutant
+    // prepends that exact text, so this is refused for being marker-unsafe, not for missing
+    fresh();
+    let (_, arg) = tmp_manifest("marker_attack.toml", &manifest("PROBE-PIN:END"));
+    let (rc, err) = probe_pin_bin(&["run", "--write", &arg], &[]);
+    assert_eq!(rc, 2, "{err}");
+    assert!(err.contains("contains the marker tag"), "{err}");
+    assert!(err.contains("P1_marker_anchor"), "{err}");
+    assert_eq!(end_markers(), 1, "a refused run must not write");
+
+    // reach guard: the SAME manifest with a marker-free anchor runs to a spliced block, so the
+    // refusal above is about the marker text and not about this manifest's shape
+    fresh();
+    let (_, arg) = tmp_manifest(
+        "marker_ok.toml",
+        &manifest("CENSUS VIOLATED: expected 2 sites, got 3"),
+    );
+    let (rc, err) = probe_pin_bin(&["run", "--write", &arg], &[]);
+    assert_eq!(rc, 0, "the benign twin must still write: {err}");
+    assert_eq!(end_markers(), 1, "exactly one END marker survives a write");
+    assert_eq!(probe_pin_bin(&["check", &arg], &[]).0, 0);
+
+    for name in ["marker_attack.toml", "marker_ok.toml", "marker_block.md"] {
+        std::fs::remove_file(root().join(TMP).join(name)).ok();
+    }
+}
+
+/// A script-level failure is NAMED, not inferred from a stderr prefix. `mount`, `cmp` and
+/// `timeout` are resolved through `PATH` INSIDE the namespace under `set -eu`, so a PATH without
+/// them makes the shell die before `exec` — empty stdout, non-zero code, which is byte-for-byte
+/// the shape of a target that died before its first libtest record.
+///
+/// DROP arm: the same run with the script's reserved-code `trap` removed is the measurement
+/// that motivated it — exit 127, and `HarnessIncomplete`, whose message tells the operator to
+/// raise `RUST_MIN_STACK`, which cannot make `timeout` exist.
+#[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
+fn script_failure_is_named_not_inferred() {
+    fn on_path(tool: &str) -> PathBuf {
+        std::env::var("PATH")
+            .unwrap()
+            .split(':')
+            .map(|dir| Path::new(dir).join(tool))
+            .find(|p| p.exists())
+            .unwrap_or_else(|| panic!("{tool} must be on PATH for this test to mean anything"))
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    // enough to reach the script, and nothing the script needs after that
+    for tool in ["unshare", "bash"] {
+        std::os::unix::fs::symlink(on_path(tool), bin.join(tool)).unwrap();
+    }
+    for missing in ["mount", "cmp", "timeout"] {
+        assert!(
+            !bin.join(missing).exists(),
+            "reach guard: {missing} must be absent from the constructed PATH"
+        );
+    }
+    let t = target("ppfixture_census", 60, &[("PATH", bin.to_str().unwrap())]);
+
+    let run = isolate::run(testbin(), &[], &t).unwrap();
+    assert_eq!(run.rc, 96, "stderr: {}", run.stderr);
+    assert!(
+        run.stdout.trim().is_empty(),
+        "the target never ran: {}",
+        run.stdout
+    );
+    let e = verdict::observe("P1", &run, &t, &[]).unwrap_err();
+    assert!(matches!(e, Abort::IsolationScriptFailed { .. }), "{e}");
+    assert!(
+        !e.to_string().contains("RUST_MIN_STACK"),
+        "the remedy must not name a stack size: {e}"
+    );
+
+    // DROP — the reserved code removed from the SHIPPING script
+    let dropped = script_without(&["trap"]);
+    assert_ne!(dropped, isolate::SCRIPT, "the DROP edit must apply");
+    let run = isolate::run_with_script(&dropped, testbin(), &[], &t).unwrap();
+    assert_eq!(run.rc, 127, "stderr: {}", run.stderr);
+    let e = verdict::observe("P1", &run, &t, &[]).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Abort::HarnessIncomplete {
+                missing: HarnessMarker::SuiteStarted,
+                ..
+            }
+        ),
+        "{e}"
+    );
+    assert!(e.to_string().contains("RUST_MIN_STACK"), "{e}");
+
+    // positive: the same target with the ambient PATH still runs to a clean observation
+    let t = target("ppfixture_census", 60, &[]);
+    assert!(verdict::observe("P1", &isolate::run(testbin(), &[], &t).unwrap(), &t, &[]).is_ok());
 }
 
 /// The dogfood: probe-pin runs its own committed manifest against its own committed block.

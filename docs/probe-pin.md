@@ -88,7 +88,9 @@ timeout_secs = 300                           # exceeded -> killed, and named; 0 
 
 [output]
 file   = "crates/engine/tests/integration/loop_shortcut_seat_pin_census.rs"
-marker = "PROBE-PIN"
+marker = "PROBE-PIN"                         # [A-Za-z0-9_-] too: the marker IS the block's
+                                             # structure, and a blank one degenerates to
+                                             # ':BEGIN'/':END'
 
 [[probe]]
 id    = "P0_control"                         # [A-Za-z0-9_-]: an id is a scratch path SEGMENT
@@ -101,7 +103,8 @@ claim = "no mounts, unmodified tree — the instrument itself"
 id = "P1_revert_interaction"
   [[probe.mutation]]                         # 0..N, APPLIED IN ORDER
   kind = "replace"                           # or "prepend" { files, text, repeat }
-                                             # every mutation must name >= 1 file
+                                             # every mutation must name >= 1 file, and a pad
+                                             # (text.len() × repeat) is capped at 64 MiB
   file = "crates/engine/src/game/interaction.rs"
   find = "…verbatim…"                        # must match EXACTLY once, in the RUNNING text
   replace = ""                               # may be ""; the MATERIALIZED file must differ
@@ -115,10 +118,12 @@ id = "P1_revert_interaction"
   anchor  = ["PROVENANCE SPLIT VIOLATED", "text: \"Ok(TargetPin::Player(*player))\""]
 
 [[projection]]                               # 0..N, optional; shells to ast-grep
-id       = "targetpin_sites"
+id       = "targetpin_sites"                 # a plain name, and UNIQUE: counts are looked up by
+                                             # id, so a duplicate renders the FIRST one's number
 pattern  = "TargetPin::Player($$$)"
-paths    = ["crates/engine/src", "crates/server-core/src"]
-sentence = "`TargetPin::Player` is constructed or matched at {count} sites."
+paths    = ["crates/engine/src", "crates/server-core/src"]   # >= 1: ast-grep with no operand
+                                             # scans the whole cwd instead
+sentence = "`TargetPin::Player` is constructed or matched at {count} sites."   # {count} REQUIRED
 ```
 
 probe-pin owns `--format`, `-Z`, `--nocapture`, `--show-output`, `--test-threads`, `--quiet` and
@@ -146,6 +151,27 @@ anchors in the list must hit inside the same record. An anchor that is empty aft
 refused for the same reason the empty anchor LIST is: `contains("")` is true of every capture,
 so it is satisfied by any failure at all.
 
+**Every manifest value that is RENDERED into the block is refused if it carries a control
+character or a marker tag.** The block is line-oriented and marker-delimited — `block::locate`
+counts `<marker>:BEGIN`/`<marker>:END` per line, and the cell escape covers only `|` — so such a
+value does not describe the artifact, it reshapes it. Measured: `anchor = ["PROBE-PIN:END"]`
+rendered into the firing-assertion cell, `run --write` exited 0, and the spliced file then held
+two END markers, after which every `check` aborts `expected exactly one PROBE-PIN:BEGIN/END pair
+… found 1/2` and the pin can only be recovered by hand. The rule is applied to the SURFACE, not
+to `anchor`: `manifest::rendered_block_values` enumerates every value that reaches the block —
+the manifest path, `[output].marker`, each probe id, each mutation path (its file name is
+rendered in the mutation cell), each anchor, each projection sentence — and
+`pure_logic::block_text_surface_is_one_authority` measures that enumeration against what
+`block::render` actually emits, so a new field that starts rendering is either covered or the
+census fails.
+
+**Named residual.** The same census also names the two producers on this surface that are *not*
+manifest values and cannot be refused before the run: an instrument's `--version` string, and a
+`provenance` path taken from the target's own `panicked at …` output. Reaching the failure
+through those needs a tool version or a source file whose name contains `<marker>:END`, and the
+result is loud (`check` aborts `MarkerNotUnique`) rather than a green row for an unmeasured
+tree — so they are disclosed, not guarded.
+
 ## What a row proves, and what it does not
 
 **`fail` rows.** `Verdict::Fail` means the target failed *and* every anchor hit inside one
@@ -171,6 +197,17 @@ differed from the original, was visible at the target's path inside the namespac
 Each probe runs as `unshare --map-root-user --mount bash -c <script>`; the script bind-mounts
 every mutant over its real path, `cmp -s`-reads each one back, and `exec timeout -k 5 …`s the
 target. The mounts are private to that process and vanish on exit.
+
+**The script owns two exit codes, and the classification reads them before the record stream.**
+`97` is the mount readback failing; `96` is the script failing before the target was reached at
+all — `mount`, `cmp` and `timeout` are resolved through `PATH` *inside* the namespace under
+`set -eu`, so a missing one of them, an unset `PP_*` variable, or a failed `exec` kills the shell
+with **empty stdout and a non-zero code**, which is byte-for-byte the shape of a target that died
+before its first libtest record. Measured with `timeout` off `PATH`: exit 127, and the abort
+raised was `HarnessIncomplete`, whose message tells the operator to raise `RUST_MIN_STACK`
+through `[target].env` — a remedy that cannot make `timeout` exist. An `EXIT` trap now raises 96
+for the whole pre-`exec` region (a successful `exec` replaces the shell, so it cannot fire for
+the target's own exit), and both reserved codes are trusted only when stdout is empty.
 
 **Mount-isolated is not write-isolated (N-10).** `unshare --mount` stops *probe-pin* from
 writing your tree. It does not stop the *target* from writing anywhere it likes, including

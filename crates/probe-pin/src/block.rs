@@ -135,13 +135,16 @@ pub fn digest(
                     Some(Verdict::Fail { .. }) => "fail",
                     None => "unmeasured",
                 },
+                // Exhaustive, never `_`: these two fields are what the digest PINS about a
+                // measurement, and a wildcard would silently record `None` — an unmeasured
+                // probe's own value — for a future verdict shape nobody revisited here.
                 mounts_reached: match verdict {
                     Some(Verdict::Pass { mounts_reached }) => Some(*mounts_reached),
-                    _ => None,
+                    Some(Verdict::Fail { .. }) | None => None,
                 },
                 provenance: match verdict {
                     Some(Verdict::Fail { provenance }) => Some(provenance.clone()),
-                    _ => None,
+                    Some(Verdict::Pass { .. }) | None => None,
                 },
             }
         })
