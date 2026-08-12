@@ -2578,8 +2578,16 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
     //
     // PINS ARE PLUGGED IN HERE (`scope.pinned`, minted by the single authority
     // `game::engine::bounded_cycle_pin_slots`). Precondition (a) holds by construction:
-    // the pins that channel carries are `TargetPin::Player` / `MayChoice` designations,
-    // both state-independent (never "the newest copy"). Precondition (c) is NOT taken on
+    // the pins that channel carries are SEAT designations and `MayChoice` designations,
+    // both state-independent (never "the newest copy"). A seat designation now has TWO
+    // spellings and (a) holds for both: `TargetPin::Player` is the CR 115.10a CHOICE class,
+    // while a CR 601.2c TARGET-class seat is
+    // `Scheduled(TargetSchedule::Constant(Ranking::one(AnnouncementSubject::Seat(..))))` —
+    // one entry, selected without reading the iteration index, so it too can never denote
+    // "the newest copy". The split changes WHICH AUTHORITY judges a seat's legality, never
+    // whether the designation is state-independent, which is all this precondition asks.
+    // (This module reads no pin VARIANT at all — every `TargetPin::` occurrence in it is
+    // prose — so no relief verdict can move with the spelling.) Precondition (c) is NOT taken on
     // trust from the mint site: [`pinned_may_choice_relief`] re-runs the mint's own
     // per-entry acceptance test — controller conjunct included — for THIS entry, so the
     // relief predicate is the mint predicate rather than a coarser sibling of it.

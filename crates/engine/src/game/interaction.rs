@@ -13,8 +13,8 @@ use crate::ai_support::{
     FilterPipeline, TacticalClass,
 };
 use crate::analysis::decision_template::{
-    declaration_conforms, DecisionGroupKey, DecisionKind, DecisionTemplate, IterationCount,
-    PinnedDecision, ReplayMode, TargetPin,
+    declaration_conforms, AnnouncementSubject, DecisionGroupKey, DecisionKind, DecisionTemplate,
+    IterationCount, PinnedDecision, Ranking, ReplayMode, TargetPin, TargetSchedule,
 };
 use crate::types::ability::{
     AggregateFunction, ChoiceType, ChooseFromZoneConstraint, Comparator, CounterCostSelection,
@@ -8950,8 +8950,18 @@ fn materialize_loop_shortcut_response(
                 let targets = candidate_indices
                     .iter()
                     .map(|index| match &projection.candidates[*index] {
+                        // CR 601.2c: the HUMAN ingress of the SAME point kind, so it emits
+                        // the SAME spelling as the engine's own producer
+                        // (`game::engine::record_trigger_target_answer`). A candidate on a
+                        // `Targets` point is an announced TARGET, so the seat is judged by
+                        // CR 702.11c hexproof / CR 702.18a shroud / CR 702.16b protection
+                        // through the announcement-subject arm — never by existence alone.
+                        // Emitting `TargetPin::Player` here instead would select the
+                        // authority by WHO SUBMITTED the answer rather than by WHAT IT IS.
                         LoopShortcutCandidateValue::Target(TargetRef::Player(player)) => {
-                            Ok(TargetPin::Player(*player))
+                            Ok(TargetPin::Scheduled(TargetSchedule::Constant(
+                                Ranking::one(AnnouncementSubject::Seat(*player)),
+                            )))
                         }
                         LoopShortcutCandidateValue::Target(TargetRef::Object(object_id)) => {
                             let object = authoritative_state
@@ -9042,9 +9052,16 @@ fn materialize_loop_shortcut_response(
     if let Some(template) = &template {
         // TRAP REMOVAL, NOT A BUG FIX — recorded so the next reader does not "correct" this
         // literal into `shortcut_validated_range(..)` and then wonder what changed. This
-        // decoder emits only `Player` and `ByIdentity` pins, both of which resolve
-        // INDEPENDENTLY of `iteration`, so validating at index 0 alone is correct by
-        // construction here: a wider range would re-resolve the same pin to the same value.
+        // decoder emits only ITERATION-INVARIANT pins, so validating at index 0 alone is
+        // correct by construction here: a wider range would re-resolve the same pin to the
+        // same value. That is the property doing the work, and it is stated as the property
+        // rather than as a list of variant names — the list has already moved once. Today
+        // the emitted set is `ByIdentity` (never reads `iteration` at all) and
+        // `Scheduled(TargetSchedule::Constant(..))`, whose arm in
+        // `decision_template::evaluate_schedule` selects its `Ranking` without consulting
+        // `iter` (unlike the `RoundRobin` / `Piecewise` arms beside it, which this decoder
+        // does not emit). Emitting a genuinely iteration-VARYING pin here would invalidate
+        // the literal, not just this comment.
         // It is also strictly weaker than the declare-path firewall rather than a second
         // hole — `1` is a prefix of any range that path validates. It cannot mint a
         // `Fixed(0)` either: the count-spec projection's `Fixed` arm hard-codes `min: 1`

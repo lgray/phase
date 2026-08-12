@@ -1179,6 +1179,8 @@ mod loop_shortcut;
 mod loop_shortcut_activation;
 mod loop_shortcut_mana_engine;
 mod loop_shortcut_offer_writer_census;
+mod loop_shortcut_ranking;
+mod loop_shortcut_seat_pin_census;
 mod lose_control_this_turn_delayed_trigger;
 mod lost_mine_fungi_cavern_duration_runtime;
 mod lost_mine_storeroom_targeting_runtime;

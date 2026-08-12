@@ -521,10 +521,31 @@ impl TryFrom<Vec<AnnouncementSubject>> for Ranking {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TargetPin {
     ByIdentity(DecisionSource),
-    /// A CONSTANT target (CR 732.2a): this pin answers EVERY firing of its source within
-    /// the period with the declared player. A seat is state-independent by construction —
-    /// it can never denote "the newest copy" — so no iteration can turn the pin into the
-    /// conditional action CR 732.2a forbids.
+    /// A CONSTANT **CHOICE-class** seat (CR 115.10a): this pin answers EVERY firing of its
+    /// source within the period with the declared player. A seat is state-independent by
+    /// construction — it can never denote "the newest copy" — so no iteration can turn the
+    /// pin into the conditional action CR 732.2a forbids.
+    ///
+    /// # THE TWO CLASSES NOW HAVE TWO SPELLINGS, AND THIS ONE IS THE CHOICE CLASS
+    ///
+    /// CR 115.10a: "unless that object or player is identified by the word 'target' … it's
+    /// not a target". A seat this pin names was CHOSEN, not targeted, so [`resolve_target`]
+    /// judges it by `game::players::player_exists_for_choice` — EXISTENCE ONLY. Applying the
+    /// targeting-only exclusions (CR 702.11c hexproof / CR 702.18a shroud / CR 702.16b
+    /// protection) here would refuse legal CR 732.2a proposals; that over-veto is what
+    /// `game::engine`'s `a_shrouded_player_pin_is_still_published_by_the_offer_builder` and
+    /// `a_shrouded_seat_is_untargetable_yet_still_choosable_at_the_pin_recheck` (this
+    /// module) exist to keep out. Its live in-process producer is the CR 701.34a proliferate
+    /// arm (`game::engine::apply_action` → `record_loop_pin`).
+    ///
+    /// A CR 601.2c **TARGET**-class seat is a different question and takes the other
+    /// spelling: [`AnnouncementSubject::Seat`] inside a [`Ranking`] inside
+    /// [`TargetPin::Scheduled`], judged by `game::targeting::player_is_legal_target`. Both
+    /// TARGET-class producers emit that spelling —
+    /// `game::engine::record_trigger_target_answer` (the engine's own CR 601.2c
+    /// announcement journal) and `game::interaction::materialize_loop_shortcut_response`
+    /// (the human ingress of the same point kind). The spelling IS the provenance, so the
+    /// authority is selected by what the answer IS, never by who submitted it.
     Player(PlayerId),
     Scheduled(TargetSchedule),
 }
@@ -796,36 +817,58 @@ fn resolve_target(
         // `static_abilities::player_cannot_be_targeted_by`. It is NOT enforced here, and
         // does not need to be.
         //
-        // OPEN RESIDUAL — the object-growth route. Stated in full here, because no shipped
-        // file states it elsewhere. INVARIANT: a `TargetPin::Player` must never reach
+        // THE RESIDUAL'S DEFERRED FIX SHAPE HAS LANDED FOR THE IN-PROCESS SURFACE: the two
+        // classes now have TWO SPELLINGS, so they are distinguishable AT THIS SEAM by the
+        // variant alone. `TargetPin::Player` is the CHOICE class (this arm, existence only);
+        // a CR 601.2c TARGET-class seat is `AnnouncementSubject::Seat` inside a `Ranking`
+        // inside `TargetPin::Scheduled`, resolved by the arm below through
+        // `targeting::player_is_legal_target`. THE PREVIOUS TEXT WAS SCOPED TOO NARROWLY and
+        // is corrected rather than deleted: it named only `record_loop_pin` (three sites,
+        // one of which — the CR 701.34a proliferate-target arm — is a genuine CHOICE) and
+        // was SILENT about the `record_loop_answer` route, along which
+        // `game::engine::record_trigger_target_answer` did produce a TARGET-class
+        // `TargetPin::Player` from a `WaitingFor::TriggerTargetSelection` announcement. That
+        // producer, and the human ingress of the same point kind
+        // (`game::interaction::materialize_loop_shortcut_response`), now emit the ranked
+        // spelling. So no IN-PROCESS producer can reach this arm with a target any more, and
+        // "not live today" is now an enforced property rather than a census result — pinned
+        // by `tests/integration/loop_shortcut_seat_pin_census.rs`.
+        //
+        // OPEN RESIDUAL — the object-growth route, which is why this arm is still not a
+        // sufficient authority on its own. INVARIANT: a `TargetPin::Player` must never reach
         // materialization validated only against a legal set derived from the declared pins
         // themselves. `try_offer_object_growth_shortcut` builds its points through
         // `pinned_decisions_to_points`, whose legal sets come FROM the pins, so on that
         // route the offer would ratify its own pin — and CR 732.2a admits only a sequence
         // "that may be legally taken based on the current game state", which a self-derived
-        // set cannot establish. NOT live today FROM ANY IN-PROCESS PRODUCER — and the scope
-        // word is load-bearing: the one `record_loop_pin` arm that can push a
-        // `TargetPin::Player` is the CR 701.34a proliferate-target arm, and a proliferate
-        // choice is not a target, so THIS call is its correct authority.
+        // set cannot establish. That hazard is class-independent: it is about WHERE the
+        // legal set came from, not about which spelling the pin uses, so the split narrows
+        // this residual's producer surface without closing it.
         //
-        // PINS ALSO ARRIVE WIRE-SOURCED, and no in-process invariant covers that.
-        // `LoopActionContext` is `#[serde(from = "LoopActionContextRepr")]`, and that shim's
-        // `From` impl installs the deserialized vector verbatim (`pins: r.pins`), so a
-        // restored save can carry a Player pin of UNKNOWN class.
-        // `GameState::migrate_transient_loop_sequence` keeps a loaded sequence ONLY for a
-        // save captured in a `LoopShortcut` / `RespondToShortcut` window, and on that route
-        // the pins are replayed by the accept→materialize drive through
+        // WHAT REMAINS OPEN, PRECISELY — PINS ARRIVE WIRE-SOURCED, and no in-process
+        // invariant covers that. `LoopActionContext` is
+        // `#[serde(from = "LoopActionContextRepr")]`, and that shim's `From` impl installs
+        // the deserialized vector verbatim (`pins: r.pins`), so a restored save can still
+        // carry a `TargetPin::Player` a foreign writer MEANT as a target. The wire carries
+        // the spelling, not the writer's intent, so the split cannot adjudicate that case —
+        // it can only make the honest spelling available and make the in-process producers
+        // use it. `GameState::migrate_transient_loop_sequence` keeps a loaded sequence ONLY
+        // for a save captured in a `LoopShortcut` / `RespondToShortcut` window, and on that
+        // route the pins are replayed by the accept→materialize drive through
         // `build_recast_template` → `decision_template::resolve`, i.e. through THIS call —
         // so a wire pin's EXISTENCE half is authority-enforced here too. Same class as the
         // wire-sourced `max_iterations` defect `reject_zero_bound_shortcut_offer` closes: a
         // load-seam value the in-process producer census cannot see.
         //
-        // The residual opens the moment any producer — IN-PROCESS OR WIRE — puts a
-        // TARGET-class Player pin into `LoopActionContext.pins`. DAMAGE MODE then:
-        // `CycleOutcome::Abort` rolls back only the crossing cycle, so cycles `0..k` stay
-        // committed under a pin no authority ever validated. Deferred fix shape:
-        // provenance-type the pin so the two classes are distinguishable at this seam — a
-        // change to a serialized type, hence not this phase.
+        // DAMAGE MODE if a wire producer does that: `CycleOutcome::Abort` rolls back only
+        // the crossing cycle, so cycles `0..k` stay committed under a pin no authority ever
+        // validated. Note what is NOT the damage mode, because the two are easy to conflate:
+        // a correctly-spelled ranked seat that becomes an illegal target mid-drive is
+        // handled BY CONSTRUCTION and is not a residual at all — `evaluate_schedule`
+        // resolves `head()` only and never slides to a later entry, so the drive aborts at
+        // the boundary (CR 115.7a: "if a target can't be changed to another legal target,
+        // the original target is unchanged, even if the original target is itself illegal by
+        // then"; CR 732.2a bars the conditional action sliding would be).
         TargetPin::Player(p) => crate::game::players::player_exists_for_choice(state, *p)
             .then_some(ConcreteTarget::Player(*p))
             .ok_or_else(illegal),
@@ -1239,9 +1282,13 @@ pub fn validate_pins(
 /// * the declare firewall passes `game::engine::shortcut_validated_range(&count, template)` —
 ///   the range the ACCEPTED COUNT will drive;
 /// * the interaction decoder passes `1`, correct by construction there because it emits only
-///   `TargetPin::Player` and `TargetPin::ByIdentity` pins, and `resolve_target` resolves both
-///   WITHOUT reading `iteration` (only `TargetPin::Scheduled` consults it). Its verdict is
-///   therefore identical at any range ≥ 1.
+///   ITERATION-INVARIANT pins. That is the property, stated as a property because the variant
+///   list has already moved once: the decoder emits [`TargetPin::ByIdentity`] (which
+///   [`resolve_target`] resolves without reading `iteration` at all) and
+///   [`TargetPin::Scheduled`] carrying [`TargetSchedule::Constant`], whose arm of
+///   [`evaluate_schedule`] selects its [`Ranking`] without consulting the index — unlike the
+///   `RoundRobin` / `Piecewise` arms beside it, which that decoder does not emit. Its verdict
+///   is therefore identical at any range ≥ 1.
 ///
 /// Ranges are nested rather than contradictory — `0..n` re-checks are a superset of `0..m` for
 /// `m <= n`, so a wider range is strictly stricter — which is why a PUBLISHER must validate at
