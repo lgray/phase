@@ -160,8 +160,21 @@ fn pins_name_hidden_source(
         },
     };
     // Wildcard-free over `PinnedDecision`, so a future variant that carries an object
-    // identity gets a compile-time visit here instead of leaking silently. Every
-    // slot-only variant is already published unredacted as `point.slot`.
+    // identity gets a compile-time visit here instead of leaking silently.
+    //
+    // `slot` is deliberately not inspected, and the honest reason is PER-CARRIER rather than
+    // global. Carrier 1 co-publishes the identical `DecisionSlot` unredacted as
+    // `schema.points[].slot` (the `LoopShortcut` arm below), so redacting it here would hide
+    // nothing that arm hands over anyway. Carriers 2 and 3 publish NO schema, and for them the
+    // claim is narrower and measured rather than structural: every `DecisionSlot.source` this
+    // engine mints today is either `YieldTarget::AllCopies { card_id }` (a card identity, which
+    // occupies no zone) or a `ThisObject` that `game::engine::object_decision_source` built from
+    // a stack object or a battlefield permanent — never a hand/library occupant. That is a
+    // property of today's PRODUCERS (`build_recast_template` and the `record_loop_pin` call
+    // sites feed carriers 2/3; a proposer-declared template's slots come from the offer schema,
+    // whose sources are stack entries), not of `DecisionSlot` itself, whose constructors accept
+    // any object. A producer that slots a hidden-zone source would leak it through carriers 2/3,
+    // and `source_hidden` above is already the function to call on `slot.source` when one exists.
     pins.iter().any(|pin| match pin {
         PinnedDecision::Targets { targets, .. } => targets.iter().any(&pin_hidden),
         PinnedDecision::Order { source, .. } => source_hidden(source),
@@ -5963,19 +5976,24 @@ mod tests {
     const D5H_PROPOSER: PlayerId = PlayerId(0);
     const D5H_VIEWER: PlayerId = PlayerId(1);
 
-    /// One `LoopShortcut` offer whose declaration pins whatever `pins` builds from the HIDDEN
-    /// card's id. The card sits in the PROPOSER's hand, so the non-proposer viewer cannot
-    /// privately view its owner and `target_hidden` answers `true` for it.
+    /// One `LoopShortcut` offer whose declaration carries whatever `decisions` builds from the
+    /// HIDDEN card's id and the fixture's slot. The card sits in the PROPOSER's hand, so the
+    /// non-proposer viewer cannot privately view its owner and `target_hidden` answers `true`
+    /// for it.
     ///
-    /// Called twice — once hidden, once all-`Player` — so the mint spells the
+    /// EVERY arm of D5-h and D5-h/2 mints through here, so the fixture spells the
     /// `WaitingFor::LoopShortcut` anchor exactly once (this is a counted site in
-    /// `tests/integration/loop_shortcut_offer_writer_census.rs`).
-    fn d5h_offer(
-        pins: impl FnOnce(ObjectId) -> Vec<crate::analysis::decision_template::TargetPin>,
+    /// `tests/integration/loop_shortcut_offer_writer_census.rs`, which pins the per-file
+    /// multiset — a second literal in this file would fail that row).
+    fn d5h_offer_decisions(
+        decisions: impl FnOnce(
+            ObjectId,
+            &crate::analysis::decision_template::DecisionSlot,
+        ) -> Vec<crate::analysis::decision_template::PinnedDecision>,
     ) -> GameState {
         use crate::analysis::decision_template::{
             DecisionGroupKey, DecisionKind, DecisionPoint, DecisionPointKind, DecisionSlot,
-            DecisionTemplate, IterationCount, PinnedDecision, ReplayMode, ShortcutDecisionSchema,
+            DecisionTemplate, IterationCount, ReplayMode, ShortcutDecisionSchema,
         };
         let mut state = GameState::new_two_player(42);
         let hidden = create_object(
@@ -6016,10 +6034,7 @@ mod tests {
             },
             declaration: Some(DecisionTemplate {
                 owner: D5H_PROPOSER,
-                decisions: vec![PinnedDecision::Targets {
-                    slot: slot.clone(),
-                    targets: pins(hidden),
-                }],
+                decisions: decisions(hidden, &slot),
                 replay: ReplayMode::Scheduled {
                     count: IterationCount::Fixed(3),
                 },
@@ -6027,6 +6042,19 @@ mod tests {
             }),
         };
         state
+    }
+
+    /// The ONE-pin shorthand D5-h uses: a single `PinnedDecision::Targets` carrying `pins`.
+    fn d5h_offer(
+        pins: impl FnOnce(ObjectId) -> Vec<crate::analysis::decision_template::TargetPin>,
+    ) -> GameState {
+        use crate::analysis::decision_template::PinnedDecision;
+        d5h_offer_decisions(|hidden, slot| {
+            vec![PinnedDecision::Targets {
+                slot: slot.clone(),
+                targets: pins(hidden),
+            }]
+        })
     }
 
     /// The declaration AS PROJECTED for `viewer`. Both arms of D5-h read through here, so the
@@ -6109,6 +6137,109 @@ mod tests {
             d5h_projected_declaration(&public_state, D5H_PROPOSER),
             "an all-seat declaration is public and reaches the opponent UNCHANGED — without this \
              arm a redactor that dropped everything would pass the hidden arm above"
+        );
+        assert!(
+            d5h_projected_declaration(&public_state, D5H_VIEWER).is_some(),
+            "and it is genuinely present, not two matching `None`s"
+        );
+    }
+
+    /// **Row D5-h/2 — the ACROSS-PIN axis: a declaration whose FIRST pin is public and whose
+    /// SECOND names a hidden object still drops WHOLE.**
+    ///
+    /// D5-h above and both integration rows build a ONE-element `decisions` vector, and on a
+    /// one-element vector `pins.iter().any(..)` and `pins.iter().all(..)` are the same function —
+    /// so the PIN-LEVEL quantifier of `pins_name_hidden_source` was discriminated by no row in the
+    /// tree (measured: flipping the OUTER `any` to `all` left lib and integration fully green).
+    /// CR 732.2b is all-or-nothing across the WHOLE pin set, not within one pin: a declaration
+    /// that survives because only *some* of its pins name hidden objects states a proposal that
+    /// was never made.
+    ///
+    /// # The multi-pin shape is the ORDINARY production shape, not an exotic one
+    ///
+    /// `game::engine::record_loop_pin` appends up to three pins onto ONE `LoopActionContext.pins`
+    /// in temporal order — a mana-ability tap-cost `Targets` pin (`index: 0`), a `ManaColor` pin
+    /// (`index: 1`), then a proliferate `Targets` pin — and `game::engine::build_recast_template`
+    /// clones that very vector (`decisions = ctx.pins.clone()`) into the offer's declaration
+    /// before pushing a `ConvokeTaps` pin. A public pin sitting ahead of a hidden one is therefore
+    /// exactly what those producers mint; this row builds `[ManaColor, Targets{hidden}]`, i.e.
+    /// pins 2 and 3 of that production sequence.
+    ///
+    /// # Non-vacuity / discrimination
+    ///
+    /// The PUBLIC pin is FIRST, so an implementation that stops at the first pin — `all(..)`, or a
+    /// `decisions.first()` peek — keeps the declaration and fails the negative below. Paired
+    /// positives: the proposer's own projection keeps it, and an all-public TWO-pin declaration
+    /// reaches the non-proposer unchanged, so a redactor that dropped every multi-pin declaration
+    /// fails here. The pin count and the first pin's variant are asserted on the projected
+    /// proposer copy, so a fixture that silently built one pin (or a hidden first pin) cannot
+    /// satisfy the negative for the wrong reason.
+    ///
+    /// REVERT-PROBE (measured both directions, `item4-run/t-r0-fold/REPORT.md`): outer
+    /// `pins.iter().any` -> `.all` in `pins_name_hidden_source` ⇒ this row FAILS while every other
+    /// row in `game::visibility::tests` stays green; restored ⇒ it passes.
+    #[test]
+    fn d5h2_a_public_pin_ahead_of_a_hidden_one_still_drops_the_whole_declaration() {
+        use crate::analysis::decision_template::{PinnedDecision, TargetPin};
+        use crate::types::mana::ManaColor;
+
+        // ── the hostile arm: pin 1 carries no identity, pin 2 names the hidden hand card ──
+        let hidden_state = d5h_offer_decisions(|hidden, slot| {
+            vec![
+                PinnedDecision::ManaColor {
+                    slot: slot.clone(),
+                    color: ManaColor::Blue,
+                },
+                PinnedDecision::Targets {
+                    slot: slot.clone(),
+                    targets: vec![TargetPin::ByIdentity(
+                        crate::types::game_state::YieldTarget::ThisObject {
+                            source_id: hidden,
+                            incarnation: Some(1),
+                            trigger_description: None,
+                        },
+                    )],
+                },
+            ]
+        });
+        let proposer_copy = d5h_projected_declaration(&hidden_state, D5H_PROPOSER)
+            .expect("reach-guard + positive: the PROPOSER's own projection keeps the declaration");
+        assert_eq!(
+            proposer_copy.decisions.len(),
+            2,
+            "reach-guard: the fixture really carries TWO pins — `any` and `all` are the same \
+             function on a one-pin vector, which is why this row exists"
+        );
+        assert!(
+            matches!(proposer_copy.decisions[0], PinnedDecision::ManaColor { .. }),
+            "reach-guard: the FIRST pin carries no hidden identity, so a check that stops at \
+             `decisions[0]` must look further to answer correctly"
+        );
+        assert!(
+            d5h_projected_declaration(&hidden_state, D5H_VIEWER).is_none(),
+            "CR 732.2b: ONE pin naming an object this viewer may not see drops the ENTIRE \
+             declaration, however many public pins precede it"
+        );
+
+        // ── the paired positive: the SAME two-pin shape with no hidden identity travels whole ──
+        let public_state = d5h_offer_decisions(|_hidden, slot| {
+            vec![
+                PinnedDecision::ManaColor {
+                    slot: slot.clone(),
+                    color: ManaColor::Blue,
+                },
+                PinnedDecision::Targets {
+                    slot: slot.clone(),
+                    targets: vec![TargetPin::Player(D5H_VIEWER)],
+                },
+            ]
+        });
+        assert_eq!(
+            d5h_projected_declaration(&public_state, D5H_VIEWER),
+            d5h_projected_declaration(&public_state, D5H_PROPOSER),
+            "a two-pin declaration with no hidden identity reaches the opponent UNCHANGED — \
+             without this arm a redactor that dropped every multi-pin declaration would pass the \
+             negative above"
         );
         assert!(
             d5h_projected_declaration(&public_state, D5H_VIEWER).is_some(),

@@ -158,10 +158,17 @@ impl LoopCertificate {
     }
 }
 
-/// CR 732.2a: the public, log/display summary a `WaitingFor::RespondToShortcut` carries
-/// to each responding opponent — "the player with priority suggests repeating this loop
-/// N times". Every field is derived from public board state (the confirmed certificate +
-/// the proposer's declared count), so there is no hidden information to redact.
+/// CR 732.2a: the log/display summary a `WaitingFor::RespondToShortcut` carries to each
+/// responding opponent — "the player with priority suggests repeating this loop N times".
+///
+/// Every field EXCEPT [`ShortcutProposal::template`] is derived from public board state (the
+/// confirmed certificate + the proposer's declared count). `template` is NOT: it is the
+/// proposer's `DecisionTemplate` moved here verbatim by `game::engine::handle_declare_shortcut`,
+/// and its pins can name objects in hidden zones. It is redacted per viewer in
+/// `game::visibility::filter_state_for_viewer` through the shared `pins_name_hidden_source`
+/// authority — all-or-nothing per CR 732.2b, the whole template is dropped and never trimmed.
+/// The blanket "no hidden information to redact" this doc used to claim is exactly what let
+/// this carrier drift from the `WaitingFor::LoopShortcut` offer it is copied from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShortcutProposal {
     /// CR 732.2a: the player with priority who proposed the shortcut. This is separate from

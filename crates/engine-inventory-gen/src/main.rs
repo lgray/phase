@@ -1,6 +1,6 @@
 //! Engine surface inventory generator.
 //!
-//! Walks `crates/engine/src/types/` via `syn`, enumerates every `pub enum` and
+//! Walks `crates/engine/src/` via `syn`, enumerates every `pub enum` and
 //! its variants with file:line, doc comments, and CR annotations. Auto-detects
 //! sibling-cluster smells (variants sharing a name root that look like
 //! parameterization candidates per the workspace "Parameterize, don't proliferate"
@@ -75,11 +75,20 @@ struct ClusterSmell {
 }
 
 /// Every directory whose `pub enum`s are engine surface a variant proposal must be able to
-/// discover. `types/` alone is not that set: CLAUDE.md makes an inventory grep the mandatory
-/// discoverability gate before proposing a variant, and `analysis/` holds public rules-bearing
-/// enums (`TargetSchedule`, `PinnedDecision`, `ReplayMode`, …) that the gate structurally could
-/// not see while this was a single directory.
-const TARGET_DIRS: &[&str] = &["crates/engine/src/types", "crates/engine/src/analysis"];
+/// discover. CLAUDE.md makes an inventory grep the mandatory discoverability gate before
+/// proposing a variant and scopes it to "any other engine enum", so the walk is the WHOLE
+/// engine crate rather than a hand-kept subset: `types/` + `analysis/` left 85 of the 647
+/// top-level `pub enum`s under `crates/engine/src` structurally invisible to the gate
+/// (`game/` 61, `ai_support/` 13, `parser/` 7, `database/` 4). One root is also shorter than
+/// the list it replaces.
+///
+/// MEASURED COST, disclosed rather than absorbed: the catalogue is a `BTreeMap` keyed on the
+/// enum IDENT, and across the whole crate exactly one ident collides — `LayoutKind`, declared
+/// in both `types/card.rs` and `database/synthesis.rs` — so 647 declarations yield 646 entries
+/// and the later walk order wins. The gate this feeds is an existence/parameterization lookup
+/// by name, which still answers for `LayoutKind`; a module-qualified key is the fix if a
+/// second collision ever makes the per-variant listing ambiguous.
+const TARGET_DIRS: &[&str] = &["crates/engine/src"];
 const OUTPUT: &str = "data/engine-inventory.json";
 
 fn main() -> Result<()> {
