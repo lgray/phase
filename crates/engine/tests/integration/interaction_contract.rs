@@ -3061,8 +3061,10 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
 /// `ConstraintUnsatisfied`. The positive reach-guard above would be UNSATISFIABLE there, and the
 /// cheapest-looking repair would be to loosen a fail-closed predicate. So the slot source here is
 /// a `ThisObject` naming a live battlefield creature, at that object's LIVE incarnation read from
-/// state (CR 400.7) — never a hard-coded one. `AllCopies` cannot take the CR 114.2 command-zone
-/// disjunct either: an emblem has no card, so only `ThisObject` participates.
+/// state (CR 400.7) — never a hard-coded one. `AllCopies` cannot take the CR 114.4 / CR 113.6p
+/// command-zone disjunct either: that disjunct is `ThisObject`-only, so a command-zone source
+/// named by CARD identity (a conspiracy, an Eminence commander — both of which DO have cards)
+/// still resolves `None` and fails closed. Measured residual, disclosed rather than closed.
 ///
 /// The three shipped `Shortcut` rows in this file are untouched by the split, but by INDEX
 /// ORDERING rather than by design: the file has exactly one candidate-selection site and it takes

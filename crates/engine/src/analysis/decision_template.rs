@@ -668,9 +668,11 @@ pub enum ReplayFailure {
     /// name neither. Parameterizing the existing variant keeps ONE "target went illegal"
     /// failure instead of growing a per-pin-kind sibling cluster.
     IllegalTarget { slot: DecisionSlot, pin: TargetPin },
-    /// CR 400.7: an ORDER pin's source (`Order`) is absent from the current battlefield
-    /// ⇒ the ordering template no longer matches ⇒ fall through to a normal manual
-    /// prompt. Raised ONLY for the `Order` pin kind, in any `ReplayMode`.
+    /// CR 400.7: an ORDER pin's source does not re-bind to a live ability instance —
+    /// [`resolve_ability_instance`] finds no object of that identity at that incarnation in a
+    /// zone its abilities function from (CR 113.6b) ⇒ the ordering template no longer matches
+    /// ⇒ fall through to a normal manual prompt. Raised ONLY for the `Order` pin kind, in any
+    /// `ReplayMode`.
     MissingSource { source: DecisionSource },
     /// A `RoundRobin`/`Piecewise` schedule has no entry covering this iteration index.
     ScheduleExhausted { slot: DecisionSlot },
@@ -710,12 +712,79 @@ fn resolve_pin(
     state: &GameState,
 ) -> Result<ConcreteDecision, ReplayFailure> {
     match pin {
-        // CR 603.3b: replay this source's trigger at its pinned ordering position. The
-        // source must still be on the battlefield or the ordering template no longer
-        // matches (CR 400.7).
+        // CR 603.3b: replay this source's trigger at its pinned ordering position. The pin
+        // re-binds to the SAME live ability instance (CR 400.7 incarnation), in a zone that
+        // instance's abilities function from (CR 113.6b; emblems CR 114.4, planes / schemes /
+        // conspiracies CR 113.6p) — not merely to something still on the battlefield.
+        //
+        // Resolving an `Order` pin GRANTS NO CAPABILITY, and the six points that consume
+        // `resolve`'s output split two ways. FIVE read the vec's ELEMENTS, and not one of them
+        // reads a `ConcreteDecision::Order`'s PAYLOAD: `inject_pinned_answer`'s two arms
+        // `find_map` for their own kind, `pinned_targets_for_source` and
+        // `pinned_mana_color_for_source` skip it in an `if let`, and the `ManaPayment` beat's
+        // exhaustive match aborts on its mere presence (`Order { .. }`, fields discarded). ONE
+        // — the per-cycle re-check in `materialize_fixed_shortcut` — reads only the `is_err()`
+        // VERDICT and discards the vec entirely. (LABELED CODE READ: the six consumption
+        // points, enumerated and read at both revisions.)
+        //
+        // At the five ELEMENT readers an ORDER-ONLY template still fails closed; what the
+        // re-bind changes is only WHERE: the abort moves out of `resolve()` and into the
+        // consumer — the trailing `Err(RecastAbort)` of the two `pinned_*` seams, the
+        // `find_map`'s `ok_or(RecastAbort)` in the injector, the match arm at the
+        // `ManaPayment` beat.
+        //
+        // At the VERDICT reader nothing moves downstream, because there is nothing downstream
+        // to move to: that gate consults only `resolve`'s `Result`. A pin that fails to
+        // re-bind breaks the cycle loop AT THAT ITERATION, committing only the cycles before
+        // it — and for a source the accessor never admits, that is iteration 0, so no cycle
+        // commits at all. Once every pin re-binds, the gate stops breaking; what happens after
+        // it is governed by the element readers above, not by this gate. That is true for
+        // every template shape, Order-only and mixed alike, because the gate never looks at an
+        // element.
+        //
+        // For a mixed template whose OTHER pins themselves resolve, the payoff lands at an
+        // element reader that has an element of its own kind. Two of the five answer from a
+        // `Targets` element — `pinned_targets_for_source` and the injector's
+        // `TriggerTargetSelection` arm — and the one measured here is
+        // `pinned_targets_for_source`: on the measured value `[Order @ command zone,
+        // Targets @ battlefield]`, with the `Order` pin re-binding and the `Targets` pin itself
+        // resolving, it now returns that `Targets` pin's own answer, where before the
+        // command-zone `Order` pin discarded it and the seam aborted. Where a pin does NOT
+        // resolve, the template still fails whole at every one of the six consumers, because
+        // `resolve` is a per-pin `Result` collect that each consumer gates on before reading
+        // anything: a mixed template carrying a `Targets` pin whose own target is not on the
+        // battlefield (CR 608.2b) aborts after this commit exactly as before it. It is NOT
+        // that every element reader succeeds on such a template: a reader that finds no
+        // element of its own kind (`pinned_mana_color_for_source`, the injector's `MayChoice`
+        // arm) still reaches its `Err(RecastAbort)`, and the `ManaPayment` beat still aborts on
+        // the `Order` element's mere presence — after this commit exactly as before it, for
+        // every mixed template.
+        //
+        // The bound that makes this capability-neutral at the `DeclareShortcut` wire is DRIVE
+        // EQUALITY, not submittability. When an `Order` element re-binds, resolving WITH it
+        // yields the identical answer to resolving without it at every one of the six
+        // consumers, EXCEPT at the `ManaPayment` beat, where its presence forces
+        // `Err(RecastAbort)` — strictly more fail-closed, never more permissive. When it does
+        // NOT re-bind, the `Result` collect fails the whole template at every consumer; this
+        // commit changes which sources re-bind, never that disposition. Where the same
+        // template minus its `Order` pins is itself submittable, that drive was therefore
+        // already expressible by omitting them. It is NOT always submittable: `pin_slot`
+        // addresses an `Order` pin to `{source, index 0}` and `validate_pins`' `Order` arm is
+        // the one arm that checks nothing, so an `Order` pin can be the sole cover of a
+        // required point, and dropping it then fails `predictability_gate`. That shape is
+        // pre-existing and zone-independent — this commit changes only which sources can be
+        // spelled into it, never the shape itself.
+        //
+        // No template's ACCEPTANCE changes here: `declaration_conforms` is
+        // `predictability_gate` + `validate_pins`, and neither reaches `resolve_pin`. What
+        // changes is what an already-accepted template does. (Pinned by
+        // `game::engine::stage2_injector_tests::a_command_zone_order_pin_stops_poisoning_the_template_without_gaining_capability`
+        // rows R/N/N2/P/P-minus; the structural clauses above are labeled code reads.)
         PinnedDecision::Order { source, pos } => {
-            let id = resolve_source(source, state).ok_or_else(|| ReplayFailure::MissingSource {
-                source: source.clone(),
+            let id = resolve_ability_instance(source, state).ok_or_else(|| {
+                ReplayFailure::MissingSource {
+                    source: source.clone(),
+                }
             })?;
             Ok(ConcreteDecision::Order {
                 source: id,
@@ -879,8 +948,14 @@ fn resolve_target(
 /// Re-bind a stored `DecisionSource` to a live battlefield `ObjectId`. The battlefield
 /// analogue of `GameState::is_priority_yielded`'s matching arms. KIND-AGNOSTIC: returns
 /// `None` on no match, and the CALLER maps that to the pin-kind-appropriate
-/// `ReplayFailure` (`Order` ⇒ `MissingSource`, a target ⇒ `IllegalTarget`) — the single
-/// seam where G2's per-pin-kind failure selection is realized.
+/// `ReplayFailure` (`Order` ⇒ `MissingSource`, a target ⇒ `IllegalTarget`) — G2's
+/// per-pin-kind failure selection.
+///
+/// The `Order` pin and the two `game::engine` slot seams enter through
+/// [`resolve_ability_instance`] rather than here; this function is that accessor's
+/// BATTLEFIELD DISJUNCT, and it remains the whole answer for the TARGET path
+/// ([`resolve_target`]'s `Object` arm and `evaluate_schedule`'s `Object` head), where the
+/// battlefield filter IS the CR 608.2b legality re-check.
 pub(crate) fn resolve_source(src: &DecisionSource, state: &GameState) -> Option<ObjectId> {
     match src {
         // CR 400.7: bind ONE incarnation — a re-entered permanent bumps `incarnation`
@@ -909,30 +984,54 @@ pub(crate) fn resolve_source(src: &DecisionSource, state: &GameState) -> Option<
     }
 }
 
-/// CR 608.2b + CR 114.2: re-bind a stored `DecisionSource` to the live ABILITY INSTANCE it
-/// identifies — a different question from [`resolve_source`]'s, and the reason this accessor
-/// exists rather than a second spelling at each caller.
+/// CR 608.2b + CR 114.4 + CR 113.6p: re-bind a stored `DecisionSource` to the live ABILITY
+/// INSTANCE it identifies — a different question from [`resolve_source`]'s, and the reason
+/// this accessor exists rather than a second spelling at each caller.
 ///
-/// NOT YET THE ONLY SPELLING, and the honest statement is the useful one: `game::engine`'s
-/// `pinned_targets_for_source` and `pinned_mana_color_for_source` ask this same question of a
-/// pin's SLOT source through bare `resolve_source`, so a command-zone-sourced slot does not
-/// match there and the drive fails closed to manual play. That is unchanged pre-existing
-/// behaviour, not something this accessor introduced; migrating those two widens what the
-/// drive accepts and so belongs to a commit that carries a row for it.
+/// THE ONLY SPELLING of that question, as of the commit that migrated the last two callers.
+/// Every production asker routes here: `resolve_pin`'s `Order` arm and `evaluate_schedule`'s
+/// `Seat` arm call it directly, and `game::engine::slot_source_prompted` is the `bool`-valued
+/// wrapper its four seams use — `inject_pinned_answer`'s `TriggerTargetSelection` and
+/// `MayChoice` `find_map` guards, `pinned_targets_for_source`, and
+/// `pinned_mana_color_for_source`. There is no bare `resolve_source` slot comparison left in
+/// `game::engine`.
 ///
 /// A *pin's* source identifies a TARGET, so [`resolve_source`] is deliberately
 /// BATTLEFIELD-ONLY and that filter IS the CR 608.2b legality re-check: a pinned target that
 /// left the battlefield must stop matching, and it must not be widened. A *slot's* source
-/// only identifies WHICH ability instance prompts, and CR 114.2 puts a planeswalker EMBLEM —
-/// "both owned and controlled by that player" — in the COMMAND zone, where it stays for the
-/// whole game and raises its triggers from. So the command-zone disjunct lives here, scoped
-/// to object identity plus the pinned CR 400.7 incarnation, exactly as the battlefield arm
-/// is.
+/// only identifies WHICH ability instance prompts. CR 114.2 puts an EMBLEM — "both owned and
+/// controlled by that player" — into the COMMAND zone; that is PLACEMENT. Whether the thing
+/// placed there can prompt at all is a separate rule, and it is per ABILITY rather than per
+/// object: CR 113.6b, "an ability that states which zones it functions in functions only from
+/// those zones". So the command-zone disjunct lives here, scoped to object identity plus the
+/// pinned CR 400.7 incarnation, exactly as the battlefield arm is.
 ///
-/// `AllCopies` is card-identity matching and an emblem has no card, so only `ThisObject`
-/// participates in the command disjunct. Graveyard / exile / hand sources still resolve
-/// `None` ⇒ every caller fails closed (`game::engine::slot_source_prompted` aborts the drive
-/// to manual play; `evaluate_schedule`'s `Seat` arm raises `IllegalTarget`).
+/// The class this disjunct serves is every command-zone-functioning ability source, not
+/// emblems alone — which is why the filter is NOT tightened to `obj.is_emblem`:
+///
+/// * **emblems** — CR 114.4, "abilities of emblems function in the command zone";
+/// * **planes, schemes, conspiracies** — CR 113.6p, whose enumeration is "emblems, plane
+///   cards, vanguard cards, scheme cards, and conspiracy cards"; `database::synthesis`'s
+///   `synthesize_planechase` / `synthesize_archenemy` / `synthesize_conspiracy` stamp
+///   `Zone::Command` onto each such face's triggers and statics;
+/// * **phenomena** — CR 901.7, "any abilities of a FACE-UP plane card or phenomenon card in
+///   the command zone function from that zone" (CR 113.6p's enumeration does not reach this
+///   card type; `synthesize_planechase` covers both faces);
+/// * **Eminence commanders** — an ordinary card whose own ability declares its zones, i.e.
+///   CR 113.6b again, opted in per definition rather than per card type.
+///
+/// `game::functioning_abilities` is where that opt-in is read (`active_zones` for a static,
+/// `trigger_zones` for a trigger), and it — not this accessor — decides whether an ability
+/// functions. A single object can carry a Command-functioning static and Battlefield-only
+/// triggers at once, so an object-level zone test could never be the functioning authority;
+/// identity is what this accessor selects on.
+///
+/// RESIDUAL, measured and disclosed rather than closed: the command disjunct is
+/// `ThisObject`-only. `AllCopies` matches by CARD identity and is battlefield-only, so a
+/// command-zone source spelled by card identity — a conspiracy, an Eminence commander — still
+/// resolves `None` and fails closed. Graveyard / exile / hand sources resolve `None` too ⇒
+/// every caller fails closed (`game::engine::slot_source_prompted` aborts the drive to manual
+/// play; `evaluate_schedule`'s `Seat` arm raises `IllegalTarget`).
 pub(crate) fn resolve_ability_instance(
     src: &DecisionSource,
     state: &GameState,
@@ -995,8 +1094,9 @@ fn evaluate_schedule(
         // `targeting::player_is_legal_target` (existence + CR 702.11c hexproof /
         // CR 702.18a shroud / CR 702.16b protection) rather than by existence alone. Its two
         // trailing arguments describe THE ABILITY INSTANCE that would name the seat, not a
-        // target object — hence `resolve_ability_instance` (which admits the CR 114.2 command
-        // zone) and NOT `resolve_source` (battlefield-only, and correctly so for a pin).
+        // target object — hence `resolve_ability_instance` (which admits the command zone —
+        // CR 114.4 / CR 113.6p) and NOT `resolve_source` (battlefield-only, and correctly so
+        // for a pin).
         //
         // A `None` ANYWHERE in this chain falls through to the `ok_or_else` below: with no
         // live ability instance the engine cannot certify that the object it would ask the
@@ -2179,7 +2279,7 @@ mod tests {
     // ── item-4 R1 — the parameterized announcement subject (`Ranking`) ──
 
     /// Insert an object into an arbitrary zone. `bf_object` above is battlefield-only, and
-    /// rows R1-h/i need the CR 114.2 command zone and the graveyard.
+    /// rows R1-h/i need the CR 114.4 command zone and the graveyard.
     fn zoned_object(state: &mut GameState, id: u64, zone: Zone) -> ObjectId {
         let oid = ObjectId(id);
         let mut o = GameObject::new(
@@ -2560,10 +2660,11 @@ mod tests {
     ///
     /// * **R1-g, battlefield** — resolves. The control arm; the only one of the three that can
     ///   fail for a boring reason (a dead harness).
-    /// * **R1-h, CR 114.2 command zone** — resolves. An emblem is "both owned and controlled by
-    ///   that player" and lives in the command zone for the whole game, raising its triggers
-    ///   from there. `crates/engine/tests/fixtures/dellian_emblem_conqueror_4p.json.gz` is a
-    ///   real board whose published `Targets` point names exactly such a source.
+    /// * **R1-h, command zone** — resolves. CR 114.2 puts an emblem — "both owned and
+    ///   controlled by that player" — there, and CR 114.4 is why its abilities function from
+    ///   there (CR 113.6p for the plane / scheme / conspiracy members of the same class).
+    ///   `crates/engine/tests/fixtures/dellian_emblem_conqueror_4p.json.gz` is a real board
+    ///   whose published `Targets` point names exactly such a source.
     /// * **R1-i, graveyard** — refuses. With no live ability instance the engine cannot certify
     ///   that the object it would ask the CR 702.11c question about still IS that instance
     ///   (CR 400.7 / CR 608.2b). The seat still EXISTS and a graveyard object still carries a
@@ -2612,15 +2713,15 @@ mod tests {
             "R1-g: the control arm resolves — the instrument can return a target"
         );
 
-        // R1-h: CR 114.2 command zone ⇒ resolves.
+        // R1-h: CR 114.4 / CR 113.6p command zone ⇒ resolves.
         assert_eq!(
             sole_target(
                 &resolve_from(this_obj(emblem.0, Some(3)), &state)
-                    .expect("CR 114.2: an emblem prompts from the command zone")
+                    .expect("CR 114.4: an emblem's abilities function in the command zone")
             ),
             ConcreteTarget::Player(seat),
             "R1-h: a `resolve_source`-derived arm answers None here and would refuse the \
-             emblem loop the drive built a CR 114.2 disjunct FOR"
+             emblem loop the drive built a CR 114.4 / CR 113.6p disjunct FOR"
         );
 
         // R1-i: graveyard ⇒ fails closed.
@@ -2659,6 +2760,155 @@ mod tests {
             ),
             "CR 400.7: the command arm re-binds ONE incarnation, exactly like the battlefield \
              arm — a re-created emblem does not certify the old pin"
+        );
+    }
+
+    /// **T4 — an `Order` pin resolves from the command zone through the PUBLIC [`resolve`],
+    /// and still fails closed everywhere else.**
+    ///
+    /// CR 603.3b is the pin's framing (replay this source's trigger at its pinned ordering
+    /// position); what changed is that "this source" is now re-bound by
+    /// [`resolve_ability_instance`] — same identity, same CR 400.7 incarnation, in a zone
+    /// that instance's abilities function from (CR 113.6b; emblems CR 114.4) — rather than
+    /// by `resolve_source`'s battlefield-only filter.
+    ///
+    /// **Resolving an `Order` pin grants NO capability.** No production consumer of
+    /// `resolve`'s output reads an `Order` element's payload: four element readers
+    /// discriminate on the variant and skip it, the `ManaPayment` beat aborts on its mere
+    /// presence, and the per-cycle re-check reads only the `is_err()` verdict. What the
+    /// re-bind buys is that a command-zone `Order` pin stops discarding every OTHER pin's
+    /// answer in the same template — `resolve` is a per-pin `Result` collect. That payoff and
+    /// its bound are pinned by
+    /// `game::engine::stage2_injector_tests::a_command_zone_order_pin_stops_poisoning_the_template_without_gaining_capability`,
+    /// whose five rows are the measurement; this row measures only the re-bind itself.
+    ///
+    /// # Non-vacuity / discrimination
+    ///
+    /// Rows a and b are one field apart (the zone) and both `Ok`; rows b/c and b/d are one
+    /// field apart and OPPOSITE; rows e and f are one field apart — the SAME object, moved —
+    /// and OPPOSITE. Each negative row asserts its subject exists in the intended state
+    /// before the negative assertion.
+    ///
+    /// REVERT-PROBES: revert the `Order` arm to `resolve_source` ⇒ row **b** fails alone;
+    /// widen the accessor's command disjunct to any zone ⇒ row **c** fails; drop the CR 400.7
+    /// incarnation conjunct ⇒ row **d** fails; widen the `AllCopies` arm to the command zone
+    /// ⇒ row **f** fails.
+    #[test]
+    fn an_order_pin_resolves_from_the_command_zone_and_still_fails_closed_elsewhere() {
+        let mut state = GameState::new_two_player(7);
+        let battlefield = zoned_object(&mut state, 900, Zone::Battlefield);
+        let command = zoned_object(&mut state, 901, Zone::Command);
+        let graveyard = zoned_object(&mut state, 902, Zone::Graveyard);
+        let copy = zoned_object(&mut state, 910, Zone::Battlefield);
+
+        let template = |source: DecisionSource| DecisionTemplate {
+            owner: PlayerId(0),
+            decisions: vec![PinnedDecision::Order { source, pos: 0 }],
+            replay: ReplayMode::Static,
+            key: tri_key(),
+        };
+        let order_source = |out: &[ConcreteDecision]| match out {
+            [ConcreteDecision::Order { source, .. }] => *source,
+            other => panic!("expected exactly one Order decision, got {other:?}"),
+        };
+
+        // row a — the shipped battlefield arm, and the control that `resolve` can answer Ok.
+        assert_eq!(
+            order_source(
+                &resolve(&template(this_obj(battlefield.0, Some(3))), 0, &state)
+                    .expect("row a: a live battlefield source still re-binds")
+            ),
+            battlefield,
+            "row a: control"
+        );
+
+        // row b — THE FIX. One field from a: the source's zone.
+        assert_eq!(
+            order_source(
+                &resolve(&template(this_obj(command.0, Some(3))), 0, &state).expect(
+                    "row b: CR 114.4 — an ability functioning in the command zone \
+                             re-binds there"
+                )
+            ),
+            command,
+            "row b: the CR 603.3b ordering pin no longer needs its source on the battlefield"
+        );
+
+        // row c — one field from b: the zone again, the other way.
+        assert_eq!(
+            state
+                .objects
+                .get(&graveyard)
+                .expect("reach-guard: row c's source object was built")
+                .zone,
+            Zone::Graveyard,
+            "reach-guard: row c's source exists and is in the graveyard, so its failure is \
+             about the ZONE and not about an absent object"
+        );
+        assert!(
+            matches!(
+                resolve(&template(this_obj(graveyard.0, Some(3))), 0, &state),
+                Err(ReplayFailure::MissingSource { .. })
+            ),
+            "row c: the zone set is {{Battlefield, Command}} and nothing else"
+        );
+
+        // row d — one field from b: the pinned CR 400.7 incarnation.
+        assert_ne!(
+            state
+                .objects
+                .get(&command)
+                .expect("reach-guard: row d's source object was built")
+                .incarnation,
+            2,
+            "reach-guard: the LIVE incarnation differs from the pinned one"
+        );
+        assert!(
+            matches!(
+                resolve(&template(this_obj(command.0, Some(2))), 0, &state),
+                Err(ReplayFailure::MissingSource { .. })
+            ),
+            "row d: CR 400.7 — a re-created source is a new object with no relation to the \
+             pinned one, in the command zone exactly as on the battlefield"
+        );
+
+        // rows e/f — ONE object, moved. The widening is `ThisObject`-only, so a
+        // card-identity-spelled command-zone source still fails closed: the disclosed
+        // residual, in executable form.
+        let by_card = YieldTarget::AllCopies {
+            card_id: CardId(910),
+            trigger_description: None,
+        };
+        assert_eq!(
+            order_source(
+                &resolve(&template(by_card.clone()), 0, &state)
+                    .expect("row e: the card's only copy is on the battlefield")
+            ),
+            copy,
+            "row e: the `AllCopies` arm's control positive"
+        );
+        state
+            .objects
+            .get_mut(&copy)
+            .expect("reach-guard: row f moves the SAME object row e just resolved")
+            .zone = Zone::Command;
+        assert_eq!(
+            state
+                .objects
+                .get(&copy)
+                .expect("reach-guard: the object still exists after the move")
+                .card_id,
+            CardId(910),
+            "reach-guard: row f differs from row e in ZONE ONLY — same object, same card id"
+        );
+        assert!(
+            matches!(
+                resolve(&template(by_card), 0, &state),
+                Err(ReplayFailure::MissingSource { .. })
+            ),
+            "row f: DISCLOSED RESIDUAL — the command disjunct is `ThisObject`-only, so a \
+             command-zone source named by CARD identity (a conspiracy, an Eminence \
+             commander) still fails closed. Disclosed, not closed."
         );
     }
 }
