@@ -125,12 +125,20 @@ pub(crate) fn capture_library_search_card_view(
 /// SAME predicate carriers 1 and 2 apply), so a template this viewer may not privately view is
 /// REMOVED entirely and there is nothing left for this predicate to answer about it.
 ///
-/// A `TargetPin::Player` needs no redaction, and that is an ENGINE property rather than a CR one —
-/// no rule makes seat identity public. This projection hides card identities and hidden-zone
-/// contents; the seat list itself is never per-viewer filtered (`filtered.players[..]` is redacted
-/// in place, never removed), so a `PlayerId` names something every viewer already has. CR 115.2 is
-/// cited for the narrower thing it actually says: a spell or ability may target a player when it
-/// specifies so, which is what makes a seat a legal pin value at all.
+/// A SEAT needs no redaction, and that is an ENGINE property rather than a CR one — no rule makes
+/// seat identity public. This projection hides card identities and hidden-zone contents; the seat
+/// list itself is never per-viewer filtered (`filtered.players[..]` is redacted in place, never
+/// removed), so a `PlayerId` names something every viewer already has. CR 115.2 is cited for the
+/// narrower thing it actually says: a spell or ability may target a player when it specifies so,
+/// which is what makes a seat a legal pin value at all.
+///
+/// STATED ABOUT THE SEAT RATHER THAN ABOUT ONE SPELLING, because a seat now has two of them:
+/// `TargetPin::Player` (the CR 115.10a CHOICE class) and `AnnouncementSubject::Seat` inside a
+/// `Ranking` (the CR 601.2c TARGET class). Redaction asks "does this name an identity this viewer
+/// may not see", a question the CHOICE/TARGET split does not bear on at all — which is why both
+/// arms below answer `false` for this ONE reason rather than two. It is also why the split cannot
+/// quietly open a leak here: the `AnnouncementSubject` match is wildcard-free, so a future subject
+/// kind that DOES name a hidden identity gets a compile error instead of a `false`.
 ///
 /// `target_hidden` is passed in rather than re-derived so that the declaration's object identities
 /// and the offer schema's legal targets are answered by ONE hidden-info authority; two derivations
@@ -156,8 +164,9 @@ fn pins_name_hidden_source(
     // the tail is a leak on exactly the same footing as one in the head.
     //
     // Wildcard-free over `AnnouncementSubject`: a future subject kind gets a compile-time
-    // visit here. The `Seat` arm is `false` for the reason already given above for
-    // `TargetPin::Player` — seat identity is public in this engine — and is not restated.
+    // visit here. The `Seat` arm is `false` for the SEAT reason given above — seat identity is
+    // public in this engine — which is stated about the seat rather than about either spelling
+    // precisely so both arms can cite it once.
     let subject_hidden = |subject: &AnnouncementSubject| match subject {
         AnnouncementSubject::Object(source) => source_hidden(source),
         AnnouncementSubject::Seat(_) => false,

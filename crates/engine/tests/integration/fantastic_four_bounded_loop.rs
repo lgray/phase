@@ -328,7 +328,8 @@ fn f4_pin_template(
     count: u32,
 ) -> engine::analysis::decision_template::DecisionTemplate {
     use engine::analysis::decision_template::{
-        DecisionGroupKey, DecisionTemplate, MayChoiceOption, PinnedDecision, ReplayMode, TargetPin,
+        AnnouncementSubject, DecisionGroupKey, DecisionTemplate, MayChoiceOption, PinnedDecision,
+        Ranking, ReplayMode, TargetPin, TargetSchedule,
     };
     DecisionTemplate {
         owner,
@@ -344,9 +345,17 @@ fn f4_pin_template(
                 // chosen when the trigger goes on the stack and re-checked for legality at
                 // each resolution. P1 is the constant seat `f4_drive_one_beat` aims at and is
                 // living on this board, so the pin stays legal for every driven cycle.
+                //
+                // CR 601.2c: "target opponent" makes this an ANNOUNCED target, so the
+                // reference spells the TARGET class — a one-entry `Ranking` naming the seat —
+                // and not the CR 115.10a `TargetPin::Player` choice class. This literal is
+                // the conformance oracle row D1 compares the live publisher against, so it
+                // has to track the publisher's spelling exactly.
                 DecisionPointKind::Targets { .. } => PinnedDecision::Targets {
                     slot: p.slot.clone(),
-                    targets: vec![TargetPin::Player(P1)],
+                    targets: vec![TargetPin::Scheduled(TargetSchedule::Constant(
+                        Ranking::one(AnnouncementSubject::Seat(P1)),
+                    ))],
                 },
                 other => panic!("unexpected point kind {other:?}"),
             })
@@ -672,6 +681,182 @@ fn r1_the_bounded_offer_fires_on_the_real_f4_dump() {
         schema.max_iterations < MAX_SHORTCUT_CYCLES_MIRROR,
         "the bound must be NARROWED, else this row is satisfied by the unnarrowed default \
          every pre-bounded offer carries"
+    );
+}
+
+/// **Row R2-a — REAL DUMP.** The MAINTAINED-INVARIANT row for the provenance split: after both
+/// TARGET-class producers moved to the ranked spelling, this real 4p board still fires its
+/// CR 732.2a bounded offer, still publishes a `Some` declaration, still carries the same bound —
+/// and Torch's `Targets` pin is now the CR 601.2c TARGET-class spelling.
+///
+/// # The two halves, and why one without the other is worthless
+///
+/// `declaration.is_some()` alone passes on the OLD spelling, so it cannot see the migration at
+/// all. The pin-VALUE assertion alone would pass on a publisher that emitted the right shape
+/// while the offer machinery had quietly broken. Both are asserted, on one board, in one run.
+///
+/// # Discrimination
+///
+/// REVERT-PROBE (the commit itself): restore `record_trigger_target_answer`'s player arm to
+/// `Some(TargetPin::Player(*pl))` ⇒ the journal holds the CHOICE-class spelling ⇒
+/// `build_bounded_declaration` copies it through ⇒ the pin-value assertion FAILS while
+/// `is_some()` stays green. That asymmetry is the row.
+///
+/// # The hostile arm, and the ORDERING that makes it reachable
+///
+/// The split's whole content is WHICH AUTHORITY judges a seat, so the hostile fixture makes the
+/// seat untargetable and requires the declaration to be REFUSED. The hexproof is applied AFTER
+/// the real drive has latched the pin, and the ordering is load-bearing rather than convenient:
+/// Torch's "target opponent" has three legal opponents on this board, so a board that was
+/// hexproofed BEFORE the drive would let the announcement name a different opponent, and the
+/// row would be measuring the announcement's choice instead of the pin's legality. Latch first,
+/// then remove the seat from the target set, is also the CR 115.7a shape — "the original target
+/// is unchanged, even if the original target is itself illegal by then".
+///
+/// PAIRED POSITIVE, same board, same instrument: `validate_pins` on the very same
+/// (schema, declaration) pair is `Ok` BEFORE the grantor lands. Without it, `Err` afterwards is
+/// equally explained by a seat pin that never validates at all.
+///
+/// REVERT-PROBE (hostile arm): the same restore of the producer ⇒ the pin is a
+/// `TargetPin::Player`, `resolve_target`'s CHOICE arm asks existence only, the hexproof is not
+/// consulted, `validate_pins` returns `Ok` ⇒ the refusal assertion FAILS. This is the real-dump
+/// sibling of the resolver-level row in `loop_shortcut_ranking.rs`.
+#[test]
+fn r2a_split_the_bounded_offer_still_publishes_a_ranked_seat_pin_and_refuses_a_hexproofed_one() {
+    use engine::analysis::decision_template::{
+        validate_pins, AnnouncementSubject, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+    };
+    use engine::types::ability::{ControllerRef, StaticDefinition, TypedFilter};
+    use engine::types::game_state::LayersDirty;
+    use engine::types::identifiers::CardId;
+    use engine::types::statics::StaticMode;
+    use engine::types::zones::Zone;
+
+    let mut state = load_f4();
+    let beat = drive_f4_to_offer(&mut state, 400)
+        .expect("REACH-GUARD: the bounded offer must still FIRE after the provenance split");
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    let schema = schema.clone();
+
+    assert_eq!(
+        schema.max_iterations, 18,
+        "MAINTAINED INVARIANT: the CR 704.5a-derived bound at beat {beat} is unchanged by a \
+         change of pin SPELLING — the split moves which authority judges a seat, not how much \
+         the loop consumes"
+    );
+
+    let declaration = offer_declaration(&state)
+        .expect("MAINTAINED INVARIANT: the offer still publishes a declaration");
+    assert_eq!(
+        declaration.owner, proposer,
+        "reach-guard: the published declaration is the proposer's own"
+    );
+
+    let target_slot = schema
+        .points
+        .iter()
+        .find(|p| matches!(p.kind, DecisionPointKind::Targets { .. }))
+        .map(|p| p.slot.clone())
+        .expect("reach-guard: the offer publishes Torch's CR 601.2c Targets point");
+    let pinned = declaration
+        .decisions
+        .iter()
+        .find_map(|pin| match pin {
+            PinnedDecision::Targets { slot, targets } if *slot == target_slot => Some(targets),
+            _ => None,
+        })
+        .expect("reach-guard: the declaration pins the published Targets slot");
+    assert_eq!(
+        *pinned,
+        vec![TargetPin::Scheduled(TargetSchedule::Constant(
+            Ranking::one(AnnouncementSubject::Seat(P1))
+        ))],
+        "CR 601.2c: Torch's announced opponent is a TARGET, so the published pin carries the \
+         TARGET-class spelling. Without this half the row passes unchanged on the pre-split \
+         `TargetPin::Player(P1)`"
+    );
+
+    // ── PAIRED POSITIVE: the pin is LEGAL against the offer's own schema, before the hostile
+    //    change lands ──
+    assert!(
+        validate_pins(&schema, &declaration, schema.max_iterations, &state).is_ok(),
+        "paired positive: the ranked pin validates at the FULL declared range on the \
+         un-hexproofed board — otherwise the refusal below is explained by a seat pin that \
+         never validates at all"
+    );
+
+    // ── HOSTILE: P1 gains hexproof from a permanent P1 controls, AFTER the pin is latched ──
+    let mut hostile = state.clone();
+    // Built with production `zones::create_object` rather than a raw `objects.insert`: a raw
+    // insert never joins `state.battlefield`, so the grantor would be invisible to
+    // `game_functioning_statics` and the hexproof would silently never apply.
+    let grantor = engine::game::zones::create_object(
+        &mut hostile,
+        CardId(9401),
+        P1,
+        "You Have Hexproof Source".to_string(),
+        Zone::Battlefield,
+    );
+    hostile
+        .objects
+        .get_mut(&grantor)
+        .expect("the grantor was just created")
+        .static_definitions = vec![StaticDefinition::new(StaticMode::Hexproof).affected(
+        engine::types::ability::TargetFilter::Typed(
+            TypedFilter::default().controller(ControllerRef::You),
+        ),
+    )]
+    .into();
+    // MEASURED, and the reach-guard below is what caught it: after a completed drive this
+    // board's `layers_dirty` is `Clean`, and `create_object` does not re-dirty it — so a bare
+    // `flush_layers` returns immediately, `refresh_static_mode_presence` never runs, and the
+    // O(1) `static_mode_presence` gate answers `false` for `Hexproof` no matter what the
+    // grantor carries. Marking the pass dirty is fixture bookkeeping, not a rule: it requests
+    // exactly the re-evaluation an ETB would have requested.
+    hostile.layers_dirty = LayersDirty::Full;
+    engine::game::layers::flush_layers(&mut hostile);
+
+    // The grant must actually bite at the TARGET seam, or the refusal below proves nothing.
+    // CR 702.11c is opponent-scoped, so it is asked with Torch's own controller as the source
+    // controller — the same question `evaluate_schedule`'s `Seat` arm asks.
+    let torch = resolve_by_name(&hostile, TORCH);
+    let torch_controller = hostile.objects[&torch].controller;
+    assert!(
+        engine::game::players::is_opponent(&hostile, P1, torch_controller),
+        "reach-guard: CR 702.11c only excludes OPPONENTS' spells and abilities, so Torch's \
+         controller {torch_controller:?} must be P1's opponent"
+    );
+    assert!(
+        engine::game::static_abilities::player_cannot_be_targeted_by(
+            &hostile,
+            P1,
+            torch,
+            torch_controller
+        ),
+        "reach-guard: the hexproof grant must bite at the TARGET seam for Torch's ability. \
+         grantor_on_battlefield={} player_has_hexproof={} — if the second is false while the \
+         first is true, the layers pass did not re-run and the O(1) `static_mode_presence` \
+         gate is stale",
+        hostile.battlefield.contains(&grantor),
+        engine::game::static_abilities::player_has_hexproof(&hostile, P1),
+    );
+    assert!(
+        !engine::game::static_abilities::player_cannot_be_targeted_by(
+            &hostile,
+            PlayerId(2),
+            torch,
+            torch_controller
+        ),
+        "reach-guard: a DIFFERENT seat on the same board is still targetable, so the exclusion \
+         above is the hexproof and not a blanket refusal"
+    );
+
+    assert!(
+        validate_pins(&schema, &declaration, schema.max_iterations, &hostile).is_err(),
+        "CR 601.2c + CR 702.11c: a TARGET-class seat that has become untargetable is an \
+         ILLEGAL pin value, so the declaration is REFUSED rather than driven at a wrong seat. \
+         Under the pre-split `TargetPin::Player` this returns Ok — existence alone — which is \
+         exactly the over-veto-free CHOICE authority the split moved this pin off"
     );
 }
 
@@ -1599,7 +1784,8 @@ fn c1_row1_the_may_journal_is_populated_at_the_f4_offer_under_the_proposers_own_
 #[test]
 fn c2a_row_t1_the_announced_target_is_journalled_at_the_f4_offers_published_slot() {
     use engine::analysis::decision_template::{
-        LoopAnswer, LoopAnswerValue, MayChoiceOption, TargetPin,
+        AnnouncementSubject, LoopAnswer, LoopAnswerValue, MayChoiceOption, Ranking, TargetPin,
+        TargetSchedule,
     };
 
     let mut state = load_f4();
@@ -1636,10 +1822,13 @@ fn c2a_row_t1_the_announced_target_is_journalled_at_the_f4_offers_published_slot
         assert_eq!(
             state.loop_answer(slot, proposer),
             Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
-                TargetPin::Player(P1)
+                TargetPin::Scheduled(TargetSchedule::Constant(Ranking::one(
+                    AnnouncementSubject::Seat(P1)
+                )))
             ]))),
             "CR 608.2b: the published Targets slot must hold the announcement the drive made \
-             (a constant CR 115.2 player target), under the PROPOSER's own key; slot \
+             (a constant CR 115.2 player target, in the CR 601.2c TARGET-class spelling), \
+             under the PROPOSER's own key; slot \
              {slot:?}, proposer {proposer:?}, journal holds {} entries",
             state.loop_answers_recorded()
         );
@@ -1677,15 +1866,18 @@ fn c2a_row_t1_the_announced_target_is_journalled_at_the_f4_offers_published_slot
 ///
 /// [`c2a_row_t1_the_announced_target_is_journalled_at_the_f4_offers_published_slot`] drives
 /// the shipped policy, which aims at P1. A writer that IGNORED the announcement and stored
-/// the constant `TargetPin::Player(P1)` would satisfy it exactly. Only a second seat
-/// discriminates that, and it must be a REAL drive: the seat is announced through production
-/// `apply()` at Torch's CR 601.2c choice, never injected.
+/// the constant seat P1 would satisfy it exactly. Only a second seat discriminates that, and it
+/// must be a REAL drive: the seat is announced through production `apply()` at Torch's
+/// CR 601.2c choice, never injected.
 ///
 /// # Discrimination
 ///
 /// In `record_trigger_target_answer`, replace the mapped `targets` with
-/// `vec![TargetPin::Player(PlayerId(1))]` ⇒ this row reds on the value while T1 stays GREEN.
-/// That asymmetry is the point: T1 alone cannot see this mutation.
+/// `vec![TargetPin::Scheduled(TargetSchedule::Constant(Ranking::one(AnnouncementSubject::Seat(PlayerId(1)))))]`
+/// ⇒ this row reds on the value while T1 stays GREEN. That asymmetry is the point: T1 alone
+/// cannot see this mutation. The mutant is spelled in the CURRENT producer spelling on purpose:
+/// the discrimination is seat-vs-seat and survives any re-spelling, but a recipe naming a
+/// spelling the producer no longer emits is a recipe that no longer compiles.
 ///
 /// # Reach-guards
 ///
@@ -1694,7 +1886,9 @@ fn c2a_row_t1_the_announced_target_is_journalled_at_the_f4_offers_published_slot
 /// publish a `Targets` point, and the aimed seat must differ from T1's.
 #[test]
 fn c2a_row_t1p_the_journalled_pin_follows_the_announced_seat_not_a_constant() {
-    use engine::analysis::decision_template::{LoopAnswer, LoopAnswerValue, TargetPin};
+    use engine::analysis::decision_template::{
+        AnnouncementSubject, LoopAnswer, LoopAnswerValue, Ranking, TargetPin, TargetSchedule,
+    };
 
     const AIMED: PlayerId = PlayerId(2);
     assert_ne!(
@@ -1733,7 +1927,9 @@ fn c2a_row_t1p_the_journalled_pin_follows_the_announced_seat_not_a_constant() {
         assert_eq!(
             state.loop_answer(slot, proposer),
             Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
-                TargetPin::Player(AIMED)
+                TargetPin::Scheduled(TargetSchedule::Constant(Ranking::one(
+                    AnnouncementSubject::Seat(AIMED)
+                )))
             ]))),
             "PROVENANCE: the journal must hold the seat this drive ANNOUNCED ({AIMED:?}), not \
              the seat the shipped policy happens to aim at; slot {slot:?}"
@@ -1756,9 +1952,10 @@ fn offer_declaration(
 /// CONFORMS to the reference shape this suite already accepts, on all three tracked dumps.
 ///
 /// ⚠ **THIS IS A CONFORMANCE ORACLE, NEVER A PROVENANCE ONE.** [`f4_pin_template`] is a pure
-/// function of `(schema, owner, count)` — it hard-codes `MayChoiceOption::Take` and
-/// `TargetPin::Player(P1)` and never reads the journal — so a consumer that ignored the journal
-/// entirely and emitted those same constants passes this row. That is exactly what
+/// function of `(schema, owner, count)` — it hard-codes `MayChoiceOption::Take` and the seat P1
+/// (as `Scheduled(Constant(Ranking::one(AnnouncementSubject::Seat(P1))))`, the CR 601.2c
+/// TARGET-class spelling the publisher emits) and never reads the journal — so a consumer that
+/// ignored the journal entirely and emitted those same constants passes this row. That is exactly what
 /// [`d1p_the_published_pin_follows_the_journal_not_a_constant`] and its P3 sibling are for.
 ///
 /// # The count trap, measured
@@ -1849,9 +2046,10 @@ fn d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
 ///
 /// # The asymmetry IS the row
 ///
-/// On the shipped P1 board, replacing the journalled targets with the constant
-/// `vec![TargetPin::Player(PlayerId(1))]` is GREEN — that mutant is indistinguishable there.
-/// At a second seat it is RED. Only a second seat discriminates a journal-blind consumer.
+/// On the shipped P1 board, replacing the journalled targets with the constant seat P1
+/// (`vec![TargetPin::Scheduled(TargetSchedule::Constant(Ranking::one(AnnouncementSubject::Seat(PlayerId(1)))))]`)
+/// is GREEN — that mutant is indistinguishable there. At a second seat it is RED. Only a second
+/// seat discriminates a journal-blind consumer.
 ///
 /// # Reach-guards, asserted BEFORE the claim
 ///
@@ -1860,7 +2058,7 @@ fn d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
 /// `Targets` point's journal entry already reads the aimed seat before the consumer is called.
 ///
 /// REVERT-PROBE: in `build_bounded_declaration`'s `(Targets, Targets)` arm, replace the
-/// journalled `targets` with `vec![TargetPin::Player(PlayerId(1))]` ⇒ this row flips on the pin
+/// journalled `targets` with the same constant-P1 vector named above ⇒ this row flips on the pin
 /// VALUE while D1 stays green.
 ///
 /// *What wrong implementation would still pass this row?* One that reads the journal but ignores
@@ -1879,8 +2077,15 @@ fn d1p_sib_the_published_pin_provenance_is_not_specific_to_one_second_seat() {
 
 fn d1p_provenance_at_seat(aimed: PlayerId) {
     use engine::analysis::decision_template::{
-        validate_pins, LoopAnswer, LoopAnswerValue, PinnedDecision, TargetPin,
+        validate_pins, AnnouncementSubject, LoopAnswer, LoopAnswerValue, PinnedDecision, Ranking,
+        TargetPin, TargetSchedule,
     };
+    // CR 601.2c: the one spelling this row expects at BOTH tiers — the journal's own write and
+    // the declaration the publisher derives from it. Built once so the two `assert_eq!`s below
+    // cannot drift apart; it is still a fully-determined VALUE, not a pattern.
+    let announced_seat = TargetPin::Scheduled(TargetSchedule::Constant(Ranking::one(
+        AnnouncementSubject::Seat(aimed),
+    )));
 
     assert_ne!(
         aimed, P1,
@@ -1915,7 +2120,7 @@ fn d1p_provenance_at_seat(aimed: PlayerId) {
     assert_eq!(
         state.loop_answer(&target_slot, proposer),
         Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
-            TargetPin::Player(aimed)
+            announced_seat.clone()
         ]))),
         "reach-guard: the journal holds the ANNOUNCED seat {aimed:?} at the published slot"
     );
@@ -1931,7 +2136,7 @@ fn d1p_provenance_at_seat(aimed: PlayerId) {
         .expect("the declaration pins the published Targets slot");
     assert_eq!(
         *pinned,
-        vec![TargetPin::Player(aimed)],
+        vec![announced_seat],
         "PROVENANCE: the declaration must pin the seat this drive ANNOUNCED ({aimed:?}), not the \
          seat the shipped policy happens to aim at"
     );

@@ -2966,8 +2966,13 @@ fn entry_announces(
     //   player shape while the ONE slot the announcement actually surfaces belongs to a
     //   chained sub-ability targeting OBJECTS (measured: head `LoseLife` at
     //   `TargetChoiceTiming::Resolution` contributing 0 slots + a chained
-    //   `LoseLife{Typed{[Creature]}}` contributing 1, legal set three objects). A
-    //   `TargetPin::Player` cannot specify such a choice, so publishing it would hand
+    //   `LoseLife{Typed{[Creature]}}` contributing 1, legal set three objects). NO SEAT PIN
+    //   can specify such a choice — neither spelling: not the CR 115.10a
+    //   `TargetPin::Player`, and not the CR 601.2c
+    //   `Scheduled(Constant(Ranking::one(AnnouncementSubject::Seat(..))))` the announcement
+    //   journal now emits, since both resolve to a `ConcreteTarget::Player` and the slot
+    //   wants objects. The provenance split changes which authority judges a seat, not what
+    //   a seat can denote, so this conjunct is untouched by it. Publishing anyway would hand
     //   gate (3)'s `continue` a slot no pin can answer.
     //
     // `Err` (no legal target, CR 603.3d) also yields `None` — fail-closed, matching this
@@ -3783,17 +3788,29 @@ fn until_lethal_fallback(
 /// is a `Ranking`, which lives INSIDE the step and never changes the count — this seam is
 /// type-only across that parameterization.
 ///
-/// DORMANT for every Stage-2 crownable loop (Ruling B) — and the REASON needed restating once
-/// a step's subject became parameterized. It is no longer "`TargetSchedule` rotates
-/// DecisionSource objects, not players": the type now admits `AnnouncementSubject::Seat`. The
-/// dormancy is a PRODUCER property instead, and it is measured rather than structural — no
-/// in-tree producer emits a `Seat` into a schedule, so every schedule this engine mints still
-/// rotates objects, `live_mandatory_loop_winner` crowns on PLAYER fallers, and an
-/// object-rotating loop produces no player faller. The only crownable >2p player drain pins
-/// ALL opponents every cycle (`TargetPin::Player` is constant, period 1). The seam is built
-/// for generality and a multi-cycle aggregation is fail-safe either way (a loop reaching the
-/// arm measures 1 cycle, finds no faller, does not crown), so a future seat-rotating producer
-/// changes what must be re-argued here, not what this function returns.
+/// DORMANT for every Stage-2 crownable loop (Ruling B) — and the REASON has now been restated
+/// TWICE, because each restatement was falsified by the next commit and the history is the
+/// useful part. (i) It was "`TargetSchedule` rotates DecisionSource objects, not players";
+/// parameterizing a step's subject admitted `AnnouncementSubject::Seat` and killed that.
+/// (ii) It was then "no in-tree producer emits a `Seat` into a schedule", which is FALSE as of
+/// the provenance split: `record_trigger_target_answer` and
+/// `game::interaction::materialize_loop_shortcut_response` both mint
+/// `Scheduled(TargetSchedule::Constant(Ranking::one(AnnouncementSubject::Seat(..))))` for a
+/// CR 601.2c announced seat.
+///
+/// (iii) The property that actually holds, and the one this function's return value depends on,
+/// is about ROTATION rather than about subjects: **no in-tree producer emits a multi-STEP
+/// schedule** (`RoundRobin` / `Piecewise`) **or a multi-entry `Ranking`**. Every seat-carrying
+/// schedule the engine mints is a one-step `Constant`, which lands on the `1` arm of the match
+/// below — the same `1` a `TargetPin::Player` lands on, so the split moved the spelling and not
+/// the period. `live_mandatory_loop_winner` crowns on PLAYER fallers, and a loop whose targets
+/// do not rotate produces no NEW player faller per cycle to aggregate. The only crownable >2p
+/// player drain pins ALL opponents every cycle (constant, period 1 — via the
+/// `Scheduled(Constant(_))` arm below since the split, via `TargetPin::Player(_)` before it,
+/// and those two arms return the same `1`). The seam is built for generality and a multi-cycle
+/// aggregation is fail-safe either way (a loop reaching the arm measures 1 cycle, finds no
+/// faller, does not crown), so a future ROTATING producer changes what must be re-argued here,
+/// not what this function returns.
 ///
 /// CR 732.2a SAFETY LIMIT: the returned period is clamped to `MAX_SHORTCUT_CYCLES`. Both
 /// consumers derive their `0..period` range from this one helper (`validate_pins` and
@@ -4634,7 +4651,8 @@ fn record_trigger_target_answer(
     targets: &[crate::types::ability::TargetRef],
 ) {
     use crate::analysis::decision_template::{
-        DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
+        AnnouncementSubject, DecisionSlot, LoopAnswer, LoopAnswerValue, Ranking, TargetPin,
+        TargetSchedule,
     };
     use crate::types::ability::TargetRef;
     let announced_slots = match &state.waiting_for {
@@ -4654,10 +4672,23 @@ fn record_trigger_target_answer(
             // CR 400.7: bind to the CURRENT incarnation, so a re-entered permanent stops
             // matching instead of being falsely replayed.
             TargetRef::Object(id) => object_decision_source(state, *id).map(TargetPin::ByIdentity),
-            // CR 732.2a: a seat is state-independent by construction — it can never denote
-            // "the newest copy" — so no iteration can turn the pin into a conditional
-            // action.
-            TargetRef::Player(pl) => Some(TargetPin::Player(*pl)),
+            // CR 601.2c: THIS PRODUCER IS TARGET CLASS, and the spelling says so. This
+            // writer is gated on `WaitingFor::TriggerTargetSelection`, i.e. on a CR 601.2c
+            // announcement ("the player announces … choices … including the targets"), so
+            // the seat it journals was TARGETED, not merely chosen. It therefore emits the
+            // announcement-subject spelling, whose resolver arm applies CR 702.11c hexproof /
+            // CR 702.18a shroud / CR 702.16b protection. A merely CHOSEN seat (CR 115.10a —
+            // e.g. the CR 701.34a proliferate arm) keeps `TargetPin::Player` and its
+            // existence-only authority; see that variant's own doc. Two questions, two
+            // spellings, and the spelling IS the provenance.
+            //
+            // CR 732.2a is still satisfied: a seat is state-independent by construction — it
+            // can never denote "the newest copy" — and a one-element `Ranking` under
+            // `Constant` is answered identically at every iteration index, so no iteration
+            // can turn the pin into a conditional action.
+            TargetRef::Player(pl) => Some(TargetPin::Scheduled(TargetSchedule::Constant(
+                Ranking::one(AnnouncementSubject::Seat(*pl)),
+            ))),
         })
         .collect::<Option<Vec<_>>>()
     else {
@@ -16191,7 +16222,8 @@ mod stage2_injector_tests {
     #[test]
     fn c2a_row_t5_an_unresolvable_target_abandons_the_whole_journal_write() {
         use crate::analysis::decision_template::{
-            DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
+            AnnouncementSubject, DecisionSlot, LoopAnswer, LoopAnswerValue, Ranking, TargetPin,
+            TargetSchedule,
         };
         use crate::types::ability::TargetRef;
 
@@ -16236,7 +16268,11 @@ mod stage2_injector_tests {
                 TargetPin::ByIdentity(
                     object_decision_source(&state, live).expect("the live target resolves")
                 ),
-                TargetPin::Player(P1),
+                // CR 601.2c: an ANNOUNCED seat, so the TARGET-class spelling — not
+                // `TargetPin::Player`, which is the CR 115.10a choice class.
+                TargetPin::Scheduled(TargetSchedule::Constant(Ranking::one(
+                    AnnouncementSubject::Seat(P1)
+                ))),
             ]))),
             "CR 601.2c: the pins are journalled in ANNOUNCEMENT ORDER, and CR 400.7 binds \
              the object member to its current incarnation"
@@ -16307,7 +16343,8 @@ mod stage2_injector_tests {
     #[test]
     fn c2a_row_f2_a_multi_slot_announcement_is_refused_rather_than_collapsed() {
         use crate::analysis::decision_template::{
-            DecisionSlot, LoopAnswer, LoopAnswerValue, TargetPin,
+            AnnouncementSubject, DecisionSlot, LoopAnswer, LoopAnswerValue, Ranking, TargetPin,
+            TargetSchedule,
         };
         use crate::types::ability::TargetRef;
 
@@ -16324,7 +16361,10 @@ mod stage2_injector_tests {
         assert_eq!(
             state.loop_answer(&slot, P0),
             Some(LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![
-                TargetPin::Player(P1)
+                // CR 601.2c TARGET class: an announced seat takes the ranked spelling.
+                TargetPin::Scheduled(TargetSchedule::Constant(Ranking::one(
+                    AnnouncementSubject::Seat(P1)
+                )))
             ]))),
             "a single-slot announcement is exactly what this journal key describes"
         );
@@ -17998,11 +18038,29 @@ mod stage2_injector_tests {
                 // hunks are inside `#[cfg(test)]` below this producer. The total (38) and the
                 // partition (5/8/25) both fired GREEN on the run that caught this; only this third
                 // assert panicked.
-                // ⚠ REBASE #3: `:12637 ⇒ :12636`, located by content digest, offset from
+                //
+                // ⚠ item-4 R2 (the seat-pin provenance split): `:12575 ⇒ :12606`, `+31`, LOCAL.
+                // Resolved BY CONTENT FIRST per the protocol above: the sha256 recorded there
+                // matched exactly ONE line under a whole-file scan, at `:12606`, and the nearest
+                // preceding `fn` is still `begin_pending_trigger_target_selection` (`:12472`) with
+                // none intervening. Arithmetic CHECK afterwards: `git diff -U0` against the parent
+                // shows exactly four hunks above the old coordinate — `+5` on `entry_announces`'
+                // withhold rationale (a comment), `+12` on `shortcut_drive_period`'s dormancy doc
+                // (a comment), and `+1`/`+13` inside `record_trigger_target_answer` (its `use`
+                // list and the `TargetRef::Player` arm re-spelled to
+                // `Scheduled(Constant(Ranking::one(AnnouncementSubject::Seat(..))))`) — summing to
+                // `+31`, and `12575 + 31 = 12606` exactly. SET PRESERVATION: two of the four hunks
+                // are pure comment; the other two are a `use` list and ONE expression inside a
+                // `LoopAnswerValue::Targets` mapping, which assigns no `state.waiting_for` and
+                // mints no `OptionalEffectChoice` prompt. This round's remaining `engine.rs` hunks
+                // are all inside `#[cfg(test)] mod stage2_injector_tests`, BELOW this producer. The
+                // total (38) and the partition (5/8/25) both fired GREEN on the run that caught
+                // this — only this third assert (`:17342`) panicked.
+                // ⚠ REBASE #3: `:12668 ⇒ :12667`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
-                // ⚠ REBASE #3: `:12636 ⇒ :12641`, located by content digest, offset from
+                // ⚠ REBASE #3: `:12667 ⇒ :12672`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
-                "game/engine.rs:12641".to_string(),
+                "game/engine.rs:12672".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \

@@ -3028,6 +3028,185 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
     );
 }
 
+/// **Row R2-f — the HUMAN ingress emits the same spelling as the engine's own producer.**
+///
+/// CR 601.2c: one shape per point kind, whoever submitted it. `materialize_loop_shortcut_response`
+/// decodes a submitted player candidate on a `Targets` point into
+/// `Scheduled(Constant(Ranking::one(AnnouncementSubject::Seat(..))))` — the same value
+/// `game::engine::record_trigger_target_answer` journals for an announced seat — and an OBJECT
+/// candidate on the SAME point into `TargetPin::ByIdentity`, unchanged.
+///
+/// # Discrimination
+///
+/// Migrate only the engine's producer and leave this decoder emitting `TargetPin::Player(*player)`
+/// ⇒ one `Targets` point yields two different pin spellings depending on WHO submitted the
+/// answer, and the seat assertion below FAILS while the object assertion stays green. That
+/// asymmetry — one arm moving, one not — is what makes this a spelling row rather than a
+/// smoke test.
+///
+/// # Paired positive reach-guard
+///
+/// The decoder must still ACCEPT end to end: `resolve_interaction_response` returns
+/// `Ok(GameAction::DeclareShortcut { .. })`, which means `declaration_conforms` ran
+/// `predictability_gate` and `validate_pins` at range 1 and passed. Without it the row would be
+/// satisfied by a decoder that had simply started refusing everything.
+///
+/// # ⚠ WHY THIS ROW BUILDS ITS OWN BOARD (measured, not preference)
+///
+/// The file's other shortcut rows share a schema whose only slot source is
+/// `AllCopies { CardId(9001) }`, which no battlefield object carries. After the split a `Seat`
+/// pin on such a slot resolves through `resolve_ability_instance` ⇒ `resolve_source`'s
+/// `AllCopies` arm (`.filter(|o| o.zone == Zone::Battlefield && o.card_id == *card_id)`) ⇒
+/// `None` ⇒ `IllegalTarget` ⇒ `validate_pins` ⇒ `declaration_conforms == false` ⇒
+/// `ConstraintUnsatisfied`. The positive reach-guard above would be UNSATISFIABLE there, and the
+/// cheapest-looking repair would be to loosen a fail-closed predicate. So the slot source here is
+/// a `ThisObject` naming a live battlefield creature, at that object's LIVE incarnation read from
+/// state (CR 400.7) — never a hard-coded one. `AllCopies` cannot take the CR 114.2 command-zone
+/// disjunct either: an emblem has no card, so only `ThisObject` participates.
+///
+/// The three shipped `Shortcut` rows in this file are untouched by the split, but by INDEX
+/// ORDERING rather than by design: the file has exactly one candidate-selection site and it takes
+/// `candidate_ids[0]`, which on the one board offering both is the OBJECT. That vector must not
+/// be reordered.
+///
+/// This row's own board deliberately exercises BOTH indices, and the two arms key each other: if
+/// the projection's candidate order did not follow `legal_targets`, both assertions would fail
+/// rather than one silently passing on the wrong candidate.
+#[test]
+fn loop_shortcut_human_ingress_emits_the_target_class_spelling_for_a_submitted_seat() {
+    use engine::analysis::decision_template::{
+        AnnouncementSubject, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+    };
+
+    let mut scenario = GameScenario::new();
+    let target = scenario.add_creature(P0, "R2f Ability Source", 1, 1).id();
+    let mut runner = scenario.build();
+    let incarnation = runner.state().objects[&target].incarnation;
+    let slot = DecisionSlot {
+        source: engine::types::game_state::YieldTarget::ThisObject {
+            source_id: target,
+            incarnation: Some(incarnation),
+            trigger_description: None,
+        },
+        index: 0,
+    };
+    runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
+        proposer: P0,
+        predicted_winner: Some(P0),
+        certificate: engine::analysis::loop_check::LoopCertificate {
+            unbounded: Vec::new(),
+            win_kind: engine::analysis::loop_check::WinKind::Advantage,
+            mandatory: false,
+            residual_board_delta: engine::analysis::resource::BoardDelta::default(),
+            per_cycle: None,
+        },
+        schema: ShortcutDecisionSchema {
+            iteration_count: IterationCount::Fixed(2),
+            max_iterations: ShortcutDecisionSchema::default().max_iterations,
+            points: vec![DecisionPoint {
+                slot: slot.clone(),
+                kind: DecisionPointKind::Targets {
+                    // Index 0 is the OBJECT, index 1 is the SEAT. Both are exercised below.
+                    legal_targets: vec![TargetRef::Object(target), TargetRef::Player(P1)],
+                    min_targets: 1,
+                    max_targets: 1,
+                    ordered: true,
+                },
+            }],
+            convoke_tappable_count: 0,
+        },
+        declaration: None,
+    };
+    bind(runner.state_mut(), "r2f-human-seat-pin");
+
+    let view = priority_view(runner.state());
+    let InteractionOpportunityResponse::Schema {
+        spec: InteractionResponseSpec::Shortcut { points, .. },
+        ..
+    } = &view.opportunities[0].response
+    else {
+        panic!("the loop shortcut offer uses a shortcut schema");
+    };
+    assert_eq!(
+        points.len(),
+        1,
+        "reach-guard: exactly one published point, so the pin below addresses the point this \
+         row is about"
+    );
+    assert_eq!(
+        points[0].candidate_ids.len(),
+        2,
+        "reach-guard: BOTH legal targets must be offered as candidates, else one of the two \
+         arms below is unreachable"
+    );
+
+    let decode = |candidate: usize| {
+        resolve_interaction_response(
+            runner.state(),
+            P0,
+            &InteractionSubmission {
+                interaction_id: view.opportunities[0].interaction_id.clone(),
+                response: InteractionResponse::Shortcut {
+                    decision: InteractionShortcutDecision::AcceptSuggested,
+                    pins: vec![InteractionShortcutPin {
+                        group: 0,
+                        choice_ids: vec![points[0].candidate_ids[candidate].clone()],
+                    }],
+                },
+            },
+        )
+    };
+
+    // ── THE CLAIM: a submitted SEAT decodes to the CR 601.2c TARGET-class spelling ──
+    let GameAction::DeclareShortcut {
+        template: Some(seat_template),
+        ..
+    } = decode(1).expect(
+        "paired positive: the human ingress still ACCEPTS end to end — `declaration_conforms` \
+         ran `predictability_gate` and `validate_pins` at range 1 and passed",
+    )
+    else {
+        panic!("a shortcut acceptance carrying pins materializes a template");
+    };
+    assert_eq!(
+        seat_template.decisions,
+        vec![PinnedDecision::Targets {
+            slot: slot.clone(),
+            targets: vec![TargetPin::Scheduled(TargetSchedule::Constant(
+                Ranking::one(AnnouncementSubject::Seat(P1))
+            ))],
+        }],
+        "CR 601.2c: a candidate on a `Targets` point is an ANNOUNCED target, so a submitted \
+         seat takes the TARGET-class spelling — the same value the engine's own producer \
+         journals. `TargetPin::Player(P1)` here would select the authority by WHO SUBMITTED \
+         the answer rather than by WHAT IT IS"
+    );
+
+    // ── THE SIBLING: an OBJECT candidate on the SAME point is unchanged ──
+    let GameAction::DeclareShortcut {
+        template: Some(object_template),
+        ..
+    } = decode(0).expect("the object candidate is accepted on the same point")
+    else {
+        panic!("a shortcut acceptance carrying pins materializes a template");
+    };
+    assert_eq!(
+        object_template.decisions,
+        vec![PinnedDecision::Targets {
+            slot,
+            targets: vec![TargetPin::ByIdentity(
+                engine::types::game_state::YieldTarget::ThisObject {
+                    source_id: target,
+                    incarnation: Some(incarnation),
+                    trigger_description: None,
+                }
+            )],
+        }],
+        "the migration re-spelled the SEAT branch only: an object candidate still binds by \
+         CR 400.7 identity"
+    );
+}
+
 #[test]
 fn coin_flip_sequence_supports_multi_keep_and_rejects_duplicates() {
     let mut state = GameState::new_two_player(42);

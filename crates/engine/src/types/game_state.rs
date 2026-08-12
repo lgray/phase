@@ -11094,10 +11094,16 @@ pub enum WaitingFor {
         /// Built by `game::engine::build_bounded_declaration`; `None` on every other mint.
         ///
         /// LATCHED at offer time, not a live view: it is a snapshot of the answers the
-        /// detection window observed. `TargetPin::Player` is state-independent and
+        /// detection window observed. Latching the pin SET latches no per-iteration OUTCOME,
+        /// because no pin kind stores one: a SEAT designation is state-independent under
+        /// either spelling — the CR 115.10a `TargetPin::Player` and the CR 601.2c
+        /// `Scheduled(Constant(Ranking::one(AnnouncementSubject::Seat(..))))` alike — and
         /// `TargetPin::ByIdentity` re-resolves live per iteration inside
-        /// `analysis::decision_template::resolve` (CR 608.2b), so latching the pin SET here
-        /// latches no per-iteration outcome.
+        /// `analysis::decision_template::resolve` (CR 608.2b). The ranked spelling is
+        /// re-resolved live too, and it is the STRONGER case rather than a new exposure: its
+        /// arm re-asks CR 702.11c hexproof / CR 702.18a shroud / CR 702.16b protection at
+        /// every iteration, so a latched TARGET-class seat can stop resolving mid-drive where
+        /// a latched CHOICE-class one could not.
         ///
         /// `#[serde(default)]` follows `schema`'s precedent on this same variant. Consequence,
         /// chosen rather than discovered: a pre-declaration save decodes with `None`, which is
@@ -30461,5 +30467,115 @@ mod tests {
             "each seat reads back its OWN announcement, uncorrupted by the other's"
         );
         assert_eq!(state.loop_answer(&slot, seat_b), Some(answer_b));
+    }
+
+    /// **Row T3-R — the latch, exercised with the MIGRATED spelling.** CR 601.2c: after the
+    /// provenance split an announced seat is journalled as
+    /// `Scheduled(Constant(Ranking::one(AnnouncementSubject::Seat(..))))`, and this row
+    /// asserts the [`LoopAnswer::Conflicted`] latch behaves identically on that value.
+    ///
+    /// # Why it exists — the gap it closes
+    ///
+    /// [`c2a_row_t3_a_differing_target_answer_latches_conflicted_idempotently_and_seat_locally`]
+    /// and its T4 sibling HAND-BUILD their `LoopAnswer`s, so the producer migration cannot
+    /// reach them and they stay green unmodified. That leaves the latch never exercised with
+    /// the value production now writes: equality preservation across the re-spelling would
+    /// rest on derived structural `PartialEq` alone — sound, but unpinned. This pins it.
+    ///
+    /// # Discrimination
+    ///
+    /// Two independent mutants, each caught by a different arm, and BOTH RUN rather than
+    /// reasoned about (the mutation must target EQUALITY, not the producer — this row builds
+    /// its own values, so a producer mutation cannot reach it):
+    ///
+    /// * hand-write `impl PartialEq for Ranking` as `self.head() == other.head()` — the
+    ///   head-only shape `evaluate_schedule` uses to RESOLVE, and therefore the plausible
+    ///   wrong reading ⇒ arm (b)'s same-head/different-tail pair compares EQUAL ⇒ no latch ⇒
+    ///   **arm (b) FAILS while arms (a) and (c) stay green**, because (a)'s heads already
+    ///   differ. The tail is the NEXT episode's pre-declaration, so two proposals agreeing
+    ///   only about this episode are not the same answer;
+    /// * hand-write `impl PartialEq for AnnouncementSubject` with `(Seat(_), Seat(_)) => true`
+    ///   ⇒ two DIFFERENT seats compare equal ⇒ arm (a)'s own reach-guard fires first and
+    ///   names the vacuity by hand, which is the reach-guard doing its job rather than the
+    ///   latch assertion doing it late.
+    ///
+    /// # Paired positive
+    ///
+    /// Arm (c) records the SAME ranking twice and requires the entry to stay `Uniform`. Without
+    /// it, a latch that fired on every write — i.e. an equality that is always false — would
+    /// satisfy both negative arms.
+    #[test]
+    fn c2a_row_t3r_the_conflicted_latch_is_unchanged_by_the_migrated_seat_spelling() {
+        use crate::analysis::decision_template::{
+            AnnouncementSubject, DecisionSlot, LoopAnswer, LoopAnswerValue, Ranking, TargetPin,
+            TargetSchedule,
+        };
+
+        let ranked = |subjects: Vec<AnnouncementSubject>| {
+            LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Scheduled(
+                TargetSchedule::Constant(
+                    Ranking::new(subjects).expect("non-empty, duplicate-free by construction"),
+                ),
+            )]))
+        };
+        let seat = |p: u8| AnnouncementSubject::Seat(PlayerId(p));
+
+        // ── (a) two rankings naming DIFFERENT seats ⇒ Conflicted ──
+        let mut state = journal_state();
+        let slot_a = DecisionSlot::target(journal_source(913));
+        let aimed_at_1 = ranked(vec![seat(1)]);
+        let aimed_at_2 = ranked(vec![seat(2)]);
+        assert_ne!(
+            aimed_at_1, aimed_at_2,
+            "reach-guard: the two announcements must DIFFER as values, else the latch has \
+             nothing to fire on and every arm below is vacuous"
+        );
+        state.record_loop_answer(slot_a.clone(), PlayerId(0), aimed_at_1.clone());
+        assert_eq!(
+            state.loop_answer(&slot_a, PlayerId(0)),
+            Some(aimed_at_1.clone()),
+            "paired positive: the FIRST ranked answer is journalled as Uniform before any \
+             disagreement, so a writer that stored nothing cannot reach the latch"
+        );
+        state.record_loop_answer(slot_a.clone(), PlayerId(0), aimed_at_2);
+        assert_eq!(
+            state.loop_answer(&slot_a, PlayerId(0)),
+            Some(LoopAnswer::Conflicted),
+            "CR 732.2a: two announcements naming different seats are a disagreement in the \
+             ranked spelling exactly as they were in the CHOICE-class one"
+        );
+
+        // ── (b) SAME head, DIFFERENT tail ⇒ still Conflicted ──
+        //
+        // The tail is a pre-declaration for the NEXT episode (CR 732.2a), not decoration, so
+        // two proposals that agree only about this episode are not the same answer. This is
+        // the arm a head-only equality would lose.
+        let slot_b = DecisionSlot::target(journal_source(914));
+        let head1_tail2 = ranked(vec![seat(1), seat(2)]);
+        let head1_tail3 = ranked(vec![seat(1), seat(3)]);
+        state.record_loop_answer(slot_b.clone(), PlayerId(0), head1_tail2.clone());
+        assert_eq!(
+            state.loop_answer(&slot_b, PlayerId(0)),
+            Some(head1_tail2),
+            "reach-guard: the multi-entry ranking round-trips as Uniform first"
+        );
+        state.record_loop_answer(slot_b.clone(), PlayerId(0), head1_tail3);
+        assert_eq!(
+            state.loop_answer(&slot_b, PlayerId(0)),
+            Some(LoopAnswer::Conflicted),
+            "equality over a `Ranking` is STRUCTURAL, not head-only: the tail is the next \
+             episode's pre-declaration, so differing tails are differing answers"
+        );
+
+        // ── (c) the SAME ranking twice ⇒ still Uniform ──
+        let slot_c = DecisionSlot::target(journal_source(915));
+        state.record_loop_answer(slot_c.clone(), PlayerId(0), aimed_at_1.clone());
+        state.record_loop_answer(slot_c.clone(), PlayerId(0), aimed_at_1.clone());
+        assert_eq!(
+            state.loop_answer(&slot_c, PlayerId(0)),
+            Some(aimed_at_1),
+            "the latch fires on DISAGREEMENT, not on repetition — without this arm an \
+             always-false equality would satisfy (a) and (b)"
+        );
     }
 }
