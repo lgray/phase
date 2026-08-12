@@ -3211,8 +3211,11 @@ fn entry_announces(
 /// with an unbindable slot), so the schema can only ever under-publish.
 ///
 /// Class served: every proposer-controlled triggered ability on the stack whose declared
-/// target is a player — never a named card. Command-zone sources (CR 114.2 emblems) are
-/// included; [`slot_source_prompted`] is the matching half at replay time.
+/// target is a player — never a named card. Command-zone sources are included — every
+/// command-zone-functioning ability source, not emblems alone (emblem CR 114.4; plane, scheme,
+/// conspiracy CR 113.6p; a face-up phenomenon CR 901.7; an Eminence commander per its own
+/// ability's declared zones, CR 113.6b) — and [`slot_source_prompted`] is the matching half at
+/// replay time.
 ///
 /// PER SOURCE, NOT PER ENTRY: N stack entries from ONE source mint N byte-identical
 /// `DecisionSlot`s (real boards reach 35 entries on one source), and the sub-index
@@ -4202,14 +4205,18 @@ fn inject_pinned_answer(
     }
 }
 
-/// CR 608.2b + CR 114.2: does this SLOT's source identify the ability instance that raised
-/// the prompt carrying `source_id`?
+/// CR 608.2b + CR 114.4 + CR 113.6p: does this SLOT's source identify the ability instance
+/// that raised the prompt carrying `source_id`?
 ///
 /// The zone reasoning — why a SLOT's source admits the command zone while a PIN's source is
 /// battlefield-only, and why graveyard / exile / hand still fail closed — now lives on
 /// [`crate::analysis::decision_template::resolve_ability_instance`], the single accessor for
 /// "which live ability instance is this". This call site is the identity comparison against
 /// the prompting object; a `None` there means the caller aborts to manual play.
+///
+/// FOUR production seams ask through here: `inject_pinned_answer`'s `TriggerTargetSelection`
+/// and `MayChoice` `find_map` guards, and the drive's `pinned_targets_for_source` /
+/// `pinned_mana_color_for_source`.
 fn slot_source_prompted(
     state: &GameState,
     src: &crate::analysis::decision_template::DecisionSource,
@@ -4711,17 +4718,22 @@ fn record_trigger_target_answer(
 /// WHOLE `template` means ANY pin that no longer resolves to a live legal object (a target left
 /// its zone) aborts the whole beat fail-closed — a broken loop never certifies. `Err(RecastAbort)`
 /// if no `Targets` pin's source matches `source_id`.
+///
+/// "Whose slot source re-binds to `source_id`" is asked through [`slot_source_prompted`], the one
+/// spelling of that question — so the slot may name any ability instance the beat's prompt could
+/// have come from (CR 608.2b keeps the pinned TARGETS battlefield-only through `resolve_source`;
+/// the SLOT's source is a different question and admits the command zone).
 fn pinned_targets_for_source(
     template: &crate::analysis::decision_template::DecisionTemplate,
     iteration: crate::analysis::decision_template::IterationIndex,
     clone: &GameState,
     source_id: ObjectId,
 ) -> Result<Vec<crate::analysis::decision_template::ConcreteTarget>, RecastAbort> {
-    use crate::analysis::decision_template::{resolve, resolve_source, ConcreteDecision};
+    use crate::analysis::decision_template::{resolve, ConcreteDecision};
     let decisions = resolve(template, iteration, clone).map_err(|_| RecastAbort)?;
     for d in decisions {
         if let ConcreteDecision::Targets { slot, targets } = d {
-            if resolve_source(&slot.source, clone) == Some(source_id) {
+            if slot_source_prompted(clone, &slot.source, source_id) {
                 return Ok(targets);
             }
         }
@@ -4731,17 +4743,21 @@ fn pinned_targets_for_source(
 
 /// FIX-1 (CR 608.2d): the recorded mana color of the `ManaColor` pin whose slot source is
 /// `source_id` (the driving mana ability's source). `Err(RecastAbort)` if unpinned.
+///
+/// The slot-source question is [`slot_source_prompted`]'s, exactly as in
+/// [`pinned_targets_for_source`]: CR 608.2d is the choice this pin records, and which ability
+/// instance offered that choice is what the predicate answers.
 fn pinned_mana_color_for_source(
     template: &crate::analysis::decision_template::DecisionTemplate,
     iteration: crate::analysis::decision_template::IterationIndex,
     clone: &GameState,
     source_id: ObjectId,
 ) -> Result<crate::types::mana::ManaColor, RecastAbort> {
-    use crate::analysis::decision_template::{resolve, resolve_source, ConcreteDecision};
+    use crate::analysis::decision_template::{resolve, ConcreteDecision};
     let decisions = resolve(template, iteration, clone).map_err(|_| RecastAbort)?;
     for d in decisions {
         if let ConcreteDecision::ManaColor { slot, color } = d {
-            if resolve_source(&slot.source, clone) == Some(source_id) {
+            if slot_source_prompted(clone, &slot.source, source_id) {
                 return Ok(color);
             }
         }
@@ -15810,8 +15826,8 @@ mod bounded_declaration_tests {
 mod stage2_injector_tests {
     use super::*;
     use crate::analysis::decision_template::{
-        DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate, IterationCount,
-        PinnedDecision, ReplayMode, TargetPin, TargetSchedule,
+        ConcreteTarget, DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate,
+        IterationCount, PinnedDecision, ReplayMode, TargetPin, TargetSchedule,
     };
     use crate::game::scenario::GameScenario;
     use crate::types::game_state::{LoopDetectionMode, YieldTarget};
@@ -16418,13 +16434,14 @@ mod stage2_injector_tests {
         );
     }
 
-    /// CR 114.2 + CR 608.2b: a pinned SLOT whose source is a command-zone emblem must match
+    /// CR 114.4 + CR 608.2b: a pinned SLOT whose source is a command-zone emblem must match
     /// the prompt that emblem raised; a graveyard or exile source must NOT.
     ///
     /// This is the zone predicate `inject_pinned_answer`'s `TriggerTargetSelection` arm
-    /// dispatches on. Its production drive lands with the bounded offer in a later commit,
-    /// so it is pinned here at the seam — the shipped BATTLEFIELD arm is exercised
-    /// end-to-end by `injector_routes_pinned_targets_per_source` above and by the
+    /// dispatches on, and it now has two further production callers on the drive side:
+    /// `pinned_targets_for_source` and `pinned_mana_color_for_source` ask the same question
+    /// through the same `slot_source_prompted` predicate. The shipped BATTLEFIELD arm is
+    /// exercised end-to-end by `injector_routes_pinned_targets_per_source` above and by the
     /// `kilo_live_offer_from_real_dump` rows, and this row asserts that arm is unchanged.
     ///
     /// The zone disjuncts this row pins now live one call down, in
@@ -16460,10 +16477,11 @@ mod stage2_injector_tests {
             slot_source_prompted(&state, &pin(battlefield, Some(3)), battlefield),
             "the shipped CR 608.2b battlefield arm must be untouched"
         );
-        // NEW: CR 114.2 — an emblem lives in the command zone and prompts from there.
+        // CR 114.2 — an emblem lives in the command zone; CR 114.4 — its abilities function
+        // there, which is why the slot may prompt from there.
         assert!(
             slot_source_prompted(&state, &pin(emblem, Some(3)), emblem),
-            "CR 114.2: a command-zone emblem's slot must match the prompt it raised"
+            "CR 114.4: a command-zone emblem's slot must match the prompt it raised"
         );
         // Fail-closed: every other off-battlefield zone still misses ⇒ `RecastAbort`.
         assert!(
@@ -16484,6 +16502,277 @@ mod stage2_injector_tests {
         assert!(
             !slot_source_prompted(&state, &pin(emblem, Some(3)), battlefield),
             "the matcher is keyed on identity, not merely on zone"
+        );
+    }
+
+    /// **T1 — CR 608.2b + CR 114.4: the drive's tap-cost / proliferate seam matches a
+    /// COMMAND-zone slot source, and still refuses every other way of missing.**
+    ///
+    /// `pinned_targets_for_source` asks "which pinned `Targets` belongs to the ability
+    /// instance that raised this beat?" through [`slot_source_prompted`] — the predicate
+    /// `inject_pinned_answer` already used — instead of through the battlefield-only
+    /// `resolve_source`. CR 114.4 (CR 113.6p for the plane / scheme / conspiracy members of
+    /// the same class) is why an ability may prompt from the command zone at all; CR 608.2b
+    /// is why the pinned TARGETS stay battlefield-only, which row c pins.
+    ///
+    /// # Non-vacuity / discrimination
+    ///
+    /// Every row is ONE field from row b and comes out OPPOSITE it. An input that never
+    /// arrived cannot produce that table — it would answer the same way on both sides of the
+    /// field. Each negative row asserts its subject exists in the intended zone BEFORE the
+    /// negative assertion, so it provably fails for the stated reason rather than because the
+    /// object was never built.
+    ///
+    /// REVERT-PROBES: restore `resolve_source` at this seam ⇒ row **b** fails alone; widen
+    /// `resolve_source` to admit `Zone::Command` ⇒ row **c** fails; widen the accessor's
+    /// command disjunct to any zone ⇒ row **d** fails; drop the CR 400.7 incarnation
+    /// conjunct ⇒ row **e** fails; make the accessor answer "any command-zone object" ⇒ row
+    /// **f** fails.
+    #[test]
+    fn pinned_targets_for_source_matches_a_command_zone_slot_and_still_refuses_elsewhere() {
+        use crate::types::zones::Zone;
+        let mut state = GameScenario::new_n_player(2, 7).build().state().clone();
+        let battlefield = place(&mut state, 900, Zone::Battlefield);
+        let command = place(&mut state, 901, Zone::Command);
+        let graveyard = place(&mut state, 902, Zone::Graveyard);
+        let other_command = place(&mut state, 904, Zone::Command);
+        let command_target = place(&mut state, 905, Zone::Command);
+
+        let live_src = |id: ObjectId| object_decision_source(&state, id).expect("placed above");
+        let bf_src = live_src(battlefield);
+        let cmd_src = live_src(command);
+        let gy_src = live_src(graveyard);
+        let stale_cmd_src = YieldTarget::ThisObject {
+            source_id: command,
+            incarnation: Some(2),
+            trigger_description: None,
+        };
+        let bf_target = TargetPin::ByIdentity(live_src(battlefield));
+        let cmd_target = TargetPin::ByIdentity(live_src(command_target));
+
+        let template = |slot_source: &YieldTarget, target: &TargetPin| DecisionTemplate {
+            owner: P0,
+            decisions: vec![PinnedDecision::Targets {
+                slot: DecisionSlot {
+                    source: slot_source.clone(),
+                    index: 0,
+                },
+                targets: vec![target.clone()],
+            }],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::UntilLethal,
+            },
+            key: DecisionGroupKey::from_sources(
+                std::slice::from_ref(slot_source),
+                DecisionKind::LoopChoice,
+            ),
+        };
+
+        // row a — the shipped battlefield arm, unchanged. Also the control that proves the
+        // instrument can return targets at all.
+        assert_eq!(
+            pinned_targets_for_source(&template(&bf_src, &bf_target), 0, &state, battlefield)
+                .expect("row a: a battlefield-sourced slot still answers its own beat"),
+            vec![ConcreteTarget::Object(battlefield)],
+            "row a: control"
+        );
+
+        // row b — THE FIX. One field from row a: the slot source's ZONE.
+        assert_eq!(
+            pinned_targets_for_source(&template(&cmd_src, &bf_target), 0, &state, command)
+                .expect("row b: CR 114.4 — a command-zone ability instance's slot matches"),
+            vec![ConcreteTarget::Object(battlefield)],
+            "row b: the command-zone slot source answers the beat it raised"
+        );
+
+        // row c — one field from b: the TARGET's zone. CR 608.2b is not widened.
+        assert_eq!(
+            state
+                .objects
+                .get(&command_target)
+                .expect("reach-guard: row c's target object was built")
+                .zone,
+            Zone::Command,
+            "reach-guard: row c's TARGET is in the command zone, so its Err is about the \
+             target path and not about a missing object"
+        );
+        assert!(
+            pinned_targets_for_source(&template(&cmd_src, &cmd_target), 0, &state, command)
+                .is_err(),
+            "row c: CR 608.2b — a pinned TARGET off the battlefield stays illegal; widening \
+             the SLOT question does not widen the TARGET question"
+        );
+
+        // row d — one field from b: the slot source's zone again, the other way.
+        assert_eq!(
+            state
+                .objects
+                .get(&graveyard)
+                .expect("reach-guard: row d's slot-source object was built")
+                .zone,
+            Zone::Graveyard,
+            "reach-guard: row d's slot source exists and is in the graveyard"
+        );
+        assert!(
+            pinned_targets_for_source(&template(&gy_src, &bf_target), 0, &state, graveyard)
+                .is_err(),
+            "row d: the zone set is {{Battlefield, Command}} and nothing else — a graveyard \
+             source aborts the drive to manual play"
+        );
+
+        // row e — one field from b: the pinned CR 400.7 incarnation.
+        assert_ne!(
+            state
+                .objects
+                .get(&command)
+                .expect("reach-guard: row e's slot-source object was built")
+                .incarnation,
+            2,
+            "reach-guard: the LIVE incarnation differs from the pinned one, so row e's Err \
+             is about CR 400.7 and not about an absent object"
+        );
+        assert!(
+            pinned_targets_for_source(&template(&stale_cmd_src, &bf_target), 0, &state, command)
+                .is_err(),
+            "row e: CR 400.7 — a re-created source is a new object and does not answer the \
+             old pin, in the command zone exactly as on the battlefield"
+        );
+
+        // row f — one field from b: the identity being asked about.
+        for (id, label) in [(command, "the pinned"), (other_command, "the asking")] {
+            assert_eq!(
+                state
+                    .objects
+                    .get(&id)
+                    .unwrap_or_else(|| panic!("reach-guard: {label} object was built"))
+                    .zone,
+                Zone::Command,
+                "reach-guard: BOTH command-zone objects exist, so row f cannot pass by \
+                 absence — only by identity"
+            );
+        }
+        assert!(
+            pinned_targets_for_source(&template(&cmd_src, &bf_target), 0, &state, other_command)
+                .is_err(),
+            "row f: the matcher is keyed on IDENTITY, not on 'some object in the command \
+             zone' — a second command-zone source does not inherit this slot's answer"
+        );
+    }
+
+    /// **T2 — CR 608.2d + CR 114.4: the same migration at the mana-color seam.**
+    ///
+    /// `pinned_mana_color_for_source` records the CR 608.2d color choice a mana ability
+    /// offered; which ability instance offered it is [`slot_source_prompted`]'s question, now
+    /// asked with the same spelling as at the tap-cost seam. Rows a/b/d/e/f mirror T1's; a
+    /// `ManaColor` pin carries no targets, so T1's target-legality row c has no analogue.
+    ///
+    /// # Non-vacuity / discrimination
+    ///
+    /// Same shape as T1: one field from row b, opposite verdict, every negative row reach-
+    /// guarded on its subject's existence and zone.
+    ///
+    /// REVERT-PROBES: restore `resolve_source` at this seam ⇒ row **b** fails alone; the
+    /// accessor-side probes (any-zone widening, dropped incarnation conjunct, zone-not-
+    /// identity matching) fail rows **d**, **e**, **f** respectively.
+    #[test]
+    fn pinned_mana_color_for_source_matches_a_command_zone_slot_and_still_refuses_elsewhere() {
+        use crate::types::mana::ManaColor;
+        use crate::types::zones::Zone;
+        let mut state = GameScenario::new_n_player(2, 7).build().state().clone();
+        let battlefield = place(&mut state, 900, Zone::Battlefield);
+        let command = place(&mut state, 901, Zone::Command);
+        let graveyard = place(&mut state, 902, Zone::Graveyard);
+        let other_command = place(&mut state, 904, Zone::Command);
+
+        let live_src = |id: ObjectId| object_decision_source(&state, id).expect("placed above");
+        let bf_src = live_src(battlefield);
+        let cmd_src = live_src(command);
+        let gy_src = live_src(graveyard);
+        let stale_cmd_src = YieldTarget::ThisObject {
+            source_id: command,
+            incarnation: Some(2),
+            trigger_description: None,
+        };
+
+        let template = |slot_source: &YieldTarget| DecisionTemplate {
+            owner: P0,
+            decisions: vec![PinnedDecision::ManaColor {
+                slot: DecisionSlot {
+                    source: slot_source.clone(),
+                    index: 0,
+                },
+                color: ManaColor::Blue,
+            }],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::UntilLethal,
+            },
+            key: DecisionGroupKey::from_sources(
+                std::slice::from_ref(slot_source),
+                DecisionKind::LoopChoice,
+            ),
+        };
+
+        // row a — shipped battlefield arm + the control that the instrument returns a color.
+        assert_eq!(
+            pinned_mana_color_for_source(&template(&bf_src), 0, &state, battlefield)
+                .expect("row a: a battlefield-sourced slot still answers its own beat"),
+            ManaColor::Blue,
+            "row a: control"
+        );
+
+        // row b — THE FIX, one field from a: the slot source's zone.
+        assert_eq!(
+            pinned_mana_color_for_source(&template(&cmd_src), 0, &state, command)
+                .expect("row b: CR 114.4 — a command-zone ability instance's slot matches"),
+            ManaColor::Blue,
+            "row b: the command-zone slot source answers the CR 608.2d choice it offered"
+        );
+
+        // row d — one field from b: the slot source's zone, the other way.
+        assert_eq!(
+            state
+                .objects
+                .get(&graveyard)
+                .expect("reach-guard: row d's slot-source object was built")
+                .zone,
+            Zone::Graveyard,
+            "reach-guard: row d's slot source exists and is in the graveyard"
+        );
+        assert!(
+            pinned_mana_color_for_source(&template(&gy_src), 0, &state, graveyard).is_err(),
+            "row d: a graveyard source aborts the drive to manual play"
+        );
+
+        // row e — one field from b: the pinned CR 400.7 incarnation.
+        assert_ne!(
+            state
+                .objects
+                .get(&command)
+                .expect("reach-guard: row e's slot-source object was built")
+                .incarnation,
+            2,
+            "reach-guard: the LIVE incarnation differs from the pinned one"
+        );
+        assert!(
+            pinned_mana_color_for_source(&template(&stale_cmd_src), 0, &state, command).is_err(),
+            "row e: CR 400.7 — a stale incarnation does not match in the command zone either"
+        );
+
+        // row f — one field from b: the identity being asked about.
+        for (id, label) in [(command, "the pinned"), (other_command, "the asking")] {
+            assert_eq!(
+                state
+                    .objects
+                    .get(&id)
+                    .unwrap_or_else(|| panic!("reach-guard: {label} object was built"))
+                    .zone,
+                Zone::Command,
+                "reach-guard: BOTH command-zone objects exist, so row f cannot pass by absence"
+            );
+        }
+        assert!(
+            pinned_mana_color_for_source(&template(&cmd_src), 0, &state, other_command).is_err(),
+            "row f: identity, not zone, selects whose color this is"
         );
     }
 
@@ -16931,7 +17220,7 @@ mod stage2_injector_tests {
         );
     }
 
-    /// CR 114.2 + CR 608.2b, on a REAL restored 4p board: `inject_pinned_answer` accepts a
+    /// CR 114.4 + CR 608.2b, on a REAL restored 4p board: `inject_pinned_answer` accepts a
     /// pin whose slot source is the COMMAND-zone emblem (obj 541) that raised the prompt.
     ///
     /// This is the production-path row for [`slot_source_prompted`]. The seam is live
@@ -16992,7 +17281,7 @@ mod stage2_injector_tests {
         let src = object_decision_source(&state, EMBLEM).expect("the emblem object exists");
         // The control that makes this row non-vacuous: the shipped battlefield-only
         // `resolve_source` does NOT match this source, so an accept can only come from the
-        // CR 114.2 disjunct.
+        // CR 114.4 disjunct.
         assert_eq!(
             crate::analysis::decision_template::resolve_source(&src, &state),
             None,
@@ -17018,7 +17307,7 @@ mod stage2_injector_tests {
         // ── ACCEPT: the command-zone pin answers the prompt on the real board ──
         let mut work = state.clone();
         inject_pinned_answer(&mut work, Some(&template(src.clone())), 0, &prompt)
-            .expect("CR 114.2: the emblem's own pin must answer the prompt it raised");
+            .expect("CR 114.4: the emblem's own pin must answer the prompt it raised");
         assert_ne!(
             work.waiting_for, prompt,
             "the prompt was actually consumed, not silently skipped"
@@ -17059,6 +17348,307 @@ mod stage2_injector_tests {
         assert!(
             inject_pinned_answer(&mut other_work, Some(&template(other_src)), 0, &prompt).is_err(),
             "a pin for another source does not answer the emblem's prompt"
+        );
+    }
+
+    /// **T3 — the slot-source VALUE is one a REAL board produces, and the migrated drive
+    /// seam accepts it** (CR 114.4 + CR 608.2b, on the restored 4p dellian board).
+    ///
+    /// Modelled on `a_command_zone_pin_answers_a_real_restored_boards_prompt` above, whose
+    /// structure — reach guards read off the loaded board, then a `resolve_source == None`
+    /// non-vacuity control, then the accept — is reused here at the OTHER consumer.
+    ///
+    /// # What this row does NOT claim
+    ///
+    /// It does not claim that a shipped card drives a command-zone-sourced tap-cost /
+    /// mana-color / proliferate beat *in a recorded loop period* today. It claims the
+    /// slot-source VALUE is one a real board produces and that `pinned_targets_for_source`
+    /// accepts it.
+    ///
+    /// # Non-vacuity / discrimination
+    ///
+    /// The control is load-bearing: `resolve_source` answers `None` for this very source on
+    /// this very board, so row a's `Ok` can only have come from the command-zone disjunct.
+    /// Rows b–e are each one field from row a and come out opposite. Every object is chosen
+    /// by PREDICATE off the loaded board (except `EMBLEM`, already a module const), so a
+    /// re-derived fixture cannot silently blank a row.
+    ///
+    /// REVERT-PROBES: restore `resolve_source` at this seam ⇒ row **a** fails; widen the
+    /// accessor to any zone ⇒ row **b** fails; drop the CR 400.7 conjunct ⇒ row **c** fails;
+    /// match on zone rather than identity ⇒ rows **d** and **e** fail.
+    #[test]
+    fn a_command_zone_slot_from_the_real_4p_board_answers_the_recast_beat() {
+        use crate::types::zones::Zone;
+        let state = load_dellian_dump();
+
+        // ── reach guards, all read off the loaded board ──
+        let emblem = state
+            .objects
+            .get(&EMBLEM)
+            .expect("reach-guard: dump B carries the emblem object");
+        assert_eq!(
+            emblem.zone,
+            Zone::Command,
+            "reach-guard: CR 114.2 puts the emblem in the command zone"
+        );
+        assert!(
+            emblem.is_emblem,
+            "reach-guard: CR 114.4 is the rule under test, so the object must really be an \
+             emblem"
+        );
+        let emblem_incarnation = emblem.incarnation;
+
+        let lowest_battlefield = state
+            .objects
+            .values()
+            .filter(|o| o.zone == Zone::Battlefield)
+            .min_by_key(|o| o.id.0)
+            .map(|o| o.id)
+            .expect("reach-guard: the board has battlefield objects to target");
+        let graveyard_object = state
+            .objects
+            .values()
+            .filter(|o| o.zone == Zone::Graveyard)
+            .min_by_key(|o| o.id.0)
+            .map(|o| o.id)
+            .expect("reach-guard: the board has a graveyard object for row b");
+
+        let src = object_decision_source(&state, EMBLEM).expect("the emblem object exists");
+        // Non-vacuity control: the shipped battlefield-only `resolve_source` does NOT match
+        // this source, so an accept can only come from the CR 114.4 disjunct.
+        assert_eq!(
+            crate::analysis::decision_template::resolve_source(&src, &state),
+            None,
+            "CR 608.2b: `resolve_source` is battlefield-only and must stay so"
+        );
+
+        let template = |slot_source: YieldTarget| DecisionTemplate {
+            owner: P0,
+            decisions: vec![PinnedDecision::Targets {
+                slot: DecisionSlot {
+                    source: slot_source.clone(),
+                    index: 0,
+                },
+                targets: vec![TargetPin::ByIdentity(object_decision_source_of(
+                    &state,
+                    lowest_battlefield,
+                ))],
+            }],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::UntilLethal,
+            },
+            key: DecisionGroupKey::from_sources(&[slot_source], DecisionKind::LoopChoice),
+        };
+
+        // row a — positive: the real board's command-zone source answers its own beat.
+        assert_eq!(
+            pinned_targets_for_source(&template(src.clone()), 0, &state, EMBLEM)
+                .expect("CR 114.4: the emblem's own slot answers the beat it raised"),
+            vec![ConcreteTarget::Object(lowest_battlefield)],
+            "row a: the drive seam accepts a slot source a REAL board produced"
+        );
+
+        // row b — one field: a graveyard source off the same board.
+        let gy_src = object_decision_source_of(&state, graveyard_object);
+        assert!(
+            pinned_targets_for_source(&template(gy_src), 0, &state, graveyard_object).is_err(),
+            "row b: the zone set is {{Battlefield, Command}}; a graveyard source still aborts"
+        );
+
+        // row c — one field: the pinned CR 400.7 incarnation.
+        let stale = YieldTarget::ThisObject {
+            source_id: EMBLEM,
+            incarnation: Some(emblem_incarnation + 1),
+            trigger_description: None,
+        };
+        assert!(
+            pinned_targets_for_source(&template(stale), 0, &state, EMBLEM).is_err(),
+            "row c: CR 400.7 — a re-created emblem does not answer the old pin"
+        );
+
+        // row d — one field: the identity being asked about.
+        assert!(
+            pinned_targets_for_source(&template(src.clone()), 0, &state, lowest_battlefield)
+                .is_err(),
+            "row d: identity, not zone, selects whose slot this is"
+        );
+
+        // row e — MULTI-AUTHORITY hostile fixture. This board holds TWO command-zone
+        // objects, and the second is not an emblem: object 400's two TRIGGERS declare
+        // `trigger_zones == ["Battlefield"]` while its cost-reduction STATIC declares
+        // `active_zones ∋ Command`; one object, two abilities, two different zones of
+        // function (CR 113.6b). The accessor admits it by zone either way, so only identity
+        // can exclude it.
+        let commander = state
+            .objects
+            .values()
+            .filter(|o| o.zone == Zone::Command && o.id != EMBLEM)
+            .min_by_key(|o| o.id.0)
+            .map(|o| o.id)
+            .expect("reach-guard: dump B carries a SECOND command-zone object");
+        assert!(
+            !state.objects[&commander].is_emblem,
+            "reach-guard: the second command-zone object is not an emblem, so row e is a \
+             genuine multi-authority case and not a duplicate of row a"
+        );
+        let commander_src = object_decision_source_of(&state, commander);
+        assert!(
+            pinned_targets_for_source(&template(commander_src), 0, &state, EMBLEM).is_err(),
+            "row e: a DIFFERENT command-zone ability instance's slot must not answer the \
+             emblem's beat — zone admits both, identity separates them"
+        );
+    }
+
+    /// `object_decision_source` with the test's own existence guard folded in, so a row that
+    /// picks its object by predicate cannot silently degrade into `None`.
+    fn object_decision_source_of(state: &GameState, id: ObjectId) -> YieldTarget {
+        object_decision_source(state, id)
+            .unwrap_or_else(|| panic!("reach-guard: object {id:?} is on the loaded board"))
+    }
+
+    /// **T6 — the capability-neutrality pin.** Five rows on ONE board with ONE template
+    /// value each, pinning what resolving a command-zone `Order` pin does and does not buy.
+    ///
+    /// Both sides of the Order-only claim return `Err(RecastAbort)` — a unit struct — so the
+    /// two abort points are not distinguishable by return value. The instrument therefore
+    /// observes the abort point INDIRECTLY, through a second pin in the same template, using
+    /// the mechanism `resolve` is built on: it is a per-pin `Result` collect, so one failing
+    /// pin discards every other pin's answer.
+    ///
+    /// | row | template | seam | expect |
+    /// |---|---|---|---|
+    /// | **R** (delivery) | `order_only` | `decision_template::resolve` | `Ok`, carrying the `Order` element |
+    /// | **N** (neutrality, `ok_or` half) | `order_only`, the SAME value | `pinned_targets_for_source` | `Err(RecastAbort)` |
+    /// | **N2** (neutrality, `find_map` half) | `order_only`, the SAME value | `inject_pinned_answer` | `Err(RecastAbort)` |
+    /// | **P** (poisoning removed) | `mixed` | `pinned_targets_for_source` | `Ok` |
+    /// | **P-minus** (omit-the-pin equivalence) | `mixed` minus its `Order` element | `pinned_targets_for_source` | `Ok`, EQUAL to P's |
+    ///
+    /// # Why no row is vacuous
+    ///
+    /// * **P vs N** differ by exactly one field — the presence of the `Targets` pin — and
+    ///   come out OPPOSITE.
+    /// * **N and N2 are revert-INSENSITIVE on purpose, and that insensitivity IS the
+    ///   measurement**: "the beat still fails closed" is the claim that the verdict does not
+    ///   move. **R is their reach guard.** R calls the same `resolve` with the same
+    ///   `(template, 0, &state)` triple those two seams call internally, so `R == Ok` proves
+    ///   the input arrived and resolved; N's and N2's `Err` can then only be the
+    ///   post-resolve fall-through, never "the input never arrived". **This is the
+    ///   load-bearing condition of the whole test: R, N and N2 must use the byte-same
+    ///   template VALUE on the same `&state` VALUE.** If R built its own template, N and N2
+    ///   would become indistinguishable from non-delivery and this row would read as proof
+    ///   while measuring nothing.
+    /// * **P-minus** is the security row. Its discriminating assertion is the EQUALITY, not
+    ///   the `Ok`: it fails the moment an `Order` element contributes anything to the answer.
+    ///   `mixed_no_order` is `mixed` minus exactly its `Order` element, built from the same
+    ///   `targets_pin` value on the same board — if the two templates were constructed
+    ///   independently, the `assert_eq!` would measure two hand-written templates agreeing
+    ///   instead of the element contributing nothing.
+    ///
+    /// # What this does NOT measure
+    ///
+    /// ACCEPTANCE. Whether `mixed_no_order` is *submittable* is `declaration_conforms`'
+    /// question; no row here asks it, and the answer is not always yes (an `Order` pin can be
+    /// the sole cover of a required point, in which case dropping it fails
+    /// `predictability_gate` — pre-existing and zone-independent).
+    ///
+    /// REVERT-PROBES: reverting the `Order` arm to `resolve_source` ⇒ rows **R** and **P**
+    /// fail; **N**, **N2** and **P-minus** are deliberately revert-insensitive.
+    #[test]
+    fn a_command_zone_order_pin_stops_poisoning_the_template_without_gaining_capability() {
+        use crate::types::zones::Zone;
+        let mut state = GameScenario::new_n_player(2, 7).build().state().clone();
+        let battlefield = place(&mut state, 900, Zone::Battlefield);
+        let command = place(&mut state, 901, Zone::Command);
+        stand_up_target_prompt(&mut state, P0, command, 1);
+        let prompt = state.waiting_for.clone();
+
+        let order_source = object_decision_source(&state, command).expect("placed above");
+        let order_pin = PinnedDecision::Order {
+            source: order_source.clone(),
+            pos: 0,
+        };
+        // ONE template value, bound once, shared by rows R, N and N2 (the preservation
+        // condition above).
+        let order_only = DecisionTemplate {
+            owner: P0,
+            decisions: vec![order_pin.clone()],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::UntilLethal,
+            },
+            key: DecisionGroupKey::from_sources(
+                std::slice::from_ref(&order_source),
+                DecisionKind::LoopChoice,
+            ),
+        };
+
+        // ── row R (delivery): the pin re-binds through the public `resolve`. ──
+        let resolved = crate::analysis::decision_template::resolve(&order_only, 0, &state)
+            .expect("row R: a command-zone Order pin re-binds to its live ability instance");
+        assert!(
+            resolved.iter().any(|d| matches!(
+                d,
+                crate::analysis::decision_template::ConcreteDecision::Order { source, .. }
+                    if *source == command
+            )),
+            "row R: the resolved vec carries THIS source's Order element — the delivery \
+             this row exists to prove for N and N2"
+        );
+
+        // ── row N (neutrality, the trailing-`Err` half): the SAME value, same board. ──
+        assert!(
+            pinned_targets_for_source(&order_only, 0, &state, battlefield).is_err(),
+            "row N: an ORDER-only template still fails closed at this element reader. Row R \
+             proved the internal `resolve` returned Ok on this exact value, so this Err is \
+             the post-resolve fall-through — the abort MOVED, it was not avoided"
+        );
+
+        // ── row N2 (neutrality, the `find_map` half): the SAME value, cloned board. ──
+        let mut injector_work = state.clone();
+        assert!(
+            inject_pinned_answer(&mut injector_work, Some(&order_only), 0, &prompt).is_err(),
+            "row N2: the injector beat still fails closed too — its `find_map` looks for a \
+             `Targets` element and an `Order` element is not one"
+        );
+
+        // ── the mixed pair. `mixed_no_order` is `mixed` with the FIRST element dropped and
+        // NOTHING else changed: one `targets_pin` value, cloned into both. ──
+        let targets_pin = PinnedDecision::Targets {
+            slot: DecisionSlot {
+                source: object_decision_source(&state, battlefield).expect("placed above"),
+                index: 0,
+            },
+            targets: vec![TargetPin::ByIdentity(
+                object_decision_source(&state, battlefield).expect("placed above"),
+            )],
+        };
+        let mixed = DecisionTemplate {
+            decisions: vec![order_pin.clone(), targets_pin.clone()],
+            ..order_only.clone()
+        };
+        let mixed_no_order = DecisionTemplate {
+            decisions: vec![targets_pin.clone()],
+            ..order_only.clone()
+        };
+
+        // ── row P (poisoning removed): the OTHER pin in the same template now answers. ──
+        let p = pinned_targets_for_source(&mixed, 0, &state, battlefield).expect(
+            "row P: with the Order pin re-binding and the Targets pin resolving, the seam \
+             returns the Targets pin's own answer",
+        );
+        assert_eq!(
+            p,
+            vec![ConcreteTarget::Object(battlefield)],
+            "row P: one field from row N (the second pin) and OPPOSITE it"
+        );
+
+        // ── row P-minus (omit-the-pin equivalence): the security row. ──
+        let p_minus = pinned_targets_for_source(&mixed_no_order, 0, &state, battlefield)
+            .expect("row P-minus: the Order-less template resolves at both revisions");
+        assert_eq!(
+            p, p_minus,
+            "row P-minus: a re-binding `Order` element contributes NOTHING to this \
+             consumer's answer — the equality is the discriminating assertion, and it \
+             fails the moment any consumer starts reading `ConcreteDecision::Order`"
         );
     }
 
@@ -18056,11 +18646,32 @@ mod stage2_injector_tests {
                 // are all inside `#[cfg(test)] mod stage2_injector_tests`, BELOW this producer. The
                 // total (38) and the partition (5/8/25) both fired GREEN on the run that caught
                 // this — only this third assert (`:17342`) panicked.
-                // ⚠ REBASE #3: `:12668 ⇒ :12667`, located by content digest, offset from
+                //
+                // R2b (the slot-question accessor migration at the last three call sites):
+                // `:12606 ⇒ :12622`, +16. LOCAL, not upstream — the CI-vs-local diagnosis in the
+                // header does not apply. Arithmetic CHECK: `git diff -U0` against the parent has
+                // NINE hunks above the old coordinate, netting exactly `+16`, and
+                // `12606 + 16 = 12622`. SET PRESERVATION: every one of those nine is either a
+                // doc/comment rewrite (the CR 114.2 → CR 114.4 / CR 113.6p sweep, the two
+                // `pinned_*` headers, `slot_source_prompted`'s header, `bounded_cycle_pin_slots`'
+                // class list) or ONE of the two production call-site swaps
+                // (`resolve_source(&slot.source, clone) == Some(source_id)` ⇒
+                // `slot_source_prompted(clone, &slot.source, source_id)`), which changes which
+                // predicate answers a slot question and assigns no `state.waiting_for` — it mints
+                // no `OptionalEffectChoice` prompt. This round's remaining `engine.rs` hunks are
+                // inside `#[cfg(test)] mod stage2_injector_tests`, BELOW this producer. The total
+                // (38) and the partition (5/8/25) both fired GREEN on the run that caught this —
+                // only this third assert panicked. Identity re-established rather than assumed:
+                // line `:12622` is byte-identical by sha256
+                // (`8a544e878d3e77fb…5cc7d63`, the SAME hash this log recorded for `:11549` and
+                // `:11583`) to `10e80db9c:engine.rs:12606`, and it is still inside
+                // `begin_pending_trigger_target_selection`, which moved by the same +16 (opens
+                // `:12472 ⇒ :12488`).
+                // ⚠ REBASE #3: `:12684 ⇒ :12683`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
-                // ⚠ REBASE #3: `:12667 ⇒ :12672`, located by content digest, offset from
+                // ⚠ REBASE #3: `:12683 ⇒ :12688`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
-                "game/engine.rs:12672".to_string(),
+                "game/engine.rs:12688".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
@@ -18368,9 +18979,11 @@ mod stage2_injector_tests {
     /// dispatched" from "the injector returned `Ok(())` having done nothing": an empty board
     /// would answer `Ok(())` just as happily.
     ///
-    /// The pinned source is a BATTLEFIELD object because `resolve_source` is battlefield-only
-    /// (CR 400.7 incarnation binding) — on any other zone `slot_source_prompted` would refuse
-    /// every arm below for a reason none of them is about.
+    /// The pinned source is a BATTLEFIELD object because `slot_source_prompted` asks
+    /// `resolve_ability_instance`, whose zone set is {Battlefield, Command} at the pinned
+    /// CR 400.7 incarnation — on a graveyard / exile / hand source it would refuse every arm
+    /// below for a reason none of them is about. (A command-zone source would be admitted;
+    /// the battlefield one is chosen because these rows are not about the zone at all.)
     fn u4_may_board(asked: PlayerId) -> (GameState, ObjectId) {
         use crate::types::ability::{Effect, QuantityExpr, TargetFilter};
         let mut state = GameScenario::new_n_player(3, 7).build().state().clone();
