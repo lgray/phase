@@ -71,8 +71,18 @@ pub fn pick_executable(stdout: &str, package: &str, test: &str) -> Result<PathBu
 
 /// `cargo test -p <package> --test <test> --no-run` — run OUTSIDE the namespace, on the
 /// pristine tree, before any mutant exists.
-pub fn resolve(package: &str, test: &str) -> Result<PathBuf, Abort> {
+///
+/// Pinned to `root`, matching `project::count`. Unlike `workspace_root`, which must inherit the
+/// caller's cwd because that is how it discovers the root at all, this invocation already has
+/// the root, and inheriting a cwd only makes its side effects depend on where probe-pin was run
+/// from. `CARGO_TARGET_DIR` is commonly relative — the Tilt resources here pass
+/// `target/probe-pin` — and a relative value resolves against the cwd of whichever process
+/// finally execs cargo. Measured: with the cwd left inherited, running the Tier-2 suite (whose
+/// tests run with cwd = the crate directory) materialized a 285M `crates/probe-pin/target/`
+/// that no `.gitignore` rule covers, because the repo ignores a ROOT-anchored `/target`.
+pub fn resolve(root: &Path, package: &str, test: &str) -> Result<PathBuf, Abort> {
     let out = Command::new("cargo")
+        .current_dir(root)
         .args([
             "test",
             "-p",

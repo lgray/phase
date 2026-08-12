@@ -774,6 +774,53 @@ fn control_may_not_declare_an_assert_count() {
     assert!(manifest::validate(&toml::from_str::<Manifest>(&text).unwrap()).is_ok());
 }
 
+/// `target::resolve` must run cargo with the workspace root as its cwd, and this is asserted
+/// against the SOURCE because no behavioural test can see it: with the pin removed the whole
+/// Tier-2 suite still passes 15/15 — only the *location of a side effect* moves. Measured, both
+/// arms, same command: pinned, nothing appears; unpinned, a 285M `crates/probe-pin/target/`
+/// materializes, which no `.gitignore` rule covers because the repo ignores a root-anchored
+/// `/target`.
+///
+/// The cause is that `CARGO_TARGET_DIR` is commonly relative (the Tilt resources pass
+/// `target/probe-pin`) and a relative value resolves against the cwd of whichever process
+/// finally execs cargo — here a test whose cwd is the crate directory, not the root.
+/// `workspace_root` is deliberately NOT pinned: inheriting the caller's cwd is how it discovers
+/// the root at all.
+#[test]
+fn target_resolve_pins_cargo_to_the_workspace_root() {
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/target.rs"))
+        .expect("target.rs is readable");
+
+    let resolve = src
+        .split_once("pub fn resolve(")
+        .expect("target::resolve exists")
+        .1;
+    let body = resolve
+        .split_once("pub fn ")
+        .map_or(resolve, |(before, _)| before);
+    assert!(
+        body.contains(".current_dir(root)"),
+        "target::resolve no longer pins cargo's cwd to the workspace root. A relative \
+         CARGO_TARGET_DIR then resolves against whatever cwd the caller had, scattering build \
+         artifacts outside the root-anchored /target the repo ignores. The Tier-2 suite cannot \
+         catch this — it passes either way."
+    );
+
+    // Instrument control: the same search must NOT find the pin in `workspace_root`, which is
+    // correct precisely because it inherits the caller's cwd. If this ever matches, the search
+    // is picking up the wrong function and the assertion above proves nothing.
+    let wsr = src
+        .split_once("pub fn workspace_root(")
+        .expect("workspace_root exists")
+        .1;
+    let wsr_body = wsr.split_once("pub fn ").map_or(wsr, |(before, _)| before);
+    assert!(
+        !wsr_body.contains(".current_dir("),
+        "workspace_root must NOT pin a cwd — it discovers the root FROM the cwd. If it now does, \
+         this test's function-slicing is wrong and both assertions need re-reading."
+    );
+}
+
 /// The Tier-2 suite is `#[ignore]`d because GitHub's runners deny unprivileged user namespaces,
 /// so GH CI never executes a real mount. That is a measured accommodation, and an accommodation
 /// with nothing watching it decays: a Tier-2 test added without the attribute turns CI red for a

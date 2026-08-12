@@ -53,7 +53,9 @@ fn root() -> &'static Path {
 /// Resolved once per process: the nested `cargo test --no-run` is the expensive part.
 fn testbin() -> &'static Path {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
-    BIN.get_or_init(|| probe_pin::target::resolve("probe-pin", "pure_logic").expect("test binary"))
+    BIN.get_or_init(|| {
+        probe_pin::target::resolve(root(), "probe-pin", "pure_logic").expect("test binary")
+    })
 }
 
 fn target(filter: &str, secs: u64, env: &[(&str, &str)]) -> Target {

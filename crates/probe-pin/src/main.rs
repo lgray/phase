@@ -122,7 +122,7 @@ fn pipeline(manifest_path: &Path, mode: Mode) -> anyhow::Result<u8> {
     manifest::validate_paths(&m, &root)?;
 
     // 3. resolve the target binary — outside the namespace, on the pristine tree
-    let testbin = target::resolve(&m.target.package, &m.target.test)?;
+    let testbin = target::resolve(&root, &m.target.package, &m.target.test)?;
 
     // 4. record instruments
     let mut instruments = Vec::new();
