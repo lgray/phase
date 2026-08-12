@@ -276,3 +276,20 @@ local_resource('probe-pin-check',
     allow_parallel = True,
     labels = ['lint'],
 )
+
+# The Tier-2 suite is #[ignore]d because GitHub's runners deny unprivileged user namespaces
+# (unshare -> /proc/self/uid_map EPERM), so GH CI never executes a real mount. THIS resource is
+# what keeps that honest: the local venue does have the capability, so Tier 2 runs here on every
+# change. Without it, "ignored in CI" quietly becomes "never run anywhere".
+#
+# `-- --ignored` runs ONLY the ignored tests, which is exactly this suite. A non-zero exit turns
+# the resource red like any other gate — a real Tier-2 gate, not a fire-and-forget reporter.
+local_resource('probe-pin-e2e',
+    cmd = ['bash', '-c',
+           'CARGO_TARGET_DIR=target/probe-pin cargo test -p probe-pin --test isolation_e2e -- --ignored'],
+    deps = ['crates/probe-pin/'],
+    ignore = TMP_IGNORE + ['**/tmp/**'],
+    auto_init = 'lint' in enabled,
+    allow_parallel = True,
+    labels = ['lint'],
+)

@@ -774,6 +774,67 @@ fn control_may_not_declare_an_assert_count() {
     assert!(manifest::validate(&toml::from_str::<Manifest>(&text).unwrap()).is_ok());
 }
 
+/// The Tier-2 suite is `#[ignore]`d because GitHub's runners deny unprivileged user namespaces,
+/// so GH CI never executes a real mount. That is a measured accommodation, and an accommodation
+/// with nothing watching it decays: a Tier-2 test added without the attribute turns CI red for a
+/// reason nobody will connect to namespaces, and — worse — the ignored set can widen into tests
+/// that had no capability problem at all, which is "skipped in CI" quietly becoming "isolation
+/// abandoned".
+///
+/// This guard lives in `pure_logic` on purpose: it is the suite CI actually runs, so the watcher
+/// is not itself ignored. It pins the count, the attribute on EVERY test, and the exact reason
+/// text — reword the reason and this fails, which is the intent: the reason is the only place a
+/// reader is told the accommodation is about namespaces and how to run the suite anyway.
+///
+/// The companion control is the Tilt `probe-pin-e2e` resource, which runs the suite with
+/// `--ignored` in the local venue, where the capability exists. Together: this test says "the
+/// suite is still uniformly ignored and still says why", and Tilt says "and it still passes".
+#[test]
+fn tier2_suite_is_uniformly_ignored_with_the_measured_reason() {
+    const EXPECTED: &str = "#[ignore = \"Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`.\"]";
+
+    let src = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/isolation_e2e.rs"),
+    )
+    .expect("the Tier-2 suite is readable");
+    let lines: Vec<&str> = src.lines().collect();
+
+    // Count the ATTRIBUTE, never the string: this file's own doc comments and a fixture label
+    // both contain the text `#[ignore]`, and an unanchored match counts those too — the exact
+    // trap that produced a 7-vs-1 discrepancy when this suite was first measured.
+    let tests: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.trim() == "#[test]")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        tests.len(),
+        15,
+        "the Tier-2 suite changed size. Every test here needs the #[ignore] attribute (CI cannot \
+         create a mount namespace); update this count deliberately, and keep the Tilt \
+         `probe-pin-e2e` resource as the venue that actually runs them."
+    );
+    assert!(
+        lines.iter().filter(|l| l.contains("#[ignore")).count() > tests.len(),
+        "instrument check: this file is known to contain #[ignore] MENTIONS in prose as well as \
+         attributes, so a raw substring count must exceed the attribute count. If it does not, \
+         the mentions moved and this test's anchoring rationale needs re-reading."
+    );
+
+    for i in tests {
+        let next = lines[i + 1].trim();
+        assert_eq!(
+            next,
+            EXPECTED,
+            "the #[test] at isolation_e2e.rs:{} is not followed by the expected #[ignore]. Every \
+             Tier-2 test must carry it verbatim: CI denies unprivileged user namespaces, so an \
+             unignored test here fails on every run for a reason unrelated to what it asserts.",
+            i + 1
+        );
+    }
+}
+
 /// Driver-added. `docs/probe-pin.md`'s manifest example is the surface a first user COPIES, and
 /// it had no mechanical coverage at all — an example is code that never runs, so nothing caught
 /// that it (a) was not valid TOML (`text = "…" ; count = 1`; `;` is not a TOML separator) and
