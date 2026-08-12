@@ -144,14 +144,31 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
     let files: Vec<&str> = sites.iter().map(|s| s.file.as_str()).collect();
 
     // CONJUNCT 1: what is compared is the FILE MULTISET — file identity AND multiplicity, in
-    // sorted order. Line numbers are not compared; they appear only in the failure message.
-    // That is deliberate: a line pin fails on any insertion above a site, which is drift
-    // burden without discrimination. Multiplicity carries the load instead — a new construction
-    // anywhere changes the compared value, including a THIRD `engine.rs` hit from reverting
+    // sorted order. Line numbers are not compared against any pinned value; they order the sites
+    // (`production_sites` sorts by `(file, line)`) and appear in the failure message. That is
+    // deliberate: a line pin fails on any insertion above a site, which is drift burden without
+    // discrimination — measured: a 200-line insertion above every site leaves this census green.
+    // Multiplicity carries the load instead — a new construction anywhere THE WALK VISITS changes
+    // the compared value, including a THIRD `engine.rs` hit from reverting
     // `record_trigger_target_answer`, and `interaction.rs` is pinned by ABSENCE, which no
-    // rearrangement inside that file can satisfy. The `engine.rs` pair, where multiplicity
-    // alone would let a third construction hide behind the file already being listed twice, is
-    // narrowed by the text pins further down that name each of its two arms.
+    // rearrangement inside that file can satisfy. The walk visits three roots only
+    // (`engine/src`, `server-core/src`, `phase-ai/src`), so a construction added in a crate
+    // outside them — `engine-wasm`, `seat-reducer` and `phase-server` all depend on the engine —
+    // is invisible here. That gap is latent, not live: today `TargetPin` appears in no crate
+    // other than `engine` and `server-core`, and both of their `src` roots are walked.
+    //
+    // The doubled `engine.rs` entry is guarded by MULTIPLICITY, not by the text pins below: a
+    // third construction in that file fails THIS assertion, before the text pins are reached.
+    // Do NOT relax `files` to a de-duplicated set on the theory that the text pins cover the
+    // doubling — they are a different layer, and layer 3 below exists because a change can pass
+    // both of them. Three measured layers, in the order they fire:
+    //   1. this multiset — a THIRD `engine.rs` construction, i.e. either producer reverted;
+    //   2. the text pins below — a SUBSTITUTION at either arm that holds the count at 2, and a
+    //      change in the two arms' relative ORDER (relocating arm 0 below arm 1 fails the first
+    //      text pin with the count and both texts otherwise unchanged);
+    //   3. conjunct 3's per-file `AnnouncementSubject::Seat` count — a substitution that ALSO
+    //      preserves both texts (producer reverted AND the positive control dropped) passes both
+    //      text pins and is caught only there.
     //
     // LIMITATION: the three singly-listed files (`decision_template.rs`, `visibility.rs`,
     // `server-core/...`) are pinned by file identity and count alone. Swapping one of their
@@ -187,8 +204,9 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
          IS. got {sites:?}"
     );
 
-    // The `engine.rs` pair is pinned to its two ARMS by text, so a construction added inside
-    // `record_trigger_target_answer` cannot hide behind the file already being listed twice.
+    // The `engine.rs` pair is pinned to its two ARMS by text: a SUBSTITUTION at either arm that
+    // holds the file count at 2 fails here, as does relocating the arms relative to each other.
+    // An ADDED construction in this file does not reach here — the multiset above fails first.
     let engine_texts: Vec<&str> = sites
         .iter()
         .filter(|s| s.file == "engine/src/game/engine.rs")
