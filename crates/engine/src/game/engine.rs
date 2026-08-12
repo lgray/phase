@@ -3776,17 +3776,24 @@ fn until_lethal_fallback(
 }
 
 /// CR 732.2a: how many whole cycles one shortcut drive must aggregate before the measured
-/// delta is complete. A `RoundRobin`/`Piecewise` target schedule rotates its OBJECT sources
-/// over its length, so a full period is that length; every other pin (a `Constant` target, a
+/// delta is complete. A `RoundRobin`/`Piecewise` target schedule rotates its STEPS over its
+/// length, so a full period is that length; every other pin (a `Constant` target, a
 /// `Player` pin, a non-target pin, or no template at all) settles in ONE cycle. Returns the
-/// max schedule length over the template's `Targets` pins, defaulting to 1.
+/// max schedule length over the template's `Targets` pins, defaulting to 1. A step's subject
+/// is a `Ranking`, which lives INSIDE the step and never changes the count — this seam is
+/// type-only across that parameterization.
 ///
-/// DORMANT for every Stage-2 crownable loop (Ruling B): `TargetSchedule` rotates DecisionSource
-/// objects, not players, and `live_mandatory_loop_winner` crowns on PLAYER fallers — an
-/// object-rotating loop produces no player faller, so it never crowns; the only crownable >2p
-/// player drain pins ALL opponents every cycle (`TargetPin::Player` is constant, period 1). The
-/// seam is built for generality; a multi-cycle aggregation is fail-safe (an object loop reaching
-/// the arm measures 1 cycle, finds no faller, does not crown).
+/// DORMANT for every Stage-2 crownable loop (Ruling B) — and the REASON needed restating once
+/// a step's subject became parameterized. It is no longer "`TargetSchedule` rotates
+/// DecisionSource objects, not players": the type now admits `AnnouncementSubject::Seat`. The
+/// dormancy is a PRODUCER property instead, and it is measured rather than structural — no
+/// in-tree producer emits a `Seat` into a schedule, so every schedule this engine mints still
+/// rotates objects, `live_mandatory_loop_winner` crowns on PLAYER fallers, and an
+/// object-rotating loop produces no player faller. The only crownable >2p player drain pins
+/// ALL opponents every cycle (`TargetPin::Player` is constant, period 1). The seam is built
+/// for generality and a multi-cycle aggregation is fail-safe either way (a loop reaching the
+/// arm measures 1 cycle, finds no faller, does not crown), so a future seat-rotating producer
+/// changes what must be re-argued here, not what this function returns.
 ///
 /// CR 732.2a SAFETY LIMIT: the returned period is clamped to `MAX_SHORTCUT_CYCLES`. Both
 /// consumers derive their `0..period` range from this one helper (`validate_pins` and
@@ -4181,39 +4188,17 @@ fn inject_pinned_answer(
 /// CR 608.2b + CR 114.2: does this SLOT's source identify the ability instance that raised
 /// the prompt carrying `source_id`?
 ///
-/// [`crate::analysis::decision_template::resolve_source`] is deliberately BATTLEFIELD-ONLY,
-/// and that filter IS the CR 608.2b legality re-check for
-/// `ByIdentity` **target** pins — a pinned target that left the battlefield must stop
-/// matching. It must not be widened. But a SLOT's source only identifies WHICH ability
-/// instance prompts, and CR 114.2 puts a planeswalker EMBLEM — "both owned and
-/// controlled by that player" — in the **command zone**, where it stays for the whole game
-/// and raises its triggers from. So the command-zone disjunct lives HERE, at the caller,
-/// scoped to object identity + the pinned CR 400.7 incarnation.
-///
-/// Graveyard / exile / hand sources still fail ⇒ the caller aborts to manual play.
+/// The zone reasoning — why a SLOT's source admits the command zone while a PIN's source is
+/// battlefield-only, and why graveyard / exile / hand still fail closed — now lives on
+/// [`crate::analysis::decision_template::resolve_ability_instance`], the single accessor for
+/// "which live ability instance is this". This call site is the identity comparison against
+/// the prompting object; a `None` there means the caller aborts to manual play.
 fn slot_source_prompted(
     state: &GameState,
     src: &crate::analysis::decision_template::DecisionSource,
     source_id: ObjectId,
 ) -> bool {
-    if crate::analysis::decision_template::resolve_source(src, state) == Some(source_id) {
-        return true;
-    }
-    // CR 114.2: the command-zone arm. `AllCopies` is card-identity matching and an emblem
-    // has no card, so only `ThisObject` participates.
-    let crate::types::game_state::YieldTarget::ThisObject {
-        source_id: pinned_id,
-        incarnation,
-        ..
-    } = src
-    else {
-        return false;
-    };
-    *pinned_id == source_id
-        && state.objects.get(pinned_id).is_some_and(|o| {
-            o.zone == crate::types::zones::Zone::Command
-                && (incarnation.is_none() || *incarnation == Some(o.incarnation))
-        })
+    crate::analysis::decision_template::resolve_ability_instance(src, state) == Some(source_id)
 }
 
 /// PR-7 Phase 4b: CR 732.2a finite materialization of a confirmed `Fixed(N)` loop
@@ -16089,25 +16074,32 @@ mod stage2_injector_tests {
             },
             key: DecisionGroupKey::from_sources(std::slice::from_ref(&a), DecisionKind::LoopChoice),
         };
+        // A ranking lives INSIDE a schedule step; `shortcut_drive_period` still counts STEPS,
+        // which is why this migration is type-only at the seam under test.
+        let rank = |src| {
+            crate::analysis::decision_template::Ranking::one(
+                crate::analysis::decision_template::AnnouncementSubject::Object(src),
+            )
+        };
 
         let constant = mk(vec![TargetPin::Player(P1)]);
         assert_eq!(shortcut_drive_period(Some(&constant)), 1, "Player pin ⇒ 1");
 
         let rr = mk(vec![TargetPin::Scheduled(TargetSchedule::RoundRobin(
-            vec![a.clone(), b.clone(), c.clone()],
+            vec![rank(a.clone()), rank(b.clone()), rank(c.clone())],
         ))]);
         assert_eq!(shortcut_drive_period(Some(&rr)), 3, "RoundRobin(3) ⇒ 3");
 
         let pw = mk(vec![TargetPin::Scheduled(TargetSchedule::Piecewise(vec![
-            (0, a.clone()),
-            (5, b.clone()),
+            (0, rank(a.clone())),
+            (5, rank(b.clone())),
         ]))]);
         assert_eq!(shortcut_drive_period(Some(&pw)), 2, "Piecewise(2) ⇒ 2");
 
         // CR 732.2a SAFETY LIMIT: an over-cap schedule clamps to MAX_SHORTCUT_CYCLES.
         // Revert-probe: restore `.max(1)` (drop the `.clamp`) ⇒ returns MAX+5 (1005) ≠ 1000.
         let oversized = mk(vec![TargetPin::Scheduled(TargetSchedule::RoundRobin(
-            vec![a.clone(); (MAX_SHORTCUT_CYCLES + 5) as usize],
+            vec![rank(a.clone()); (MAX_SHORTCUT_CYCLES + 5) as usize],
         ))]);
         assert_eq!(
             shortcut_drive_period(Some(&oversized)),
@@ -16386,7 +16378,15 @@ mod stage2_injector_tests {
     /// end-to-end by `injector_routes_pinned_targets_per_source` above and by the
     /// `kilo_live_offer_from_real_dump` rows, and this row asserts that arm is unchanged.
     ///
-    /// REVERT-PROBES: (a) delete the command-zone disjunct in `slot_source_prompted` ⇒ the
+    /// The zone disjuncts this row pins now live one call down, in
+    /// [`crate::analysis::decision_template::resolve_ability_instance`], which
+    /// `slot_source_prompted` delegates to — so all three probes below are run THERE. That
+    /// delegation is why this row is also the maintained-invariant row for the factoring: it
+    /// stays green unmodified, and a factoring that silently widened the zone set reds here.
+    /// (Measured: dropping the `Zone::Command` filter in that accessor fails the graveyard
+    /// assertion below.)
+    ///
+    /// REVERT-PROBES: (a) delete the command-zone disjunct ⇒ the
     /// Command assertion FAILS (and `inject_pinned_answer` would `RecastAbort` on an
     /// emblem-pinned drive); (b) widen the disjunct to accept any zone ⇒ the graveyard and
     /// exile assertions FAIL; (c) drop the incarnation conjunct ⇒ the CR 400.7 assertion
@@ -17967,9 +17967,26 @@ mod stage2_injector_tests {
                 // SET PRESERVATION (C3): unchanged. The other four entries live in `game/effects/mod.rs`
                 // and `game/effects/scoped_library_search.rs`, neither of which C3 touches, and a comment
                 // round adds no line matching the needle — total still 38, partition still 5/8/25.
-                // ⚠ REBASE #3: `:12652 ⇒ :12651`, located by content digest, offset from
+                //
+                // ⚠ item-4 R1 (the `Ranking` parameterization): `:12590 ⇒ :12575`, `-15`, LOCAL.
+                // Resolved BY CONTENT FIRST per the protocol above: the sha256 above matched exactly
+                // ONE line under a whole-file scan, at `:12575`, and the nearest preceding `fn` is
+                // still `begin_pending_trigger_target_selection` (`:12441`) with none intervening.
+                // Arithmetic CHECK afterwards: `git diff -U0` against the parent shows exactly four
+                // non-zero hunks above the old coordinate — `+2` and `+5` on `shortcut_drive_period`'s
+                // doc (Ruling B's dormancy REASON restated: the type now admits a seat subject, so the
+                // dormancy is a measured producer property rather than a structural one) and `-5`/`-17`
+                // for `slot_source_prompted`'s factoring into
+                // `analysis::decision_template::resolve_ability_instance` (a doc block and its two
+                // inlined zone arms, replaced by one delegating call and a pointer) — summing to `-15`.
+                // SET PRESERVATION: all four hunks are a doc block or a delegating call; none assigns
+                // `state.waiting_for` and none mints a prompt, and this round's remaining `engine.rs`
+                // hunks are inside `#[cfg(test)]` below this producer. The total (38) and the
+                // partition (5/8/25) both fired GREEN on the run that caught this; only this third
+                // assert panicked.
+                // ⚠ REBASE #3: `:12637 ⇒ :12636`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
-                "game/engine.rs:12651".to_string(),
+                "game/engine.rs:12636".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \

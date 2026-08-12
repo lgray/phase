@@ -15,9 +15,9 @@
 //! `match` perturbed even one event. Because the golden is pre-edit, this is not circular.
 
 use engine::analysis::decision_template::{
-    DecisionGroupKey, DecisionKind, DecisionPoint, DecisionPointKind, DecisionSlot,
-    DecisionTemplate, IterationCount, PinnedDecision, ReplayMode, ShortcutDecisionSchema,
-    TargetPin, TargetSchedule,
+    AnnouncementSubject, DecisionGroupKey, DecisionKind, DecisionPoint, DecisionPointKind,
+    DecisionSlot, DecisionTemplate, IterationCount, PinnedDecision, Ranking, ReplayMode,
+    ShortcutDecisionSchema, TargetPin, TargetSchedule,
 };
 use engine::analysis::loop_check::{LoopCertificate, ShortcutProposal, ShortcutResponse, WinKind};
 use engine::analysis::resource::{loop_states_equal_modulo_resources, BoardDelta, ResourceAxis};
@@ -39,6 +39,14 @@ use engine::types::player::PlayerId;
 const P0: PlayerId = PlayerId(0);
 const P1: PlayerId = PlayerId(1);
 const P2: PlayerId = PlayerId(2);
+
+/// The one-element ranking a schedule step carries when it names a single object: a
+/// `Ranking::one(Object(src))` IS the pre-parameterization constant subject, so every site
+/// below is a re-spelling with no behaviour delta (CR 732.2a — only the head is ever
+/// resolved within one drive).
+fn obj_rank(src: YieldTarget) -> Ranking {
+    Ranking::one(AnnouncementSubject::Object(src))
+}
 
 const DRAIN_CLERIC: &str = "Whenever you gain life, each opponent loses 1 life.";
 const BLOOD_SIPPER: &str = "Whenever an opponent loses life, you gain 1 life.";
@@ -2058,9 +2066,9 @@ fn piecewise_cleric_template(
         source: valid.clone(),
         index: 0,
     };
-    let mut schedule = vec![(0u32, valid.clone())];
+    let mut schedule = vec![(0u32, obj_rank(valid.clone()))];
     if let Some(at) = switch_to_bogus_at {
-        schedule.push((at, bogus));
+        schedule.push((at, obj_rank(bogus)));
     }
     DecisionTemplate {
         owner,
@@ -11605,7 +11613,9 @@ fn g1_declare_verdict(
     if pin_twice {
         // E-neg: two pins against a `min_targets == max_targets == 1` point. The cardinality
         // check sits OUTSIDE the per-index loop, so it must still refuse at count 0.
-        targets.push(TargetPin::Scheduled(TargetSchedule::Constant(a.clone())));
+        targets.push(TargetPin::Scheduled(TargetSchedule::Constant(obj_rank(
+            a.clone(),
+        ))));
     }
     let template = DecisionTemplate {
         owner: P0,
@@ -11633,15 +11643,15 @@ fn g1_declare_verdict(
 }
 
 fn piecewise_a_then_b(a: &YieldTarget, b: &YieldTarget) -> TargetSchedule {
-    TargetSchedule::Piecewise(vec![(0, a.clone()), (5, b.clone())])
+    TargetSchedule::Piecewise(vec![(0, obj_rank(a.clone())), (5, obj_rank(b.clone()))])
 }
 
 fn piecewise_b_then_a(a: &YieldTarget, b: &YieldTarget) -> TargetSchedule {
-    TargetSchedule::Piecewise(vec![(0, b.clone()), (5, a.clone())])
+    TargetSchedule::Piecewise(vec![(0, obj_rank(b.clone())), (5, obj_rank(a.clone()))])
 }
 
 fn round_robin_a_b(a: &YieldTarget, b: &YieldTarget) -> TargetSchedule {
-    TargetSchedule::RoundRobin(vec![a.clone(), b.clone()])
+    TargetSchedule::RoundRobin(vec![obj_rank(a.clone()), obj_rank(b.clone())])
 }
 
 /// R6 arms A / B / C — the validated range must COVER the driven range.

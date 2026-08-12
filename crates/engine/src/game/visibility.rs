@@ -120,9 +120,10 @@ pub(crate) fn capture_library_search_card_view(
 ///    mints — it is wired so a fourth writer cannot open the leak silently.
 ///
 /// `GameState::decision_templates` is the fourth carrier and deliberately does NOT route here: it
-/// is redacted by owner-retain (`filtered.decision_templates.retain(|t| t.owner == viewer)`), so a
-/// template the viewer does not own is REMOVED entirely and there is nothing left for this
-/// predicate to answer about it.
+/// is redacted wholesale by the private-access retain
+/// (`filtered.decision_templates.retain(|t| can_view_private_for_player(t.owner))` — CR 723.4, the
+/// SAME predicate carriers 1 and 2 apply), so a template this viewer may not privately view is
+/// REMOVED entirely and there is nothing left for this predicate to answer about it.
 ///
 /// A `TargetPin::Player` needs no redaction, and that is an ENGINE property rather than a CR one —
 /// no rule makes seat identity public. This projection hides card identities and hidden-zone
@@ -139,7 +140,7 @@ fn pins_name_hidden_source(
     target_hidden: &dyn Fn(ObjectId) -> bool,
 ) -> bool {
     use crate::analysis::decision_template::{
-        DecisionSource, PinnedDecision, TargetPin, TargetSchedule,
+        AnnouncementSubject, DecisionSource, PinnedDecision, Ranking, TargetPin, TargetSchedule,
     };
     let source_hidden = |source: &DecisionSource| match source {
         crate::types::game_state::YieldTarget::ThisObject { source_id, .. } => {
@@ -148,14 +149,28 @@ fn pins_name_hidden_source(
         // A card identity, not a live object: it names no zone occupant to hide.
         crate::types::game_state::YieldTarget::AllCopies { .. } => false,
     };
+    // A `Scheduled` step carries a whole `Ranking`, so the walk descends one level further
+    // than the pin: EVERY subject in every step is inspected, not just the head the current
+    // episode would resolve. The tail is a pre-declaration the responder receives now (it is
+    // part of the proposal they accept or shorten under CR 732.2b), so a hidden identity in
+    // the tail is a leak on exactly the same footing as one in the head.
+    //
+    // Wildcard-free over `AnnouncementSubject`: a future subject kind gets a compile-time
+    // visit here. The `Seat` arm is `false` for the reason already given above for
+    // `TargetPin::Player` — seat identity is public in this engine — and is not restated.
+    let subject_hidden = |subject: &AnnouncementSubject| match subject {
+        AnnouncementSubject::Object(source) => source_hidden(source),
+        AnnouncementSubject::Seat(_) => false,
+    };
+    let ranking_hidden = |ranking: &Ranking| ranking.iter().any(&subject_hidden);
     let pin_hidden = |pin: &TargetPin| match pin {
         TargetPin::ByIdentity(source) => source_hidden(source),
         TargetPin::Player(_) => false,
         TargetPin::Scheduled(schedule) => match schedule {
-            TargetSchedule::Constant(source) => source_hidden(source),
-            TargetSchedule::RoundRobin(sources) => sources.iter().any(&source_hidden),
+            TargetSchedule::Constant(ranking) => ranking_hidden(ranking),
+            TargetSchedule::RoundRobin(rankings) => rankings.iter().any(&ranking_hidden),
             TargetSchedule::Piecewise(steps) => {
-                steps.iter().any(|(_, source)| source_hidden(source))
+                steps.iter().any(|(_, ranking)| ranking_hidden(ranking))
             }
         },
     };
@@ -1571,7 +1586,17 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     filtered
         .may_trigger_auto_choices
         .retain(|record| record.key.player == viewer);
-    filtered.decision_templates.retain(|t| t.owner == viewer);
+    // CR 723.4: "If information about an object in the game would be visible to the player
+    // being controlled, it's visible to both that player and the player controlling them."
+    // The pin vector's other carriers already answer "may this viewer see it" with this same
+    // predicate (the `LoopShortcut` and `RespondToShortcut` blocks above), so carrier 4 uses
+    // it too rather than a strict owner-equality that would deny a controlling player a
+    // template they are entitled to. Absent turn control (and absent a latched
+    // search-decision authority) this is exactly owner-equality — see
+    // `turn_control::authorized_submitter_for_player` for the full arm set.
+    filtered
+        .decision_templates
+        .retain(|t| can_view_private_for_player(t.owner));
     filtered.priority_yields.retain(|y| y.player == viewer);
     filtered
         .lands_tapped_for_mana
@@ -2934,7 +2959,13 @@ mod tests {
     }
 
     /// CR 603.3b: saved trigger-ordering templates are per-player private preference
-    /// state — a viewer sees only their own, never an opponent's saved orderings.
+    /// state — a viewer sees only the ones they may privately view.
+    ///
+    /// The REASON is CR 723.4 private access, not opponent-ness: a player controlling another
+    /// player is normally an opponent and DOES see the controlled seat's templates (row R1-j
+    /// asserts that direction). This board has no turn control and no latched search-decision
+    /// authority, so `can_view_private_for_player` is exactly owner-equality here, which is
+    /// why this row is unmodified by the unification.
     #[test]
     fn filters_other_players_decision_templates() {
         use crate::analysis::decision_template::{
@@ -2970,6 +3001,97 @@ mod tests {
         // view (len 2) or an inverted retain drops P0's own (len 0) — both fail here.
         assert_eq!(filtered.decision_templates.len(), 1);
         assert_eq!(filtered.decision_templates[0].owner, PlayerId(0));
+    }
+
+    /// **Row R1-j — carrier 4 answers "may this viewer see it" with the SAME predicate as
+    /// carriers 1 and 2.** CR 723.4: "If information about an object in the game would be
+    /// visible to the player being controlled, it's visible to both that player and the
+    /// player controlling them." A controlling player is normally an opponent, so strict
+    /// owner-equality denied them a template they are entitled to — while the
+    /// `LoopShortcut` / `RespondToShortcut` carriers directly above already used
+    /// `can_view_private_for_player`. One question, one predicate.
+    ///
+    /// # Non-vacuity / discrimination
+    ///
+    /// BOTH directions ride ONE instrument on ONE board: turn control in effect ⇒ RETAINED;
+    /// the identical board with the control record removed ⇒ DROPPED. Without the second
+    /// half the change would read as "everyone now sees everything". The shipped row
+    /// `filters_other_players_decision_templates` above is the third guard: a plain
+    /// non-owner with no control still loses the template, and that row is unmodified.
+    ///
+    /// REVERT-PROBE: restore `retain(|t| t.owner == viewer)` ⇒ the controller loses the
+    /// controlled seat's template ⇒ the RETAINED assertion FAILS, while the DROPPED
+    /// assertion and the shipped row stay green.
+    #[test]
+    fn r1j_a_controlling_player_sees_the_controlled_seats_decision_template() {
+        use crate::analysis::decision_template::{
+            DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+        };
+        use crate::types::game_state::YieldTarget;
+
+        let controller = PlayerId(0);
+        let controlled = PlayerId(1);
+        let src = YieldTarget::AllCopies {
+            card_id: CardId(100),
+            trigger_description: None,
+        };
+        let template = DecisionTemplate {
+            owner: controlled,
+            decisions: vec![PinnedDecision::Order {
+                source: src.clone(),
+                pos: 0,
+            }],
+            replay: ReplayMode::Static,
+            key: DecisionGroupKey::from_sources(&[src], DecisionKind::TriggerOrdering),
+        };
+
+        let mut state = GameState::new_two_player(42);
+        state.set_trigger_order_template(template);
+        assert_eq!(
+            state.decision_templates.len(),
+            1,
+            "reach-guard: the unprojected state really carries the template"
+        );
+
+        // ── DROPPED: no turn control, viewer != owner (the pre-unification behaviour, which
+        //    the unification preserves) ──
+        assert!(
+            filter_state_for_viewer(&state, controller)
+                .decision_templates
+                .is_empty(),
+            "with no control in effect a non-owner still loses it — the predicate did not \
+             become a pass-through"
+        );
+
+        // ── RETAINED: the SAME board with `controller` taking `controlled`'s turn. The
+        //    control is scoped to the ACTIVE player's decisions — see
+        //    `turn_control::effective_authority_for_player`, which is the authority the
+        //    reach-guard below reads rather than restating. ──
+        let mut controlled_state = state.clone();
+        controlled_state.active_player = controlled;
+        controlled_state.turn_decision_controller = Some(controller);
+        assert_eq!(
+            turn_control::authorized_submitter_for_player(&controlled_state, controlled),
+            controller,
+            "reach-guard: the control record really is in effect, so the retain below is \
+             keyed to CR 723.4 and not to the fixture"
+        );
+        let projected = filter_state_for_viewer(&controlled_state, controller);
+        assert_eq!(
+            projected.decision_templates.len(),
+            1,
+            "CR 723.4: the controlling player sees the controlled seat's template"
+        );
+        assert_eq!(projected.decision_templates[0].owner, controlled);
+
+        // And the controlled player still sees their own — the widening is additive.
+        assert_eq!(
+            filter_state_for_viewer(&controlled_state, controlled)
+                .decision_templates
+                .len(),
+            1,
+            "the owner never lost their own copy"
+        );
     }
 
     /// CR 117.3d: priority yields are private preference state — a viewer sees
@@ -6239,6 +6361,129 @@ mod tests {
             d5h_projected_declaration(&public_state, D5H_PROPOSER),
             "a two-pin declaration with no hidden identity reaches the opponent UNCHANGED — \
              without this arm a redactor that dropped every multi-pin declaration would pass the \
+             negative above"
+        );
+        assert!(
+            d5h_projected_declaration(&public_state, D5H_VIEWER).is_some(),
+            "and it is genuinely present, not two matching `None`s"
+        );
+    }
+
+    /// **Row R1-k — the WITHIN-RANKING axis: a public subject ahead of a hidden one inside
+    /// ONE `Scheduled` pin still drops the WHOLE declaration.**
+    ///
+    /// This is `d5h2`'s shape one level further down. `d5h2` is a public *pin* ahead of a
+    /// hidden one; this is a public *subject* ahead of a hidden one inside a single pin —
+    /// which the `Ranking` parameterization newly makes possible. The redaction walk must
+    /// descend into every subject of every step, not stop at the head the current episode
+    /// would resolve: the tail is a pre-declaration the responder receives NOW, as part of
+    /// the proposal CR 732.2b lets them accept or shorten, so a hidden identity there leaks
+    /// on exactly the same footing as one in the head.
+    ///
+    /// # Coverage this row creates rather than repeats
+    ///
+    /// `TargetPin::Scheduled` has exactly ONE occurrence in this file — the production arm
+    /// inside `pins_name_hidden_source` — and zero in its tests, so before this row NOTHING
+    /// in the tree failed for either mutation below.
+    ///
+    /// # Non-vacuity / discrimination
+    ///
+    /// The PUBLIC subject is FIRST, so a walk that reads only `head()` keeps the declaration
+    /// and fails the negative. Paired positives: the proposer's own projection keeps it in
+    /// the hidden arm, and an ALL-PUBLIC two-subject ranking on the same board reaches the
+    /// non-proposer unchanged — so a redactor that dropped every ranked declaration fails
+    /// here. The head's publicness is asserted structurally on the proposer's copy, so a
+    /// fixture that silently built a hidden head cannot satisfy the negative for the wrong
+    /// reason.
+    ///
+    /// REVERT-PROBES: (a) walk only `ranking.head()` instead of `iter()` ⇒ the hidden TAIL is
+    /// never seen ⇒ the declaration survives for the non-proposer ⇒ FAILS; (b) write
+    /// `AnnouncementSubject::Object(_) => false` (mirroring the `Seat => false` line directly
+    /// above it) ⇒ FAILS. Both leave every other row in this module green.
+    ///
+    /// This row mints through `d5h_offer_decisions` and reads through
+    /// `d5h_projected_declaration`, so it adds NO new `WaitingFor::LoopShortcut {` literal —
+    /// `tests/integration/loop_shortcut_offer_writer_census.rs` pins this file's production
+    /// multiset at 2 and would red on a third.
+    #[test]
+    fn r1k_a_public_subject_ahead_of_a_hidden_one_in_a_ranking_still_drops_the_declaration() {
+        use crate::analysis::decision_template::{
+            AnnouncementSubject, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+        };
+        use crate::types::game_state::YieldTarget;
+
+        // A card identity occupies no zone, so `source_hidden` answers `false` for it by an
+        // explicit production arm — a head that is public BY RULE, not by absence.
+        let public_subject = AnnouncementSubject::Object(YieldTarget::AllCopies {
+            card_id: CardId(4242),
+            trigger_description: None,
+        });
+        let ranked_pin =
+            |ranking: Ranking, slot: &crate::analysis::decision_template::DecisionSlot| {
+                vec![PinnedDecision::Targets {
+                    slot: slot.clone(),
+                    targets: vec![TargetPin::Scheduled(TargetSchedule::Constant(ranking))],
+                }]
+            };
+
+        // ── the hostile arm: subject 1 is public, subject 2 names the hidden hand card ──
+        let hidden_state = d5h_offer_decisions(|hidden, slot| {
+            let ranking = Ranking::new(vec![
+                public_subject.clone(),
+                AnnouncementSubject::Object(YieldTarget::ThisObject {
+                    source_id: hidden,
+                    incarnation: Some(1),
+                    trigger_description: None,
+                }),
+            ])
+            .expect("two distinct subjects");
+            ranked_pin(ranking, slot)
+        });
+        let proposer_copy = d5h_projected_declaration(&hidden_state, D5H_PROPOSER)
+            .expect("reach-guard + positive: the PROPOSER's own projection keeps the declaration");
+        match &proposer_copy.decisions[0] {
+            PinnedDecision::Targets { targets, .. } => {
+                match &targets[0] {
+                    TargetPin::Scheduled(TargetSchedule::Constant(ranking)) => {
+                        assert_eq!(
+                            ranking.iter().count(),
+                            2,
+                            "reach-guard: the ranking really carries TWO subjects — on a \
+                             one-subject ranking `head()` and `iter()` are the same function, \
+                             which is why this row exists"
+                        );
+                        assert_eq!(
+                            ranking.head(),
+                            &public_subject,
+                            "reach-guard: the HEAD carries no hidden identity, so a walk that \
+                             stops at the head must look further to answer correctly"
+                        );
+                    }
+                    other => panic!("the fixture pins a Constant ranking, got {other:?}"),
+                };
+            }
+            other => panic!("the fixture pins one Targets decision, got {other:?}"),
+        }
+        assert!(
+            d5h_projected_declaration(&hidden_state, D5H_VIEWER).is_none(),
+            "CR 732.2b: ONE subject naming an object this viewer may not see drops the ENTIRE \
+             declaration, however many public subjects precede it in the ranking"
+        );
+
+        // ── the paired positive: the SAME two-subject shape with no hidden identity ──
+        let public_state = d5h_offer_decisions(|_hidden, slot| {
+            let ranking = Ranking::new(vec![
+                public_subject.clone(),
+                AnnouncementSubject::Seat(D5H_VIEWER),
+            ])
+            .expect("two distinct subjects");
+            ranked_pin(ranking, slot)
+        });
+        assert_eq!(
+            d5h_projected_declaration(&public_state, D5H_VIEWER),
+            d5h_projected_declaration(&public_state, D5H_PROPOSER),
+            "a two-subject ranking with no hidden identity reaches the opponent UNCHANGED — \
+             without this arm a redactor that dropped every ranked declaration would pass the \
              negative above"
         );
         assert!(
