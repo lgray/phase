@@ -257,3 +257,22 @@ local_resource('coverage',
     auto_init = False,
     labels = ['data'],
 )
+
+# The only local enforcement venue for `probe-pin check` (CI enrollment needs a workflow edit,
+# which is a hard stop). Measured cost: 6.25s cold, 0.11s incremental, 0.046s for 10 isolated
+# probe runs -- so an automatic trigger with narrow deps, not a manual knob. This price holds
+# ONLY while the manifest pins probe-pin's own test binary; an engine-census manifest is ~25s
+# of runs plus an engine build and must be re-priced before it is added here.
+local_resource('probe-pin-check',
+    # Separate CARGO_TARGET_DIR (same reason as 'clippy'): probe-pin's dep tree is disjoint
+    # from the engine's, so a shared dir would mutually invalidate fingerprints.
+    cmd = ['bash', '-c',
+           'CARGO_TARGET_DIR=target/probe-pin cargo probe-pin check crates/probe-pin/tests/fixtures/dogfood.toml'],
+    deps = ['crates/probe-pin/', 'docs/probe-pin.md'],
+    # TMP_IGNORE is a FILENAME glob ('**/*.tmp.*') and does not match a tmp/ DIRECTORY, so the
+    # Tier-2 tests' scratch writes under tests/fixtures/tmp/ would retrigger this resource.
+    ignore = TMP_IGNORE + ['**/tmp/**'],
+    auto_init = 'lint' in enabled,
+    allow_parallel = True,
+    labels = ['lint'],
+)

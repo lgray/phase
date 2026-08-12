@@ -1,0 +1,241 @@
+# probe-pin
+
+probe-pin turns a *probe* — a mutation of the tree plus an expectation about a test's outcome —
+into a regenerable, digest-stamped block of comments in source. The block is the artifact a
+reviewer reads; the manifest is the thing that regenerates it; the digest is what makes a stale
+block loud instead of decorative.
+
+The tool exists to enforce exactly two invariants:
+
+1. **probe-pin never writes the tree it measures.** Mutants are materialized in a scratch
+   directory outside the workspace and bind-mounted over the real path inside an unprivileged
+   mount namespace. Every mutated file is sha256'd before and after the run. That scratch
+   directory is asserted to be outside the workspace — and, since a mutant lands at
+   `<scratch>/<probe.id>/<file>`, the two joined KEYS are validated too: an id must be a plain
+   name (`[A-Za-z0-9_-]`), and every manifest path must be workspace-relative with no `..`
+   component. A container assert cannot see a key that joins its way back out of the container.
+2. **No verdict is reported for a run that measured nothing.** A control that selected zero
+   tests is an instrument failure, not a pass.
+
+Everything else in this document is a bound on what a row in the block actually proves.
+
+## Usage
+
+```bash
+cargo probe-pin run          <manifest>   # run every probe, print the block
+cargo probe-pin run --write  <manifest>   # ... and splice it into [output].file
+cargo probe-pin check        <manifest>   # ... and compare it against the committed block
+```
+
+`check` costs the **same target runs as `run`** — it is a re-measurement, not a text
+comparison. Exit codes:
+
+| exit | meaning |
+|---|---|
+| 0 | ok / the committed block matches |
+| 1 | a verdict mismatched its expectation, or the block is stale |
+| 2 | any abort — an instrument failure. Nothing is written. |
+| 101 | probe-pin itself panicked or failed to build (out of contract) |
+
+The local enforcement venue is the Tilt `probe-pin-check` resource. **`probe-pin check` is not
+enforced in GitHub CI**: enrolling it needs a `.github/workflows/**` edit, which is a hard stop
+for agent changes. CI does build the crate and run its tests (`--workspace`).
+
+## Manifest
+
+```toml
+version = 1                                  # unknown value -> refuse
+
+[target]
+mode         = "runtime-read"                # "compiled" parses and is REJECTED (see below)
+package      = "engine"                      # cargo -p     — binary RESOLUTION only
+test         = "integration"                 # cargo --test
+filter       = "loop_shortcut_seat_pin_census"
+filter_match = "substring"                   # or "exact" -> probe-pin appends --exact
+args         = []                            # appended LAST to the argv; reserved flags refused
+env          = { RUST_MIN_STACK = "16777216" }   # DEFAULT, not empty
+timeout_secs = 300                           # exceeded -> killed, and named
+
+[output]
+file   = "crates/engine/tests/integration/loop_shortcut_seat_pin_census.rs"
+marker = "PROBE-PIN"
+
+[[probe]]
+id    = "P0_control"                         # [A-Za-z0-9_-]: an id is a scratch path SEGMENT
+claim = "no mounts, unmodified tree — the instrument itself"
+  [probe.expect]
+  outcome = "pass"
+# EXACTLY ONE zero-mutation probe is required: it is the control.
+
+[[probe]]
+id = "P1_revert_interaction"
+  [[probe.mutation]]                         # 0..N, APPLIED IN ORDER
+  kind = "replace"                           # or "prepend" { files, text, repeat }
+  file = "crates/engine/src/game/interaction.rs"
+  find = "…verbatim…"                        # must match EXACTLY once, in the RUNNING text
+  replace = ""                               # may be ""; the MATERIALIZED file must differ
+  [[probe.assert_count]]                     # checked on the FINAL mutant text
+  file = "crates/engine/src/game/interaction.rs"
+  text = "TargetPin::Player" ; count = 1
+  [probe.expect]
+  outcome = "fail"
+  anchor  = ["PROVENANCE SPLIT VIOLATED", "text: \"Ok(TargetPin::Player(*player))\""]
+
+[[projection]]                               # 0..N, optional; shells to ast-grep
+id       = "targetpin_sites"
+pattern  = "TargetPin::Player($$$)"
+paths    = ["crates/engine/src", "crates/server-core/src"]
+sentence = "`TargetPin::Player` is constructed or matched at {count} sites."
+```
+
+probe-pin owns `--format`, `-Z`, `--nocapture`, `--show-output`, `--test-threads`, `--quiet` and
+`--exact`; `[target].args` may not pass them. It runs the target with libtest's JSON record
+format (`--format json -Z unstable-options`, **nightly-only surface**) and requires a pure
+record stream on stdout, so `--nocapture` would corrupt the instrument.
+
+Anchors match **inside one `{"type":"test"}` `event:"failed"` record's capture buffer** — that
+test's own `println!`, `eprintln!` and panic message, and nothing from any other test. All
+anchors in the list must hit inside the same record.
+
+## What a row proves, and what it does not
+
+**`fail` rows.** `Verdict::Fail` means the target failed *and* every anchor hit inside one
+failed-test record. A target failure whose anchors do not all land in one record is reported as
+a verdict mismatch (exit 1) naming the missed anchor — never as a pass — and `run --write` does
+not splice a block for a run that exits non-zero.
+
+**`pass` rows** prove **visible-and-still-passing**, not read-and-still-passing. The mutant
+differed from the original, was visible at the target's path inside the namespace (proved by a
+`cmp` readback), the harness ran to completion, and the assertion still passed. The row's
+"firing assertion" cell renders `mount reached: N file(s)` to say exactly that. Three ways a
+`pass` row is silent about reading, all measured:
+
+1. **`include_str!` bakes the original bytes at build time.** The target binary is built
+   outside the namespace, by design, so a compile-time read can never see the mutant.
+2. **A bind mount is path-scoped.** Any second hardlink to the same inode still serves the
+   original bytes.
+3. A manifest naming a file the target's scan root no longer covers yields a green pass row
+   forever.
+
+## Isolation model
+
+Each probe runs as `unshare --map-root-user --mount bash -c <script>`; the script bind-mounts
+every mutant over its real path, `cmp -s`-reads each one back, and `exec timeout -k 5 …`s the
+target. The mounts are private to that process and vanish on exit.
+
+**Mount-isolated is not write-isolated (N-10).** `unshare --mount` stops *probe-pin* from
+writing your tree. It does not stop the *target* from writing anywhere it likes, including
+gitignored `target/`. probe-pin's guarantees are about probe-pin, not about your test.
+
+**`env_clear()` is scoped to the target run only (MAJOR-3).** The target child's environment is
+constructed — `PATH`, `HOME`, `RUST_BACKTRACE=0`, `RUST_MIN_STACK` (default `16777216`,
+overridable), then `[target].env` — so two developers with different shells pin the same capture
+bytes. The `cargo`, `rustc` and `ast-grep` shell-outs **inherit** the ambient environment
+unmodified: clearing them would strip `CARGO_HOME`/`CARGO_TARGET_DIR` and silently resolve
+against the shared `~/.cargo` instead of a per-worktree home.
+
+**Scratch location.** Mutants go in a `TempDir` under `TMPDIR`, and probe-pin asserts that
+directory is not inside the workspace. If your `TMPDIR` is inside the worktree, probe-pin
+aborts rather than creating files under the tree it is measuring.
+
+## Anchors may not embed line numbers — and the bound on that lint
+
+A source line number moves on every unrelated edit above it, so an anchor containing one rots
+without the pinned behaviour changing. Validation rejects three forms, at zero target runs:
+
+```
+\bline\s*[:=]?\s*\d      ∪      \.[A-Za-z]{1,5}:\d+      ∪      :\d+:\d+
+```
+
+Measured against the ten shipping anchors of the real corpus (0 rejected) and nine hostile
+spellings (7 rejected).
+
+**Named residual.** The lint cannot catch a positional integer that is syntactically
+indistinguishable from a legitimate count. The boundary is two strings that differ only in the
+integer:
+
+```
+shipping anchor : ("engine/src/game/engine.rs", 1)       accepted (correctly)
+hostile twin    : ("engine/src/game/engine.rs", 11492)   accepted (the miss)
+```
+
+`L11492` is the other measured miss. Any regex that rejects the hostile form also rejects the
+real shipping anchor, so no lint closes this. The behavioural alternative — re-running each
+probe against a line-shifted tree — is measurably unsound (a line number originating in a file
+no probe mutates survives it) and costs a target run per probe, so it is not shipped. Revisit if
+an anchor of the `("<path>", <int>)` shape is ever authored with a *line* in the integer slot.
+
+Two probes whose anchor lists are byte-identical, or whose anchor list fully matches another
+probe's captured failure, are refused: they do not distinguish each other, so the pin would stay
+green if one of the two mutations stopped firing. The escape is to merge the two probes or to
+make the target's assertion message distinguish them — *not* to add a unique anchor, which may
+be impossible when the only distinguishing text is a line number.
+
+## The block, the digest, and instruments
+
+```
+// human intent prose lives HERE, above the marker, and is never touched — and never validated
+// PROBE-PIN:BEGIN manifest=probe-pin/seat-pin.toml digest=sha256:eb93eb0d0322246d
+// instrument rustc = rustc 1.97.0-nightly (0febdbab2 2026-04-18)
+// instrument ast-grep = ast-grep 0.44.1
+// | probe | mutation | expect | verdict | firing assertion (anchor) | provenance |
+// |---|---|---|---|---|---|
+// | P0_control | (none) | pass | pass | (control; no mounts) | — |
+// probe-pin validates only the lines between BEGIN and END. Prose outside is never checked.
+// PROBE-PIN:END
+// more human prose HERE, below the marker, also never touched and also never validated
+```
+
+**Out-of-marker prose is a known non-guarantee.** probe-pin validates the lines between `BEGIN`
+and `END`. Prose above, below, or anywhere else is never read, never validated, and never
+invalidated by this tool. Detecting stale free prose requires reading intent, and no instrument
+does that. If you write interpretation, label it yourself.
+
+**The digest pins what was MEASURED**, not just the outcomes: the whole `[target]` (including
+`filter`, `filter_match`, `args`, `env` and `timeout_secs`), `[output]`, every probe's inputs and
+its observed exit code and verdict, the control, every projection's `pattern` and sorted `paths`
+and count, and the instrument list. Narrowing a filter or subsetting a projection's paths
+changes the digest even when every verdict and count is identical. Excluded: `:line:col`,
+durations, PIDs, absolute paths, and completion order.
+
+**Line numbers are excluded from the render, the digest and anchors** — one rule applied three
+times. A line number is not evidence a committed artifact can carry, because it changes without
+the pinned behaviour changing. If you need the line, run the target: probe-pin's messages name
+the file and the assertion text.
+
+**An instrument is recorded iff it produced a number in the block.** `rustc` always did — every
+verdict came through libtest's nightly-only JSON surface — so it is unconditional. `ast-grep`
+only did when the manifest declares at least one projection, so its line appears only then.
+`PROBE_PIN_ASTGREP` overrides the ast-grep binary; there is no `rustc` twin, because `rustc` is
+on `PATH` wherever cargo built the target.
+
+**Projections are per-manifest.** A manifest that declares one and cannot run the tool aborts:
+probe-pin will not emit a block whose projection sentence is silently missing.
+
+**`run --write` refuses** when an instrument moved **and** a measured number moved — exactly
+when attribution is impossible and obeying would destroy the evidence of which one changed it.
+The escape needs no flag: reduce the block to a bare `BEGIN`/`END` pair and re-run, which shows
+the deliberate act in the PR diff. A toolchain bump alone (measured numbers identical) simply
+re-stamps; `rust-toolchain.toml` has moved twice in this repository's entire history.
+
+## Compiled mode (deferred)
+
+`[target].mode = "compiled"` parses and is rejected at validation time with an explicit
+deferral message. Only `runtime-read` ships: the mutant is bind-mounted and read as **text**,
+never compiled.
+
+It is deferred rather than removed because the guards it needs are known and measured. Cargo
+fingerprints on mtime; a bind mount presents the mutant's mtime and unmounting restores an
+*older* one, so cargo skips the rebuild and the next verdict is silently the previous probe's:
+
+```
+### mutant, fresh mtime ###        Compiling probe-scratch = 1  -> test result: FAILED  (correct)
+### control immediately after ###  Compiling probe-scratch = 0  -> test result: FAILED  (WRONG)
+### control on a FRESH target dir ###                           -> test result: ok. 1 passed
+```
+
+`touch`ing the real source fixes it and writes your worktree, which is prohibited. Compiled mode
+therefore needs **both**: a fresh `CARGO_TARGET_DIR` per probe under the tool's scratch root, and
+a mandatory `Compiling <package>` assertion on every compiled build, the control included —
+absence aborts. Until that ships, prose about compiled behaviour has no instrument here, and its
+honest home is outside the markers, where probe-pin explicitly never validates it.
