@@ -53,6 +53,21 @@ The local enforcement venue is the Tilt `probe-pin-check` resource. **`probe-pin
 enforced in GitHub CI**: enrolling it needs a `.github/workflows/**` edit, which is a hard stop
 for agent changes. CI does build the crate and run its tests (`--workspace`).
 
+**The Tier-2 suite does not run in CI, and this is measured, not assumed.** GitHub's runners deny
+unprivileged user namespaces — `unshare --map-root-user --mount` fails with
+`write failed /proc/self/uid_map: Operation not permitted` — so every test in
+`tests/isolation_e2e.rs` carries `#[ignore]`. CI therefore covers `pure_logic` (schema,
+validation, verdict, digest and drift logic) but never exercises a real mount. Run Tier 2 where
+namespaces work:
+
+```bash
+cargo test -p probe-pin --test isolation_e2e -- --ignored
+```
+
+`#[ignore]` rather than a runtime capability check, on purpose: a test that silently no-ops when
+the namespace is unavailable reports as **passed**, which is exactly the unmeasured-green this
+tool exists to refuse. An ignored test reports as ignored.
+
 ## Manifest
 
 ```toml

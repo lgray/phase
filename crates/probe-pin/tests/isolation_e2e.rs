@@ -7,6 +7,27 @@
 //! Rows 1, 2 and 21 execute their own DROP arms: each is defined as a mutation of the
 //! isolation SCRIPT (drop the readback / compare the mutant with itself / copy instead of
 //! mount), so the test derives the mutant script and runs it through the same entry point.
+//!
+//! # Every test here is `#[ignore]`d, and that is a measurement, not a preference
+//!
+//! GitHub's runners deny unprivileged user namespaces: `unshare --map-root-user --mount`
+//! fails with `write failed /proc/self/uid_map: Operation not permitted`. Measured on
+//! <https://github.com/phase-rs/phase/actions/runs/31646292055> — 14 of these 15 tests failed
+//! there for that one reason, spread across all four test shards.
+//!
+//! The suite is ignored WHOLE rather than per failing test. The lone survivor
+//! (`proj_missing_both_paths`) passes only because its manifest is refused at validation,
+//! before `unshare` is ever reached — a property of that fixture, not of the test. Splitting
+//! the suite on "does this manifest happen to abort early" creates a boundary that moves
+//! silently the next time a fixture or a refusal order changes, and a Tier-2 test that stops
+//! reaching Tier 2 is exactly the unmeasured-green this crate exists to refuse.
+//!
+//! `#[ignore]` and not a runtime capability check: a test that quietly no-ops when the
+//! namespace is missing reports as PASSED. That is this crate's own BLOCKER defect wearing a
+//! test harness. An ignored test reports as ignored.
+//!
+//! Run them where namespaces work:
+//! `cargo test -p probe-pin --test isolation_e2e -- --ignored`
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -107,6 +128,7 @@ fn probe_pin_bin(args: &[&str], env: &[(&str, &str)]) -> (i32, String) {
 /// readback catches it; arm C removes the readback too and the same unmounted run reports a
 /// clean PASS — which is the whole reason a `pass` verdict is only worth its readback.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn mount_reach() {
     let dir = tempfile::tempdir().unwrap();
     let mounts = vec![Mount {
@@ -165,6 +187,7 @@ fn mount_reach() {
 /// Row 2: a `Prepend` mutant reaches the target too. The census reports 202 sites under a
 /// real 200-line pad, and 2 when the mount is dropped.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn pad_reach() {
     let dir = tempfile::tempdir().unwrap();
     let padded = format!(
@@ -227,6 +250,7 @@ fn pad_reach() {
 /// 240 s hard kill; with `timeout 0` it would never fire. The abort reported is
 /// `TargetTimedOut` and not the co-firing `HarnessIncomplete { SuiteFinished }`.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn timeout() {
     let t = target("ppfixture_hang", 3, &[("PP_FIXTURE", "hang")]);
     let run = isolate::run(testbin(), &[], &t).unwrap();
@@ -255,6 +279,7 @@ fn timeout() {
 /// set IS the manifest's mutated-file list. Relocating the write alone would stop the row
 /// firing and silently re-vacuate it.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn tree() {
     let dir = tempfile::tempdir().unwrap();
     let t = target("ppfixture_census", 60, &[]);
@@ -308,6 +333,7 @@ fn tree() {
 /// drift or a verdict mismatch, 2 for rot (the pinned code moved so far the probe can no
 /// longer be applied).
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn drift() {
     let dir = root().join(TMP);
     std::fs::create_dir_all(&dir).unwrap();
@@ -382,6 +408,7 @@ fn drift() {
 /// Row 26's both-paths arm: `run --write` and `check` BOTH abort when a declared projection's
 /// tool cannot be run. Neither emits a block with the sentence missing.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn proj_missing_both_paths() {
     let missing = root().join("crates/probe-pin/tests/fixtures/astgrep_does_not_exist");
     let env = [("PROBE_PIN_ASTGREP", missing.to_str().unwrap())];
@@ -407,6 +434,7 @@ fn proj_missing_both_paths() {
 /// (check every probe but not the control) the run still exits 2, but the control has already
 /// been certified on zero tests and the abort names the wrong probe.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn no_tests_selected_ordering() {
     let dir = root().join(TMP);
     std::fs::create_dir_all(&dir).unwrap();
@@ -468,6 +496,7 @@ fn no_tests_selected_ordering() {
 /// being a SUBSET of P2's captured failure is invisible to it; only the all-pairs scan over the
 /// captures sees it, and that scan runs at exactly one call site.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn wiring_discriminate() {
     let (rc, err) = probe_pin_bin(
         &["run", "crates/probe-pin/tests/fixtures/collide.toml"],
@@ -487,6 +516,7 @@ fn wiring_discriminate() {
 /// §7 step 10 is CALLED — invariant (a)'s runtime enforcement. The manifest's target writes an
 /// unmounted path during the CONTROL run, which is a real write to the measured tree.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn wiring_verify_fingerprint() {
     std::fs::create_dir_all(root().join(TMP)).unwrap();
     let file = root().join(TMP).join("tree_write.txt");
@@ -511,6 +541,7 @@ fn wiring_verify_fingerprint() {
 /// §7 step 7's `ControlFailed` branch is CALLED: a control that fails on the unmodified tree is
 /// a broken instrument, and §8's control-failed row is otherwise unreachable.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn wiring_control_failed() {
     let (rc, err) = probe_pin_bin(
         &["run", "crates/probe-pin/tests/fixtures/control_fails.toml"],
@@ -534,6 +565,7 @@ fn wiring_control_failed() {
 /// spliceable block and exited 0. The complement — a control declared `fail` that really does
 /// fail — is `wiring_control_failed` above: an instrument failure, exit 2, no verdict at all.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn wiring_control_goes_through_the_verdict_authority() {
     let (rc, err) = probe_pin_bin(
         &[
@@ -572,6 +604,7 @@ fn tmp_manifest(name: &str, text: &str) -> (PathBuf, String) {
 ///
 /// Both routes run through the real pipeline, so this pins the CALL as well as the condition.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn execution_floor_aborts_a_zero_run() {
     let base = std::fs::read_to_string(root().join("crates/probe-pin/tests/fixtures/dogfood.toml"))
         .unwrap()
@@ -633,6 +666,7 @@ fn execution_floor_aborts_a_zero_run() {
 /// Revert-probe: delete the `validate_paths` call from `main.rs` and this arm goes to rc 0 with
 /// the block written at the symlink's target.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn wiring_validate_paths() {
     let outside = tempfile::tempdir().unwrap();
     let victim = outside.path().join("escape.md");
@@ -694,6 +728,7 @@ fn wiring_validate_paths() {
 /// The dogfood: probe-pin runs its own committed manifest against its own committed block.
 /// This is the same invocation the Tilt `probe-pin-check` resource makes.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn dogfood_check() {
     let (rc, err) = probe_pin_bin(
         &["check", "crates/probe-pin/tests/fixtures/dogfood.toml"],
@@ -705,6 +740,7 @@ fn dogfood_check() {
 /// The isolation model itself: a run under `unshare` never sees the ambient environment, and
 /// `Run`'s streams are never merged.
 #[test]
+#[ignore = "Tier 2: drives probe-pin through `unshare --map-root-user --mount`. CI runners deny unprivileged user namespaces (uid_map EPERM), so the whole suite runs locally only: `cargo test -p probe-pin --test isolation_e2e -- --ignored`."]
 fn streams_are_separate() {
     let t = target("ppfixture_census", 60, &[]);
     let run: Run = isolate::run(testbin(), &[], &t).unwrap();
