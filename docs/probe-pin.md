@@ -27,6 +27,9 @@ cargo probe-pin run --write  <manifest>   # ... and splice it into [output].file
 cargo probe-pin check        <manifest>   # ... and compare it against the committed block
 ```
 
+`<manifest>` must live **inside the workspace**: its path is stamped into the BEGIN line and
+into the digest, so an absolute one would pin a block no other checkout can reproduce.
+
 `check` costs the **same target runs as `run`** — it is a re-measurement, not a text
 comparison. Exit codes:
 
@@ -48,13 +51,16 @@ version = 1                                  # unknown value -> refuse
 
 [target]
 mode         = "runtime-read"                # "compiled" parses and is REJECTED (see below)
-package      = "engine"                      # cargo -p     — binary RESOLUTION only
+package      = "phase-engine"                # cargo -p     — binary RESOLUTION only.
+                                             # The PACKAGE name, which is not the lib TARGET name:
+                                             # crates/engine is package `phase-engine`, [lib] `engine`,
+                                             # and `-p engine` fails to resolve.
 test         = "integration"                 # cargo --test
 filter       = "loop_shortcut_seat_pin_census"
 filter_match = "substring"                   # or "exact" -> probe-pin appends --exact
 args         = []                            # appended LAST to the argv; reserved flags refused
 env          = { RUST_MIN_STACK = "16777216" }   # DEFAULT, not empty
-timeout_secs = 300                           # exceeded -> killed, and named
+timeout_secs = 300                           # exceeded -> killed, and named; 0 is REFUSED
 
 [output]
 file   = "crates/engine/tests/integration/loop_shortcut_seat_pin_census.rs"
@@ -71,12 +77,14 @@ claim = "no mounts, unmodified tree — the instrument itself"
 id = "P1_revert_interaction"
   [[probe.mutation]]                         # 0..N, APPLIED IN ORDER
   kind = "replace"                           # or "prepend" { files, text, repeat }
+                                             # every mutation must name >= 1 file
   file = "crates/engine/src/game/interaction.rs"
   find = "…verbatim…"                        # must match EXACTLY once, in the RUNNING text
   replace = ""                               # may be ""; the MATERIALIZED file must differ
   [[probe.assert_count]]                     # checked on the FINAL mutant text
   file = "crates/engine/src/game/interaction.rs"
-  text = "TargetPin::Player" ; count = 1
+  text = "TargetPin::Player"
+  count = 1
   [probe.expect]
   outcome = "fail"
   anchor  = ["PROVENANCE SPLIT VIOLATED", "text: \"Ok(TargetPin::Player(*player))\""]
@@ -128,9 +136,11 @@ writing your tree. It does not stop the *target* from writing anywhere it likes,
 gitignored `target/`. probe-pin's guarantees are about probe-pin, not about your test.
 
 **`env_clear()` is scoped to the target run only (MAJOR-3).** The target child's environment is
-constructed — `PATH`, `HOME`, `RUST_BACKTRACE=0`, `RUST_MIN_STACK` (default `16777216`,
-overridable), then `[target].env` — so two developers with different shells pin the same capture
-bytes. The `cargo`, `rustc` and `ast-grep` shell-outs **inherit** the ambient environment
+constructed — `PATH`, `HOME`, `RUST_MIN_STACK` (default `16777216`, overridable), then
+`[target].env` — so two developers with different shells pin the same capture bytes.
+`RUST_BACKTRACE` is deliberately **not** re-set: an unconditional set produces identical capture
+bytes whether or not the clear ran, which is how row 12's backtrace arm went vacuous. Absent from
+a cleared environment libtest reads it as off, and `[target].env` can still turn it on. The `cargo`, `rustc` and `ast-grep` shell-outs **inherit** the ambient environment
 unmodified: clearing them would strip `CARGO_HOME`/`CARGO_TARGET_DIR` and silently resolve
 against the shared `~/.cargo` instead of a per-worktree home.
 

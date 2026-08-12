@@ -305,6 +305,17 @@ pub fn validate(m: &Manifest) -> anyhow::Result<()> {
             return Err(Abort::ReservedArg { arg: arg.clone() }.into());
         }
     }
+    if m.target.timeout_secs == 0 {
+        bail!("probe-pin: [target].timeout_secs = 0 disables `timeout` entirely — `timeout -k 5 0` runs the child to completion, so a hung target would never be killed and never named. Set a positive value. Aborting.");
+    }
+    // The block is the artifact this whole pipeline exists to produce, and `--check` re-verifies
+    // it by resolving `[output].file` against the workspace root. `root.join("../x")` escapes,
+    // and a pin written outside the workspace is a pin no checkout and no CI job can ever
+    // re-measure — the verification loop it was rendered for cannot reach it. Measured: exit 0,
+    // block spliced into a file outside the root. Same rule already governs every mutation path.
+    if !is_workspace_relative(&m.output.file) {
+        bail!("probe-pin: [output].file '{}' is not workspace-relative. The block is resolved against the workspace root, so a path with '..', a root, or a prefix writes the pin outside the repository — where `probe-pin check` and CI can never re-measure it, which is the one thing a pin exists to allow. Name it relative to the workspace root. Aborting.", m.output.file);
+    }
     if m.probes.iter().filter(|p| p.mutations.is_empty()).count() != 1 {
         return Err(Abort::ControlMissing.into());
     }
@@ -314,6 +325,21 @@ pub fn validate(m: &Manifest) -> anyhow::Result<()> {
         }
         if m.probes[..i].iter().any(|q| q.id == p.id) {
             bail!("probe-pin: duplicate probe id '{}'. Probe ids are the block's row keys and the digest's ordering; they must be unique. Aborting.", p.id);
+        }
+        // The control materializes no mutant, and `assert_count` is checked against the mutant
+        // text — so one declared here is pinned into the digest and never evaluated. Measured:
+        // a control carrying `count = 99` of a string that occurs nowhere exited 0, green.
+        if p.mutations.is_empty() && !p.assert_counts.is_empty() {
+            bail!("probe-pin: {} declares assert_count(s) with no mutation. assert_count is checked against the MUTANT text, and a probe with no mutation is the control — it never materializes one, so these would be pinned into the block's digest without ever being evaluated. Move them to the probe whose mutation they describe. Aborting.", p.id);
+        }
+        // An empty file list is not a mutation: it seeds no file, so `mutate::apply`'s per-file
+        // no-op gate never executes, nothing is mounted, and the probe's verdict is about the
+        // UNMODIFIED tree — the control's job, rendered as a `pass` row that claims a mutant was
+        // visible. Refused per MUTATION so it cannot ride along beside one that names a file.
+        for (index, mutation) in p.mutations.iter().enumerate() {
+            if mutation.files().is_empty() {
+                bail!("probe-pin: {} mutation[{index}] names no file. A mutation with an empty file list mutates nothing and mounts nothing, so this probe would measure the unmodified tree and render it as a mutant's verdict. Name the file(s) to mutate, or delete the probe. Aborting.", p.id);
+            }
         }
         for file in p
             .mutations

@@ -547,6 +547,7 @@ fn env_default() {
 fn schema_adequacy() {
     for name in [
         "collide.toml",
+        "control_expect_fail.toml",
         "control_fails.toml",
         "dogfood.toml",
         "p7.toml",
@@ -695,6 +696,216 @@ fn noop() {
         scratch.path()
     )
     .is_ok());
+}
+
+/// Row 18's escape (final review-impl, MAJOR-1): a mutation whose `files` list is EMPTY never
+/// reaches the no-op gate — it seeds no running file, so the per-file loop never executes, no
+/// mount is built, and the probe renders a green `pass` row carrying the control's own firing
+/// text for a run of the UNMODIFIED tree. The refusal is per MUTATION, so the shape cannot be
+/// smuggled in beside one that does name a file either.
+#[test]
+fn mutation_must_name_a_file() {
+    let text = std::fs::read_to_string(fixtures().join("dogfood.toml")).unwrap();
+    let parse = |t: &str| toml::from_str::<Manifest>(t).expect("manifest parses");
+    // positive: the shipping manifest, unedited, validates
+    manifest::validate(&parse(&text)).unwrap();
+
+    let empty = text.replace(
+        "  files  = [\"crates/probe-pin/tests/fixtures/prod.txt\"]",
+        "  files  = []",
+    );
+    assert_ne!(
+        empty, text,
+        "the fixture edit must apply, or this arm is vacuous"
+    );
+    let m = parse(&empty);
+    assert!(
+        m.probes[2].touched().is_empty() && !m.probes[2].mutations.is_empty(),
+        "the shape under test: mutations declared, no file named"
+    );
+    let e = manifest::validate(&m).unwrap_err();
+    assert!(e.to_string().contains("names no file"), "{e}");
+    assert!(e.to_string().contains("P2_pad_reaches_target"), "{e}");
+
+    // beside a real mutation: still refused, and the index names WHICH one
+    let no_file =
+        "  [[probe.mutation]]\n  kind   = \"prepend\"\n  files  = []\n  text   = \"// x\\n\"\n";
+    let mixed = text.replace(
+        "  [[probe.mutation]]\n  kind    = \"replace\"",
+        &format!("{no_file}  [[probe.mutation]]\n  kind    = \"replace\""),
+    );
+    assert_ne!(
+        mixed, text,
+        "the fixture edit must apply, or this arm is vacuous"
+    );
+    let e = manifest::validate(&parse(&mixed)).unwrap_err();
+    assert!(e.to_string().contains("mutation[0] names no file"), "{e}");
+}
+
+/// MAJOR-1's sibling, found by sweeping the same shape (a declaration that never reaches its
+/// gate): `assert_count` is evaluated against the MUTANT text inside `mutate::apply`, which the
+/// control never enters. Measured against the fixed binary before this refusal existed — a
+/// control declaring `count = 99` of a string that occurs nowhere ran green at exit 0, with the
+/// unevaluated triple pinned into the digest.
+#[test]
+fn control_may_not_declare_an_assert_count() {
+    let text = std::fs::read_to_string(fixtures().join("dogfood.toml")).unwrap();
+    let ac = "  [[probe.assert_count]]\n  file  = \"crates/probe-pin/tests/fixtures/prod.txt\"\n  text  = \"NOWHERE\"\n  count = 99\n";
+    let anchor_line = "claim = \"no mounts, unmodified tree — the instrument itself\"\n";
+    let on_control = text.replace(anchor_line, &format!("{anchor_line}{ac}"));
+    assert_ne!(
+        on_control, text,
+        "the fixture edit must apply, or this arm is vacuous"
+    );
+    let m = toml::from_str::<Manifest>(&on_control).expect("manifest parses");
+    assert!(
+        m.probes[0].mutations.is_empty() && !m.probes[0].assert_counts.is_empty(),
+        "the shape under test: the control carries an assert_count"
+    );
+    let e = manifest::validate(&m).unwrap_err();
+    assert!(
+        e.to_string().contains("assert_count(s) with no mutation"),
+        "{e}"
+    );
+    // positive: the SAME assert_count on a probe that mutates is the shipping shape (P1 already
+    // carries one), so the refusal is about the missing mutant, not about assert_count itself
+    assert!(manifest::validate(&toml::from_str::<Manifest>(&text).unwrap()).is_ok());
+}
+
+/// Driver-added. `docs/probe-pin.md`'s manifest example is the surface a first user COPIES, and
+/// it had no mechanical coverage at all — an example is code that never runs, so nothing caught
+/// that it (a) was not valid TOML (`text = "…" ; count = 1`; `;` is not a TOML separator) and
+/// (b) named `package = "engine"`, which does not exist: `crates/engine` is package
+/// `phase-engine` with `[lib] name = "engine"`, so `cargo test -p engine` fails to resolve.
+/// Both shipped. This gate is why the fixtures were clean and the doc was not: fixtures get
+/// parsed by other tests, the doc block got read by humans.
+///
+/// The example carries deliberate `…verbatim…` placeholders, so it cannot be RUN. What is
+/// mechanically checkable is checked: it parses, it validates, and its package resolves.
+#[test]
+fn docs_manifest_example_parses_validates_and_names_a_real_package() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let doc = std::fs::read_to_string(root.join("docs/probe-pin.md")).expect("docs readable");
+    let block = doc
+        .split("```toml\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n```").next())
+        .expect("docs carry a fenced toml manifest example");
+    assert!(
+        block.contains("[[probe]]") && block.contains("[target]"),
+        "extracted the wrong fence, or the example lost its shape: {block:.200}"
+    );
+
+    let m: Manifest = toml::from_str(block)
+        .unwrap_or_else(|e| panic!("the docs manifest example is not valid TOML: {e}"));
+    manifest::validate(&m).expect("the docs manifest example must pass validate()");
+
+    // Every workspace member is `crates/*` (root Cargo.toml: members = ["crates/*"]), so the
+    // package set is readable without shelling to cargo — which would contend for the target
+    // lock Tilt already holds.
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(root.join("crates")).expect("crates/ readable") {
+        let toml_path = entry.expect("dir entry").path().join("Cargo.toml");
+        let Ok(text) = std::fs::read_to_string(&toml_path) else {
+            continue;
+        };
+        if let Ok(v) = toml::from_str::<toml::Value>(&text) {
+            if let Some(n) = v
+                .get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+            {
+                names.push(n.to_string());
+            }
+        }
+    }
+    assert!(
+        names.contains(&"phase-engine".to_string()),
+        "instrument check: the package scan must find a package it is known to contain, else a \
+         missing package would pass vacuously. found: {names:?}"
+    );
+    assert!(
+        !names.contains(&"engine".to_string()),
+        "positive control for the exact defect: `engine` is the lib TARGET name, and if a package \
+         by that name ever exists this test stops discriminating"
+    );
+    assert!(
+        names.contains(&m.target.package),
+        "the docs example names package '{}', which is not a workspace package. `cargo test -p \
+         {}` would abort for anyone copying it. found: {names:?}",
+        m.target.package,
+        m.target.package
+    );
+}
+
+/// Driver-added beyond the final review-impl finding set, after MEASURING the escape the
+/// reviewer had adjudicated as hardening: `[output].file = "../probepin-run/…"` + `run --write`
+/// exited 0 and spliced the block into a file outside the workspace root. That is not a
+/// containment nicety — `check` resolves `[output].file` against the root, so a pin written
+/// outside it is one no checkout and no CI job can re-measure.
+#[test]
+fn output_file_must_be_workspace_relative() {
+    let text = std::fs::read_to_string(fixtures().join("dogfood.toml")).unwrap();
+    for escape in [
+        "../probepin-run/escape.md",
+        "/tmp/escape.md",
+        "crates/../../escape.md",
+    ] {
+        let edited = text.replace(
+            "file   = \"crates/probe-pin/tests/fixtures/dogfood_block.md\"",
+            &format!("file   = \"{escape}\""),
+        );
+        assert_ne!(
+            edited, text,
+            "the fixture edit must apply, or this is vacuous"
+        );
+        let m = toml::from_str::<Manifest>(&edited).expect("manifest parses");
+        assert_eq!(
+            m.output.file, escape,
+            "the escaping path reached the struct"
+        );
+        let e = manifest::validate(&m).unwrap_err();
+        assert!(
+            e.to_string().contains("is not workspace-relative"),
+            "{escape} was accepted: {e}"
+        );
+    }
+    // positive: the shipping path is workspace-relative and still validates, so the refusal is
+    // about the escape and not about `[output].file` being checked at all
+    assert!(manifest::validate(&toml::from_str::<Manifest>(&text).unwrap()).is_ok());
+}
+
+/// Final review-impl, MINOR-5: `timeout_secs = 0` disables the guard instead of tightening it.
+/// The shell behaviour is MEASURED here, not argued — it is the whole reason for the refusal.
+#[test]
+fn timeout_zero_is_refused() {
+    let rc = |secs: &str, sleep: &str| {
+        Command::new("timeout")
+            .args(["-k", "5", secs, "sleep", sleep])
+            .status()
+            .unwrap()
+            .code()
+            .unwrap()
+    };
+    assert_eq!(
+        rc("0", "0.2"),
+        0,
+        "`timeout 0` runs the child to completion"
+    );
+    assert_eq!(rc("1", "5"), 124, "a positive timeout fires");
+
+    let text = std::fs::read_to_string(fixtures().join("dogfood.toml")).unwrap();
+    let zero = text.replace("timeout_secs = 60", "timeout_secs = 0");
+    assert_ne!(
+        zero, text,
+        "the fixture edit must apply, or this arm is vacuous"
+    );
+    let m = toml::from_str::<Manifest>(&zero).expect("manifest parses");
+    assert_eq!(m.target.timeout_secs, 0);
+    let e = manifest::validate(&m).unwrap_err();
+    assert!(e.to_string().contains("disables `timeout`"), "{e}");
+    // positive: the shipping value validates
+    assert!(manifest::validate(&toml::from_str::<Manifest>(&text).unwrap()).is_ok());
 }
 
 // ------------------------------------------------------------------ row 19
@@ -1177,6 +1388,75 @@ fn write_refusal() {
     );
 }
 
+/// Row 29's escape (final review-impl, MAJOR-3): a projection sentence is free-form manifest
+/// text rendered into the same line-space as the `instrument` lines, so classifying by TEXT
+/// PREFIX let a sentence beginning `instrument ` be read as an instrument line — excluded from
+/// the "a measured number moved" comparison, which silently disabled the write refusal and made
+/// `check` print "Measured numbers are unchanged" about a number that had moved 3 -> 6.
+///
+/// The two arms differ by ONE CHARACTER (`instrument` vs `Instrument`), and both blocks come
+/// out of the real `render`, so classification is pinned where it is produced.
+#[test]
+fn projection_sentence_may_start_with_the_word_instrument() {
+    let outcomes = vec![Outcome {
+        id: "P0_control".to_string(),
+        rc: 0,
+        verdict: Verdict::Pass { mounts_reached: 0 },
+    }];
+    let render = |head: &str, ag: &str, count: usize| {
+        let mut m = load("projection.toml");
+        m.projections[0].sentence = format!("{head} sites counted: {{count}}");
+        let counts = vec![ProjectionCount {
+            id: m.projections[0].id.clone(),
+            count,
+        }];
+        block::render(
+            &m,
+            "m.toml",
+            "0123456789abcdef",
+            &[
+                (Instrument::Toolchain, "rustc 1.97.0".to_string()),
+                (Instrument::AstGrep, ag.to_string()),
+            ],
+            &outcomes,
+            &counts,
+        )
+    };
+
+    for head in ["instrument", "Instrument"] {
+        let committed = render(head, "ast-grep 0.44.1", 3);
+        let generated = render(head, "ast-grep 0.45.0", 6);
+        // reach guard: the sentence really is rendered, and the number really did move
+        assert!(
+            committed.contains(&format!("// {head} sites counted: 3")),
+            "{committed}"
+        );
+        assert!(
+            generated.contains(&format!("// {head} sites counted: 6")),
+            "{generated}"
+        );
+
+        let outcome = block::check(&committed, &generated);
+        assert!(
+            block::write_refusal(&outcome, &committed, &generated).is_some(),
+            "a sentence starting {head:?} must not disable the write refusal"
+        );
+        assert!(
+            block::report(&outcome, "m.toml").contains("cannot be attributed"),
+            "a sentence starting {head:?} must not make `check` claim the numbers held still"
+        );
+    }
+
+    // the layout the classification rests on: BEGIN, then the instrument lines CONTIGUOUSLY,
+    // and the projection sentence outside that run however it is spelled.
+    let block = render("instrument", "ast-grep 0.44.1", 3);
+    let lines: Vec<&str> = block.lines().collect();
+    assert!(lines[0].contains(":BEGIN manifest="), "{:?}", lines[0]);
+    assert!(lines[1].starts_with("// instrument rustc = "));
+    assert!(lines[2].starts_with("// instrument ast-grep = "));
+    assert!(!lines[3].starts_with("// instrument "), "{:?}", lines[3]);
+}
+
 // ------------------------------------------------------------------ rows 26, 30
 
 /// Row 26: fail-closed on a missing projection tool — probe-pin will not emit a block whose
@@ -1297,6 +1577,31 @@ fn exit_codes() {
             numbers_moved: false
         }),
         1
+    );
+}
+
+/// Final review-impl, MINOR-6: the manifest path reaches the digest AND the BEGIN line, so an
+/// absolute one stamps a machine-specific path into a committed artifact — the opposite of the
+/// reproducibility the digest exists to provide, and the one manifest path key that was not
+/// validated workspace-relative. The refusal lands at §7 step 2, so this arm costs zero target
+/// runs; before it existed the same invocation ran the whole pipeline and stamped `/tmp/…`.
+#[test]
+fn manifest_outside_the_workspace_is_refused() {
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join("dogfood.toml");
+    std::fs::copy(fixtures().join("dogfood.toml"), &path).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_probe-pin"))
+        .args(["check", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(err.contains("is not inside the workspace root"), "{err}");
+    // and the absolute path never reached a rendered block
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains(":BEGIN manifest=/"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
     );
 }
 

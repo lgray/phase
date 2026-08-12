@@ -526,6 +526,29 @@ fn wiring_control_failed() {
     );
 }
 
+/// §7 step 7 goes through `verdict::verdict` (final review-impl, MAJOR-2). Step 7 used to
+/// CONSTRUCT `Verdict::Pass { mounts_reached: 0 }` for the control by hand, so the one probe
+/// whose whole job is "the instrument works" was the one probe outside the crate's verdict
+/// authority: a control whose expectation the run refutes rendered `| fail | pass |` in a
+/// spliceable block and exited 0. The complement — a control declared `fail` that really does
+/// fail — is `wiring_control_failed` above: an instrument failure, exit 2, no verdict at all.
+#[test]
+fn wiring_control_goes_through_the_verdict_authority() {
+    let (rc, err) = probe_pin_bin(
+        &[
+            "run",
+            "crates/probe-pin/tests/fixtures/control_expect_fail.toml",
+        ],
+        &[],
+    );
+    assert_eq!(rc, 1, "{err}");
+    assert!(err.contains("VERDICT MISMATCH"), "{err}");
+    assert!(
+        err.contains("P0_control expected outcome = \"fail\" but the target PASSED"),
+        "{err}"
+    );
+}
+
 /// The dogfood: probe-pin runs its own committed manifest against its own committed block.
 /// This is the same invocation the Tilt `probe-pin-check` resource makes.
 #[test]

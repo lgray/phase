@@ -340,9 +340,29 @@ pub fn extract(text: &str, marker: &str, file: &Path) -> Result<String, Abort> {
 
 // ---------------------------------------------------------------- check
 
+/// A block's two regions, split by CONSTRUCTION order rather than by what a line says:
+/// `render` emits the BEGIN line, then exactly one `// instrument <tool> = <version>` line per
+/// recorded instrument, then everything that carries a measured number. Every line after that
+/// contiguous leading run is measured — including a projection sentence that happens to begin
+/// with the word `instrument`, which a whole-block prefix test read as an instrument line and
+/// silently dropped from the "a measured number moved" comparison, disabling the write refusal.
+/// One split, both consumers: the two classifications cannot disagree about a line.
+fn regions(block: &str) -> (Vec<&str>, Vec<&str>) {
+    let (mut header, mut measured) = (Vec::new(), Vec::new());
+    for line in block.lines().skip(1) {
+        if measured.is_empty() && line.starts_with("// instrument ") {
+            header.push(line);
+        } else {
+            measured.push(line);
+        }
+    }
+    (header, measured)
+}
+
 fn instrument_lines(block: &str) -> Vec<(Instrument, String)> {
-    block
-        .lines()
+    regions(block)
+        .0
+        .into_iter()
         .filter_map(|l| l.trim_end_matches('\r').strip_prefix("// instrument "))
         .filter_map(|rest| rest.split_once(" = "))
         .filter_map(|(name, version)| {
@@ -354,14 +374,11 @@ fn instrument_lines(block: &str) -> Vec<(Instrument, String)> {
         .collect()
 }
 
-/// Everything the block asserts about the world MINUS the two lines that name the tools and
-/// the digest: the table rows and the projection sentences. If these differ, a measured
-/// number moved.
+/// Everything the block asserts about the world MINUS the BEGIN line and the lines that name
+/// the tools: the table rows and the projection sentences. If these differ, a measured number
+/// moved.
 fn measured_lines(block: &str) -> Vec<&str> {
-    block
-        .lines()
-        .filter(|l| !l.starts_with("// instrument ") && !l.contains(":BEGIN manifest="))
-        .collect()
+    regions(block).1
 }
 
 fn changed_instruments(committed: &str, generated: &str) -> Vec<InstrumentChange> {

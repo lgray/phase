@@ -69,6 +69,29 @@ fn main() -> ExitCode {
     }
 }
 
+/// One probe's measurement, recorded through `verdict::verdict` — the crate's single verdict
+/// authority. Every probe reaches the block through this one function, control included: the
+/// probe whose whole job is "the instrument works" is the last one that should be exempt from
+/// the check that a measurement matched its declared expectation.
+fn record(
+    probe: &manifest::Probe,
+    obs: &verdict::Observed,
+    mounts_reached: usize,
+    outcomes: &mut Vec<Outcome>,
+    captures: &mut BTreeMap<String, Vec<String>>,
+    mismatches: &mut Vec<verdict::Mismatch>,
+) {
+    captures.insert(probe.id.clone(), obs.failed_captures.clone());
+    match verdict::verdict(probe, obs, mounts_reached) {
+        Ok(verdict) => outcomes.push(Outcome {
+            id: probe.id.clone(),
+            rc: obs.rc,
+            verdict,
+        }),
+        Err(mismatch) => mismatches.push(mismatch),
+    }
+}
+
 fn pipeline(manifest_path: &Path, mode: Mode) -> anyhow::Result<u8> {
     // 1. load + validate
     let m = Manifest::load(manifest_path)?;
@@ -76,11 +99,21 @@ fn pipeline(manifest_path: &Path, mode: Mode) -> anyhow::Result<u8> {
 
     // 2. workspace root
     let root = target::workspace_root()?;
+    // Workspace-relative or nothing: this string reaches the digest AND the BEGIN line, so an
+    // absolute path stamps a machine-specific value into a committed artifact — the exact
+    // reproducibility the digest exists to provide (docs/probe-pin.md: "Excluded: … absolute
+    // paths"), and the treatment `is_workspace_relative` already gives every other path key.
     let manifest_rel = manifest_path
         .canonicalize()
         .ok()
         .and_then(|p| p.strip_prefix(&root).ok().map(Path::to_path_buf))
-        .unwrap_or_else(|| manifest_path.to_path_buf())
+        .with_context(|| {
+            format!(
+                "probe-pin: manifest {} is not inside the workspace root {}. Its path is stamped into the block's BEGIN line and into the digest, so an absolute one would pin a block that no other checkout can reproduce. Move the manifest into the workspace and name it relative to the root. Aborting.",
+                manifest_path.display(),
+                root.display()
+            )
+        })?
         .display()
         .to_string();
 
@@ -122,28 +155,33 @@ fn pipeline(manifest_path: &Path, mode: Mode) -> anyhow::Result<u8> {
         }
         .into());
     }
-    let mut outcomes = vec![Outcome {
-        id: control.id.clone(),
-        rc: obs.rc,
-        verdict: verdict::Verdict::Pass { mounts_reached: 0 },
-    }];
+    let mut outcomes: Vec<Outcome> = Vec::new();
     let mut captures: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut mismatches: Vec<verdict::Mismatch> = Vec::new();
+    // The control's verdict comes from the same authority as every other probe's. Constructing
+    // one here instead would report a control whose expectation the run REFUTES as a clean pass.
+    record(
+        control,
+        &obs,
+        0,
+        &mut outcomes,
+        &mut captures,
+        &mut mismatches,
+    );
 
     // 8. every other probe
     for probe in m.probes.iter().filter(|p| !p.mutations.is_empty()) {
         let mounts = mutate::apply(probe, &root, scratch.path())?;
         let run = isolate::run(&testbin, &mounts, &m.target)?;
         let obs = verdict::observe(&probe.id, &run, &m.target, &mounts)?;
-        captures.insert(probe.id.clone(), obs.failed_captures.clone());
-        match verdict::verdict(probe, &obs, mounts.len()) {
-            Ok(v) => outcomes.push(Outcome {
-                id: probe.id.clone(),
-                rc: obs.rc,
-                verdict: v,
-            }),
-            Err(mismatch) => mismatches.push(mismatch),
-        }
+        record(
+            probe,
+            &obs,
+            mounts.len(),
+            &mut outcomes,
+            &mut captures,
+            &mut mismatches,
+        );
     }
 
     // 9. all-pairs discrimination over the captured failed-test records
