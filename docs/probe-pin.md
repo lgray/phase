@@ -14,8 +14,17 @@ The tool exists to enforce exactly two invariants:
    `<scratch>/<probe.id>/<file>`, the two joined KEYS are validated too: an id must be a plain
    name (`[A-Za-z0-9_-]`), and every manifest path must be workspace-relative with no `..`
    component. A container assert cannot see a key that joins its way back out of the container.
-2. **No verdict is reported for a run that measured nothing.** A control that selected zero
-   tests is an instrument failure, not a pass.
+   Lexical cleanliness is only the pre-filter: every manifest path is then **canonicalized and
+   asserted to resolve inside its base** — the workspace root for a file probe-pin reads, the
+   scratch dir for a mutant it writes — because `Path::components()` all `Normal` says nothing
+   about what a component resolves to, and an in-tree symlink satisfies it while landing the
+   write anywhere on the filesystem.
+2. **No verdict is reported for a run that measured nothing.** The floor is on what
+   **executed**, not on what was selected: `passed + failed == 0` aborts. `test_count` reads 1
+   for a normal run, for an `#[ignore]`d pinned test and for a `--bench` argv alike (measured,
+   all three), so a floor on selection is blind to every flag or attribute that suppresses
+   execution. One abort covers both shapes and names which it saw — the filter selected
+   nothing, or everything it selected was skipped.
 
 Everything else in this document is a bound on what a row in the block actually proves.
 
@@ -56,10 +65,10 @@ package      = "phase-engine"                # cargo -p     — binary RESOLUTIO
                                              # crates/engine is package `phase-engine`, [lib] `engine`,
                                              # and `-p engine` fails to resolve.
 test         = "integration"                 # cargo --test
-filter       = "loop_shortcut_seat_pin_census"
+filter       = "loop_shortcut_seat_pin_census"   # a SUBSTRING: may not begin with '-'
 filter_match = "substring"                   # or "exact" -> probe-pin appends --exact
 args         = []                            # appended LAST to the argv; reserved flags refused
-env          = { RUST_MIN_STACK = "16777216" }   # DEFAULT, not empty
+env          = { RUST_MIN_STACK = "16777216" }   # DEFAULT, not empty; probe-pin's own keys refused
 timeout_secs = 300                           # exceeded -> killed, and named; 0 is REFUSED
 
 [output]
@@ -81,7 +90,8 @@ id = "P1_revert_interaction"
   file = "crates/engine/src/game/interaction.rs"
   find = "…verbatim…"                        # must match EXACTLY once, in the RUNNING text
   replace = ""                               # may be ""; the MATERIALIZED file must differ
-  [[probe.assert_count]]                     # checked on the FINAL mutant text
+  [[probe.assert_count]]                     # checked on the FINAL mutant text, so the file
+                                             # must be one THIS probe mutates
   file = "crates/engine/src/game/interaction.rs"
   text = "TargetPin::Player"
   count = 1
@@ -97,13 +107,29 @@ sentence = "`TargetPin::Player` is constructed or matched at {count} sites."
 ```
 
 probe-pin owns `--format`, `-Z`, `--nocapture`, `--show-output`, `--test-threads`, `--quiet` and
-`--exact`; `[target].args` may not pass them. It runs the target with libtest's JSON record
+`--exact`; no manifest value may pass them. It runs the target with libtest's JSON record
 format (`--format json -Z unstable-options`, **nightly-only surface**) and requires a pure
 record stream on stdout, so `--nocapture` would corrupt the instrument.
 
+That check is applied to **every token the manifest contributes to the argv**, enumerated once
+in `Target::manifest_argv` and used by `isolate::argv` to build the real argv — `filter` reaches
+libtest too, as token 0, where getopts parses a `-`-leading token as a flag. `filter` is
+additionally constrained by shape: it is a substring matched against test names, so it may not
+begin with `-`. Hostile flags are *not* enumerated (`--bench` is on no list); the execution
+floor is what covers them, this is what keeps the two argv producers from drifting.
+
+`[target].env` may not set a variable probe-pin itself sets — `PATH`, `HOME`, `PP_MOUNTS`,
+`PP_MUTANT_*`, `PP_TARGET_*`, `TIMEOUT`, `TESTBIN`. The target child is `unshare … bash -c
+SCRIPT`, so `PATH` resolves the `mount` and `cmp` the readback is made of: a manifest pointing it
+at stubs renders `mount reached: N file(s)` for a probe whose mutant was never mounted (measured,
+exit 0). `RUST_MIN_STACK` is the one probe-pin-set variable a manifest may override — it is a
+default, and lowering it kills the target mid-run rather than forging a green row.
+
 Anchors match **inside one `{"type":"test"}` `event:"failed"` record's capture buffer** — that
 test's own `println!`, `eprintln!` and panic message, and nothing from any other test. All
-anchors in the list must hit inside the same record.
+anchors in the list must hit inside the same record. An anchor that is empty after trimming is
+refused for the same reason the empty anchor LIST is: `contains("")` is true of every capture,
+so it is satisfied by any failure at all.
 
 ## What a row proves, and what it does not
 

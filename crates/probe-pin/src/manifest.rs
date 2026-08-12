@@ -72,6 +72,24 @@ pub struct Target {
     pub timeout_secs: u64,
 }
 
+impl Target {
+    /// Every argv token this manifest contributes to the target's command line, in argv order,
+    /// tagged with the field that contributed it.
+    ///
+    /// THE single authority for "which manifest values reach the target's argv". `isolate::argv`
+    /// builds the real argv from this list and `validate` checks RESERVED against it, so the two
+    /// cannot drift: a future field that feeds argv is validated the moment it is added here,
+    /// and is unreachable by `isolate::argv` until it is. `filter` was the miss that made this
+    /// necessary — it is argv token 0, where libtest's getopts parses it as a FLAG if it looks
+    /// like one, and only `args` was ever checked (measured: `filter = "--bench"`, exit 0, a
+    /// green `mount reached: 1 file(s)` row for a run whose every test body was skipped).
+    pub fn manifest_argv(&self) -> Vec<(&'static str, &str)> {
+        std::iter::once(("[target].filter", self.filter.as_str()))
+            .chain(self.args.iter().map(|a| ("[target].args", a.as_str())))
+            .collect()
+    }
+}
+
 fn default_env() -> BTreeMap<String, String> {
     BTreeMap::from([("RUST_MIN_STACK".to_string(), "16777216".to_string())])
 }
@@ -271,11 +289,67 @@ pub fn is_plain_name(id: &str) -> bool {
 
 /// Same rule, one level up: a manifest path is joined onto the workspace root AND onto the
 /// scratch dir, so every component must be a plain name — no root, no prefix, no `..`, no `.`.
+///
+/// LEXICAL only, and that is all it is used for now: `Path::components()` says nothing about
+/// what a component RESOLVES to. It is the pre-filter that gives the actionable `..` message;
+/// `resolve_contained` is the containment assertion.
 pub fn is_workspace_relative(path: &str) -> bool {
     !path.is_empty()
         && std::path::Path::new(path)
             .components()
             .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// Realpath containment: `base.join(key)` must RESOLVE inside `base`. Returns the joined path,
+/// or the reason it escapes.
+///
+/// The lexical check above accepts every path whose components are `Normal`, which an in-tree
+/// SYMLINK satisfies while resolving anywhere on the filesystem (measured: `[output].file`
+/// through one, exit 0, the block spliced outside the repository). `isolate::scratch_dir`
+/// already states containment the only way that holds — canonicalize, then `starts_with` — and
+/// this is that same assertion applied to the keys a manifest supplies, so both path
+/// directions (into the workspace, into the scratch dir) are one function.
+///
+/// The named file need not exist: `[output].file` may be created and a mutant's destination
+/// never exists yet. So what is canonicalized is the deepest ancestor that resolves — nothing
+/// below it exists, so nothing below it can redirect the write. The one exception is a name
+/// that EXISTS but does not resolve, i.e. a dangling symlink, which `canonicalize` cannot see
+/// and `fs::write` follows straight out of the tree; it is refused by name.
+pub fn resolve_contained(base: &std::path::Path, key: &str) -> Result<std::path::PathBuf, String> {
+    if !is_workspace_relative(key) {
+        return Err(format!(
+            "'{key}' is not a relative path with no '..' component"
+        ));
+    }
+    let base_real = base
+        .canonicalize()
+        .map_err(|e| format!("{} cannot be resolved: {e}", base.display()))?;
+    let full = base_real.join(key);
+    let mut probe = full.as_path();
+    let resolved = loop {
+        match probe.canonicalize() {
+            Ok(real) => break real,
+            Err(_) if std::fs::symlink_metadata(probe).is_ok() => {
+                return Err(format!(
+                    "'{key}' passes through {}, a symlink whose target does not exist — a write follows it, and probe-pin cannot prove where to",
+                    probe.display()
+                ))
+            }
+            Err(_) => {
+                probe = probe
+                    .parent()
+                    .ok_or_else(|| format!("'{key}' has no resolvable ancestor"))?;
+            }
+        }
+    };
+    if !resolved.starts_with(&base_real) {
+        return Err(format!(
+            "'{key}' resolves to {}, which is outside {}",
+            resolved.display(),
+            base_real.display()
+        ));
+    }
+    Ok(full)
 }
 
 /// The option NAME a token carries: `--test-threads=4` -> `--test-threads`, `-Zfoo` -> `-Z`.
@@ -286,7 +360,70 @@ pub fn option_name(arg: &str) -> &str {
     arg.split_once('=').map_or(arg, |(k, _)| k)
 }
 
-/// §7 step 1. Everything refusable before the tree is touched or a target is built.
+/// Every manifest value that reaches a process argv POSITIONALLY, tagged with its field.
+/// probe-pin shells three programs that take manifest values — the target (`isolate::argv`),
+/// cargo (`target::resolve`) and ast-grep (`project::count`) — and an operand is where a
+/// leading `-` is reinterpreted as an option by all three grammars. Both measured:
+/// `[target].filter = "--bench"` ran zero test bodies while libtest still reported test_count 1,
+/// and `[[projection]].paths = ["-h"]` made ast-grep print its HELP, which probe-pin counted
+/// into a rendered "named at 30 sites" sentence at exit 0.
+///
+/// Three manifest values are deliberately absent. `[target].args` is the one field whose
+/// contract IS flags — it is checked against `RESERVED` instead. `[target].package`,
+/// `[target].test` and `[[projection]].pattern` are never operands: each is the VALUE of a
+/// preceding flag, so a `-`-leading one is refused by the tool itself before any verdict exists
+/// (measured: `cargo test -p --config --test …` exits 2 via `TargetBuildFailed`).
+pub fn positional_argv_values(m: &Manifest) -> Vec<(String, &str)> {
+    let mut out = vec![("[target].filter".to_string(), m.target.filter.as_str())];
+    for pj in &m.projections {
+        for path in &pj.paths {
+            out.push((
+                format!("[[projection]] '{}' paths entry", pj.id),
+                path.as_str(),
+            ));
+        }
+    }
+    out
+}
+
+/// §7 step 1b. The path refusals that need the workspace ROOT, which step 1 does not have.
+///
+/// Split from `validate` by necessity, not by taste: containment is a realpath assertion and a
+/// realpath needs the base. It runs the moment the root is known and BEFORE the target binary
+/// is resolved, so a refusal still costs zero target runs — the property step 1 had.
+pub fn validate_paths(m: &Manifest, root: &std::path::Path) -> anyhow::Result<()> {
+    if let Err(why) = resolve_contained(root, &m.output.file) {
+        bail!("probe-pin: [output].file '{}' is not workspace-relative: {why}. The block is resolved against the workspace root, so a path that leaves it — through '..', a root, a prefix, or a SYMLINK whose components are all ordinary names — writes the pin outside the repository, where `probe-pin check` and CI can never re-measure it. Name it relative to the workspace root. Aborting.", m.output.file);
+    }
+    for p in &m.probes {
+        for file in p
+            .mutations
+            .iter()
+            .flat_map(Mutation::files)
+            .chain(p.assert_counts.iter().map(|a| a.file.as_str()))
+        {
+            if let Err(why) = resolve_contained(root, file) {
+                bail!("probe-pin: {} names '{file}', which is not a workspace-relative path: {why}. Manifest paths are read from the workspace root and materialized under probe-pin's scratch directory; one that resolves outside the root reads a file this pin does not measure. Aborting.", p.id);
+            }
+        }
+    }
+    // The fourth path producer, and the one that reaches a DIFFERENT program: `project::count`
+    // runs ast-grep with `current_dir(root)` and these paths as its operands, so a path that
+    // resolves outside the root renders a projection sentence counting code this repository does
+    // not contain — a measured number about a tree the pin does not pin.
+    for pj in &m.projections {
+        for path in &pj.paths {
+            if let Err(why) = resolve_contained(root, path) {
+                bail!("probe-pin: [[projection]] '{}' scans '{path}', which is not a workspace-relative path: {why}. A projection counts sites in the tree this manifest pins; a path that resolves outside the workspace root renders a sentence about code no checkout of this repository can re-measure. Aborting.", pj.id);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// §7 step 1. Everything refusable before the tree is touched, a target is built, or the
+/// workspace root is even known. The path keys get their LEXICAL refusal here and their
+/// containment refusal in `validate_paths`, which needs the root.
 pub fn validate(m: &Manifest) -> anyhow::Result<()> {
     if m.version != 1 {
         bail!(
@@ -300,9 +437,34 @@ pub fn validate(m: &Manifest) -> anyhow::Result<()> {
         }
         .into());
     }
-    for arg in &m.target.args {
+    // Every token the manifest puts on the target's argv, not just `[target].args` — one
+    // enumeration, shared with `isolate::argv`, so a field cannot reach the argv unvalidated.
+    for (field, arg) in m.target.manifest_argv() {
         if RESERVED.contains(&option_name(arg)) {
-            return Err(Abort::ReservedArg { arg: arg.clone() }.into());
+            return Err(Abort::ReservedArg {
+                field: field.to_string(),
+                arg: arg.to_string(),
+            }
+            .into());
+        }
+    }
+    // What an OPERAND is, stated positively for every field that becomes one — a filter is a
+    // substring of a test name, a projection path is a directory. Not a list of the flags
+    // someone thought of: `--bench` is deliberately NOT in RESERVED, because enumerating hostile
+    // flags is the shape that already failed twice in this crate, and the execution floor in
+    // `verdict::observe` is what generalizes over the ones nobody named.
+    for (field, value) in positional_argv_values(m) {
+        if value.starts_with('-') {
+            bail!("probe-pin: {field} = \"{value}\" begins with '-'. probe-pin passes it to a program as an OPERAND, where every argv grammar it shells reads a leading '-' as an option instead — measured: `[target].filter = \"--bench\"` ran zero test bodies while libtest still reported test_count 1, and `[[projection]].paths = [\"-h\"]` made ast-grep print its help, which probe-pin counted into a rendered 30-site sentence at exit 0. A filter is a SUBSTRING of a test name; a projection path is a DIRECTORY. Name one. Aborting.");
+        }
+    }
+    // The manifest may not override an environment variable probe-pin itself sets. The refused
+    // set is derived from what `isolate` actually sets, not restated here: `PATH` reaches the
+    // `unshare … bash -c` script, where it resolves the `mount` and `cmp` whose readback is the
+    // only reason a `pass` verdict means anything.
+    for key in m.target.env.keys() {
+        if crate::isolate::is_probe_pin_owned_env(key) {
+            bail!("probe-pin: [target].env sets '{key}', which probe-pin itself sets for the target run. PATH and HOME are constructed so two developers pin the same capture bytes — and PATH resolves the `mount`, `cmp` and `timeout` the isolation script runs, so overriding it renders a green 'mount reached' row for a probe whose mutant was never mounted and never compared (measured). PP_MOUNTS, PP_MUTANT_*, PP_TARGET_*, TIMEOUT and TESTBIN are the script's own inputs. Remove it; RUST_MIN_STACK is the one probe-pin-set variable a manifest may raise. Aborting.");
         }
     }
     if m.target.timeout_secs == 0 {
@@ -351,9 +513,31 @@ pub fn validate(m: &Manifest) -> anyhow::Result<()> {
                 bail!("probe-pin: {} names '{file}', which is not a workspace-relative path. Manifest paths are joined onto the workspace root AND onto probe-pin's scratch directory, so an absolute path or a '..' component reads outside the workspace and materializes the mutant outside the scratch directory — inside the tree probe-pin is measuring. Use a path relative to the workspace root, with no '..' component. Aborting.", p.id);
             }
         }
+        // `assert_count` is evaluated against the MUTANT text, inside `mutate::apply`, so the
+        // only file it can be evaluated on is one this probe mutates. Naming any other file
+        // used to fall back to reading the PRISTINE tree while the failure message said "in
+        // the MUTANT of" — the assertion ran, but on text no mutation had touched, so an author
+        // reading that message believed they had pinned post-mutation state. Refusing is the
+        // half that stays true later: it is the same shape as the control refusal above (a
+        // declaration pinned into the digest that its gate never sees), and it costs zero
+        // target runs, where a corrected message would still have pinned pristine text.
+        for ac in &p.assert_counts {
+            if !p.touched().contains(&ac.file) {
+                bail!("probe-pin: {} declares an assert_count on '{}', which this probe does not mutate. assert_count is checked against the MUTANT text; a file with no mutation has no mutant, so this would assert against the pristine tree — a claim about post-mutation state, measured on pre-mutation text. Mutate that file in this probe, or move the assert_count to the probe that does. Aborting.", p.id, ac.file);
+            }
+        }
         if let Expect::Fail { anchor } = &p.expect {
             if anchor.is_empty() {
                 bail!("probe-pin: {} expects outcome = \"fail\" with an empty anchor list. A failure with no anchor pins nothing — any failure would satisfy it. Aborting.", p.id);
+            }
+            // The identical hazard, one character away: anchors are matched with `contains`,
+            // and EVERY capture contains "". The empty list was refused for exactly this reason
+            // while `anchor = [""]` was accepted — measured: exit 0, a green `fail` row whose
+            // firing-assertion cell is BLANK, which reads to a reviewer as "no anchor was
+            // needed" rather than "any failure satisfies this". `" "` behaves the same, hence
+            // the trim.
+            if let Some(blank) = anchor.iter().find(|a| a.trim().is_empty()) {
+                bail!("probe-pin: {} declares the anchor {blank:?}, which is empty after trimming. Anchors are matched with `contains`, and every capture contains the empty string — so this anchor is satisfied by ANY failure, exactly like the empty anchor list, and it renders as a blank firing-assertion cell that reads as 'no anchor was needed'. Anchor on the text of the assertion this probe pins. Aborting.", p.id);
             }
         }
         for a in p.anchors() {

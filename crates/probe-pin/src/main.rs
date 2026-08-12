@@ -117,6 +117,10 @@ fn pipeline(manifest_path: &Path, mode: Mode) -> anyhow::Result<u8> {
         .display()
         .to_string();
 
+    // 2b. the path refusals that need the root. Between resolving the root and building the
+    // target, so containment is asserted at zero target runs — a refusal must never cost one.
+    manifest::validate_paths(&m, &root)?;
+
     // 3. resolve the target binary — outside the namespace, on the pristine tree
     let testbin = target::resolve(&m.target.package, &m.target.test)?;
 
@@ -144,7 +148,7 @@ fn pipeline(manifest_path: &Path, mode: Mode) -> anyhow::Result<u8> {
     }
     let before = isolate::fingerprint(&root, &touched)?;
 
-    // 7. the control, first — its `test_count > 0` floor gates everything downstream
+    // 7. the control, first — its execution floor gates everything downstream
     let control = m.control();
     let run = isolate::run(&testbin, &[], &m.target)?;
     let obs = verdict::observe(&control.id, &run, &m.target, &[])?;

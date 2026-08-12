@@ -36,6 +36,31 @@ impl std::fmt::Display for HarnessMarker {
     }
 }
 
+/// WHY a run executed no test body. The PARAMETER of the one "this run measured nothing"
+/// abort, not a second abort: the refusal, its consequence and its exit code are identical in
+/// both shapes, and only the sentence naming what libtest reported differs. (CLAUDE.md:
+/// parameterize, don't proliferate — a sibling variant here would be the third spelling of
+/// one instrument failure.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NothingRan {
+    /// libtest selected no test at all: `test_count == 0`.
+    NoneSelected,
+    /// libtest selected tests and executed no body: `passed + failed == 0` with
+    /// `test_count > 0` — an `#[ignore]`, a `--bench` run, a run-time skip.
+    AllSkipped,
+}
+
+impl std::fmt::Display for NothingRan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoneSelected => "[target].filter selected ZERO tests",
+            Self::AllSkipped => {
+                "every test [target].filter selected was SKIPPED — not one test body executed"
+            }
+        })
+    }
+}
+
 /// A tool whose version produced a number in the block. Recorded iff it produced one:
 /// `rustc` always (every verdict comes through libtest's nightly JSON surface), `ast-grep`
 /// only when the manifest declares at least one projection.
@@ -103,8 +128,12 @@ pub enum Abort {
     #[error("probe-pin: this manifest does not declare exactly one control probe. The control is the [[probe]] with zero mutations: it runs the unmodified tree, and it is the only thing that shows the instrument itself works — without exactly one, a green run has no baseline and every verdict in it is unfalsifiable. Declare a single zero-mutation probe (conventionally `P0_control`, expect.outcome = \"pass\"), or delete the extra ones. Aborting.")]
     ControlMissing,
 
-    #[error("probe-pin: [target].args contains \"{arg}\". probe-pin owns --format, -Z, --nocapture, --show-output, --test-threads, --quiet and --exact: it runs the target with libtest's JSON record format, and --nocapture puts raw test output on stdout, which corrupts that stream. Remove it. Aborting.")]
-    ReservedArg { arg: String },
+    /// `field` is the manifest key that CONTRIBUTED the token, from `Target::manifest_argv` —
+    /// the same enumeration `isolate::argv` builds the argv from. It is carried rather than
+    /// hard-coded because `[target].filter` reaches the argv too, FIRST, where libtest's
+    /// getopts parses a `-`-leading token as a flag.
+    #[error("probe-pin: {field} contributes \"{arg}\" to the target's argv. probe-pin owns --format, -Z, --nocapture, --show-output, --test-threads, --quiet and --exact: it runs the target with libtest's JSON record format, and --nocapture puts raw test output on stdout, which corrupts that stream. Remove it. Aborting.")]
+    ReservedArg { field: String, arg: String },
 
     #[error("probe-pin: {probe} anchor \"{anchor}\" embeds a source line number. Line numbers move on every unrelated edit above them, so this anchor would rot without the pinned behaviour changing. Re-anchor on the assertion's text. Aborting.")]
     AnchorEmbedsLineNumber { probe: String, anchor: String },
@@ -199,11 +228,19 @@ pub enum Abort {
     #[error("probe-pin: the control probe '{probe}' (no mounts, unmodified tree) FAILED with exit {rc}. The instrument is broken; every other verdict in this run is meaningless. Aborting.")]
     ControlFailed { probe: String, rc: i32 },
 
-    #[error("probe-pin: {probe} selected ZERO tests: [target].filter = \"{filter}\" with filter_match = \"{filter_match}\" matched nothing (libtest reported test_count 0, {filtered_out} filtered out, exit {rc}). A control that ran nothing is an INSTRUMENT FAILURE, not a pass — every verdict in this run would be about tests that never executed. Check the filter against the target's test names, set filter_match = \"substring\", or remove a selecting flag from [target].args (--skip, --ignored and --exclude-should-panic each measured driving test_count to 0). Aborting.")]
-    NoTestsSelected {
+    /// The EXECUTION floor: `passed + failed == 0`. It is written on the fields that say what
+    /// RAN, because `test_count` only says what was selected — an `#[ignore]`d pinned test and
+    /// a `--bench` run both report `test_count: 1` with no body executed, and both rendered a
+    /// green row. This one condition covers every flag or attribute that suppresses execution,
+    /// including the ones nobody enumerated.
+    #[error("probe-pin: {probe} MEASURED NOTHING — {reason}: libtest reported test_count {test_count}, passed 0, failed 0, ignored {ignored}, {filtered_out} filtered out, exit {rc} (filter = \"{filter}\", filter_match = \"{filter_match}\"). A run that executed no test body is an INSTRUMENT FAILURE, not a pass — every verdict in it would be about tests that never ran. Check the filter against the target's test names, set filter_match = \"substring\", remove a selecting flag from [target].args (--skip, --ignored, --exclude-should-panic and --bench each measured driving the executed count to 0), or remove #[ignore] from the pinned test. Aborting.")]
+    NothingExecuted {
         probe: String,
+        reason: NothingRan,
         filter: String,
         filter_match: FilterMatch,
+        test_count: usize,
+        ignored: usize,
         filtered_out: usize,
         rc: i32,
     },

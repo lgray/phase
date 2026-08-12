@@ -17,7 +17,9 @@ use probe_pin::mutate;
 use probe_pin::project;
 use probe_pin::target;
 use probe_pin::verdict::{self, Verdict};
-use probe_pin::{Abort, CheckOutcome, DriftCause, HarnessMarker, Instrument, InstrumentChange};
+use probe_pin::{
+    Abort, CheckOutcome, DriftCause, HarnessMarker, Instrument, InstrumentChange, NothingRan,
+};
 
 // ------------------------------------------------------------------ helpers
 
@@ -212,7 +214,7 @@ fn reserved_arg() {
         m.target.args = vec![hostile.to_string()];
         let e = abort_of(manifest::validate(&m).unwrap_err());
         assert!(
-            matches!(e, Abort::ReservedArg { ref arg } if arg == hostile),
+            matches!(e, Abort::ReservedArg { ref arg, ref field } if arg == hostile && field == "[target].args"),
             "{hostile}"
         );
     }
@@ -1037,14 +1039,28 @@ fn path_keys_cannot_escape_the_scratch_dir() {
          [probe.expect]\noutcome='pass'\n"
     ));
 
-    // arm 1 — the phenomenon: an unvalidated id writes INSIDE the measured workspace
-    mutate::apply(&id_manifest.probes[1], &ws, scratch.path()).expect("the escape succeeds");
+    // arm 1 — the phenomenon: the JOIN escapes, so the write lands INSIDE the measured
+    // workspace. `mutate::apply` computed exactly this destination and wrote it; the write-side
+    // containment assert now refuses it first (arm 1b), so the escape is performed here to stay
+    // MEASURED rather than merely asserted about.
+    let escaped_dest = scratch.path().join(&hostile_id).join("f.txt");
+    std::fs::create_dir_all(escaped_dest.parent().unwrap()).unwrap();
+    std::fs::write(&escaped_dest, "beta\n").unwrap();
     assert_eq!(
         std::fs::read_to_string(ws.join("VICTIM.rs/f.txt")).unwrap(),
         "beta\n",
-        "the escape must be real, or arm 2 pins nothing"
+        "the escape must be real, or arms 1b and 2 pin nothing"
     );
     std::fs::remove_dir_all(ws.join("VICTIM.rs")).unwrap();
+
+    // arm 1b — the write-side guard: `mutate::apply` refuses that destination by containment,
+    // whatever validation did or did not do about the id's charset
+    let e = mutate::apply(&id_manifest.probes[1], &ws, scratch.path()).unwrap_err();
+    assert!(
+        format!("{e}").contains("outside probe-pin's scratch directory"),
+        "{e}"
+    );
+    assert_eq!(listing(), ["VICTIM2.rs", "f.txt"], "nothing may be written");
 
     // arm 2 — the guard: refused, and NO file appears outside the scratch dir
     let e = guarded(&id_manifest).unwrap_err();
@@ -1061,13 +1077,22 @@ fn path_keys_cannot_escape_the_scratch_dir() {
          [[probe.mutation]]\nkind='replace'\nfile={hostile_file:?}\nfind='alpha'\nreplace='beta'\n\
          [probe.expect]\noutcome='pass'\n"
     ));
-    mutate::apply(&file_manifest.probes[1], &ws, scratch.path()).expect("the escape succeeds");
+    let escaped_dest = scratch.path().join("P1_escaping_file").join(&hostile_file);
+    std::fs::create_dir_all(escaped_dest.parent().unwrap()).unwrap();
+    std::fs::write(&escaped_dest, "beta\n").unwrap();
     assert_eq!(
         std::fs::read_to_string(ws.join("VICTIM2.rs")).unwrap(),
         "beta\n",
         "the mutant must have been written over the workspace file"
     );
     write(&ws, "VICTIM2.rs", "alpha\n");
+
+    // arm 3b — the same write-side guard, on the `.join(rel)` half
+    let e = mutate::apply(&file_manifest.probes[1], &ws, scratch.path()).unwrap_err();
+    assert!(
+        format!("{e}").contains("outside probe-pin's scratch directory"),
+        "{e}"
+    );
 
     // arm 4 — the guard, same half
     let e = guarded(&file_manifest).unwrap_err();
@@ -1662,7 +1687,7 @@ fn no_tests_selected() {
     let e = verdict::observe("P0_control", &run, &t, &[]).unwrap_err();
     assert_eq!(run.rc, 0, "libtest reports a green exit for a 0-test run");
     assert!(
-        matches!(e, Abort::NoTestsSelected { ref probe, filter_match: manifest::FilterMatch::Exact, .. } if probe == "P0_control"),
+        matches!(e, Abort::NothingExecuted { ref probe, filter_match: manifest::FilterMatch::Exact, reason: NothingRan::NoneSelected, .. } if probe == "P0_control"),
         "{e}"
     );
     assert!(e.to_string().contains("INSTRUMENT FAILURE"));
@@ -1673,8 +1698,95 @@ fn no_tests_selected() {
     t.filter_match = manifest::FilterMatch::Substring;
     assert!(matches!(
         verdict::observe("P0_control", &run, &t, &[]).unwrap_err(),
-        Abort::NoTestsSelected { .. }
+        Abort::NothingExecuted {
+            reason: NothingRan::NoneSelected,
+            ..
+        }
     ));
+}
+
+/// The EXECUTION floor — the general guarantee of the class-closure pass, and the one gate that
+/// covers a suppressing flag nobody enumerated.
+///
+/// `test_count` is what the OLD floor read, and it is IDENTICAL (1) across all three shapes
+/// below: a normal run, an `#[ignore]`d pinned test, and a `--bench` argv. That equality is
+/// asserted first, because it is the whole reason the floor had to move to a different field —
+/// and because it is what makes the DROP arm (restore `test_count == 0`) flip both hostile arms
+/// green while every other assertion in this file stays put.
+///
+/// The `#[ignore]` route needs NO manifest change at all, so digest, block and Tilt resource
+/// stay green forever; `--bench` is reachable through `[target].args`, which is why the argv
+/// shape check alone would not have closed it.
+#[test]
+fn execution_floor_reads_what_executed() {
+    let mut t = target();
+    let obs = |run: &Run, t: &Target| verdict::observe("P0_control", run, t, &[]);
+
+    // the reach guard, and the reason the floor moved: SELECTION cannot tell these apart
+    let normal = child("ppfixture_census", &[], &[]);
+    let ignored = child("ppfixture_ignored", &[], &[]);
+    let benched = child("ppfixture_census", &[], &["--bench"]);
+    for (name, run) in [("ignored", &ignored), ("--bench", &benched)] {
+        assert!(
+            run.stdout.contains("\"test_count\": 1"),
+            "{name}: libtest must still report test_count 1, or this test pins nothing: {}",
+            run.stdout
+        );
+        assert_eq!(run.rc, 0, "{name}: libtest exits GREEN on a skipped run");
+    }
+
+    // positive: a run that executed a body is measured
+    let ok = obs(&normal, &t).expect("a normal run must measure");
+    assert_eq!((ok.passed, ok.failed, ok.ignored), (1, 0, 0));
+
+    // hostile 1: the BLOCKER — `#[ignore]` on the pinned test
+    t.filter = "ppfixture_ignored".into();
+    let e = obs(&ignored, &t).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Abort::NothingExecuted {
+                reason: NothingRan::AllSkipped,
+                test_count: 1,
+                ignored: 1,
+                ..
+            }
+        ),
+        "{e}"
+    );
+    assert!(e.to_string().contains("MEASURED NOTHING"), "{e}");
+    assert!(
+        e.to_string().contains("was SKIPPED"),
+        "the message must distinguish skipped from unselected: {e}"
+    );
+
+    // hostile 2: `--bench`, which is deliberately NOT on any denylist
+    t.filter = "ppfixture_census".into();
+    t.args = vec!["--bench".into()];
+    let e = obs(&benched, &t).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Abort::NothingExecuted {
+                reason: NothingRan::AllSkipped,
+                ..
+            }
+        ),
+        "{e}"
+    );
+
+    // and the other parameter of the SAME abort still reads as a selection failure
+    t.args.clear();
+    t.filter = "ppfixture_census_OLDNAME".into();
+    let e = obs(&child("ppfixture_census_OLDNAME", &[], &[]), &t).unwrap_err();
+    assert!(e.to_string().contains("selected ZERO tests"), "{e}");
+    assert!(!e.to_string().contains("was SKIPPED"), "{e}");
+
+    // a FAILING run is executed too: the floor is on passed + failed, not on passed
+    let failed = child("ppfixture_panic", &[("PP_FIXTURE", "panic")], &["--exact"]);
+    t.filter = "ppfixture_panic".into();
+    let obs = obs(&failed, &t).expect("a failing run measured something");
+    assert_eq!((obs.passed, obs.failed), (0, 1));
 }
 
 // ------------------------------------------------------------------ argv + verdict wiring
@@ -1714,6 +1826,365 @@ fn argv_is_live() {
         count(&all) > count(&skipped),
         "[target].args must reach the argv"
     );
+}
+
+// ------------------------------------------------ surface 1: argv (the class, not the field)
+
+/// The ARGV surface. `RESERVED` was checked against `[target].args` while `[target].filter` was
+/// argv token 0 — where libtest's getopts parses it as a flag. The fix is not another field in
+/// the loop: `Target::manifest_argv` is the single enumeration of what the manifest contributes,
+/// `isolate::argv` BUILDS the argv from it, and validation checks the same list, so a future
+/// argv-feeding field is covered by construction.
+///
+/// The DROP arm is `validate` iterating `m.target.args` again: arms 1 and 2 go green, arm 3
+/// (the drift assertion) stays green — which is why arm 3 alone is not the test.
+#[test]
+fn argv_surface_is_one_authority() {
+    let mut m = load("dogfood.toml");
+
+    // arm 1 — a reserved flag in the FILTER slot is refused, and named as the filter
+    m.target.filter = "--format".into();
+    let e = abort_of(manifest::validate(&m).unwrap_err());
+    assert!(
+        matches!(e, Abort::ReservedArg { ref field, ref arg } if field == "[target].filter" && arg == "--format"),
+        "{e}"
+    );
+
+    // arm 2 — the SHAPE constraint, stated as what an OPERAND is. `--bench` is on no denylist
+    // (deliberately: §1's floor is what generalizes), so only the shape rule sees it here.
+    for hostile in ["--bench", "-Zunstable-options", "--list", "-h"] {
+        m.target.filter = hostile.into();
+        let e = manifest::validate(&m).unwrap_err();
+        assert!(
+            e.to_string().contains("begins with '-'")
+                || matches!(abort_of(e), Abort::ReservedArg { .. }),
+            "{hostile} was accepted"
+        );
+    }
+    // positive: an ordinary filter, and a hyphen INSIDE one, still validate
+    for benign in ["ppfixture_census", "census_two-part", ""] {
+        m.target.filter = benign.into();
+        assert!(manifest::validate(&m).is_ok(), "{benign:?} was refused");
+    }
+
+    // arm 2b — the SAME rule on the other program probe-pin hands manifest operands to. `-h`
+    // there is not hypothetical: measured on the shipping binary, ast-grep printed its HELP and
+    // probe-pin counted the lines into a rendered "named at 30 sites" sentence, exit 0.
+    let mut p = load("projection.toml");
+    assert_eq!(
+        manifest::positional_argv_values(&p).len(),
+        2,
+        "the enumeration must cover [target].filter AND the projection's paths"
+    );
+    p.projections[0].paths = vec!["-h".into()];
+    let e = manifest::validate(&p).unwrap_err();
+    assert!(e.to_string().contains("begins with '-'"), "{e}");
+    assert!(e.to_string().contains("instrument_sites"), "{e}");
+    p.projections[0].paths = vec!["crates/probe-pin/src".into()];
+    assert!(manifest::validate(&p).is_ok());
+
+    // arm 3 — the drift assertion: the argv is BUILT from the enumeration validation checks.
+    // Every manifest token reaches the argv, and every argv token that is not probe-pin's own
+    // came from that enumeration — so a field cannot reach libtest unvalidated.
+    let mut t = target();
+    t.filter = "ppfixture_census".into();
+    t.args = vec!["--skip".into(), "ppfixture_ignored".into()];
+    t.filter_match = manifest::FilterMatch::Exact;
+    let argv = isolate::argv(&t);
+    let contributed: Vec<&str> = t.manifest_argv().iter().map(|(_, a)| *a).collect();
+    assert_eq!(
+        contributed,
+        ["ppfixture_census", "--skip", "ppfixture_ignored"]
+    );
+    for token in &contributed {
+        assert!(
+            argv.iter().any(|a| a == token),
+            "{token} never reached argv"
+        );
+    }
+    for token in &argv {
+        assert!(
+            isolate::OWNED_FLAGS.contains(&token.as_str()) || contributed.contains(&token.as_str()),
+            "{token} is on the argv and is neither probe-pin's nor the manifest's"
+        );
+    }
+}
+
+// ------------------------------------------------------------------ surface 2: env
+
+/// The ENV surface. `[target].env` was applied LAST with no key restriction, over a child that
+/// is `unshare … bash -c SCRIPT` — so `PATH` resolved the `mount` and `cmp` the readback is made
+/// of. Measured on the shipping binary: a manifest pointing `PATH` at stub `mount`/`cmp`
+/// rendered `mount reached: 1 file(s)` at exit 0 for a probe whose mutant was never mounted.
+///
+/// Arm 2 is the anti-drift half, and the reason the refused set is not a hand-written list
+/// compared against another hand-written list: it reads the keys the SHIPPING child command
+/// actually sets, through `Command::get_envs`, and requires each to be refused.
+#[test]
+fn env_surface_refuses_probe_pin_owned_keys() {
+    let mut m = load("dogfood.toml");
+
+    // arm 1 — the measured attack, plus the rest of the owned set
+    for key in [
+        "PATH",
+        "HOME",
+        "PP_MOUNTS",
+        "PP_MUTANT_0",
+        "PP_TARGET_3",
+        "TIMEOUT",
+        "TESTBIN",
+    ] {
+        m.target.env = BTreeMap::from([(key.to_string(), "/hostile".to_string())]);
+        let e = manifest::validate(&m).unwrap_err();
+        assert!(e.to_string().contains(key), "{key} was accepted: {e}");
+        assert!(
+            e.to_string().contains("probe-pin itself sets"),
+            "{key} -> {e}"
+        );
+    }
+    // positive: the target's OWN variables, and the one documented overridable default
+    m.target.env = BTreeMap::from([
+        ("PP_FIXTURE".to_string(), "treewrite".to_string()),
+        ("RUST_MIN_STACK".to_string(), "268435456".to_string()),
+        ("RUST_BACKTRACE".to_string(), "1".to_string()),
+    ]);
+    assert!(manifest::validate(&m).is_ok());
+
+    // arm 2 — every key the shipping child command sets must be refused by the same authority.
+    // `[target].env` is emptied first, so what remains in `get_envs` is probe-pin's alone.
+    let mut t = target();
+    t.env.clear();
+    let mounts = vec![
+        mutate::Mount {
+            mutant: PathBuf::from("/scratch/P1/a.rs"),
+            target: PathBuf::from("/ws/a.rs"),
+        },
+        mutate::Mount {
+            mutant: PathBuf::from("/scratch/P1/b.rs"),
+            target: PathBuf::from("/ws/b.rs"),
+        },
+    ];
+    let cmd = isolate::child_command(isolate::SCRIPT, Path::new("/bin/true"), &mounts, &t);
+    let keys: Vec<String> = cmd
+        .get_envs()
+        .filter(|(_, v)| v.is_some())
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        keys.iter().any(|k| k == "PP_MUTANT_1") && keys.iter().any(|k| k == "PATH"),
+        "instrument check: the readback must see the real key set, got {keys:?}"
+    );
+    for key in &keys {
+        assert!(
+            isolate::is_probe_pin_owned_env(key) || key == "RUST_MIN_STACK",
+            "the child sets {key}, which [target].env may still override. Either add it to \
+             isolate's owned set or document it like RUST_MIN_STACK. keys: {keys:?}"
+        );
+    }
+}
+
+// ------------------------------------------------------------------ surface 3: filesystem path
+
+/// The PATH surface. `is_workspace_relative` is LEXICAL — every component `Normal` says nothing
+/// about what a component RESOLVES to — so an in-tree symlink satisfies it and lands the write
+/// anywhere on the filesystem (measured on the shipping binary: `[output].file` through one,
+/// exit 0, the block spliced outside the repository).
+///
+/// Arm 1 is the phenomenon: the lexical check ACCEPTS the escaping key, which is what makes the
+/// containment assertion non-vacuous. `isolate::scratch_dir`'s canonicalize-then-`starts_with`
+/// is the in-tree pattern this reuses, in both directions — into the workspace here, and into
+/// the scratch dir in `mutant_destination_cannot_escape_the_scratch_dir`.
+#[test]
+fn path_surface_is_realpath_containment() {
+    let base = tempfile::tempdir().unwrap();
+    let ws = base.path().join("ws");
+    let outside = base.path().join("outside");
+    std::fs::create_dir_all(ws.join("crates")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("victim.rs"), "OUTSIDE\n").unwrap();
+    std::os::unix::fs::symlink(&outside, ws.join("crates/link")).unwrap();
+    std::os::unix::fs::symlink(outside.join("does_not_exist"), ws.join("crates/dangling")).unwrap();
+
+    // arm 1 — the phenomenon: every escaping key below passes the LEXICAL check
+    for key in [
+        "crates/link/victim.rs",
+        "crates/link/new_file.md",
+        "crates/dangling",
+    ] {
+        assert!(
+            manifest::is_workspace_relative(key),
+            "{key} must be lexically clean, or the containment arm is vacuous"
+        );
+        let why =
+            manifest::resolve_contained(&ws, key).expect_err(&format!("{key} escaped containment"));
+        assert!(
+            why.contains("outside") || why.contains("symlink whose target does not exist"),
+            "{key} -> {why}"
+        );
+    }
+    // and the lexical refusals still read as lexical ones
+    for key in ["../escape.md", "/tmp/escape.md", "crates/../../escape.md"] {
+        let why = manifest::resolve_contained(&ws, key).unwrap_err();
+        assert!(why.contains("not a relative path"), "{key} -> {why}");
+    }
+
+    // positive: an existing in-tree file, a file that does not exist yet, and a nested new path
+    std::fs::write(ws.join("crates/real.rs"), "IN\n").unwrap();
+    for key in ["crates/real.rs", "crates/new.md", "crates/deep/new.md"] {
+        assert!(
+            manifest::resolve_contained(&ws, key).is_ok(),
+            "{key} was refused"
+        );
+    }
+
+    // and it is WIRED: validate_paths refuses the same key on both path fields
+    let m = |output: &str, mutated: &str| -> Manifest {
+        toml::from_str(&format!(
+            "version = 1\n\
+             [target]\nmode='runtime-read'\npackage='p'\ntest='t'\nfilter='f'\nfilter_match='substring'\n\
+             [output]\nfile={output:?}\nmarker='PROBE-PIN'\n\
+             [[probe]]\nid='P0_control'\n[probe.expect]\noutcome='pass'\n\
+             [[probe]]\nid='P1'\n[[probe.mutation]]\nkind='replace'\nfile={mutated:?}\nfind='a'\nreplace='b'\n\
+             [probe.expect]\noutcome='pass'\n"
+        ))
+        .expect("manifest parses")
+    };
+    let ok = m("crates/new.md", "crates/real.rs");
+    manifest::validate(&ok).expect("the benign manifest validates");
+    manifest::validate_paths(&ok, &ws).expect("the benign manifest is contained");
+
+    let escaping_output = m("crates/link/new_file.md", "crates/real.rs");
+    manifest::validate(&escaping_output).expect("the LEXICAL pass is the phenomenon");
+    let e = manifest::validate_paths(&escaping_output, &ws).unwrap_err();
+    assert!(e.to_string().contains("[output].file"), "{e}");
+    assert!(e.to_string().contains("is not workspace-relative"), "{e}");
+
+    let escaping_mutation = m("crates/new.md", "crates/link/victim.rs");
+    manifest::validate(&escaping_mutation).expect("the LEXICAL pass is the phenomenon");
+    let e = manifest::validate_paths(&escaping_mutation, &ws).unwrap_err();
+    assert!(e.to_string().contains("P1 names"), "{e}");
+
+    // the fourth path producer: a projection's operands reach ast-grep, in the same tree
+    let mut projecting = load("projection.toml");
+    projecting.projections[0].paths = vec!["crates/link".into()];
+    let e = manifest::validate_paths(&projecting, &ws).unwrap_err();
+    assert!(e.to_string().contains("instrument_sites"), "{e}");
+    assert!(e.to_string().contains("scans"), "{e}");
+    projecting.projections[0].paths = vec!["crates/real.rs".into()];
+    assert!(manifest::validate_paths(&projecting, &ws).is_ok());
+}
+
+/// The same containment rule on the WRITE side, where the base is the scratch dir. `mutate::apply`
+/// writes `scratch.join(probe.id).join(rel)`: both halves are lexically constrained already, and
+/// neither says what the join resolves to. Arm 1 exhibits the escape — a symlink in the scratch
+/// dir named as a plain probe id — writing a mutant straight into the measured workspace.
+#[test]
+fn mutant_destination_cannot_escape_the_scratch_dir() {
+    let base = tempfile::tempdir().unwrap();
+    let ws = base.path().join("ws");
+    let scratch = base.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    write(&ws, "f.txt", "alpha\n");
+    let p = probe(
+        "id='P1_plain_name'\n[[mutation]]\nkind='replace'\nfile='f.txt'\nfind='alpha'\nreplace='beta'\n\
+         [expect]\noutcome='pass'\n",
+    );
+    // the id is a plain name and the file is relative — both LEXICAL checks pass
+    assert!(manifest::is_plain_name(&p.id) && manifest::is_workspace_relative("f.txt"));
+
+    // arm 1 — the phenomenon, with the guard's own base symlinked into the workspace
+    std::os::unix::fs::symlink(&ws, scratch.join("P1_plain_name")).unwrap();
+    let e = mutate::apply(&p, &ws, &scratch).unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("outside probe-pin's scratch directory"),
+        "{e}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("f.txt")).unwrap(),
+        "alpha\n",
+        "nothing may be written into the measured tree"
+    );
+
+    // positive: an ordinary scratch dir still materializes the mutant
+    std::fs::remove_file(scratch.join("P1_plain_name")).unwrap();
+    let mounts = mutate::apply(&p, &ws, &scratch).expect("the shipping shape must survive");
+    assert_eq!(mounts.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(scratch.join("P1_plain_name/f.txt")).unwrap(),
+        "beta\n"
+    );
+}
+
+// ------------------------------------------------------------------ surface 4: anchor semantics
+
+/// The ANCHOR surface. The empty anchor LIST was refused because "any failure would satisfy it";
+/// `all_anchors_in_one` matches with `contains`, and `contains("")` is true for every capture —
+/// so `anchor = [""]` is that identical hazard one character away, and it was accepted
+/// (measured: exit 0, a green `fail` row with a BLANK firing-assertion cell, which reads as "no
+/// anchor was needed").
+#[test]
+fn anchor_surface_refuses_a_blank_anchor() {
+    // the phenomenon: a blank anchor is satisfied by any capture at all
+    assert!(verdict::all_anchors_in_one(
+        &[String::new()],
+        &["a totally unrelated failure".to_string()]
+    ));
+    assert!(!verdict::all_anchors_in_one(
+        &["REAL".to_string()],
+        &["a totally unrelated failure".to_string()]
+    ));
+
+    let mut m = load("dogfood.toml");
+    for hostile in [vec![""], vec![" "], vec!["\t\n"], vec!["REAL ANCHOR", ""]] {
+        m.probes[1].expect = probe_pin::manifest::Expect::Fail {
+            anchor: hostile.iter().map(|s| (*s).to_string()).collect(),
+        };
+        let e = manifest::validate(&m).unwrap_err();
+        assert!(
+            e.to_string().contains("empty after trimming"),
+            "{hostile:?} was accepted: {e}"
+        );
+        assert!(e.to_string().contains("P1_drop_second_site"), "{e}");
+    }
+    // the empty LIST still reports as the empty list, not as a blank anchor
+    m.probes[1].expect = probe_pin::manifest::Expect::Fail { anchor: vec![] };
+    let e = manifest::validate(&m).unwrap_err();
+    assert!(e.to_string().contains("empty anchor list"), "{e}");
+    // positive: the shipping anchors validate
+    assert!(manifest::validate(&load("dogfood.toml")).is_ok());
+}
+
+// ------------------------------------------------------- assert_count says what it measured
+
+/// `assert_count` is evaluated against the MUTANT text, so a file the probe does not mutate had
+/// no mutant — the old fallback read the PRISTINE tree and reported it as "in the MUTANT of".
+/// Refusing is the half that cannot rot: the message stays true because the case is gone.
+#[test]
+fn assert_count_must_name_a_file_this_probe_mutates() {
+    let text = std::fs::read_to_string(fixtures().join("dogfood.toml")).unwrap();
+    let unmutated = text.replace(
+        "  [[probe.assert_count]]\n  file  = \"crates/probe-pin/tests/fixtures/prod.txt\"",
+        "  [[probe.assert_count]]\n  file  = \"crates/probe-pin/tests/fixtures/dogfood.toml\"",
+    );
+    assert_ne!(
+        unmutated, text,
+        "the fixture edit must apply, or this arm is vacuous"
+    );
+    let m = toml::from_str::<Manifest>(&unmutated).expect("manifest parses");
+    assert_eq!(
+        m.probes[1].assert_counts[0].file,
+        "crates/probe-pin/tests/fixtures/dogfood.toml"
+    );
+    let e = manifest::validate(&m).unwrap_err();
+    assert!(
+        e.to_string().contains("which this probe does not mutate"),
+        "{e}"
+    );
+    assert!(e.to_string().contains("P1_drop_second_site"), "{e}");
+
+    // positive: the shipping assert_count names the file its probe mutates
+    assert!(manifest::validate(&toml::from_str::<Manifest>(&text).unwrap()).is_ok());
 }
 
 /// `Verdict::Fail` IS "target failed AND every anchor in ONE record". Its complement is a
@@ -1762,6 +2233,16 @@ fn ppfixture_census() {
         sites, 2,
         "CENSUS VIOLATED: expected 2 sites, got {sites}; text: {text:?}"
     );
+}
+
+/// The execution floor's fixture: a pinned test whose body NEVER RUNS. `#[ignore]` needs no
+/// manifest change at all, so the digest, the block and the Tilt resource stay green forever —
+/// and libtest still reports `test_count: 1` for it, which is why a floor written on
+/// `test_count` cannot see it. The terminal record's `passed`/`failed`/`ignored` can.
+#[test]
+#[ignore = "a probe TARGET, not an assertion: driven by the execution-floor manifests"]
+fn ppfixture_ignored() {
+    assert!(std::fs::read_to_string(PROD).is_ok(), "prod.txt");
 }
 
 /// Row 8's fixture A: UNCONDITIONAL — no `RUST_MIN_STACK` value rescues it.

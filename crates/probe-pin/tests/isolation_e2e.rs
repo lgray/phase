@@ -402,10 +402,10 @@ fn proj_missing_both_paths() {
     }
 }
 
-/// Row 33's ordering arm: the `test_count > 0` floor is evaluated on the CONTROL first, so a
-/// rotted filter aborts naming `P0_control` and no probe is ever run. Under the trivialized
-/// ordering (check every probe but not the control) the run still exits 2, but the control has
-/// already been certified on zero tests and the abort names the wrong probe.
+/// Row 33's ordering arm: the execution floor is evaluated on the CONTROL first, so a rotted
+/// filter aborts naming `P0_control` and no probe is ever run. Under the trivialized ordering
+/// (check every probe but not the control) the run still exits 2, but the control has already
+/// been certified on zero tests and the abort names the wrong probe.
 #[test]
 fn no_tests_selected_ordering() {
     let dir = root().join(TMP);
@@ -441,13 +441,14 @@ fn no_tests_selected_ordering() {
             .map(|_| probe_pin_bin(&["run", &arg], &[]).0)
             .collect();
         let which = if again.iter().all(|r| *r != 2) {
-            "REGRESSION (reproduced 3/3): the test_count floor is not firing on the control"
+            "REGRESSION (reproduced 3/3): the execution floor is not firing on the control"
         } else {
             "FLAKE (1 of 3): the re-runs aborted on the control as specified — MAJOR-3's residual, NOT a floor regression"
         };
         panic!("probe-pin: {which}. exit: first={rc}, re-runs={again:?}, expected 2\n{err}");
     }
-    assert!(err.contains("P0_control selected ZERO tests"), "{err}");
+    assert!(err.contains("P0_control MEASURED NOTHING"), "{err}");
+    assert!(err.contains("selected ZERO tests"), "{err}");
     assert!(err.contains("INSTRUMENT FAILURE"), "{err}");
     assert!(
         !err.contains("P1_drop_second_site") && !err.contains("P2_pad"),
@@ -547,6 +548,147 @@ fn wiring_control_goes_through_the_verdict_authority() {
         err.contains("P0_control expected outcome = \"fail\" but the target PASSED"),
         "{err}"
     );
+}
+
+/// A manifest under the gitignored tmp dir, plus its workspace-relative argument.
+fn tmp_manifest(name: &str, text: &str) -> (PathBuf, String) {
+    let dir = root().join(TMP);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, text).unwrap();
+    let arg = path
+        .strip_prefix(root())
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    (path, arg)
+}
+
+/// The execution floor END TO END — the BLOCKER's exact repro, flipped. A `#[ignore]` on the
+/// pinned test needs no manifest edit at all, so before this floor the digest, the block and the
+/// Tilt resource stayed green forever for a tree nothing measured. Measured on the shipping
+/// binary before the fix: exit 0, and a `| pass | pass | mount reached: 1 file(s) |` row.
+///
+/// Both routes run through the real pipeline, so this pins the CALL as well as the condition.
+#[test]
+fn execution_floor_aborts_a_zero_run() {
+    let base = std::fs::read_to_string(root().join("crates/probe-pin/tests/fixtures/dogfood.toml"))
+        .unwrap()
+        // a probe whose mutant leaves the census passing: the shape that renders a green `pass`
+        // row, which is what a skipped run forges
+        .replace(
+            "  find    = \"SITE-TWO marker beta\\n\"\n  replace = \"\"",
+            "  find    = \"alpha\"\n  replace = \"gamma\"",
+        )
+        .replace("  text  = \"marker\"\n  count = 1", "  text  = \"gamma\"\n  count = 1")
+        .replace(
+            "  outcome = \"fail\"\n  anchor  = [\"CENSUS VIOLATED: expected 2 sites, got 1\",\n             \"text: \\\"SITE-ONE marker alpha\\\\n\\\"\"]",
+            "  outcome = \"pass\"",
+        );
+    // the reach guard: this manifest must be GREEN when the target really runs, or every arm
+    // below aborts for a reason that has nothing to do with the floor
+    let (_, arg) = tmp_manifest("floor_base.toml", &base);
+    let (rc, err) = probe_pin_bin(&["run", &arg], &[]);
+    assert_eq!(rc, 0, "the benign arm must pass: {err}");
+
+    for (name, edit, route) in [
+        (
+            "floor_ignored.toml",
+            base.replace(
+                "filter       = \"ppfixture_census\"",
+                "filter       = \"ppfixture_ignored\"",
+            ),
+            "#[ignore] on the pinned test",
+        ),
+        (
+            "floor_bench.toml",
+            base.replace(
+                "timeout_secs = 60",
+                "timeout_secs = 60\nargs         = [\"--bench\"]",
+            ),
+            "--bench through [target].args",
+        ),
+    ] {
+        assert_ne!(edit, base, "{route}: the edit must apply");
+        let (_, arg) = tmp_manifest(name, &edit);
+        let (rc, err) = probe_pin_bin(&["run", &arg], &[]);
+        assert_eq!(rc, 2, "{route} must abort, got {rc}: {err}");
+        assert!(err.contains("MEASURED NOTHING"), "{route}: {err}");
+        assert!(err.contains("was SKIPPED"), "{route}: {err}");
+        // and it stops at the CONTROL, so no probe's verdict is rendered from a skipped run
+        assert!(err.contains("P0_control"), "{route}: {err}");
+        assert!(!err.contains("PROBE-PIN:BEGIN"), "{route}: {err}");
+    }
+    for name in ["floor_base.toml", "floor_ignored.toml", "floor_bench.toml"] {
+        std::fs::remove_file(root().join(TMP).join(name)).ok();
+    }
+}
+
+/// §7 step 1b is CALLED. `[output].file` through an IN-TREE SYMLINK is lexically clean — every
+/// component is `Normal` — so `validate` accepts it and only the realpath containment assert at
+/// the new call site can refuse it. Measured on the shipping binary before the fix: exit 0, and
+/// the block spliced into a file outside the repository.
+///
+/// Revert-probe: delete the `validate_paths` call from `main.rs` and this arm goes to rc 0 with
+/// the block written at the symlink's target.
+#[test]
+fn wiring_validate_paths() {
+    let outside = tempfile::tempdir().unwrap();
+    let victim = outside.path().join("escape.md");
+    std::fs::write(
+        &victim,
+        "prose above\n// PROBE-PIN:BEGIN placeholder\n// PROBE-PIN:END\nprose below\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root().join(TMP)).unwrap();
+    let link = root().join(TMP).join("escape_link");
+    std::fs::remove_file(&link).ok();
+    std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+    let text = std::fs::read_to_string(root().join("crates/probe-pin/tests/fixtures/dogfood.toml"))
+        .unwrap()
+        .replace(
+            "crates/probe-pin/tests/fixtures/dogfood_block.md",
+            "crates/probe-pin/tests/fixtures/tmp/escape_link/escape.md",
+        );
+    let (_, arg) = tmp_manifest("escape_out.toml", &text);
+    let before = std::fs::read_to_string(&victim).unwrap();
+
+    let (rc, err) = probe_pin_bin(&["run", "--write", &arg], &[]);
+    assert_eq!(rc, 2, "{err}");
+    assert!(err.contains("[output].file"), "{err}");
+    assert!(err.contains("is not workspace-relative"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&victim).unwrap(),
+        before,
+        "nothing may be written outside the workspace"
+    );
+
+    // positive: the same manifest naming a real in-tree output still runs to a block
+    let (_, arg) = tmp_manifest(
+        "escape_out_ok.toml",
+        &text.replace(
+            "crates/probe-pin/tests/fixtures/tmp/escape_link/escape.md",
+            "crates/probe-pin/tests/fixtures/tmp/contained_block.md",
+        ),
+    );
+    std::fs::write(
+        root().join(TMP).join("contained_block.md"),
+        "prose above\n// PROBE-PIN:BEGIN placeholder\n// PROBE-PIN:END\nprose below\n",
+    )
+    .unwrap();
+    let (rc, err) = probe_pin_bin(&["run", "--write", &arg], &[]);
+    assert_eq!(rc, 0, "the contained path must still be writable: {err}");
+
+    std::fs::remove_file(&link).ok();
+    for name in [
+        "escape_out.toml",
+        "escape_out_ok.toml",
+        "contained_block.md",
+    ] {
+        std::fs::remove_file(root().join(TMP).join(name)).ok();
+    }
 }
 
 /// The dogfood: probe-pin runs its own committed manifest against its own committed block.

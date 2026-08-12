@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use crate::isolate::Run;
 use crate::manifest::{Expect, Probe, Target};
 use crate::mutate::Mount;
-use crate::{Abort, HarnessMarker};
+use crate::{Abort, HarnessMarker, NothingRan};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -19,7 +19,14 @@ pub enum Verdict {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Observed {
     pub rc: i32,
+    /// What the suite-STARTED record said it would run. Selection, not execution.
     pub test_count: usize,
+    /// What the suite-TERMINAL record said actually happened. `passed + failed` is the only
+    /// number in the stream that counts test BODIES that ran: `test_count` is identical for a
+    /// normal run, an `#[ignore]`d run and a `--bench` run (measured, all three).
+    pub passed: usize,
+    pub failed: usize,
+    pub ignored: usize,
     pub filtered_out: usize,
     /// The `stdout` field of every `{"type":"test"}` `event:"failed"` record. libtest's
     /// per-test capture buffer: that test's `println!`, its `eprintln!` and its panic
@@ -90,6 +97,10 @@ pub fn observe(
                 terminal = true;
                 obs.target_failed = event != "ok";
                 obs.filtered_out = v["filtered_out"].as_u64().unwrap_or(0) as usize;
+                let field = |k| v[k].as_u64().unwrap_or(0) as usize;
+                obs.passed = field("passed");
+                obs.failed = field("failed");
+                obs.ignored = field("ignored");
             }
             // `event:"failed"` appears on the suite record too, so the filter is written on
             // `type`, not on `event`.
@@ -111,11 +122,25 @@ pub fn observe(
             });
         }
     }
-    if obs.test_count == 0 {
-        return Err(Abort::NoTestsSelected {
+    // The EXECUTION floor, and the general guarantee of the whole tool: not "were tests
+    // selected" but "did a test body run". `test_count` answers the first question, and the
+    // three shapes that made this crate render a green row for an unmeasured tree — a filter
+    // that matched nothing, an `#[ignore]` on the pinned test, a `--bench` argv — are
+    // indistinguishable in it (measured: `test_count: 1` for all three). `passed + failed` is
+    // the field that answers the question, and it closes every suppressing flag at once,
+    // including the ones no denylist names.
+    if obs.passed + obs.failed == 0 {
+        return Err(Abort::NothingExecuted {
             probe: probe.to_string(),
+            reason: if obs.test_count == 0 {
+                NothingRan::NoneSelected
+            } else {
+                NothingRan::AllSkipped
+            },
             filter: target.filter.clone(),
             filter_match: target.filter_match,
+            test_count: obs.test_count,
+            ignored: obs.ignored,
             filtered_out: obs.filtered_out,
             rc: run.rc,
         });

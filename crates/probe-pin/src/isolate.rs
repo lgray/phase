@@ -49,9 +49,29 @@ pub fn exit_rc(status: &std::process::ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
+/// The flags probe-pin itself puts on the target's argv. Everything else on that command line
+/// came from `Target::manifest_argv`, which is what `manifest::validate` checks.
+pub const OWNED_FLAGS: &[&str] = &[
+    "--exact",
+    "--test-threads=1",
+    "--format",
+    "json",
+    "-Z",
+    "unstable-options",
+];
+
 /// `[filter] + ["--exact"] iff Exact + [the flags probe-pin owns] + [target].args`.
+///
+/// The manifest's contribution is taken from `Target::manifest_argv` rather than read out of
+/// the fields again: that function is the single authority for WHICH manifest values reach a
+/// target's command line, and validation checks the same list. Reading `target.filter` here
+/// directly is exactly how `filter` came to be argv token 0 with nothing validating it.
 pub fn argv(target: &Target) -> Vec<String> {
-    let mut v = vec![target.filter.clone()];
+    let contributed = target.manifest_argv();
+    let ((_, filter), args) = contributed
+        .split_first()
+        .expect("manifest_argv yields the filter first, then [target].args");
+    let mut v = vec![(*filter).to_string()];
     if target.filter_match == FilterMatch::Exact {
         v.push("--exact".to_string());
     }
@@ -64,8 +84,35 @@ pub fn argv(target: &Target) -> Vec<String> {
     ] {
         v.push(flag.to_string());
     }
-    v.extend(target.args.iter().cloned());
+    v.extend(args.iter().map(|(_, a)| (*a).to_string()));
     v
+}
+
+/// The ambient keys the target child keeps. Everything else is cleared.
+const INHERITED: &[&str] = &["PATH", "HOME"];
+
+/// The variables `run_with_script` hands the SCRIPT, which reads them by these exact names.
+/// The mutant/target pair is one variable per mount, so those two are prefixes.
+const SCRIPT_VARS: &[&str] = &["PP_MOUNTS", "TIMEOUT", "TESTBIN"];
+const SCRIPT_VAR_PREFIXES: &[&str] = &["PP_MUTANT_", "PP_TARGET_"];
+
+/// Does probe-pin itself set this environment variable in the target child? The single
+/// authority for "[target].env may not override this", derived from the two places that set
+/// one — and pinned by `env_keys_probe_pin_sets_are_all_refused`, which builds a real child
+/// command through the shipping path and asserts every key it sets is refused here.
+///
+/// `PATH` is the severe one: the child is `unshare … bash -c SCRIPT`, so `PATH` resolves
+/// `mount`, `cmp` and `timeout` INSIDE the script — a manifest that sets it to a directory of
+/// stubs renders `mount reached: 1 file(s)` for a probe whose mutant was never mounted and
+/// never compared (measured: exit 0, green).
+///
+/// `RUST_MIN_STACK` is deliberately absent: `apply_child_env` sets it as a DEFAULT that
+/// `[target].env` is documented and tested to raise, and lowering it cannot forge a green row —
+/// the target dies mid-run and `HarnessIncomplete` fires.
+pub fn is_probe_pin_owned_env(key: &str) -> bool {
+    INHERITED.contains(&key)
+        || SCRIPT_VARS.contains(&key)
+        || SCRIPT_VAR_PREFIXES.iter().any(|p| key.starts_with(p))
 }
 
 /// The step-8 target run's environment is CONSTRUCTED, not inherited: two developers with
@@ -78,7 +125,7 @@ pub fn argv(target: &Target) -> Vec<String> {
 /// from a cleared environment, libtest reads it as off; `[target].env` can still turn it on.
 pub fn apply_child_env(cmd: &mut Command, target: &Target) {
     cmd.env_clear();
-    for key in ["PATH", "HOME"] {
+    for key in INHERITED {
         if let Ok(v) = std::env::var(key) {
             cmd.env(key, v);
         }
@@ -93,15 +140,15 @@ pub fn run(testbin: &Path, mounts: &[Mount], target: &Target) -> Result<Run, Abo
     run_with_script(SCRIPT, testbin, mounts, target)
 }
 
-/// Split out so §10 rows 1, 2 and 21 can run their DROP arms — each of which is defined as a
-/// mutation OF THIS SCRIPT (drop the readback / compare the mutant with itself / copy instead
-/// of mount) rather than a mutation of the caller.
-pub fn run_with_script(
-    script: &str,
-    testbin: &Path,
-    mounts: &[Mount],
-    target: &Target,
-) -> Result<Run, Abort> {
+/// The target child, fully constructed and not yet spawned. Split out from `run_with_script`
+/// so a test can read back — through `Command::get_envs` — exactly which variables probe-pin
+/// sets, and prove `is_probe_pin_owned_env` refuses every one of them. A hand-maintained list
+/// checked against a hand-maintained list proves nothing; this one is checked against the
+/// command that actually runs.
+///
+/// The probe-pin-owned variables are applied AFTER `apply_child_env`, so `[target].env` cannot
+/// win by ordering either — belt and braces, since validation now refuses them by name.
+pub fn child_command(script: &str, testbin: &Path, mounts: &[Mount], target: &Target) -> Command {
     let mut cmd = Command::new("unshare");
     cmd.args(["--map-root-user", "--mount", "bash", "-c"])
         .arg(script)
@@ -115,10 +162,24 @@ pub fn run_with_script(
     }
     cmd.env("TIMEOUT", target.timeout_secs.to_string());
     cmd.env("TESTBIN", testbin);
-    let out = cmd.output().map_err(|e| Abort::IsolationUnavailable {
-        rc: None,
-        stderr: e.to_string(),
-    })?;
+    cmd
+}
+
+/// Split out so §10 rows 1, 2 and 21 can run their DROP arms — each of which is defined as a
+/// mutation OF THIS SCRIPT (drop the readback / compare the mutant with itself / copy instead
+/// of mount) rather than a mutation of the caller.
+pub fn run_with_script(
+    script: &str,
+    testbin: &Path,
+    mounts: &[Mount],
+    target: &Target,
+) -> Result<Run, Abort> {
+    let out = child_command(script, testbin, mounts, target)
+        .output()
+        .map_err(|e| Abort::IsolationUnavailable {
+            rc: None,
+            stderr: e.to_string(),
+        })?;
     Ok(Run {
         rc: exit_rc(&out.status),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),

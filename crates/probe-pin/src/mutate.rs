@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use crate::manifest::{Mutation, Probe};
+use crate::manifest::{self, Mutation, Probe};
 use crate::Abort;
 
 /// One `mount --bind <mutant> <target>` pair.
@@ -78,7 +78,12 @@ pub fn apply(probe: &Probe, root: &Path, scratch: &Path) -> anyhow::Result<Vec<M
 
     let mut mounts = Vec::new();
     for (rel, original, mutant) in &running {
-        let dest = scratch.join(&probe.id).join(rel);
+        // The write side of the same containment rule `validate_paths` applies to the read
+        // side, asserted where the base finally exists: the scratch dir is created at §7 step 5.
+        // Both joined keys go in at once — `probe.id` is lexically a plain name and `rel` is
+        // lexically relative, and neither says where the join RESOLVES.
+        let dest = manifest::resolve_contained(scratch, &format!("{}/{rel}", probe.id))
+            .map_err(|why| anyhow::anyhow!("probe-pin: {} materializes its mutant outside probe-pin's scratch directory: {why}. The mutant path is <scratch>/<probe.id>/<file>, and a join that resolves out of the scratch dir writes into the tree probe-pin is measuring — the one thing this tool must never do. Aborting.", probe.id))?;
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| Abort::MaterializeFailed {
                 path: parent.to_path_buf(),
@@ -106,27 +111,22 @@ pub fn apply(probe: &Probe, root: &Path, scratch: &Path) -> anyhow::Result<Vec<M
         });
     }
 
-    assert_counts(probe, root, &running)?;
+    assert_counts(probe, &running)?;
     Ok(mounts)
 }
 
 /// `[[probe.assert_count]]` against the FINAL mutant text, after all mutations have composed.
-fn assert_counts(
-    probe: &Probe,
-    root: &Path,
-    running: &[(String, String, String)],
-) -> anyhow::Result<()> {
+///
+/// There is no pristine-tree fallback: `validate` refuses an `assert_count` naming a file this
+/// probe does not mutate, so every one of them HAS a mutant here. The fallback that used to
+/// stand in its place read the unmutated file and reported the result as "in the MUTANT of",
+/// which is the message describing text it did not read.
+fn assert_counts(probe: &Probe, running: &[(String, String, String)]) -> anyhow::Result<()> {
     for ac in &probe.assert_counts {
-        let text = match running.iter().find(|(f, _, _)| *f == ac.file) {
-            Some((_, _, mutant)) => mutant.clone(),
-            None => std::fs::read_to_string(root.join(&ac.file)).with_context(|| {
-                format!(
-                    "probe-pin: {} assert_count cannot read {}",
-                    probe.id,
-                    root.join(&ac.file).display()
-                )
-            })?,
-        };
+        let (_, _, text) = running
+            .iter()
+            .find(|(f, _, _)| *f == ac.file)
+            .expect("validate() proved every assert_count names a file this probe mutates");
         let found = text.matches(ac.text.as_str()).count();
         if found != ac.count {
             return Err(Abort::AssertCount {
