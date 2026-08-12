@@ -1,0 +1,173 @@
+//! §7 steps 5, 6 and 8: the scratch dir, the fingerprints, and the isolated target run.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use tempfile::TempDir;
+
+use crate::manifest::{FilterMatch, Target};
+use crate::mutate::Mount;
+use crate::{sha256_hex, Abort};
+
+/// The whole script. Four probe-pin-owned variables reach it through the child's ENVIRONMENT
+/// (`$MUTANT`/`$TARGET` indexed per mount, `$TIMEOUT`, `$TESTBIN`), never as positionals — so
+/// `"$@"` is exactly the target's argv and shell quoting never touches user-supplied `args`.
+///
+/// The `cmp -s` readback is the whole reason a `pass` verdict means anything: it proves the
+/// bytes the target can see at `$TARGET` are the mutant's, inside the namespace, after the
+/// mount. `set -eu` makes a missing `timeout`/`mount`/`cmp` a non-zero exit, never a silent
+/// unmounted run.
+pub const SCRIPT: &str = r#"set -eu
+i=0
+while [ "$i" -lt "$PP_MOUNTS" ]; do
+  m="PP_MUTANT_$i"; t="PP_TARGET_$i"
+  MUTANT=${!m}; TARGET=${!t}
+  mount --bind "$MUTANT" "$TARGET"
+  cmp -s "$MUTANT" "$TARGET" || { printf 'probe-pin: MOUNT NOT REACHED: %s (mutant %s)\n' "$TARGET" "$MUTANT" >&2; exit 97; }
+  i=$((i + 1))
+done
+exec timeout -k 5 "$TIMEOUT" "$TESTBIN" "$@"
+"#;
+
+/// Streams are never merged: stdout must stay a pure libtest JSON record stream, and a stack
+/// overflow's `fatal runtime error: …` arrives on stderr.
+#[derive(Debug, Clone)]
+pub struct Run {
+    pub rc: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// A signal-killed process has no exit CODE at all — `timeout` re-raises the child's signal
+/// rather than translating it. Every shell reports `128 + signal` for that, and so does
+/// probe-pin: a stack-overflow abort is the 134 that `HarnessIncomplete`'s message quotes.
+pub fn exit_rc(status: &std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
+}
+
+/// `[filter] + ["--exact"] iff Exact + [the flags probe-pin owns] + [target].args`.
+pub fn argv(target: &Target) -> Vec<String> {
+    let mut v = vec![target.filter.clone()];
+    if target.filter_match == FilterMatch::Exact {
+        v.push("--exact".to_string());
+    }
+    for flag in [
+        "--test-threads=1",
+        "--format",
+        "json",
+        "-Z",
+        "unstable-options",
+    ] {
+        v.push(flag.to_string());
+    }
+    v.extend(target.args.iter().cloned());
+    v
+}
+
+/// The step-8 target run's environment is CONSTRUCTED, not inherited: two developers with
+/// different shells get the same capture bytes. Scope is this run only — the cargo, rustc and
+/// ast-grep shell-outs inherit, because clearing them strips `CARGO_HOME`/`CARGO_TARGET_DIR`.
+///
+/// The ALLOWLIST is the single authority: `RUST_BACKTRACE` is not re-set to `"0"` here, because
+/// an unconditional set makes the clear untestable — it produces identical capture bytes whether
+/// or not `env_clear()` ran, which is exactly how row 12's backtrace arm went vacuous. Absent
+/// from a cleared environment, libtest reads it as off; `[target].env` can still turn it on.
+pub fn apply_child_env(cmd: &mut Command, target: &Target) {
+    cmd.env_clear();
+    for key in ["PATH", "HOME"] {
+        if let Ok(v) = std::env::var(key) {
+            cmd.env(key, v);
+        }
+    }
+    cmd.env("RUST_MIN_STACK", "16777216");
+    for (k, v) in &target.env {
+        cmd.env(k, v);
+    }
+}
+
+pub fn run(testbin: &Path, mounts: &[Mount], target: &Target) -> Result<Run, Abort> {
+    run_with_script(SCRIPT, testbin, mounts, target)
+}
+
+/// Split out so §10 rows 1, 2 and 21 can run their DROP arms — each of which is defined as a
+/// mutation OF THIS SCRIPT (drop the readback / compare the mutant with itself / copy instead
+/// of mount) rather than a mutation of the caller.
+pub fn run_with_script(
+    script: &str,
+    testbin: &Path,
+    mounts: &[Mount],
+    target: &Target,
+) -> Result<Run, Abort> {
+    let mut cmd = Command::new("unshare");
+    cmd.args(["--map-root-user", "--mount", "bash", "-c"])
+        .arg(script)
+        .arg("probe-pin")
+        .args(argv(target));
+    apply_child_env(&mut cmd, target);
+    cmd.env("PP_MOUNTS", mounts.len().to_string());
+    for (i, m) in mounts.iter().enumerate() {
+        cmd.env(format!("PP_MUTANT_{i}"), &m.mutant);
+        cmd.env(format!("PP_TARGET_{i}"), &m.target);
+    }
+    cmd.env("TIMEOUT", target.timeout_secs.to_string());
+    cmd.env("TESTBIN", testbin);
+    let out = cmd.output().map_err(|e| Abort::IsolationUnavailable {
+        rc: None,
+        stderr: e.to_string(),
+    })?;
+    Ok(Run {
+        rc: exit_rc(&out.status),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
+/// §7 step 5. `TempDir` in `base` (`env::temp_dir()` in production), then the assert that
+/// probe-pin is not creating files under the tree it is measuring.
+pub fn scratch_dir(base: &Path, workspace: &Path) -> Result<TempDir, Abort> {
+    let dir = TempDir::new_in(base).map_err(|e| Abort::MaterializeFailed {
+        path: base.to_path_buf(),
+        err: e.to_string(),
+    })?;
+    let real = std::fs::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+    let ws = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    if real.starts_with(&ws) {
+        return Err(Abort::ScratchInsideWorkspace {
+            scratch: real,
+            workspace: ws,
+        });
+    }
+    Ok(dir)
+}
+
+/// §7 steps 6 and 10: sha256 over the mutated file set only — scoped to the files probe-pin
+/// touches, so a concurrent agent editing anything else cannot discard this run.
+pub fn fingerprint(root: &Path, files: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for rel in files {
+        let bytes = std::fs::read(root.join(rel))?;
+        out.insert(rel.clone(), sha256_hex(&bytes));
+    }
+    Ok(out)
+}
+
+pub fn verify_fingerprint(
+    before: &BTreeMap<String, String>,
+    after: &BTreeMap<String, String>,
+) -> Result<(), Abort> {
+    for (file, sha) in before {
+        let now = after.get(file).map(String::as_str).unwrap_or("<missing>");
+        if now != sha {
+            return Err(Abort::TreeMutated {
+                file: PathBuf::from(file),
+                before: sha.clone(),
+                after: now.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
