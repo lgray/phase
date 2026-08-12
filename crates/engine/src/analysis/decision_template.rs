@@ -670,7 +670,8 @@ pub enum ReplayFailure {
     IllegalTarget { slot: DecisionSlot, pin: TargetPin },
     /// CR 400.7: an ORDER pin's source does not re-bind to a live ability instance —
     /// [`resolve_ability_instance`] finds no object of that identity at that incarnation in a
-    /// zone its abilities function from (CR 113.6b) ⇒ the ordering template no longer matches
+    /// zone it admits (`Battlefield`; also `Command` for a `ThisObject` source) ⇒ the ordering
+    /// template no longer matches
     /// ⇒ fall through to a normal manual prompt. Raised ONLY for the `Order` pin kind, in any
     /// `ReplayMode`.
     MissingSource { source: DecisionSource },
@@ -713,9 +714,14 @@ fn resolve_pin(
 ) -> Result<ConcreteDecision, ReplayFailure> {
     match pin {
         // CR 603.3b: replay this source's trigger at its pinned ordering position. The pin
-        // re-binds to the SAME live ability instance (CR 400.7 incarnation), in a zone that
-        // instance's abilities function from (CR 113.6b; emblems CR 114.4, planes / schemes /
-        // conspiracies CR 113.6p) — not merely to something still on the battlefield.
+        // re-binds to the SAME live ability instance (CR 400.7 incarnation) still present in
+        // a zone the accessor admits — `Battlefield`, plus `Command` for a `ThisObject`
+        // source — not merely to something still on the battlefield. `Command` is admitted
+        // because a whole CLASS of sources functions from there (emblems CR 114.4; plane /
+        // scheme / conspiracy cards CR 113.6p; face-up plane and phenomenon cards CR 901.7;
+        // Eminence commanders CR 113.6b), but the accessor tests zone presence and identity
+        // only — whether a given ability functions is `game::functioning_abilities`'
+        // question, not this accessor's.
         //
         // Resolving an `Order` pin GRANTS NO CAPABILITY, and the six points that consume
         // `resolve`'s output split two ways. FIVE read the vec's ELEMENTS, and not one of them
@@ -1101,8 +1107,12 @@ fn evaluate_schedule(
         // A `None` ANYWHERE in this chain falls through to the `ok_or_else` below: with no
         // live ability instance the engine cannot certify that the object it would ask the
         // CR 702.11c question about still IS that instance (CR 400.7 / CR 608.2b), and
-        // CR 732.1 makes refusing a shortcut free — no declaration published just means the
-        // table plays the loop out manually. Announcing a target we cannot certify is not
+        // CR 732.1 + CR 732.2a make refusing a shortcut free — "the player with priority MAY
+        // suggest a shortcut" is a permission, not an obligation, so no declaration published
+        // just means the table plays the loop out manually. (CR 732.2b is the RESPONDER rule
+        // — each OTHER player accepting or shortening a proposal that already exists — so it
+        // cannot govern a proposer that publishes nothing.) Announcing a target we cannot
+        // certify is not
         // free. This is the fail-closed branch, not an oversight.
         AnnouncementSubject::Seat(p) => resolve_ability_instance(&slot.source, state)
             .and_then(|src_id| state.objects.get(&src_id).map(|o| (src_id, o.controller)))
@@ -2669,7 +2679,8 @@ mod tests {
     ///   that the object it would ask the CR 702.11c question about still IS that instance
     ///   (CR 400.7 / CR 608.2b). The seat still EXISTS and a graveyard object still carries a
     ///   `controller`, so the question is answerable — what is missing is the certification,
-    ///   and CR 732.1 makes refusing free (no declaration ⇒ the table plays it out manually).
+    ///   and CR 732.1 + CR 732.2a make refusing free — "may suggest" is a permission, not an
+    ///   obligation (no declaration ⇒ the table plays it out manually).
     ///
     /// # Non-vacuity / discrimination
     ///
@@ -2768,8 +2779,8 @@ mod tests {
     ///
     /// CR 603.3b is the pin's framing (replay this source's trigger at its pinned ordering
     /// position); what changed is that "this source" is now re-bound by
-    /// [`resolve_ability_instance`] — same identity, same CR 400.7 incarnation, in a zone
-    /// that instance's abilities function from (CR 113.6b; emblems CR 114.4) — rather than
+    /// [`resolve_ability_instance`] — same identity, same CR 400.7 incarnation, present in a
+    /// zone it admits (`Battlefield`, plus `Command` for a `ThisObject` source) — rather than
     /// by `resolve_source`'s battlefield-only filter.
     ///
     /// **Resolving an `Order` pin grants NO capability.** No production consumer of
