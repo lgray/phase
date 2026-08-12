@@ -148,10 +148,10 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
     // (`production_sites` sorts by `(file, line)`) and appear in the failure message. That is
     // deliberate: a line pin fails on any insertion above a site, which is drift burden without
     // discrimination — measured: a 200-line insertion above every site leaves this census green.
-    // Multiplicity carries the load instead — a new construction anywhere THE WALK VISITS changes
-    // the compared value, including a THIRD `engine.rs` hit from reverting
-    // `record_trigger_target_answer`, and `interaction.rs` is pinned by ABSENCE, which no
-    // rearrangement inside that file can satisfy. The walk visits three roots only
+    // Multiplicity carries the load instead — a new construction anywhere THE WALK VISITS in
+    // production scope changes the compared value, including a THIRD `engine.rs` hit from
+    // reverting `record_trigger_target_answer`, and `interaction.rs` is pinned by ABSENCE,
+    // which no rearrangement inside that file can satisfy. The walk visits three roots only
     // (`engine/src`, `server-core/src`, `phase-ai/src`), so a construction added in a crate
     // outside them — `engine-wasm`, `seat-reducer` and `phase-server` all depend on the engine —
     // is invisible here. That gap is latent, not live: today `TargetPin` appears in no crate
@@ -162,7 +162,8 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
     // Do NOT relax `files` to a de-duplicated set on the theory that the text pins cover the
     // doubling — they are a different layer, and layer 3 below exists because a change can pass
     // both of them. Three measured layers, in the order they fire:
-    //   1. this multiset — a THIRD `engine.rs` construction, i.e. either producer reverted;
+    //   1. this multiset — a THIRD `engine.rs` construction, and, via ABSENCE, either producer
+    //      reverted;
     //   2. the text pins below — a SUBSTITUTION at either arm that holds the count at 2, and a
     //      change in the two arms' relative ORDER (relocating arm 0 below arm 1 fails the first
     //      text pin with the count and both texts otherwise unchanged);
