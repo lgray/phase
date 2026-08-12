@@ -141,15 +141,22 @@ fn production_sites(needle: &str) -> Vec<Site> {
 #[test]
 fn no_target_class_producer_constructs_a_choice_class_player_pin() {
     let sites = production_sites(&choice_needle());
-    let located: Vec<(String, usize)> = sites
-        .iter()
-        .map(|s| (s.file.clone(), s.line))
-        .collect::<Vec<_>>();
     let files: Vec<&str> = sites.iter().map(|s| s.file.as_str()).collect();
 
-    // CONJUNCT 1: the two TARGET-class producers' files may still hold CHOICE-class sites
-    // (`engine.rs` holds two), but a construction inside either producer is what this row
-    // forbids — so the sites are pinned by exact file:line and text, not merely by file.
+    // CONJUNCT 1: what is compared is the FILE MULTISET — file identity AND multiplicity, in
+    // sorted order. Line numbers are not compared; they appear only in the failure message.
+    // That is deliberate: a line pin fails on any insertion above a site, which is drift
+    // burden without discrimination. Multiplicity carries the load instead — a new construction
+    // anywhere changes the compared value, including a THIRD `engine.rs` hit from reverting
+    // `record_trigger_target_answer`, and `interaction.rs` is pinned by ABSENCE, which no
+    // rearrangement inside that file can satisfy. The `engine.rs` pair, where multiplicity
+    // alone would let a third construction hide behind the file already being listed twice, is
+    // narrowed by the text pins further down that name each of its two arms.
+    //
+    // LIMITATION: the three singly-listed files (`decision_template.rs`, `visibility.rs`,
+    // `server-core/...`) are pinned by file identity and count alone. Swapping one of their
+    // constructions for a DIFFERENT one in the same file leaves this census green. Those are
+    // not the producers this row is about, and none of them is text-pinned.
     assert_eq!(
         files,
         vec![
@@ -232,7 +239,7 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
          classified rather than absorbed. got {ranked:?}"
     );
     assert!(
-        !located.is_empty(),
+        !sites.is_empty(),
         "keying control: the choice-class needle must return a NON-EMPTY set, or its \
          per-producer absence above would be the answer a dead instrument gives"
     );
