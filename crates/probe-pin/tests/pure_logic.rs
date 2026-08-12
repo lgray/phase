@@ -1332,6 +1332,66 @@ fn path_keys_cannot_escape_the_scratch_dir() {
     assert_eq!(listing(), ["VICTIM2.rs", "f.txt"]);
 }
 
+/// Maintainer review on #7315, blocking: "add a regression test proving marker/newline injection
+/// is rejected and that `run --write` cannot produce an uncheckable block". Those are two
+/// different claims and they are proven at two different layers, because closing only the first
+/// leaves the second conditional on probe-pin having seen every producer in advance.
+///
+/// Layer 1 — the manifest fields, refused before any target runs. Layer 2 — the bytes actually
+/// written, refused by `splice` itself. Layer 2 is what makes the guarantee unconditional: an
+/// instrument's `--version` output and the `provenance` paths lifted from the target's panic text
+/// also reach rendered lines, and neither can be validated in advance.
+#[test]
+fn write_can_never_produce_a_block_its_own_check_cannot_locate() {
+    let file = Path::new("out.md");
+    let text = "above\n// PROBE-PIN:BEGIN old\n// stale\n// PROBE-PIN:END\nbelow\n";
+
+    // Layer 1: manifest-derived injection is refused, including the maintainer's exact string.
+    let manifest = std::fs::read_to_string(fixtures().join("dogfood.toml")).unwrap();
+    for hostile in ["\nPROBE-PIN:END", "PROBE-PIN:END", "boom\nsecond"] {
+        let edited = manifest.replace(
+            r#"anchor  = ["CENSUS VIOLATED: expected 2 sites, got 202"]"#,
+            &format!("anchor  = [{}]", serde_json::to_string(hostile).unwrap()),
+        );
+        assert_ne!(
+            edited, manifest,
+            "the fixture edit must apply, or this is vacuous"
+        );
+        let m: Manifest = toml::from_str(&edited).expect("manifest parses");
+        // `validate_block_text` is the guard for values that reach the BLOCK, and it is separate
+        // from `validate` because it needs the manifest's workspace-relative path — which is
+        // itself one of the rendered values. Both run before any target, at `main.rs:113-114`.
+        let msg =
+            match manifest::validate_block_text(&m, "crates/probe-pin/tests/fixtures/dogfood.toml")
+            {
+                Ok(()) => panic!("{hostile:?} was ACCEPTED and would be rendered into the block"),
+                Err(e) => e.to_string(),
+            };
+        assert!(
+            msg.contains("control character") || msg.contains("marker tag"),
+            "{hostile:?} was accepted: {msg}"
+        );
+    }
+
+    // Layer 2: a generated block carrying a second END is refused AT THE WRITE, no manifest
+    // involved — this is the arm that covers producers probe-pin cannot inspect beforehand.
+    let injected = "// PROBE-PIN:BEGIN new\n// | p | m | pass | pass | // PROBE-PIN:END | — |\n// PROBE-PIN:END";
+    let err = block::splice(text, "PROBE-PIN", file, injected)
+        .expect_err("a block carrying a second END must never be returned for writing");
+    assert!(
+        matches!(abort_of(err.into()), Abort::MarkerNotUnique { begins, ends, .. } if begins == 1 && ends == 2),
+        "the refusal must name the marker imbalance it found"
+    );
+
+    // Positive control: the same splice with a well-formed block still succeeds, so the guard
+    // above is refusing the injection and not simply refusing everything.
+    let clean = "// PROBE-PIN:BEGIN new\n// | p | m | pass | pass | fired | — |\n// PROBE-PIN:END";
+    let out = block::splice(text, "PROBE-PIN", file, clean).expect("a well-formed block splices");
+    assert!(out.starts_with("above\n") && out.ends_with("below\n"));
+    // and the result is locatable, which is the property the whole test is about
+    block::extract(&out, "PROBE-PIN", file).expect("the written file must be locatable");
+}
+
 // ------------------------------------------------------------------ row 22
 
 /// Row 22: the splice preserves every byte outside the marker pair — prose above, prose

@@ -331,9 +331,25 @@ pub fn locate(text: &str, marker: &str, file: &Path) -> Result<(usize, usize), A
     }
 }
 
+/// Splices `block` over the marked span, and refuses to return a result the next `locate` could
+/// not find.
+///
+/// The postcondition is checked HERE, at the write surface, and not only on the manifest fields
+/// that feed `render`. Validation of those fields is necessary and is done — but it can only
+/// cover values probe-pin can see before the run. Two producers reach a rendered line and cannot
+/// be refused in advance: an instrument's `--version` output, and the `provenance` paths lifted
+/// from the target's own panic text. If any producer emits a marker tag, `run --write` would
+/// otherwise commit a block that its own next `check` aborts on with `MarkerNotUnique` — a pin
+/// that can only be recovered by editing the file by hand, which is the regenerable-artifact
+/// guarantee failing exactly where it is supposed to hold.
+///
+/// So the invariant is stated against the bytes actually being written, where it is unconditional:
+/// whatever produced this text, the file probe-pin is about to commit is one `check` can locate.
 pub fn splice(text: &str, marker: &str, file: &Path, block: &str) -> Result<String, Abort> {
     let (begin, end) = locate(text, marker, file)?;
-    Ok(format!("{}{block}{}", &text[..begin], &text[end..]))
+    let spliced = format!("{}{block}{}", &text[..begin], &text[end..]);
+    locate(&spliced, marker, file)?;
+    Ok(spliced)
 }
 
 pub fn extract(text: &str, marker: &str, file: &Path) -> Result<String, Abort> {
