@@ -18738,9 +18738,14 @@ mod stage2_injector_tests {
                 // holds identically: all 5 net inserted lines are `//` comments, so no
                 // `waiting_for = ` or `Ok(Some(` line was added, and the pin below is once more
                 // the ONLY non-comment line in this round's `crates/engine/src` diff.
-                // ⚠ REBASE #3: `:12713 ⇒ :12712`, located by content digest, offset from
-                // `begin_pending_trigger_target_selection` unchanged at 134.
-                "game/engine.rs:12712".to_string(),
+                // ⚠ RE-REBASE onto upstream `7127326673`: `:12712 ⇒ :12717`, the **+5** that
+                // upstream #4155 inserts above this producer (seven lines for abandoned-cast
+                // finalization, less two removed by its deferred-resume cleanup). LOCATED BY
+                // CONTENT DIGEST, never by arithmetic: the line whose sha256 is
+                // `8a544e87…5cc7d63` matches exactly ONE line under a whole-file scan and is
+                // still inside `begin_pending_trigger_target_selection`, at the invariant offset
+                // 134. `12712 + 5` is the CHECK that agreed, not the derivation.
+                "game/engine.rs:12717".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
