@@ -15141,9 +15141,10 @@ mod tests {
             "the extractor must return the whole predicate, not a truncated span; got \
              {head}-{end}"
         );
+        // The shared comment rule (`crate::source_census::code`), so a trailing comment naming
+        // one of the tokens below cannot be read as a code site.
         let code: Vec<(usize, &str)> = (head..=end)
-            .map(|i| (i, lines[i]))
-            .filter(|(_, l)| !l.trim_start().starts_with("//"))
+            .map(|i| (i, crate::source_census::code(lines[i])))
             .collect();
 
         let item6_head = code

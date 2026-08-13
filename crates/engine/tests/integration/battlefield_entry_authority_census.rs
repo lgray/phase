@@ -245,6 +245,10 @@
 use std::path::Path;
 
 use super::loop_shortcut_offer_writer_census::{cfg_test_scoped_lines, rs_files};
+// The comment rule is NOT this file's any more: it moved to `src/source_census.rs`, which the
+// crate's own unit-test censuses share through a plain `mod` and this binary reaches through a
+// `#[path]` declaration in `main.rs`. One implementation, both venues.
+use super::source_census::{code, code_span};
 
 /// The bare anchor, ASSEMBLED AT RUNTIME so this file can never count its own text — the doctrine
 /// `loop_shortcut_offer_writer_census` files against its own superseded round-2 anchor.
@@ -591,11 +595,7 @@ fn classify_anchor(src: &str, file: &str, needle: &str, keep: impl Fn(&str) -> b
     lines
         .iter()
         .enumerate()
-        .filter(|(_, line)| !line.trim_start().starts_with("//"))
-        .filter(|(_, line)| {
-            let (lo, hi) = code_span(line);
-            line[lo..hi].contains(needle)
-        })
+        .filter(|(_, line)| code(line).contains(needle))
         .filter_map(|(n, _)| {
             let body = literal_body(&lines, n, needle);
             keep(&body).then(|| Hit {
@@ -685,6 +685,13 @@ fn call_tail(lines: &[&str], row: usize, from: usize) -> String {
     let mut row = row;
     let mut rest: &str = &lines[row][from..];
     loop {
+        // DELIBERATELY NOT ROUTED THROUGH `source_census::code`, measured rather than overlooked.
+        // Routing it lets `call_tail` read THROUGH a `/* … */` sitting between the field and its
+        // call, which turns arm 5(vi)'s UNREADABLE tail into a readable `.extend(` and drops that
+        // arm from `(1, 1)` to `(0, 0)` — RUN, not reasoned. Arm 5(vi)'s contract is "a tail this
+        // function cannot read is COUNTED", and it is not this change's to redefine. The shared
+        // rule governs which text is a NEEDLE SITE; this function reads a TAIL, and the two
+        // questions come apart exactly here.
         let trimmed = rest.trim_start();
         if !trimmed.is_empty() && !trimmed.starts_with("//") {
             return trimmed.chars().take(24).collect();
@@ -762,50 +769,6 @@ fn is_ambiguous_mutator(tail: &str) -> bool {
     .any(|verb| tail.starts_with(verb))
 }
 
-/// The byte range of `line` that is CODE: a LEADING `/* … */` comment and a TRAILING `//` comment
-/// are excluded from the search.
-///
-/// THE ONE HOME OF THE TRAILING-COMMENT RULE for every source census in this binary — this
-/// file's three anchors, `loop_shortcut_offer_writer_census::classify` and
-/// `loop_shortcut_seat_pin_census::sites_in_source`. They previously rejected only lines that
-/// OPEN with `//`, which counts a needle sitting after a trailing `//` as a real site; a second
-/// copy of the corrected rule is a second place for it to drift.
-///
-/// Both exclusions only ever REMOVE text, and each is guarded so that it cannot remove code:
-///
-/// * The leading form fires only when the TRIMMED line starts with `/*`, and drops exactly up to
-///   and including the first `*/` — so `/*count=*/ state.last_created_token_ids.push(id)` keeps its
-///   call (arm 5(viii)).
-/// * The trailing form fires only when no `"` precedes the `//` in the remaining code — so
-///   `let u = "http://x"; state.last_created_token_ids.push(id);` keeps its call (arm 5(viii)).
-///
-/// The offsets are returned rather than a substring because [`call_tail`] indexes back into the
-/// ORIGINAL line, and because the `/* … */` tail form of arm 5(vi) must still reach the classifier.
-///
-/// Whatever survives both guards — a `//` after a quote, a `/* … */` opened mid-line, a string
-/// literal quoting the defect, or the interior lines of a multi-line block comment — is still
-/// scanned, and would ADD a hit. That direction is fail-CLOSED (spurious red, never a missed
-/// publish); it is listed in this file's residuals. What is closed here are the two shapes this
-/// change's own prose is most likely to take.
-pub(super) fn code_span(line: &str) -> (usize, usize) {
-    let trimmed = line.trim_start();
-    let mut lo = 0usize;
-    if trimmed.starts_with("/*") {
-        let start = line.len() - trimmed.len();
-        lo = match line[start..].find("*/") {
-            Some(end) => start + end + 2,
-            None => line.len(),
-        };
-    }
-    let mut hi = line.len();
-    if let Some(slash) = line[lo..].find("//") {
-        if !line[lo..lo + slash].contains('"') {
-            hi = lo + slash;
-        }
-    }
-    (lo, hi)
-}
-
 /// Classify every access to either anaphora container in `src` whose TAIL satisfies `keep`.
 ///
 /// The third anchor's walker, parameterised by the tail predicate so that
@@ -823,14 +786,14 @@ fn classify_container_tails(src: &str, file: &str, keep: fn(&str) -> bool) -> Ve
     let lines: Vec<&str> = src.lines().collect();
     let mut hits = Vec::new();
     for (n, line) in lines.iter().enumerate() {
-        if line.trim_start().starts_with("//") {
-            continue;
-        }
+        // ONE comment rule, the shared one: a whole-line comment has an EMPTY code span, so the
+        // `starts_with("//")` test this used to carry beside it was a second policy saying the
+        // same thing — and a second place to get it wrong.
         let (lo, hi) = code_span(line);
-        let code = &line[lo..hi];
+        let code_part = &line[lo..hi];
         for needle in ANAPHORA_CONTAINERS {
             let mut from = 0usize;
-            while let Some(at) = code[from..].find(needle) {
+            while let Some(at) = code_part[from..].find(needle) {
                 from += at + needle.len();
                 if keep(&call_tail(&lines, n, lo + from)) {
                     hits.push(Hit {
@@ -935,11 +898,12 @@ const FN_PREFIX_ALLOW_SET: [&str; 5] = [
 fn top_level_fn_headers(src: &str) -> Result<Vec<(usize, String)>, String> {
     let mut out = Vec::new();
     for (n, line) in src.lines().enumerate() {
-        if line.starts_with([' ', '\t']) || line.trim_start().starts_with("//") {
+        if line.starts_with([' ', '\t']) {
             continue;
         }
-        let (lo, hi) = code_span(line);
-        let tokens: Vec<&str> = line[lo..hi].split_whitespace().collect();
+        // A whole-line comment yields an empty code half and therefore no `fn` token, so the
+        // shared rule subsumes the comment test that used to sit in the condition above.
+        let tokens: Vec<&str> = code(line).split_whitespace().collect();
         let Some(at) = tokens.iter().position(|token| *token == "fn") else {
             continue;
         };

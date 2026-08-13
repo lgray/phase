@@ -45,8 +45,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use super::battlefield_entry_authority_census::code_span;
 use super::loop_shortcut_offer_writer_census::{cfg_test_scoped_lines, rs_files};
+use super::source_census::code;
 
 /// The CHOICE-class needle, ASSEMBLED AT RUNTIME for the same reason the sibling census
 /// assembles its own: this file lives under `crates/engine/tests/`, which the walk does not
@@ -95,7 +95,7 @@ struct Site {
 /// deleting one construction while naming the same spelling in a trailing comment on a surviving
 /// construction line HOLDS the count — the substitution class conjunct 1 exists to catch.
 /// Occurrences are therefore counted in the line's CODE half only, via
-/// [`super::battlefield_entry_authority_census::code_span`] (the one home of the rule, shared
+/// [`super::source_census::code`] (the one home of the rule, shared
 /// with both sibling censuses). It is fail-CLOSED: a `//` preceded by a `"` on the same line —
 /// `let u = "http://x"; ..` — stays in the code half, so a URL in a string literal cannot hide a
 /// real construction behind it, which a naive `split("//")` would.
@@ -108,11 +108,10 @@ fn sites_in_source(src: &str, needle: &str, file: &str) -> Vec<Site> {
     let scoped = cfg_test_scoped_lines(src);
     let mut out = Vec::new();
     for (n, line) in src.lines().enumerate() {
-        if line.trim_start().starts_with("//") || scoped[n] {
+        if scoped[n] {
             continue;
         }
-        let (lo, hi) = code_span(line);
-        for _ in 0..line[lo..hi].matches(needle).count() {
+        for _ in 0..code(line).matches(needle).count() {
             out.push(Site {
                 file: file.to_string(),
                 line: n + 1,
@@ -398,7 +397,7 @@ fn the_seat_pin_census_instrument_reports_both_answers_on_planted_input() {
 ///    multiset with no code change (revert-probe: `left: 2 / right: 1`).
 /// 3. FAIL-CLOSED — a `//` inside a STRING LITERAL preceding a real construction: 1, not 0. A
 ///    naive `split("//")` truncates there and UNDER-counts, silently dropping a real site;
-///    [`code_span`] leaves a `//` that follows a `"` in the code half, so the miss cannot happen.
+///    [`code`] leaves a `//` that follows a `"` in the code half, so the miss cannot happen.
 #[test]
 fn the_seat_pin_census_ignores_a_trailing_comment_mention() {
     let choice = choice_needle();

@@ -2636,11 +2636,9 @@ fn c1_every_ring_clear_site_also_clears_the_loop_answer_journal() {
         // nor clears the journal. Whole-line-only exclusion is not enough here and the failure is
         // two-sided — a comment naming the clear would be counted as a site, and a comment naming
         // `loop_answer_journal = None` inside a window would mark a genuinely UNPAIRED site as
-        // paired, which is the direction that hides the regression. Shared rule, one home.
-        let code = |line: &str| {
-            let (lo, hi) = super::battlefield_entry_authority_census::code_span(line);
-            line[lo..hi].to_string()
-        };
+        // paired, which is the direction that hides the regression. Shared rule, one home:
+        // `src/source_census.rs`, the same file the crate's own unit-test censuses use.
+        use super::source_census::code;
         for (i, line) in lines.iter().enumerate() {
             if !code(line).contains("loop_detect_ring.clear()") {
                 continue;

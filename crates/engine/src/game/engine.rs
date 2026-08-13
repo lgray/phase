@@ -17980,18 +17980,10 @@ mod stage2_injector_tests {
         // comment rule at all until now. The consequence was measured, not theorised: a doc
         // comment that quoted the needle verbatim counted ITSELF, reading 39 against a pin of
         // 38, and was worked around by deleting the brace from the quotation (`aa313f122`).
-        // That repaired one sentence and left the counter broken for the next one. The rule is
-        // `battlefield_entry_authority_census::code_span`'s, restated in its smallest form
-        // because a `#[cfg(test)]` module in the lib cannot import from the integration binary:
-        // drop everything from the first `//` NOT preceded by a `"` on that line, so a `//`
-        // inside a string literal cannot truncate real code away (fail-closed — the residual
-        // direction is a spurious extra hit, never a missed one).
-        fn code_of(line: &str) -> &str {
-            match line.find("//") {
-                Some(at) if !line[..at].contains('"') => &line[..at],
-                _ => line,
-            }
-        }
+        // That repaired one sentence and left the counter broken for the next one. The rule now
+        // has ONE home for the whole repository, `crate::source_census`, which the integration
+        // binary compiles from the same file.
+        use crate::source_census::code as code_of;
 
         // The needle is ASSEMBLED so this row's own source cannot be counted by its own
         // instrument. `..` excludes multi-line READ destructures whose rest-pattern sits on
@@ -18782,15 +18774,15 @@ mod stage2_injector_tests {
         let effects_src = std::fs::read_to_string(root.join("game/effects/mod.rs"))
             .expect("readable effects module");
         let authority = format!("{}_prompt_player", "optional");
-        // CODE LINES ONLY. A whole-file `matches()` also counted PROSE, and this PR's C1 adds a
-        // doc link to the authority in `upfront_optional_gate`'s comment — a mention that is
-        // neither a definition nor a call. Excluding `//` lines makes the instrument STRICTLY
-        // MORE specific to the thing it names (a second CALL) rather than less: the pinned
-        // count is unchanged at 2, and a real second call still trips it because a call cannot
-        // live on a comment line.
+        // CODE ONLY, and now the CODE HALF of each line rather than only non-comment lines:
+        // a whole-file `matches()` counted PROSE, and this PR's C1 adds a doc link to the
+        // authority in `upfront_optional_gate`'s comment — a mention that is neither a
+        // definition nor a call. `crate::source_census::code` is the shared rule; the pinned
+        // count is unchanged at 2 (re-measured), and a real second call still trips it because
+        // a call cannot live in comment text.
         let authority_code_hits = effects_src
             .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
+            .map(crate::source_census::code)
             .filter(|l| l.contains(&authority))
             .count();
         assert_eq!(
@@ -20678,11 +20670,13 @@ mod bounded_offer_conjunct_tests {
 
     /// Code lines (comments excluded, per R8's ruling: a comment reads nothing) of an extent
     /// that contain `needle`, as absolute line indices.
+    ///
+    /// "Comments excluded" means the shared `crate::source_census::code` rule — whole-line AND
+    /// trailing — not a private `starts_with("//")` test.
     #[cfg(test)]
     fn engine_code_hits(lines: &[&str], extent: (usize, usize), needle: &str) -> Vec<usize> {
         (extent.0..=extent.1)
-            .filter(|i| !lines[*i].trim_start().starts_with("//"))
-            .filter(|i| lines[*i].contains(needle))
+            .filter(|i| crate::source_census::code(lines[*i]).contains(needle))
             .collect()
     }
 
@@ -21112,9 +21106,9 @@ mod bounded_offer_conjunct_tests {
                 .replace('\\', "/");
             let test_file = rel.trim_end_matches(".rs").ends_with("_tests");
             for (n, line) in lines.iter().enumerate() {
-                if line.trim_start().starts_with("//") {
-                    continue;
-                }
+                // The shared comment rule, not a private one: comment text declares no
+                // predicate and calls none.
+                let line = crate::source_census::code(line);
                 if test_file || spans.iter().any(|(a, b)| (*a..=*b).contains(&n)) {
                     continue;
                 }

@@ -1,3 +1,12 @@
+// THE SHARED COMMENT RULE for every source census in this binary, compiled from the SAME FILE the
+// crate's own unit-test censuses use. `#[path]` rather than a copy: `src/source_census.rs` is
+// `#![cfg(test)]`, and `cfg(test)` HOLDS in this venue too (an integration target is built with
+// `--test`), so one implementation serves both without shipping guard code in a release build.
+// MEASURED, not assumed — the alternative already in this tree is `test_support.rs` / `support.rs`,
+// twin files kept equal by a comment asking a human to remember.
+#[path = "../../src/source_census.rs"]
+mod source_census;
+
 mod abigale_integration;
 mod abundance_optional_draw_replacement;
 mod ad_nauseam_repeat;

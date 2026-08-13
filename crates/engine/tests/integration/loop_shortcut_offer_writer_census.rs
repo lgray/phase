@@ -98,7 +98,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::battlefield_entry_authority_census::code_span;
+use super::source_census::code;
 
 /// The bare anchor, ASSEMBLED AT RUNTIME.
 ///
@@ -204,18 +204,14 @@ pub(super) fn cfg_test_scoped_lines(src: &str) -> Vec<bool> {
 /// the exclusion in both directions: a pure prose edit moves the pinned number with no code
 /// change, and deleting a real writer while naming the same spelling in a trailing comment on a
 /// surviving line HOLDS the number — the substitution class this census exists to catch.
-/// [`super::battlefield_entry_authority_census::code_span`] is the one home of that rule; it is
+/// [`super::source_census::code`] is the one home of that rule, shared by every census in
 /// fail-CLOSED (a `//` preceded by a `"` on the same line is left in the code half, so a URL in
 /// a string literal cannot hide a real writer behind it).
 fn classify(src: &str, needle: &str, file: &str) -> Vec<Hit> {
     let scoped = cfg_test_scoped_lines(src);
     src.lines()
         .enumerate()
-        .filter(|(_, line)| !line.trim_start().starts_with("//"))
-        .filter(|(_, line)| {
-            let (lo, hi) = code_span(line);
-            line[lo..hi].contains(needle)
-        })
+        .filter(|(_, line)| code(line).contains(needle))
         .map(|(n, line)| Hit {
             file: file.to_string(),
             line: n + 1,
