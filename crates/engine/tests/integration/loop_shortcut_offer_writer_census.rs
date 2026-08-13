@@ -98,6 +98,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use super::battlefield_entry_authority_census::code_span;
+
 /// The bare anchor, ASSEMBLED AT RUNTIME.
 ///
 /// This file lives under `crates/engine/tests/`, which the census does not walk,
@@ -123,6 +125,9 @@ struct Hit {
     file: String,
     line: usize,
     in_test: bool,
+    /// The trimmed source line, so a hit can be selected by ROLE (definition vs. consumer)
+    /// instead of by line ORDER. Mirrors the sibling seat-pin census's `Site::text`.
+    text: String,
 }
 
 /// CR-neutral source classification: which lines of `src` sit inside a
@@ -194,15 +199,28 @@ pub(super) fn cfg_test_scoped_lines(src: &str) -> Vec<bool> {
 /// of 12: that half has since been adjudicated repeatedly, and the assert
 /// below is the authority for the pair. Prose that repeats a number is prose that
 /// can go stale — this defers to the assert rather than restating it.)
+/// THE COMMENT RULE IS THE CODE HALF OF THE LINE, not the whole line. Rejecting only lines that
+/// OPEN with `//` left a needle sitting AFTER a trailing `//` counted as a writer, which breaks
+/// the exclusion in both directions: a pure prose edit moves the pinned number with no code
+/// change, and deleting a real writer while naming the same spelling in a trailing comment on a
+/// surviving line HOLDS the number — the substitution class this census exists to catch.
+/// [`super::battlefield_entry_authority_census::code_span`] is the one home of that rule; it is
+/// fail-CLOSED (a `//` preceded by a `"` on the same line is left in the code half, so a URL in
+/// a string literal cannot hide a real writer behind it).
 fn classify(src: &str, needle: &str, file: &str) -> Vec<Hit> {
     let scoped = cfg_test_scoped_lines(src);
     src.lines()
         .enumerate()
-        .filter(|(_, line)| line.contains(needle) && !line.trim_start().starts_with("//"))
-        .map(|(n, _)| Hit {
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| {
+            let (lo, hi) = code_span(line);
+            line[lo..hi].contains(needle)
+        })
+        .map(|(n, line)| Hit {
             file: file.to_string(),
             line: n + 1,
             in_test: scoped[n],
+            text: line.trim().to_string(),
         })
         .collect()
 }
@@ -434,11 +452,27 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
 
     // The one consumer runs the COVERAGE half too, asserted the way the old
     // per-call-site rule did: a `predictability_gate` hit within two lines.
+    //
+    // THE CONSUMER IS SELECTED BY ROLE, NOT BY LINE ORDER. `max_by_key(|h| h.line)` picked the
+    // consumer only while the definition happened to sit ABOVE it; moving `pub fn validate_pins`
+    // below `declaration_conforms` — a legal refactor this census has no business objecting to —
+    // silently made the coverage assertion below check the DEFINITION line instead, i.e. measure
+    // the wrong thing and report an unrelated failure. The definition is the hit whose text
+    // declares the fn; the consumer is the other one, and both counts are asserted so a shape
+    // this rule cannot classify fails loudly instead of defaulting.
     let gates = census("predictability_gate(");
-    let consumer = pins_production
+    let (definitions, consumers): (Vec<&&Hit>, Vec<&&Hit>) = pins_production
         .iter()
-        .max_by_key(|h| h.line)
-        .expect("the assert above proves two hits");
+        .partition(|h| h.text.contains("fn validate_pins("));
+    assert_eq!(
+        (definitions.len(), consumers.len()),
+        (1, 1),
+        "the two production `validate_pins(` hits must split by ROLE into exactly one \
+         DEFINITION (`fn validate_pins(`) and exactly one CONSUMER. Anything else means the \
+         role rule stopped classifying this surface and the coverage assertion below would be \
+         measuring an unknown hit. definitions: {definitions:?}; consumers: {consumers:?}"
+    );
+    let consumer = consumers[0];
     assert!(
         gates
             .iter()

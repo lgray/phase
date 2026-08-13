@@ -2602,8 +2602,19 @@ fn c1_row7c_the_may_journal_does_not_cross_save_load() {
 /// fails loudly if a NINTH clear site is added without the journal, which is the actual
 /// regression this guards.
 ///
-/// Discrimination: delete any one `loop_answer_journal = None;` that follows a ring clear ⇒
-/// the pairing count drops and this row reds naming the file and line.
+/// THE WALK IS THE WHOLE CRATE, not a named pair of files. A hard-coded
+/// `["game/engine.rs", "types/game_state.rs"]` cannot see a ninth site in any THIRD file: such
+/// a site is neither paired nor reported, so `paired == 8` still passes while the regression is
+/// live. MEASURED on this tree: the recursive walk finds exactly the 8 sites the named pair did
+/// (5 in `game/engine.rs`, 3 in `types/game_state.rs`), so THE COUNT ASSERTION IS BLIND TO THE
+/// WIDENING — the planted-third-file probe below is the only thing that measures it.
+///
+/// Discrimination, BOTH DIRECTIONS, RUN:
+/// * delete any one `loop_answer_journal = None;` that follows a ring clear ⇒ the pairing count
+///   drops and this row reds naming the file and line;
+/// * add an unpaired `state.loop_detect_ring.clear();` to a THIRD file under
+///   `crates/engine/src` ⇒ `unpaired` names that file and this row reds. Under the named-pair
+///   walk the identical plant left the row GREEN.
 #[test]
 fn c1_every_ring_clear_site_also_clears_the_loop_answer_journal() {
     use std::path::Path;
@@ -2611,17 +2622,36 @@ fn c1_every_ring_clear_site_also_clears_the_loop_answer_journal() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut unpaired: Vec<String> = Vec::new();
     let mut paired = 0usize;
-    for rel in ["game/engine.rs", "types/game_state.rs"] {
-        let path = src.join(rel);
+    // The walker is the sibling census's, not a second copy: one home for "every `.rs` file
+    // under a root", already shared by the census rows in this binary.
+    for path in super::loop_shortcut_offer_writer_census::rs_files(&src) {
+        let rel = path
+            .strip_prefix(&src)
+            .expect("walked path is under src")
+            .to_string_lossy()
+            .replace('\\', "/");
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
         let lines: Vec<&str> = text.lines().collect();
+        // Both halves read the CODE of a line, never its comment: prose neither clears the ring
+        // nor clears the journal. Whole-line-only exclusion is not enough here and the failure is
+        // two-sided — a comment naming the clear would be counted as a site, and a comment naming
+        // `loop_answer_journal = None` inside a window would mark a genuinely UNPAIRED site as
+        // paired, which is the direction that hides the regression. Shared rule, one home.
+        let code = |line: &str| {
+            let (lo, hi) = super::battlefield_entry_authority_census::code_span(line);
+            line[lo..hi].to_string()
+        };
         for (i, line) in lines.iter().enumerate() {
-            if !line.contains("loop_detect_ring.clear()") {
+            if !code(line).contains("loop_detect_ring.clear()") {
                 continue;
             }
             // The journal assignment sits within the same block, immediately after the ring
             // clear (a comment line may separate them).
-            let window = lines[i + 1..(i + 5).min(lines.len())].join("\n");
+            let window = lines[i + 1..(i + 5).min(lines.len())]
+                .iter()
+                .map(|l| code(l))
+                .collect::<Vec<_>>()
+                .join("\n");
             if window.contains("loop_answer_journal = None") {
                 paired += 1;
             } else {
@@ -2637,9 +2667,10 @@ fn c1_every_ring_clear_site_also_clears_the_loop_answer_journal() {
     );
     assert_eq!(
         paired, 8,
-        "the ring has EIGHT production clear sites (5 in game/engine.rs, 3 in \
-         types/game_state.rs). A different count means a site was added or removed and this \
-         census must be re-derived, not re-numbered"
+        "the ring has EIGHT production clear sites across the whole of `crates/engine/src` \
+         (5 in game/engine.rs, 3 in types/game_state.rs; MEASURED by this recursive walk). A \
+         different count means a site was added or removed and this census must be re-derived, \
+         not re-numbered"
     );
 }
 

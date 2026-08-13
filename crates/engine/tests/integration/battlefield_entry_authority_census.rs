@@ -580,13 +580,22 @@ struct Hit {
 ///
 /// The shared walker for BOTH anchors. Keeping one copy is what guarantees the two pins agree on
 /// the comment rule, on the brace scan, and on the `cfg_test_scoped_lines` scope resolver.
+///
+/// The needle is required in the line's CODE half ([`code_span`]), not merely in the line: a
+/// whole-line-only exclusion counts a needle written after a trailing `//` as a construction.
+/// Strictly more specific — `code_span` only ever removes comment text, and leaves a `//` that
+/// follows a `"` in the code half.
 fn classify_anchor(src: &str, file: &str, needle: &str, keep: impl Fn(&str) -> bool) -> Vec<Hit> {
     let scoped = cfg_test_scoped_lines(src);
     let lines: Vec<&str> = src.lines().collect();
     lines
         .iter()
         .enumerate()
-        .filter(|(_, line)| line.contains(needle) && !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| {
+            let (lo, hi) = code_span(line);
+            line[lo..hi].contains(needle)
+        })
         .filter_map(|(n, _)| {
             let body = literal_body(&lines, n, needle);
             keep(&body).then(|| Hit {
@@ -606,8 +615,9 @@ fn classify_anchor(src: &str, file: &str, needle: &str, keep: impl Fn(&str) -> b
 /// branch is what a spelling-based detector misses: `let from = None;` + `from,` constructs exactly
 /// the same event.
 ///
-/// The comment-line exclusion (`!line.trim_start().starts_with("//")`) is reused verbatim from
-/// `loop_shortcut_offer_writer_census::classify`'s measured rule: a comment writes no event, and a
+/// The comment exclusion is shared with `loop_shortcut_offer_writer_census::classify` and
+/// `loop_shortcut_seat_pin_census::sites_in_source` — all three now route it through
+/// [`code_span`], so the rule is whole-line AND trailing: a comment writes no event, and a
 /// comment-blind anchor makes the tripwire fire on prose.
 fn classify(src: &str, file: &str) -> Vec<Hit> {
     classify_anchor(src, file, &anchor(), |body| {
@@ -753,7 +763,13 @@ fn is_ambiguous_mutator(tail: &str) -> bool {
 }
 
 /// The byte range of `line` that is CODE: a LEADING `/* … */` comment and a TRAILING `//` comment
-/// are excluded from the container search.
+/// are excluded from the search.
+///
+/// THE ONE HOME OF THE TRAILING-COMMENT RULE for every source census in this binary — this
+/// file's three anchors, `loop_shortcut_offer_writer_census::classify` and
+/// `loop_shortcut_seat_pin_census::sites_in_source`. They previously rejected only lines that
+/// OPEN with `//`, which counts a needle sitting after a trailing `//` as a real site; a second
+/// copy of the corrected rule is a second place for it to drift.
 ///
 /// Both exclusions only ever REMOVE text, and each is guarded so that it cannot remove code:
 ///
@@ -771,7 +787,7 @@ fn is_ambiguous_mutator(tail: &str) -> bool {
 /// scanned, and would ADD a hit. That direction is fail-CLOSED (spurious red, never a missed
 /// publish); it is listed in this file's residuals. What is closed here are the two shapes this
 /// change's own prose is most likely to take.
-fn code_span(line: &str) -> (usize, usize) {
+pub(super) fn code_span(line: &str) -> (usize, usize) {
     let trimmed = line.trim_start();
     let mut lo = 0usize;
     if trimmed.starts_with("/*") {
@@ -909,13 +925,21 @@ const FN_PREFIX_ALLOW_SET: [&str; 5] = [
 /// signature's continuation (`) -> Option<…> {`) carries no bare `fn` token, so it is not collected.
 ///
 /// `Err` carries the extend-the-allow-set message for an unrecognised prefix.
+///
+/// TOKENS COME FROM THE CODE HALF ([`code_span`]), as everywhere else in this binary: a trailing
+/// comment naming `fn` on a column-0 code line would otherwise contribute a bare `fn` token and
+/// resolve to an unrecognised prefix — loud rather than silent, but still the wrong answer. The
+/// COLUMN-0 test deliberately stays on the ORIGINAL line: `code_span` skips a leading
+/// `/* … */`, and testing the trimmed remainder for column 0 would drop a real header that
+/// happens to carry one.
 fn top_level_fn_headers(src: &str) -> Result<Vec<(usize, String)>, String> {
     let mut out = Vec::new();
     for (n, line) in src.lines().enumerate() {
         if line.starts_with([' ', '\t']) || line.trim_start().starts_with("//") {
             continue;
         }
-        let tokens: Vec<&str> = line.split_whitespace().collect();
+        let (lo, hi) = code_span(line);
+        let tokens: Vec<&str> = line[lo..hi].split_whitespace().collect();
         let Some(at) = tokens.iter().position(|token| *token == "fn") else {
             continue;
         };

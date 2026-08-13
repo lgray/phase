@@ -45,6 +45,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use super::battlefield_entry_authority_census::code_span;
 use super::loop_shortcut_offer_writer_census::{cfg_test_scoped_lines, rs_files};
 
 /// The CHOICE-class needle, ASSEMBLED AT RUNTIME for the same reason the sibling census
@@ -86,11 +87,23 @@ struct Site {
 /// `TargetRef::Object(id) => Some(TargetRef::Object(*id))` match-arm-plus-construction shape a
 /// producer revert would take.
 ///
-/// COMMENT LINES ARE EXCLUDED, and this is the same deviation the sibling census records: prose
-/// writes no pin and reads none, so a doc mentioning a spelling is not a construction site. The
-/// doc surface is swept separately (the commit's per-property bucket table); counting it here
-/// would make the tripwire fire on prose. `//!`, `///` and `//` are all excluded; a trailing
-/// comment on a code line still counts, because the CODE on that line is real.
+/// COMMENT TEXT IS EXCLUDED — whole-line AND trailing, which is the half this rule got wrong.
+/// Prose writes no pin and reads none, so a doc mentioning a spelling is not a construction site;
+/// the doc surface is swept separately (the commit's per-property bucket table). Rejecting only
+/// lines that OPEN with `//` still counted every occurrence after a trailing `//`, and that fails
+/// in BOTH directions: a pure prose edit moves the pinned multiset with no code change, and
+/// deleting one construction while naming the same spelling in a trailing comment on a surviving
+/// construction line HOLDS the count — the substitution class conjunct 1 exists to catch.
+/// Occurrences are therefore counted in the line's CODE half only, via
+/// [`super::battlefield_entry_authority_census::code_span`] (the one home of the rule, shared
+/// with both sibling censuses). It is fail-CLOSED: a `//` preceded by a `"` on the same line —
+/// `let u = "http://x"; ..` — stays in the code half, so a URL in a string literal cannot hide a
+/// real construction behind it, which a naive `split("//")` would.
+///
+/// MEASURED at the time of the fix: no line in any walked root carries a needle after a trailing
+/// `//`, so this repaired NO pinned number. The repo-scanning rows are therefore blind to it and
+/// [`the_seat_pin_census_ignores_a_trailing_comment_mention`] — synthetic input, both directions
+/// — is the only thing that measures the rule.
 fn sites_in_source(src: &str, needle: &str, file: &str) -> Vec<Site> {
     let scoped = cfg_test_scoped_lines(src);
     let mut out = Vec::new();
@@ -98,7 +111,8 @@ fn sites_in_source(src: &str, needle: &str, file: &str) -> Vec<Site> {
         if line.trim_start().starts_with("//") || scoped[n] {
             continue;
         }
-        for _ in 0..line.matches(needle).count() {
+        let (lo, hi) = code_span(line);
+        for _ in 0..line[lo..hi].matches(needle).count() {
             out.push(Site {
                 file: file.to_string(),
                 line: n + 1,
@@ -358,6 +372,71 @@ fn the_seat_pin_census_instrument_reports_both_answers_on_planted_input() {
          spelling: the `#[cfg(test)] pub(crate) mod` copies belong in the test column and the \
          prose line is not a construction site. Dropping either filter makes this (2, 2).\n\
          src:\n{src}"
+    );
+}
+
+/// TRAILING-COMMENT ARM — a needle mention after `//` on a REAL CODE LINE neither inflates the
+/// count nor masks a deleted construction.
+///
+/// SYNTHETIC INPUT BY NECESSITY, not by preference. Measured when this rule was repaired: no line
+/// in any of the three walked roots carries a needle after a trailing `//`, so every row that
+/// scans the real tree passes byte-identically with the rule and without it. A repo-scanning
+/// assertion for this property is vacuous BY CONSTRUCTION; only planted input can separate the
+/// two rules. [`the_seat_pin_census_instrument_reports_both_answers_on_planted_input`] plants its
+/// prose on its OWN line, which the whole-line filter already rejected, so it never reached this
+/// path.
+///
+/// # The three arms, and what each one would be under the old rule
+///
+/// 1. SUBSTITUTION, the arm that matters and therefore the one asserted FIRST — the construction
+///    is DELETED and the trailing-comment mention survives: 0, not 1. Under the old rule the
+///    census counted a removed construction as still present, which is exactly the substitution
+///    class conjunct 1 exists to catch. MEASURED by revert-probe: restoring
+///    `line.matches(needle)` makes this arm fail `left: 1 / right: 0`.
+/// 2. INFLATION — one real construction plus a mention of the same spelling in a trailing
+///    comment on that same line: 1, not 2. Under the old rule a pure PROSE edit moved the pinned
+///    multiset with no code change (revert-probe: `left: 2 / right: 1`).
+/// 3. FAIL-CLOSED — a `//` inside a STRING LITERAL preceding a real construction: 1, not 0. A
+///    naive `split("//")` truncates there and UNDER-counts, silently dropping a real site;
+///    [`code_span`] leaves a `//` that follows a `"` in the code half, so the miss cannot happen.
+#[test]
+fn the_seat_pin_census_ignores_a_trailing_comment_mention() {
+    let choice = choice_needle();
+    let count = |src: &str| sites_in_source(src, &choice, "planted.rs").len();
+
+    // FIRST, because it is the arm that matters: a revert-probe must show THIS one failing, not
+    // merely the cheaper inflation arm that would short-circuit ahead of it.
+    let substitution = format!("fn f() {{\n    let a = 0; // was {choice}PlayerId(0))\n}}\n");
+    assert_eq!(
+        count(&substitution),
+        0,
+        "THE SUBSTITUTION ARM: the construction is gone and only a trailing-comment mention \
+         survives, so the count must fall to 0. Counting the whole line makes this 1 — a \
+         DELETED producer reported as still present, which is the failure conjunct 1 exists to \
+         catch.\nsrc:\n{substitution}"
+    );
+
+    let inflation =
+        format!("fn f() {{\n    let a = {choice}PlayerId(0)); // also {choice}PlayerId(9))\n}}\n");
+    assert_eq!(
+        count(&inflation),
+        1,
+        "a needle in a TRAILING comment is prose: the code half of this line holds exactly ONE \
+         construction. Counting the whole line makes this 2, and a pure prose edit then moves \
+         the pinned multiset with no code change.\nsrc:\n{inflation}"
+    );
+
+    let in_string =
+        format!("fn f() {{\n    let u = \"http://x\";\n    let a = {choice}PlayerId(0));\n}}\n");
+    let in_string_one_line =
+        format!("fn f() {{\n    let u = \"http://x\"; let a = {choice}PlayerId(0));\n}}\n");
+    assert_eq!(
+        (count(&in_string), count(&in_string_one_line)),
+        (1, 1),
+        "FAIL-CLOSED: a `//` inside a string literal is not a comment opener. A naive \
+         `split(\"//\")` truncates at the URL and reports 0 for the one-line form — a real \
+         construction silently dropped, the one direction a census must never fail in.\n\
+         src:\n{in_string_one_line}"
     );
 }
 

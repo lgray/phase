@@ -450,11 +450,15 @@ local_resource('probe-pin-census',
     # deliberately NOT ENGINE_SRC + AI_SRC.
     # ⚠ THE PREDICATE IS STATED BECAUSE THE EARLIER WORD WAS "EVERYTHING", AND THAT WAS FALSE.
     # Disclosed residual, not a gap that was missed: the target is resolved by building
-    # `--test integration`, so ANY sibling file under crates/engine/tests/integration/ (plus that
-    # crate's dev-deps and Cargo.lock) can move the verdict -- by breaking that build, or by adding
-    # a test that FAILS under the manifest's control. Those are NOT watched, on purpose: watching
-    # them would re-trigger this pin on every unrelated integration-test edit, and there are over a
-    # thousand of them. Both failure classes surface as exit 2 with the cause named in the output.
+    # `--test integration`, so ANY sibling file under crates/engine/tests/integration/ can move the
+    # verdict -- by breaking that build, or by adding a test that FAILS under the manifest's
+    # control. Those are NOT watched, on purpose: watching them would re-trigger this pin on every
+    # unrelated integration-test edit, and there are over a thousand of them. Both failure classes
+    # surface as exit 2 with the cause named in the output. THE DEV-DEP AND LOCKFILE HALF OF THIS
+    # RESIDUAL IS NO LONGER RESIDUAL -- it was listed here alongside the thousand siblings and
+    # inherited their exemption, which was wrong by this file's own admission rule: a lockfile-only
+    # edit leaves a stale GREEN, and Cargo.lock is one file with a tiny edit surface. It, the two
+    # manifests that reach this target, and .cargo/config.toml are watched below.
     # The pin is over exactly what census() reads; ENGINE_SRC is a superset BY DESIGN (its own
     # comment requires it to stay a superset of the engine cache key: src + data + build.rs +
     # Cargo.toml), and census() reads none of the extras. The live cost of the wider set is not
@@ -469,6 +473,29 @@ local_resource('probe-pin-census',
     deps = [
         'crates/engine/src/',
         'crates/phase-ai/src/',
+        # THE BUILD INPUTS OF THE TARGET THIS PIN RESOLVES BY BUILDING (`--test integration`).
+        # A lockfile- or manifest-only edit changes what that target compiles while every watched
+        # source file stays byte-identical, so without these the resource keeps its PRIOR GREEN
+        # even when the rebuilt target would fail or move a number. Each is admitted by the rule
+        # 'main.rs' below is admitted by -- ONE file with a tiny, stable edit surface -- not by the
+        # "everything that can break the build" reading the comment above already rejects for the
+        # thousand-odd sibling test files.
+        # WHICH manifests, MEASURED not shotgunned (`cargo tree -p phase-engine -e normal,dev`
+        # intersected with the workspace members): phase-engine is the ONLY workspace member in
+        # this target's graph, so its manifest plus the workspace root's -- [profile.test] and
+        # [workspace.dependencies], which this target resolves through -- are the whole set.
+        # Sibling crate manifests are deliberately absent: they cannot reach this build.
+        # probe-pin's own manifest already rides along inside the 'crates/probe-pin/' dep below.
+        # Cargo may itself rewrite Cargo.lock when it is stale, which costs at most ONE extra
+        # settling run, not a loop: the rewrite is idempotent.
+        'Cargo.lock',
+        'Cargo.toml',
+        'crates/engine/Cargo.toml',
+        # NOT a manifest, watched on the same one-file rule: [env] here sets
+        # RUST_MIN_STACK = 16777216, which that file records as load-bearing for test threads
+        # (Debug-formatting the Effect <-> AbilityDefinition recursion overflows a default
+        # stack). Lowering it turns these tests red with no source edit at all.
+        '.cargo/config.toml',
         # The TOOL that renders the block, watched for the same reason 'probe-pin-check' watches
         # it: a change to block::render or the digest moves the rendered block, and without this
         # nothing re-triggers the check until an unrelated engine edit happens to fire it.

@@ -17976,6 +17976,23 @@ mod stage2_injector_tests {
         files.sort();
         assert!(files.len() > 100, "reach-guard: the walker found the crate");
 
+        // COMMENT TEXT IS NOT A CENSUS SITE — this instrument counts CODE, and it had no
+        // comment rule at all until now. The consequence was measured, not theorised: a doc
+        // comment that quoted the needle verbatim counted ITSELF, reading 39 against a pin of
+        // 38, and was worked around by deleting the brace from the quotation (`aa313f122`).
+        // That repaired one sentence and left the counter broken for the next one. The rule is
+        // `battlefield_entry_authority_census::code_span`'s, restated in its smallest form
+        // because a `#[cfg(test)]` module in the lib cannot import from the integration binary:
+        // drop everything from the first `//` NOT preceded by a `"` on that line, so a `//`
+        // inside a string literal cannot truncate real code away (fail-closed — the residual
+        // direction is a spurious extra hit, never a missed one).
+        fn code_of(line: &str) -> &str {
+            match line.find("//") {
+                Some(at) if !line[..at].contains('"') => &line[..at],
+                _ => line,
+            }
+        }
+
         // The needle is ASSEMBLED so this row's own source cannot be counted by its own
         // instrument. `..` excludes multi-line READ destructures whose rest-pattern sits on
         // a later line — the inflation the raw grep suffers from.
@@ -17997,20 +18014,23 @@ mod stage2_injector_tests {
                 .replace('\\', "/");
             let test_file = rel.trim_end_matches(".rs").ends_with("_tests");
             for (n, line) in lines.iter().enumerate() {
-                if !line.contains(&needle) || line.contains("..") {
+                let code = code_of(line);
+                if !code.contains(&needle) || code.contains("..") {
                     continue;
                 }
                 if test_file || spans.iter().any(|(a, b)| (*a..=*b).contains(&n)) {
                     in_test += 1;
-                } else if line.contains("waiting_for = ")
-                    || line.contains("Ok(Some(")
+                } else if code.contains("waiting_for = ")
+                    || code.contains("Ok(Some(")
                     // `install_direct_choice_frame` owns the actual
                     // `state.waiting_for` write. Its typed prompt argument is
                     // still a production mint, not a reader; the call sits
-                    // within this bounded argument expression.
+                    // within this bounded argument expression. Read through
+                    // `code_of` as well, so prose naming the call cannot
+                    // promote a reader to a producer.
                     || lines[n.saturating_sub(32)..n]
                         .iter()
-                        .any(|prior| prior.contains(".install_direct_choice_frame("))
+                        .any(|prior| code_of(prior).contains(".install_direct_choice_frame("))
                 {
                     producers.push(format!("{rel}:{}", n + 1));
                 } else {
@@ -18473,12 +18493,15 @@ mod stage2_injector_tests {
                 //
                 // Producer identity re-established rather than assumed: the line at the new
                 // coordinate is byte-identical to the base's `:12004` and to upstream's `:12003`
-                // (`return Ok(Some(WaitingFor::OptionalEffectChoice`), and it is still inside
-                // `begin_pending_trigger_target_selection`. The opening brace is dropped from that
-                // quotation ON PURPOSE: this census has no comment filter, so quoting the needle
-                // whole makes the sentence count ITSELF as a site. It did — this line was the
-                // 39th hit against a pin of 38. The test assembles its own needle with `format!`
-                // for exactly this reason; prose that names the construct owes the same care.
+                // (`return Ok(Some(WaitingFor::OptionalEffectChoice {`), and it is still inside
+                // `begin_pending_trigger_target_selection`. THE OPENING BRACE IS QUOTED WHOLE
+                // AGAIN, and that is the point: it was dropped as a workaround because the census
+                // had no comment filter and this sentence counted ITSELF as the 39th hit against
+                // a pin of 38. Mutilating the prose repaired the sentence, not the counter — the
+                // next whole quotation anywhere in the crate would have broken it again. The
+                // counter now excludes comment text, so this line is a comment and is not a site;
+                // restoring the brace is what makes that repair MEASURED on the real tree rather
+                // than latent. Under the old rule this exact line reds the census at 39.
                 //
                 // TO BE UNAMBIGUOUS FOR THE NEXT READER: the `+1` in `apply_action`'s
                 // `DecideOptionalEffect` arm is a READER, NOT A SIXTH PRODUCER. It destructures the cloned `state.waiting_for`

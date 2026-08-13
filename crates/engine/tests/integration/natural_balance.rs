@@ -498,8 +498,10 @@ fn natural_balance_collects_two_local_x_searches_before_one_shuffle_each() {
 ///
 /// **NOT CLAIMED:** that the seat component changes an OFFER. That additionally requires
 /// the publisher to publish a `MayChoice` point for this source in a bounded window, which
-/// this board does not do — MEASURED here, as the final assertion: no
-/// `WaitingFor::LoopShortcut` is minted anywhere in this drive. The offer-level claim is
+/// this board does not do. WHAT IS MEASURED IS THE TERMINAL STATE AND ONLY THAT: the final
+/// assertion reads `runner.state().waiting_for` once, after the drive, so it says the drive does
+/// not END on a `WaitingFor::LoopShortcut`. It CANNOT exclude an offer minted and cleared at an
+/// earlier beat — no intermediate beat is sampled. The offer-level claim is
 /// therefore unmeasured in either direction and this row does not make it. The pair key is
 /// DEFENSE IN DEPTH PLUS A CODE DELETION, not a live-bug fix: the pin injector already
 /// aborts a replay whose prompt recipient differs from the template owner, so a
@@ -667,10 +669,12 @@ fn natural_balance_two_scoped_seats_journal_one_may_source_under_two_independent
          Conflicted over the first"
     );
 
-    // ── the offer-mint non-claim, measured rather than asserted in prose ──
+    // ── the offer-mint non-claim, measured rather than asserted in prose. TERMINAL STATE ONLY:
+    //    one read of `waiting_for` after the drive. It cannot exclude an offer minted and cleared
+    //    at an earlier beat, and the rustdoc's non-claim is scoped to match. ──
     assert!(
         !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
-        "this board journals two seats but publishes no CR 732.2a offer, which is why this \
-         row's claim stops at the journal"
+        "this board journals two seats and does not END on a CR 732.2a offer, which is why \
+         this row's claim stops at the journal"
     );
 }

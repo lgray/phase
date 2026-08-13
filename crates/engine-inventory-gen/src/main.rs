@@ -37,6 +37,10 @@ struct Inventory {
 
 #[derive(Serialize)]
 struct EnumEntry {
+    /// The bare ident. Carried as a field because the map key is module-qualified: without it
+    /// a quoted grep (`"LayoutKind"`) — a form the discoverability gate is written in — went
+    /// from 1 hit to 0. MEASURED on this tree before the field was added.
+    name: String,
     file: String,
     line: usize,
     doc: String,
@@ -80,14 +84,23 @@ struct ClusterSmell {
 /// engine crate rather than a hand-kept subset: `types/` + `analysis/` left 85 of the 654
 /// top-level `pub enum`s under `crates/engine/src` structurally invisible to the gate
 /// (`game/` 61, `ai_support/` 13, `parser/` 7, `database/` 4). One root is also shorter than
-/// the list it replaces.
+/// the list it replaces. MEASURED by running the generator: 654 enums, 5319 variants — the
+/// catalogue now holds one entry per DECLARATION, so `enum_count` and the declaration count
+/// are the same number.
 ///
-/// MEASURED COST, disclosed rather than absorbed: the catalogue is a `BTreeMap` keyed on the
-/// enum IDENT, and across the whole crate exactly one ident collides — `LayoutKind`, declared
-/// in both `types/card.rs` and `database/synthesis.rs` — so 654 declarations yield 653 entries
-/// and the later walk order wins. The gate this feeds is an existence/parameterization lookup
-/// by name, which still answers for `LayoutKind`; a module-qualified key is the fix if a
-/// second collision ever makes the per-variant listing ambiguous.
+/// THE CATALOGUE KEY IS MODULE-QUALIFIED (`types::card::LayoutKind`), because the widened walk
+/// makes ident collisions reachable and an ident key drops one side of every collision. Measured
+/// on this tree: `LayoutKind` is declared in BOTH `types/card.rs` and `database/synthesis.rs`,
+/// and the two are NOT variant-identical — `Omen` exists only in `card.rs`, `Specialize` only in
+/// `synthesis.rs`. An ident key therefore answered the discoverability gate with ONE enum's
+/// variant list, so an existence check for the shadowed variant returned a FALSE NEGATIVE — the
+/// exact outcome CLAUDE.md makes this grep mandatory to prevent. It also made the output
+/// irreproducible: which side survived was decided by `readdir` order.
+///
+/// Grep still works on the qualified key: `LayoutKind` is a substring of
+/// `types::card::LayoutKind`, so the skill's `rg "<concept>" data/engine-inventory.json`
+/// existence check is unaffected. Unique keys additionally make the `BTreeMap` order — and so
+/// the emitted JSON — a function of the source tree alone.
 const TARGET_DIRS: &[&str] = &["crates/engine/src"];
 const OUTPUT: &str = "data/engine-inventory.json";
 
@@ -102,11 +115,16 @@ fn main() -> Result<()> {
 
     for dir in TARGET_DIRS {
         let target = workspace_root.join(dir);
-        for entry in WalkDir::new(&target).into_iter().filter_map(|e| e.ok()) {
+        // Sorted so the emitted `sources` list — and the walk itself — does not depend on
+        // `readdir` order; errors propagate rather than silently yielding a partial inventory
+        // that still reports success.
+        for entry in WalkDir::new(&target).sort_by_file_name() {
+            let entry = entry.with_context(|| format!("walk {}", target.display()))?;
             let path = entry.path();
             if path.extension().is_none_or(|ext| ext != "rs") {
                 continue;
             }
+            let module = module_path(path.strip_prefix(&target).unwrap_or(path));
             let rel = path.strip_prefix(&workspace_root).unwrap_or(path);
             sources.push(rel.display().to_string());
 
@@ -123,7 +141,17 @@ fn main() -> Result<()> {
                         continue;
                     }
                     let entry = build_enum_entry(e, &content, rel, &cr_re);
-                    enums.insert(e.ident.to_string(), entry);
+                    let key = if module.is_empty() {
+                        e.ident.to_string()
+                    } else {
+                        format!("{module}::{}", e.ident)
+                    };
+                    // Rust cannot declare two same-named top-level enums in one file, so a
+                    // collision here means the key stopped identifying a declaration. Loud,
+                    // because a silent overwrite is the defect this key shape exists to close.
+                    if let Some(prev) = enums.insert(key.clone(), entry) {
+                        anyhow::bail!("duplicate inventory key {key}: already held {}", prev.file);
+                    }
                 }
             }
         }
@@ -181,6 +209,23 @@ fn find_workspace_root() -> Result<PathBuf> {
     }
 }
 
+/// The module path of a source file relative to the walk root: `types/card.rs` → `types::card`,
+/// `game/mod.rs` → `game`, `lib.rs` → `` (crate root).
+///
+/// Derived from the PATH rather than from `syn`, which is exact here because only top-level
+/// `file.items` are catalogued — an enum inside an inline `mod` is not walked at all.
+fn module_path(rel_to_root: &Path) -> String {
+    let mut parts: Vec<String> = rel_to_root
+        .with_extension("")
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if let Some("mod" | "lib" | "main") = parts.last().map(String::as_str) {
+        parts.pop();
+    }
+    parts.join("::")
+}
+
 fn is_pub(vis: &syn::Visibility) -> bool {
     matches!(vis, syn::Visibility::Public(_))
 }
@@ -223,6 +268,7 @@ fn build_enum_entry(e: &ItemEnum, _source: &str, rel_path: &Path, cr_re: &Regex)
     let sibling_clusters = detect_clusters(&variants);
 
     EnumEntry {
+        name: e.ident.to_string(),
         file: rel_path.display().to_string(),
         line,
         doc,

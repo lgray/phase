@@ -284,11 +284,14 @@ pub(super) fn grid_template(
 /// The contrast this carrier lives inside is "the template survives, the answer journal does
 /// not". The journal half is asserted by
 /// `fantastic_four_bounded_loop::r3a_the_accepted_drive_ends_at_the_priority_point_with_the_window_cleared`
-/// — with the `> 0` reach-guard that makes it non-vacuous — and NOT here, because
-/// `GameState::loop_answer_journal` and its single writer `record_loop_answer` are
-/// `pub(crate)`: a board this file can build never populates the journal, so a
-/// `loop_answers_recorded() == 0` assertion here would be a vacuous negative with no reachable
-/// paired positive.
+/// — with the `> 0` reach-guard that makes it non-vacuous — and NOT here. THE REASON IS THE
+/// BOARD, NOT VISIBILITY, and the distinction matters to whoever reads this next: the READER
+/// accessors are `pub` and reachable from this binary — `natural_balance.rs` calls
+/// `runner.state().loop_answers_recorded()` (`:648`) and `runner.state().loop_answer(..)`
+/// (`:654`). Only the WRITER, `GameState::record_loop_answer`, is `pub(crate)`, and the journal
+/// field with it. What makes an assertion here vacuous is that this file's synthetic board
+/// drives no answer through `apply()` at all, so `loop_answers_recorded() == 0` would be a
+/// negative with no reachable paired positive — not an unreachable accessor.
 ///
 /// # The hostile arm is MULTI-AUTHORITY, and it says so structurally
 ///
