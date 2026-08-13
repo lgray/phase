@@ -2822,10 +2822,19 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
 /// RE-DERIVED from the generator rather than hand-named: the declare candidate opens the window
 /// and the decline hands priority back.
 ///
-/// **The four one-axis drives below are UNCHANGED and remain the engine-side guards the
-/// generator's gate depends on** — in particular `Fixed(max) + None ⇒ Priority`, which is a
-/// LIVE fail-closed guard (resolving a `template: None` declaration against the offer's own
-/// declaration is a declare-handler change deliberately out of this commit's partition).
+/// **The four one-axis drives below still measure the engine-side guards the generator's gate
+/// depends on, but one of them has FLIPPED, deliberately.** `Fixed(max) + None` used to be a
+/// live fail-closed guard, on the stated grounds that resolving a `template: None` declaration
+/// against the offer's own published declaration was a declare-handler change deferred out of
+/// that commit's partition. Item-4 C2 IS that change: `handle_declare_shortcut` now resolves a
+/// `None` template against `offer.declaration` before the `template.owner` firewall, so on this
+/// board — which publishes a declaration — that arm is ACCEPTED and the `None if
+/// …loop_period_controller() != Some(proposer)` arm is bypassed rather than reached. The arm is
+/// kept, flipped, because it is the one row here that measures the manual ingress agreeing with
+/// the AI ingress on one and the same offer. Its fail-closed sibling did not disappear — it
+/// moved to the offer shape that still reaches it, which is
+/// [`a_template_free_declaration_is_admitted_only_by_the_proposers_own_period`] (offer with
+/// `declaration: None`).
 ///
 /// Four declarations are driven through `apply()` on the SAME real offer board, differing one
 /// axis at a time:
@@ -2834,12 +2843,12 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
 /// |---|---|
 /// | `UntilLethal` + `None` — **the shape the generator emitted before the bounded gate** | REFUSED ⇒ `Priority` |
 /// | `UntilLethal` + a conformant template | REFUSED ⇒ `Priority` (so the refusal is keyed on the COUNT, not on the pins) |
-/// | `Fixed(max)` + `None` | REFUSED ⇒ `Priority` (`template: None` against a non-empty schema fail-closes when `last_loop_action_sequence` is empty — measured empty here) |
+/// | `Fixed(max)` + `None` | **ACCEPTED** ⇒ item-4 C2 resolves the `None` against the declaration this offer published, so the browser payload reaches the same window the AI's does |
 /// | `Fixed(max)` + a conformant template | **ACCEPTED** ⇒ the CR 732.2b APNAP window opens |
 ///
 /// The last row is the ANTI-VACUITY control: without it, "everything reaches `Priority`" would
 /// be satisfied by a board that refuses every declaration for some unrelated reason. With it,
-/// the three refusals are proved to be refusals of *those* declarations.
+/// the two `UntilLethal` refusals are proved to be refusals of *those* declarations.
 ///
 /// ⚠ This row deliberately does NOT assert what the accepted declaration then accomplishes —
 /// that is [`r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_announced`]'s
@@ -2875,10 +2884,17 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
 
     assert!(
         state.last_loop_action_sequence.is_empty(),
-        "the measured precondition for the `Fixed` + `None` arm below: with a NON-empty \
-         sequence a template-free declaration is legitimately re-derivable and that arm would \
-         be measuring something else. len={}",
+        "the measured precondition that makes the `Fixed` + `None` arm below ATTRIBUTABLE: with \
+         no recorded period at all, the `None if …loop_period_controller() != Some(proposer)` \
+         arm would refuse this declaration on the pre-C2 engine, so that arm's acceptance is \
+         attributable to item-4 C2's `or_else` and to nothing else on this board. len={}",
         state.last_loop_action_sequence.len()
+    );
+    assert!(
+        offer_declaration(&state).is_some(),
+        "and the other half of that attribution: the `or_else` can only accept because THIS \
+         offer published a declaration to fall back to. An offer publishing `None` still \
+         fail-closes — `a_template_free_declaration_is_admitted_only_by_the_proposers_own_period`"
     );
 
     // Every AI candidate, driven through the public boundary and dispatched on its own SHAPE,
@@ -2946,10 +2962,13 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
     );
     assert_eq!(
         outcome(IterationCount::Fixed(max), None),
-        "Priority",
-        "and 'just emit `Fixed`' is not a template-free remedy: a `template: None` declaration \
-         against a non-empty schema fail-closes unless the recorded driving period belongs to \
-         the offer's proposer, and here there is no period at all"
+        "RespondToShortcut",
+        "item-4 C2, and this arm FLIPPED with it: `Fixed` + `template: None` is the browser's \
+         own payload, and `handle_declare_shortcut` now resolves that `None` against the \
+         declaration THIS offer published rather than discarding it. Both reach-guards above \
+         are what make the flip attributable — no recorded period (so the pre-C2 engine refused \
+         here) and a published declaration (so there is something to resolve against). Revert \
+         the `or_else` ⇒ `Priority`"
     );
     // ── ANTI-VACUITY CONTROL: this board DOES accept a declaration ──
     assert_eq!(
@@ -3559,8 +3578,10 @@ fn a1_the_users_accept_committed_nothing_board_now_commits_on_every_axis() {
     assert_axis_scales("MODE2", "token", tokens_1, tokens_3);
 }
 
-/// ITEM 2 (CR 732.2a) — the DECLARE seam: a `template: None` declaration is admitted only when
-/// the recorded period belongs to the offer's own proposer.
+/// ITEM 2 (CR 732.2a) — the DECLARE seam: **on an offer that published no declaration of its
+/// own**, a `template: None` declaration is admitted only when the recorded period belongs to
+/// the offer's own proposer. The qualifier is item-4 C2's and is load-bearing — see the arm
+/// table below.
 ///
 /// **WHY THIS FIXTURE AND NOT `loop_shortcut.rs`.** Site F sits under
 /// `if !offer.schema.points.is_empty()`. The dina bounded offer publishes an EMPTY point set
@@ -3581,11 +3602,20 @@ fn a1_the_users_accept_committed_nothing_board_now_commits_on_every_axis() {
 /// foreign period would take the unvalidated sibling arm and open the CR 732.2b APNAP window on a
 /// client-supplied declaration. The arm therefore asks whose period it is.
 ///
-/// | arm | sequence | expected `waiting_for` |
-/// |---|---|---|
-/// | EMPTY-seq | empty | `Priority` (fail-closed) — must-not-flip |
-/// | OWN-seq | proposer's | `RespondToShortcut` (the legitimate object-growth route) — must-not-flip |
-/// | FOREIGN-seq | an opponent's | `Priority` — **the remedy** |
+/// **ALL THREE ARMS RUN ON AN OFFER WHOSE OWN `declaration` IS CLEARED (item-4 C2).** That is
+/// the offer shape site F still decides — `handle_declare_shortcut` resolves a `template: None`
+/// declaration against `offer.declaration` above the pin block, so an offer that published one
+/// bypasses site F entirely. The clearing keeps this row on its own subject instead of silently
+/// converting it into a `declaration_conforms` row; the fourth arm below is the paired positive
+/// that proves the clearing is the operative axis. See the closure's own comment for why a
+/// declaration-free offer is a reachable production shape rather than a contrivance.
+///
+/// | arm | offer `declaration` | sequence | expected `waiting_for` |
+/// |---|---|---|---|
+/// | EMPTY-seq | cleared | empty | `Priority` (fail-closed) — must-not-flip |
+/// | OWN-seq | cleared | proposer's | `RespondToShortcut` (the legitimate object-growth route) — must-not-flip |
+/// | FOREIGN-seq | cleared | an opponent's | `Priority` — **the remedy** |
+/// | RETAINED | **retained** | empty | `RespondToShortcut` — **the C2 paired positive**: one field apart from EMPTY-seq, and it flips |
 ///
 /// **TWO-SIDED CONTROL, PER ASSERTION** — no constant implementation passes:
 /// * **DROP** the proposer test (restore `state.last_loop_action_sequence.is_empty()`) ⇒
@@ -3594,6 +3624,10 @@ fn a1_the_users_accept_committed_nothing_board_now_commits_on_every_axis() {
 ///   instead (the shipped object-growth declarations break — the tree's own doc above this arm
 ///   says keying on `template.is_none()` alone does exactly this). TRIVIALIZE to never-reject ⇒
 ///   EMPTY-seq returns `RespondToShortcut` ⇒ that assertion fails.
+/// * **REVERT item-4 C2** (drop `let template = template.or_else(|| offer.declaration.cloned())`
+///   from `handle_declare_shortcut`) ⇒ the RETAINED arm returns `Priority` ⇒ **that** assertion
+///   fails, while the three cleared-offer arms are untouched (they have no declaration to
+///   resolve against, so the `or_else` was already a no-op for them).
 ///
 /// ⚠ **WHAT THIS ROW DELIBERATELY DOES NOT ASSERT — a realized negative, recorded rather than
 /// re-keyed.** Continuing each ACCEPTED arm through `accept_all_opponents` was measured, and both
@@ -3624,6 +3658,13 @@ fn a_template_free_declaration_is_admitted_only_by_the_proposers_own_period() {
         "REACH-GUARD: the published bound must admit `Fixed(1)`, else the arms are refused for \
          a reason that has nothing to do with the period"
     );
+    assert!(
+        offer_declaration(&state).is_some(),
+        "REACH-GUARD for the `declaration = None` mutation the closure below applies: the \
+         UNTOUCHED offer really does publish a declaration, so that clearing is a genuine \
+         one-field mutation rather than a no-op restating the fixture. Paired with the \
+         `declaration retained` positive at the end of this row"
+    );
 
     let opp = state
         .players
@@ -3639,9 +3680,42 @@ fn a_template_free_declaration_is_admitted_only_by_the_proposers_own_period() {
         .expect("the dump has objects");
 
     // One offer state, one field reassigned per arm, one action applied — nothing else differs.
+    //
+    // ⚠ THE OFFER'S OWN `declaration` IS CLEARED, and that is what keeps this row LIVE rather
+    // than what weakens it (item-4 C2). `handle_declare_shortcut` now resolves a `template:
+    // None` declaration against `offer.declaration` ABOVE the pin block, so on an offer that
+    // published one, `&template` takes the `Some(t)` arm and site F is never reached — all
+    // three arms below would read `RespondToShortcut` and the row would be measuring
+    // `declaration_conforms` instead of the period test it is named for. Clearing the
+    // declaration puts the row back on the offer shape site F still decides, which is a
+    // REACHABLE production shape and not a contrivance: `build_bounded_declaration` returns
+    // `None` on a journal miss or a kind/value mismatch even with a non-empty schema, both
+    // non-bounded mints hard-code `declaration: None`, and a restored save may carry `None`.
+    // Measured across the tracked suite at this tip: 34 distinct tests still reach site F on a
+    // point-carrying offer that published no declaration.
     let declare_with = |seq: Vec<LoopActionContext>| {
         let mut probe = state.clone();
         probe.last_loop_action_sequence = seq;
+        match &mut probe.waiting_for {
+            WaitingFor::LoopShortcut { declaration, .. } => *declaration = None,
+            other => panic!("expected the CR 732.2a bounded offer, got {other:?}"),
+        }
+        apply(
+            &mut probe,
+            proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(1),
+                template: None,
+            },
+        )
+        .expect("dispatched — a refusal is a HANDBACK, not an error");
+        probe.waiting_for.variant_name()
+    };
+    // The SAME EMPTY-seq call with the declaration RETAINED — one field apart from the first
+    // assertion below, and the axis is the offer's own `declaration`.
+    let declare_empty_seq_with_declaration_retained = || {
+        let mut probe = state.clone();
+        probe.last_loop_action_sequence = Vec::new();
         apply(
             &mut probe,
             proposer,
@@ -3683,7 +3757,377 @@ fn a_template_free_declaration_is_admitted_only_by_the_proposers_own_period() {
         "Priority",
         "FOREIGN-seq — THE REMEDY. CR 732.2a: an opponent's independent activation is not a \
          template this proposer's drive can re-derive from, so admitting it would open the \
-         CR 732.2b window on a client-supplied declaration that received ZERO pin validation \
+         CR 732.2b window on a client-supplied declaration that received ZERO pin validation. \
+         NOTE the paired assertion below: this seat-relative refusal is what site F decides on a \
+         declaration-free offer, NOT a blanket refusal of `template: None` \
          against a schema with published points"
+    );
+    // ── PAIRED POSITIVE, and it is what makes the two refusals above ATTRIBUTABLE ──
+    assert_eq!(
+        declare_empty_seq_with_declaration_retained(),
+        "RespondToShortcut",
+        "item-4 C2: byte-identical to the EMPTY-seq arm above except that the offer's own \
+         `declaration` is RETAINED, and it flips. Two things follow, and neither is provable \
+         from the refusals alone. (1) Those refusals are site F's seat-relative period verdict, \
+         not this fixture refusing every `template: None` declaration for some unrelated reason \
+         — an always-reject engine fails HERE. (2) Site F is REACHED at all on the cleared \
+         offer, because the only difference between reaching it and bypassing it is the field \
+         this assertion restores. Revert C2's `or_else` ⇒ this arm reads `Priority` and the \
+         whole row degenerates into three copies of one verdict"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// item-4 C2 — the engine-issued declaration is HONOURED on the manual declare path
+//
+// The defect these rows close is an ACTOR DIVERGENCE on one and the same offer: the engine
+// mints a bounded offer carrying its own `declaration` (the proposer's journalled answers),
+// `ai_support::candidates` reads that field and declares with `template: Some(declaration)` and
+// is accepted, while a browser — which structurally sends `template: null`, because the client
+// never constructs a template — was refused. The repair is one `Option::or_else` in
+// `handle_declare_shortcut`, placed ABOVE the `template.owner` firewall.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// The accepted proposal behind a `RespondToShortcut` window. Panics loudly on any other state
+/// so a row that meant to assert on a proposal can never silently assert on its absence.
+fn accepted_proposal(state: &GameState) -> &engine::analysis::loop_check::ShortcutProposal {
+    match &state.waiting_for {
+        WaitingFor::RespondToShortcut { proposal, .. } => proposal,
+        other => panic!("expected the `RespondToShortcut` accept-or-shorten window, got {other:?}"),
+    }
+}
+
+/// Declare `Fixed(k)` with the browser's own payload (`template: None`) against the live F4
+/// offer, returning the post-state.
+fn declare_template_free(state: &GameState, proposer: PlayerId, k: u32) -> GameState {
+    let mut probe = state.clone();
+    apply(
+        &mut probe,
+        proposer,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(k),
+            template: None,
+        },
+    )
+    .expect("dispatched — a refusal is a HANDBACK, not an error");
+    probe
+}
+
+/// **Rows R1 + R1b — THE REPAIR.** A browser `template: null` declaration against the real
+/// point-carrying bounded offer reaches the ACCEPTED declaration, at every count the picker
+/// makes selectable rather than only at the suggested one.
+///
+/// # Why this row exists at all
+///
+/// `ai_support::candidates` gates its declare candidate on `declaration.is_some()` and sends
+/// that very template, so the AI path was already green
+/// ([`d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration`]). The manual
+/// arm bound `declaration: _` and threw the field away, so the identical offer answered the two
+/// ingresses differently. `template: null` is not "no pins" — it is "no OVERRIDE of the pins you
+/// already published", and this row is the measurement of that reading.
+///
+/// # The revert-failing assertion, named
+///
+/// `proposal.template == Some(offer_declaration(&state))` — VALUE-equal against the field the
+/// offer published, never `is_some()`. Delete `let template = template.or_else(|| ...)` from
+/// `handle_declare_shortcut` and every arm here lands `Priority`, so `accepted_proposal` panics
+/// before any assertion is reached.
+///
+/// # R1b: the counts are not the suggested one
+///
+/// The picker's whole point is that any count in `[min, max]` may be declared, so a repair that
+/// only worked at `suggested` would be no repair. `k = 1` is the window's lower edge and
+/// `k = 5` is neither edge nor the suggestion — no implementation that special-cases
+/// `max_iterations` (which this board publishes as `suggested`) satisfies the `k = 5` arm.
+/// `proposal.count` is asserted per arm, so an engine that accepted the declaration but drove
+/// the suggested count anyway fails here rather than silently overriding the player.
+///
+/// # Reach-guards, asserted BEFORE the claim
+///
+/// The schema publishes points (else the pin block is skipped and the row measures the empty
+/// path — that is [`c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone`]'s
+/// subject), the schema is bounded, the offer really published a declaration (else the
+/// `or_else` has nothing to resolve against and every arm would be measuring site F), and the
+/// window is wide enough that `k = 5` is genuinely interior. The bound is read from the schema
+/// rather than pinned to a literal.
+#[test]
+fn c2_r1_the_browsers_template_free_declaration_reaches_the_accepted_declaration() {
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    let (points, bounded, max) = (
+        schema.points.len(),
+        schema.is_bounded(),
+        schema.max_iterations,
+    );
+
+    assert!(
+        points > 0,
+        "REACH-GUARD: with an empty point set `handle_declare_shortcut` skips the pin block \
+         entirely and this row would measure the owner firewall instead of the repair"
+    );
+    assert!(
+        bounded,
+        "REACH-GUARD: an unbounded schema takes the `UntilLethal` arms, not this one"
+    );
+    let published = offer_declaration(&state).expect(
+        "REACH-GUARD: the `or_else` resolves against THIS field — without it every arm \
+                 below would be measuring site F's period test, not the repair",
+    );
+    assert!(
+        max >= 5,
+        "REACH-GUARD: `k = 5` must be INTERIOR to the declarable window, else R1b's \
+         non-suggested arm is refused by the `Fixed(n) > max_iterations` cap for a reason that \
+         has nothing to do with the repair. max_iterations={max}"
+    );
+
+    // R1 — the suggested count, which is `max` on this board.
+    let at_max = declare_template_free(&state, proposer, max);
+    assert_eq!(
+        accepted_proposal(&at_max).template.as_ref(),
+        Some(&published),
+        "item-4 C2: the accepted proposal carries the offer's OWN published declaration, \
+         value-equal. `is_some()` would also pass on an engine that fabricated an empty \
+         template, which is precisely the wrong implementation \
+         `a_template_free_declaration_is_admitted_only_by_the_proposers_own_period` kills"
+    );
+    assert_eq!(
+        accepted_proposal(&at_max).count,
+        IterationCount::Fixed(max),
+        "and the count the player named is the count the proposal carries"
+    );
+
+    // R1b — a lower-edge count and a strictly interior one. Neither is `suggested`.
+    for k in [1u32, 5] {
+        let post = declare_template_free(&state, proposer, k);
+        assert_eq!(
+            accepted_proposal(&post).template.as_ref(),
+            Some(&published),
+            "R1b at k={k}: the picker may name ANY count in the window, and the resolved \
+             declaration is the same published one at every count — the offer publishes one \
+             declaration, not one per count"
+        );
+        assert_eq!(
+            accepted_proposal(&post).count,
+            IterationCount::Fixed(k),
+            "R1b at k={k}: the proposal drives the count the player NAMED. An engine that \
+             accepted the declaration and then substituted `suggested` fails here. k=5 is \
+             neither window edge (1/{max}) nor the suggestion, so no hard-coded value \
+             satisfies this arm"
+        );
+    }
+}
+
+/// **Row R3 — PLACEMENT.** A restored offer whose published declaration carries a FOREIGN owner
+/// is refused, because the `or_else` resolves the `None` template ABOVE the `template.owner`
+/// firewall rather than below it.
+///
+/// # ⚠ What this row does and does not discriminate — read before trusting it
+///
+/// **It does NOT discriminate the C2 repair itself: it passes both ways.** Pre-repair the
+/// `template: None` never resolves, reaches site F and lands `Priority`; post-repair the
+/// resolved `Some(hostile)` reaches the owner firewall and lands `Priority`. Same verdict by two
+/// different paths, and the paths are indistinguishable from outside — all six refusal arms call
+/// the same `reject_shortcut_declaration`, which writes a byte-identical `WaitingFor::Priority`
+/// and pushes zero events (`game/engine.rs`, on the count `match`: *"no row can observe which
+/// block refused first"*). No assertion can recover which arm fired, so none is attempted here;
+/// an arm-exclusion assert would read as verification while proving nothing.
+/// [`c2_r1_the_browsers_template_free_declaration_reaches_the_accepted_declaration`] is what
+/// covers the repair.
+///
+/// **What it DOES discriminate is the `or_else`'s PLACEMENT**, which is the one thing about C2
+/// that is not self-evident from the diff. Move that statement one line down, below the
+/// firewall, and this row flips to `RespondToShortcut`: the firewall would see the unresolved
+/// `None` and pass it, then the `Some(t)` arm would judge the hostile template by
+/// `declaration_conforms` alone — and `declaration_conforms` is `predictability_gate &&
+/// validate_pins`, neither of which reads `owner`. The firewall is therefore the SOLE refuser of
+/// a foreign-owner declaration, and below it there is nothing left to refuse one.
+/// MEASURED, by physically relocating the statement: refused above, ACCEPTED below.
+///
+/// # Fixture guard, labelled honestly
+///
+/// `offer_declaration(..).is_some()` after the mutation is a FIXTURE guard — it proves the owner
+/// rewrite did not erase the declaration — and not a path discriminator. It is true pre-repair
+/// as well.
+///
+/// # The matched positive is what makes "refused" mean anything
+///
+/// The untampered offer, same call, same count, must open APNAP. Without it, `Priority` here is
+/// indistinguishable from a fixture that refuses everything. The two differ in exactly one
+/// field: `declaration.owner`.
+#[test]
+fn r3_placement_a_restored_foreign_owner_declaration_is_refused() {
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    assert!(
+        !schema.points.is_empty(),
+        "REACH-GUARD: an empty point set would make the two arms differ for a different reason"
+    );
+    let hostile = state
+        .players
+        .iter()
+        .find(|p| p.id != proposer && !p.is_eliminated)
+        .map(|p| p.id)
+        .expect("REACH-GUARD: a living seat other than the proposer must exist on a 4p board");
+
+    // The RESTORE ingress image: a persisted offer whose published declaration names another
+    // seat. One field differs from the untampered board.
+    let mut tampered = state.clone();
+    match &mut tampered.waiting_for {
+        WaitingFor::LoopShortcut { declaration, .. } => {
+            declaration
+                .as_mut()
+                .expect("the untampered offer publishes a declaration")
+                .owner = hostile;
+        }
+        other => panic!("expected the CR 732.2a bounded offer, got {other:?}"),
+    }
+    assert_eq!(
+        offer_declaration(&tampered).map(|d| d.owner),
+        Some(hostile),
+        "FIXTURE GUARD (not a path discriminator): the owner rewrite landed and did not erase \
+         the declaration. This is equally true before the repair"
+    );
+
+    assert_eq!(
+        declare_template_free(&tampered, proposer, 1)
+            .waiting_for
+            .variant_name(),
+        "Priority",
+        "PLACEMENT: the resolved declaration meets the `template.owner` firewall BEFORE anything \
+         else looks at it. Relocate the `or_else` below that firewall and this reads \
+         `RespondToShortcut`, because `declaration_conforms` accepts a template that differs \
+         only in `owner`"
+    );
+    // ── MATCHED POSITIVE, one field apart ──
+    assert_eq!(
+        declare_template_free(&state, proposer, 1)
+            .waiting_for
+            .variant_name(),
+        "RespondToShortcut",
+        "the byte-identical offer whose declaration is owned by the PROPOSER opens the APNAP \
+         window. Without this arm the refusal above would be indistinguishable from a fixture \
+         that refuses every declaration"
+    );
+}
+
+/// **Rows R4b + R5 — the points-EMPTY offer, where the owner firewall is the only gate.**
+///
+/// `handle_declare_shortcut` runs the pin block only under `!offer.schema.points.is_empty()`, so
+/// on a point-free offer neither `declaration_conforms` nor site F ever runs and the resolved
+/// template meets the firewall alone. Three arms on one F4-derived fixture, `schema.points`
+/// emptied:
+///
+/// | arm | offer `declaration` | expected |
+/// |---|---|---|
+/// | **R5** point-free control | cleared | `RespondToShortcut` — accepts pre- AND post-repair |
+/// | **R4b/A** | retained, `owner == proposer` | `RespondToShortcut`, and `proposal.template` carries it |
+/// | **R4b/B** | retained, `owner == hostile` | `Priority` — the firewall, alone |
+///
+/// # Per-arm discrimination, stated rather than assumed
+///
+/// **R5 passes both ways and is labelled a CONTROL.** Its job is to prove this fixture accepts
+/// declarations at all once the point set is gone, so R4b/B's refusal is attributable to the
+/// owner rather than to the emptied schema. It also pins that the `or_else` is a genuine no-op
+/// on the shape §4.3 calls row 4: every production mint publishes `declaration: None` for an
+/// empty schema, because `build_bounded_declaration` returns `None` on
+/// `schema.points.is_empty()` before doing anything else.
+///
+/// **R4b/A discriminates the repair** — pre-repair `proposal.template` is `None` here, so the
+/// `Some(..)` assertion fails. **R4b/B discriminates in the OPPOSITE direction** — pre-repair
+/// the firewall sees an unresolved `None` and ACCEPTS, so `Priority` is the post-repair verdict
+/// only. The pair is the row; neither half alone shows both directions.
+///
+/// # The capability R4b/B does not create, recorded because it looks like one
+///
+/// A points-empty offer carrying a restored declaration is reachable only through the restore
+/// ingress — no production mint emits that pair. The `or_else` is deliberately NOT guarded with
+/// `!points.is_empty()`: a live client can already send `template: Some(anything owned by the
+/// proposer)` against a points-empty offer today and reach `proposal.template` with the pin
+/// block skipped, so the firewall is the only gate on this shape both before and after. A guard
+/// for an unreachable case is a special case; the behaviour is pinned here instead.
+#[test]
+fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, _certificate, _schema) = offer_parts(&state);
+    let hostile = state
+        .players
+        .iter()
+        .find(|p| p.id != proposer && !p.is_eliminated)
+        .map(|p| p.id)
+        .expect("REACH-GUARD: a living seat other than the proposer must exist on a 4p board");
+    let published =
+        offer_declaration(&state).expect("the untampered offer publishes a declaration");
+
+    // One F4 offer, `schema.points` emptied, `declaration` set per arm. Nothing else differs.
+    let point_free_offer = |declaration: Option<PlayerId>| {
+        let mut probe = state.clone();
+        match &mut probe.waiting_for {
+            WaitingFor::LoopShortcut {
+                schema,
+                declaration: decl,
+                ..
+            } => {
+                schema.points.clear();
+                *decl = declaration.map(|owner| {
+                    let mut d = published.clone();
+                    d.owner = owner;
+                    d
+                });
+            }
+            other => panic!("expected the CR 732.2a bounded offer, got {other:?}"),
+        }
+        assert!(
+            match &probe.waiting_for {
+                WaitingFor::LoopShortcut { schema, .. } => schema.points.is_empty(),
+                _ => false,
+            },
+            "REACH-GUARD: the row is about the SKIPPED pin block, so the point set must really \
+             be empty — otherwise `declaration_conforms` runs and the firewall is not alone"
+        );
+        probe
+    };
+
+    // ── R5, the point-free CONTROL: passes pre- and post-repair ──
+    assert_eq!(
+        declare_template_free(&point_free_offer(None), proposer, 1)
+            .waiting_for
+            .variant_name(),
+        "RespondToShortcut",
+        "R5 CONTROL: a point-free offer publishing no declaration drains exactly as before — \
+         the `or_else` resolves `None` to `None` and is a no-op. This arm is what makes R4b/B's \
+         refusal below attributable to the OWNER rather than to the emptied schema"
+    );
+
+    // ── R4b/A: retained declaration, owner == proposer ──
+    let honest = declare_template_free(&point_free_offer(Some(proposer)), proposer, 1);
+    assert_eq!(
+        honest.waiting_for.variant_name(),
+        "RespondToShortcut",
+        "R4b/A: the firewall passes a declaration owned by the proposer"
+    );
+    assert_eq!(
+        accepted_proposal(&honest)
+            .template
+            .as_ref()
+            .map(|t| t.owner),
+        Some(proposer),
+        "R4b/A discriminates the repair: PRE-repair `proposal.template` is `None` here, because \
+         the offer's declaration was discarded and the pin block never ran. The resolved \
+         template reaching the proposal is the change"
+    );
+
+    // ── R4b/B: retained declaration, foreign owner — the OPPOSITE direction ──
+    assert_eq!(
+        declare_template_free(&point_free_offer(Some(hostile)), proposer, 1)
+            .waiting_for
+            .variant_name(),
+        "Priority",
+        "R4b/B discriminates in the opposite direction from R4b/A: PRE-repair this ACCEPTS, \
+         because the firewall inspects an unresolved `None` and passes it. Post-repair the \
+         resolved foreign-owner declaration meets the firewall and is refused. A row asserting \
+         only R4b/A would miss that the repair WIDENS what the firewall inspects"
     );
 }

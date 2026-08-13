@@ -5876,6 +5876,10 @@ struct LoopShortcutOffer<'a> {
     predicted_winner: Option<PlayerId>,
     certificate: &'a crate::analysis::loop_check::LoopCertificate,
     schema: &'a crate::analysis::decision_template::ShortcutDecisionSchema,
+    /// The engine's OWN published declaration for this offer, borrowed. Cloned only on the
+    /// fallback path in `handle_declare_shortcut`, where a `template: None` declaration
+    /// resolves against it.
+    declaration: Option<&'a crate::analysis::decision_template::DecisionTemplate>,
 }
 
 /// CR 732.2a + CR 800.4a: reject a
@@ -5981,6 +5985,41 @@ fn handle_declare_shortcut(
         crate::analysis::decision_template::IterationCount::Fixed(_)
         | crate::analysis::decision_template::IterationCount::UntilLethal => {}
     }
+    // A `template: None` declaration is not "no pins" — it is "no OVERRIDE of the pins this
+    // offer already published". Resolve it against the offer's own engine-issued declaration so
+    // the manual ingress and `ai_support::candidates` (which reads the identical field) declare
+    // the SAME proposal against the SAME offer. Until this line existed the engine published a
+    // declaration on the offer and then discarded it here, so the AI — which sends
+    // `Some(declaration)` — was accepted while the browser, which sends `None`, was refused on
+    // one and the same offer. No rules citation is minted here: the block immediately below
+    // carries this handler's, and `docs/MagicCompRules.txt` is absent from this tree, so an
+    // unverified restatement would be worse than none.
+    //
+    // PLACEMENT IS LOAD-BEARING, AND MEASURED: this sits ABOVE the `template.owner` firewall
+    // below. `declaration_conforms` is `predictability_gate && validate_pins` and reads no
+    // `owner` at all — measured: a template differing from a conforming one ONLY in `owner`
+    // still conforms. That firewall is therefore the SOLE refuser of a foreign-owner
+    // declaration, and moving this statement one line down would hand the firewall a `None`
+    // (which passes) and then hand the `Some(t)` arm a foreign-owner template it accepts.
+    // Pinned by `r3_placement_a_restored_foreign_owner_declaration_is_refused`.
+    //
+    // WHAT THIS DOES TO THE `None if …loop_period_controller() != Some(proposer)` ARM BELOW,
+    // stated because it reads like a loosening and is not: that arm is BYPASSED whenever the
+    // offer published a declaration, because `&template` then takes the `Some(t)` arm instead.
+    // That is intended. The arm exists so a PINLESS drive never runs — its own doc says "with
+    // nothing this proposer can re-derive from, a pin-consuming drive would run with no pins at
+    // all" — and a resolved declaration supplies exactly those pins. The substitute gate is
+    // `declaration_conforms`, which is strictly STRONGER for this case: the arm asserts only
+    // that a re-derivation SOURCE exists, while `declaration_conforms` validates the actual
+    // pins against the actual schema over the range the accepted count will drive.
+    //
+    // THE ARM IS NOT DEAD AFTERWARDS — do not "simplify" it away. It still decides every offer
+    // that published no declaration, and that set is non-empty by construction:
+    // `build_bounded_declaration` returns `None` on a journal miss or on a kind/value mismatch
+    // even with a non-empty schema, both non-bounded mints hard-code `declaration: None`, and a
+    // restored save may carry `None`. Pinned by
+    // `a_template_free_declaration_is_admitted_only_by_the_proposers_own_period`.
+    let template = template.or_else(|| offer.declaration.cloned());
     // CR 732.2a + CR 603.5: the declared template's `owner` is CLIENT-SUPPLIED — the
     // `GameAction::DeclareShortcut { template }` payload arrives here verbatim — and it is
     // the comparand `inject_pinned_answer` uses to decide WHOSE CR 603.5 choice a pin may
@@ -9394,11 +9433,13 @@ fn apply_action(
                 predicted_winner,
                 certificate,
                 schema,
-                // NOT threaded, deliberately: resolving a `template: None` declaration against
-                // the offer's own `declaration` is a change to the DECLARE handler's proposal
-                // shape, with its own hostile-fixture obligations (foreign period, restore
-                // ingress). `_` rather than a bind so nothing here implies otherwise.
-                declaration: _,
+                // Threaded: `handle_declare_shortcut` resolves a `template: None` declaration
+                // against the offer's own published declaration, so the manual ingress and
+                // `ai_support::candidates` (which reads this identical field) declare the SAME
+                // proposal against the SAME offer. The hostile-fixture obligations this bind
+                // used to defer — foreign period, restore ingress — are discharged by the rows
+                // named on that handler's `or_else`.
+                declaration,
             },
             GameAction::DeclareShortcut { count, template },
         ) => {
@@ -9409,6 +9450,7 @@ fn apply_action(
                     predicted_winner: *predicted_winner,
                     certificate,
                     schema,
+                    declaration: declaration.as_ref(),
                 },
                 count,
                 template,
