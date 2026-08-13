@@ -121,9 +121,9 @@ pub(super) fn cfg_test_scoped_lines(src: &str) -> Vec<bool> {
 /// re-measured by the very commit that ships the row. Excluding comment lines
 /// restores the plan's PRODUCTION count of 22 exactly, INCLUDING its per-file
 /// production multiset. (It does not restore the plan's original test-half count
-/// of 12: that half has since been adjudicated to 14, twice, and the assert below
-/// is the authority for the pair. Prose that repeats a number is prose that can go
-/// stale — this defers to the assert rather than restating it.)
+/// of 12: that half has since been adjudicated five times, to 21, and the assert
+/// below is the authority for the pair. Prose that repeats a number is prose that
+/// can go stale — this defers to the assert rather than restating it.)
 fn classify(src: &str, needle: &str, file: &str) -> Vec<Hit> {
     let scoped = cfg_test_scoped_lines(src);
     src.lines()
@@ -184,10 +184,10 @@ fn census(needle: &str) -> Vec<Hit> {
 }
 
 /// R8 CONJUNCT 1 — the offer-writer surface, pinned BIDIRECTIONALLY (`== 22` /
-/// `== 14`, so a REMOVED site fails too) and by per-file multiset.
+/// `== 21`, so a REMOVED site fails too) and by per-file multiset.
 ///
-/// ⚠ THE `#[cfg(test)]` HALF HAS MOVED TWICE, 12 ⇒ 13 ⇒ 14, AND EACH
-/// ADJUDICATION IS RECORDED RATHER THAN THE ASSERT RELAXED.
+/// ⚠ THE `#[cfg(test)]` HALF HAS MOVED FIVE TIMES, 12 ⇒ 13 ⇒ 14 ⇒ 16 ⇒ 17 ⇒ 21,
+/// AND EACH ADJUDICATION IS RECORDED RATHER THAN THE ASSERT RELAXED.
 /// * 12 ⇒ 13: §6 R27 (b)
 ///   (`analysis::resource::tests::r27_b_a_stored_may_auto_choice_survives_the_ring`)
 ///   destructures the offer the mint RETURNED to count its published CR 603.5
@@ -197,11 +197,24 @@ fn census(needle: &str) -> Vec<Hit> {
 ///   arm (b) can assert that the DECLARE firewall refuses a hostile
 ///   `template.owner` — i.e. that arm (b)'s drive-seam configuration is
 ///   production-unreachable.
+/// * 14 ⇒ 16: both in `phase-ai/src/policies/loop_shortcut.rs`'s `#[cfg(test)]`
+///   module — `bounded_offer_with_period`, a builder minting an offer whose
+///   certificate carries a real `per_cycle` so the proposer-elimination arm can
+///   be driven, and `certificate_of`, a READ accessor for the same rows.
+/// * 16 ⇒ 17: item-4 C2a's cap-round row
+///   `the_bounded_offer_charges_a_forced_victim_it_publishes_no_point_for` in
+///   `engine/src/analysis/resource.rs` — A READ, NOT A WRITER: it destructures
+///   the offer it minted to assert an EMPTY `schema.points` beside a
+///   `victim_slot` that still names the forced victim.
+/// * 17 ⇒ 21: item-4 C2b's two in-crate rows spell the anchor FOUR times between
+///   them — `game/visibility.rs` row D5-h's mint and its projection read, and
+///   `ai_support/candidates.rs` row D6-n's mint and its reach-guard read.
 ///
-/// Both are WRITES in a `#[cfg(test)]` scope, which is the benign case this
-/// row's own failure message names: a test fixture cannot make the period
-/// machinery certify. The PRODUCTION half is unchanged at 22 and so is the
-/// per-file multiset below, which is the half §10 ruling condition (2) is about.
+/// All five are in a `#[cfg(test)]` scope — mints and reads both — which is the
+/// benign case this row's own failure message names: a test fixture cannot make
+/// the period machinery certify. The PRODUCTION half is unchanged at 22 and so is
+/// the per-file multiset below, which is the half §10 ruling condition (2) is
+/// about.
 ///
 /// R8 CONJUNCT 2, same test — pin VALUE-legality has exactly ONE production
 /// consumer (`analysis::decision_template::declaration_conforms`), that consumer
@@ -247,7 +260,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          certify without declaring or driving — §10 ruling condition (2), i.e. \
          answer-legality-at-certification becomes OWED WORK and the U-series stops. A new READ \
          site is the benign case; adjudicate, do not relax the assert.\n\
-         THE TEST HALF HAS BEEN ADJUDICATED THREE TIMES (12 ⇒ 13, §6 R27 (b)'s schema read in \
+         THE TEST HALF HAS BEEN ADJUDICATED FIVE TIMES (12 ⇒ 13, §6 R27 (b)'s schema read in \
          `engine/src/analysis/resource.rs`; 13 ⇒ 14, 5d U4's `u4_park_on_offer` fixture in \
          `engine/src/game/engine.rs`, which parks a constructed board on an offer so §6 R28 \
          arm (b) can assert the DECLARE firewall refuses a hostile `template.owner`; 14 ⇒ 16, \

@@ -4450,6 +4450,30 @@ fn materialize_fixed_shortcut(
     // partial-cycle event leak). Ring-clear BEFORE handback so this same `apply()` does
     // not instantly re-emit a fresh offer for the same (now-interrupted) loop; a later
     // beat re-detects genuinely.
+    //
+    // CR 732.2a: "The ending point of this sequence must be a place where a player has
+    // priority, though it need not be the player proposing the shortcut." THIS BLOCK IS
+    // THAT ENDING POINT, and it is the ending point for BOTH entry paths above — `n`
+    // cycles done with no cross-lethal, and `break 'cycles`.
+    //
+    // What the boundary means for a declared `Ranking`: within one accepted drive only its
+    // HEAD is ever resolved (`evaluate_schedule`), so this seam is where the NEXT episode
+    // may legitimately re-evaluate the tail. The reasoning is not restated here — it lives
+    // on `analysis::decision_template::Ranking` ("CONSUMED AT AN EPISODE BOUNDARY, NEVER
+    // MID-DRIVE"), and a second copy is the drift the R1 doc sweep exists to prevent.
+    //
+    // PROBE-PINNED (probe arm `MUT_SEAM`): the window clear here is load-bearing, not a
+    // backstop. MEASURED — skipping it on the f4 accepted drive leaves `loop_detect_ring`
+    // non-empty (12) and the journal populated (3 answers), and this same `apply()`
+    // re-emits a `LoopShortcut` offer.
+    // PROBE-PINNED: the abort entry reaches here with the window equally live. MEASURED
+    // `ring=16, answers=0` on `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`.
+    //
+    // LABELLED INTERPRETATION, not a pinned claim: the `waiting_for` re-seat below is a
+    // NORMALIZATION whose load-bearing case no fixture in this repo exercises today. On
+    // all four fixtures measured reaching this seam the state is ALREADY
+    // `WaitingFor::Priority` on entry, and skipping the re-seat changes nothing observable
+    // (probe arm `MUT_PRIORITY`).
     *state = committed;
     state.loop_detect_ring.clear();
     // CR 603.5: the recorded "may" answers describe the window that just ended.
@@ -18667,11 +18691,28 @@ mod stage2_injector_tests {
                 // `:11583`) to `10e80db9c:engine.rs:12606`, and it is still inside
                 // `begin_pending_trigger_target_selection`, which moved by the same +16 (opens
                 // `:12472 ⇒ :12488`).
-                // ⚠ REBASE #3: `:12684 ⇒ :12683`, located by content digest, offset from
+                //
+                // ⚠ item-4 R3 (the drive-end seam's CR 732.2a doc amendment): `:12622 ⇒ :12646`,
+                // `+24`. LOCAL, and a COMMENT-ONLY round. Resolved BY CONTENT FIRST per the
+                // protocol above: the sha256 this log already records for this producer
+                // (`8a544e878d3e77fb…5cc7d63`) matches EXACTLY ONE line under a whole-file scan
+                // of the new tree, at `:12646` — and exactly one in the parent, at `:12622` — and
+                // it is still inside `begin_pending_trigger_target_selection`, which moved by the
+                // same +24 (opens `:12488 ⇒ :12512`). Arithmetic CHECK afterwards, never as the
+                // source: `git diff -U0` against the parent shows this file has exactly ONE hunk,
+                // `@@ -4452,0 +4453,24 @@` inside `materialize_fixed_shortcut` — the CR 732.2a
+                // episode-boundary amendment — which is ABOVE this producer, and
+                // `12622 + 24 = 12646` exactly. SET PRESERVATION: all 24 inserted lines are `//`
+                // comments (R3's entire `crates/engine/src` diff is comment-only — both files are
+                // byte-identical to the parent with comment lines stripped), so no
+                // `waiting_for = ` or `Ok(Some(` line was added and a comment round cannot mint a
+                // prompt. The total (38) and the partition (5/8/25) both fired GREEN on the run
+                // that caught this — only this third assert panicked.
+                // ⚠ REBASE #3: `:12708 ⇒ :12707`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
-                // ⚠ REBASE #3: `:12683 ⇒ :12688`, located by content digest, offset from
+                // ⚠ REBASE #3: `:12707 ⇒ :12712`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
-                "game/engine.rs:12688".to_string(),
+                "game/engine.rs:12712".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \

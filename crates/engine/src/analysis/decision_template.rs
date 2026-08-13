@@ -33,9 +33,16 @@ pub type IterationIndex = u32;
 /// CR 603.3b (TriggerOrdering) / CR 732.2a (LoopChoice): which decision family a
 /// template captures. The `key` discriminant that lets one `decision_templates` Vec
 /// hold both the trigger-order templates B2 consults and the loop-choice templates
-/// B3/B5 will add, so the gate can filter to `TriggerOrdering` only. `LoopChoice` has
-/// no Phase-2 consumer (reserved), but the FILTER it enables is load-bearing now (the
-/// gate must ignore non-ordering templates).
+/// B3/B5 will add, so the gate can filter to `TriggerOrdering` only. The FILTER it
+/// enables is load-bearing now (the gate must ignore non-ordering templates), and
+/// `LoopChoice`'s own consumer is now known: it is the CROSS-EPISODE CARRIER. A
+/// `LoopChoice` entry in `GameState::decision_templates` survives the CR 603.3b batch
+/// boundary — `GameState::clear_ephemeral_trigger_order_templates`' retain predicate is
+/// scoped to `TriggerOrdering` — so it is the vehicle a later episode's declaration can
+/// ride, and it is still POPULATED BY PHASE 4 AND BY NOTHING TODAY. PROBE-PINNED: a
+/// planted `LoopChoice` ephemeral template survives a whole accepted 4-player drive (probe
+/// arm CONTROL), and is removed once that predicate is widened to cover `LoopChoice`
+/// (probe arm `MUT_LOOPCHOICE`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DecisionKind {
     TriggerOrdering,
