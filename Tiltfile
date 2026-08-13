@@ -284,9 +284,18 @@ local_resource('probe-pin-check',
 #
 # `-- --ignored` runs ONLY the ignored tests, which is exactly this suite. A non-zero exit turns
 # the resource red like any other gate — a real Tier-2 gate, not a fire-and-forget reporter.
+#
+# Its OWN CARGO_TARGET_DIR, not 'probe-pin-check''s. Both resources watch 'crates/probe-pin/', so
+# one edit triggers both, and both set allow_parallel — so Tilt may run them at once. Sharing a
+# target dir across them is not the disjoint-dep-tree case the comment above describes: each
+# isolation test shells a nested `cargo test --test pure_logic --no-run` into that dir while
+# `probe-pin check` resolves the same test binary out of it. The contention is cross-PROCESS, so
+# the in-process SERIAL mutex in isolation_e2e.rs does not span it, and the flake recorded there
+# has exactly this mechanism (artifact freshness). This is the only venue that executes Tier 2, so
+# a flake here is a gate reporting the wrong colour.
 local_resource('probe-pin-e2e',
     cmd = ['bash', '-c',
-           'CARGO_TARGET_DIR=target/probe-pin cargo test -p probe-pin --test isolation_e2e -- --ignored'],
+           'CARGO_TARGET_DIR=target/probe-pin-e2e cargo test -p probe-pin --test isolation_e2e -- --ignored'],
     deps = ['crates/probe-pin/'],
     ignore = TMP_IGNORE + ['**/tmp/**'],
     auto_init = 'lint' in enabled,

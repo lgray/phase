@@ -211,9 +211,24 @@ pub fn mutation_cell(probe: &Probe) -> String {
     )
 }
 
+/// Keyed on probe IDENTITY, never on the measured count.
+///
+/// `mutation_cell` decides "this is the control" from `probe.mutations.is_empty()`, which is the
+/// definition — `validate` requires exactly one probe with no mutations. Deciding the same fact
+/// here from `mounts_reached == 0` made two discriminators for one concept in adjacent functions,
+/// agreeing only through a property of the current call graph: `main` passes a literal `0` for the
+/// control and `mounts.len()` for every other probe, and `validate` refuses an empty mutation file
+/// list, so a mutation probe cannot reach `0` today.
+///
+/// That is a coincidence to rest an evidence artifact on, not a guarantee. Any future path
+/// yielding a probe with mutations but no materialized mount would render `(control; no mounts)`
+/// for a MUTATION probe — a false claim in a committed block, and one no digest catches, because
+/// the digest pins `mounts_reached` and would agree with it. A row says what a probe IS; the count
+/// says what the run reached. Rendered output is unchanged (measured: the dogfood block and its
+/// digest are byte-identical across this change).
 fn firing_cell(probe: &Probe, verdict: &Verdict) -> String {
     match verdict {
-        Verdict::Pass { mounts_reached: 0 } => "(control; no mounts)".to_string(),
+        Verdict::Pass { .. } if probe.mutations.is_empty() => "(control; no mounts)".to_string(),
         Verdict::Pass { mounts_reached } => format!("mount reached: {mounts_reached} file(s)"),
         Verdict::Fail { .. } => probe.anchors().join(" / "),
     }
@@ -256,6 +271,31 @@ pub fn render(
     out.push_str("// |---|---|---|---|---|---|\n");
     for probe in &manifest.probes {
         let Some(outcome) = outcomes.iter().find(|o| o.id == probe.id) else {
+            // An outcome-less probe gets a VISIBLE row saying so, matching what `digest` already
+            // records for the same input (`rc = -1`, `verdict = "unmeasured"`).
+            //
+            // This used to `continue`, which made the two consumers of one probe list disagree
+            // about what a missing outcome MEANS — in the direction this crate exists to refuse.
+            // A manifest declares N probes, the block shows N-1 rows, and `check` reports CLEAN,
+            // because the committed and the generated block omit the same row and stamp the same
+            // digest. Evidence disappears and nothing is loud.
+            //
+            // Not reachable through `main` today: `record` routes an expectation mismatch to
+            // `mismatches` rather than `outcomes`, and `pipeline` returns at that gate
+            // (`main.rs:190`) before `render` runs. An `unreachable!` was tried here and was
+            // wrong — `render` is public and tests legitimately call it with `&[]` outcomes to
+            // inspect projection sentences, so the panic fired on correct use. A function whose
+            // contract only holds for one caller's call order should not be enforcing that order;
+            // it should represent the state it can actually be handed.
+            out.push_str(&format!(
+                "// | {} | {} | {} | unmeasured | (not measured) | — |\n",
+                cell(&probe.id),
+                cell(&mutation_cell(probe)),
+                match probe.expect {
+                    Expect::Pass {} => "pass",
+                    Expect::Fail { .. } => "fail",
+                },
+            ));
             continue;
         };
         let expect = match probe.expect {

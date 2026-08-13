@@ -569,6 +569,18 @@ pub fn validate(m: &Manifest) -> anyhow::Result<()> {
             bail!("probe-pin: {field} = \"{value}\" begins with '-'. probe-pin passes it to a program as an OPERAND, where every argv grammar it shells reads a leading '-' as an option instead — measured: `[target].filter = \"--bench\"` ran zero test bodies while libtest still reported test_count 1, and `[[projection]].paths = [\"-h\"]` made ast-grep print its help, which probe-pin counted into a rendered 30-site sentence at exit 0. A filter is a SUBSTRING of a test name; a projection path is a DIRECTORY. Name one. Aborting.");
         }
     }
+    // The same positive shape, applied to the empty end of the range: a filter is a substring
+    // that NAMES a test, and "" names nothing. It is refused here rather than left to the
+    // execution floor because the two `filter_match` modes fail in opposite directions and
+    // neither reports the manifest defect. Measured with `filter_match = "substring"`: the run
+    // widens to the whole target binary while the block still renders a row keyed on one named
+    // filter — caught in that probe only because a widened test happened to fail, which made the
+    // control abort ("the instrument is broken"), not because anything checked the filter. With
+    // `filter_match = "exact"` it matches nothing, and the floor then reports an execution
+    // failure — the right refusal for the wrong reason, blaming the target for a manifest typo.
+    if m.target.filter.trim().is_empty() {
+        bail!("probe-pin: [target].filter is blank. A filter is a SUBSTRING that names the test a probe measures, and \"\" names nothing: with filter_match = \"substring\" libtest matches EVERY test in the target binary, so the probe measures the whole suite while the block renders a row keyed on one named target (measured — the widened run is only caught when one of those tests happens to fail, which reports as a broken control, not as a manifest defect); with filter_match = \"exact\" it matches nothing and the execution floor blames the target for what is a typo here. Name the test. Aborting.");
+    }
     // The manifest may not override an environment variable probe-pin itself sets. The refused
     // set is derived from what `isolate` actually sets, not restated here: `PATH` reaches the
     // `unshare … bash -c` script, where it resolves the `mount` and `cmp` whose readback is the

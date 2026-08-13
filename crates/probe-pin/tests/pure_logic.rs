@@ -1222,6 +1222,176 @@ fn timeout_zero_is_refused() {
     assert!(manifest::validate(&toml::from_str::<Manifest>(&text).unwrap()).is_ok());
 }
 
+/// A blank `[target].filter` is a manifest defect that neither `filter_match` mode reports AS one.
+///
+/// Measured before the refusal existed, running a real manifest with `filter = ""` and
+/// `filter_match = "substring"`: the run widened to the whole target binary and probe-pin exited 2
+/// — but with "the control probe 'P0_control' FAILED with exit 101 … the instrument is broken",
+/// because a test in the widened set happened to fail. Nothing looked at the filter. Had the
+/// widened suite passed, every row would have rendered green while measuring a suite the block
+/// names as one test. The `exact` mode fails the other way: zero matches, which the execution
+/// floor reports as a target that ran nothing.
+#[test]
+fn blank_filter_is_refused() {
+    let text = std::fs::read_to_string(fixtures().join("dogfood.toml")).unwrap();
+    let blank = text.replace("filter       = \"ppfixture_census\"", "filter       = \"\"");
+    assert_ne!(
+        blank, text,
+        "the fixture edit must apply, or this arm is vacuous"
+    );
+    let m = toml::from_str::<Manifest>(&blank).expect("manifest parses");
+    assert_eq!(m.target.filter, "");
+    let e = manifest::validate(&m).unwrap_err();
+    assert!(e.to_string().contains("[target].filter is blank"), "{e}");
+
+    // Whitespace is blank too — a filter of spaces names no test either, and `trim` is what makes
+    // the refusal about NAMING rather than about the empty string.
+    let spaces = text.replace(
+        "filter       = \"ppfixture_census\"",
+        "filter       = \"   \"",
+    );
+    let m = toml::from_str::<Manifest>(&spaces).expect("manifest parses");
+    assert!(
+        manifest::validate(&m)
+            .unwrap_err()
+            .to_string()
+            .contains("[target].filter is blank"),
+        "a whitespace-only filter must be refused for the same reason"
+    );
+
+    // Positive control: the shipping filter still validates, so the refusal is discriminating and
+    // not a blanket rejection of the field.
+    assert!(manifest::validate(&toml::from_str::<Manifest>(&text).unwrap()).is_ok());
+}
+
+/// The control row is keyed on probe IDENTITY, so a MUTATION probe can never claim to be one.
+///
+/// Discriminating by construction: both probes below carry the identical verdict
+/// `Pass { mounts_reached: 0 }`. Only their identity differs. Before this change `firing_cell`
+/// read the count, so both rendered `(control; no mounts)` — the mutation probe's row asserting
+/// it had no mutations, in a committed evidence artifact, with a digest that agrees because the
+/// digest pins the same count.
+///
+/// The zero-mount mutation probe is not reachable through `main` today (`validate` refuses an
+/// empty mutation file list, so `mounts.len() >= 1`), which is exactly why the test constructs the
+/// state directly: the property being pinned is that the ROW cannot lie, not that the current call
+/// graph happens not to produce a liar.
+#[test]
+fn a_mutation_probe_can_never_render_as_the_control() {
+    let text = std::fs::read_to_string(fixtures().join("dogfood.toml")).unwrap();
+    let m = toml::from_str::<Manifest>(&text).expect("manifest parses");
+    let control = &m.probes[0];
+    let mutating = &m.probes[1];
+    assert!(
+        control.mutations.is_empty() && !mutating.mutations.is_empty(),
+        "fixture shape assumed by this test: probe 0 is the control, probe 1 mutates"
+    );
+
+    let render_with = |probe: &Probe| {
+        let one = Manifest {
+            probes: vec![probe.clone()],
+            ..m.clone()
+        };
+        let outcomes = vec![Outcome {
+            id: probe.id.clone(),
+            rc: 0,
+            // The SAME verdict for both probes: identity is the only variable.
+            verdict: Verdict::Pass { mounts_reached: 0 },
+        }];
+        block::render(&one, "m.toml", "d", &[], &outcomes, &[])
+    };
+
+    assert!(
+        render_with(control).contains("(control; no mounts)"),
+        "the control's row must still say so"
+    );
+    let mutant_row = render_with(mutating);
+    assert!(
+        !mutant_row.contains("(control; no mounts)"),
+        "a probe WITH mutations rendered as the control on a zero count. The row is deciding \
+         probe identity from a measured number, so an evidence artifact states that a mutation \
+         probe made no mutations. Row was:\n{mutant_row}"
+    );
+    assert!(
+        mutant_row.contains("mount reached: 0 file(s)"),
+        "and it must report the count it actually measured, however unexpected. Row was:\n{mutant_row}"
+    );
+}
+
+/// The table can never contain fewer rows than the manifest declares probes.
+///
+/// `digest` records an outcome-less probe as `rc = -1`, `verdict = "unmeasured"`. `render` used to
+/// `continue` past it. That disagreement is the silent kind: a manifest declares N probes, the
+/// block shows N-1 rows, and `check` reports CLEAN — the committed and generated blocks omit the
+/// same row and stamp the same digest, so the drift detector agrees with the loss.
+///
+/// Not reachable through `main` (the mismatch gate at `main.rs:190` returns first), which is why
+/// this asserts on `render` directly. `render` is public and this input is legitimate: the
+/// projection-surface test calls it with `&[]` outcomes.
+#[test]
+fn a_probe_with_no_outcome_gets_a_visible_unmeasured_row() {
+    let text = std::fs::read_to_string(fixtures().join("dogfood.toml")).unwrap();
+    let m = toml::from_str::<Manifest>(&text).expect("manifest parses");
+    let declared = m.probes.len();
+    assert!(declared >= 2, "fixture must declare several probes");
+
+    // Every probe measured EXCEPT the last one.
+    let outcomes: Vec<Outcome> = m.probes[..declared - 1]
+        .iter()
+        .map(|p| Outcome {
+            id: p.id.clone(),
+            rc: 0,
+            verdict: Verdict::Pass { mounts_reached: 1 },
+        })
+        .collect();
+    let rendered = block::render(&m, "m.toml", "d", &[], &outcomes, &[]);
+
+    let rows = rendered
+        .lines()
+        .filter(|l| l.starts_with("// | ") && !l.contains("| probe |"))
+        .count();
+    assert_eq!(
+        rows, declared,
+        "the table dropped a declared probe instead of rendering it. A block that silently loses \
+         evidence still passes `check`, because the committed copy lost the same row.\n{rendered}"
+    );
+
+    let dropped = &m.probes[declared - 1].id;
+    let row = rendered
+        .lines()
+        .find(|l| l.contains(dropped.as_str()))
+        .unwrap_or_else(|| panic!("no row for the unmeasured probe:\n{rendered}"));
+    assert!(
+        row.contains("unmeasured"),
+        "the unmeasured probe's row must SAY it is unmeasured, matching what digest records for \
+         the same input: {row}"
+    );
+
+    // Discriminating: a fully-measured run must not gain a phantom row, or the count assertion
+    // above would pass for a render that emits an extra line per probe.
+    let all: Vec<Outcome> = m
+        .probes
+        .iter()
+        .map(|p| Outcome {
+            id: p.id.clone(),
+            rc: 0,
+            verdict: Verdict::Pass { mounts_reached: 1 },
+        })
+        .collect();
+    let full = block::render(&m, "m.toml", "d", &[], &all, &[]);
+    assert_eq!(
+        full.lines()
+            .filter(|l| l.starts_with("// | ") && !l.contains("| probe |"))
+            .count(),
+        declared,
+        "a fully-measured render must have exactly one row per probe:\n{full}"
+    );
+    assert!(
+        !full.contains("unmeasured"),
+        "and none of them may be marked unmeasured:\n{full}"
+    );
+}
+
 // ------------------------------------------------------------------ row 19
 
 /// Row 19: `assert_count` runs on the MUTANT, after all mutations have composed.
@@ -2292,10 +2462,24 @@ fn argv_surface_is_one_authority() {
         );
     }
     // positive: an ordinary filter, and a hyphen INSIDE one, still validate
-    for benign in ["ppfixture_census", "census_two-part", ""] {
+    for benign in ["ppfixture_census", "census_two-part"] {
         m.target.filter = benign.into();
         assert!(manifest::validate(&m).is_ok(), "{benign:?} was refused");
     }
+    // `""` used to sit in that list, asserting a blank filter validates — which it no longer does.
+    // Kept as a probe of WHICH guard refuses it: the naming rule, not this surface. If the argv
+    // rule ever starts rejecting it, the benign list above stops proving the rule is discriminating
+    // and this arm says so rather than passing on any refusal at all.
+    m.target.filter = String::new();
+    let e = manifest::validate(&m).unwrap_err();
+    assert!(
+        e.to_string().contains("[target].filter is blank"),
+        "a blank filter must be refused for naming nothing: {e}"
+    );
+    assert!(
+        !e.to_string().contains("begins with '-'"),
+        "the leading-'-' operand rule must not be what rejects a blank filter: {e}"
+    );
 
     // arm 2b — the SAME rule on the other program probe-pin hands manifest operands to. `-h`
     // there is not hypothetical: measured on the shipping binary, ast-grep printed its HELP and
