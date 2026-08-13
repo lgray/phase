@@ -4594,7 +4594,7 @@ fn enum_variants(src: &str, enum_name: &str) -> Vec<(String, Vec<Type>)> {
 ///
 /// This step used to scan for `pub struct <Ident> {` at column 0, which is a small fraction of
 /// the declarations that can hold a `marker`. MEASURED over this walk root: that shape matches
-/// **486** declarations, while **649** `pub enum`, **108** `pub(crate) struct` and **12**
+/// **491** declarations, while **654** `pub enum`, **108** `pub(crate) struct` and **12**
 /// generic `pub struct` heads are invisible to it — and a carrier the depth-1 step cannot see
 /// is scored as a clean GREEN, which is the one failure mode a census must not have. `syn` is
 /// already a `[dev-dependencies]` entry of this crate and already the instrument
@@ -4914,8 +4914,8 @@ fn exactly_two_waiting_for_variants_carry_a_decision_template_and_both_are_redac
 
     // ── PLANT 5 — the four holder FORMS the retired string scan could not see, plus a
     //    non-carrier control. Each is a real declaration shape from this walk root: over
-    //    `crates/engine/src` the old `pub struct <Ident> {` shape matched 486 declarations
-    //    while 649 `pub enum`, 108 `pub(crate) struct` and 12 generic `pub struct` heads were
+    //    `crates/engine/src` the old `pub struct <Ident> {` shape matched 491 declarations
+    //    while 654 `pub enum`, 108 `pub(crate) struct` and 12 generic `pub struct` heads were
     //    invisible — every one of them a carrier that would have scored a clean GREEN. ──
     let forms = format!(
         "pub(crate) struct CrateVisHolder {{\n    pub template: Option<{marker}>,\n}}\n\

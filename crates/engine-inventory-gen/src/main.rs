@@ -77,14 +77,14 @@ struct ClusterSmell {
 /// Every directory whose `pub enum`s are engine surface a variant proposal must be able to
 /// discover. CLAUDE.md makes an inventory grep the mandatory discoverability gate before
 /// proposing a variant and scopes it to "any other engine enum", so the walk is the WHOLE
-/// engine crate rather than a hand-kept subset: `types/` + `analysis/` left 85 of the 647
+/// engine crate rather than a hand-kept subset: `types/` + `analysis/` left 85 of the 654
 /// top-level `pub enum`s under `crates/engine/src` structurally invisible to the gate
 /// (`game/` 61, `ai_support/` 13, `parser/` 7, `database/` 4). One root is also shorter than
 /// the list it replaces.
 ///
 /// MEASURED COST, disclosed rather than absorbed: the catalogue is a `BTreeMap` keyed on the
 /// enum IDENT, and across the whole crate exactly one ident collides — `LayoutKind`, declared
-/// in both `types/card.rs` and `database/synthesis.rs` — so 647 declarations yield 646 entries
+/// in both `types/card.rs` and `database/synthesis.rs` — so 654 declarations yield 653 entries
 /// and the later walk order wins. The gate this feeds is an existence/parameterization lookup
 /// by name, which still answers for `LayoutKind`; a module-qualified key is the fix if a
 /// second collision ever makes the per-variant listing ambiguous.

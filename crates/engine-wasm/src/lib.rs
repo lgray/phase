@@ -2021,13 +2021,23 @@ fn load_minimal_test_card_database() {
 /// game on the wire. Undo is a single-player affordance only.
 #[wasm_bindgen]
 pub fn restore_game_state(json_str: &str) -> Result<(), JsValue> {
+    restore_game_state_inner(json_str).map_err(|error| JsValue::from_str(&error))
+}
+
+/// The natively-callable body of [`restore_game_state`].
+///
+/// Split for the same reason — and in the same shape — as `resolve_all_inner`
+/// and `scored_candidates_inner`: the `#[wasm_bindgen]` shell may only run on
+/// wasm32. Off-target, `JsValue::from_str` panics inside a function that cannot
+/// unwind, so a shell that merely RETURNS an error aborts the whole process with
+/// SIGABRT instead of failing the test. A native test that calls the shell is
+/// therefore only safe while restore succeeds; the moment it errors, the failure
+/// is unreadable. Tests call this function.
+fn restore_game_state_inner(json_str: &str) -> Result<(), String> {
     if MULTIPLAYER_MODE.with(|cell| cell.get()) {
-        return Err(JsValue::from_str(
-            "restore_game_state refused: undo is disabled in multiplayer sessions",
-        ));
+        return Err("restore_game_state refused: undo is disabled in multiplayer sessions".into());
     }
-    let restored = decode_and_rehydrate_restored_game_state(json_str)
-        .map_err(|error| JsValue::from_str(&error))?;
+    let restored = decode_and_rehydrate_restored_game_state(json_str)?;
     let mut state = restored.state;
     // Reseed the skipped `rng` and fast-forward it to the offset captured at
     // export (issue #5466) so the restored game draws the values that would have
@@ -5210,12 +5220,28 @@ mod ai_scoring_rng_bridge_tests {
 
         GAME_STATE.with(|cell| cell.set(Some(state)));
 
+        // Restore REFUSES without a card database (`rehydrate_restored_state_from_card_db`
+        // errors on absence alone), and these rows are about the RNG triple, not card
+        // data: `rehydrate_game_from_card_db` returns `()` and treats an unknown name as
+        // a no-op, so an EMPTY database satisfies the requirement without inventing card
+        // rows this module would then have to keep true. `restored_card_db_requirements_tests`
+        // is the row that pins the requirement itself.
+        CARD_DB.with(|cell| {
+            *cell.borrow_mut() = Some(
+                engine::database::CardDatabase::from_json_str("{}")
+                    .expect("an empty card database must parse"),
+            );
+        });
+
         // The exact shipped plant: `AiWorkerPool` calls `worker.restoreState(..)`
         // before every scoring call, and `restore_game_state` rehydrates the full
         // triple.
         let json = export_game_state_json().expect("planting must be exportable");
         clear_game_state();
-        restore_game_state(&json).expect("planting must be restorable");
+        // The INNER body, not the `#[wasm_bindgen]` shell: off-wasm32 the shell's
+        // error path builds a `JsValue` inside a non-unwinding fn and SIGABRTs, so
+        // calling it here would turn any restore failure into an unreadable abort.
+        restore_game_state_inner(&json).expect("planting must be restorable");
 
         // Premise 2, measured: the production restore resumed the saved position,
         // so a zero observed below is this entry point's own policy rather than a
