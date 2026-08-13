@@ -219,7 +219,11 @@ fn r2d_a_ranked_seat_is_judged_as_a_target_while_the_choice_class_keeps_existenc
 /// source — `ThisObject` is per-incarnation (CR 400.7) and therefore ephemeral, `AllCopies`
 /// latches card identity and is persistent — so the cell is built by choosing the source, never
 /// by setting a flag.
-fn grid_template(
+///
+/// `pub(super)` because `fantastic_four_bounded_loop`'s cross-episode-carrier row plants the
+/// same cells on the REAL 4-player board: two builders would be two definitions of
+/// "ephemeral", and the one thing this grid must not have is a second opinion about its axis.
+pub(super) fn grid_template(
     owner: PlayerId,
     kind: DecisionKind,
     ephemeral: bool,
@@ -254,9 +258,12 @@ fn grid_template(
 ///
 /// # Reachability was established before cause was attributed
 ///
-/// MEASURED on the real 4-player drive: planted templates go `3 → 2` at the accepting beat of
-/// the f4 bounded drive, survivors `[(LoopChoice, ephemeral), (TriggerOrdering, persistent)]`.
-/// So this boundary is reached in production, and the grid below states WHICH cell it removes.
+/// The real 4-player drive reaches this boundary, and that is a SHIPPED ROW rather than a
+/// retired probe: `fantastic_four_bounded_loop::r3b_driven_a_loop_choice_carrier_survives_a_
+/// whole_accepted_f4_drive` plants the cells on the f4 dump and drives an accepted CR 732.2a
+/// shortcut through `apply()` — MEASURED `3 → 2`, survivors
+/// `[(LoopChoice, ephemeral), (TriggerOrdering, persistent)]`. So the boundary is reached in
+/// production, and the grid below states WHICH cell it removes.
 ///
 /// # The row is the 2×2 GRID, not one cell
 ///

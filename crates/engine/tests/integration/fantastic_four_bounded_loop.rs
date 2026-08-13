@@ -1210,6 +1210,134 @@ fn r3a_the_accepted_drive_ends_at_the_priority_point_with_the_window_cleared() {
     );
 }
 
+/// **R3-b, DRIVEN ARM** — the CROSS-EPISODE CARRIER claim, taken on the real 4-player board
+/// across a whole accepted drive rather than at helper level.
+///
+/// `analysis::decision_template::DecisionKind`'s doc states that a `LoopChoice` template
+/// SURVIVES the CR 603.3b batch boundary and is therefore the vehicle a later episode's
+/// declaration rides. Its sibling `loop_shortcut_ranking::r3b_*` states the same property at
+/// the seam — it calls `clear_ephemeral_trigger_order_templates()` directly — which pins WHICH
+/// CELL the predicate removes but says nothing about whether an accepted production drive ever
+/// reaches that predicate, or reaches it only once, or leaves the survivor intact afterwards.
+/// This row is that missing half: `DeclareShortcut` → the full CR 732.2b APNAP window →
+/// `apply_confirmed_shortcut` → `materialize_fixed_shortcut`, every beat through `apply()`.
+///
+/// # Non-vacuity
+///
+/// The `TriggerOrdering` + ephemeral cell is the paired positive: it is REMOVED by the same
+/// drive that keeps the `LoopChoice` one, so "the drive never reached the boundary" and "the
+/// drive dropped everything" both fail here. MEASURED `3 → 2`.
+///
+/// # Discrimination
+///
+/// The asserted vector is two-sided, and each side names the mutant that flips it:
+///
+/// * drop the seam's `kind ==` conjunct ⇒ the `(LoopChoice, ephemeral)` element disappears;
+/// * never reach the seam at all ⇒ the `(TriggerOrdering, ephemeral)` element is still there.
+///
+/// The second is MEASURED by this row passing (`3 → 2`, with that cell and only that cell
+/// gone). The first is attributed rather than mutated HERE, and the attribution is licensed by
+/// a census rather than by a code read: over `crates/engine/src` the only `retain` on a LIVE
+/// `decision_templates` is `GameState::clear_ephemeral_trigger_order_templates` — `visibility`'s
+/// retain runs on the per-viewer CLONE (`filtered.decision_templates`), and no other site
+/// clears, drains, removes or reassigns the Vec. So a drive that demonstrably removed one cell
+/// ran that predicate, and the survivor beside it is that predicate's `kind ==` conjunct doing
+/// work. The predicate-level mutant itself is RUN on the seam-level sibling
+/// `loop_shortcut_ranking::r3b_*`, which is where a production-source mutation belongs.
+///
+/// The planted cells are inert as far as the drive is concerned — they key on a source no F4
+/// trigger raises — so they observe the boundary without steering it.
+#[test]
+fn r3b_driven_a_loop_choice_carrier_survives_a_whole_accepted_f4_drive() {
+    use super::loop_shortcut_ranking::grid_template;
+
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    let schema = schema.clone();
+    let template = f4_pin_template(&schema, proposer, 3);
+
+    // Planted at the OFFER beat, keyed to a real battlefield object resolved BY NAME so a
+    // re-dump that renumbers `ObjectId`s flows through (see `resolve_by_name`).
+    //
+    // The plant is purely ADDITIVE, and that is ASSERTED rather than assumed: had the drive
+    // left real templates here, overwriting them could steer the very drive this row observes,
+    // and the survivor set below would be reporting the fixture's own damage.
+    let anchor = resolve_by_name(&state, THING);
+    assert!(
+        state.decision_templates.is_empty(),
+        "reach-guard: the F4 drive reaches its offer beat carrying NO templates, so the grid \
+         below is planted onto an empty vector and displaces nothing; got {:?}",
+        state
+            .decision_templates
+            .iter()
+            .map(|t| (t.key.kind, t.key.is_ephemeral()))
+            .collect::<Vec<_>>()
+    );
+    state.decision_templates = vec![
+        grid_template(P0, DecisionKind::LoopChoice, true, anchor),
+        grid_template(P0, DecisionKind::TriggerOrdering, true, anchor),
+        grid_template(P0, DecisionKind::TriggerOrdering, false, anchor),
+    ];
+    let cells = |state: &GameState| -> Vec<(DecisionKind, bool)> {
+        state
+            .decision_templates
+            .iter()
+            .map(|t| (t.key.kind, t.key.is_ephemeral()))
+            .collect()
+    };
+    assert_eq!(
+        cells(&state),
+        vec![
+            (DecisionKind::LoopChoice, true),
+            (DecisionKind::TriggerOrdering, true),
+            (DecisionKind::TriggerOrdering, false),
+        ],
+        "reach-guard on the INSTRUMENT: both axes must be genuinely distinguishable on the real
+         board too, else 'exactly one cell removed' could be an artefact of three identical keys"
+    );
+
+    apply(
+        &mut state,
+        proposer,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(3),
+            template: Some(template),
+        },
+    )
+    .expect("the declaration is dispatched");
+    assert!(
+        matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "reach-guard: the declaration carrying the full published pin set must be accepted and \
+         open the CR 732.2b window, got {:?}",
+        state.waiting_for
+    );
+    let responders = accept_all_opponents(&mut state);
+    assert!(
+        responders > 0,
+        "reach-guard: the CR 732.2b window must actually have opened and been answered \
+         (CR 732.2c), else no drive ran and no batch boundary was crossed"
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "reach-guard: the accepted drive ran to its CR 732.2a ending point, got {:?}",
+        state.waiting_for
+    );
+
+    assert_eq!(
+        cells(&state),
+        vec![
+            (DecisionKind::LoopChoice, true),
+            (DecisionKind::TriggerOrdering, false),
+        ],
+        "CR 732.2a + CR 603.3b: across a whole ACCEPTED drive the ephemeral `LoopChoice` \
+         carrier SURVIVES — it is the cross-episode vehicle P4 rides — while the ephemeral \
+         `TriggerOrdering` cell beside it is dropped at the batch boundary the drive crosses. \
+         A missing `LoopChoice` means the retain predicate lost its KIND conjunct; a surviving \
+         ephemeral `TriggerOrdering` means the drive never reached the boundary at all"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // R23 conjunct (5-reach) — the beat guard's reachability on the real dump
 // ─────────────────────────────────────────────────────────────────────────────────────────
