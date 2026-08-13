@@ -882,6 +882,104 @@ fn target_resolve_pins_cargo_to_the_workspace_root() {
     );
 }
 
+/// The `splice` postcondition is only worth what the WRITER CENSUS is worth.
+///
+/// `splice` refusing to return an unlocatable block makes "`run --write` cannot commit a block its
+/// own next `check` aborts on" unconditional — but only while `splice` is the sole route to the
+/// bytes of the pinned file. A second `fs::write` of `output.file` added later would falsify that
+/// sentence in the docs, the PR body and the crate's own comment block, with nothing failing. That
+/// is this crate's recurring defect class wearing new clothes: prose stays green after the thing
+/// it describes has moved.
+///
+/// So the census is executable rather than recited. Measured at the head that added the
+/// postcondition: exactly two write producers exist in `src/` — `mutate.rs` (the mutant, into the
+/// scratch dir, never a rendered block) and `main.rs` (the pinned file), and the latter's content
+/// argument is literally the `splice(..)?` call. The guard is not merely *on* the write path; it
+/// is *inside the only write's argument*, so no byte sequence reaches the file without it.
+///
+/// COUNTED ON SYNTAX, NOT TEXT — but stated as what it is, because the first draft of this
+/// comment got it wrong in the direction that flatters the code. It claimed the comment-strip was
+/// load-bearing today, citing `manifest.rs`'s prose mention of `fs::write`. Measured: that mention
+/// is in backticks with no open paren, every producer pattern here requires the paren, and
+/// deleting the strip left this test GREEN — the arm did not flip. The strip is DEFENSIVE, not
+/// currently load-bearing.
+///
+/// Its value is therefore measured against the input it exists for rather than asserted: inserting
+/// a doc comment that quotes a call site (`// e.g. std::fs::write(&dest, mutant) ...`) into
+/// `mutate.rs` keeps this test green WITH the strip and fails it at `found 3` WITHOUT — same
+/// source, both arms. So it earns its three lines against a comment a future author will
+/// plausibly write, and the census counts call sites rather than the word "write".
+#[test]
+fn every_write_of_the_pinned_file_routes_through_splice() {
+    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sites: Vec<(String, String)> = Vec::new();
+
+    for entry in std::fs::read_dir(&src_dir).expect("src/ is readable") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("module is readable");
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        for line in text.lines() {
+            let code = line.trim_start();
+            // Strip `//`, `///` and `//!` alike: a doc comment is not a call site.
+            if code.starts_with("//") {
+                continue;
+            }
+            if ["fs::write(", "File::create(", ".write_all(", "OpenOptions"]
+                .iter()
+                .any(|p| code.contains(p))
+            {
+                sites.push((name.clone(), code.to_string()));
+            }
+        }
+    }
+
+    // Positive control: a census that can only return zero proves nothing. If the producer
+    // patterns ever stop matching real code, this fires before the completeness assertion below
+    // can pass vacuously.
+    assert!(
+        !sites.is_empty(),
+        "the writer census found NO filesystem writes in src/, but probe-pin demonstrably writes \
+         both a mutant and the pinned file. The search patterns no longer match real call sites, \
+         so every assertion below this line would pass by finding nothing."
+    );
+
+    let files: Vec<&str> = sites.iter().map(|(f, _)| f.as_str()).collect();
+    assert_eq!(
+        sites.len(),
+        2,
+        "the writer census changed: expected exactly 2 filesystem writes in src/ (mutate.rs's \
+         scratch mutant, main.rs's pinned file), found {} in {files:?}. If a new write is \
+         legitimate, decide which it is: a write of output.file MUST route through \
+         block::splice, or the postcondition stops being unconditional and docs/probe-pin.md \
+         plus the crate's own generated block are asserting something no longer true. \
+         Sites: {sites:#?}",
+        sites.len()
+    );
+    assert!(
+        files.contains(&"mutate.rs") && files.contains(&"main.rs"),
+        "the two writes are no longer the two expected producers: {files:?}"
+    );
+
+    let main_src = std::fs::read_to_string(src_dir.join("main.rs")).expect("main.rs is readable");
+    let write_call = main_src
+        .split_once("std::fs::write(")
+        .expect("main.rs writes the pinned file")
+        .1;
+    let args = write_call
+        .split_once(")\n")
+        .map_or(write_call, |(before, _)| before);
+    assert!(
+        args.contains("block::splice("),
+        "main.rs still writes the pinned file, but the bytes no longer come from block::splice. \
+         The postcondition that refuses an unlocatable block is bypassed, and `run --write` can \
+         again commit a block whose marker span its own `check` cannot find. Write args were: \
+         {args}"
+    );
+}
+
 /// The workspace root is CANONICAL at its one producer, because every consumer compares it
 /// against a path that has been: `main`'s `manifest_rel` strips it from
 /// `manifest_path.canonicalize()`, `resolve_contained` canonicalizes `base`, `scratch_dir`
