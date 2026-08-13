@@ -18802,7 +18802,42 @@ mod stage2_injector_tests {
                 // `8a544e87…5cc7d63` matches exactly ONE line under a whole-file scan and is
                 // still inside `begin_pending_trigger_target_selection`, at the invariant offset
                 // 134. `12712 + 5` is the CHECK that agreed, not the derivation.
-                "game/engine.rs:12717".to_string(),
+                //
+                // ⚠ item-4 C2 (the manual declare path honours the offer's own published
+                // declaration): `:12717 ⇒ :12759`, `+42`. LOCAL, not upstream. LOCATED BY
+                // CONTENT DIGEST, never by arithmetic: the line whose sha256 is
+                // `8a544e87…5cc7d63` — the digest this log has carried since `a6d1a0e62` —
+                // matches EXACTLY ONE line under a whole-file scan of the new tree, at `:12759`,
+                // and exactly one in the parent, at `:12717`. It is still inside
+                // `begin_pending_trigger_target_selection` (`:12625`) with no intervening `fn`,
+                // at the INVARIANT OFFSET 134 — `12759 - 12625`, and the parent's
+                // `12717 - 12583`. Arithmetic CHECK afterwards, never as the source: `git diff
+                // -U0` against the parent shows FOUR hunks, ALL above this producer — `+4`
+                // (`LoopShortcutOffer`'s new `declaration` field and its doc), `+35`
+                // (`handle_declare_shortcut`'s `or_else` and the placement rationale above it),
+                // `+2` net (`apply_action`'s `declaration: _` discharge rewritten as a bind,
+                // `-5`/`+7`) and `+1` (`declaration: declaration.as_ref(),` in the struct
+                // literal) — summing to exactly `+42`, and `12717 + 42 = 12759`.
+                //
+                // DERIVED TWICE, ACROSS A REBASE, AND THAT IS THE ENTRY'S POINT. This value was
+                // first measured pre-rebase against `b51e45c59`, then DISCARDED unused and
+                // re-derived from scratch against the rebased tree rather than carried — the
+                // discipline the entry six above states as *"a coordinate is a fact about a
+                // tree, not a property of this commit"*. The two derivations agreeing is a
+                // result, not a shortcut that was taken. (The rebase moved this file's OTHER
+                // stale element for us: upstream `d11529d0c` re-pinned
+                // `game/effects/mod.rs:9922 ⇒ :9932`, which arrived through the rebase already
+                // correct and is not this commit's to touch.)
+                //
+                // SET PRESERVATION: C2 adds ONE production statement (an `Option::or_else`) and
+                // one struct field, and rewrites a match-arm binding from `declaration: _` to a
+                // bind. None of the three assigns `state.waiting_for`, so no line matching the
+                // needle is added or removed and no `OptionalEffectChoice` prompt can be minted.
+                // Confirmed by the failure shape rather than by inspection alone: the total (38)
+                // and the partition (5/8/25) both fired GREEN on the run that caught this, and
+                // the panic was on this third assert alone — which is what makes it a coordinate
+                // shift rather than a population change.
+                "game/engine.rs:12759".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
