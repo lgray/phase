@@ -39,10 +39,12 @@ pub type IterationIndex = u32;
 /// `LoopChoice` entry in `GameState::decision_templates` survives the CR 603.3b batch
 /// boundary — `GameState::clear_ephemeral_trigger_order_templates`' retain predicate is
 /// scoped to `TriggerOrdering` — so it is the vehicle a later episode's declaration can
-/// ride, and it is still POPULATED BY PHASE 4 AND BY NOTHING TODAY. PROBE-PINNED: a
-/// planted `LoopChoice` ephemeral template survives a whole accepted 4-player drive (probe
-/// arm CONTROL), and is removed once that predicate is widened to cover `LoopChoice`
-/// (probe arm `MUT_LOOPCHOICE`).
+/// ride, and it is still POPULATED BY PHASE 4 AND BY NOTHING TODAY. PINNED BY A SHIPPED
+/// ROW: `fantastic_four_bounded_loop::r3b_driven_a_loop_choice_carrier_survives_a_whole_
+/// accepted_f4_drive` plants the `(kind × ephemerality)` cells on the real 4-player board
+/// and drives a whole accepted CR 732.2a shortcut through `apply()` — the `LoopChoice`
+/// cell survives (`3 → 2`) while the `TriggerOrdering` ephemeral cell beside it does not.
+/// `loop_shortcut_ranking::r3b_*` is the seam-level statement of the same predicate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DecisionKind {
     TriggerOrdering,

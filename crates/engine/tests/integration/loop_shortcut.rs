@@ -4511,96 +4511,132 @@ enum CarrierKind {
     Via(String),
 }
 
-/// A variant start line inside an enum body — `^    [A-Z][A-Za-z0-9]*( \{|,|\()`, spelled with
-/// `std` string ops instead of a dependency.
-///
-/// MEASURED set-identical to `syn 2.0.117`'s variant list over this enum (128 names each, 0
-/// regex-only, 0 syn-only), which is why this census ships no enum-body parser: doc lines,
-/// attributes and field lines all fail the shape, and nothing else in the body passes it.
-fn is_variant_start(line: &str) -> Option<&str> {
-    let rest = line.strip_prefix("    ")?;
-    if !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
-        return None;
-    }
-    let end = rest
-        .find(|c: char| !c.is_ascii_alphanumeric())
-        .unwrap_or(rest.len());
-    let (ident, tail) = rest.split_at(end);
-    (tail.starts_with(" {") || tail.starts_with(',') || tail.starts_with('(')).then_some(ident)
-}
+use syn::{GenericArgument, Item, PathArguments, Type};
 
-/// The lines between `pub enum <name> {` and its column-0 closing brace.
-fn enum_body<'a>(src: &'a str, enum_name: &str) -> Vec<&'a str> {
-    let open = format!("pub enum {enum_name} {{");
-    let mut out = Vec::new();
-    let mut inside = false;
-    for line in src.lines() {
-        if !inside {
-            inside = line.trim_start().starts_with(&open);
-            continue;
+/// Every type identifier `ty` names, outermost first: `Option<Vec<Foo>>` ⇒
+/// `["Option", "Vec", "Foo"]`.
+///
+/// A NAME list rather than a `contains(marker)` over rendered text: the latter answers yes for
+/// `DecisionTemplateAudit` and for the word inside a doc comment, and both would be carriers
+/// this census invented.
+fn type_names(ty: &Type) -> Vec<String> {
+    fn walk(ty: &Type, out: &mut Vec<String>) {
+        match ty {
+            Type::Path(p) => {
+                for seg in &p.path.segments {
+                    out.push(seg.ident.to_string());
+                    if let PathArguments::AngleBracketed(args) = &seg.arguments {
+                        for arg in &args.args {
+                            if let GenericArgument::Type(inner) = arg {
+                                walk(inner, out);
+                            }
+                        }
+                    }
+                }
+            }
+            Type::Reference(r) => walk(&r.elem, out),
+            Type::Slice(s) => walk(&s.elem, out),
+            Type::Array(a) => walk(&a.elem, out),
+            Type::Group(g) => walk(&g.elem, out),
+            Type::Paren(p) => walk(&p.elem, out),
+            Type::Tuple(t) => t.elems.iter().for_each(|e| walk(e, out)),
+            _ => {}
         }
-        if line == "}" {
-            break;
-        }
-        out.push(line);
     }
+    let mut out = Vec::new();
+    walk(ty, &mut out);
     out
 }
 
-/// `(variant name, the lines from its start up to the next variant start)`.
-fn variants<'a>(body: &[&'a str]) -> Vec<(String, Vec<&'a str>)> {
-    let starts: Vec<usize> = body
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| is_variant_start(l).is_some())
-        .map(|(i, _)| i)
-        .collect();
-    starts
-        .iter()
-        .enumerate()
-        .map(|(k, &i)| {
-            let end = starts.get(k + 1).copied().unwrap_or(body.len());
-            (
-                is_variant_start(body[i])
-                    .expect("filtered above")
-                    .to_string(),
-                body[i..end].to_vec(),
-            )
-        })
-        .collect()
+/// Every item in `items`, INCLUDING the ones nested in inline `mod` blocks — a holder does not
+/// stop being a holder for living inside a module.
+fn flatten<'a>(items: &'a [Item], out: &mut Vec<&'a Item>) {
+    for item in items {
+        out.push(item);
+        if let Item::Mod(m) = item {
+            if let Some((_, inner)) = &m.content {
+                flatten(inner, out);
+            }
+        }
+    }
 }
 
-/// Every `pub struct` in the walked corpus that spells `marker` in its own body. THE DEPTH-1
-/// STEP, and the whole of it — see the row's disclosed limitation.
+/// `(variant name, its field types)` for `enum_name`, in declaration order.
+fn enum_variants(src: &str, enum_name: &str) -> Vec<(String, Vec<Type>)> {
+    let parsed =
+        syn::parse_file(src).unwrap_or_else(|e| panic!("parse the `{enum_name}` source: {e}"));
+    let mut items = Vec::new();
+    flatten(&parsed.items, &mut items);
+    items
+        .iter()
+        .find_map(|item| match item {
+            Item::Enum(e) if e.ident == enum_name => Some(
+                e.variants
+                    .iter()
+                    .map(|v| {
+                        (
+                            v.ident.to_string(),
+                            v.fields.iter().map(|f| f.ty.clone()).collect(),
+                        )
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("`{enum_name}` must be declared in the parsed source"))
+}
+
+/// Every type declaration in the walked corpus whose own body names `marker` — struct, enum or
+/// alias, at any visibility, generic or not, nested in a `mod` or not. THE DEPTH-1 STEP, and
+/// the whole of it — see the row's disclosed limitation.
+///
+/// # Why `syn` and not string ops
+///
+/// This step used to scan for `pub struct <Ident> {` at column 0, which is a small fraction of
+/// the declarations that can hold a `marker`. MEASURED over this walk root: that shape matches
+/// **486** declarations, while **649** `pub enum`, **108** `pub(crate) struct` and **12**
+/// generic `pub struct` heads are invisible to it — and a carrier the depth-1 step cannot see
+/// is scored as a clean GREEN, which is the one failure mode a census must not have. `syn` is
+/// already a `[dev-dependencies]` entry of this crate and already the instrument
+/// `deterministic_game_state_serde` parses production sources with, so this is reuse and not a
+/// new dependency. `PLANT 5` below is the arm that holds the four recovered forms.
 ///
 /// Computed ONCE per corpus rather than re-scanned per candidate identifier: the walk is 500+
 /// files and the enum is 128 variants, so the per-identifier form is quadratic in the corpus
 /// for no extra signal.
-fn structs_carrying(
-    corpus: &[(String, String)],
-    marker: &str,
-) -> std::collections::BTreeSet<String> {
+fn types_carrying(corpus: &[(String, String)], marker: &str) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
-    for (_, src) in corpus {
-        let mut open: Option<String> = None;
-        for line in src.lines() {
-            let Some(name) = open.as_deref() else {
-                if let Some(rest) = line.strip_prefix("pub struct ") {
-                    if let Some(ident) = rest.strip_suffix(" {") {
-                        if ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                            open = Some(ident.to_string());
-                        }
-                    }
-                }
-                continue;
+    for (file, src) in corpus {
+        // A SOUND prefilter, not a shortcut: a declaration can only NAME `marker` if its file
+        // text contains `marker`, so this skips ~500 parses without narrowing the answer.
+        if !src.contains(marker) {
+            continue;
+        }
+        let parsed = syn::parse_file(src).unwrap_or_else(|e| panic!("parse {file}: {e}"));
+        let mut items = Vec::new();
+        flatten(&parsed.items, &mut items);
+        for item in items {
+            let (name, field_types): (String, Vec<&Type>) = match item {
+                Item::Struct(s) => (
+                    s.ident.to_string(),
+                    s.fields.iter().map(|f| &f.ty).collect(),
+                ),
+                Item::Enum(e) => (
+                    e.ident.to_string(),
+                    e.variants
+                        .iter()
+                        .flat_map(|v| v.fields.iter().map(|f| &f.ty))
+                        .collect(),
+                ),
+                Item::Type(t) => (t.ident.to_string(), vec![t.ty.as_ref()]),
+                _ => continue,
             };
-            if line == "}" {
-                open = None;
-                continue;
-            }
-            if !line.trim_start().starts_with("//") && line.contains(marker) {
-                out.insert(name.to_string());
-                open = None;
+            if field_types
+                .iter()
+                .flat_map(|t| type_names(t))
+                .any(|n| n == marker)
+            {
+                out.insert(name);
             }
         }
     }
@@ -4620,38 +4656,21 @@ fn carriers_in_source(
     marker: &str,
     walk_via: bool,
 ) -> Vec<(String, CarrierKind)> {
-    let via_types = structs_carrying(corpus, marker);
-    let body = enum_body(enum_src, enum_name);
+    let via_types = types_carrying(corpus, marker);
     let mut out = Vec::new();
-    for (name, vbody) in variants(&body) {
-        let code: Vec<&&str> = vbody
-            .iter()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect();
-        if code.iter().any(|l| l.contains(marker)) {
+    for (name, field_types) in enum_variants(enum_src, enum_name) {
+        // Outermost-first across the variant's fields in declaration order, so `Via` names the
+        // holder a reader would name.
+        let named: Vec<String> = field_types.iter().flat_map(type_names).collect();
+        if named.iter().any(|n| n == marker) {
             out.push((name, CarrierKind::Direct));
             continue;
         }
         if !walk_via {
             continue;
         }
-        let via = code.iter().find_map(|l| {
-            let mut rest: &str = l;
-            loop {
-                let p = rest.find(|c: char| c.is_ascii_uppercase())?;
-                rest = &rest[p..];
-                let e = rest
-                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                    .unwrap_or(rest.len());
-                let (id, tail) = rest.split_at(e);
-                if id != marker && via_types.contains(id) {
-                    return Some(id.to_string());
-                }
-                rest = tail;
-            }
-        });
-        if let Some(t) = via {
-            out.push((name, CarrierKind::Via(t)));
+        if let Some(via) = named.into_iter().find(|n| via_types.contains(n)) {
+            out.push((name, CarrierKind::Via(via)));
         }
     }
     out
@@ -4726,7 +4745,7 @@ fn plant_into_enum(src: &str, enum_name: &str, injected: &str) -> String {
 /// and this ~4 800-row integration target are never type-checked, and the repair list is
 /// neither stable nor bounded. Source injection has neither problem and needs no build.
 ///
-/// # Discrimination — four plant arms, all RUN, all over in-memory copies
+/// # Discrimination — five plant arms, all RUN, all over in-memory copies
 ///
 /// * a 3rd DIRECT and a 4th VIA carrier planted into a copy of the enum source ⇒ the set
 ///   assertion fails NAMING both new variants (`n = 4`);
@@ -4737,7 +4756,11 @@ fn plant_into_enum(src: &str, enum_name: &str, injected: &str) -> String {
 /// * the `RespondToShortcut` arm deleted from a copy of `visibility.rs` ⇒ the redaction half
 ///   flips to `false` for that carrier while `LoopShortcut` stays `true`. The mutation is on a
 ///   COPY, so the shipped row `respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers`
-///   above is not perturbed.
+///   above is not perturbed;
+/// * a `pub(crate)`, a GENERIC, an ENUM, an ALIAS and a `mod`-NESTED holder planted at once ⇒
+///   all five are NAMED as `Via` carriers, and a non-carrier planted beside them is not. These
+///   are the forms the retired `pub struct <Ident> {{` string scan could not see, and each was
+///   a false GREEN rather than a false alarm.
 ///
 /// # DISCLOSED LIMITATIONS
 ///
@@ -4780,14 +4803,13 @@ fn exactly_two_waiting_for_variants_carry_a_decision_template_and_both_are_redac
     let visibility_src = file_of("game/visibility.rs");
 
     // ── the classifier's own reach-guard: the enum was actually found ──
-    let total = variants(&enum_body(&enum_src, "WaitingFor")).len();
+    let total = enum_variants(&enum_src, "WaitingFor").len();
     assert_eq!(
         total, 128,
-        "`WaitingFor` has 128 variants at this tip (cross-checked against `syn 2.0.117`, which \
-         reports the same NAME SET). This number is pinned so a variant REMOVED is as visible \
-         as one added; if you added a variant and it carries no `DecisionTemplate`, update this \
-         number. A wildly different count means the enum-body reader lost its anchor, and every \
-         assertion below would then be measuring an empty body"
+        "`WaitingFor` has 128 variants at this tip, read off the `syn` parse. This number is \
+         pinned so a variant REMOVED is as visible as one added; if you added a variant and it \
+         carries no `DecisionTemplate`, update this number. A wildly different count means the \
+         reader lost its anchor, and every assertion below would then be measuring an empty enum"
     );
 
     let carriers = carriers_in_source(&enum_src, "WaitingFor", &corpus, &marker, true);
@@ -4882,6 +4904,67 @@ fn exactly_two_waiting_for_variants_carry_a_decision_template_and_both_are_redac
             && !redaction_arm_present(&mutated_visibility, "RespondToShortcut"),
         "the redaction half must FLIP when its arm is deleted from the copy, and only for the \
          carrier whose arm was deleted — otherwise the `for` loop above asserts nothing"
+    );
+
+    // ── PLANT 5 — the four holder FORMS the retired string scan could not see, plus a
+    //    non-carrier control. Each is a real declaration shape from this walk root: over
+    //    `crates/engine/src` the old `pub struct <Ident> {` shape matched 486 declarations
+    //    while 649 `pub enum`, 108 `pub(crate) struct` and 12 generic `pub struct` heads were
+    //    invisible — every one of them a carrier that would have scored a clean GREEN. ──
+    let forms = format!(
+        "pub(crate) struct CrateVisHolder {{\n    pub template: Option<{marker}>,\n}}\n\
+         pub struct GenericHolder<'a, T> {{\n    pub template: &'a {marker},\n    pub t: T,\n}}\n\
+         pub enum EnumHolder {{\n    WithTemplate({marker}),\n    Without,\n}}\n\
+         pub type AliasHolder = Option<{marker}>;\n\
+         pub struct NotAHolder {{\n    pub seat: PlayerId,\n}}\n\
+         mod inner {{\n    pub struct NestedHolder {{\n        pub template: \
+         Option<super::{marker}>,\n    }}\n}}\n"
+    );
+    let mut forms_corpus = corpus.clone();
+    forms_corpus.push(("forms.rs".to_string(), forms));
+    let forms_src = plant_into_enum(
+        &enum_src,
+        "WaitingFor",
+        "    ProbeCrateVis {\n        h: CrateVisHolder,\n    },\n\
+         \x20   ProbeGeneric {\n        h: GenericHolder<'static, u8>,\n    },\n\
+         \x20   ProbeEnumHolder {\n        h: EnumHolder,\n    },\n\
+         \x20   ProbeAlias {\n        h: AliasHolder,\n    },\n\
+         \x20   ProbeNested {\n        h: NestedHolder,\n    },\n\
+         \x20   ProbeNonCarrier {\n        h: NotAHolder,\n    },\n",
+    );
+    let by_forms: Vec<(String, CarrierKind)> =
+        carriers_in_source(&forms_src, "WaitingFor", &forms_corpus, &marker, true)
+            .into_iter()
+            .filter(|(n, _)| n.starts_with("Probe"))
+            .collect();
+    assert_eq!(
+        by_forms,
+        vec![
+            (
+                "ProbeCrateVis".to_string(),
+                CarrierKind::Via("CrateVisHolder".to_string())
+            ),
+            (
+                "ProbeGeneric".to_string(),
+                CarrierKind::Via("GenericHolder".to_string())
+            ),
+            (
+                "ProbeEnumHolder".to_string(),
+                CarrierKind::Via("EnumHolder".to_string())
+            ),
+            (
+                "ProbeAlias".to_string(),
+                CarrierKind::Via("AliasHolder".to_string())
+            ),
+            (
+                "ProbeNested".to_string(),
+                CarrierKind::Via("NestedHolder".to_string())
+            ),
+        ],
+        "the depth-1 step must see a `pub(crate)`, a GENERIC, an ENUM, an ALIAS and a \
+         `mod`-NESTED holder alike — and `ProbeNonCarrier` must be ABSENT, because an \
+         instrument that reports every variant is as useless as one that reports too few. \
+         got {by_forms:?}"
     );
 }
 
@@ -11752,7 +11835,13 @@ fn bounded_fixed_drive_rolls_back_a_partial_crossing_cycle() {
             doctored.loop_answers_recorded(),
             0,
             "n={n}: CR 603.5 — the recorded `may` answers describe the window that just ended, \
-             and the same seam drops them together with the ring"
+             and the same seam drops them together with the ring. ⚠ FORWARD TRIPWIRE, not a \
+             co-equal half of that claim: MEASURED non-discriminating on THIS fixture — under a \
+             mutant neutering only the seam's `loop_answer_journal = None` this clause stays \
+             green (the journal already reads 0 when this fixture reaches the seam) while the \
+             f4 row fails `left: 3, right: 0`. It earns its place by failing if a future writer \
+             ever populates the journal on this entry path and the seam stops clearing it; the \
+             DISCRIMINATING statement of the journal half is the f4 row named above"
         );
     }
 }

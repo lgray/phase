@@ -18699,15 +18699,20 @@ mod stage2_injector_tests {
                 // of the new tree, at `:12646` — and exactly one in the parent, at `:12622` — and
                 // it is still inside `begin_pending_trigger_target_selection`, which moved by the
                 // same +24 (opens `:12488 ⇒ :12512`). Arithmetic CHECK afterwards, never as the
-                // source: `git diff -U0` against the parent shows this file has exactly ONE hunk,
-                // `@@ -4452,0 +4453,24 @@` inside `materialize_fixed_shortcut` — the CR 732.2a
-                // episode-boundary amendment — which is ABOVE this producer, and
-                // `12622 + 24 = 12646` exactly. SET PRESERVATION: all 24 inserted lines are `//`
-                // comments (R3's entire `crates/engine/src` diff is comment-only — both files are
-                // byte-identical to the parent with comment lines stripped), so no
+                // source: `git diff -U0` against the parent shows exactly ONE hunk ABOVE this
+                // producer, `@@ -4452,0 +4453,24 @@` inside `materialize_fixed_shortcut` — the
+                // CR 732.2a episode-boundary amendment — and `12622 + 24 = 12646` exactly. (The
+                // file carries a SECOND hunk, this very comment block; it is BELOW the producer
+                // and so contributes nothing to the coordinate. Counting whole-file hunks instead
+                // of hunks-above-the-producer is the arithmetic slip to avoid here.)
+                // SET PRESERVATION: all 24 inserted lines are `//` comments, so no
                 // `waiting_for = ` or `Ok(Some(` line was added and a comment round cannot mint a
-                // prompt. The total (38) and the partition (5/8/25) both fired GREEN on the run
-                // that caught this — only this third assert panicked.
+                // prompt. R3's `crates/engine/src` diff is comment-only APART FROM THIS PIN
+                // STRING: with comment lines stripped, `analysis/decision_template.rs` is
+                // byte-identical to the parent and `game/engine.rs` differs in exactly one line —
+                // the `:12622 ⇒ :12646` literal directly below. The total (38) and the partition
+                // (5/8/25) both fired GREEN on the run that caught this — only this third assert
+                // panicked.
                 // ⚠ REBASE #3: `:12708 ⇒ :12707`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
                 // ⚠ REBASE #3: `:12707 ⇒ :12712`, located by content digest, offset from
