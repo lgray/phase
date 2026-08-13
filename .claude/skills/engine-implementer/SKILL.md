@@ -88,6 +88,32 @@ If the reviewer returns gaps, spawn a **fresh** planning agent (Step 1 inputs pl
 
 Each review must run in a fresh agent context — never reuse the previous reviewer's context.
 
+#### Surgical-fix mode — when the design is settled and the findings are spot drift
+
+The loop above assumes findings move the **design**. Once they stop doing that, re-running it makes the artifact worse: a fresh planner rewrites prose to absorb each finding, prose is where spot findings live, so every round manufactures the next round's findings.
+
+**When all three hold, switch modes** — measure them, do not judge them:
+
+1. The design is unchanged for ≥2 consecutive rounds (compare a stable structural count: steps, sub-steps, enum variants, call sites — **not** line count).
+2. The last round's findings are all **spot** — a stale number, a stale coordinate, a claim contradicted by a neighbouring section, a missing control, a sentence never swept. None changes what the implementation does.
+3. Each finding names a coordinate **and** its replacement text. If any finding requires *deciding* something, it is a design finding: stay in the loop.
+
+**Do not add a fourth condition based on falling churn.** Round-over-round churn shrinks while a loop turns unproductive: smaller repairs to a growing record. It measures edit size, not convergence, and gating on it blocks the switch precisely when the switch is warranted.
+
+**The corroborating signal, if you want one, is the fraction of a round's findings whose defect originated in the *previous* round's repairs.** It climbs as the loop starts feeding on itself, but not monotonically — so treat a high fraction as evidence for the switch, never as the trigger.
+
+**In surgical-fix mode the orchestrator applies the findings itself**, as check-and-replace edits — the one narrow exception to "the orchestrator never authors content." It is *applying* adjudicated text, not authoring; the moment a fix needs a decision, dispatch a planner instead. Requirements:
+
+- **Two-sided verification per edit:** the old string absent AND the new string present, 1:1 per fragment, not a lucky aggregate.
+- **State the sweep's boundary.** A changelog entry that quotes the struck text will match your own grep for it. Population, predicate, scan direction, and whether the matched line counts — write them down; every enumeration defect is an unstated predicate rather than a bad measurement.
+- **Fix the neighbours the fix breaks.** A finding's repair frequently contradicts a section that classified the old form. Sweep by mechanism, not by coordinate.
+- **Then one re-review of the WHOLE artifact**, fresh context — not just the repaired sections, per `$bug-triage`'s targeted-re-review rule. Surgical mode replaces the *rounds*, never the final independent check.
+- **Record the mode switch and its three measurements in the artifact**, so the exit is auditable rather than asserted.
+
+**This does not contradict `$bug-triage`'s fixpoint gate.** That gate requires whole-plan re-review because *"revisions routinely INTRODUCE new gaps in untouched-looking areas"* — planner **rewrites** do. A check-and-replace at a named coordinate does not rewrite, which is why it is the safe tool once the design has stopped moving. `$review-engine-plan` ends its loop with *"or the caller stops the process"* and states no criteria; this section is those criteria, and it lives here because the orchestrator is that caller.
+
+This is not a licence for "two rounds and ship". The unbounded loop remains the default and the burden of proof is on leaving it: no measurement, no switch.
+
 ### Step 3 — Dispatch implementation
 
 Spawn the `engine-implementation-executor` agent.
