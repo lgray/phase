@@ -81,12 +81,19 @@ struct ClusterSmell {
 /// Every directory whose `pub enum`s are engine surface a variant proposal must be able to
 /// discover. CLAUDE.md makes an inventory grep the mandatory discoverability gate before
 /// proposing a variant and scopes it to "any other engine enum", so the walk is the WHOLE
-/// engine crate rather than a hand-kept subset: `types/` + `analysis/` left 85 of the 654
+/// engine crate rather than a hand-kept subset: a `types/` + `analysis/` walk leaves 85
 /// top-level `pub enum`s under `crates/engine/src` structurally invisible to the gate
-/// (`game/` 61, `ai_support/` 13, `parser/` 7, `database/` 4). One root is also shorter than
-/// the list it replaces. MEASURED by running the generator: 654 enums, 5319 variants — the
-/// catalogue now holds one entry per DECLARATION, so `enum_count` and the declaration count
-/// are the same number.
+/// (`game/` 61, `ai_support/` 13, `parser/` 7, `database/` 4). That split is the standing
+/// reason for the walk root, and it is re-derivable at any time by grouping the emitted
+/// `file` fields. One root is also shorter than the list it replaces.
+///
+/// THE TOTALS ARE A SNAPSHOT, NOT A STANDING FACT — deliberately stated apart from the split
+/// above, because pinning the two together is what let one stale digit rot the other. Measured
+/// 2026-08-13: 655 enums, 5320 variants. If they move, RE-TAKE them rather than re-label; and
+/// prefer not to read them here at all, since every run prints its own totals on the success
+/// line, which is the only current answer. What must stay true is the invariant those totals
+/// are evidence for: the catalogue holds one entry per DECLARATION, so `enum_count` and the
+/// declaration count are the same number.
 ///
 /// THE CATALOGUE KEY IS MODULE-QUALIFIED (`types::card::LayoutKind`), because the widened walk
 /// makes ident collisions reachable and an ident key drops one side of every collision. Measured
@@ -116,8 +123,14 @@ fn main() -> Result<()> {
     for dir in TARGET_DIRS {
         let target = workspace_root.join(dir);
         // Sorted so the emitted `sources` list — and the walk itself — does not depend on
-        // `readdir` order; errors propagate rather than silently yielding a partial inventory
-        // that still reports success.
+        // `readdir` order.
+        //
+        // ALL THREE per-file failures propagate: walk, read, AND parse. The parse arm used to
+        // `continue` past unparseable files as "likely WIP" while `sources.push` ran BEFORE
+        // it, so such a file was LISTED as scanned while contributing zero enums — the
+        // inventory reported success over a file it never read, and the `add-engine-variant`
+        // existence gate got a FALSE NEGATIVE indistinguishable from a true one. A WIP file is
+        // a reason to fix the file, not to hand that gate a silent hole.
         for entry in WalkDir::new(&target).sort_by_file_name() {
             let entry = entry.with_context(|| format!("walk {}", target.display()))?;
             let path = entry.path();
@@ -126,14 +139,16 @@ fn main() -> Result<()> {
             }
             let module = module_path(path.strip_prefix(&target).unwrap_or(path));
             let rel = path.strip_prefix(&workspace_root).unwrap_or(path);
-            sources.push(rel.display().to_string());
 
             let content =
                 fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-            let file = match syn::parse_file(&content) {
-                Ok(f) => f,
-                Err(_) => continue, // skip unparseable files (likely WIP)
-            };
+            let file =
+                syn::parse_file(&content).with_context(|| format!("parse {}", path.display()))?;
+            // AFTER the parse, not before. The ordering is unobservable today (every failure
+            // above aborts the run and writes nothing), so this is the structural form of the
+            // fix rather than the fix: `sources` means "files this inventory actually read",
+            // and position now enforces that instead of the error handling continuing to.
+            sources.push(rel.display().to_string());
 
             for item in &file.items {
                 if let Item::Enum(e) = item {

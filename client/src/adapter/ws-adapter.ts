@@ -205,11 +205,22 @@ export class NativeEngineVersionMismatchError extends Error {
  *
  * 31 — WaitingFor::LoopShortcut publishes the engine-issued declaration, and
  *      InteractionResponseSpec::Shortcut publishes preview, the per-axis
- *      consequence of the offered count. Both are optional, so a v30 peer still
- *      PARSES the frame — a capability bump like 24, not a parse bump. A v31
- *      client paired with a v30 server sends the template-free DeclareShortcut
- *      these fields authorize and has its declaration silently dropped, with no
- *      parse error to catch it.
+ *      consequence of the offered count. Both are optional and neither type
+ *      sets deny_unknown_fields, so a v30 peer still PARSES the frame — a
+ *      capability bump like 24, not a parse bump. UNLIKE 24, no pairing is left
+ *      for the capability gap to bite in, so this entry names no silent-drop
+ *      hazard: full-game floors are exact-match on BOTH sides
+ *      (MIN_SUPPORTED_SERVER_PROTOCOL below, and MIN_SUPPORTED_PROTOCOL in
+ *      crates/server-core/src/protocol.rs, each equal to their own
+ *      PROTOCOL_VERSION), so a v31/v30 full-game pair is refused at the
+ *      handshake and never sends an action frame. The one-version window that
+ *      does exist is lobby-only (LOBBY_MIN_SUPPORTED_SERVER_PROTOCOL below /
+ *      MIN_SUPPORTED_PROTOCOL in crates/lobby-broker/src/protocol.rs) and it
+ *      cannot carry this capability either: DeclareShortcut rides
+ *      ClientMessage::Action, which LobbyClientMessage has no variant for at
+ *      all, and which reject_if_disabled in crates/phase-server/src/main.rs
+ *      answers under ServerMode::LobbyOnly with an explicit rejection rather
+ *      than a silent drop.
  * 30 — Serialized player-action completion provenance and modal continuations.
  * 29 — Added requester-correlated ResolveAllRejected response frames.
  * 28 — Added native ResolveAll request/result frames.

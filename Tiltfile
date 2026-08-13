@@ -24,12 +24,17 @@ TMP_IGNORE = ['**/*.tmp.*']
 
 # probe-pin isolates through `unshare --map-root-user --mount` (util-linux) and runs its target
 # under `timeout` (GNU coreutils). macOS ships neither, and there is no Darwin equivalent of an
-# unprivileged mount namespace to port to — so both probe-pin resources abort on a Darwin host
-# no matter what the tree contains. Gate their auto_init rather than let them boot straight into
-# a permanent red: a gate that is red on every change teaches everyone to stop reading the
-# colour, which costs more than the gate earns. They stay VISIBLE and clickable, like every
-# other opt-in resource here, so the refusal is still one click away when someone wants to see
-# it. `os.name` is consulted FIRST and short-circuits, so a Windows host never reaches `uname`
+# unprivileged mount namespace to port to — so EVERY probe-pin resource in this file aborts on
+# a Darwin host no matter what the tree contains: `probe-pin check` reaches `isolate::run`
+# unconditionally from `pipeline()` (crates/probe-pin/src/main.rs:145 — the baseline run, before
+# any mutant), and that spawns `unshare` (crates/probe-pin/src/isolate.rs:157). Scoped as a rule
+# over all of them rather than as a count: a count goes stale the next time one is added, which
+# is precisely how a resource below came to sit here ungated. Gate their auto_init rather than
+# let them boot straight into a permanent red: a gate that is red on every change teaches
+# everyone to stop reading the colour, which costs more than the gate earns. They stay VISIBLE
+# and clickable, like every other opt-in resource here, so the refusal is still one click away
+# when someone wants to see it.
+# `os.name` is consulted FIRST and short-circuits, so a Windows host never reaches `uname`
 # — which it does not ship, and which would fail Tiltfile LOAD rather than one resource.
 IS_LINUX = (
     os.name == 'posix'
@@ -37,9 +42,11 @@ IS_LINUX = (
 )
 
 # auto_init alone would NOT be enough: it governs only the STARTUP run, and the default
-# TRIGGER_MODE_AUTO re-runs a resource whenever its deps change. Both probe-pin resources watch
-# 'crates/probe-pin/', so off Linux the very next edit there would drag them back into the red
-# that auto_init just avoided. Off-Linux they must stop watching too, not merely stop booting.
+# TRIGGER_MODE_AUTO re-runs a resource whenever its deps change. Every probe-pin resource lists
+# 'crates/probe-pin/' in `deps`, so off Linux the very next edit there would drag it back into
+# the red that auto_init just avoided. Off-Linux they must stop watching too, not merely stop
+# booting — so the two gates travel together: a probe-pin resource carrying only one of them is
+# a bug, not a lighter reading of the policy.
 PROBE_PIN_TRIGGER = TRIGGER_MODE_AUTO if IS_LINUX else TRIGGER_MODE_MANUAL
 
 # Must stay a SUPERSET of what `scripts/engine-source-hash.sh` hashes as the engine cache
@@ -421,18 +428,33 @@ local_resource('probe-pin-e2e',
 # Putting CARGO_TARGET_DIR on the `cargo probe-pin` alias instead would push a second, cold engine
 # build into target/probe-pin-census. What warms the shared tree is whatever else
 # happened to run; this resource orders itself behind nothing, which is hazard 2.
-# NO `resource_deps`. MEASURED, not preferred: 'build-native' is auto_init = 'test' in enabled
-# and this resource is auto_init = 'lint' in enabled, so under `tilt up -- lint` it would wait
-# forever on a resource that never starts -- merged, green in the file, and enforced NOWHERE, in
-# the only venue this manifest has. Every other resource_deps pair in this Tiltfile satisfies
-# "dependent auto-inits => dependency auto-inits" (test-engine/test-ai -> build-native, same
-# group; test-frontend -> wasm and coverage -> card-data, dependency always inits; caddy ->
-# frontend violates it only under `tilt up -- https tauri`, which nothing rejects, so that pair
-# is already a violation and this one would be the second -- the first that fires under a profile
-# the file itself documents). Price of not depending on it: build-native saves 1.7s
+# NO `resource_deps`. MEASURED, not preferred: 'build-native' auto-inits only under the `test`
+# profile and this resource only under `lint` (plus the platform gate, which only narrows it
+# further), so under `tilt up -- lint` it would wait forever on a resource that never starts --
+# merged, green in the file, and enforced NOWHERE, in the only venue this manifest has.
+# The PROFILES are named rather than the two `auto_init` expressions quoted: the argument rests
+# only on neither condition implying the other, and a quoted expression is a second copy to keep
+# in sync -- which is exactly how this sentence came to misquote the resource below.
+#
+# Every other resource_deps pair in this Tiltfile satisfies "dependent auto-inits =>
+# dependency auto-inits" (test-engine/test-ai -> build-native, same group; test-frontend ->
+# wasm and coverage -> card-data, dependency always inits; caddy -> frontend violates it only
+# under `tilt up -- https tauri`, which nothing rejects, so that pair is already a violation
+# and this one would be the second -- the first that fires under a profile the file itself
+# documents). Price of not depending on it: build-native saves 1.7s
 # of 32.9s on the inner resolve WHEN THE TWO RUN IN SEQUENCE (see the numbers above) -- not worth
 # a venue that silently does not run. The parallel case is hazard 2, and it is the price of this
 # choice, stated rather than netted out.
+#
+# PLATFORM: Linux-only, under the file-wide probe-pin policy and for the reason that policy
+# states -- this cmd is `probe-pin check`, and that reaches `unshare` unconditionally (see the
+# IS_LINUX note at the top of this file for the two coordinates). What the gate BUYS is only
+# that a Darwin host does not boot this resource into a red it can never clear; what it does NOT
+# buy is any enforcement of the pin off Linux. There is no CI venue to fall back to -- MEASURED:
+# `grep -rn probe-pin .github/workflows/` returns nothing, which is the state 'probe-pin-check''s
+# note calls a hard stop -- so off Linux this pin's verdict is carried entirely by whatever Linux
+# venue last ran it. That is the identical shape 'probe-pin-e2e' states for Tier 2, and it is
+# stated here rather than inferred from the flag.
 local_resource('probe-pin-census',
     cmd = ['bash', '-c',
            # Starlark has NO implicit adjacent-string-literal concatenation (a Python rule this
@@ -527,7 +549,8 @@ local_resource('probe-pin-census',
     # this exact pairing and states the reason; watching the crate without it re-imports the
     # retrigger loop that comment exists to document.
     ignore = TMP_IGNORE + ['**/tmp/**'],
-    auto_init = 'lint' in enabled,
+    auto_init = 'lint' in enabled and IS_LINUX,
+    trigger_mode = PROBE_PIN_TRIGGER,
     allow_parallel = True,
     labels = ['lint'],
 )
