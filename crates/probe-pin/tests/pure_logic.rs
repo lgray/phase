@@ -927,9 +927,23 @@ fn every_write_of_the_pinned_file_routes_through_splice() {
             if code.starts_with("//") {
                 continue;
             }
-            if ["fs::write(", "File::create(", ".write_all(", "OpenOptions"]
-                .iter()
-                .any(|p| code.contains(p))
+            // `fs::copy` and `fs::rename` are here because an independent reviewer ran this
+            // census with a WIDER pattern set than the one shipped above and got the same answer.
+            // Same result, but the agreement was luck: they exist in no `src/` module today, so a
+            // future `fs::copy(tmp, out_path)` would have written the pinned file and this census
+            // would have reported "exactly 2" while missing it. A census is only as wide as its
+            // producer list, and a found hole is a lower bound — the fix is the wider list, not
+            // the reassuring count.
+            if [
+                "fs::write(",
+                "File::create(",
+                ".write_all(",
+                "OpenOptions",
+                "fs::copy(",
+                "fs::rename(",
+            ]
+            .iter()
+            .any(|p| code.contains(p))
             {
                 sites.push((name.clone(), code.to_string()));
             }
