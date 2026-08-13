@@ -4466,8 +4466,13 @@ fn materialize_fixed_shortcut(
     // backstop. MEASURED — skipping it on the f4 accepted drive leaves `loop_detect_ring`
     // non-empty (12) and the journal populated (3 answers), and this same `apply()`
     // re-emits a `LoopShortcut` offer.
-    // PROBE-PINNED: the abort entry reaches here with the window equally live. MEASURED
-    // `ring=16, answers=0` on `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`.
+    // PROBE-PINNED: the abort entry reaches this seam ASYMMETRICALLY. MEASURED
+    // `ring=16, answers=0` on `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`: the
+    // ring is LIVE there, so the ring-clear stays load-bearing on this path, but the journal is
+    // ALREADY empty — the `loop_answer_journal = None` below is a ⚠ FORWARD TRIPWIRE on this
+    // entry path, not a co-equal half of the CR 603.5 claim. The DISCRIMINATING statement of the
+    // journal half is the f4 row
+    // `fantastic_four_bounded_loop::r3a_the_accepted_drive_ends_at_the_priority_point_with_the_window_cleared`.
     //
     // LABELLED INTERPRETATION, not a pinned claim: the `waiting_for` re-seat below is a
     // NORMALIZATION whose load-bearing case no fixture in this repo exercises today. On
@@ -18710,12 +18715,26 @@ mod stage2_injector_tests {
                 // prompt. R3's `crates/engine/src` diff is comment-only APART FROM THIS PIN
                 // STRING: with comment lines stripped, `analysis/decision_template.rs` is
                 // byte-identical to the parent and `game/engine.rs` differs in exactly one line —
-                // the `:12622 ⇒ :12646` literal directly below. The total (38) and the partition
+                // the pin literal directly below. The total (38) and the partition
                 // (5/8/25) both fired GREEN on the run that caught this — only this third assert
                 // panicked.
-                // ⚠ REBASE #3: `:12708 ⇒ :12707`, located by content digest, offset from
-                // `begin_pending_trigger_target_selection` unchanged at 134.
-                // ⚠ REBASE #3: `:12707 ⇒ :12712`, located by content digest, offset from
+                //
+                // ⚠ item-4 R3 FIX-ROUND 3 (reword of that same block's abort-entry PROBE-PINNED
+                // clause, which called the window "equally live" while reporting `answers=0`):
+                // `:12646 ⇒ :12651`, `+5`. LOCAL, COMMENT-ONLY again, same protocol: the recorded
+                // sha256 (`8a544e878d3e77fb…5cc7d63`, verbatim line + trailing newline) matches
+                // EXACTLY ONE line under a whole-file scan of the new tree, at `:12651` — and
+                // exactly one in the parent, at `:12646` — and it is still inside
+                // `begin_pending_trigger_target_selection`, which moved by the same +5 (opens
+                // `:12512 ⇒ :12517`). Arithmetic CHECK afterwards, never as the source: `git diff
+                // -U0` shows exactly ONE hunk ABOVE this producer, `@@ -4469,2 +4469,7 @@` inside
+                // `materialize_fixed_shortcut` (2 comment lines ⇒ 7), and `12646 + 5 = 12651`.
+                // The other hunk is this very block plus the pin below it — BELOW the producer,
+                // contributing nothing, the same slip the entry above flags. SET PRESERVATION
+                // holds identically: all 5 net inserted lines are `//` comments, so no
+                // `waiting_for = ` or `Ok(Some(` line was added, and the pin below is once more
+                // the ONLY non-comment line in this round's `crates/engine/src` diff.
+                // ⚠ REBASE #3: `:12713 ⇒ :12712`, located by content digest, offset from
                 // `begin_pending_trigger_target_selection` unchanged at 134.
                 "game/engine.rs:12712".to_string(),
             ],
