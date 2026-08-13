@@ -42,7 +42,7 @@
 //! measured defect in the naive "nearest preceding attribute" rule, and a second copy of the
 //! rule is a second place for it to be got wrong.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::loop_shortcut_offer_writer_census::{cfg_test_scoped_lines, rs_files};
@@ -69,13 +69,63 @@ struct Site {
     text: String,
 }
 
-/// Non-comment hits of `needle` in production (non-`#[cfg(test)]`) scope.
+/// Non-comment, production-scope OCCURRENCES of `needle` in `src`, one [`Site`] each.
+///
+/// THE SINGLE HOME OF THIS CENSUS'S MATCHING RULE. Source-parameterized, so the anti-vacuity
+/// and matched-pair rows below exercise THE SHIPPED RULE rather than a copy of it — a copy
+/// validates a rule the file no longer ships. Mirrors
+/// [`super::loop_shortcut_offer_writer_census`]'s `classify(src, needle, file)` shape, and
+/// computes its own `#[cfg(test)]` scope map for the same reason that one does: a
+/// caller-supplied map is a second thing a call site can get wrong.
+///
+/// OCCURRENCE granularity, not line granularity: `line.matches(needle).count()` (the `std`
+/// building block for non-overlapping matches) emits one `Site` per construction, so two
+/// constructions co-located on one line are two counted sites. The boolean rule this replaced
+/// counted them once — measured on this tree, 146 non-comment lines already carry two or more
+/// occurrences of the same `Enum::Variant(` spelling, including the
+/// `TargetRef::Object(id) => Some(TargetRef::Object(*id))` match-arm-plus-construction shape a
+/// producer revert would take.
 ///
 /// COMMENT LINES ARE EXCLUDED, and this is the same deviation the sibling census records: prose
 /// writes no pin and reads none, so a doc mentioning a spelling is not a construction site. The
 /// doc surface is swept separately (the commit's per-property bucket table); counting it here
 /// would make the tripwire fire on prose. `//!`, `///` and `//` are all excluded; a trailing
 /// comment on a code line still counts, because the CODE on that line is real.
+fn sites_in_source(src: &str, needle: &str, file: &str) -> Vec<Site> {
+    let scoped = cfg_test_scoped_lines(src);
+    let mut out = Vec::new();
+    for (n, line) in src.lines().enumerate() {
+        if line.trim_start().starts_with("//") || scoped[n] {
+            continue;
+        }
+        for _ in 0..line.matches(needle).count() {
+            out.push(Site {
+                file: file.to_string(),
+                line: n + 1,
+                text: line.trim().to_string(),
+            });
+        }
+    }
+    out.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    out
+}
+
+/// The LINE count the pre-S279 boolean rule produced, derived from the SAME `Vec<Site>`.
+///
+/// NOT a second copy of the rule: [`sites_in_source`] emits one `Site` per OCCURRENCE, so the
+/// distinct `(file, line)` keys are exactly the lines `line.contains(needle)` would have
+/// counted — provably equal to the old rule without shipping the old rule. The key is
+/// `(file, line)` and not `line`, so two files sharing a line number cannot collapse.
+fn distinct_lines(sites: &[Site]) -> usize {
+    sites
+        .iter()
+        .map(|s| (s.file.as_str(), s.line))
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+/// Production-scope OCCURRENCES of `needle` across the three walked crate roots — the walk,
+/// with the matching rule delegated to [`sites_in_source`].
 fn production_sites(needle: &str) -> Vec<Site> {
     let engine_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let server_src = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -95,21 +145,12 @@ fn production_sites(needle: &str) -> Vec<Site> {
         for path in rs_files(&root) {
             let src =
                 std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
-            let scoped = cfg_test_scoped_lines(&src);
             let rel = path
                 .strip_prefix(&root)
                 .expect("walked path is under its root")
                 .to_string_lossy()
                 .replace('\\', "/");
-            for (n, line) in src.lines().enumerate() {
-                if line.contains(needle) && !line.trim_start().starts_with("//") && !scoped[n] {
-                    out.push(Site {
-                        file: format!("{prefix}/{rel}"),
-                        line: n + 1,
-                        text: line.trim().to_string(),
-                    });
-                }
-            }
+            out.extend(sites_in_source(&src, needle, &format!("{prefix}/{rel}")));
         }
     }
     out.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
@@ -149,7 +190,9 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
     // deliberate: a line pin fails on any insertion above a site, which is drift burden without
     // discrimination — measured: a 200-line insertion above every site leaves this census green.
     // Multiplicity carries the load instead — a new construction anywhere THE WALK VISITS in
-    // production scope changes the compared value, including a THIRD `engine.rs` hit from
+    // production scope changes the compared value, and multiplicity is counted per OCCURRENCE,
+    // not per line, so a construction co-located with an existing one on the same line still
+    // moves the compared value. That includes a THIRD `engine.rs` hit from
     // reverting `record_trigger_target_answer`, and `interaction.rs` is pinned by ABSENCE,
     // which no rearrangement inside that file can satisfy. The walk visits three roots only
     // (`engine/src`, `server-core/src`, `phase-ai/src`), so a construction added in a crate
@@ -158,7 +201,9 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
     // other than `engine` and `server-core`, and both of their `src` roots are walked.
     //
     // The doubled `engine.rs` entry is guarded by MULTIPLICITY, not by the text pins below: a
-    // third construction in that file fails THIS assertion, before the text pins are reached.
+    // third construction in that file fails THIS assertion, before the text pins are reached —
+    // including one written onto a line that already carries a construction, since the count is
+    // per OCCURRENCE.
     // Do NOT relax `files` to a de-duplicated set on the theory that the text pins cover the
     // doubling — they are a different layer, and layer 3 below exists because a change can pass
     // both of them. Three measured layers, in the order they fire:
@@ -207,7 +252,9 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
 
     // The `engine.rs` pair is pinned to its two ARMS by text: a SUBSTITUTION at either arm that
     // holds the file count at 2 fails here, as does relocating the arms relative to each other.
-    // An ADDED construction in this file does not reach here — the multiset above fails first.
+    // An ADDED construction in this file does not reach here — the multiset above fails first,
+    // and it fails per OCCURRENCE, so co-locating the addition on an existing hit line does not
+    // slip past it either.
     let engine_texts: Vec<&str> = sites
         .iter()
         .filter(|s| s.file == "engine/src/game/engine.rs")
@@ -299,15 +346,10 @@ fn the_seat_pin_census_instrument_reports_both_answers_on_planted_input() {
          }}\n"
     );
 
-    let scoped = cfg_test_scoped_lines(&src);
-    let count = |needle: &str| {
-        src.lines()
-            .enumerate()
-            .filter(|(n, line)| {
-                line.contains(needle) && !line.trim_start().starts_with("//") && !scoped[*n]
-            })
-            .count()
-    };
+    // Routed through THE SHIPPED RULE, never a local re-implementation of it: an inline copy
+    // here would validate a rule this file no longer ships, which is the drift the census
+    // itself exists to catch.
+    let count = |needle: &str| sites_in_source(&src, needle, "planted.rs").len();
 
     assert_eq!(
         (count(&choice), count(&target)),
@@ -317,4 +359,66 @@ fn the_seat_pin_census_instrument_reports_both_answers_on_planted_input() {
          prose line is not a construction site. Dropping either filter makes this (2, 2).\n\
          src:\n{src}"
     );
+}
+
+/// S279 INSTRUMENT — the census counts OCCURRENCES, and the two rules are separated on input
+/// that distinguishes them.
+///
+/// The pre-S279 rule was `line.contains(needle)`, a BOOLEAN: two constructions on one line
+/// counted once. That is not a synthetic worry — measured over this census's own three walk
+/// roots, 146 non-comment lines already carry two or more occurrences of the same
+/// `Enum::Variant(` spelling, two of them in exactly the match-arm-plus-construction shape a
+/// producer revert would take (`ability_utils.rs`'s `TargetRef::Object(id) =>
+/// Some(TargetRef::Object(*id))` and `targeting.rs`'s `Player` sibling). `TargetPin::Player(`
+/// reads at line/occurrence parity today BY ACCIDENT, not by property.
+///
+/// # The matched pair, and why the second number is a PROJECTION
+///
+/// Each arm asserts BOTH numbers: `sites_in_source(..).len()` (occurrences) and
+/// [`distinct_lines`] (the lines the old boolean rule would have counted). `distinct_lines` is
+/// derived from the SAME `Vec<Site>`, so the two numbers can diverge only because the DATA
+/// differs — never because two instruments differ. A second inline implementation of the line
+/// rule is the defect this row exists to remove, not a shortcut it may take.
+///
+/// # Discrimination — one arm flips, two do not
+///
+/// Revert `sites_in_source` to the boolean form (`if line.contains(needle) { push once }`) ⇒
+/// SAME-LINE's occurrence count becomes 1 ⇒ THIS ROW FAILS, while BASE and DISTINCT-LINE stay
+/// green. That asymmetry is what makes it a matched pair rather than a single-sided assertion.
+///
+/// # Wiring requirement
+///
+/// The arms call `sites_in_source` with their OWN source. They must never call
+/// `production_sites`, which takes no source, reads the real tree, and would report the same
+/// answer under both rules — measuring nothing.
+#[test]
+fn the_seat_pin_census_counts_occurrences_and_not_lines() {
+    let needle = choice_needle();
+    let base = format!("fn production() {{\n    let a = {needle}PlayerId(0));\n}}\n");
+    // The SECOND construction is added TO THE EXISTING HIT LINE — the whole point of the arm.
+    let same_line = format!(
+        "fn production() {{\n    let a = match t {{ {needle}p) => {needle}*p), _ => x }};\n}}\n"
+    );
+    // The same second construction, on its OWN line.
+    let distinct = format!(
+        "fn production() {{\n    let a = {needle}PlayerId(0));\n    let b = \
+         {needle}PlayerId(1));\n}}\n"
+    );
+
+    for (label, src, expected) in [
+        ("BASE", &base, (1, 1)),
+        ("SAME-LINE", &same_line, (2, 1)),
+        ("DISTINCT-LINE", &distinct, (2, 2)),
+    ] {
+        let sites = sites_in_source(src, &needle, "synthetic.rs");
+        assert_eq!(
+            (sites.len(), distinct_lines(&sites)),
+            expected,
+            "arm {label}: (occurrences, lines) must be {expected:?}. BASE is the reach-guard — \
+             both rules agree on the trivial case; SAME-LINE is the arm that FLIPS, and it \
+             reads (1, 1) if `sites_in_source` is reverted to `line.contains(needle)`; \
+             DISTINCT-LINE proves the flip is about CO-LOCATION and not about the second \
+             construction existing. got {sites:?}\nsrc:\n{src}"
+        );
+    }
 }

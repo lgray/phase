@@ -1091,6 +1091,125 @@ fn r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_ann
     );
 }
 
+/// **R3-a** — the CR 732.2a EPISODE BOUNDARY, driven on the real dump: a completed drive
+/// hands back at the priority point with the detection window CLEARED (`loop_detect_ring`
+/// empty, `loop_answer_journal == None`), and this same `apply()` does NOT re-offer.
+///
+/// The seam is the drive-end block in `game::engine` — `*state = committed;`, then the ring
+/// clear and journal clear, then the priority handback. That is **site 2** of the eight
+/// ring-clear sites [`c1_every_ring_clear_site_also_clears_the_loop_answer_journal`]
+/// enumerates, and that census covers site 2 STRUCTURALLY only (its own doc says so). This
+/// row drives it.
+///
+/// # Why the f4 board, and why it is not substitutable
+///
+/// Four shipped fixtures reach this seam. MEASURED, this dump is the only one whose journal
+/// is non-empty there (`answers=3`; the three `loop_shortcut.rs` fixtures arrive at
+/// `answers=0`). The `loop_answer_journal` half of the claim is therefore unpinnable
+/// anywhere else — which is what makes this row REAL-DUMP rather than convenient. The ABORT
+/// entry to the same seam is covered where its fixtures already live, on
+/// `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle` in `loop_shortcut.rs`.
+///
+/// # Discrimination — REVERT-PROBE, RUN, not adopted from a code read
+///
+/// Delete the seam's `state.loop_detect_ring.clear();` + `state.loop_answer_journal = None;`
+/// ⇒ MEASURED `ring=12, answers=3, wf=LoopShortcut` against this drive's `0, 0, Priority`:
+/// all three assertions below flip together and the engine re-offers within the same
+/// `apply()`.
+///
+/// The ANTI-PROBE, also run: deleting `apply_action`'s PRE-ACTION clear instead leaves the
+/// final state MEASURED-unchanged at `0, 0, Priority`. This row keys on the drive-end seam
+/// and not on the upstream clear, and must not be attributed to it.
+///
+/// ⚠ **Do NOT assert that the ring/journal are non-empty immediately before the seam.**
+/// MEASURED: they read `0/0` at the post-declare beat, because `apply_action`'s pre-action
+/// clear fires on `DeclareShortcut`. The `12/3` the seam itself receives is internal and
+/// unobservable from a test. The paired positive below is taken at the OFFER beat, which is
+/// observable.
+///
+/// ⚠ **Do NOT add a revert-probe on the `WaitingFor::Priority` re-seat** that follows the
+/// clear: MEASURED VACUOUS on all four fixtures reaching this seam — they are already at
+/// `Priority` on entry. The seam's own comment block carries that as labelled
+/// interpretation, deliberately not as a pinned claim.
+#[test]
+fn r3a_the_accepted_drive_ends_at_the_priority_point_with_the_window_cleared() {
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+
+    // ── PAIRED POSITIVE (i): the window is LIVE at the offer beat, same board, same run.
+    //    MEASURED at `2160f6e2c`: ring=9, answers=3. Without it every zero below is
+    //    satisfiable by a board that never sampled or never answered a `may`. ──
+    let ring_at_offer = state.loop_detect_ring.len();
+    let answers_at_offer = state.loop_answers_recorded();
+    assert!(
+        ring_at_offer > 0 && answers_at_offer > 0,
+        "paired positive: at the CR 732.2a offer beat this board must carry BOTH a populated \
+         detection ring and a populated CR 603.5 answer journal, else the cleared-window \
+         assertions after the drive are vacuous. ring={ring_at_offer} answers={answers_at_offer}"
+    );
+
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    let schema = schema.clone();
+    let template = f4_pin_template(&schema, proposer, 3);
+    apply(
+        &mut state,
+        proposer,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(3),
+            template: Some(template),
+        },
+    )
+    .expect("the declaration is dispatched");
+    // Reach-guard, not the claim: a REFUSED declaration hands priority straight back, and
+    // then the cleared window below would be the pre-action clear's work rather than the
+    // drive-end seam's.
+    assert!(
+        matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "reach-guard: the declaration carrying the full published pin set must be accepted \
+         and open the CR 732.2b window, got {:?}",
+        state.waiting_for
+    );
+    let responders = accept_all_opponents(&mut state);
+    assert!(
+        responders > 0,
+        "reach-guard: the CR 732.2b response window must actually have opened and been \
+         answered — the shortcut is taken only once the last opponent has accepted \
+         (CR 732.2c) — else the drive never ran and no seam was reached"
+    );
+
+    // ── THE CLAIM: the drive ended at the CR 732.2a ending point with the window discarded ──
+    assert!(
+        state.loop_detect_ring.is_empty(),
+        "CR 732.2a: the accepted drive ends at the ending point with the detection window \
+         DISCARDED, so the next episode re-detects from scratch. ring still carries {} \
+         sample(s) (it carried {ring_at_offer} at the offer beat)",
+        state.loop_detect_ring.len()
+    );
+    assert_eq!(
+        state.loop_answers_recorded(),
+        0,
+        "CR 603.5: the recorded `may` answers describe the window that just ended, and the \
+         drive-end seam drops them with the ring (it carried {answers_at_offer} at the offer \
+         beat)"
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "CR 732.2a: the ending point of the taken sequence is a place where a player has \
+         priority — and a `LoopShortcut` here would be the re-offer the seam's ring clear \
+         exists to prevent. got {:?}",
+        state.waiting_for
+    );
+
+    // ── PAIRED POSITIVE (ii): the sampler is still ON at handback, so an empty ring is a
+    //    CLEARED ring and not a disabled detector. ──
+    assert!(
+        state.loop_detection.samples(),
+        "paired positive: the detector must still be sampling after the handback ({:?}), \
+         else `ring.is_empty()` above says nothing about the seam",
+        state.loop_detection
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // R23 conjunct (5-reach) — the beat guard's reachability on the real dump
 // ─────────────────────────────────────────────────────────────────────────────────────────

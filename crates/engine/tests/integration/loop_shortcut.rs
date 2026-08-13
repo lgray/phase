@@ -4497,6 +4497,394 @@ fn respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// R3-c — the `DecisionTemplate` carrier census over `WaitingFor`
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// HOW a `WaitingFor` variant reaches a `DecisionTemplate`: in its own body, or through a
+/// field type that carries one. The intermediate type is NAMED rather than flattened to a
+/// bool — "via which type" is a real axis (`RespondToShortcut` reaches the template through
+/// `ShortcutProposal`) and a bool would erase it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CarrierKind {
+    Direct,
+    Via(String),
+}
+
+/// A variant start line inside an enum body — `^    [A-Z][A-Za-z0-9]*( \{|,|\()`, spelled with
+/// `std` string ops instead of a dependency.
+///
+/// MEASURED set-identical to `syn 2.0.117`'s variant list over this enum (128 names each, 0
+/// regex-only, 0 syn-only), which is why this census ships no enum-body parser: doc lines,
+/// attributes and field lines all fail the shape, and nothing else in the body passes it.
+fn is_variant_start(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("    ")?;
+    if !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return None;
+    }
+    let end = rest
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(rest.len());
+    let (ident, tail) = rest.split_at(end);
+    (tail.starts_with(" {") || tail.starts_with(',') || tail.starts_with('(')).then_some(ident)
+}
+
+/// The lines between `pub enum <name> {` and its column-0 closing brace.
+fn enum_body<'a>(src: &'a str, enum_name: &str) -> Vec<&'a str> {
+    let open = format!("pub enum {enum_name} {{");
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in src.lines() {
+        if !inside {
+            inside = line.trim_start().starts_with(&open);
+            continue;
+        }
+        if line == "}" {
+            break;
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// `(variant name, the lines from its start up to the next variant start)`.
+fn variants<'a>(body: &[&'a str]) -> Vec<(String, Vec<&'a str>)> {
+    let starts: Vec<usize> = body
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_variant_start(l).is_some())
+        .map(|(i, _)| i)
+        .collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(k, &i)| {
+            let end = starts.get(k + 1).copied().unwrap_or(body.len());
+            (
+                is_variant_start(body[i])
+                    .expect("filtered above")
+                    .to_string(),
+                body[i..end].to_vec(),
+            )
+        })
+        .collect()
+}
+
+/// Every `pub struct` in the walked corpus that spells `marker` in its own body. THE DEPTH-1
+/// STEP, and the whole of it — see the row's disclosed limitation.
+///
+/// Computed ONCE per corpus rather than re-scanned per candidate identifier: the walk is 500+
+/// files and the enum is 128 variants, so the per-identifier form is quadratic in the corpus
+/// for no extra signal.
+fn structs_carrying(
+    corpus: &[(String, String)],
+    marker: &str,
+) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for (_, src) in corpus {
+        let mut open: Option<String> = None;
+        for line in src.lines() {
+            let Some(name) = open.as_deref() else {
+                if let Some(rest) = line.strip_prefix("pub struct ") {
+                    if let Some(ident) = rest.strip_suffix(" {") {
+                        if ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                            open = Some(ident.to_string());
+                        }
+                    }
+                }
+                continue;
+            };
+            if line == "}" {
+                open = None;
+                continue;
+            }
+            if !line.trim_start().starts_with("//") && line.contains(marker) {
+                out.insert(name.to_string());
+                open = None;
+            }
+        }
+    }
+    out
+}
+
+/// Every variant of `enum_name` in `enum_src` that reaches `marker`, DIRECTLY or through one
+/// field type found in `corpus`.
+///
+/// SOURCE-PARAMETERIZED on purpose: every probe below plants into an in-memory `String`, so the
+/// census's own discrimination costs no compile and mutates no worktree file. Mirrors
+/// `super::loop_shortcut_offer_writer_census::classify`'s `(src, needle, file)` shape.
+fn carriers_in_source(
+    enum_src: &str,
+    enum_name: &str,
+    corpus: &[(String, String)],
+    marker: &str,
+    walk_via: bool,
+) -> Vec<(String, CarrierKind)> {
+    let via_types = structs_carrying(corpus, marker);
+    let body = enum_body(enum_src, enum_name);
+    let mut out = Vec::new();
+    for (name, vbody) in variants(&body) {
+        let code: Vec<&&str> = vbody
+            .iter()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        if code.iter().any(|l| l.contains(marker)) {
+            out.push((name, CarrierKind::Direct));
+            continue;
+        }
+        if !walk_via {
+            continue;
+        }
+        let via = code.iter().find_map(|l| {
+            let mut rest: &str = l;
+            loop {
+                let p = rest.find(|c: char| c.is_ascii_uppercase())?;
+                rest = &rest[p..];
+                let e = rest
+                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .unwrap_or(rest.len());
+                let (id, tail) = rest.split_at(e);
+                if id != marker && via_types.contains(id) {
+                    return Some(id.to_string());
+                }
+                rest = tail;
+            }
+        });
+        if let Some(t) = via {
+            out.push((name, CarrierKind::Via(t)));
+        }
+    }
+    out
+}
+
+/// Does `filter_state_for_viewer`'s body carry an `if let WaitingFor::<name>` dispatch arm?
+fn redaction_arm_present(visibility_src: &str, name: &str) -> bool {
+    let needle = format!("if let {}::{name}", "WaitingFor");
+    let mut inside = false;
+    for line in visibility_src.lines() {
+        if !inside {
+            inside = line.starts_with("pub fn filter_state_for_viewer(");
+            continue;
+        }
+        if line == "}" {
+            break;
+        }
+        if line.contains(&needle) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Splice `injected` in immediately above `enum_name`'s closing brace, on a COPY of `src`.
+fn plant_into_enum(src: &str, enum_name: &str, injected: &str) -> String {
+    let open = format!("pub enum {enum_name} {{");
+    let mut out = String::new();
+    let mut inside = false;
+    let mut planted = false;
+    for line in src.lines() {
+        if !planted {
+            if inside && line == "}" {
+                out.push_str(injected);
+                planted = true;
+            } else if !inside && line.trim_start().starts_with(&open) {
+                inside = true;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    assert!(
+        planted,
+        "the plant anchor `{open}` … `}}` must exist in the copy"
+    );
+    out
+}
+
+/// **R3-c** — exactly TWO `WaitingFor` variants carry a `DecisionTemplate`, and both have a
+/// redaction arm inside `filter_state_for_viewer`.
+///
+/// MEASURED at this tip: `{(LoopShortcut, Direct), (RespondToShortcut, Via(ShortcutProposal))}`
+/// out of 128 variants; the VIA target is `analysis::loop_check::ShortcutProposal`'s
+/// `pub template: Option<DecisionTemplate>`.
+///
+/// # Why a census exists here at all
+///
+/// The REDACTION DISPATCH in `filter_state_for_viewer` is two `if let`s, not a `match`, so a
+/// THIRD carrier gets no compile error THERE — that is the gap this row closes. It is not true
+/// elsewhere: **at least 9** exhaustive `match`es on `WaitingFor` would fail E0004, spread over
+/// two crates (`engine`, `phase-ai`) — measured by whole-workspace AST enumeration over
+/// `crates/`, which is a **lower bound**, not a total. Those matches make a new variant hard to
+/// ADD; not one of them makes it hard to add UNREDACTED. **The site list is deliberately not
+/// enumerated here** — a frozen list in a doc comment is a claim no test defends, and it rots
+/// the moment a crate is added.
+///
+/// # Why the probes plant into a `String` instead of adding a variant
+///
+/// MEASURED: a real third variant yields 6 E0004 under `cargo check -p phase-engine --lib` and
+/// 7 with `--features test-support`, and BOTH runs abort at the lib — so the dependent crates
+/// and this ~4 800-row integration target are never type-checked, and the repair list is
+/// neither stable nor bounded. Source injection has neither problem and needs no build.
+///
+/// # Discrimination — four plant arms, all RUN, all over in-memory copies
+///
+/// * a 3rd DIRECT and a 4th VIA carrier planted into a copy of the enum source ⇒ the set
+///   assertion fails NAMING both new variants (`n = 4`);
+/// * the depth-1 VIA step disabled ⇒ the set shrinks to `{LoopShortcut}` ⇒ fails, so the
+///   transitive step is load-bearing rather than decoration;
+/// * a synthetic enum with no carrier at all ⇒ `n = 0`, so the classifier cannot only ever
+///   return the answer this row wants;
+/// * the `RespondToShortcut` arm deleted from a copy of `visibility.rs` ⇒ the redaction half
+///   flips to `false` for that carrier while `LoopShortcut` stays `true`. The mutation is on a
+///   COPY, so the shipped row `respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers`
+///   above is not perturbed.
+///
+/// # DISCLOSED LIMITATIONS
+///
+/// 1. **The walk is DEPTH-1.** A `WaitingFor` field whose type reaches a `DecisionTemplate` two
+///    levels down is invisible to it. Measured today: zero such types exist. That is a latent
+///    gap, not a covered case.
+/// 2. **The E0004 figure above is a LOWER BOUND from a named instrument**, not a total, and this
+///    row must never be "helpfully" upgraded into a site list.
+#[test]
+fn exactly_two_waiting_for_variants_carry_a_decision_template_and_both_are_redacted() {
+    use super::loop_shortcut_offer_writer_census::rs_files;
+
+    // Assembled at runtime for the same reason both sibling censuses assemble their anchors:
+    // an instrument that can count its own needle after a future move is one that lies about
+    // the surface it measures.
+    let marker = format!("{}{}", "Decision", "Template");
+    let engine_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let corpus: Vec<(String, String)> = rs_files(&engine_src)
+        .into_iter()
+        .map(|path| {
+            let src =
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+            let rel = path
+                .strip_prefix(&engine_src)
+                .expect("walked path is under its root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            (rel, src)
+        })
+        .collect();
+    let file_of = |suffix: &str| -> String {
+        corpus
+            .iter()
+            .find(|(f, _)| f.ends_with(suffix))
+            .unwrap_or_else(|| panic!("the walk must reach {suffix}"))
+            .1
+            .clone()
+    };
+    let enum_src = file_of("types/game_state.rs");
+    let visibility_src = file_of("game/visibility.rs");
+
+    // ── the classifier's own reach-guard: the enum was actually found ──
+    let total = variants(&enum_body(&enum_src, "WaitingFor")).len();
+    assert_eq!(
+        total, 128,
+        "`WaitingFor` has 128 variants at this tip (cross-checked against `syn 2.0.117`, which \
+         reports the same NAME SET). This number is pinned so a variant REMOVED is as visible \
+         as one added; if you added a variant and it carries no `DecisionTemplate`, update this \
+         number. A wildly different count means the enum-body reader lost its anchor, and every \
+         assertion below would then be measuring an empty body"
+    );
+
+    let carriers = carriers_in_source(&enum_src, "WaitingFor", &corpus, &marker, true);
+    assert_eq!(
+        carriers,
+        vec![
+            ("LoopShortcut".to_string(), CarrierKind::Direct),
+            (
+                "RespondToShortcut".to_string(),
+                CarrierKind::Via("ShortcutProposal".to_string())
+            ),
+        ],
+        "CR 732.2a / CR 723.4: exactly TWO `WaitingFor` variants carry a `DecisionTemplate` — \
+         `LoopShortcut` directly and `RespondToShortcut` through `ShortcutProposal` — and both \
+         are named rather than counted, because a census asserting `>= 1 carrier` is vacuous. A \
+         THIRD carrier is a new per-viewer redaction obligation: the dispatch in \
+         `filter_state_for_viewer` is `if let`s, so nothing will fail to compile. got {carriers:?}"
+    );
+
+    // ── the redaction half, read from the production source ──
+    for (name, kind) in &carriers {
+        assert!(
+            redaction_arm_present(&visibility_src, name),
+            "CR 723.4: every `DecisionTemplate` carrier needs its own dispatch arm inside \
+             `filter_state_for_viewer`; `{name}` ({kind:?}) has none"
+        );
+    }
+
+    // ── PLANT 1 — a 3rd DIRECT and a 4th VIA carrier, into COPIES ──
+    let planted_src = plant_into_enum(
+        &enum_src,
+        "WaitingFor",
+        &format!(
+            "    ProbeThirdCarrier {{\n        template: Option<{marker}>,\n    }},\n\
+             \x20   ProbeFourthCarrier {{\n        holder: ProbeViaHolder,\n    }},\n"
+        ),
+    );
+    let mut planted_corpus = corpus.clone();
+    planted_corpus.push((
+        "planted.rs".to_string(),
+        format!("pub struct ProbeViaHolder {{\n    pub template: Option<{marker}>,\n}}\n"),
+    ));
+    let planted = carriers_in_source(&planted_src, "WaitingFor", &planted_corpus, &marker, true);
+    assert_eq!(
+        planted
+            .iter()
+            .map(|(n, k)| (n.as_str(), k.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("LoopShortcut", CarrierKind::Direct),
+            (
+                "RespondToShortcut",
+                CarrierKind::Via("ShortcutProposal".to_string())
+            ),
+            ("ProbeThirdCarrier", CarrierKind::Direct),
+            (
+                "ProbeFourthCarrier",
+                CarrierKind::Via("ProbeViaHolder".to_string())
+            ),
+        ],
+        "ANTI-VACUITY: the census must NAME a planted third (direct) and fourth (transitive) \
+         carrier, else the two-carrier answer above is what a dead instrument returns. \
+         got {planted:?}"
+    );
+
+    // ── PLANT 2 — the depth-1 VIA step disabled ──
+    let no_via = carriers_in_source(&enum_src, "WaitingFor", &corpus, &marker, false);
+    assert_eq!(
+        no_via,
+        vec![("LoopShortcut".to_string(), CarrierKind::Direct)],
+        "the transitive step is LOAD-BEARING: without it `RespondToShortcut` is invisible and \
+         the shipped set assertion above would be a one-element claim. got {no_via:?}"
+    );
+
+    // ── PLANT 3 — a synthetic enum with no carrier ──
+    let synthetic = "pub enum WaitingFor {\n    Alpha {\n        player: PlayerId,\n    },\n    \
+                     Beta {\n        x: u32,\n    },\n}\n";
+    let none = carriers_in_source(synthetic, "WaitingFor", &corpus, &marker, true);
+    assert!(
+        none.is_empty(),
+        "a carrier-free enum must classify as carrier-free; an instrument that can only ever \
+         return {{LoopShortcut, RespondToShortcut}} is what this arm forecloses. got {none:?}"
+    );
+
+    // ── PLANT 4 — the redaction arm deleted, on a COPY of `visibility.rs` ──
+    let mutated_visibility = visibility_src.replace(
+        &format!("if let {}::RespondToShortcut", "WaitingFor"),
+        &format!("if let {}::ZzzDeletedArm", "WaitingFor"),
+    );
+    assert!(
+        redaction_arm_present(&mutated_visibility, "LoopShortcut")
+            && !redaction_arm_present(&mutated_visibility, "RespondToShortcut"),
+        "the redaction half must FLIP when its arm is deleted from the copy, and only for the \
+         carrier whose arm was deleted — otherwise the `for` loop above asserts nothing"
+    );
+}
+
 /// F4 (review finding): the THIRD carrier of the same `Vec<PinnedDecision>` —
 /// `GameState::last_loop_action_sequence[].pins` — routes through the same authority.
 ///
@@ -11343,6 +11731,28 @@ fn bounded_fixed_drive_rolls_back_a_partial_crossing_cycle() {
             "n={n}: CR 104.2a — a player wins only once ALL their opponents have left, and this \
              crossing eliminates at most one of three, so there is no winner to crown and the \
              aborted drive hands back ordinary priority rather than ending the game"
+        );
+
+        // (d) R3-a's ABORT ARM — the drive-end seam is the CR 732.2a ending point for this
+        //     entry path too, and it discards the detection window before handing back.
+        //     MEASURED: this fixture enters that seam with a LIVE ring (`ring=16`), so the
+        //     emptiness below is a CLEARED ring and not an absent one. Its journal is
+        //     ALREADY empty there (`answers=0`) — the populated-journal half of the same
+        //     seam is pinned on the f4 dump by
+        //     `fantastic_four_bounded_loop::r3a_the_accepted_drive_ends_at_the_priority_point_with_the_window_cleared`,
+        //     the only fixture measured reaching this seam with answers recorded.
+        assert!(
+            doctored.loop_detect_ring.is_empty(),
+            "n={n}: CR 732.2a — the aborted drive ends at the priority handback with the \
+             detection window DISCARDED, so a later beat re-detects genuinely instead of this \
+             same `apply()` re-offering the interrupted loop; ring still carries {} sample(s)",
+            doctored.loop_detect_ring.len()
+        );
+        assert_eq!(
+            doctored.loop_answers_recorded(),
+            0,
+            "n={n}: CR 603.5 — the recorded `may` answers describe the window that just ended, \
+             and the same seam drops them together with the ring"
         );
     }
 }
