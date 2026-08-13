@@ -203,6 +203,13 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 31 — WaitingFor::LoopShortcut publishes the engine-issued declaration, and
+ *      InteractionResponseSpec::Shortcut publishes preview, the per-axis
+ *      consequence of the offered count. Both are optional, so a v30 peer still
+ *      PARSES the frame — a capability bump like 24, not a parse bump. A v31
+ *      client paired with a v30 server sends the template-free DeclareShortcut
+ *      these fields authorize and has its declaration silently dropped, with no
+ *      parse error to catch it.
  * 30 — Serialized player-action completion provenance and modal continuations.
  * 29 — Added requester-correlated ResolveAllRejected response frames.
  * 28 — Added native ResolveAll request/result frames.
@@ -237,7 +244,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      into a MulliganDecisionPhase::BottomCards sub-phase on
  *      WaitingFor::MulliganDecision.
  */
-export const PROTOCOL_VERSION = 30;
+export const PROTOCOL_VERSION = 31;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.
