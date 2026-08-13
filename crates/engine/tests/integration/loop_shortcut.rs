@@ -4805,12 +4805,18 @@ fn exactly_two_waiting_for_variants_carry_a_decision_template_and_both_are_redac
     // ── the classifier's own reach-guard: the enum was actually found ──
     let total = enum_variants(&enum_src, "WaitingFor").len();
     assert_eq!(
-        total, 128,
-        "`WaitingFor` has 128 variants at this tip, read off the `syn` parse. This number is \
+        total, 129,
+        "`WaitingFor` has 129 variants at this tip, read off the `syn` parse. This number is \
          pinned so a variant REMOVED is as visible as one added; if you added a variant and it \
          carries no `DecisionTemplate`, update this number. A wildly different count means the \
          reader lost its anchor, and every assertion below would then be measuring an empty enum"
     );
+    // 128 ⇒ 129 is ADJUDICATED, not bumped: upstream #7336 ("make dig entries attack") added
+    // `EntryAttackTargetChoice { player, object_id, valid_targets }`. Measured, because the
+    // number alone cannot say it: that variant carries NO `DecisionTemplate` (zero matches in
+    // its body), so it is not a third carrier and the assertion below is unchanged by it. The
+    // count moved for a reason that does not touch this row's subject — which is exactly the
+    // case this reach-guard exists to make visible rather than silent.
 
     let carriers = carriers_in_source(&enum_src, "WaitingFor", &corpus, &marker, true);
     assert_eq!(

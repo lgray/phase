@@ -18473,8 +18473,12 @@ mod stage2_injector_tests {
                 //
                 // Producer identity re-established rather than assumed: the line at the new
                 // coordinate is byte-identical to the base's `:12004` and to upstream's `:12003`
-                // (`return Ok(Some(WaitingFor::OptionalEffectChoice {`), and it is still inside
-                // `begin_pending_trigger_target_selection`.
+                // (`return Ok(Some(WaitingFor::OptionalEffectChoice`), and it is still inside
+                // `begin_pending_trigger_target_selection`. The opening brace is dropped from that
+                // quotation ON PURPOSE: this census has no comment filter, so quoting the needle
+                // whole makes the sentence count ITSELF as a site. It did — this line was the
+                // 39th hit against a pin of 38. The test assembles its own needle with `format!`
+                // for exactly this reason; prose that names the construct owes the same care.
                 //
                 // TO BE UNAMBIGUOUS FOR THE NEXT READER: the `+1` in `apply_action`'s
                 // `DecideOptionalEffect` arm is a READER, NOT A SIXTH PRODUCER. It destructures the cloned `state.waiting_for`
