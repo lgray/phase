@@ -9,9 +9,35 @@
 //! number written into a plan cannot fire; this can.
 //!
 //! WHAT IT PINS, and why it is an INVARIANCE claim rather than a re-measurement:
-//! 22 production + 14 test sites across `crates/engine/src` and
-//! `crates/phase-ai/src`. A failure reads *"5d (or a successor) changed the
-//! offer-writer surface"*, not *"someone re-measured"*.
+//! the offer-writer surface across `crates/engine/src` and `crates/phase-ai/src`.
+//! NO NUMBER IS RESTATED HERE — not even to narrate the incident that caused this
+//! rewrite. This header once carried a production/test pair that had drifted from
+//! the assert below; quoting that pair *here* would reintroduce the defect,
+//! because probe-pin validates only between its BEGIN/END markers and any number
+//! above them is unanchored by construction. The incident, with both figures, is
+//! recorded in `probe-pin/engine-census.toml`, whose anchors an adjudicator has to
+//! edit anyway. The assert below is where the pair is authoritative. NO rustdoc in
+//! this file states either half of it — the adjudication history names SUPERSEDED
+//! test-half values only, each chain deferring to the assert rather than restating
+//! it (the chains end at "the value the assert below pins", "the pinned value", and
+//! "the assert below is the authority for the pair"; no single phrase is shared, so
+//! none is quoted as if it were). Both
+//! figures do recur inside the assert's own failure MESSAGE, beside the literal
+//! they describe, where an adjudicator editing one has the other in view; P1's
+//! anchors cover that literal and one sentence of that message. NOTHING covers
+//! rustdoc, which is why the rustdoc now carries no figure OF THE PINNED PAIR.
+//! ⚠ READ THAT SCOPE LITERALLY — it was written wider once and was false. This file's
+//! SIBLING test (`the_cfg_scope_classifier_...`) still has its OWN asserted figures
+//! restated in its rustdoc, and NOTHING pins them: that test builds its
+//! input as an in-binary String, so no bind-mount can reach it and the manifest
+//! declares it unpinnable. Those restatements can go stale exactly as the pinned
+//! pair's did. They are disclosed rather than struck because striking them would edit
+//! a test this commit does not pin and was not reviewed against. The
+//! PROBE-PIN block below re-measures both halves on every `probe-pin check` — its
+//! rows anchor the pinned tuple and the adjudication sentence inside the assert —
+//! so moving either without regenerating the block turns the pin red. A failure
+//! reads *"5d (or a successor) changed the offer-writer surface"*, not
+//! *"someone re-measured"*.
 //!
 //! THE ANCHOR IS BARE — `WaitingFor::LoopShortcut {`, with no `= ` / `Ok(`
 //! qualifier. A prefix-anchored regex cannot be completed by adding prefixes:
@@ -24,6 +50,50 @@
 //! Pattern copied from `no_top_level_test_binaries.rs` — the in-tree precedent
 //! for a `#[test]` that reads the source tree through
 //! `Path::new(env!("CARGO_MANIFEST_DIR"))` and asserts a structural invariant.
+
+// ── PROBE-PIN ────────────────────────────────────────────────────────────────
+// The claims below are MEASURED, not asserted in prose: each row is a mutation of
+// the walked tree plus the verdict it produced. Regenerate with
+//   cargo probe-pin run --write probe-pin/engine-census.toml
+// A row whose anchor stops matching is a number that moved without an adjudication.
+//
+// DISCLOSURE — the SHAPE named as the anchor lint's residual now occurs in a MANIFEST for the
+// first time. The predicate is stated because a bare "first time" is false: `docs/probe-pin.md`
+// already prints an anchor of this shape as a worked example, so the shape's first appearance
+// in-tree is the doc's, not this file's. What is new is the first one AUTHORED IN A SHIPPING
+// MANIFEST. `docs/probe-pin.md` rejects anchors embedding a line number, and names one
+// shape it cannot reject: a positional integer in a `("<path>", <int>)` slot. The block
+// below carries anchors of that shape. In each, the integer is a COUNT (a per-file multiset
+// entry), which is the legitimate form the lint deliberately admits — never a line. Said
+// here because no instrument distinguishes the two. The doc's REVISIT CONDITION is narrower
+// than the shape and is NOT met by this commit: it asks for a revisit only "if an anchor of
+// the `("<path>", <int>)` shape is ever authored with a *line* in the integer slot". No
+// revisit is owed here; what is owed is this disclosure.
+// ⚠ THAT QUOTATION IS UNANCHORED, and saying so is the point: no probe in the manifest matches
+// it, and `docs/probe-pin.md` is not one of this resource's deps, so editing the doc leaves this
+// quotation silently stale. It is quoted rather than paraphrased because a paraphrase was wrong
+// here once; it is disclosed rather than pinned because pinning another file's prose from this
+// file would make an unrelated doc edit fail the census pin.
+//
+// VENUE LIMIT — the block below is checked by ONE venue: the Tiltfile's `probe-pin-census`
+// resource, locally, on engine-source edits. It is NOT checked in GitHub CI, and CI
+// enrollment is policy-blocked (`.agents/pr-review-policy.toml` `[hard_stops]` lists
+// `.github/workflows/**`). A green block in a merged commit is not a CI-verified block.
+// PROBE-PIN:BEGIN manifest=probe-pin/engine-census.toml digest=sha256:38836c2e1f2fddb8
+// instrument rustc = rustc 1.97.0-nightly (0febdbab2 2026-04-18)
+// | probe | mutation | expect | verdict | firing assertion (anchor) | provenance |
+// |---|---|---|---|---|---|
+// | P0_control | (none) | pass | pass | (control; no mounts) | — |
+// | P1_production_site_removed | scenario.rs ×1 | fail | fail | left: (21, 21) / right: (22, 21) / THE TEST HALF HAS BEEN ADJUDICATED FIVE TIMES | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
+// | P2_test_site_removed | projection.rs ×1 | fail | fail | left: (22, 20) / right: (22, 21) | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
+// | P3_walk_reaches_phase_ai_and_skips_comments | lib.rs ×1 | fail | fail | left: (23, 21) / right: (22, 21) | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
+// | P4_counting_is_per_line | lib.rs ×1 | fail | fail | left: (24, 21) / right: (22, 21) | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
+// | P5_relocation_preserves_the_count | scenario.rs ×1, interaction.rs ×1 | fail | fail | the COUNT can be preserved by a move that relocates a writer / ("engine/src/game/interaction.rs", 6) | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
+// | P6_second_validate_pins_consumer | scenario.rs ×1 | fail | fail | expected `validate_pins(` to appear in production exactly twice | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
+// | P7_coverage_half_unpaired | decision_template.rs ×1 | fail | fail | validating pin VALUES without also running | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
+// | P8_authority_call_site_removed | engine.rs ×1 | fail | fail | expected 1 definition + 3 call sites / ("engine/src/game/engine.rs", 1) | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
+// probe-pin validates only the lines between BEGIN and END. Prose outside is never checked.
+// PROBE-PIN:END
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -115,13 +185,13 @@ pub(super) fn cfg_test_scoped_lines(src: &str) -> Vec<bool> {
 /// U1–U6 introduce no `WaitingFor::LoopShortcut {` token. Measured on this tree:
 /// 5d U2's declare-time owner firewall added the DOC LINE
 /// `// copied from `WaitingFor::LoopShortcut { proposer }`.` to `game/engine.rs`,
-/// which a comment-blind bare anchor counts as a 23rd production site. A comment
+/// which a comment-blind bare anchor counts as one MORE production site. A comment
 /// is not a code surface — it writes no offer and consumes none — so counting it
 /// would make the tripwire fire on prose and would force the pinned number to be
 /// re-measured by the very commit that ships the row. Excluding comment lines
-/// restores the plan's PRODUCTION count of 22 exactly, INCLUDING its per-file
+/// restores the plan's PRODUCTION count exactly, INCLUDING its per-file
 /// production multiset. (It does not restore the plan's original test-half count
-/// of 12: that half has since been adjudicated five times, to 21, and the assert
+/// of 12: that half has since been adjudicated repeatedly, and the assert
 /// below is the authority for the pair. Prose that repeats a number is prose that
 /// can go stale — this defers to the assert rather than restating it.)
 fn classify(src: &str, needle: &str, file: &str) -> Vec<Hit> {
@@ -183,11 +253,12 @@ fn census(needle: &str) -> Vec<Hit> {
     hits
 }
 
-/// R8 CONJUNCT 1 — the offer-writer surface, pinned BIDIRECTIONALLY (`== 22` /
-/// `== 21`, so a REMOVED site fails too) and by per-file multiset.
+/// R8 CONJUNCT 1 — the offer-writer surface, pinned BIDIRECTIONALLY (an EQUALITY
+/// on each half, so a REMOVED site fails too) and by per-file multiset.
 ///
-/// ⚠ THE `#[cfg(test)]` HALF HAS MOVED FIVE TIMES, 12 ⇒ 13 ⇒ 14 ⇒ 16 ⇒ 17 ⇒ 21,
-/// AND EACH ADJUDICATION IS RECORDED RATHER THAN THE ASSERT RELAXED.
+/// ⚠ THE `#[cfg(test)]` HALF HAS MOVED REPEATEDLY — 12 ⇒ 13 ⇒ 14 ⇒ 16 ⇒ 17 ⇒ the
+/// value the assert below pins — AND EACH ADJUDICATION IS RECORDED RATHER THAN
+/// THE ASSERT RELAXED.
 /// * 12 ⇒ 13: §6 R27 (b)
 ///   (`analysis::resource::tests::r27_b_a_stored_may_auto_choice_survives_the_ring`)
 ///   destructures the offer the mint RETURNED to count its published CR 603.5
@@ -201,20 +272,21 @@ fn census(needle: &str) -> Vec<Hit> {
 ///   module — `bounded_offer_with_period`, a builder minting an offer whose
 ///   certificate carries a real `per_cycle` so the proposer-elimination arm can
 ///   be driven, and `certificate_of`, a READ accessor for the same rows.
-/// * 16 ⇒ 17: item-4 C2a's cap-round row
+/// * 16 ⇒ 17: the cap-round row
 ///   `the_bounded_offer_charges_a_forced_victim_it_publishes_no_point_for` in
 ///   `engine/src/analysis/resource.rs` — A READ, NOT A WRITER: it destructures
 ///   the offer it minted to assert an EMPTY `schema.points` beside a
 ///   `victim_slot` that still names the forced victim.
-/// * 17 ⇒ 21: item-4 C2b's two in-crate rows spell the anchor FOUR times between
-///   them — `game/visibility.rs` row D5-h's mint and its projection read, and
-///   `ai_support/candidates.rs` row D6-n's mint and its reach-guard read.
+/// * 17 ⇒ the pinned value: the CR 732.2a declaration change's two in-crate
+///   rows spell the anchor FOUR
+///   times between them — `game/visibility.rs` row D5-h's mint and its projection
+///   read, and `ai_support/candidates.rs` row D6-n's mint and its reach-guard read.
 ///
 /// All five are in a `#[cfg(test)]` scope — mints and reads both — which is the
 /// benign case this row's own failure message names: a test fixture cannot make
-/// the period machinery certify. The PRODUCTION half is unchanged at 22 and so is
-/// the per-file multiset below, which is the half §10 ruling condition (2) is
-/// about.
+/// the period machinery certify. The PRODUCTION half is UNCHANGED across all five
+/// — and so is the per-file multiset below, which is the half §10 ruling condition
+/// (2) is about. Its VALUE is the assert's, not this comment's.
 ///
 /// R8 CONJUNCT 2, same test — pin VALUE-legality has exactly ONE production
 /// consumer (`analysis::decision_template::declaration_conforms`), that consumer
@@ -269,7 +341,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          real `per_cycle` so the proposer-elimination arm can be driven, and `certificate_of`, \
          a read accessor for the same rows. PRODUCTION STAYED AT 22 across that change, which \
          is the half this pin exists to protect: the new policy arm READS the certificate and \
-         writes no offer). FOURTH ADJUDICATION, 16 => 17: item-4 C2a's cap-round row \
+         writes no offer). FOURTH ADJUDICATION, 16 => 17: the cap-round row \
          `the_bounded_offer_charges_a_forced_victim_it_publishes_no_point_for` in \
          `engine/src/analysis/resource.rs`, whose `WaitingFor::LoopShortcut` DESTRUCTURE reads the \
          offer it minted to assert the combination that decoupling CR 732.2a publication from CR \
@@ -278,8 +350,8 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          multiset, and that conjunct is what makes this the benign case rather than a surface \
          change; if it moves again, name the new site here too rather than only moving the \
          number.\n\
-         FIFTH ADJUDICATION, 17 => 21: item-4 C2b publishes the bounded offer's own CR 732.2a \
-         `declaration` on `WaitingFor::LoopShortcut`, and its two in-crate rows spell the anchor \
+         FIFTH ADJUDICATION, 17 => 21: publishing the bounded offer's own CR 732.2a \
+         `declaration` on `WaitingFor::LoopShortcut` added two in-crate rows that spell the anchor \
          FOUR times between them. Named individually, because this census counts LINES (its \
          `classify()` is `line.contains(needle)`, deliberately replacing a construction-shaped \
          detector), so a mint and a read of the same fixture are two counted sites: (1) \
@@ -427,8 +499,12 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
 /// anchor): remove the cfg-scope filter — i.e. make `cfg_test_scoped_lines`
 /// return all-`false` — and the four mod-scoped plants count as production, so
 /// `(4, 4)` becomes `(8, 0)` and this test FLIPS TO FAIL. The classifier is also
-/// measured keyed on the real tree: it returns BOTH 22 production AND 12 test
-/// above, so it is not constant in either direction.
+/// measured keyed on the real tree: the census assert above resolves a production
+/// half and a test half that differ from each other and from this test's `(4, 4)`,
+/// so it is not constant in either direction. THE PAIR IS NOT RESTATED HERE — this
+/// sentence used to restate it, the test half moved under adjudication, and nothing
+/// went red. The assert above is where that pair is authoritative, and the PROBE-PIN
+/// block below re-measures it on every `probe-pin check`.
 #[test]
 fn the_cfg_scope_classifier_sees_four_foreign_forms_the_construction_anchor_misses() {
     let bare = anchor();
