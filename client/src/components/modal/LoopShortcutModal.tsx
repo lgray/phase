@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
+  InteractionId,
   InteractionResponseSpec,
   InteractionShortcutPreview,
   ViewerInteraction,
@@ -39,6 +40,24 @@ function shortcutSpec(interaction: ViewerInteraction | null): ShortcutSpec | nul
     if (opportunity.response.type !== "schema") continue;
     const { spec } = opportunity.response.data;
     if (spec.type === "shortcut") return spec.data;
+  }
+  return null;
+}
+
+/** The live shortcut offer's interaction id — the identity React keys the offer body on.
+ *  Walks the same list under the same predicate as `shortcutSpec`, so the two agree on which
+ *  opportunity is "the offer" by construction rather than by convention.
+ *
+ *  Returns the branded string ITSELF, never a wrapper object. `useGameStore` is zustand 5, whose
+ *  `useStore` is a bare `useSyncExternalStore` with no equality function, so React compares
+ *  successive selector results with `Object.is`: a selector returning a fresh object literal is
+ *  the documented infinite-loop shape, not merely an extra render. `InteractionId` is
+ *  `string & { __brand }` — a primitive at runtime — so this is `Object.is`-stable whenever the
+ *  id has not rotated, for the same reason `shortcutSpec`'s store reference is. */
+function shortcutInteractionId(interaction: ViewerInteraction | null): InteractionId | null {
+  for (const opportunity of interaction?.opportunities ?? []) {
+    if (opportunity.response.type !== "schema") continue;
+    if (opportunity.response.data.spec.type === "shortcut") return opportunity.interactionId;
   }
   return null;
 }
@@ -126,13 +145,28 @@ export function DeclareShortcutModal() {
   const waitingFor = useGameStore((s) => s.waitingFor);
   // `shortcutSpec` returns a reference INTO store state (or null), so the selector is stable.
   const spec = useGameStore((s) => shortcutSpec(s.viewerInteraction));
+  // A branded string, not an object literal — same snapshot-stability reason as the line above.
+  const offerId = useGameStore((s) => shortcutInteractionId(s.viewerInteraction));
 
   if (waitingFor?.type !== "LoopShortcut" || !canAct) return null;
 
-  // The offer body is mounted only while the offer is live, so the picker's entry cannot survive
-  // into a later offer: this component itself never unmounts (GamePage keeps both modals mounted
-  // and they self-gate), which is exactly how a stale typed count would otherwise leak.
-  return <DeclareShortcutOffer data={waitingFor.data} spec={spec} />;
+  // A typed count must not survive into a LATER offer, and the two ways one offer can follow
+  // another need two different mechanisms. Naming only the first is how this comment was wrong:
+  //   - offer -> other-state -> offer: covered by the `return null` above, which unmounts the body
+  //     when the state leaves `LoopShortcut`. This component itself never unmounts (GamePage keeps
+  //     both modals mounted and they self-gate), so that guard is the only unmount there is.
+  //   - offer -> offer: covered by the `key` below and ONLY by it. React reconciles by element type
+  //     and position, so without a key two consecutive offers share one `DeclareShortcutOffer`
+  //     instance and its `picked`. The transport may deliver B without the client ever committing a
+  //     render at an intermediate state, so the first guard is not merely weaker here — it never runs.
+  // `interactionId` is the identity because it rotates in ENGINE state on every accepted action:
+  // `LoopShortcut` classifies as a non-simultaneous Single decision, and
+  // `rebind_interaction_slots_after_action` re-mints those "including A→A and A→B→A". A key built
+  // from the published window, or from any `waitingFor.data` field, is not distinct between two
+  // offers that happen to carry equal values — the plausible fix that reads as a fix.
+  // `offerId` is null only when no shortcut opportunity is published, and then `spec` is null too
+  // (one predicate, one list), so no picker renders and there is no `picked` to leak.
+  return <DeclareShortcutOffer key={offerId ?? "no-offer"} data={waitingFor.data} spec={spec} />;
 }
 
 function DeclareShortcutOffer({

@@ -542,8 +542,15 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 ///   fail-closing on. Any surviving cross-reference to `r2` resolves to nothing.
 ///
 /// This row keeps the half it always owned — the offer fires, and its bound arithmetic is
-/// correct. `r2b`/`r3`/`r4`/`r5` and the interruptibility pair are still unwritten: no `fn r2b_`,
-/// `fn r3_`, `fn r4_` or `fn r5_` row exists in this file.
+/// correct. `r2b`/`r4`/`r5` and the interruptibility pair are still unwritten: no `fn r2b_`,
+/// `fn r4_` or `fn r5_` row exists in this file, and `interruptibility` appears nowhere in it
+/// outside this sentence. **`r3` IS written** —
+/// `fn r3_placement_a_restored_foreign_owner_declaration_is_refused`, added by the same commit
+/// that made a template-free declaration resolve against the offer's published declaration. That
+/// commit is why this sentence needed repairing at all: it was measured true when written, and a
+/// row added later falsified it silently, because no sweep in this lane reads prose under
+/// `crates/engine/`. Locate the row by NAME — this is a measurement of one tree, not a standing
+/// property, and the next row added re-opens it.
 ///
 /// # What the assertion is bound to, and why it is not `f(x) == f(x)`
 ///

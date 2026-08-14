@@ -26,7 +26,13 @@ type ShortcutSpec = Extract<InteractionResponseSpec, { type: "shortcut" }>["data
 /** The engine's published shortcut response spec, delivered on `viewerInteraction` exactly as
  *  `gameStore.legalResultState` assigns it. Defaults mirror the live publisher
  *  (`game/interaction.rs`): a Fixed window and `allow_decline: true`. */
-function shortcutInteraction(overrides: Partial<ShortcutSpec> = {}): ViewerInteraction {
+function shortcutInteraction(
+  overrides: Partial<ShortcutSpec> = {},
+  // The offer's identity. Defaults to the literal every existing row was already written
+  // against, so parameterizing it changes no existing row; the A→B rows below pass distinct
+  // ids because a rotating id is precisely what they discriminate on.
+  interactionId = "session.0.1",
+): ViewerInteraction {
   const spec: ShortcutSpec = {
     count: { type: "fixed", data: { min: 1, max: 5, suggested: 5 } },
     points: [],
@@ -42,7 +48,7 @@ function shortcutInteraction(overrides: Partial<ShortcutSpec> = {}): ViewerInter
     autoPassRecommended: false,
     opportunities: [
       {
-        interactionId: "session.0.1" as InteractionId,
+        interactionId: interactionId as InteractionId,
         response: {
           type: "schema",
           data: { spec: { type: "shortcut", data: spec }, candidates: [] },
@@ -262,6 +268,76 @@ describe("LoopShortcutModal", () => {
       type: "DeclareShortcut",
       data: expect.objectContaining({ count: "UntilLethal" }),
     });
+  });
+
+  // C4/§7.5: a count typed into offer A must not survive into offer B. The body is keyed on the
+  // offer's `interactionId`, which the engine re-mints on every accepted action.
+  //
+  // ⚠ The second render MUST be `view.rerender(...)`, never a second `render(...)`. A fresh
+  // `render` builds a new tree and mounts a new `DeclareShortcutOffer`, which resets `picked` on
+  // the UNFIXED code too — the row would go green against the defect and prove nothing. The rows
+  // above use `cleanup()` + `render()` between shapes; that is the opposite of what these need, so
+  // do not "fix" these into the house idiom.
+  it("starts offer B from its own suggestion, not the count typed into offer A (C4)", () => {
+    seed(
+      buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 5 } } }),
+      {},
+      shortcutInteraction(
+        { count: { type: "fixed", data: { min: 1, max: 9, suggested: 5 } } },
+        "session.0.1",
+      ),
+    );
+    const view = render(<DeclareShortcutModal />);
+
+    const box = screen.getByRole("spinbutton");
+    // Positive reach-guard: the entry actually landed, so a later "not 2" cannot pass vacuously
+    // by the picker never having accepted input. `type="text"` + `role="spinbutton"`, so the
+    // compared value is a STRING.
+    fireEvent.change(box, { target: { value: "2" } });
+    expect(box).toHaveValue("2");
+
+    seed(
+      buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 7 } } }),
+      {},
+      shortcutInteraction(
+        { count: { type: "fixed", data: { min: 1, max: 9, suggested: 7 } } },
+        "session.0.2",
+      ),
+    );
+    view.rerender(<DeclareShortcutModal />);
+
+    expect(screen.getByRole("spinbutton")).toHaveValue("7");
+  });
+
+  // The hostile sibling, and it is what kills the plausible wrong fix: offer B publishes a
+  // BYTE-IDENTICAL window to A and differs only in `interactionId`. A key built from the window —
+  // or from any `waitingFor.data` field — passes the row above and fails this one.
+  it("resets on a second offer carrying an identical window (C4 hostile)", () => {
+    seed(
+      buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 5 } } }),
+      {},
+      shortcutInteraction(
+        { count: { type: "fixed", data: { min: 1, max: 9, suggested: 5 } } },
+        "session.0.1",
+      ),
+    );
+    const view = render(<DeclareShortcutModal />);
+
+    const box = screen.getByRole("spinbutton");
+    fireEvent.change(box, { target: { value: "2" } });
+    expect(box).toHaveValue("2");
+
+    seed(
+      buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 5 } } }),
+      {},
+      shortcutInteraction(
+        { count: { type: "fixed", data: { min: 1, max: 9, suggested: 5 } } },
+        "session.0.2",
+      ),
+    );
+    view.rerender(<DeclareShortcutModal />);
+
+    expect(screen.getByRole("spinbutton")).toHaveValue("5");
   });
 
   // BL-1 (CR 732.2a), BOTH arms: Decline is offered iff the engine's `allowDecline` says so. The
