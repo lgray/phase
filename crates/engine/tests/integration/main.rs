@@ -1156,6 +1156,7 @@ mod willie_lumpkin_cant_attack;
 mod winnowing;
 mod wise_mothman_milled_trigger;
 mod wise_mothman_target_distinctness;
+mod witherbloom_altar_probe;
 mod wolverine_best_there_is_dealt_damage_counter;
 mod wolverine_fierce_fighter_heal;
 mod wrenn_and_six_up_to_one_optout;
