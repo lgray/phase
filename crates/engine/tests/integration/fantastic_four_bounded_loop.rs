@@ -390,8 +390,11 @@ fn replay_at_priority(state: &GameState, proposer: PlayerId) -> GameState {
 /// **Row 9, tracked-loader arm.** The RNG chokepoint gap was never confined to the untracked Dina
 /// board: this TRACKED dump carries `rng_word_pos = 379` and used to restore with the live stream
 /// at word 0, so the very next export-time `capture_rng_word_pos` panicked
-/// `HighWaterRegression { current: 379, requested: 0 }`. Every row in this file loads through
-/// `load_f4`, so the gap sat under all of them. Scope: this row measures the CHOKEPOINT's
+/// `HighWaterRegression { current: 379, requested: 0 }`. Every row that loads an F4 board loads
+/// through `load_f4`, so the gap sat under all of those. NOT literally every row here: `b5f_` and
+/// `m1_` load through `load_mode1`, `a1_` through `load_mode2`, and `c1_` loads no board at all
+/// (it walks source). Stated as loaders rather than as a count, because a count rots on the next
+/// row added and this sentence has already been false once. Scope: this row measures the CHOKEPOINT's
 /// postcondition, which is not every shipped ingress's postcondition — `server-core`'s
 /// `GameSession::from_persisted` re-seeds after the chokepoint and zeroes `rng_word_pos` with it,
 /// ending at an agreed live-0 / high-water-0 pair rather than at this row's resumed position.
