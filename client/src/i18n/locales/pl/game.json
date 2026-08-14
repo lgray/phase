@@ -22,8 +22,6 @@
     "convokeInfo_other": "Auto-taps up to {{count}} creatures for convoke each iteration.",
     "countAria": "Number of iterations",
     "previewTitle_one": "Repeating once produces:",
-    "previewTitle_few": "Repeating {{count}} times produces:",
-    "previewTitle_many": "Repeating {{count}} times produces:",
     "previewTitle_other": "Repeating {{count}} times produces:",
     "previewEntry": "{{amount}} {{resource}}",
     "previewEntryPlayer": "{{amount}} {{resource}} — {{player}}",
