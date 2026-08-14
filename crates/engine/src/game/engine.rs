@@ -18837,7 +18837,16 @@ mod stage2_injector_tests {
                 // and the partition (5/8/25) both fired GREEN on the run that caught this, and
                 // the panic was on this third assert alone — which is what makes it a coordinate
                 // shift rather than a population change.
-                "game/engine.rs:12759".to_string(),
+                // ⚠ REBASE onto upstream `635c51ec4` (#7382, pre-entry opponent controller):
+                // `:12759 ⇒ :12763`, +4 from a hunk at `apply_action` `@@ -9867,0 +9868,4 @@`,
+                // entirely above this producer. MEASURED in the rebased file, never computed: the
+                // offset from `begin_pending_trigger_target_selection` is the control and is STILL
+                // 134, which is what re-establishes identity — the same mint text occurs at several
+                // coordinates in this crate, so the offset discriminates where the text cannot.
+                // This rebase raised the literal as a CONFLICT twice and then drifted it SILENTLY a
+                // third time at the tip; only the offset control caught the silent one. That is the
+                // drift class FU-4 (content-hash coordinate anchor) exists to end.
+                "game/engine.rs:12763".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
