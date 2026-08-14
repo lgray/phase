@@ -4805,8 +4805,8 @@ fn exactly_two_waiting_for_variants_carry_a_decision_template_and_both_are_redac
     // ── the classifier's own reach-guard: the enum was actually found ──
     let total = enum_variants(&enum_src, "WaitingFor").len();
     assert_eq!(
-        total, 129,
-        "`WaitingFor` has 129 variants at this tip, read off the `syn` parse. This number is \
+        total, 130,
+        "`WaitingFor` has 130 variants at this tip, read off the `syn` parse. This number is \
          pinned so a variant REMOVED is as visible as one added; if you added a variant and it \
          carries no `DecisionTemplate`, update this number. A wildly different count means the \
          reader lost its anchor, and every assertion below would then be measuring an empty enum"
@@ -4817,6 +4817,15 @@ fn exactly_two_waiting_for_variants_carry_a_decision_template_and_both_are_redac
     // its body), so it is not a third carrier and the assertion below is unchanged by it. The
     // count moved for a reason that does not touch this row's subject — which is exactly the
     // case this reach-guard exists to make visible rather than silent.
+    // 129 ⇒ 130 is ADJUDICATED on the same terms: upstream #7382 ("choose pre-entry opponent
+    // controller") added `EntryControllerChoice { player: PlayerId, candidates: Vec<PlayerId> }`
+    // (CR 614.12a). Measured, not inferred from the diff: that body holds NO `DecisionTemplate`,
+    // so it is not a third carrier, and both the carrier vec and the redaction loop below are
+    // unchanged by it. The count itself was read from THIS assertion's own failure (`left: 130`)
+    // rather than from a hand-written variant counter — one was tried and returned 49 while
+    // contradicting itself, and a second instrument that disagrees with the `syn` parse is worth
+    // less than no second instrument. The reach-guard did its whole job here: this drift produced
+    // no merge conflict and could not have, so CI was the only thing between it and shipping.
 
     let carriers = carriers_in_source(&enum_src, "WaitingFor", &corpus, &marker, true);
     assert_eq!(
