@@ -45,11 +45,21 @@ pub enum ServerErrorCode {
 ///
 /// 31 — `WaitingFor::LoopShortcut` publishes the engine-issued `declaration`, and
 ///      `InteractionResponseSpec::Shortcut` publishes `preview`, the per-axis
-///      consequence of the offered count. Both are `Option`, so a v30 peer still
-///      *parses* the frame — this is a capability bump like 24, not a parse bump.
-///      A v31 client paired with a v30 server sends the template-free
-///      `DeclareShortcut` these fields authorize and has its declaration silently
-///      dropped, with no parse error to catch it.
+///      consequence of the offered count. Both are `Option` and neither type sets
+///      `deny_unknown_fields`, so a v30 peer still *parses* the frame — this is a
+///      capability bump like 24, not a parse bump. UNLIKE 24, no pairing is left to
+///      exercise the gap, so this entry names no silent-drop hazard. Full-game floors
+///      are exact-match on both sides (`server_core::MIN_SUPPORTED_PROTOCOL ==
+///      PROTOCOL_VERSION`, and `MIN_SUPPORTED_SERVER_PROTOCOL` in
+///      `client/src/adapter/ws-adapter.ts`), so a v31/v30 full-game pair is refused
+///      at the handshake and never sends an action frame. The one-version window is
+///      this file's `MIN_SUPPORTED_PROTOCOL` below, and it is lobby-only:
+///      `DeclareShortcut` rides `ClientMessage::Action`, which `LobbyClientMessage`
+///      has no variant for at all, and which `reject_if_disabled` in
+///      `crates/phase-server/src/main.rs` answers under `ServerMode::LobbyOnly` with
+///      an explicit rejection rather than a silent drop. The P2P games this broker
+///      matchmakes are gated tighter still, on build-commit equality
+///      (`check_build_commit`), not on a protocol window.
 /// 30 — Serialized player-action completion provenance and modal continuations.
 /// 29 — Added requester-correlated `ResolveAllRejected` response frames.
 /// 28 — Added native `ResolveAll` request/result frames.
