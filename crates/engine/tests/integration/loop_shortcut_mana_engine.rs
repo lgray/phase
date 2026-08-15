@@ -58,7 +58,7 @@ fn place_on_battlefield(
 }
 
 /// The layer-derived mana-ability index on `source` (`{T}: Add {C}{C}{C}`). Read OFF the object.
-fn mana_ability_index(state: &GameState, source: ObjectId) -> Option<usize> {
+pub(crate) fn mana_ability_index(state: &GameState, source: ObjectId) -> Option<usize> {
     state
         .objects
         .get(&source)?
@@ -70,7 +70,7 @@ fn mana_ability_index(state: &GameState, source: ObjectId) -> Option<usize> {
 /// The layer-derived NON-mana activated ability index on `source` (`{3}: Untap this artifact`).
 /// The static "doesn't untap during your untap step" ability is `Static`-kind, so the only
 /// non-mana `Activated` ability is the untap.
-fn untap_ability_index(state: &GameState, source: ObjectId) -> Option<usize> {
+pub(crate) fn untap_ability_index(state: &GameState, source: ObjectId) -> Option<usize> {
     state
         .objects
         .get(&source)?
@@ -110,14 +110,14 @@ fn colorless(state: &GameState, player: PlayerId) -> usize {
         .unwrap_or(0)
 }
 
-struct Rig {
-    runner: GameRunner,
-    basalt: ObjectId,
+pub(crate) struct Rig {
+    pub(crate) runner: GameRunner,
+    pub(crate) basalt: ObjectId,
 }
 
 /// Build the 2-player rig: Basalt Monolith on P0's battlefield, optionally with Power Artifact
 /// attached (the cost-reduction that makes the untap net-positive). `mode` selects the detector.
-fn setup(with_power: bool, mode: LoopDetectionMode, db: &CardDatabase) -> Rig {
+pub(crate) fn setup(with_power: bool, mode: LoopDetectionMode, db: &CardDatabase) -> Rig {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let basalt = scenario.add_real_card(P0, BASALT, Zone::Battlefield, db);
@@ -158,7 +158,7 @@ fn activate_and_settle(runner: &mut GameRunner, source: ObjectId, ability_index:
 
 /// Drive one full loop period: the off-stack mana beat, then the on-stack untap beat, settling
 /// each. Returns with the CR 732.2a offer surfaced (if the loop is detected).
-fn drive_one_period(rig: &mut Rig, mana_idx: usize, untap_idx: usize) {
+pub(crate) fn drive_one_period(rig: &mut Rig, mana_idx: usize, untap_idx: usize) {
     activate_and_settle(&mut rig.runner, rig.basalt, mana_idx);
     activate_and_settle(&mut rig.runner, rig.basalt, untap_idx);
 }

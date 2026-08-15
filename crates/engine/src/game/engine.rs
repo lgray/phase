@@ -6039,23 +6039,24 @@ fn try_offer_object_growth_shortcut(
 
 /// CR 732.2a: which materialization strategy an accepted object-growth collapse selected.
 ///
-/// Computed ONCE at the route seam inside `materialize_object_growth_shortcut`, whose own
-/// exhaustive `match` on it is the sole consumer: it names the decision that selects which
-/// `PersistentAxisMaterialization` gets registered. It is deliberately NOT recoverable from the
-/// registered stash: `PersistentAxisMaterialization` is a registration (one decision registers up
-/// to three items), and `LoopCollapseAxis::from_materializations` cannot tell the routes apart at
-/// all — a `DriveSequence { collapsed_axes: [TokensCreated] }` folds to `LoopCollapseAxis::Tokens`,
-/// the same value the batched `Tokens(_)` item folds to. Re-deriving through either would be a
-/// rescan of a decision this function already made, and through the second it would be silently
-/// wrong.
+/// A LOCAL name for a decision `materialize_object_growth_shortcut` makes and consumes in adjacent
+/// expressions. The route is never stored, returned, or read at a distance, so the type buys
+/// nothing at a distance either. What it does buy is the wildcard-free `match` below: the two
+/// registration bodies sit under one exhaustive dispatch, so WORK-QUEUE first-five item 5
+/// (segmented tally) build-breaks here rather than silently inheriting `Batched`. That is the
+/// whole justification for the type over a bare `if`/`else`, and it is a bet on an arm that does
+/// not exist yet.
 ///
-/// Exhaustive matches only (no wildcard): WORK-QUEUE first-five item 5 (segmented tally) adds a
-/// third variant, and every consumer must build-break rather than default to `Batched`.
+/// NOT a carried value — an earlier draft's claim that the typed route had to be threaded to a
+/// later bound site rather than re-derived from the stash described the per-route iteration cap,
+/// which was withdrawn. There is no second site. The underlying fact survives and is still a
+/// reason never to re-derive a route from a registration —
+/// `LoopCollapseAxis::from_materializations` cannot tell the routes apart at all, since a
+/// `DriveSequence { collapsed_axes: [TokensCreated] }` folds to the same `LoopCollapseAxis::Tokens`
+/// the batched `Tokens(_)` item folds to — but nothing re-derives one today, so it is not a reason
+/// this type exists.
 ///
-/// No `#[must_use]`: nothing returns this type today, so the attribute would be inert. Restore it
-/// the moment a consumer returns a `LoopCollapseRoute` — dropping a returned route is the first
-/// move of the re-derive-from-the-stash mistake, and that should be a compile error rather than a
-/// convention.
+/// No `#[must_use]`: nothing returns this type, so the attribute would be inert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoopCollapseRoute {
     /// N x delta batched items (`Tokens` / `Counters` / `Life`). O(1) in N; no per-cycle replay.
@@ -6208,9 +6209,33 @@ fn materialize_object_growth_shortcut(
     // can re-fire a cast trigger" — is either unsound (`LoopAction` names the DRIVING action, so
     // excluding `Activate` batches a period whose activated ability casts during resolution) or
     // vacuous (excluding only `TapLandForMana` is sound, but a mana-engine period registers
-    // nothing at all). So this conjunct rides the helper alone, inside the pre-existing
-    // `!sequence.is_empty()` guard. Narrowing by the trigger's own matcher is F-route-precision,
-    // blocked on a per-cycle matcher-invariance proof.
+    // nothing at all). Narrowing by the trigger's own matcher is F-route-precision, blocked on a
+    // per-cycle matcher-invariance proof.
+    //
+    // SINGLE AUTHORITY for what the batched arm registers: the exact item list the `Batched` arm
+    // below hands to `register_pending_materialization`, built ONCE here and consumed as a VALUE
+    // by both that arm and the route's `!batched.is_empty()` conjunct. Deliberately NOT a
+    // predicate mirroring the arm's per-axis conditions — a mirrored predicate is precisely the
+    // drift this shape forecloses. A future fourth batched axis is a fourth push HERE and feeds
+    // the route guard for free, because the arm has no per-axis condition of its own left to
+    // forget to update.
+    let batched: Vec<crate::types::game_state::PersistentAxisMaterialization> = {
+        use crate::types::game_state::PersistentAxisMaterialization;
+        let mut items = Vec::new();
+        if let Some(profile) = token_profile {
+            items.push(PersistentAxisMaterialization::Tokens(Box::new(profile)));
+        }
+        if !growths.is_empty() {
+            items.push(PersistentAxisMaterialization::Counters(growths));
+        }
+        items.extend(life.into_iter().map(|(player, per_cycle_delta)| {
+            PersistentAxisMaterialization::Life {
+                player,
+                per_cycle_delta,
+            }
+        }));
+        items
+    };
     let cast_sourced = crate::analysis::resource::board_has_functioning_cast_trigger(state);
     // M5: hoisted out of the branch so an empty period can never register NOTHING — a route
     // flipped to the replay falls back to the batched arm instead of silently dropping the whole
@@ -6219,7 +6244,29 @@ fn materialize_object_growth_shortcut(
     // predicate is already false there. Kept explicit so a future route conjunct cannot
     // reintroduce the hole.)
     let sequence = state.last_loop_action_sequence.clone();
-    let route = if (counter_observed || life_observed || life_etb_sourced || cast_sourced)
+    // `!batched.is_empty()` is the SYMMETRY guard, and it is a conjunct of the whole disjunction
+    // rather than a narrowing bolted onto the cast leg. MEASURED REGRESSION without it: the two
+    // arms are ASYMMETRIC — the batched arm registers CONDITIONALLY (a mana engine has no token
+    // profile, no counter growth and no life growth, so it registers NOTHING; the shape asserted
+    // by `loop_shortcut_mana_engine::mana_engine_accept_still_renders_its_infinity_badge`'s
+    // reach-guard (2)), while the replay arm registers a `DriveSequence` UNCONDITIONALLY. Since
+    // `cast_sourced` is the only disjunct with no axis-shaped conjunct, a mana engine sharing a
+    // board with ANY functioning cast trigger — controlled by any player; the scan walks
+    // `state.objects.values()` and is NOT controller-filtered — flipped from registering nothing
+    // to scheduling a collapse naming its own `Mana(_)` axis, which `scheduled_collapse_axes` puts
+    // into `axes_to_remove` at the CR 500.5 boundary, ENDING an ∞ mana mark the board is entitled
+    // to keep. Pinned by
+    // `loop_shortcut_cast_route::mana_engine_with_cast_trigger_registers_nothing`.
+    //
+    // Hoisting it is EXACTLY equivalent to narrowing the cast leg alone, because the other three
+    // disjuncts already imply it: `counter_observed` requires `!growths.is_empty()` (⇒ a `Counters`
+    // item), and `life_observed` / `life_etb_sourced` each require `!life.is_empty()` (⇒ at least
+    // one `Life` item). Stated as a whole-disjunction conjunct it says the thing that is actually
+    // true of the seam — the replay route is only ever the BETTER VERSION of a registration the
+    // batched arm would have made, never a registration out of nothing — and a future fifth
+    // disjunct inherits the guard instead of having to remember it.
+    let route = if !batched.is_empty()
+        && (counter_observed || life_observed || life_etb_sourced || cast_sourced)
         && !sequence.is_empty()
     {
         LoopCollapseRoute::Replay
@@ -6244,29 +6291,12 @@ fn materialize_object_growth_shortcut(
         }
         LoopCollapseRoute::Batched => {
             // UNOBSERVED fast path — register each grown persistent axis for the batched N×δ
-            // collapse.
-            if let Some(profile) = token_profile {
-                state.register_pending_materialization(
-                    proposal.proposer,
-                    crate::types::game_state::PersistentAxisMaterialization::Tokens(Box::new(
-                        profile,
-                    )),
-                );
-            }
-            if !growths.is_empty() {
-                state.register_pending_materialization(
-                    proposal.proposer,
-                    crate::types::game_state::PersistentAxisMaterialization::Counters(growths),
-                );
-            }
-            for (player, per_cycle_delta) in life {
-                state.register_pending_materialization(
-                    proposal.proposer,
-                    crate::types::game_state::PersistentAxisMaterialization::Life {
-                        player,
-                        per_cycle_delta,
-                    },
-                );
+            // collapse. The payload was built ONCE above, in the same Tokens → Counters → Life
+            // order the three per-axis `if`s used to register in; this arm carries no per-axis
+            // condition of its own, so what the route's `!batched.is_empty()` guard measured and
+            // what lands here cannot disagree.
+            for item in batched {
+                state.register_pending_materialization(proposal.proposer, item);
             }
         }
     }

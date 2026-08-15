@@ -39,26 +39,42 @@
 //! (`ExpectedRoute` below is the test-crate mirror, not a copy of the decision). Widening the
 //! production enum's visibility "just for the tests" is forbidden.
 //!
-//! REVERT PROBE (RUN, output pasted in the phase-1 gate log — an asserted revert probe is not a
-//! revert probe): delete the `cast_sourced` disjunct at the `engine.rs` route seam ⇒ the grafted
-//! arms register `Tokens` again ⇒ every row below that asserts `ExpectedRoute::Replay` goes RED.
+//! THE ROUTE IS PAYLOAD-GUARDED. The whole replay disjunction sits under `!batched.is_empty()` —
+//! the replay route is only ever the better version of a registration the BATCHED arm would have
+//! made, never a registration out of nothing. Without that guard the seam's two arms are
+//! asymmetric (the batched arm registers conditionally, the replay arm unconditionally), so a mana
+//! engine — which batches NOTHING — gets dragged onto the replay by any cast trigger on the board,
+//! and has its own `Mana(_)` ∞ mark collapsed at the CR 500.5 boundary. That was a MEASURED
+//! regression in the first cut; `mana_engine_with_cast_trigger_registers_nothing` below is its pin.
+//!
+//! REVERT PROBES (RUN, output pasted in the phase-1 gate log — an asserted revert probe is not a
+//! revert probe). (1) Delete the `cast_sourced` disjunct at the `engine.rs` route seam ⇒ the
+//! grafted arms register `Tokens` again ⇒ every row below that asserts `ExpectedRoute::Replay` goes
+//! RED. (2) Delete only the `!batched.is_empty()` guard ⇒ the Replay rows stay green and
+//! `mana_engine_with_cast_trigger_registers_nothing` goes RED with `[DriveSequence]`.
 
 use engine::analysis::decision_template::IterationCount;
 use engine::analysis::loop_check::ShortcutResponse;
+use engine::analysis::resource::ResourceAxis;
 use engine::game::engine::apply;
+use engine::game::functioning_abilities::active_trigger_definitions;
 use engine::game::scenario::GameRunner;
 use engine::game::zones::create_object;
 use engine::types::ability::TriggerDefinition;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{
-    GameState, PayableResource, PersistentAxisMaterialization, WaitingFor,
+    GameState, LoopDetectionMode, PayableResource, PersistentAxisMaterialization, WaitingFor,
 };
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::player::PlayerId;
 use engine::types::triggers::TriggerMode;
 use engine::types::zones::Zone;
 
+use super::loop_shortcut_mana_engine::{
+    drive_one_period, mana_ability_index, setup, untap_ability_index,
+};
 use super::sprout_inalla_realistic_offer::{drive_sprout_cast, load_realistic_dump};
+use super::support::shared_card_db;
 
 const P0: PlayerId = PlayerId(0);
 /// Sprout Swarm in P0's hand in the realistic 4p dump.
@@ -380,5 +396,149 @@ fn two_accepts_one_phase_one_batched_one_replay_share_one_boundary() {
         "R-mixed: ONE boundary applies ONE amount to every stashed item, and CR 732.2c makes that \
          amount the accepted count on both routes — neither route lowers the ceiling its own \
          accept published"
+    );
+}
+
+// ===========================================================================
+// R-mana — the ASYMMETRY row. A board whose BATCHED arm would register NOTHING must not be
+// dragged onto the replay by the cast disjunct.
+// ===========================================================================
+
+/// **R-mana.** A real Basalt Monolith + Power Artifact mana engine carrying a functioning cast
+/// trigger still registers NOTHING — the shipped unscheduled-axis shape — instead of scheduling a
+/// `DriveSequence` that would collapse the loop's own `Mana(_)` axis.
+///
+/// MEASURED REGRESSION, not a hypothetical. At the prior candidate `b560049f` this row is RED with
+/// `[DriveSequence]`; the `!batched.is_empty()` guard at the route seam is what makes it GREEN. The
+/// two arms of that seam are ASYMMETRIC: the batched arm registers CONDITIONALLY (token profile /
+/// counter growth / life growth — a mana engine has none of the three), while the replay arm
+/// registers a `DriveSequence` UNCONDITIONALLY. `cast_sourced` is the only route disjunct with no
+/// axis-shaped conjunct, so before the fix ANY functioning cast trigger anywhere on the board —
+/// `functioning_board_trigger_defs` walks `state.objects.values()` with NO controller filter, so an
+/// OPPONENT's Monastery Mentor is enough — flipped this board from registering nothing to
+/// scheduling a collapse. At the CR 500.5 boundary that stash raises a `PayableResource::LoopCollapse`
+/// prompt this shape has never raised, and `scheduled_collapse_axes` puts `Mana(_)` into
+/// `axes_to_remove` — ending the ∞ mana mark HEAD keeps for the rest of the phase.
+///
+/// REACHABILITY, proved in-row rather than assumed, because a fixture that never reaches the
+/// disjunct would pass vacuously. `functioning_board_trigger_defs` is
+/// `objects.values()` × `active_trigger_definitions(state, obj)` × `trigger_definition_functions_in_zone(def, obj.zone)`.
+/// Guard (1) runs the first of those two authorities on THIS board and shows the grafted cast-mode
+/// def surviving it; the second is a pure `(def, zone)` function with no board input, and the same
+/// `(SpellCast-mode def, Battlefield)` pair is measured route-flipping by
+/// [`cast_trigger_board_routes_to_replay_untouched_board_stays_batched`] above, which shares this
+/// file's [`graft_cast_trigger`]. Guard (2) shows the captured period is non-empty, so the seam's
+/// other conjunct `!sequence.is_empty()` holds too. Guard (3) shows the accept genuinely reached
+/// `materialize_object_growth_shortcut` (only that path marks the axis), so the emptiness at (4) is
+/// a route decision and not "nothing happened". With (1)–(3) satisfied, `cast_sourced` is the ONLY
+/// thing between this board and the replay route — which the RED-at-`b560049f` measurement
+/// independently confirms, since the fix touches nothing else.
+///
+/// The paired POSITIVE for this row is not on this rig — a mana engine cannot be given a batched
+/// payload without ceasing to be one — it is the grafted arm of
+/// [`cast_trigger_board_routes_to_replay_untouched_board_stays_batched`], where the same graft on a
+/// board that DOES have a batched payload still routes `Replay`. Together the pair says the
+/// disjunct fires on payload and not on the trigger alone.
+///
+/// The `shared_card_db()` guard is DORMANT in a normal checkout (`integration_cards.json.gz` is
+/// tracked); it only fires in a checkout without the card-data pipeline.
+#[test]
+fn mana_engine_with_cast_trigger_registers_nothing() {
+    let Some(db) = shared_card_db() else { return };
+    // The mana rig is built on `game::scenario::P0`; this file's `P0` must be the same seat for
+    // the graft to land on the loop controller's board at all.
+    assert_eq!(
+        P0,
+        engine::game::scenario::P0,
+        "fixture fact: both modules mean the same seat"
+    );
+    let mut rig = setup(true, LoopDetectionMode::Interactive, db);
+    let host = graft_cast_trigger(rig.runner.state_mut(), "Mana Route Probe");
+
+    // ── (1) reach-guard: the scan's per-object authority yields the grafted cast-mode def on THIS
+    // board (the graft is not merely present in `objects`, it survives the CR 702.26b / CR 114.4
+    // gate that `functioning_board_trigger_defs` applies before the zone gate) ──
+    let state = rig.runner.state();
+    let active: Vec<&TriggerDefinition> = active_trigger_definitions(
+        state,
+        state.objects.get(&host).expect("the graft host is present"),
+    )
+    .map(|entry| entry.definition)
+    .collect();
+    assert_eq!(
+        active.len(),
+        1,
+        "reach-guard: the graft host carries exactly one ACTIVE trigger def on the mana rig's board"
+    );
+    assert_eq!(
+        active[0].mode,
+        TriggerMode::SpellCast,
+        "reach-guard: the grafted cast trigger survives the gate `functioning_board_trigger_defs` \
+         applies before the zone gate — without this the row never reaches the cast disjunct and \
+         passes vacuously"
+    );
+
+    let mana_idx = mana_ability_index(rig.runner.state(), rig.basalt)
+        .expect("Basalt's {T}: Add {C}{C}{C} mana ability");
+    let untap_idx = untap_ability_index(rig.runner.state(), rig.basalt)
+        .expect("Basalt's {3}: Untap this artifact ability");
+    drive_one_period(&mut rig, mana_idx, untap_idx);
+    assert!(
+        matches!(
+            rig.runner.state().waiting_for,
+            WaitingFor::LoopShortcut { .. }
+        ),
+        "reach-guard: the mana-engine offer must still fire WITH the cast trigger grafted, got {:?}",
+        rig.runner.state().waiting_for
+    );
+    // ── (2) reach-guard: the captured period is the two-activation Basalt+Power cycle, so the
+    // route seam's `!sequence.is_empty()` conjunct is satisfied ──
+    assert_eq!(
+        rig.runner.state().last_loop_action_sequence.len(),
+        2,
+        "reach-guard: the multi-action mana period is captured, so `!sequence.is_empty()` holds \
+         and the cast disjunct is the only conjunct left to decide the route"
+    );
+
+    rig.runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(1),
+            template: None,
+        })
+        .expect("declare shortcut");
+    rig.runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("opponent accepts");
+
+    // ── (3) reach-guard: the accept really ran the materialize path — only it marks the axis ──
+    assert!(
+        rig.runner
+            .state()
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|axes| axes.iter().any(|a| matches!(a, ResourceAxis::Mana(_)))),
+        "reach-guard: the accept reaches materialize_object_growth_shortcut and marks Mana(_)"
+    );
+
+    // ── (4) DISCRIMINATOR: it registered NOTHING, preserving the ∞ mana mark ──
+    let observed: Vec<&'static str> = rig
+        .runner
+        .state()
+        .pending_unbounded_materialization
+        .values()
+        .flatten()
+        .map(route_name)
+        .collect();
+    assert!(
+        rig.runner
+            .state()
+            .pending_unbounded_materialization
+            .is_empty(),
+        "a mana engine registers NO deferred materialization even with a functioning cast trigger \
+         on the board — the batched arm would register nothing, so there is nothing for the \
+         replay to be a better version OF, and scheduling one collapses the Mana(_) axis this \
+         board is entitled to keep; observed {observed:?}"
     );
 }
