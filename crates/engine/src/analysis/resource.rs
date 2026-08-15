@@ -4807,6 +4807,52 @@ pub(crate) fn board_has_functioning_etb_trigger(state: &GameState) -> bool {
     })
 }
 
+/// CR 601.2i: does ANY functioning board trigger fire on a spell being cast?
+///
+/// The route firewall for a batched collapse whose per-cycle side effect is sourced from the
+/// loop's own CAST. The batched arm NEVER casts anything — the cast event belongs to the ELIDED
+/// period, not to the collapse — so a batched accept re-performs a cast-sourced effect ZERO
+/// times, where live play performs it once per cycle (MEASURED: a cast-sourced per-cycle mill
+/// reads [0,0,0,0] at N=5 batched and [0,N,N,N] forced to the replay).
+///
+/// SHAPE-AGNOSTIC, exactly as [`board_has_functioning_etb_trigger`]: the `SpellCast` payload is
+/// DISCARDED, so a trigger narrowed to "whenever you cast a creature spell" still routes a loop
+/// that casts an Instant. That is a sound OVER-approximation in the same idiom as its sibling —
+/// a true result routes to the discrete N-cycle driver, which is always correct (only slower).
+/// Narrowing it by running the trigger's own matcher against the captured cast is DEFERRED to
+/// F-route-precision, gated on an undischarged proof that the matcher's verdict is invariant
+/// across cycles; a false negative there re-opens the fidelity gap this predicate closes.
+///
+/// NOT paired with `token_profile.is_some()` the way its sibling is. That conjunct is sound for
+/// ETB sourcing because the batched arm MINTS the entries that re-fire those triggers — no mint,
+/// nothing re-fires. It is UNSOUND here: a counter-growth loop driven by a buyback recast has a
+/// `SpellCast` trigger and NO token profile, registers batched `Counters`, and re-performs the
+/// cast trigger 0x. Reusing the sibling's conjunct would preserve exactly the gap being closed.
+///
+/// CR 113.6 + CR 113.6b: the zone gate lives in [`functioning_board_trigger_defs`], so a cast
+/// trigger on a card in a library or hand does not count. CR 113.6 covers the DEFAULT branch
+/// ("Abilities of all other objects usually function only while that object is on the
+/// battlefield" — the empty-`trigger_zones` case); CR 113.6b is the authority for the DECLARED
+/// branch ("An ability that states which zones it functions in functions only from those
+/// zones."), which is the branch every measured cast trigger actually takes. MEASURED on two
+/// shipped 4p dumps: every `SpellCast`-keyed definition present was library-resident with
+/// `trigger_zones` naming only Battlefield or Stack, so none functions.
+/// (Citing the sub-rule mirrors the shipped sibling, which already writes `CR 113.6 (CR 113.6k)`
+/// on the shared walk above.)
+///
+/// CR 707.10: `TriggerEventKey::SpellCast` covers cast OR copied, and
+/// `trigger_index::keys_from_trigger_def` folds `TriggerMode::SpellCast`, `SpellCastOrCopy` and
+/// `SpellCopy` into it — one arm, three authoring modes.
+pub(crate) fn board_has_functioning_cast_trigger(state: &GameState) -> bool {
+    use crate::types::triggers::TriggerEventKey;
+    functioning_board_trigger_defs(state).any(|def| {
+        crate::game::trigger_index::keys_from_trigger_def(def)
+            .0
+            .iter()
+            .any(|key| matches!(key, TriggerEventKey::SpellCast(_)))
+    })
+}
+
 /// CR 732.2a / CR 603.4 / CR 614.1: does any battlefield/command-FUNCTIONING trigger fire on
 /// `trig_key`, or any active battlefield/command replacement replace `repl_event`? The shared
 /// per-event observer scan for the axis-specific firewalls, classifying triggers via the same
@@ -18279,6 +18325,127 @@ mod tests {
              from the live board must still refuse — handing the discharge `current` would \
              check one frame's events against another frame's candidates. meter \
              {frame_only_meter:?}"
+        );
+    }
+
+    /// Every `SpellCast`-keyed trigger definition on `state`, IGNORING the CR 113.6 zone gate.
+    /// This is the PRE-gate census — used only to prove the class is present, never as a control
+    /// for a gated measurement (see the same-gate rule in the row below).
+    fn cast_keyed_defs_any_zone(state: &GameState) -> usize {
+        state
+            .objects
+            .values()
+            .flat_map(|obj| {
+                crate::game::functioning_abilities::active_trigger_definitions(state, obj)
+            })
+            .filter(|active| {
+                crate::game::trigger_index::keys_from_trigger_def(active.definition)
+                    .0
+                    .iter()
+                    .any(|k| matches!(k, crate::types::triggers::TriggerEventKey::SpellCast(_)))
+            })
+            .count()
+    }
+
+    /// Definitions that PASS the CR 113.6 zone gate and are `EnterBattlefield`-keyed — the M-1
+    /// same-gate positive control. It holds `functioning_board_trigger_defs` (the gate) fixed and
+    /// inverts only the `TriggerEventKey` axis, which is the whole point: a control taken BEFORE
+    /// the gate can read non-zero while the gate excludes everything, and would then "validate" a
+    /// measurement it never touched.
+    fn gated_etb_keyed_defs(state: &GameState) -> usize {
+        functioning_board_trigger_defs(state)
+            .filter(|def| {
+                crate::game::trigger_index::keys_from_trigger_def(def)
+                    .0
+                    .iter()
+                    .any(|k| {
+                        matches!(
+                            k,
+                            crate::types::triggers::TriggerEventKey::EnterBattlefield(_)
+                        )
+                    })
+            })
+            .count()
+    }
+
+    /// **R1 ∧ R1-neg** — `board_has_functioning_cast_trigger` reads the CR 113.6 ZONE GATE, not the
+    /// mere presence or absence of a cast-mode trigger.
+    ///
+    /// These are unit rows on a `pub(crate)` predicate, so they live here rather than in
+    /// `tests/integration/loop_shortcut_cast_route.rs` — an integration test is an external crate
+    /// and can name neither the predicate nor the gate helpers its same-gate control requires.
+    /// Widening any of them for the tests is forbidden.
+    ///
+    /// The board is the REAL 4p `sprout_witherbloom_realistic_lands_4p` dump inflated through the
+    /// production decoder, which is also the base board every route row in the integration file
+    /// runs on — so R1-neg and R2-neg are the same board and the same zero.
+    ///
+    /// WHY THE ZERO IS REAL, three independent ways rather than one:
+    /// 1. **Pre-gate presence** — the board genuinely carries `SpellCast`-keyed definitions. The
+    ///    predicate returning false is therefore the GATE speaking, not an absent trigger class.
+    /// 2. **Same-gate positive control (M-1)** — holding the gate and inverting only the key axis
+    ///    returns NON-ZERO, so the gated instrument provably sees something on this board. A raw
+    ///    pre-gate count would not have established this: measured on a sibling 4p fixture, a raw
+    ///    count reads 86 while ZERO of 162 definitions pass the gate.
+    /// 3. **R1, the flip** — one battlefield-resident cast trigger, and the same predicate on the
+    ///    same board returns true.
+    #[test]
+    fn board_has_functioning_cast_trigger_reads_the_zone_gate() {
+        use crate::game::zones::create_object;
+        use crate::types::ability::TriggerDefinition;
+        use crate::types::triggers::TriggerMode;
+
+        let base = dump_state(include_bytes!(
+            "../../tests/fixtures/sprout_witherbloom_realistic_lands_4p.json.gz"
+        ));
+
+        // ── (1) the cast-trigger CLASS is present on this board, before any gating ──
+        let pre_gate_cast = cast_keyed_defs_any_zone(&base);
+        assert!(
+            pre_gate_cast > 0,
+            "R1-neg is only meaningful if the board actually carries cast-mode triggers for the \
+             CR 113.6 gate to exclude; found {pre_gate_cast} pre-gate"
+        );
+
+        // ── (2) M-1 SAME-GATE POSITIVE CONTROL: hold the gate, invert only the key ──
+        let control = gated_etb_keyed_defs(&base);
+        assert!(
+            control > 0,
+            "M-1 same-gate control: {control} definitions pass the CR 113.6 zone gate and are \
+             EnterBattlefield-keyed. At zero this board could not self-certify — the gated \
+             instrument would be seeing nothing at all — and the zero below would have to be \
+             discharged by a flip probe instead of by this census"
+        );
+
+        // ── R1-neg: gated AND cast-keyed is EMPTY ⇒ the predicate is false ──
+        assert!(
+            !board_has_functioning_cast_trigger(&base),
+            "R1-neg: the board's {pre_gate_cast} cast-keyed definitions are all library-resident \
+             with `trigger_zones` naming only Battlefield or Stack, so CR 113.6b's declared-zone \
+             branch excludes every one of them (control: {control} ETB-keyed defs DO pass the \
+             same gate)"
+        );
+
+        // ── R1: one battlefield-resident functioning cast trigger flips it ──
+        let mut grafted = base;
+        let card_id = CardId(grafted.next_object_id);
+        let host = create_object(
+            &mut grafted,
+            card_id,
+            PlayerId(0),
+            "Cast Route Probe".to_string(),
+            Zone::Battlefield,
+        );
+        grafted
+            .objects
+            .get_mut(&host)
+            .expect("the just-created graft host is in `objects`")
+            .trigger_definitions
+            .push(TriggerDefinition::new(TriggerMode::SpellCast));
+        assert!(
+            board_has_functioning_cast_trigger(&grafted),
+            "R1: a battlefield-resident cast trigger with empty `trigger_zones` FUNCTIONS under CR \
+             113.6's default branch, so the predicate must see it"
         );
     }
 }

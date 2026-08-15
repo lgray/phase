@@ -6037,6 +6037,35 @@ fn try_offer_object_growth_shortcut(
     Some((certificate, schema))
 }
 
+/// CR 732.2a: which materialization strategy an accepted object-growth collapse selected.
+///
+/// Computed ONCE at the route seam inside `materialize_object_growth_shortcut`, whose own
+/// exhaustive `match` on it is the sole consumer: it names the decision that selects which
+/// `PersistentAxisMaterialization` gets registered. It is deliberately NOT recoverable from the
+/// registered stash: `PersistentAxisMaterialization` is a registration (one decision registers up
+/// to three items), and `LoopCollapseAxis::from_materializations` cannot tell the routes apart at
+/// all — a `DriveSequence { collapsed_axes: [TokensCreated] }` folds to `LoopCollapseAxis::Tokens`,
+/// the same value the batched `Tokens(_)` item folds to. Re-deriving through either would be a
+/// rescan of a decision this function already made, and through the second it would be silently
+/// wrong.
+///
+/// Exhaustive matches only (no wildcard): WORK-QUEUE first-five item 5 (segmented tally) adds a
+/// third variant, and every consumer must build-break rather than default to `Batched`.
+///
+/// No `#[must_use]`: nothing returns this type today, so the attribute would be inert. Restore it
+/// the moment a consumer returns a `LoopCollapseRoute` — dropping a returned route is the first
+/// move of the re-derive-from-the-stash mistake, and that should be a compile error rather than a
+/// convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopCollapseRoute {
+    /// N x delta batched items (`Tokens` / `Counters` / `Life`). O(1) in N; no per-cycle replay.
+    Batched,
+    /// `DriveSequence` — the captured period replayed through real `apply()` N times. Cubic in N
+    /// (MEASURED release curve, N=1000 at 552 s), so this arm is where a future iteration budget
+    /// would attach; there is none today, and the published ceiling stays the accepted count.
+    Replay,
+}
+
 /// PR-7 Phase 4d-ii / P7 v3 (CR 732.2a): "materialize" a confirmed UNBOUNDED object-growth
 /// shortcut (fodder/token reproduction, or a multi-activation mana engine). An unbounded loop is
 /// NOT replayed a discrete number of times — that would both CAP the infinite at N and be O(N)
@@ -6169,6 +6198,20 @@ fn materialize_object_growth_shortcut(
     let life_etb_sourced = !life.is_empty()
         && token_profile.is_some()
         && crate::analysis::resource::board_has_functioning_etb_trigger(state);
+    // CR 601.2i + CR 732.2a: a per-cycle side effect the board re-earns from the loop's own CAST
+    // also belongs on the concrete replay. The conjuncts above are AXIS-shaped because the
+    // batched arm PRODUCES the ETB events it must not double-pay. The cast axis has NO such
+    // analogue: the batched collapse never casts anything, so the cast event belongs to the
+    // ELIDED period and the batched arm re-performs it 0x. `token_profile.is_some()` is therefore
+    // UNSOUND as a cast-side narrowing (a counter loop driven by a buyback recast has a cast
+    // trigger and no token profile) and the period-side alternative — "only a period that CASTS
+    // can re-fire a cast trigger" — is either unsound (`LoopAction` names the DRIVING action, so
+    // excluding `Activate` batches a period whose activated ability casts during resolution) or
+    // vacuous (excluding only `TapLandForMana` is sound, but a mana-engine period registers
+    // nothing at all). So this conjunct rides the helper alone, inside the pre-existing
+    // `!sequence.is_empty()` guard. Narrowing by the trigger's own matcher is F-route-precision,
+    // blocked on a per-cycle matcher-invariance proof.
+    let cast_sourced = crate::analysis::resource::board_has_functioning_cast_trigger(state);
     // M5: hoisted out of the branch so an empty period can never register NOTHING — a route
     // flipped to the replay falls back to the batched arm instead of silently dropping the whole
     // materialization. (Unreachable today: `growths`/`life` are derived from the same
@@ -6176,39 +6219,55 @@ fn materialize_object_growth_shortcut(
     // predicate is already false there. Kept explicit so a future route conjunct cannot
     // reintroduce the hole.)
     let sequence = state.last_loop_action_sequence.clone();
-    if (counter_observed || life_observed || life_etb_sourced) && !sequence.is_empty() {
-        // CR 732.2a: OBSERVED batchable growth — one DriveSequence collapses the WHOLE loop (all
-        // axes); replaying the captured sequence recreates every per-cycle effect honoring
-        // observers. Do NOT also register batched items (the routes are exclusive per accept).
-        state.register_pending_materialization(
-            proposal.proposer,
-            crate::types::game_state::PersistentAxisMaterialization::DriveSequence {
-                sequence,
-                collapsed_axes: proposal.unbounded.clone(),
-            },
-        );
+    let route = if (counter_observed || life_observed || life_etb_sourced || cast_sourced)
+        && !sequence.is_empty()
+    {
+        LoopCollapseRoute::Replay
     } else {
-        // UNOBSERVED fast path — register each grown persistent axis for the batched N×δ collapse.
-        if let Some(profile) = token_profile {
+        LoopCollapseRoute::Batched
+    };
+    // Exhaustive, no wildcard: WORK-QUEUE first-five item 5's segmented-tally arm must build-break
+    // here rather than silently inherit one of these two registrations.
+    match route {
+        LoopCollapseRoute::Replay => {
+            // CR 732.2a: OBSERVED batchable growth — one DriveSequence collapses the WHOLE loop
+            // (all axes); replaying the captured sequence recreates every per-cycle effect
+            // honoring observers. Do NOT also register batched items (the routes are exclusive
+            // per accept).
             state.register_pending_materialization(
                 proposal.proposer,
-                crate::types::game_state::PersistentAxisMaterialization::Tokens(Box::new(profile)),
-            );
-        }
-        if !growths.is_empty() {
-            state.register_pending_materialization(
-                proposal.proposer,
-                crate::types::game_state::PersistentAxisMaterialization::Counters(growths),
-            );
-        }
-        for (player, per_cycle_delta) in life {
-            state.register_pending_materialization(
-                proposal.proposer,
-                crate::types::game_state::PersistentAxisMaterialization::Life {
-                    player,
-                    per_cycle_delta,
+                crate::types::game_state::PersistentAxisMaterialization::DriveSequence {
+                    sequence,
+                    collapsed_axes: proposal.unbounded.clone(),
                 },
             );
+        }
+        LoopCollapseRoute::Batched => {
+            // UNOBSERVED fast path — register each grown persistent axis for the batched N×δ
+            // collapse.
+            if let Some(profile) = token_profile {
+                state.register_pending_materialization(
+                    proposal.proposer,
+                    crate::types::game_state::PersistentAxisMaterialization::Tokens(Box::new(
+                        profile,
+                    )),
+                );
+            }
+            if !growths.is_empty() {
+                state.register_pending_materialization(
+                    proposal.proposer,
+                    crate::types::game_state::PersistentAxisMaterialization::Counters(growths),
+                );
+            }
+            for (player, per_cycle_delta) in life {
+                state.register_pending_materialization(
+                    proposal.proposer,
+                    crate::types::game_state::PersistentAxisMaterialization::Life {
+                        player,
+                        per_cycle_delta,
+                    },
+                );
+            }
         }
     }
     state.loop_detect_ring.clear();
