@@ -132,7 +132,10 @@ fn probe_a_with_altar() {
         state.waiting_for
     );
     assert_eq!(
-        state.objects.get(&SPROUT).map(|o| (o.name.as_str(), o.zone)),
+        state
+            .objects
+            .get(&SPROUT)
+            .map(|o| (o.name.as_str(), o.zone)),
         Some(("Sprout Swarm", Zone::Hand))
     );
     assert_eq!(
@@ -283,9 +286,10 @@ fn multi_cycle(mut state: GameState, prefix: &str) {
                 .battlefield
                 .iter()
                 .find(|id| {
-                    state.objects.get(id).is_some_and(|o| {
-                        o.controller == P0 && o.name == "Saproling" && !o.tapped
-                    })
+                    state
+                        .objects
+                        .get(id)
+                        .is_some_and(|o| o.controller == P0 && o.name == "Saproling" && !o.tapped)
                 })
                 .copied();
             match found {
