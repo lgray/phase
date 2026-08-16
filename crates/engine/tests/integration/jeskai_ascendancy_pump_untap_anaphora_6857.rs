@@ -813,9 +813,6 @@ fn rally_to_battle_untaps_the_creatures_it_pumped() {
 
 /// Great Oak Guardian's ETB trigger — the population is `target player`'s
 /// creatures, so targeting the OPPONENT makes the anaphor's scope observable:
-/// their creatures untap, mine do not.
-/// Great Oak Guardian's ETB trigger — the population is `target player`'s
-/// creatures, so targeting the OPPONENT makes the anaphor's scope observable:
 /// their creatures untap and mine do not. A rewrite that bound "them" to the
 /// source or to the parent target could not produce this split.
 #[test]
