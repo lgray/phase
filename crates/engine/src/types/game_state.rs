@@ -24443,7 +24443,12 @@ impl GameState {
         // writer-side filter is enforced at ONE site while the invariant is consumed HERE:
         //   * `pending_unbounded_materialization` is `#[serde]`-persisted, so a stash written by a
         //     pre-fix build round-trips through a save carrying `Mana(_)` in `collapsed_axes` and
-        //     would strip a standing capability on load — the exact harm this fix closes.
+        //     strips a standing capability on load. REACHABLE ONLY ON A `debug_infinite_mana` SEAT:
+        //     `turns::drain_pending_phase_transition_progress` runs the CR 500.5 loop-mana clear at
+        //     true queue-empty BEFORE it raises this prompt, and that clear excludes exactly those
+        //     seats — so a NON-debug seat's `Mana(_)` is already gone by the time a stash naming it
+        //     arrives here, and stripping it removes nothing. Same scope the V2b integration row
+        //     states ("It is the only live victim today"); do not restate it more broadly here.
         //   * `ResourceAxis`'s exhaustive `match` build-breaks on a new AXIS, never on a new
         //     REGISTRATION SITE; a future second producer inherits the guarantee only if it is
         //     enforced where the value is used.

@@ -3628,6 +3628,15 @@ fn low3_mixed_axis_boundary_preserves_debug_infinite_mana() {
 /// The load runs through real `serde_json`, and guard (b) asserts what came BACK: without it a
 /// future `#[serde(skip)]` on `collapsed_axes` would empty the loaded set and the row would pass
 /// vacuously while silently voiding the save-compat premise this fix is argued from.
+///
+/// LEVEL STATED HONESTLY (V2's note applies here too, and for a second reason): this row calls the
+/// boundary clear DIRECTLY on a NON-DEBUG seat, so the state it pins is not one the production path
+/// reaches on THAT seat — `turns::drain_pending_phase_transition_progress` runs the CR 500.5
+/// loop-mana clear before raising the prompt, so a non-debug seat's `Mana(_)` is already gone and
+/// the live victim is a `debug_infinite_mana` seat (V2b). What is under test here is the CONSUMING
+/// AUTHORITY's own re-filter, which must hold for ANY stash it is handed however that stash
+/// arrived; calling it directly is what isolates that question from the route that produced the
+/// stash. Do not read the "pre-fix save" narrative as production-reachable on every seat.
 #[test]
 fn low3_prefix_save_stash_cannot_strip_a_standing_capability() {
     use engine::analysis::resource::ResourceAxis;
@@ -3671,17 +3680,18 @@ fn low3_prefix_save_stash_cannot_strip_a_standing_capability() {
         "reach-guard: both axes must be marked before the clear, got {:?}",
         runner.state().unbounded_resources.get(&P0)
     );
-    // (b) PREMISE PIN / ANTI-VACUITY: the LOADED stash still names the standing axis. This is the
-    // save-compat premise of the reader-side guard, asserted rather than assumed.
-    assert!(
-        matches!(
-            loaded.as_slice(),
-            [PersistentAxisMaterialization::DriveSequence { collapsed_axes, .. }]
-                if collapsed_axes.contains(&ResourceAxis::Mana(ManaType::Colorless))
-                    && collapsed_axes.contains(&ResourceAxis::Life(P0))
-        ),
-        "premise: `collapsed_axes` survives save/load, so a pre-fix stash reaches the clear with \
-         the standing axis still in it. Got {loaded:?}"
+    // (b) PREMISE PIN / ANTI-VACUITY: the LOADED stash equals what was written, FIELD FOR FIELD.
+    // Whole-value equality rather than a `collapsed_axes.contains` check, so this also discharges
+    // the `sequence` half of the two "round-trip verified" doc claims this type carries
+    // (`types::game_state` on `DriveSequence` and on `pending_unbounded_materialization`), neither
+    // of which had a backing test before this row — a lossy field inside `LoopActionContext` would
+    // otherwise round-trip badly and go unnoticed. A future `#[serde(skip)]` on `collapsed_axes`
+    // deserializes to an empty `Vec` and reds HERE, instead of letting the assertions below pass
+    // for the wrong reason.
+    assert_eq!(
+        loaded, prefix_written,
+        "premise: the stash survives save/load intact, so a pre-fix save reaches the clear with \
+         the standing axis still named in `collapsed_axes`"
     );
 
     // THE SEAM, fed the pre-fix stash.
