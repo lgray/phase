@@ -69,7 +69,9 @@ use super::resolved_commands::{
 use super::zones::{ChainReferentIntent, EtbTapState};
 use super::zones::{ExileCostSourceZone, Zone};
 
-use crate::analysis::resource::{object_class, CounterClass, ObjectClass, ResourceAxis};
+use crate::analysis::resource::{
+    object_class, CounterClass, ObjectClass, ResourceAxis, UnboundedMarkKind,
+};
 use crate::game::bracket_estimate::CommanderBracketTier;
 use crate::game::combat::{AttackTarget, CombatState};
 use crate::game::deck_loading::DeckEntry;
@@ -24435,6 +24437,27 @@ impl GameState {
         // The axis set comes from `scheduled_collapse_axes`, so "what a stash schedules" and
         // "what is removed once applied" are one match, never two copies of it.
         let mut axes_to_remove = self.scheduled_collapse_axes(collapsed);
+        // CR 500.5 + CR 106.4: DEFENSE IN DEPTH at the consuming authority. The registration site
+        // (`game::engine::materialize_object_growth_shortcut`) already stores only `DeferredAccrual`
+        // axes, so on a stash built by THIS build this retain removes nothing. It exists because the
+        // writer-side filter is enforced at ONE site while the invariant is consumed HERE:
+        //   * `pending_unbounded_materialization` is `#[serde]`-persisted, so a stash written by a
+        //     pre-fix build round-trips through a save carrying `Mana(_)` in `collapsed_axes` and
+        //     would strip a standing capability on load — the exact harm this fix closes.
+        //   * `ResourceAxis`'s exhaustive `match` build-breaks on a new AXIS, never on a new
+        //     REGISTRATION SITE; a future second producer inherits the guarantee only if it is
+        //     enforced where the value is used.
+        // Mirrors the DEFENSE-IN-DEPTH POSTURE of `derived_views::scheduled_display_axes` — NOT its
+        // question. That function's own doc is explicit that it answers a DIFFERENT one (what the
+        // badge may PROMISE across the accept→boundary window, versus which authority ends the
+        // axis), and the two only coincide because `Mana(_)` is today's sole `StandingCapability`.
+        // The posture is shared and the rules-bearing guard should not be the weaker of the two;
+        // the predicates are deliberately NOT unified, since coinciding answers to distinct
+        // questions is precisely what the categorical-boundary rule forbids collapsing.
+        // Deliberately NOT applied inside `scheduled_collapse_axes`, which must keep reporting
+        // faithfully what a stash stores.
+        axes_to_remove
+            .retain(|axis| axis.unbounded_mark_kind() == UnboundedMarkKind::DeferredAccrual);
         // The token pile drops exactly when the token axis collapses — true for a batched
         // `Tokens` item and for a `DriveSequence` that names `TokensCreated`.
         let drop_token_pile = axes_to_remove.contains(&ResourceAxis::TokensCreated);

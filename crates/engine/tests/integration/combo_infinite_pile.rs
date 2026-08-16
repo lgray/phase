@@ -3607,6 +3607,110 @@ fn low3_mixed_axis_boundary_preserves_debug_infinite_mana() {
     );
 }
 
+/// **V3** — a stash written by a PRE-FIX build, loaded by this one, still cannot strip a standing
+/// capability.
+///
+/// WHY THIS ROW EXISTS. The writer-side filter in
+/// `game::engine::materialize_object_growth_shortcut` means no stash THIS build registers can
+/// carry `Mana(_)` in `collapsed_axes` — so the reader-side `retain` in
+/// `clear_collapsed_materializations` removes nothing on a same-build stash, and V1/V2/V2b all
+/// stay GREEN when it is deleted. That is exactly what makes it deletable by accident; its own
+/// comment says it "removes nothing", which reads as an invitation. The reachable producer of a
+/// `Mana(_)`-bearing stash is not a second call site — `pending_unbounded_materialization` is
+/// `#[serde]`-persisted, so it is a SAVE FILE WRITTEN BEFORE THE FIX. This row is the only one
+/// that fails when the reader-side guard is deleted.
+///
+/// REVERT-FAILING ASSERTION: delete the `retain` in `clear_collapsed_materializations` ⇒
+/// `axes_to_remove` = {Mana(Colorless), Life(P0)} ⇒ P0's axis set empties ⇒ the entry is dropped
+/// ⇒ `get(&P0)` is `None` ⇒ RED on the `expect` below. This reverts against the READER-side
+/// guard; V1/V2/V2b revert against the WRITER-side filter, so the two are independent probes.
+///
+/// The load runs through real `serde_json`, and guard (b) asserts what came BACK: without it a
+/// future `#[serde(skip)]` on `collapsed_axes` would empty the loaded set and the row would pass
+/// vacuously while silently voiding the save-compat premise this fix is argued from.
+#[test]
+fn low3_prefix_save_stash_cannot_strip_a_standing_capability() {
+    use engine::analysis::resource::ResourceAxis;
+    use engine::types::mana::ManaType;
+
+    let mut runner = low3_life_engine_accepted(Low3BoardEtbTrigger::CastPresent);
+
+    // The real post-accept stash — already filtered to the deferred axis by this build's writer.
+    let live = runner
+        .state()
+        .pending_unbounded_materialization
+        .get(&P0)
+        .expect("the accept registers a materialization")
+        .clone();
+    let [PersistentAxisMaterialization::DriveSequence { sequence, .. }] = live.as_slice() else {
+        panic!("reach-guard: the seam under test is the DriveSequence route, got {live:?}");
+    };
+
+    // Rebuild it as a PRE-FIX build wrote it (`proposal.unbounded.clone()`, both axes) and take it
+    // through a real save/load — the only reachable producer of such a stash under this build.
+    let prefix_written = vec![PersistentAxisMaterialization::DriveSequence {
+        sequence: sequence.clone(),
+        collapsed_axes: vec![
+            ResourceAxis::Mana(ManaType::Colorless),
+            ResourceAxis::Life(P0),
+        ],
+    }];
+    let loaded: Vec<PersistentAxisMaterialization> = serde_json::from_str(
+        &serde_json::to_string(&prefix_written).expect("the stash serializes into a save"),
+    )
+    .expect("a pre-fix save's stash loads under this build");
+
+    // (a) REACH-GUARD: both axes are marked, so both halves below are real questions.
+    assert!(
+        runner
+            .state()
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|a| a.contains(&ResourceAxis::Mana(ManaType::Colorless))
+                && a.contains(&ResourceAxis::Life(P0))),
+        "reach-guard: both axes must be marked before the clear, got {:?}",
+        runner.state().unbounded_resources.get(&P0)
+    );
+    // (b) PREMISE PIN / ANTI-VACUITY: the LOADED stash still names the standing axis. This is the
+    // save-compat premise of the reader-side guard, asserted rather than assumed.
+    assert!(
+        matches!(
+            loaded.as_slice(),
+            [PersistentAxisMaterialization::DriveSequence { collapsed_axes, .. }]
+                if collapsed_axes.contains(&ResourceAxis::Mana(ManaType::Colorless))
+                    && collapsed_axes.contains(&ResourceAxis::Life(P0))
+        ),
+        "premise: `collapsed_axes` survives save/load, so a pre-fix stash reaches the clear with \
+         the standing axis still in it. Got {loaded:?}"
+    );
+
+    // THE SEAM, fed the pre-fix stash.
+    runner
+        .state_mut()
+        .clear_collapsed_materializations(P0, &loaded);
+
+    let after = runner
+        .state()
+        .unbounded_resources
+        .get(&P0)
+        .expect(
+            "the standing Mana(_) capability keeps P0's entry alive even when a PRE-FIX stash \
+             names it — the consuming authority re-filters. Without the reader-side `retain` \
+             this is `None`",
+        )
+        .clone();
+    assert!(
+        after.contains(&ResourceAxis::Mana(ManaType::Colorless)),
+        "CR 500.5 + CR 106.4 own this axis's expiry regardless of what a persisted stash claims. \
+         Got {after:?}"
+    );
+    assert!(
+        !after.contains(&ResourceAxis::Life(P0)),
+        "CR 732.2c: the deferred half is still delivered and still ends. This fails any \
+         'preserve everything' overcorrection. Got {after:?}"
+    );
+}
+
 // ───────── CR 732.2a + CR 603.6a: an ETB-SOURCED life axis routes to the concrete replay ─────────
 //
 // MEASURED DEFECT (real 4p Sprout Swarm dump `.fb-dumps/witherbloom-sprout-lumaret-works-slow`,

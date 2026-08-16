@@ -18615,7 +18615,7 @@ mod tests {
         for (axis, why) in [
             (
                 ResourceAxis::Life(p0),
-                "CR 119.1 life growth is deferred until the boundary applies it",
+                "CR 119.3 life gain is deferred until the boundary applies it",
             ),
             (
                 ResourceAxis::DamageDealt(p0),
