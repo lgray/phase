@@ -19012,11 +19012,31 @@ mod stage2_injector_tests {
                 // Identity re-established, not assumed: `9869a19f28c791ee`,
                 // `2bc316e3aa0297f8`, `8df98486627bfe15` at the new coordinates — the same
                 // three digests this log has carried since the first merge.
-                // `PreviousEffectCount` classification adds one line above all three producers,
-                // so they move uniformly to `:7003/:7080/:10318`; no prompt site changes.
-                "game/effects/mod.rs:7003".to_string(),
-                "game/effects/mod.rs:7080".to_string(),
-                "game/effects/mod.rs:10318".to_string(),
+                // `PreviousEffectCount` classification (upstream) adds one line above all
+                // three producers, moving them `:7002/:7079/:10317 ⇒ :7003/:7080/:10318`;
+                // no prompt site changes.
+                //
+                // Windfall CR 608.2h clause-freeze (this branch, phase 2), rebased onto
+                // upstream/main: `:7003/:7080/:10318 ⇒ :7027/:7104/:10342`, uniform `+24`
+                // above all three. This commit's hunks in effects/mod.rs are all inside
+                // `collect_clause_minimum_refs` / `capture_clause_minimum_snapshot`, i.e.
+                // ABOVE every producer, and their net `+24` equals the whole-file delta,
+                // so nothing was added below the third.
+                //
+                // Coordinates located by CONTENT in THIS worktree, never by indexing a
+                // line of `upstream/main` — that ref moves, and using it as a coordinate
+                // origin once produced a phantom 79-line discrepancy in this very lane.
+                // Re-measured at the rebased coordinates rather than carried forward: the
+                // 41-line window centred on each producer hashes to `ad615ce4…`,
+                // `a958f070…`, `d7fd67fd…` — byte-for-byte the pre-rebase triple — with the
+                // off-by-one neighbour (`8251728c…`, `e3830eb5…`, `85037f22…`) differing as
+                // a control at all three. (Those digests are this branch's window
+                // convention; the `9869a19f…` triple recorded above is main's own, over a
+                // different span. Two conventions, same three producers — do not compare
+                // them to each other.)
+                "game/effects/mod.rs:7027".to_string(),
+                "game/effects/mod.rs:7104".to_string(),
+                "game/effects/mod.rs:10342".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.

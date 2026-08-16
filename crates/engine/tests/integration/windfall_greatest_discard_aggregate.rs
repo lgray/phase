@@ -165,3 +165,55 @@ fn syphon_mind_shape_still_draws_the_cross_player_total() {
         "controller draws one per card discarded across all opponents (sum), not the max (1)"
     );
 }
+
+/// PROBE for the second, independent defect the code map surfaced: the draw
+/// tail keeps `player_scope: All` and re-fans-out, and each player's completed
+/// draw re-stamps the shared scalar with that player's DELIVERED count. So a
+/// player whose library ran short does not just draw fewer cards — they
+/// redefine how many every LATER player draws.
+///
+/// CR 608.2h: the draw action's count is determined only once, when the
+/// effect is applied — one player's short library cannot change another
+/// player's count. CR 608.2e: the whole fan-out is one action processed
+/// simultaneously. CR 121.2c: the SERIALIZATION (the active player performs
+/// all of their draws first, then each other player in turn order) is itself
+/// rules-correct — only the leaked count is not.
+///
+/// Discriminating: P0's library holds 5, everyone else 60. Correct = [5,8,8,8].
+/// Leaked-delivered-count = [5,5,5,5]. The two differ on three seats.
+#[test]
+fn windfall_short_library_does_not_shrink_later_players_draws() {
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    for (seat, hand) in SEATS.iter().zip([8usize, 7, 3, 3]) {
+        seed_hand(&mut scenario, *seat, hand);
+        seed_library(
+            &mut scenario,
+            *seat,
+            if *seat == P0 { 5 } else { LIBRARY_DEPTH },
+        );
+    }
+    let windfall = scenario
+        .add_spell_to_hand_from_oracle(P0, "Windfall", false, WINDFALL)
+        .with_mana_cost(ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+    let outcome = runner.cast(windfall).resolve();
+
+    let drawn: Vec<usize> = SEATS
+        .iter()
+        .map(|p| {
+            let depth = if *p == P0 { 5 } else { LIBRARY_DEPTH };
+            depth - zone_len(&outcome, *p, Zone::Library)
+        })
+        .collect();
+    eprintln!(
+        "PROBE windfall/short-library: drawn={drawn:?} waiting={:?}",
+        outcome.final_waiting_for()
+    );
+    assert_eq!(
+        drawn,
+        vec![5, 8, 8, 8],
+        "P0's short library caps only P0; every later player still draws the greatest discard (8)"
+    );
+}

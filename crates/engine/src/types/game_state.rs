@@ -14474,18 +14474,22 @@ impl StackEntryKind {
     }
 }
 
-/// CR 608.2e: A clause-local snapshot of an equalization minimum/maximum,
-/// frozen when a `player_scope` link begins so every player in that clause's
-/// APNAP fan-out resolves its disposal count against the same pre-clause board.
+/// CR 608.2h + CR 608.2e: A clause-local snapshot of a quantity whose answer is
+/// determined only once, when the effect is applied (608.2h), frozen when a
+/// `player_scope` link begins so every player in that clause's APNAP fan-out —
+/// one action processed simultaneously (608.2e) — resolves against the same
+/// pre-clause board.
 ///
 /// Balance's three clauses ("sacrifice lands", "discard cards", "sacrifice
 /// creatures") each compute an independent extremum at a different time. The
 /// `player_scope` driver re-resolves the effect's `count` expression on every
 /// per-player iteration; without a snapshot, after APNAP player 0 sacrifices
 /// down to the minimum, player 1 would recompute a smaller minimum. The
-/// snapshot freezes only the cross-player aggregate (`ControlledByEachPlayer` /
-/// `HandSize { AllPlayers }`); the per-player `left` operand still re-resolves
-/// per iteration, which is correct.
+/// snapshot freezes only the three clause-frozen classes
+/// (`ControlledByEachPlayer` / `HandSize { AllPlayers }` /
+/// `PreviousEffectAmount`, the last being a CR 608.2i look-back at a completed
+/// instruction's result); the per-player `left` operand still re-resolves per
+/// iteration, which is correct.
 ///
 /// Transient — never serialized. Captured before a `player_scope` link's
 /// fan-out and cleared when the link completes, so the next clause re-enters
@@ -16827,13 +16831,15 @@ declare_game_state! {
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_map")]
     pub last_effect_counts_by_player: HashMap<PlayerId, i32>,
 
-    /// CR 608.2e: Clause-local equalization snapshot. Each `player_scope` link
-    /// (e.g. a Balance clause) captures its cross-player extremum here before
-    /// the APNAP fan-out begins and clears it when the link completes, so every
-    /// player in that clause resolves against the same pre-clause board. The
-    /// per-link lifecycle is deliberately narrower than `last_vote_ballots`'
-    /// per-chain reset — three Balance clauses are three links in one chain and
-    /// must each snapshot independently. Transient.
+    /// CR 608.2h + CR 608.2e: Clause-local snapshot of the quantities whose
+    /// answer is determined only once, when the effect is applied. Each
+    /// `player_scope` link (e.g. a Balance clause, or Windfall's draw link)
+    /// captures its cross-player extremum or `PreviousEffectAmount` look-back
+    /// here before the APNAP fan-out begins and clears it when the link
+    /// completes, so every player in that clause resolves against the same
+    /// pre-clause board. The per-link lifecycle is deliberately narrower than
+    /// `last_vote_ballots`' per-chain reset — three Balance clauses are three
+    /// links in one chain and must each snapshot independently. Transient.
     #[serde(skip)]
     pub clause_minimum_snapshot: Option<ClauseMinimumSnapshot>,
 

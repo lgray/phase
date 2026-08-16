@@ -4436,12 +4436,14 @@ fn detach_after_multi_target_player_local_chain(
     tail
 }
 
-/// CR 608.2e: Collect cross-player equalization quantity references from a
-/// `QuantityExpr`. These are the refs whose value would shift as an APNAP
-/// fan-out mutates the board — `ControlledByEachPlayer` (battlefield extremum)
-/// and `HandSize { AllPlayers }` (hand extremum). The per-player `left` operand
-/// of a `Difference` is intentionally NOT collected: it must re-resolve per
-/// iterating player.
+/// CR 608.2h + CR 608.2e: Collect the quantity references whose answer is
+/// determined only once, when the clause is applied (608.2h), across an APNAP
+/// fan-out that is one action processed simultaneously (608.2e). Three classes
+/// are admitted: `ControlledByEachPlayer` (battlefield extremum),
+/// `HandSize { AllPlayers }` (hand extremum), and `PreviousEffectAmount`
+/// (a look-back at a COMPLETED instruction's result — see the arm below). The
+/// per-player `left` operand of a `Difference` is intentionally NOT collected:
+/// it must re-resolve per iterating player.
 fn collect_clause_minimum_refs<'a>(expr: &'a QuantityExpr, out: &mut Vec<&'a QuantityRef>) {
     match expr {
         QuantityExpr::Ref { qty } => {
@@ -4451,6 +4453,23 @@ fn collect_clause_minimum_refs<'a>(expr: &'a QuantityExpr, out: &mut Vec<&'a Qua
                     | QuantityRef::HandSize {
                         player: PlayerScope::AllPlayers { .. }
                     }
+                    // CR 608.2h: "the answer is determined only once, when the
+                    // effect is applied." A `PreviousEffectAmount` is a look-back
+                    // (CR 608.2i) at a COMPLETED instruction's result — it has no
+                    // per-iteration reading at all (that reading is
+                    // `EventContextAmount`, `game/quantity.rs`'s
+                    // `QuantityRef::EventContextAmount` arm), so every channel
+                    // and every aggregate is clause-frozen. Without this, each
+                    // player's own completed action re-stamps the shared scalar
+                    // (`install_previous_effect_counts_by_player`'s post-stamp →
+                    // `previous_effect_amount_from_events`' `Effect::Draw` arm)
+                    // and a later player inherits an earlier player's DELIVERED
+                    // count — Windfall with a short library drew [5,5,5,5]
+                    // instead of [5,8,8,8]. CR 608.2e supports it (one action,
+                    // processed simultaneously); CR 121.2c confirms the
+                    // SERIALIZATION of the multiplayer draw is itself correct —
+                    // only the leaked count is not.
+                    | QuantityRef::PreviousEffectAmount { .. }
             ) {
                 out.push(qty);
             }
@@ -4476,11 +4495,14 @@ fn collect_clause_minimum_refs<'a>(expr: &'a QuantityExpr, out: &mut Vec<&'a Qua
     }
 }
 
-/// CR 608.2e (§8): Capture this `player_scope` link's equalization extrema
-/// against the board as it stands NOW — before the APNAP fan-out begins. The
-/// snapshot is stored on `state.clause_minimum_snapshot` and consulted by the
-/// `ControlledByEachPlayer` / `HandSize { AllPlayers }` resolver arms so every
-/// player in the fan-out sees the same pre-clause minimum.
+/// CR 608.2h + CR 608.2e (§8): Capture this `player_scope` link's clause-frozen
+/// quantities against the board as it stands NOW — before the APNAP fan-out
+/// begins — because the answer is determined only once, when the effect is
+/// applied (608.2h), and the fan-out is one action processed simultaneously
+/// (608.2e). The snapshot is stored on `state.clause_minimum_snapshot` and
+/// consulted by the `ControlledByEachPlayer` / `HandSize { AllPlayers }` /
+/// `PreviousEffectAmount` resolver arms so every player in the fan-out sees the
+/// same pre-clause value.
 ///
 /// Always overwrites `state.clause_minimum_snapshot` — to `Some` when the
 /// clause carries a cross-player extremum, to `None` otherwise. This makes
@@ -4501,8 +4523,10 @@ fn collect_clause_minimum_refs<'a>(expr: &'a QuantityExpr, out: &mut Vec<&'a Qua
 /// structural rather than relying on the three cards' clauses using
 /// pairwise-distinct `QuantityRef` keys.
 fn capture_clause_minimum_snapshot(state: &mut GameState, scoped_template: &ResolvedAbility) {
-    // CR 608.2e: values are locked when the clause starts resolving, so each
-    // clause must capture against its own pre-clause board.
+    // CR 608.2h + CR 608.2e: the answer is determined only once, when the
+    // effect is applied, and the clause's fan-out is one action processed
+    // simultaneously — so values are locked when the clause starts resolving
+    // and each clause must capture against its own pre-clause board.
     //
     // Per-link reset: clear any previous clause's snapshot before resolving so
     // the live-resolve below sees a clean slate and a stale value is never
