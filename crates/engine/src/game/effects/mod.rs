@@ -5330,11 +5330,43 @@ pub fn is_known_effect(effect: &Effect) -> bool {
 /// what makes compound exile (Suspend Aggression's
 /// "Exile target nonland permanent and the top card of your library ...
 /// for each of those cards") expose both exiled objects to the grant.
+///
+/// The walk STOPS at a mode boundary — see [`crosses_modal_boundary`].
 pub(crate) fn next_sub_needs_tracked_set(ability: &ResolvedAbility) -> bool {
-    ability
-        .sub_ability
-        .as_deref()
-        .is_some_and(ability_or_branch_references_tracked_set)
+    branch_references_tracked_set(ability.sub_ability.as_deref())
+}
+
+/// CR 700.2 + CR 608.2c: does ENTERING `node` cross into a different modal
+/// instruction?
+///
+/// CR 700.2 makes each bulleted option a mode, and `build_chained_resolved`
+/// linearizes the selected modes into one `sub_ability` chain — so "is the next
+/// node part of my instruction or the start of the next one?" is not answerable
+/// from the chain's shape. It is answerable from `modal_instruction_ordinal`,
+/// which is stamped on exactly the mode roots.
+///
+/// CR 608.2c ("apply the rules of English") is why this matters: a walk asking
+/// "does anything after me consume the set I would publish?" is looking for an
+/// ANTECEDENT relationship, and a later mode's "those cards" never names an
+/// earlier mode's population. A node's OWN consumption is never a crossing —
+/// only entering a child, or being handed a parked continuation, is.
+///
+/// Deliberately NOT keyed on `sub_link`: a `SequentialSibling` marks a sentence
+/// boundary, which is a different thing from a mode boundary (measured — Random
+/// Encounter's sentence boundary parses to `ContinuationStep`, while Epic
+/// Experiment's non-modal chain puts a live tracked-set consumer two
+/// `SequentialSibling` hops below its producer). See the `SubAbilityLink` doc:
+/// "Do not add a consumer that infers a sentence boundary from this field."
+fn crosses_modal_boundary(node: &ResolvedAbility) -> bool {
+    node.modal_instruction_ordinal.is_some()
+}
+
+/// [`ability_or_branch_references_tracked_set`] applied to a branch that the
+/// caller is about to ENTER, with the mode-boundary stop of
+/// [`crosses_modal_boundary`]. Every descent in this family goes through here,
+/// so the stop cannot be applied at some entry points and forgotten at others.
+fn branch_references_tracked_set(node: Option<&ResolvedAbility>) -> bool {
+    node.is_some_and(|n| !crosses_modal_boundary(n) && ability_or_branch_references_tracked_set(n))
 }
 
 /// CR 608.2c: Does `ability` (or any of its continuation branches) consume the
@@ -5344,8 +5376,16 @@ pub(crate) fn next_sub_needs_tracked_set(ability: &ResolvedAbility) -> bool {
 /// whether the chosen cards must be published as the fresh tracked set the
 /// continuation reads (End-Blaze Epiphany: "choose a card exiled this way …
 /// you may play that card").
+///
+/// CR 700.2: the mode-boundary stop applies to THE ARGUMENT ITSELF here, unlike
+/// [`next_sub_needs_tracked_set`] where the caller IS the node. Both live
+/// callers hold the producer and pass the PARKED CONTINUATION, so for them
+/// entering the argument is already a crossing: an interactive choose made in
+/// mode N must not publish for mode N+1's anaphor. Within-mode continuations
+/// carry no ordinal and are unaffected — that is every corpus row these two
+/// sites serve today.
 pub(crate) fn chain_references_tracked_set(ability: &ResolvedAbility) -> bool {
-    ability_or_branch_references_tracked_set(ability)
+    branch_references_tracked_set(Some(ability))
 }
 
 /// CR 608.2c + CR 611.2c: An event-less producer publishes the population its
@@ -5366,6 +5406,12 @@ pub(crate) fn chain_references_tracked_set(ability: &ResolvedAbility) -> bool {
 ///  * no LATER node in this chain is itself in publisher position — the same
 ///    `next_sub_needs_tracked_set` predicate the publish site is gated on.
 ///
+/// CR 700.2 + CR 608.2c: leg 2 stops at a mode boundary
+/// ([`crosses_modal_boundary`]). A later MODE's producer is a different
+/// instruction, not a competing antecedent for this one, so it must not veto
+/// this mode's publish. Leg 1 is the mode's own responsibility and is made true
+/// at every mode root by the boundary reset in `resolve_ability_chain`.
+///
 /// When the guard declines, the arm falls through to the `_ =>` `ZoneChanged`
 /// harvest, which yields `[]` for every head in this class (they emit no
 /// `ZoneChanged`) — i.e. byte-identical to the pre-#6857 engine.
@@ -5378,6 +5424,15 @@ pub(crate) fn chain_references_tracked_set(ability: &ResolvedAbility) -> bool {
 /// undetached chain would have declined. Measured unreachable at the time of
 /// writing: 0 of the 627 event-less heads in the corpus carry a `player_scope`.
 /// If one ever does, leg 2 needs the pre-split ability, not the template.
+/// The mode-boundary stop is neither wider nor narrower than that gap: it is the
+/// same walk over the same pre-split ability. On the fan-out path itself the stop
+/// is REDUNDANT rather than load-bearing — `split_player_scope_chain` has already
+/// detached the tail that would hold the next mode's root — so it can only narrow
+/// the gate/leg-2 disagreement above, never widen it. (A mode root CAN be the
+/// fan-out head: `build_resolved_from_def` copies `player_scope` onto every mode
+/// root, pinned by `build_resolved_from_def_preserves_player_scope`, and 17
+/// corpus cards carry a mode-level `player_scope` — Rankle's Prank on all three
+/// modes.)
 fn is_sole_chain_producer(state: &GameState, ability: &ResolvedAbility) -> bool {
     let no_earlier_producer = state.chain_tracked_set_id.is_none_or(|id| {
         state
@@ -5404,9 +5459,18 @@ fn is_sole_chain_producer(state: &GameState, ability: &ResolvedAbility) -> bool 
 /// `motivated_pony_untaps_only_the_attacking_creatures_it_pumped` goes red. The
 /// fix at that point is to scope the leg to the nearest antecedent (CR 608.2c's
 /// actual rule) rather than to relax the test.
+///
+/// CR 700.2: chain-wide, but NOT past a mode boundary. Without that stop, two
+/// publishing modes A → B make leg 2 walk past A's own consumer into B's root,
+/// find B's consumer, and DECLINE A's publish — so A's within-mode consumer
+/// binds nothing. The stop is applied inside `walk`, which covers the seed and
+/// both recursions uniformly.
 fn later_node_is_publisher_position(ability: &ResolvedAbility) -> bool {
     fn walk(node: Option<&ResolvedAbility>) -> bool {
         node.is_some_and(|n| {
+            if crosses_modal_boundary(n) {
+                return false;
+            }
             // CR 603.7: production's own predicate, unmodified — a node whose
             // consumer merely DEFERS (a `CreateDelayedTrigger
             // { uses_tracked_set: true }`, which acts at a later time) still
@@ -5442,15 +5506,26 @@ fn ability_or_branch_references_tracked_set(ability: &ResolvedAbility) -> bool {
             .as_ref()
             .is_some_and(quantity_expr_references_tracked_set);
 
+    // CR 700.2 + CR 608.2c: both descents stop at a mode boundary. Guarding only
+    // the entry hop in `next_sub_needs_tracked_set` is INSUFFICIENT whenever a
+    // mode has more than one node: `append_to_sub_chain` hangs the next mode's
+    // root off the TAIL of the current mode's own sub-chain, so the entry hop
+    // lands on a within-mode node (no ordinal, so it passes) and an unguarded
+    // recursion then descends into the next mode's root and finds ITS consumer.
+    //
+    // NO CORPUS CARRIER — disclosed, and the discriminating row
+    // (`modal_two_node_mode_does_not_publish_for_a_later_modes_anaphor`) is
+    // SYNTHESIZED from two shapes this engine already parses separately. A scan
+    // of `data/card-data.json` funnels 179 modal cards with >= 2 selectable modes
+    // -> 69 with a multi-node mode -> 10 with a tracked-set-consuming mode -> 0
+    // with a multi-node mode ORDERED BEFORE a consuming one, because
+    // `ordered_selected_mode_indices` sorts and every multi-node mode found sits
+    // at the highest index of its card. That corpus is a generated artifact and
+    // its consumer side may be undercounted relative to this branch's parser;
+    // regenerate `card-data.json` to close it.
     consumes
-        || ability
-            .sub_ability
-            .as_deref()
-            .is_some_and(ability_or_branch_references_tracked_set)
-        || ability
-            .else_ability
-            .as_deref()
-            .is_some_and(ability_or_branch_references_tracked_set)
+        || branch_references_tracked_set(ability.sub_ability.as_deref())
+        || branch_references_tracked_set(ability.else_ability.as_deref())
 }
 
 /// Returns true if the effect references the most recent tracked set through

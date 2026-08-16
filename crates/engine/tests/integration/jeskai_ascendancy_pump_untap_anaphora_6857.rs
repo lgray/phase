@@ -988,47 +988,41 @@ fn valley_floodcaller_untaps_exactly_the_creatures_it_pumped() {
     );
 }
 
-/// Trystan's Command — PRESERVED, and a regression sentinel for the two-regime
-/// law rather than a fix.
+/// Trystan's Command — THE BOARD-VISIBLE HEADLINE for the mode-scoping fix.
+/// This row was committed INVERTED, pinning the rules-wrong outcome with a doc
+/// comment mandating this flip; the flip is what that comment asked for.
 ///
 /// The card is MODAL (choose two of four sibling abilities), not a chain — the
-/// engine resolves the chosen modes in sequence, so the publish gate sees the
-/// later mode's consumer. With the destroy mode chosen alongside the pump mode,
-/// the destroy publishes first, `is_sole_chain_producer`'s leg 1 declines the
-/// mass pump, and the anaphor resolves against the destroyed creature — which
-/// untaps nothing. That is a KNOWN, BOUNDED gap that predates this PR: before
-/// the parser rewrite the implicit pronoun bound elsewhere and also untapped
-/// nothing. The row exists to prove the behaviour did not get WORSE, so do not
-/// "simplify" it away on the grounds that it asserts a non-untap.
+/// engine linearizes the chosen modes into ONE resolution chain, so the publish
+/// gate used to see a later mode's consumer as if it were its own. With the
+/// destroy mode chosen alongside the pump mode, the destroy published first,
+/// `is_sole_chain_producer`'s leg 1 declined the mass pump, and mode 4's anaphor
+/// resolved against the DESTROYED creature — untapping nothing.
 ///
-/// STRUCTURAL CONSEQUENCE — this is not "one unmeasured mode pair". MEASURED:
-/// the card is `min_choices: 2, max_choices: 2` over `mode_count: 4`, so a
-/// companion mode is ALWAYS chosen; and two of the three possible companions
-/// publish before mode 4 resolves — destroy (this row) and token copy (the row
-/// below, `[0, 3]`, published set = the created token). INFERRED, not measured:
-/// the graveyard-return companion publishes too, because it moves cards to hand
-/// and the `_ =>` arm of the publish switch harvests `ZoneChanged`. If that
-/// inference is wrong, mode 4 is fixable for exactly one of three pairs.
-/// **On the two measured pairs, Trystan's Command mode 4 cannot be fixed while
-/// the publish gate is chain-wide rather than mode-scoped.**
-/// CR 700.2 is the lever: modes are separate instructions, so a sibling mode's
-/// `Destroy` arguably should not count as an "earlier producer" for mode 4's
-/// anaphor at all. Fixing that means scoping the gate to the mode, not weakening
-/// this test.
+/// CR 700.2: "each of those options is a mode", i.e. a separate instruction.
+/// CR 608.2c ("apply the rules of English"): "Untap them" names the creatures
+/// THIS mode just pumped; a sibling mode's `Destroy` is not its antecedent.
+/// `next_sub_needs_tracked_set` now stops at the mode boundary, so mode 3's
+/// destroy no longer publishes for mode 4's consumer and mode 4 publishes its
+/// own pumped population.
 ///
-/// Two measured side-facts, recorded because they are easy to misread:
-///  * the TRACKED SET does change (empty -> `[victim]`). The parser rewrite
-///    creates a `TrackedSet` consumer where there was none, so the pre-existing
-///    `Destroy` publish arm now fires. The BOARD is unaffected, because the only
-///    consumer is an untap aimed at a creature that is already in the graveyard.
-///  * this row is a SECOND leg-1 witness: with `no_earlier_producer` deleted the
-///    set becomes `[victim, mine]`, i.e. the mass pump joins the destroy's set.
+/// STRUCTURAL SCOPE — this is not one mode pair. MEASURED: the card is
+/// `min_choices: 2, max_choices: 2` over `mode_count: 4`, so a companion mode is
+/// ALWAYS chosen, and all three possible companions published before mode 4
+/// resolved: destroy (this row), token copy (the row below, `[0, 3]`), and
+/// graveyard-return (`[1, 3]`, measured `tracked_sets = [(1, [grave_card])]`).
+/// Mode 4 was board-wrong on 3 of 3 legal pairs.
 ///
-/// The `tapped` assertion below therefore pins a rules-INCORRECT outcome on
-/// purpose, as a no-regression sentinel. When the mode-scoping fix lands it must
-/// be flipped to `!tapped`, not deleted.
+/// DISCRIMINATION: the two flipping values are `published_set` (`[victim]` ->
+/// `[mine]`) and `tapped(mine)` (`true` -> `false`). Revert the mode-boundary
+/// stop in `next_sub_needs_tracked_set` and both go back. `power == Some(5)` and
+/// the graveyard assertion are the paired NON-VACUITY witnesses: they prove both
+/// modes really executed, so a `!tapped` reading cannot come from the pump
+/// simply never running. `published_set` panics on a second set, so it doubles
+/// as a "the fix did not fragment the chain into two sets" assertion — the count
+/// stays 1.
 #[test]
-fn trystans_command_pump_mode_is_unchanged_when_an_earlier_mode_publishes() {
+fn trystans_command_pump_mode_untaps_the_population_its_own_mode_pumped() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let victim = scenario.add_creature(P1, "Victim", 2, 2).id();
@@ -1056,8 +1050,9 @@ fn trystans_command_pump_mode_is_unchanged_when_an_earlier_mode_publishes() {
 
     assert_eq!(
         published_set(runner.state()),
-        ids(&[victim]),
-        "CR 608.2c: the earlier mode's destroy is the live antecedent"
+        ids(&[mine]),
+        "CR 608.2c: mode 4's \"them\" names the creatures mode 4 pumped, not the \
+         sibling mode's destroy victim"
     );
     assert_eq!(
         runner.state().objects[&victim].zone,
@@ -1070,21 +1065,24 @@ fn trystans_command_pump_mode_is_unchanged_when_an_earlier_mode_publishes() {
         "non-vacuity: the pump mode really executed too"
     );
     assert!(
-        tapped(runner.state(), mine),
-        "unchanged from before this PR — see the doc comment"
+        !tapped(runner.state(), mine),
+        "CR 701.26b: the pumped creature untaps — the defect this PR fixes"
     );
 }
 
-/// The token-copy companion mode, measured: the second half of the "any pair
-/// preempts mode 4" claim in the row above.
+/// The token-copy companion mode: the same fix reached through a DIFFERENT
+/// publishing arm. Also committed inverted, also flipped here.
 ///
-/// Modes 1 and 4 (`[0, 3]`). The copy token's creation publishes first, leg 1
-/// declines the mass pump, and the anaphor binds the TOKEN — so the pumped
-/// creatures stay tapped even though the pump itself ran. Same bounded gap as
-/// the destroy pair, reached through a different publishing arm, which is the
-/// point: the gate is chain-wide, so WHICH earlier mode published is irrelevant.
+/// Modes 1 and 4 (`[0, 3]`). The copy token's creation used to publish first,
+/// leg 1 declined the mass pump, and mode 4's anaphor bound the TOKEN — so the
+/// pumped creatures stayed tapped even though the pump itself ran. The
+/// mode-boundary stop is arm-agnostic: it is not "the destroy arm was special",
+/// it is that no earlier MODE publishes for a later mode's anaphor.
+///
+/// REDUNDANT BY MECHANISM with the row above — same crossing, same predicate.
+/// Kept for card/arm coverage; do NOT cite it as a second independent bar.
 #[test]
-fn trystans_command_token_copy_mode_also_preempts_the_pump_anaphor() {
+fn trystans_command_token_copy_mode_no_longer_preempts_the_pump_anaphor() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let elf = scenario
@@ -1121,10 +1119,19 @@ fn trystans_command_token_copy_mode_also_preempts_the_pump_anaphor() {
         .map(|id| id.0)
         .collect();
     assert_eq!(token.len(), 1, "non-vacuity: the copy mode really ran");
+    // Mode 4 pumps "creatures target player controls", and by the time it
+    // resolves that is the elf, `mine`, AND the token mode 1 just created — CR
+    // 611.2c fixes the affected set when the continuous effect begins, and the
+    // token already exists. So the token's presence here is the PUMP's own
+    // population, not a leak: pre-fix this set was the token ALONE.
+    let mut expected = ids(&[elf, mine]);
+    expected.extend_from_slice(&token);
+    expected.sort_unstable();
     assert_eq!(
         published_set(runner.state()),
-        token,
-        "CR 608.2c: the earlier mode's token is the live antecedent"
+        expected,
+        "CR 608.2c: mode 4's \"them\" is the population mode 4 pumped, not the \
+         sibling mode's token alone"
     );
     assert_eq!(
         runner.state().objects[&mine].power,
@@ -1132,7 +1139,577 @@ fn trystans_command_token_copy_mode_also_preempts_the_pump_anaphor() {
         "non-vacuity: the pump mode really executed too"
     );
     assert!(
-        tapped(runner.state(), mine),
-        "unchanged from before this PR — see the doc comment above"
+        !tapped(runner.state(), mine),
+        "CR 701.26b: the pumped creature untaps — the defect this PR fixes"
     );
+}
+
+/// Settle Beyond Reality (2X2, `{4}{W}` sorcery) — a tracked-set-CONTENTS row
+/// plus a shadowing canary. It is NOT board-visible: an earlier draft claimed it
+/// was, and running it falsified that (see the shadowing paragraph below). Oracle
+/// text verbatim from Scryfall; both modes chosen ("Choose one or both —",
+/// `min_choices: 1, max_choices: 2`).
+///
+/// MEASURED parse shape at `77e686cae` (probe over `parse_oracle_text`):
+///   * mode 0 — `ChangeZone { destination: Exile, target: Typed { Creature,
+///     controller: Opponent } }`, no sub-ability;
+///   * mode 1 — `ChangeZone { destination: Exile, target: Typed { Creature,
+///     controller: You } }` -> `ChangeZone { destination: Battlefield, target:
+///     TrackedSet { id: 0 } }`.
+///
+/// `TrackedSetId(0)` is the "most recent set" sentinel: it binds to the
+/// HIGHEST-id tracked set, whatever produced it. The publish gate
+/// (`next_sub_needs_tracked_set`) is chain-wide, and the modes are linearized
+/// into ONE resolution chain, so mode 0's exile sees mode 1's `TrackedSet`
+/// consumer below it and publishes `[theirs]`. Mode 1's exile then EXTENDS that
+/// same set to `[theirs, mine]`. **This row asserts the SET, not the board.**
+///
+/// MEASURED at `77e686cae`: the board is already correct here, and an earlier
+/// draft of this comment claiming otherwise was falsified by running it. A
+/// singular `ChangeZone` calls `targeting::resolved_targets` then
+/// `effects::effect_object_targets`, where `TargetFilter::TrackedSet` falls into
+/// the `_ =>` arm that returns `ability.targets` — this mode's OWN inherited
+/// chosen target, `[mine]`. `targeted_objects` is then non-empty, so the
+/// untargeted zone-scan path (which would have used `matches_target_filter` and
+/// moved every set member) is never reached. **Chosen-target inheritance is
+/// already mode-scoped and SHADOWS the sentinel for this consumer**, which is
+/// why the leaked `[theirs, mine]` is inert on the board here.
+///
+/// So this is a tracked-set-CONTENTS row. The two "theirs stays exiled"
+/// assertions below PASS pre-fix: they are a no-regression **canary** that would
+/// flip if anyone ever unshadowed `ChangeZone`, NOT discriminators. Only the
+/// `published_set` assertion discriminates. Any later claim that the zone
+/// assertions discriminate is a re-justification, not a restatement.
+///
+/// CR 700.2 + CR 700.2a: each bullet is a separate mode, chosen independently.
+/// CR 608.2c ("apply the rules of English"): "it" in mode 1 is a
+/// nearest-antecedent pronoun bound to mode 1's own exile — a sibling mode's
+/// exile is not its antecedent. The opponent's creature must stay in exile.
+///
+/// The three assertions are load-bearing in this order:
+///  1. non-vacuity — mode 0's exile really executed (a `ZoneChanged` to Exile for
+///     the opponent's creature). Without it, "the opponent's creature is not on
+///     the battlefield" would also pass if mode 0 had silently never run, and
+///     "it is on the battlefield" could not be distinguished from "it was never
+///     exiled";
+///  2. THE DEFECT — the opponent's creature is still in exile;
+///  3. the published set contains only mode 1's own exile. `published_set`
+///     panics on a second set, so it doubles as a "the fix did not fragment the
+///     chain" assertion.
+#[test]
+fn settle_beyond_reality_return_mode_returns_only_the_creature_its_own_mode_exiled() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let theirs = scenario.add_creature(P1, "Their Bear", 2, 2).id();
+    let mine = scenario.add_creature(P0, "My Bear", 2, 2).id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Settle Beyond Reality",
+            false,
+            "Choose one or both —\n• Exile target creature you don't control.\n• Exile target creature you control, then return it to the battlefield under its owner's control.",
+        )
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner: GameRunner = scenario.build();
+    let outcome = runner
+        .cast(spell)
+        .modes(&[0, 1])
+        .target_objects(&[theirs, mine])
+        .resolve();
+
+    let exiled_theirs = outcome
+        .events()
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                engine::types::events::GameEvent::ZoneChanged {
+                    object_id,
+                    to: engine::types::zones::Zone::Exile,
+                    ..
+                } if *object_id == theirs
+            )
+        })
+        .count();
+    assert_eq!(
+        exiled_theirs, 1,
+        "non-vacuity: mode 0 must actually exile the opponent's creature, \
+         otherwise the exile assertion below is vacuous"
+    );
+
+    assert_eq!(
+        runner.state().objects[&theirs].zone,
+        engine::types::zones::Zone::Exile,
+        "CR 608.2c: mode 1's \"return it\" names the creature MODE 1 exiled; \
+         the opponent's creature must stay exiled"
+    );
+    assert!(
+        !runner.state().battlefield.contains(&theirs),
+        "CR 700.2: a sibling mode's exile is not mode 1's antecedent — the \
+         opponent's creature must not come back"
+    );
+
+    assert_eq!(
+        runner.state().objects[&mine].zone,
+        engine::types::zones::Zone::Battlefield,
+        "CR 400.7j: an effect that moves an object to a public zone can still \
+         find it, so mode 1 returns its own exiled creature to the battlefield"
+    );
+    assert!(
+        runner.state().battlefield.contains(&mine),
+        "mode 1's own creature is the whole population of \"return it\""
+    );
+
+    assert_eq!(
+        published_set(runner.state()),
+        ids(&[mine]),
+        "CR 608.2c: the tracked set mode 1's anaphor binds holds only mode 1's \
+         own exile"
+    );
+}
+
+/// SYNTHESIZED, disclosed (precedent: this file's "Bare Pump" rows) — the
+/// discriminator for the SECOND mode-boundary crossing: the recursive descents
+/// inside `ability_or_branch_references_tracked_set`.
+///
+/// Guarding only the ENTRY HOP in `next_sub_needs_tracked_set` is insufficient
+/// whenever a mode has MORE THAN ONE node, because `append_to_sub_chain` hangs
+/// the next mode's root off the TAIL of the current mode's own sub-chain. Here
+/// mode 1 is `Destroy -> Draw`, so the entry hop lands on the `Draw` — which
+/// carries no ordinal (it is within-mode) and does not consume, so it passes —
+/// and the recursion below it reaches mode 2's root. Without the stop on that
+/// recursion, mode 1's `Destroy` publishes `[victim]` for mode 2's "Untap
+/// them", `is_sole_chain_producer`'s leg 1 then declines mode 2's own publish,
+/// and the untap binds a creature that is already in the graveyard.
+///
+/// DISCRIMINATION: delete the stop from the `sub_ability` descent in
+/// `ability_or_branch_references_tracked_set` and `published_set` goes back to
+/// `[victim]` while `tapped(mine)` goes back to `true`. The single-node modes on
+/// the real cards above cannot flip this — their entry hop already lands on the
+/// next mode's root, so crossing #1 alone covers them.
+///
+/// The `else_ability` descent of the same function has NO discriminating row and
+/// no coverage is claimed for it: reverting it (together with crossing #4, the
+/// other `else_ability` guard) leaves the integration suite at 5131 passed / 0
+/// failed. It cannot currently be reached — `append_to_sub_chain` walks only
+/// `sub_ability`, and `build_chained_resolved` is the sole writer of
+/// `modal_instruction_ordinal`, so no mode root can sit in an `else_ability`
+/// slot. It is kept for uniformity across the descents, not for a demonstrated
+/// defect.
+///
+/// WHY SYNTHESIZED: the plan named Grub's Command as the real carrier. MEASURED
+/// against `parse_oracle_text` in this worktree, it is not one — its pump bullet
+/// lowers to a SINGLE `GenericEffect` node with no rider, and its mill bullet's
+/// consumer lowers to a singular `ChangeZone { destination: Hand, target:
+/// TrackedSetFiltered { id: 0, filter: Any } }` whose Goblin restriction the
+/// parser drops and which is inert at runtime. It could not have discriminated
+/// anything. The two bullets glued here are the verbatim shapes this file
+/// already exercises separately.
+///
+/// CR 700.2 (each bullet is a mode) + CR 608.2c ("Untap them" names the
+/// creatures its OWN mode pumped) + CR 701.26b (untap).
+#[test]
+fn modal_two_node_mode_does_not_publish_for_a_later_modes_anaphor() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let victim = scenario.add_creature(P1, "Victim", 2, 2).id();
+    let mine = scenario.add_creature(P0, "Mine", 2, 2).id();
+    scenario.with_library_top(P0, &["Lib A"]);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Two Node Command",
+            false,
+            "Choose two —\n• Destroy target creature. Draw a card.\n• Creatures target player controls get +3/+3 until end of turn. Untap them.",
+        )
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner: GameRunner = scenario.build();
+    let hand_before = runner.state().players[0].hand.len();
+    for id in [victim, mine] {
+        runner.state_mut().objects.get_mut(&id).unwrap().tapped = true;
+    }
+
+    runner
+        .cast(spell)
+        .modes(&[0, 1])
+        .target_objects(&[victim])
+        .target_player(P0)
+        .resolve();
+    evaluate_layers(runner.state_mut());
+
+    assert_eq!(
+        runner.state().objects[&victim].zone,
+        engine::types::zones::Zone::Graveyard,
+        "non-vacuity: mode 1's destroy really executed, so it really was in \
+         publisher position when the descent ran"
+    );
+    assert_eq!(
+        runner.state().players[0].hand.len(),
+        hand_before,
+        "non-vacuity: mode 1's SECOND node really executed too (the cast spent \
+         the spell from hand and the draw replaced it), so the entry hop really \
+         landed on a within-mode node rather than on mode 2's root"
+    );
+    assert_eq!(
+        runner.state().objects[&mine].power,
+        Some(5),
+        "non-vacuity: mode 2's pump really executed"
+    );
+    assert_eq!(
+        published_set(runner.state()),
+        ids(&[mine]),
+        "CR 608.2c: mode 2's \"them\" is mode 2's own pumped population — mode \
+         1's destroy must not have published across the boundary"
+    );
+    assert!(
+        !tapped(runner.state(), mine),
+        "CR 701.26b: the pumped creature untaps"
+    );
+}
+
+/// Expose the Culprit, modes `[0, 1]` — POSITIVE CONTROL for the class of
+/// producers that already allocate a fresh, strictly-greater set id.
+///
+/// NO-REGRESSION. Mode 2 (index 1) heads with `ChooseObjectsIntoTrackedSet`,
+/// which publishes through `publish_fresh_tracked_set` — an UNGATED site that
+/// never consults `next_sub_needs_tracked_set` at all. The mode-boundary work
+/// must leave it exactly where it was: the pile it cloaks is the pile the player
+/// chose, no more and no less, with mode 1's unrelated turn-face-up in front of
+/// it in the same resolution chain.
+///
+/// CR 701.58a (cloak) + CR 700.2 (modes are separate instructions).
+#[test]
+fn expose_the_culprit_cloaks_only_the_pile_it_chose() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let hidden = scenario.add_creature(P0, "Hidden", 2, 2).id();
+    let pile: Vec<ObjectId> = ["Dis A", "Dis B"]
+        .iter()
+        .map(|n| {
+            scenario
+                .add_creature(P0, n, 2, 2)
+                .with_keyword(engine::types::keywords::Keyword::Disguise(
+                    ManaCost::generic(3).into(),
+                ))
+                .id()
+        })
+        .collect();
+    let bystander = scenario
+        .add_creature(P0, "Dis C", 2, 2)
+        .with_keyword(engine::types::keywords::Keyword::Disguise(
+            ManaCost::generic(3).into(),
+        ))
+        .id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Expose the Culprit",
+            false,
+            "Choose one or both —\n• Turn target face-down creature face up.\n• Exile any number of face-up creatures you control with disguise in a face-down pile, shuffle that pile, then cloak them.",
+        )
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner: GameRunner = scenario.build();
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&hidden)
+        .unwrap()
+        .face_down = true;
+
+    runner
+        .cast(spell)
+        .modes(&[0, 1])
+        .target_objects(&[hidden])
+        .commit();
+    runner.advance_until_stack_empty();
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::ChooseObjectsSelection { .. }
+        ),
+        "reach-guard: mode 2's pile selection must be reached, or nothing below \
+         is about the fresh-publish class. got {:?}",
+        runner.state().waiting_for
+    );
+    runner
+        .act(GameAction::SelectTargets {
+            targets: pile.iter().map(|&id| TargetRef::Object(id)).collect(),
+        })
+        .expect("pile selection accepted");
+
+    assert!(
+        !runner.state().objects[&hidden].face_down,
+        "non-vacuity: mode 1 really turned its own target face up, so both modes \
+         ran in one chain"
+    );
+    for &id in &pile {
+        assert!(
+            runner.state().objects[&id].face_down,
+            "CR 701.58a: every chosen creature is cloaked"
+        );
+    }
+    assert!(
+        !runner.state().objects[&bystander].face_down,
+        "an unchosen disguise creature is outside the pile under any reading"
+    );
+    // `ChooseObjectsIntoTrackedSet` publishes a fresh EMPTY set at its head and
+    // then the chosen pile as a strictly-greater id, so this chain legitimately
+    // holds two sets and `published_set`'s single-set helper does not apply.
+    let sets = tracked_sets(runner.state());
+    assert_eq!(
+        sets.last().map(Vec::as_slice),
+        Some(ids(&pile).as_slice()),
+        "the fresh-published pile is the highest-id set, unchanged by the \
+         mode-boundary work: got {sets:?}"
+    );
+}
+
+/// Drive the game forward until every delayed trigger has resolved, answering
+/// the turn-based actions that would otherwise stall a bare priority pass.
+fn advance_until_delayed_triggers_resolve(runner: &mut GameRunner) {
+    for guard in 0..256 {
+        if runner.state().delayed_triggers.is_empty() && runner.state().stack.is_empty() {
+            return;
+        }
+        let action = match &runner.state().waiting_for {
+            WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+                attacks: vec![],
+                bands: vec![],
+            },
+            WaitingFor::DeclareBlockers { .. } => GameAction::DeclareBlockers {
+                assignments: vec![],
+            },
+            WaitingFor::DiscardToHandSize { count, cards, .. } => GameAction::SelectCards {
+                cards: cards.iter().take(*count).copied().collect(),
+            },
+            _ => GameAction::PassPriority,
+        };
+        assert!(
+            runner.act(action).is_ok(),
+            "stalled at guard {guard}: phase={:?} waiting={:?}",
+            runner.state().phase,
+            runner.state().waiting_for
+        );
+    }
+    panic!("delayed trigger never resolved");
+}
+
+// ===========================================================================
+// CROSS-`SequentialSibling` NO-REGRESSION GATES
+//
+// Both cards are NON-MODAL, so `modal_instruction_ordinal` is `None` on every
+// node and the mode-boundary machinery is provably inert for them. That is the
+// point: they hold the mode-keyed design to its claim that a sentence boundary
+// is not a mode boundary.
+//
+// WHICH OF THE TWO ACTUALLY GUARDS THAT — MEASURED, not derived. Probe: key the
+// reset on `sub_link == SubAbilityLink::SequentialSibling` instead of the mode
+// ordinal, run the whole integration suite (8 rows red of 5131):
+//
+//   * RANDOM ENCOUNTER goes RED — it is the mis-key guard. Its chain fragments
+//     into two tracked sets (`[[1, 1, 2, 2, 3, 4], []]`) and the single-set
+//     precondition in `published_set` fails. NOTE this is NOT its delayed
+//     `Bounce`, which is a separately measured runtime no-op: the guard value is
+//     the fragmentation, not the bounce.
+//   * EPIC EXPERIMENT stays GREEN — so despite having the deeper cross-sibling
+//     consumer, it does NOT discriminate a `sub_link` mis-key and no guard status
+//     is claimed for it. It is derivation-only here.
+//
+// Two successive readings of these rows (mine, then a reviewer's) predicted the
+// opposite pairing. Both were wrong. Do not re-derive this from the chain shapes
+// below — re-run the probe.
+//
+// Chains dumped from `parse_oracle_text` in this worktree (not inferred from
+// the Oracle text's punctuation — that inference has been measured wrong here):
+//
+//   Epic Experiment:   ExileTop(ContinuationStep)
+//                        -> CastFromZone(SequentialSibling)
+//                          -> ChangeZoneAll{TrackedSetFiltered{0}}(SequentialSibling)
+//
+//   Random Encounter:  Shuffle(ContinuationStep)
+//                        -> Mill(ContinuationStep)
+//                          -> ChangeZoneAll{TrackedSetFiltered{0,Creature}}(ContinuationStep)
+//                            -> haste GenericEffect(SequentialSibling)
+//                              -> CreateDelayedTrigger{Bounce{TrackedSet{0}}}(SequentialSibling)
+// ===========================================================================
+
+/// Epic Experiment — a tracked-set consumer TWO `SequentialSibling` hops below
+/// its producer, with an INTERACTIVE cast step inside the window.
+///
+/// The `ExileTop` publishes; `CastFromZone` (a `SequentialSibling`, and a real
+/// pause) sits between; and `ChangeZoneAll { TrackedSetFiltered { 0 } }` — "put
+/// all cards exiled this way that weren't cast into your graveyard" — is a
+/// second `SequentialSibling` below that.
+///
+/// NO GUARD STATUS IS CLAIMED. The obvious derivation — "a reset keyed on
+/// `sub_link` would fire twice inside one instruction and orphan the anaphor, so
+/// the exiled cards would stay in exile forever" — was MEASURED FALSE: under that
+/// exact mis-key this row stays GREEN (see the section header). WHY it survives
+/// is not measured — the standing candidate, that `TrackedSetFiltered(0)` binds
+/// through `targeting::resolve_tracked_set_id` whose later rungs still find the
+/// `ExileTop` set after a chain-id clear, is a reading and is recorded as one.
+/// Keep this as a derivation-only no-regression row; the measured mis-key
+/// witness is Random Encounter.
+///
+/// CR 608.2c: this is ONE instruction sequence, not two. The card is not modal,
+/// so `crosses_modal_boundary` is false at every node and the binding must
+/// survive byte-identically.
+#[test]
+fn epic_experiment_binds_its_exiled_set_across_two_sequential_siblings() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    // Mana value 5 each, so `X = 2` makes NONE of them castable: the
+    // `CastFromZone` step is reached and offers nothing, and every exiled card
+    // must fall through to the graveyard step below it.
+    let lib: Vec<ObjectId> = ["Lib A", "Lib B"]
+        .iter()
+        .map(|n| {
+            scenario
+                .add_spell_to_library_top(P0, n, false)
+                .with_mana_cost(ManaCost::generic(5))
+                .from_oracle_text("You gain 1 life.")
+                .id()
+        })
+        .collect();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Epic Experiment",
+            false,
+            "Exile the top X cards of your library. You may cast instant and sorcery spells with mana value X or less from among them without paying their mana costs. Then put all cards exiled this way that weren't cast into your graveyard.",
+        )
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![engine::types::mana::ManaCostShard::X],
+            generic: 0,
+        })
+        .id();
+    scenario.with_mana_pool(
+        P0,
+        (0..2)
+            .map(|_| {
+                engine::types::mana::ManaUnit::new(
+                    engine::types::mana::ManaType::Colorless,
+                    ObjectId(0),
+                    false,
+                    vec![],
+                )
+            })
+            .collect(),
+    );
+    let mut runner: GameRunner = scenario.build();
+    runner.cast(spell).x(2).resolve();
+
+    assert_eq!(
+        published_set(runner.state()),
+        ids(&lib),
+        "CR 608.2c: the exiled cards remain the anaphor's antecedent across both \
+         SequentialSibling hops"
+    );
+    for &id in &lib {
+        assert_eq!(
+            runner.state().objects[&id].zone,
+            engine::types::zones::Zone::Graveyard,
+            "the uncast exiled cards reach the graveyard — the observable that \
+             an orphaned anaphor would leave stranded in exile"
+        );
+    }
+}
+
+/// Random Encounter — the harder cross-`SequentialSibling` case: a DELAYED
+/// consumer, two `SequentialSibling` hops deep, that reads slot 0 at the next
+/// end step rather than during the resolution that published it.
+///
+/// `Mill` publishes; `ChangeZoneAll { TrackedSetFiltered { 0, Creature } }` puts
+/// the milled creatures onto the battlefield; then, past a haste rider and a
+/// `CreateDelayedTrigger`, both `SequentialSibling`, the delayed "return those
+/// creatures to their owner's hand" binds `TrackedSet { 0 }`.
+///
+/// THIS ROW IS THE MIS-KEY GUARD, measured (see the section header): with the
+/// reset keyed on `sub_link` instead of the mode ordinal, this chain fragments
+/// into two tracked sets (`[[1, 1, 2, 2, 3, 4], []]`) and the single-set
+/// precondition in `published_set` fails. The guard value is the FRAGMENTATION,
+/// not the delayed bounce — the bounce is a separately measured runtime no-op
+/// (see the KNOWN GAP note at the end of this test), so no claim rides on it.
+///
+/// CR 603.7 (delayed triggered ability) + CR 608.2c. Non-modal, so the
+/// mode-boundary machinery is inert here by construction.
+#[test]
+fn random_encounter_delayed_bounce_binds_across_two_sequential_siblings() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let lib: Vec<ObjectId> = ["Lib A", "Lib B", "Lib C", "Lib D"]
+        .iter()
+        .map(|n| scenario.add_card_to_library_top(P0, n))
+        .collect();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Random Encounter",
+            false,
+            "Shuffle your library, then mill four cards. Put each creature card milled this way onto the battlefield. They gain haste. At the beginning of the next end step, return those creatures to their owner's hand.",
+        )
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner: GameRunner = scenario.build();
+    // Two of the four milled cards are creatures, so the reanimated population
+    // is a proper subset of the milled set.
+    let creatures = [lib[0], lib[1]];
+    for &id in &creatures {
+        let obj = runner.state_mut().objects.get_mut(&id).unwrap();
+        obj.card_types.core_types = vec![CoreType::Creature];
+        obj.base_card_types.core_types = vec![CoreType::Creature];
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.base_power = Some(2);
+        obj.base_toughness = Some(2);
+    }
+    runner.cast(spell).resolve();
+
+    for &id in &creatures {
+        assert_eq!(
+            runner.state().objects[&id].zone,
+            engine::types::zones::Zone::Battlefield,
+            "non-vacuity: the milled creatures really entered, or the delayed \
+             bounce below has nothing to bind"
+        );
+    }
+    assert!(
+        !runner.state().delayed_triggers.is_empty(),
+        "reach-guard: the delayed 'return those creatures' trigger was created"
+    );
+
+    let set = published_set(runner.state());
+    for &id in &creatures {
+        assert!(
+            set.contains(&id.0),
+            "CR 603.7 + CR 608.2c: the set the delayed trigger will read still \
+             holds the creatures this resolution put onto the battlefield, two \
+             SequentialSibling hops above it. got {set:?}"
+        );
+    }
+
+    advance_until_delayed_triggers_resolve(&mut runner);
+
+    // KNOWN GAP, MEASURED at this tree and NOT caused by this PR: the end-step
+    // return is a no-op. The delayed ability is created carrying an UNBOUND
+    // `Bounce { target: TrackedSet { id: 0 } }` with an empty `targets` list
+    // (dumped), and draining it to the end step produces ZERO `ZoneChanged`
+    // events. Every node of this non-modal card carries
+    // `modal_instruction_ordinal: None` (also dumped), so all four mode-boundary
+    // crossings are inert here by construction and this reading is byte-identical
+    // to the pre-PR engine.
+    //
+    // Pinned rather than omitted, in this file's established canary style: when
+    // the delayed `TrackedSet(0)` binding is fixed, these two assertions go RED
+    // and must be flipped to `Zone::Hand`, not deleted.
+    for &id in &creatures {
+        assert_eq!(
+            runner.state().objects[&id].zone,
+            engine::types::zones::Zone::Battlefield,
+            "unchanged from before this PR — see the KNOWN GAP note above"
+        );
+    }
 }
