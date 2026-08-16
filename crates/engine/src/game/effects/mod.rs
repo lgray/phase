@@ -5348,6 +5348,81 @@ pub(crate) fn chain_references_tracked_set(ability: &ResolvedAbility) -> bool {
     ability_or_branch_references_tracked_set(ability)
 }
 
+/// CR 608.2c + CR 611.2c: An event-less producer publishes the population its
+/// continuous effect froze ONLY when it is the resolution chain's sole
+/// EFFECTIVE producer.
+///
+/// [`publish_tracked_set`] unifies every publisher in a chain into one set,
+/// which is right for same-verb compounds (Suspend Aggression's two exiles) and
+/// wrong for a mixed chain: in "Creatures you control get +2/+0 … exile the top
+/// card of your library. … you may play that card" (Outlaws' Fury) the anaphor
+/// names ONLY the exile. CR 608.2c's "apply the rules of English" is
+/// nearest-antecedent binding: a head that is followed by another producer in
+/// the same chain is not the antecedent.
+///
+/// Two conditions, both cheap and exact:
+///  * no EARLIER producer contributed — an ancestor that published an EMPTY set
+///    (an `Unimplemented` root) is not a producer, so test contents, not the id;
+///  * no LATER node in this chain is itself in publisher position — the same
+///    `next_sub_needs_tracked_set` predicate the publish site is gated on.
+///
+/// When the guard declines, the arm falls through to the `_ =>` `ZoneChanged`
+/// harvest, which yields `[]` for every head in this class (they emit no
+/// `ZoneChanged`) — i.e. byte-identical to the pre-#6857 engine.
+///
+/// KNOWN GAP, unexercised today: under a `player_scope` fan-out the publish
+/// site hands `affected_objects_with_causes` the `scoped_template`, whose tail
+/// `split_player_scope_chain` has already DETACHED, while the surrounding gate
+/// reads the full `ability`. Leg 2 therefore cannot see a later producer that
+/// lives in the detached tail, and would let the head publish where the
+/// undetached chain would have declined. Measured unreachable at the time of
+/// writing: 0 of the 627 event-less heads in the corpus carry a `player_scope`.
+/// If one ever does, leg 2 needs the pre-split ability, not the template.
+fn is_sole_chain_producer(state: &GameState, ability: &ResolvedAbility) -> bool {
+    let no_earlier_producer = state.chain_tracked_set_id.is_none_or(|id| {
+        state
+            .tracked_object_sets
+            .get(&id)
+            .is_none_or(|set| set.is_empty())
+    });
+    no_earlier_producer && !later_node_is_publisher_position(ability)
+}
+
+/// Any strictly-later node of this chain that the publish site would itself
+/// gate on. Walks `sub_ability` AND `else_ability` (conservative: only one
+/// branch executes, so counting both can only DECLINE a publish, never cause a
+/// wrong one).
+///
+/// CHAIN-WIDE, NOT NEAREST-ANTECEDENT — and that is the sharp edge. Any later
+/// publisher position anywhere below this node declines the head, including the
+/// shape `head -> consumer{TrackedSet} -> consumer2{TrackedSet}`, where BOTH
+/// consumers wanted this head's population and both get nothing. No corpus row
+/// hits it today, but the loaded gun is named: **Motivated Pony**'s third node
+/// is `Unimplemented { name: "they" }` ("and they get an additional +2/+2").
+/// The day that clause parses into any tracked-set consumer, this leg declines
+/// the head, the untap regresses, and
+/// `motivated_pony_untaps_only_the_attacking_creatures_it_pumped` goes red. The
+/// fix at that point is to scope the leg to the nearest antecedent (CR 608.2c's
+/// actual rule) rather than to relax the test.
+fn later_node_is_publisher_position(ability: &ResolvedAbility) -> bool {
+    fn walk(node: Option<&ResolvedAbility>) -> bool {
+        node.is_some_and(|n| {
+            // CR 603.7: production's own predicate, unmodified — a node whose
+            // consumer merely DEFERS (a `CreateDelayedTrigger
+            // { uses_tracked_set: true }`, which acts at a later time) still
+            // counts as a publisher position here. Excluding deferring consumers
+            // from this leg would let a head publish across a `CopyTokenOf` +
+            // delayed-exile chain (Twinflame, Myra the Magnificent), putting the
+            // ORIGINAL creature into the set the delayed "exile those tokens"
+            // then binds — measured, not predicted.
+            next_sub_needs_tracked_set(n)
+                || walk(n.sub_ability.as_deref())
+                || walk(n.else_ability.as_deref())
+        })
+    }
+    walk(ability.sub_ability.as_deref())
+}
+
 fn ability_or_branch_references_tracked_set(ability: &ResolvedAbility) -> bool {
     let consumes = matches!(
         &ability.effect,
@@ -5886,6 +5961,52 @@ fn affected_objects_from_events(
                 .filter(|obj_id| filter::matches_target_filter(state, **obj_id, &filter, &ctx))
                 .copied()
                 .collect()
+        }
+        // CR 611.2c (issue #6857): the set of objects a resolution-generated
+        // continuous effect modifies is determined when that effect BEGINS and
+        // never changes afterwards, so the population these heads froze is the
+        // antecedent a following "those creatures" names (CR 608.2c). Unlike
+        // every other producer here they move nothing and emit no per-object
+        // event, so without their own arm the `_ =>` `ZoneChanged` harvest
+        // publishes an EMPTY set — the WRONG set, not merely an unhelpful one —
+        // and "Untap those creatures" (CR 701.26b) binds nothing.
+        //
+        // The published population is the PRODUCING RESOLVER'S OWN enumeration,
+        // never a re-enumeration of the head filter and never the emitted
+        // events. A re-enumeration is a second authority that can disagree with
+        // the first (a mass pump whose head filter is `Any` would name the whole
+        // battlefield), and the event stream is incomplete by construction (a
+        // `GiveControl` target the recipient already controls emits no
+        // `ControllerChanged`).
+        //
+        // IMPLEMENTATION NOTE — why reading the post-resolution board here is
+        // still the resolution-time population, and why no CR is cited for it:
+        // CR 613.1 says continuous effects apply in layers CONTINUOUSLY, which
+        // would predict that a filter reading CURRENT power sees the pumped
+        // values. It does not, for a purely mechanical reason —
+        // `GameState::add_transient_continuous_effect` only INSTALLS the effect
+        // and marks the layer cache dirty; `layers::flush_layers` materialises,
+        // and nothing flushes between this node's resolve and this publish. The
+        // same holds for a controller change (`ContinuousModification::
+        // ChangeController` goes through the identical install path), so this is
+        // uniform rather than a P/T special case.
+        //
+        // CR 704.4 + CR 704.3 cover the SEPARATE point that no state-based
+        // action and no priority intervene between the resolver and this
+        // publish.
+        Effect::PumpAll { target, .. } if is_sole_chain_producer(state, ability) => {
+            pump::pump_all_affected_objects(state, ability, target)
+        }
+        // CR 701.15a: the creatures actually goaded.
+        Effect::GoadAll { .. } if is_sole_chain_producer(state, ability) => {
+            goad::goad_targets(state, ability)
+        }
+        // CR 611.2c covers a controller change in the same sentence it covers a
+        // characteristic change, so `GiveControl` publishes on the identical
+        // rule — Domineering Will's "up to three target nonattacking creatures
+        // … Untap those creatures" (CR 608.2c) names the declared targets.
+        Effect::GiveControl { target, .. } if is_sole_chain_producer(state, ability) => {
+            gain_control::give_control_object_targets(state, ability, target)
         }
         Effect::GainControl { .. } => fallback_targets
             .iter()

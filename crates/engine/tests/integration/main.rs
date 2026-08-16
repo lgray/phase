@@ -771,6 +771,7 @@ mod ivory_gargoyle_temporal_and_skip_tail;
 mod jace_wielder_empty_library_win;
 mod jagged_lightning_each_of_two_targets;
 mod jaws_of_defeat;
+mod jeskai_ascendancy_pump_untap_anaphora_6857;
 mod json_smoke_test;
 mod judgment_bolt_where_x_damage_runtime;
 mod kaito_integration;
