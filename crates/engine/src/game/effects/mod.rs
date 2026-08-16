@@ -4469,6 +4469,24 @@ fn collect_clause_minimum_refs<'a>(expr: &'a QuantityExpr, out: &mut Vec<&'a Qua
                     // processed simultaneously); CR 121.2c confirms the
                     // SERIALIZATION of the multiplayer draw is itself correct —
                     // only the leaked count is not.
+                    //
+                    // PRECONDITION, unenforced by construction: this admission is
+                    // unconditional, and `capture_clause_minimum_snapshot` walks
+                    // the WHOLE scoped sub-chain, so it rests on the convention
+                    // stated above — `PreviousEffectAmount` is clause-wide,
+                    // `EventContextAmount` is per-iteration. A sub-link RETAINED
+                    // inside the scoped template whose `PreviousEffectAmount` is
+                    // meant to read *that iteration's* preceding effect would be
+                    // frozen at the pre-clause value instead. No card does this
+                    // today, measured: of the 44 corpus cards carrying both a
+                    // `player_scope` and a `PreviousEffectAmount`, 4 hold it in
+                    // the scoped node itself (Windfall, Jace's Archivist,
+                    // Whispering Madness, Thorna and Twigtooth) and the other 40
+                    // are the drain shape `LoseLife` → `GainLife { PEA }`, which
+                    // DETACHES because `effect_has_iteration_bound_recipient`
+                    // returns false for `GainLife`. If a future card needs a
+                    // per-iteration reading here, it wants `EventContextAmount`,
+                    // not a guard on this arm.
                     | QuantityRef::PreviousEffectAmount { .. }
             ) {
                 out.push(qty);
@@ -8338,6 +8356,32 @@ fn previous_effect_counts_by_player_from_events(
 /// instruction. `Some(empty)` is a real zero-result producer and must replace
 /// an older table; `None` means this effect has no such count channel, so clear
 /// the old table before callers preserve their ordinary scalar/excess fallback.
+/// CR 608.2c: give every player the clause applied to an entry in the
+/// completed-instruction table, defaulting a non-contributor to zero.
+///
+/// The table is built from emitted events, so a player who contributed nothing —
+/// an empty hand facing "each player discards their hand" — emits no event and
+/// would otherwise be absent. They still discarded zero *this way*, and the
+/// table is what an aggregate reduces over, so an omission is a wrong reduction
+/// domain rather than a missing convenience.
+///
+/// The omission is invisible to two of the three aggregates, which is why it
+/// survived: `Sum` reads `last_effect_amount` (and adding zeros could not move a
+/// sum anyway) and `Max` cannot be raised by zeros. Only `Min` sees it — hands
+/// 8/7/3/**0** publish `{8,7,3}` and answer 3 where the answer is 0. The defect
+/// is the domain, not the `Min` arm.
+///
+/// Existing entries are never overwritten: a player who contributed 3 keeps 3.
+fn fill_zero_contributors(
+    mut counts_by_player: HashMap<PlayerId, i32>,
+    matching_players: &[PlayerId],
+) -> HashMap<PlayerId, i32> {
+    for player in matching_players.iter().copied() {
+        counts_by_player.entry(player).or_insert(0);
+    }
+    counts_by_player
+}
+
 fn install_previous_effect_counts_by_player(
     state: &mut GameState,
     counts_by_player: Option<HashMap<PlayerId, i32>>,
@@ -9888,17 +9932,8 @@ fn resolve_chain_body(
             scoped_template.source_id,
             scoped_events,
         );
-        // CR 608.2c: A completed scoped count producer that moved/discarded
-        // nothing still produced a zero for every player in this fan-out. Keep
-        // that provenance distinct from the absence of a count producer: the
-        // nonempty zero table takes precedence over an enclosing scalar event
-        // when the detached scoped "that many" consumer resolves.
-        let counts_by_player = counts_by_player.map(|mut counts_by_player| {
-            if counts_by_player.is_empty() {
-                counts_by_player.extend(matching_players.iter().copied().map(|player| (player, 0)));
-            }
-            counts_by_player
-        });
+        let counts_by_player =
+            counts_by_player.map(|counts| fill_zero_contributors(counts, &matching_players));
         if !install_previous_effect_counts_by_player(state, counts_by_player, false) {
             if let Some(amount) =
                 previous_effect_amount_from_events(state, &scoped_template, scoped_events)
@@ -18428,6 +18463,70 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    /// CR 608.2c: the PRODUCER half of the zero-contributor fix. A player the
+    /// clause applied to who emitted no event still discarded zero *this way*
+    /// and must hold an entry, or an aggregate reduces over a domain that omits
+    /// them.
+    ///
+    /// Board 8/7/3/**0**: P3's empty hand emits no discard event, so the
+    /// event-built table arrives as `{8,7,3}`. Discriminating on the axis that
+    /// matters — `Min` over the filled table is 0, over the unfilled one 3.
+    /// (`Sum` and `Max` are provably blind to the omission, which is why this
+    /// needs its own test rather than riding an existing one.)
+    #[test]
+    fn fill_zero_contributors_adds_the_absent_player_as_zero() {
+        let mut counts = HashMap::new();
+        counts.insert(PlayerId(0), 8);
+        counts.insert(PlayerId(1), 7);
+        counts.insert(PlayerId(2), 3);
+        let seats = [PlayerId(0), PlayerId(1), PlayerId(2), PlayerId(3)];
+
+        let unfilled_min = counts.values().copied().min();
+        let filled = fill_zero_contributors(counts, &seats);
+
+        let mut rows: Vec<(u8, i32)> = filled.iter().map(|(p, n)| (p.0, *n)).collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![(0, 8), (1, 7), (2, 3), (3, 0)],
+            "the absent player is present holding 0"
+        );
+        assert_eq!(unfilled_min, Some(3), "control: unfilled, Min answers 3");
+        assert_eq!(
+            filled.values().copied().min(),
+            Some(0),
+            "filled, Min answers 0 — the whole point of the fix"
+        );
+    }
+
+    /// Contributors are never overwritten, and an already-complete table is
+    /// unchanged — so the fill cannot corrupt the common case it runs on every
+    /// time.
+    #[test]
+    fn fill_zero_contributors_preserves_existing_counts() {
+        let mut counts = HashMap::new();
+        counts.insert(PlayerId(0), 5);
+        counts.insert(PlayerId(1), 2);
+        let seats = [PlayerId(0), PlayerId(1)];
+
+        let filled = fill_zero_contributors(counts, &seats);
+
+        assert_eq!(filled.get(&PlayerId(0)).copied(), Some(5));
+        assert_eq!(filled.get(&PlayerId(1)).copied(), Some(2));
+        assert_eq!(filled.len(), 2, "no phantom entries added");
+    }
+
+    /// The previously-handled case still behaves identically: an entirely empty
+    /// table becomes an all-zero table, one entry per matching player.
+    #[test]
+    fn fill_zero_contributors_fills_an_entirely_empty_table() {
+        let seats = [PlayerId(0), PlayerId(1), PlayerId(2)];
+        let filled = fill_zero_contributors(HashMap::new(), &seats);
+        let mut rows: Vec<(u8, i32)> = filled.iter().map(|(p, n)| (p.0, *n)).collect();
+        rows.sort();
+        assert_eq!(rows, vec![(0, 0), (1, 0), (2, 0)]);
     }
 
     #[test]

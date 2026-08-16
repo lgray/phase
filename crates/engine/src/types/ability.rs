@@ -6918,11 +6918,21 @@ pub enum QuantityRef {
     ///
     /// A sibling `PreviousEffectExcessAmount` variant would be the textbook
     /// sibling-cluster smell: the channel is a leaf parameterization of one
-    /// structural axis, and both channels lie wholly inside CR 120 (the excess
-    /// channel at CR 120.10), so it is a parameterization, not a new leaf.
+    /// structural axis, so it is a parameterization, not a new leaf.
+    ///
+    /// The categorical boundary is CR 608.2c / CR 608.2i — this reference's OWN
+    /// section. Both channels are readings of the same look-back at the one
+    /// completed instruction; they differ only in which tally that instruction
+    /// left behind. (An earlier revision justified the boundary as "both
+    /// channels lie wholly inside CR 120". That is wrong and is struck: CR 120
+    /// is Damage, while the `Total` channel is stamped by non-damage producers —
+    /// life lost, counters removed, cards drawn — as three lines above already
+    /// say. CR 120.10 is cited only where it does apply, for what "excess"
+    /// means.)
     ///
     /// `Total` is serde-elided, so every pre-existing serialized card is
-    /// byte-identical.
+    /// byte-identical — a parse-diff fidelity property, not a save-compatibility
+    /// promise.
     PreviousEffectAmount {
         #[serde(default, skip_serializing_if = "is_total_damage_channel")]
         channel: DamageChannel,
@@ -21403,19 +21413,27 @@ pub enum AbilityCondition {
         comparator: Comparator,
         rhs: QuantityExpr,
     },
-    /// CR 608.2c + CR 120.6 + CR 120.10: Compares the numeric result tracked from
+    /// CR 608.2c + CR 120.10: Compares the numeric result tracked from
     /// the previous instruction in the same resolution against `rhs`. The
     /// `channel` selects which resolution-local tally is read:
-    /// - `DamageChannel::Total` (default): the *total* amount (CR 120.6) via
+    /// - `DamageChannel::Total` (default): the total amount via
     ///   `last_effect_amount` — the same channel that feeds
-    ///   `QuantityRef::PreviousEffectAmount` / `EventContextAmount`.
+    ///   `QuantityRef::PreviousEffectAmount` / `EventContextAmount`. Every
+    ///   non-damage producer (life lost, counters removed, cards drawn) stamps
+    ///   only this channel, so no CR 120 rule governs it; the look-back itself
+    ///   is CR 608.2c.
     /// - `DamageChannel::Excess`: the *excess* amount (CR 120.10) via
     ///   `last_effect_excess_amount` — damage dealt beyond lethal
     ///   ("if excess damage was dealt … this way").
+    ///
+    /// CR 120.6 was cited here for the `Total` channel and is struck: it governs
+    /// marked damage persisting until cleanup, not an amount left behind by a
+    /// preceding effect. Mirrors the identical correction on the `QuantityRef`
+    /// peer — the two must not disagree about the same channel.
     PreviousEffectAmount {
         comparator: Comparator,
         rhs: QuantityExpr,
-        /// CR 120.6 / CR 120.10: which resolution-local channel to compare
+        /// CR 608.2c / CR 120.10: which resolution-local channel to compare
         /// against. Reuses the committed `DamageChannel`; `Total` is serde-elided
         /// so every existing card is byte-identical.
         #[serde(default, skip_serializing_if = "is_total_damage_channel")]

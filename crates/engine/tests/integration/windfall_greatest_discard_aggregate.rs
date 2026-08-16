@@ -29,10 +29,40 @@ use engine::types::zones::Zone;
 
 const WINDFALL: &str = "Each player discards their hand, then draws cards equal to the greatest number of cards a player discarded this way.";
 
-/// Syphon Mind's shape — the cross-player SUM sibling that must STAY a sum.
-/// Guards against a "fix" that flips the shared aggregate back to MAX globally.
+/// Syphon Mind's shape — the NON-superlative "discarded this way" neighbour.
+///
+/// This does NOT guard the aggregate axis, and an earlier revision of this file
+/// claimed that it did. Syphon Mind parses to `FilteredTrackedSetSize` and
+/// carries no `PreviousEffectAmount` node at all, so it is structurally
+/// incapable of detecting a change to `QuantityRef::PreviousEffectAmount`'s
+/// aggregate — measured: it stays green under BOTH the aggregate revert and the
+/// clause-freeze revert. What it does guard is real and worth keeping: that the
+/// superlative combinator did not STEAL the non-superlative phrasing, i.e. this
+/// card still reaches `FilteredTrackedSetSize` and still sums.
+///
+/// The aggregate axis is guarded at unit level instead — see
+/// `game/quantity.rs`'s `previous_effect_amount_live_when_no_snapshot` and
+/// `previous_effect_amount_aggregates_are_mutually_distinct`. Measured: no
+/// printed card yields a clean integration-level Sum-vs-Max discriminator.
 const SYPHON_MIND: &str =
     "Each other player discards a card. You draw a card for each card discarded this way.";
+
+/// Blood Tithe — the drain shape, and the class the corpus actually populates:
+/// 40 of the 44 cards carrying both a `player_scope` and a
+/// `PreviousEffectAmount` are this `LoseLife` → `GainLife { PreviousEffectAmount }`
+/// form.
+///
+/// Unlike Syphon Mind this DOES build `PreviousEffectAmount`, with `aggregate`
+/// absent and therefore `Sum`. CR 119.3: an effect causing a player to gain or
+/// lose life adjusts that life total accordingly — one rule covers both
+/// directions here. "The life lost this way" is the cross-player TOTAL, 9.
+///
+/// It is a REACH guard, not an aggregate discriminator: `Effect::LoseLife`
+/// publishes no per-player table, so `Max`/`Min` fall back to the total and all
+/// three reductions coincide at 9. Measured, not reasoned — see the degeneracy
+/// note on the test itself.
+const BLOOD_TITHE: &str =
+    "Each opponent loses 3 life. You gain life equal to the life lost this way.";
 
 const P2: PlayerId = PlayerId(2);
 const P3: PlayerId = PlayerId(3);
@@ -129,9 +159,18 @@ fn windfall_draws_the_greatest_single_players_discard_not_the_cross_player_sum()
     );
 }
 
-/// The SUM sibling stays a sum. Syphon Mind in a four-player game: the three
-/// other players each discard one card and the controller draws 3 — the
-/// cross-player TOTAL. A global flip back to MAX would draw 1 here.
+/// NON-INTERFERENCE, not an aggregate guard. Syphon Mind in a four-player game:
+/// the three other players each discard one card and the controller draws 3.
+///
+/// What this discriminates: that the superlative combinator did not swallow the
+/// non-superlative "discarded this way" phrasing — this card must still reach
+/// `FilteredTrackedSetSize` and still sum. What it does NOT discriminate: the
+/// aggregate axis. Syphon Mind builds no `PreviousEffectAmount` node, so it
+/// cannot see a change to that ref's `aggregate` and stays green under both
+/// revert arms. The cross-aggregate guard lives at unit level, in
+/// `game/quantity.rs`'s `previous_effect_amount_aggregates_are_mutually_distinct`
+/// and `previous_effect_amount_live_when_no_snapshot` — no printed card gives a
+/// clean integration-level Sum-vs-Max discriminator.
 #[test]
 fn syphon_mind_shape_still_draws_the_cross_player_total() {
     let mut scenario = GameScenario::new_n_player(4, 42);
@@ -163,6 +202,146 @@ fn syphon_mind_shape_still_draws_the_cross_player_total() {
     assert_eq!(
         drawn, 3,
         "controller draws one per card discarded across all opponents (sum), not the max (1)"
+    );
+}
+
+/// CR 608.2c: a zero-contributor board must not disturb the Max class.
+///
+/// Board 8/7/3/**0** — P3 has an empty hand, so "each player discards their
+/// hand" emits no discard event for them and the event-built table arrives as
+/// `{8,7,3}` with P3 absent. The producer fills that gap with a 0 so an
+/// aggregate reduces over every subject.
+///
+/// SCOPE — this asserts the NON-REGRESSION half only: the greatest discard is
+/// still 8, so every player including the empty-handed one still draws 8. It
+/// does NOT assert the table's contents, and deliberately so:
+/// `last_effect_counts_by_player` is cleared at the player-action boundary, so
+/// it reads `[]` from `outcome.state()` regardless of the fix. An earlier
+/// revision asserted on it and failed with `left: []` — an INSTRUMENT failure,
+/// not a fix failure. The table's contents are asserted where they survive, at
+/// unit level: `game/effects/mod.rs`'s `fill_zero_contributors_*` tests, which
+/// pin `Min` at 0 filled versus 3 unfilled.
+#[test]
+fn windfall_zero_contributor_board_still_draws_the_greatest() {
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    seed_hand(&mut scenario, P0, 8);
+    seed_hand(&mut scenario, P1, 7);
+    seed_hand(&mut scenario, P2, 3);
+    // P3: no hand at all — the zero contributor.
+    for seat in SEATS {
+        seed_library(&mut scenario, seat, LIBRARY_DEPTH);
+    }
+    let windfall = scenario
+        .add_spell_to_hand_from_oracle(P0, "Windfall", false, WINDFALL)
+        .with_mana_cost(ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+
+    let outcome = runner.cast(windfall).resolve();
+
+    let drawn: Vec<usize> = SEATS
+        .iter()
+        .map(|p| LIBRARY_DEPTH - zone_len(&outcome, *p, Zone::Library))
+        .collect();
+    let graveyards: Vec<usize> = SEATS
+        .iter()
+        .map(|p| zone_len(&outcome, *p, Zone::Graveyard))
+        .collect();
+    eprintln!("PROBE windfall/zero-contributor: drawn={drawn:?} graveyards={graveyards:?}");
+
+    // CR 701.9a reach guard: the discard step ran, and P3 really contributed
+    // nothing — without this, an all-8 draw could pass on a board that never
+    // had a zero contributor at all.
+    assert_eq!(
+        graveyards[3], 0,
+        "reach guard: P3 must be the zero contributor, got {graveyards:?}"
+    );
+    assert!(
+        graveyards[0] >= 8,
+        "reach guard: the discard step must have run, got {graveyards:?}"
+    );
+    assert_eq!(
+        drawn,
+        vec![8, 8, 8, 8],
+        "non-regression: the greatest discard is still 8, so every player draws 8"
+    );
+}
+
+/// REACH + non-regression guard for the drain class — NOT an aggregate
+/// discriminator. Read the measured degeneracy below before trusting it as one.
+///
+/// Blood Tithe in a four-player game: each of the three opponents loses 3 life,
+/// so "the life lost this way" is 3 + 3 + 3 = 9 (CR 119.3) and the controller
+/// gains 9. This is the shape 40 of the 44 corpus cards carrying both a
+/// `player_scope` and a `PreviousEffectAmount` take, so it is the widest
+/// non-regression this file has.
+///
+/// WHAT IT DISCRIMINATES, measured by sentinel probe: the ref is genuinely
+/// reached — forcing an early `return 999` at the top of the
+/// `QuantityRef::PreviousEffectAmount` arm moves this card to 1019 life. So a
+/// change that stopped routing the drain class through that arm fails here.
+///
+/// WHAT IT DOES **NOT** DISCRIMINATE: the aggregate axis. `Effect::LoseLife`
+/// publishes no per-player breakdown — only `Discard` / `DiscardCard` /
+/// `ChangeZoneAll` populate `last_effect_counts_by_player` — so the table is
+/// EMPTY here and `Max`/`Min` both fall back to `unwrap_or(total)`. All three
+/// reductions coincide:
+///
+///   Sum -> 9      Max -> 9      Min -> 9      (degenerate)
+///
+/// Measured, not reasoned: forcing `AggregateFunction::Sum => per_player.max()
+/// .unwrap_or(total)` leaves this test green at 29. An earlier revision of this
+/// comment claimed `Max -> 3` and that a global flip would fail here. That was
+/// wrong, and it is the same error as the Syphon Mind control above — a
+/// discriminating claim derived from the parse tree and never revert-probed.
+///
+/// The aggregate axis IS discriminated, at unit level where a populated table
+/// can be constructed directly: `game/quantity.rs`'s
+/// `previous_effect_amount_live_when_no_snapshot` asserts `Max` = 8 over
+/// `{P0:8, P1:3}` with `last_effect_amount` = 11, so `Sum` fails it.
+#[test]
+fn blood_tithe_drain_still_gains_the_cross_player_total() {
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    for seat in SEATS {
+        seed_library(&mut scenario, seat, LIBRARY_DEPTH);
+    }
+    let tithe = scenario
+        .add_spell_to_hand_from_oracle(P0, "Blood Tithe", false, BLOOD_TITHE)
+        .with_mana_cost(ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+
+    let outcome = runner.cast(tithe).resolve();
+
+    let life: Vec<i32> = SEATS
+        .iter()
+        .map(|p| {
+            outcome
+                .state()
+                .players
+                .iter()
+                .find(|pl| pl.id == *p)
+                .expect("player exists")
+                .life
+        })
+        .collect();
+    eprintln!("PROBE blood-tithe/cast: life={life:?}");
+
+    // Reach guard: the loss step actually ran for all three opponents, so the
+    // per-player table really does hold three entries. Without this, a gain of 9
+    // could be read off a table that never fanned out.
+    assert_eq!(
+        &life[1..],
+        &[17, 17, 17],
+        "reach guard: each of the three opponents loses exactly 3 (CR 119.3)"
+    );
+    assert_eq!(
+        life[0], 29,
+        "controller gains the cross-player TOTAL life lost (9) via \
+         PreviousEffectAmount — a reach guard for the 40-card drain class, not an \
+         aggregate discriminator (see the degeneracy note above)"
     );
 }
 

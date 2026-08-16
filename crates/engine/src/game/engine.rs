@@ -19034,9 +19034,26 @@ mod stage2_injector_tests {
                 // convention; the `9869a19f…` triple recorded above is main's own, over a
                 // different span. Two conventions, same three producers — do not compare
                 // them to each other.)
-                "game/effects/mod.rs:7027".to_string(),
-                "game/effects/mod.rs:7104".to_string(),
-                "game/effects/mod.rs:10342".to_string(),
+                //
+                // Review-fix round (same branch, still phase 2):
+                // `:7027/:7104/:10342 ⇒ :7045/:7122/:10377`. NON-UNIFORM — `+18/+18/+35`
+                // — because two separate edits land above the third producer but only one
+                // lands above the first two: the `collect_clause_minimum_refs`
+                // admission-arm precondition comment and, below it, the extraction of the
+                // zero-contributor fill into `fill_zero_contributors` plus its unit tests.
+                // A non-uniform shift is exactly the shape a "+N to all three" assumption
+                // gets wrong.
+                //
+                // This `+18/+18/+35` has now been derived FOUR times from four different
+                // origins — pre-rebase off this branch, and three more times off three
+                // different upstream tips — and came out identical each time. A shift
+                // invariant under change of origin is pure line movement, not a changed
+                // producer set. Window hashes `ad615ce4…`, `a958f070…`, `d7fd67fd…`
+                // re-measured at these coordinates, with the off-by-one neighbour
+                // (`8251728c…`, `e3830eb5…`, `85037f22…`) differing as a control.
+                "game/effects/mod.rs:7045".to_string(),
+                "game/effects/mod.rs:7122".to_string(),
+                "game/effects/mod.rs:10377".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.
