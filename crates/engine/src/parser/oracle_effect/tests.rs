@@ -12575,15 +12575,27 @@ fn windfall_draw_uses_previous_discard_max_for_each_player() {
         .as_ref()
         .expect("expected draw continuation");
     assert_eq!(sub.player_scope, Some(PlayerFilter::All));
-    assert!(matches!(
-        &*sub.effect,
-        Effect::Draw {
-            count: QuantityExpr::Ref {
-                qty: QuantityRef::PreviousEffectAmount { .. }
-            },
-            target: TargetFilter::Controller,
-        }
-    ));
+    // CR 608.2c + CR 608.2i: the superlative names the cross-player reduction,
+    // so the draw count must carry `Max` — the whole point of this test's name.
+    // A `{ .. }` wildcard here pinned NOTHING and passed at BASE while Windfall
+    // drew the cross-player SUM. Revert the combinator's `Max` to `Sum`, or drop
+    // the `oracle_quantity.rs` delegation, and this FAILS.
+    assert!(
+        matches!(
+            &*sub.effect,
+            Effect::Draw {
+                count: QuantityExpr::Ref {
+                    qty: QuantityRef::PreviousEffectAmount {
+                        channel: crate::types::ability::DamageChannel::Total,
+                        aggregate: AggregateFunction::Max,
+                    }
+                },
+                target: TargetFilter::Controller,
+            }
+        ),
+        "expected PreviousEffectAmount {{ Total, Max }}, got {:?}",
+        sub.effect
+    );
 }
 
 /// CR 608.2c + CR 701.9 + CR 118.12: Read the Runes — draw X, then for each

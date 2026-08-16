@@ -22813,8 +22813,20 @@ mod tests {
         assert_eq!(state.players[1].graveyard.len(), 1);
     }
 
-    #[test]
-    fn player_scope_discard_then_windfall_draws_greatest_discard_count() {
+    /// CR 608.2c + CR 701.9a + CR 121.2: the discard→draw "this way"
+    /// back-reference, exercised on ONE board across both aggregates.
+    ///
+    /// Libraries hold 6 (not 3, as the vacuous predecessor did) so neither
+    /// aggregate is library-capped: hands 3/1 make MAX 3, SUM 4, MIN 1 and the
+    /// per-player reading 3/1 four mutually distinguishable outcomes. The
+    /// predecessor seeded 3-card libraries, so MAX 3 and SUM 4 both capped at 3
+    /// and its assertions held under either aggregate — which is why #7277
+    /// shipped with the bug.
+    ///
+    /// Returns `(hands, graveyards)` per seat.
+    fn run_player_scope_discard_then_draw(
+        aggregate: AggregateFunction,
+    ) -> (Vec<usize>, Vec<usize>) {
         let mut state = GameState::new_two_player(42);
         for i in 0..3 {
             create_object(
@@ -22824,6 +22836,8 @@ mod tests {
                 format!("P0 Hand {i}"),
                 Zone::Hand,
             );
+        }
+        for i in 0..6 {
             create_object(
                 &mut state,
                 CardId(60 + i),
@@ -22869,6 +22883,7 @@ mod tests {
                 count: QuantityExpr::Ref {
                     qty: QuantityRef::PreviousEffectAmount {
                         channel: crate::types::ability::DamageChannel::Total,
+                        aggregate,
                     },
                 },
                 target: TargetFilter::Controller,
@@ -22883,10 +22898,45 @@ mod tests {
         let mut events = Vec::new();
         resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
 
-        assert_eq!(state.players[0].hand.len(), 3);
-        assert_eq!(state.players[1].hand.len(), 3);
-        assert_eq!(state.players[0].graveyard.len(), 3);
-        assert_eq!(state.players[1].graveyard.len(), 1);
+        (
+            vec![state.players[0].hand.len(), state.players[1].hand.len()],
+            vec![
+                state.players[0].graveyard.len(),
+                state.players[1].graveyard.len(),
+            ],
+        )
+    }
+
+    /// V6 discriminator — CR 608.2c + CR 608.2i: `Max` reads the GREATEST single
+    /// player's discard (3), not the cross-player total. Flip this test's
+    /// `aggregate` to `Sum` and the hands become `[4, 4]` ⇒ FAILS. That field
+    /// swap on an otherwise byte-identical board IS the discrimination evidence;
+    /// neither member compiles at BASE, where the field does not exist.
+    #[test]
+    fn player_scope_discard_then_draw_greatest_uses_max_aggregate() {
+        let (hands, graveyards) = run_player_scope_discard_then_draw(AggregateFunction::Max);
+        assert_eq!(
+            hands,
+            vec![3, 3],
+            "Max must draw the greatest single player's discard (3), not the sum (4)"
+        );
+        // CR 701.9a reach guard: the discard step really ran and moved 3 and 1
+        // cards to the graveyards, so this cannot pass on an unresolved chain.
+        assert_eq!(graveyards, vec![3, 1], "both players must have discarded");
+    }
+
+    /// V6 same-board control — the `Sum` default keeps reading the cross-player
+    /// total (4) on the identical board, so the Max assertion above is pinned by
+    /// a measured contrast rather than by a single reading.
+    #[test]
+    fn player_scope_discard_then_draw_total_uses_sum_aggregate() {
+        let (hands, graveyards) = run_player_scope_discard_then_draw(AggregateFunction::Sum);
+        assert_eq!(
+            hands,
+            vec![4, 4],
+            "Sum must draw the cross-player total (3 + 1), the pre-change behaviour"
+        );
+        assert_eq!(graveyards, vec![3, 1], "both players must have discarded");
     }
 
     /// CR 608.2c + CR 118.12 + CR 701.9: Read the Runes — draw X, then for
