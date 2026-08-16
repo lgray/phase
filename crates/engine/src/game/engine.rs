@@ -19012,11 +19012,30 @@ mod stage2_injector_tests {
                 // Identity re-established, not assumed: `9869a19f28c791ee`,
                 // `2bc316e3aa0297f8`, `8df98486627bfe15` at the new coordinates — the same
                 // three digests this log has carried since the first merge.
-                // `PreviousEffectCount` classification adds one line above all three producers,
-                // so they move uniformly to `:7003/:7080/:10318`; no prompt site changes.
-                "game/effects/mod.rs:7003".to_string(),
-                "game/effects/mod.rs:7080".to_string(),
-                "game/effects/mod.rs:10318".to_string(),
+                // `PreviousEffectCount` classification adds one line above all three
+                // producers, so main's move uniformly to `:7003/:7080/:10318`; no prompt
+                // site changes.
+                //
+                // #6857 (this branch, re-measured after the rebase onto `4c987f92a`):
+                // main's `:7003/:7080/:10318` => `:7225/:7302/:10582`. LOCATED BY DIGEST,
+                // not by arithmetic: each upstream pin's 10-line producer block was hashed
+                // at `upstream/main` and that digest searched for in this tree --
+                // `817ae852`/`43c05331`/`37d51f60`, each found at exactly ONE coordinate.
+                // Those three digests measure IDENTICALLY at `a8244e734` and at
+                // `4c987f92a`, so #7503 moved the producers without modifying them, and
+                // this branch displaced none of them.
+                //
+                // The deltas are AGAIN NOT uniform: `+222`/`+222`/`+264`. The additivity
+                // argument used above does not apply to this branch, because its
+                // insertions are not all above the first producer -- the mode-boundary
+                // reset lands in `resolve_ability_chain`, between the second and third.
+                // Uniformity is therefore the WRONG evidence here; digest identity is the
+                // right one, and it is what establishes the set was preserved. This
+                // branch writes `state.waiting_for` nowhere: the publish arms return
+                // `Vec<ObjectId>` and prompt for nothing, so it adds no producer here.
+                "game/effects/mod.rs:7225".to_string(),
+                "game/effects/mod.rs:7302".to_string(),
+                "game/effects/mod.rs:10582".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.

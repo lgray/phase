@@ -6456,6 +6456,32 @@ fn mandatory_parent_effect_performed(effect: &Effect, events: &[GameEvent]) -> b
     }
 }
 
+/// THE ORDERING ARGUMENT for the global-max sentinel readers.
+///
+/// Eight consumers bind `TrackedSetId(0)` with a raw
+/// `state.tracked_object_sets.iter().max_by_key(|(id, _)| id.0)` instead of the
+/// documented id authority `targeting::resolve_tracked_set_id`, and they are
+/// DELIBERATELY not unified — their empty-set semantics are individually
+/// load-bearing and two are pinned by name in their own doc comments. What makes
+/// "the highest tracked-set id" the right answer under CR 608.2c is ordering,
+/// not selection:
+///
+/// > [`publish_tracked_set`]'s else-branch allocates
+/// > `TrackedSetId(next_tracked_set_id)` and increments; `next_tracked_set_id` is
+/// > monotone (seeded at 1, never decremented). `resolve_ability_chain` sets
+/// > `chain_tracked_set_id = None` at every CR 700.2 mode boundary, so the first
+/// > publish inside each mode takes that else-branch and allocates a STRICTLY
+/// > GREATER id than any preceding mode's set. "The highest tracked-set id" is
+/// > therefore "the set the currently-resolving instruction published" — exactly
+/// > CR 608.2c's nearest antecedent.
+///
+/// The eight readers cross-reference this paragraph rather than restating it.
+/// NOTE the polarity difference that keeps them un-unified: the authority skips
+/// EMPTY sets (`latest_tracked_set_id`), while these readers do not. Under mode
+/// scoping, not skipping is the CORRECT behaviour — a mode whose producer
+/// affected nothing publishes a fresh EMPTY set at the highest id, and its own
+/// consumer must bind that empty set rather than fall back to a preceding mode's
+/// non-empty one.
 pub(crate) fn publish_tracked_set(state: &mut GameState, affected_ids: Vec<ObjectId>) {
     // CR 603.7 + CR 608.2c: Chain unification. If an ancestor in this
     // resolution chain already published a tracked set, extend that set with
@@ -9343,10 +9369,52 @@ pub fn resolve_ability_chain(
         // coalesce into a single tracked set, while unrelated resolutions
         // stay isolated.
         state.chain_tracked_set_id = None;
+        // CR 700.2: the edge latch for the mode boundary below. It is cleared
+        // HERE, in the same line group as `chain_tracked_set_id`, and that
+        // ADJACENCY IS LOAD-BEARING: the latch means "the chain set has already
+        // been cleared for this mode", so a prelude that cleared one without the
+        // other would either suppress the first mode's reset (stale `Some(0)`
+        // from a previous resolution) or fire it against a set the previous
+        // resolution owned. Keep them together.
+        state.resolving_modal_instruction = None;
         // CR 608.2c + CR 109.5: Player-action accumulator resets per
         // top-level chain so "each opponent who searched this way" only sees
         // players who acted in the current resolution.
         state.player_actions_this_way.clear();
+    }
+
+    // CR 700.2 ("each of those options is a mode") + CR 608.2c (instructions in
+    // the order written; apply the rules of English): a preceding mode's
+    // published population is not this mode's antecedent, so a mode root starts
+    // with no inherited chain tracked set. This is the FOURTH narrowing of
+    // `chain_tracked_set_id`, and its closest analogue is the
+    // `RepeatContinuation::WhileCondition` arm below — "each repeated process is
+    // a FRESH execution of the instructions, so its 'that card'/'those cards'
+    // tracked set must not extend the prior iteration's". Substitute "mode" for
+    // "iteration" and that is this reset.
+    //
+    // EDGE-triggered on the ORDINAL, never on `sub_link`: a sentence boundary
+    // and a mode boundary are different things (see the `SubAbilityLink` doc:
+    // "Do not add a consumer that infers a sentence boundary from this field").
+    // MEASURED, not derived: keying this reset on
+    // `sub_link == SubAbilityLink::SequentialSibling` instead reddens 8
+    // integration rows of 5131 — Random Encounter, Suicidal Charge, Taunt from
+    // the Rampart, both Witness rows, Emperor of Bones (#1515), Sanar Vivid
+    // (#4253) and Winding Way (#2931). Which rows those are was predicted wrong
+    // twice before the probe was run; re-run it rather than re-deriving it.
+    //
+    // The edge is what keeps a `player_scope` fan-out — which re-enters this
+    // function once per player with a clone that RETAINS the ordinal — from
+    // resetting once per player and fragmenting the mode's population.
+    //
+    // Deliberately NOT mirrored into `resolve_chain_body`, the second entry
+    // point (`drive_repeat_for_outermost` calls it directly): a `repeat_for`
+    // iteration of ONE mode must not re-fire its own mode boundary.
+    if ability.modal_instruction_ordinal.is_some()
+        && ability.modal_instruction_ordinal != state.resolving_modal_instruction
+    {
+        state.resolving_modal_instruction = ability.modal_instruction_ordinal;
+        state.chain_tracked_set_id = None;
     }
 
     // BeginGame abilities are handled by mulligan setup, not normal stack resolution.
@@ -16544,6 +16612,75 @@ mod tests {
             }
             other => panic!("expected WaitingFor::UnlessPayment, got {other:?}"),
         }
+    }
+
+    /// CR 700.2: the mode boundary is EDGE-triggered, and this is the only
+    /// instrument in the suite with a nameable flip for "it must not re-fire on
+    /// re-entry into the SAME mode".
+    ///
+    /// The hazard is real and not hypothetical: `split_player_scope_chain` does
+    /// `let mut scoped = ability.clone()`, so the per-player clone RETAINS
+    /// `modal_instruction_ordinal`, and the fan-out loop re-enters
+    /// `resolve_ability_chain` once per matching player at `depth + 1` — past the
+    /// depth-0 prelude. A level trigger (reset whenever an ordinal is present)
+    /// would clear `chain_tracked_set_id` on every one of those entries and
+    /// fragment ONE mode's population into one set per player. The paused-chain
+    /// resume takes the same shape: its remaining scoped nodes also carry the
+    /// ordinal and also re-enter at depth 1.
+    ///
+    /// DISCRIMINATION: drop the `!= state.resolving_modal_instruction` conjunct
+    /// (the edge → level change) and the seeded id is gone after the second
+    /// entry, so `assert_eq!(.., Some(seeded))` fails.
+    #[test]
+    fn mode_boundary_reset_is_edge_triggered_and_survives_re_entry() {
+        let mut state = GameState::new_two_player(42);
+        let mut mode_root = ResolvedAbility::new(
+            Effect::GenericEffect {
+                static_abilities: Vec::new(),
+                duration: None,
+                target: None,
+                end_cost: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        mode_root.modal_instruction_ordinal = Some(0);
+        let mut events = Vec::new();
+
+        // First entry: the depth-0 prelude clears both fields, then the edge
+        // fires because `Some(0) != None`.
+        resolve_ability_chain(&mut state, &mode_root, &mut events, 0).expect("first entry");
+        assert_eq!(
+            state.resolving_modal_instruction,
+            Some(0),
+            "reach-guard: the edge must have fired on the first entry, or the \
+             second entry below is not testing re-entry at all"
+        );
+
+        // This mode then publishes. `split_player_scope_chain`'s loop re-enters
+        // with the SAME ordinal-bearing node at depth 1, which skips the prelude.
+        let seeded = TrackedSetId(7);
+        state.chain_tracked_set_id = Some(seeded);
+        resolve_ability_chain(&mut state, &mode_root, &mut events, 1).expect("re-entry");
+
+        assert_eq!(
+            state.chain_tracked_set_id,
+            Some(seeded),
+            "CR 700.2: re-entering the SAME modal instruction is not a new \
+             instruction, so its published set must survive"
+        );
+
+        // And the edge DOES fire for the next mode, which is what keeps this row
+        // from passing by simply never resetting anything.
+        let mut next_mode = mode_root.clone();
+        next_mode.modal_instruction_ordinal = Some(1);
+        resolve_ability_chain(&mut state, &next_mode, &mut events, 1).expect("next mode");
+        assert_eq!(
+            state.chain_tracked_set_id, None,
+            "CR 608.2c: a DIFFERENT mode is a new instruction and does start \
+             with no inherited antecedent"
+        );
     }
 
     #[test]

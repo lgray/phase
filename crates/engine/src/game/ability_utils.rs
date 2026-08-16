@@ -9738,6 +9738,7 @@ mod tests {
         assert!(files.len() > 100, "reach-guard: the walk found the crate");
 
         let mut writers: Vec<String> = Vec::new();
+        let mut uncut_writers = 0usize;
         let mut control_hits = 0usize;
         for path in &files {
             let text = std::fs::read_to_string(path).expect("read source");
@@ -9745,30 +9746,49 @@ mod tests {
             // in prose is neither counted nor able to hide a deleted writer.
             let code = crate::source_census::code_lines(&text);
             let lines: Vec<&str> = code.lines().collect();
-            // Cut at the `#[cfg(test)] mod ...` boundary. `#[cfg(test)]` also
-            // guards individual `use`/`fn` items in this crate; those are NOT the
-            // boundary, and treating them as one would hide real writers.
+            // Cut at the FIRST `#[cfg(test)]` THAT IS FOLLOWED BY `mod`, not at
+            // the first `#[cfg(test)]` full stop. This crate also `#[cfg(test)]`-
+            // guards individual `use` and `fn` items (`ability_utils.rs` has four
+            // before its test module), and an earlier draft of this scan located
+            // the first marker and then merely CHECKED whether it introduced a
+            // module — which made the cut silently degrade to "no cut at all" in
+            // exactly the files that need it. Measured: it counted this PR's own
+            // `effects/mod.rs` unit-test writers as production writers.
             let end = lines
                 .iter()
-                .position(|line| line.trim_start().starts_with("#[cfg(test)]"))
-                .filter(|i| {
-                    lines[i + 1..]
-                        .iter()
-                        .find(|l| !l.trim().is_empty())
-                        .is_some_and(|l| l.trim_start().starts_with("mod "))
+                .enumerate()
+                .position(|(i, line)| {
+                    line.trim_start().starts_with("#[cfg(test)]")
+                        && lines[i + 1..]
+                            .iter()
+                            .find(|l| !l.trim().is_empty())
+                            .is_some_and(|l| l.trim_start().starts_with("mod "))
                 })
                 .unwrap_or(lines.len());
             let rel = path.display().to_string();
-            for line in &lines[..end] {
+            for (i, line) in lines.iter().enumerate() {
                 if write_forms.iter().any(|f| line.contains(f.as_str())) {
-                    writers.push(format!("{rel}: {}", line.trim()));
+                    uncut_writers += 1;
+                    if i < end {
+                        writers.push(format!("{rel}: {}", line.trim()));
+                    }
                 }
-                if rel.ends_with(control_file) {
+                if i < end && rel.ends_with(control_file) {
                     control_hits += line.matches(control.as_str()).count();
                 }
             }
         }
 
+        // NEGATIVE CONTROL for the region cut itself: the same scan WITHOUT the
+        // `#[cfg(test)] mod` cut must find strictly more writers. Without this
+        // arm a broken cut is invisible whenever no test happens to write the
+        // field — and then the day one does, this row reds for the wrong reason.
+        assert!(
+            uncut_writers > writers.len(),
+            "NEGATIVE CONTROL: the `#[cfg(test)] mod` cut must actually be \
+             excluding test-module writers. uncut={uncut_writers} cut={}",
+            writers.len()
+        );
         assert_eq!(
             control_hits, 1,
             "POSITIVE CONTROL: `build_chained_resolved`'s `SequentialSibling` write \

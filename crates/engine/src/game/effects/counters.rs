@@ -1709,6 +1709,17 @@ pub fn resolve_add_all(
     // effect refers to the preceding effect's set even when it affected no
     // objects. Preserve that counter-specific fallback while supporting the
     // filtered "each of those <type>" intersection.
+    // CR 700.2 + CR 608.2c: both sentinel arms below are ladders whose FIRST rung
+    // is `chain_tracked_set_id`, and that rung is what mode scoping acts on — the
+    // boundary reset in `resolve_ability_chain` clears it at each mode root, so
+    // the chain rung either holds the currently-resolving mode's own set or is
+    // absent. The trailing raw `max_by_key` rung is the fallback, and it stays
+    // mode-correct for the same reason the other sentinel readers do: the
+    // ordering argument written once on `effects::publish_tracked_set`.
+    // Deliberately not routed through `targeting::resolve_tracked_set_id`: that
+    // authority SKIPS empty sets, and here not skipping is the correct semantics
+    // (a chained counter effect refers to the preceding effect's set even when it
+    // affected no objects).
     let target_filter = match crate::game::effects::resolved_object_filter(ability, &target_filter)
     {
         TargetFilter::TrackedSet {

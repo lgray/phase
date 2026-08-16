@@ -15638,9 +15638,29 @@ declare_game_state! {
     /// effects (e.g., "Exile target permanent and the top card of your library
     /// ... For each of those cards") merge their results into a single set
     /// before downstream "those cards" references resolve. Cleared at the
-    /// top-level chain entry (depth == 0) in `resolve_ability_chain`.
+    /// top-level chain entry (depth == 0) in `resolve_ability_chain`, and — when
+    /// the chain is modal — again at each CR 700.2 mode boundary, keyed on
+    /// [`Self::resolving_modal_instruction`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_tracked_set_id: Option<TrackedSetId>,
+
+    /// CR 700.2 + CR 608.2c: The `modal_instruction_ordinal` of the modal
+    /// instruction currently resolving. It EDGE-TRIGGERS the mode boundary in
+    /// `resolve_ability_chain`; `None` outside a modal resolution.
+    ///
+    /// Paired with [`Self::chain_tracked_set_id`] and cleared in the SAME depth-0
+    /// prelude block: this field's only job is to record whether
+    /// `chain_tracked_set_id` has already been cleared for the mode now entering,
+    /// so the two must never be reset at different times.
+    ///
+    /// EDGE, not level. A level trigger (reset whenever an ordinal is present)
+    /// would re-fire on every re-entry into the SAME mode:
+    /// `split_player_scope_chain` clones the ordinal-bearing node once per
+    /// fanned-out player and re-enters `resolve_ability_chain` with each, and a
+    /// paused chain resumes its remaining scoped nodes at depth 1. Either would
+    /// fragment one mode's population into one set per player.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolving_modal_instruction: Option<usize>,
 
     /// CR 608.2c + CR 614.6: Per-member producer-action provenance for tracked
     /// sets. When a producer publishes (or extends) a chain tracked set, each
@@ -21169,6 +21189,7 @@ impl GameState {
             tracked_object_sets: HashMap::new(),
             next_tracked_set_id: 1,
             chain_tracked_set_id: None,
+            resolving_modal_instruction: None,
             tracked_set_member_causes: HashMap::new(),
             commander_cast_count: HashMap::new(),
             commander_cast_owners: HashMap::new(),
@@ -23005,6 +23026,10 @@ fn _gamestate_partition_is_total(s: &GameState) {
         tracked_object_sets: _,
         next_tracked_set_id: _,
         chain_tracked_set_id: _,
+        // CR 700.2: mode-boundary edge latch, cleared in the same depth-0 prelude
+        // block as `chain_tracked_set_id` above and meaningful only inside one
+        // resolution — the same reason that field is projected out here.
+        resolving_modal_instruction: _,
         tracked_set_member_causes: _,
         commander_cast_count: _,
         commander_cast_owners: _,
@@ -23332,6 +23357,7 @@ impl PartialEq for GameState {
             && self.tracked_object_sets == other.tracked_object_sets
             && self.next_tracked_set_id == other.next_tracked_set_id
             && self.chain_tracked_set_id == other.chain_tracked_set_id
+            && self.resolving_modal_instruction == other.resolving_modal_instruction
             && self.tracked_set_member_causes == other.tracked_set_member_causes
             && self.commander_cast_count == other.commander_cast_count
             && self.commander_cast_owners == other.commander_cast_owners

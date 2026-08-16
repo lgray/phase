@@ -1713,3 +1713,234 @@ fn random_encounter_delayed_bounce_binds_across_two_sequential_siblings() {
         );
     }
 }
+
+/// SYNTHESIZED, disclosed (precedent: this file's "Bare Pump" rows) — the ONLY
+/// row that reverts on the boundary RESET alone, and therefore the only evidence
+/// that the reset earns its place beside the four crossings.
+///
+/// Both bullets are verbatim shapes this file/PR already exercise separately:
+/// bullet 1 is Settle Beyond Reality's return mode, bullet 2 is Trystan's
+/// Command mode 4. Glued into one card, they produce the shape the crossings
+/// CANNOT reach: mode 1 publishes for its OWN within-mode consumer, so the
+/// mode-boundary stop in `next_sub_needs_tracked_set` correctly does NOT fire —
+/// that publish is legitimate.
+///
+/// What happens next is the defect the reset closes. Mode 1 leaves
+/// `chain_tracked_set_id` pointing at a NON-EMPTY set. Mode 2's `PumpAll` then
+/// consults `is_sole_chain_producer`, whose leg 1 is
+/// `chain_tracked_set_id.is_none_or(|id| set.is_empty())` — false — so the pump
+/// declines to publish, falls through to the `_ =>` `ZoneChanged` harvest (empty
+/// for an event-less producer), and `publish_tracked_set([])` EXTENDS mode 1's
+/// set instead of allocating a new one. "Untap them" then binds mode 1's
+/// flickered creature and the pumped creature stays tapped.
+///
+/// The reset makes leg 1 true at every mode root by construction.
+///
+/// DISCRIMINATION: `tapped(mine)` `true` -> `false`, and `tracked_sets().len()`
+/// `1` -> `2`. Revert the reset in `resolve_ability_chain` and both go back;
+/// reverting the four crossings instead leaves this row GREEN, which is what
+/// makes it commit-specific rather than a duplicate of the rows above.
+///
+/// CR 700.2 + CR 608.2c + CR 701.26b.
+#[test]
+fn modal_pump_mode_untaps_its_own_population_when_an_earlier_mode_published_for_itself() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let flickered = scenario.add_creature(P0, "Flickered", 2, 2).id();
+    let mine = scenario.add_creature(P0, "Mine", 2, 2).id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Self Publishing Command",
+            false,
+            "Choose one or both —\n• Exile target creature you control, then return it to the battlefield under its owner's control.\n• Creatures target player controls get +3/+3 until end of turn. Untap them.",
+        )
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner: GameRunner = scenario.build();
+    runner.state_mut().objects.get_mut(&mine).unwrap().tapped = true;
+
+    runner
+        .cast(spell)
+        .modes(&[0, 1])
+        .target_objects(&[flickered])
+        .target_player(P0)
+        .resolve();
+    evaluate_layers(runner.state_mut());
+
+    assert_eq!(
+        runner.state().objects[&flickered].zone,
+        engine::types::zones::Zone::Battlefield,
+        "non-vacuity: mode 1's exile-and-return really executed, so it really \
+         published a non-empty set of its own"
+    );
+    assert_eq!(
+        runner.state().objects[&mine].power,
+        Some(5),
+        "non-vacuity: mode 2's pump really executed"
+    );
+    let sets = tracked_sets(runner.state());
+    assert_eq!(
+        sets.len(),
+        2,
+        "CR 700.2: two modes, two instructions, two sets — mode 2 must ALLOCATE \
+         rather than extend mode 1's. got {sets:?}"
+    );
+    // Mode 2 pumps "creatures target player controls", and the flickered
+    // creature is back on the battlefield by then (CR 611.2c fixes the affected
+    // set when the continuous effect begins), so BOTH are mode 2's own
+    // population. Pre-reset there is only ONE set and it holds `[flickered]`
+    // alone — mode 2's harvest was empty and merely extended mode 1's set.
+    assert_eq!(
+        sets.last().map(Vec::as_slice),
+        Some(ids(&[flickered, mine]).as_slice()),
+        "CR 608.2c: mode 2's own pumped population is the highest-id set"
+    );
+    assert!(
+        !tapped(runner.state(), mine),
+        "CR 701.26b: the pumped creature untaps"
+    );
+}
+
+/// ANTI-VACUITY INSTRUMENT for the row above, and a no-regression row in its own
+/// right: the SAME synthesized card with only its pump bullet chosen.
+///
+/// If this reads RED, the pump bullet does not lower to `PumpAll ->
+/// SetTapState { target: TrackedSet }` at all, the row above is vacuous in BOTH
+/// directions, and its verdict is void. It must pass before AND after the reset.
+#[test]
+fn modal_pump_mode_untaps_when_chosen_alone() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_creature(P0, "Flickered", 2, 2);
+    let mine = scenario.add_creature(P0, "Mine", 2, 2).id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Self Publishing Command",
+            false,
+            "Choose one or both —\n• Exile target creature you control, then return it to the battlefield under its owner's control.\n• Creatures target player controls get +3/+3 until end of turn. Untap them.",
+        )
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner: GameRunner = scenario.build();
+    runner.state_mut().objects.get_mut(&mine).unwrap().tapped = true;
+
+    runner.cast(spell).modes(&[1]).target_player(P0).resolve();
+    evaluate_layers(runner.state_mut());
+
+    assert_eq!(
+        runner.state().objects[&mine].power,
+        Some(5),
+        "non-vacuity: the pump really executed"
+    );
+    assert!(
+        !tapped(runner.state(), mine),
+        "the pump bullet really does lower to a TrackedSet untap — unchanged \
+         before and after the reset"
+    );
+}
+
+/// THE ARM-D GATE, and the discriminator for the THIRD mode-boundary crossing —
+/// the stop inside `later_node_is_publisher_position`'s walk.
+///
+/// SYNTHESIZED, disclosed (precedent: this file's "Bare Pump" rows). Both
+/// bullets are verbatim shapes this suite already exercises: bullet 1 is
+/// Trystan's Command mode 4, bullet 2 is Settle Beyond Reality's return mode.
+///
+/// WHY NOT PLUNGE INTO DARKNESS, the plan's named carrier: MEASURED — its first
+/// mode heads with `Sacrifice`, and `is_sole_chain_producer` (the function
+/// crossing #3 lives in) is consulted from exactly three match guards, all of
+/// them event-less producers: `Effect::PumpAll`, `Effect::GoadAll`,
+/// `Effect::GiveControl`. An event-emitting producer never reaches it, so Plunge
+/// could not have discriminated this crossing on any mode pair. The shape that
+/// CAN is "an event-less producer with its own within-mode consumer, followed by
+/// another publishing mode", which is what this card is.
+///
+/// THE DEFECT: `is_sole_chain_producer`'s leg 2 asks "is any LATER node in this
+/// chain itself in publisher position?" and answers by walking the whole linear
+/// chain. Mode 1 publishes for its own "Untap them" — legitimate, so crossing #1
+/// does not fire. But the walk then continues past that untap into MODE 2's root,
+/// finds mode 2's own `TrackedSet` consumer, and reports "a later publisher
+/// exists" — so mode 1's `PumpAll` DECLINES to publish, its harvest is empty, and
+/// its own untap binds an empty set. A later mode's producer is a different
+/// instruction (CR 700.2), not a competing antecedent (CR 608.2c), so leg 2 must
+/// stop at the boundary.
+///
+/// DISCRIMINATION, MEASURED at tip by deleting the `crosses_modal_boundary`
+/// early return from `later_node_is_publisher_position::walk`: the first
+/// published set goes `[mine, flickered]` -> `[]`; with that assertion relaxed
+/// to a print, the untap assertion then fails too, i.e. `tapped(mine)` goes back
+/// to `true`. The COUNT does not flip — both readings publish two sets — which
+/// is why this row asserts contents and not `sets.len()` alone.
+///
+/// ARM D: two modes both publishing, each consumer resolving inside its own
+/// mode. RED here means the ordering argument in `publish_tracked_set`'s doc is
+/// unsound, not merely that this crossing regressed.
+///
+/// NOT COMMIT-EXCLUSIVE: this row also reverts on the mode-boundary reset in the
+/// following commit (measured — reverting the reset reddens both this row and
+/// `modal_pump_mode_untaps_its_own_population_when_an_earlier_mode_published_for_itself`),
+/// so a red here localises the defect to "one of the two", not to this crossing.
+/// The crossing-#3 attribution is the probe recorded above, not this row alone.
+///
+/// CR 700.2 + CR 608.2c + CR 701.26b.
+#[test]
+fn two_publishing_modes_each_bind_their_own_population() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let mine = scenario.add_creature(P0, "Mine", 2, 2).id();
+    let flickered = scenario.add_creature(P0, "Flickered", 2, 2).id();
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Two Publisher Command",
+            false,
+            "Choose one or both —\n• Creatures target player controls get +3/+3 until end of turn. Untap them.\n• Exile target creature you control, then return it to the battlefield under its owner's control.",
+        )
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner: GameRunner = scenario.build();
+    for id in [mine, flickered] {
+        runner.state_mut().objects.get_mut(&id).unwrap().tapped = true;
+    }
+
+    runner
+        .cast(spell)
+        .modes(&[0, 1])
+        .target_player(P0)
+        .target_objects(&[flickered])
+        .resolve();
+    evaluate_layers(runner.state_mut());
+
+    assert_eq!(
+        runner.state().objects[&mine].power,
+        Some(5),
+        "non-vacuity: mode 1's pump really executed, so its publish decision was \
+         really taken"
+    );
+    assert_eq!(
+        runner.state().objects[&flickered].zone,
+        engine::types::zones::Zone::Battlefield,
+        "non-vacuity: mode 2's exile-and-return really executed — that is what \
+         puts mode 2 in PUBLISHER POSITION behind mode 1, which is the whole \
+         precondition for leg 2 to have anything to find"
+    );
+
+    let sets = tracked_sets(runner.state());
+    assert_eq!(
+        sets.len(),
+        2,
+        "CR 700.2: two publishing modes, two instructions, two sets. got {sets:?}"
+    );
+    assert_eq!(
+        sets.first().map(Vec::as_slice),
+        Some(ids(&[mine, flickered]).as_slice()),
+        "CR 608.2c: mode 1's set holds the population MODE 1 pumped. Empty here \
+         means leg 2 walked into mode 2 and declined mode 1's publish"
+    );
+    assert!(
+        !tapped(runner.state(), mine),
+        "CR 701.26b: mode 1's own \"Untap them\" binds mode 1's own population"
+    );
+}
