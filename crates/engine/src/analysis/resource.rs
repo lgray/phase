@@ -1370,7 +1370,7 @@ impl ResourceAxis {
             // CR 732.2c: every remaining axis is growth the collapse delivers, so the collapse
             // ends its mark. Listed by name (never `_`) so an 18th variant is decided, not
             // defaulted. Reachability at the object-growth producer, MEASURED:
-            //   * CR 119.1 `Life`, CR 122.1 `Counter`, `TokensCreated` — reachable today, each
+            //   * CR 119.3 `Life`, CR 122.1 `Counter`, `TokensCreated` — reachable today, each
             //     with a batched item (`LoopCollapseAxis::from_resource_axis` => `Some`).
             //   * CR 401 `LibraryDelta` — reachable POSITIVE today; NEGATIVE once the mill board
             //     is admitted (`ResourceVector::unbounded_components`' CR 401 exemption keeps a

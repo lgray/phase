@@ -3607,27 +3607,33 @@ fn low3_mixed_axis_boundary_preserves_debug_infinite_mana() {
     );
 }
 
-/// **V3** — a stash written by a PRE-FIX build, loaded by this one, still cannot strip a standing
-/// capability.
+/// **V3** — the CONSUMING AUTHORITY re-filters any stash it is handed, whatever that stash names.
 ///
 /// WHY THIS ROW EXISTS. The writer-side filter in
 /// `game::engine::materialize_object_growth_shortcut` means no stash THIS build registers can
 /// carry `Mana(_)` in `collapsed_axes` — so the reader-side `retain` in
 /// `clear_collapsed_materializations` removes nothing on a same-build stash, and V1/V2/V2b all
 /// stay GREEN when it is deleted. That is exactly what makes it deletable by accident; its own
-/// comment says it "removes nothing", which reads as an invitation. The reachable producer of a
-/// `Mana(_)`-bearing stash is not a second call site — `pending_unbounded_materialization` is
-/// `#[serde]`-persisted, so it is a SAVE FILE WRITTEN BEFORE THE FIX. This row is the only one
-/// that fails when the reader-side guard is deleted.
+/// comment says it "removes nothing", which reads as an invitation. This row is the only one that
+/// fails when the reader-side guard is deleted, and the property it pins is ARCHITECTURAL: the
+/// consumer owes the invariant for ANY stash, because `ResourceAxis`'s exhaustive `match`
+/// build-breaks on a new AXIS but never on a new REGISTRATION SITE.
+///
+/// The `Mana(_)`-bearing stash is built by round-tripping one through `serde_json`, which is just
+/// the cheapest way to construct that input and produces the same shape a deliberate graft would.
+/// It is NOT a cross-version save-compatibility claim — that is expressly not a goal of this
+/// project (alpha, no compat shims), and nothing here should be read as owing it. What the
+/// round-trip DOES buy is intra-version serialization correctness, a live feature: see guard (b).
 ///
 /// REVERT-FAILING ASSERTION: delete the `retain` in `clear_collapsed_materializations` ⇒
 /// `axes_to_remove` = {Mana(Colorless), Life(P0)} ⇒ P0's axis set empties ⇒ the entry is dropped
 /// ⇒ `get(&P0)` is `None` ⇒ RED on the `expect` below. This reverts against the READER-side
 /// guard; V1/V2/V2b revert against the WRITER-side filter, so the two are independent probes.
 ///
-/// The load runs through real `serde_json`, and guard (b) asserts what came BACK: without it a
-/// future `#[serde(skip)]` on `collapsed_axes` would empty the loaded set and the row would pass
-/// vacuously while silently voiding the save-compat premise this fix is argued from.
+/// Guard (b) asserts what came BACK from that round trip: without it a future `#[serde(skip)]` on
+/// `collapsed_axes` would empty the loaded set and the row would pass VACUOUSLY, pinning nothing.
+/// Because it compares whole values it also covers `sequence`, discharging two "round-trip
+/// verified" doc claims on this type that had no backing test before this row.
 ///
 /// LEVEL STATED HONESTLY (V2's note applies here too, and for a second reason): this row calls the
 /// boundary clear DIRECTLY on a NON-DEBUG seat, so the state it pins is not one the production path
@@ -3636,7 +3642,7 @@ fn low3_mixed_axis_boundary_preserves_debug_infinite_mana() {
 /// the live victim is a `debug_infinite_mana` seat (V2b). What is under test here is the CONSUMING
 /// AUTHORITY's own re-filter, which must hold for ANY stash it is handed however that stash
 /// arrived; calling it directly is what isolates that question from the route that produced the
-/// stash. Do not read the "pre-fix save" narrative as production-reachable on every seat.
+/// stash. Do not read the construction route as production-reachable on every seat.
 #[test]
 fn low3_prefix_save_stash_cannot_strip_a_standing_capability() {
     use engine::analysis::resource::ResourceAxis;
@@ -3665,9 +3671,9 @@ fn low3_prefix_save_stash_cannot_strip_a_standing_capability() {
         ],
     }];
     let loaded: Vec<PersistentAxisMaterialization> = serde_json::from_str(
-        &serde_json::to_string(&prefix_written).expect("the stash serializes into a save"),
+        &serde_json::to_string(&prefix_written).expect("the stash serializes"),
     )
-    .expect("a pre-fix save's stash loads under this build");
+    .expect("the round-tripped stash deserializes under this build");
 
     // (a) REACH-GUARD: both axes are marked, so both halves below are real questions.
     assert!(
@@ -3690,8 +3696,8 @@ fn low3_prefix_save_stash_cannot_strip_a_standing_capability() {
     // for the wrong reason.
     assert_eq!(
         loaded, prefix_written,
-        "premise: the stash survives save/load intact, so a pre-fix save reaches the clear with \
-         the standing axis still named in `collapsed_axes`"
+        "premise: the stash round-trips intact, so the clear below really receives one that still \
+         names the standing axis in `collapsed_axes`"
     );
 
     // THE SEAM, fed the pre-fix stash.

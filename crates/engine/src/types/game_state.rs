@@ -24441,17 +24441,21 @@ impl GameState {
         // (`game::engine::materialize_object_growth_shortcut`) already stores only `DeferredAccrual`
         // axes, so on a stash built by THIS build this retain removes nothing. It exists because the
         // writer-side filter is enforced at ONE site while the invariant is consumed HERE:
-        //   * `pending_unbounded_materialization` is `#[serde]`-persisted, so a stash written by a
-        //     pre-fix build round-trips through a save carrying `Mana(_)` in `collapsed_axes` and
-        //     strips a standing capability on load. REACHABLE ONLY ON A `debug_infinite_mana` SEAT:
+        //   * WHY IT IS KEPT — the whole justification, and it stands alone: `ResourceAxis`'s
+        //     exhaustive `match` build-breaks on a new AXIS, never on a new REGISTRATION SITE. A
+        //     future second producer inherits the guarantee only if it is enforced where the value
+        //     is USED. Nothing below is load-bearing for that.
+        //   * HOW such a stash can physically ARRIVE — reachability, NOT a requirement this code
+        //     owes anyone: `pending_unbounded_materialization` is `#[serde]`-persisted, so a
+        //     `Mana(_)`-bearing stash can be grafted by a test or come from one an older build
+        //     wrote. Cross-version save compatibility is EXPRESSLY NOT a goal of this project
+        //     (alpha, no compat shims) — do not reintroduce it as a reason for anything here.
+        //     Either route lands ONLY ON A `debug_infinite_mana` SEAT:
         //     `turns::drain_pending_phase_transition_progress` runs the CR 500.5 loop-mana clear at
         //     true queue-empty BEFORE it raises this prompt, and that clear excludes exactly those
         //     seats — so a NON-debug seat's `Mana(_)` is already gone by the time a stash naming it
         //     arrives here, and stripping it removes nothing. Same scope the V2b integration row
         //     states ("It is the only live victim today"); do not restate it more broadly here.
-        //   * `ResourceAxis`'s exhaustive `match` build-breaks on a new AXIS, never on a new
-        //     REGISTRATION SITE; a future second producer inherits the guarantee only if it is
-        //     enforced where the value is used.
         // Mirrors the DEFENSE-IN-DEPTH POSTURE of `derived_views::scheduled_display_axes` — NOT its
         // question. That function's own doc is explicit that it answers a DIFFERENT one (what the
         // badge may PROMISE across the accept→boundary window, versus which authority ends the
