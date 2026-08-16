@@ -9862,8 +9862,28 @@ fn resolve_chain_body(
         // CR 608.2c: the zero-fill's reduction domain is the set of players the
         // clause has actually applied to. A mid-fan-out pause leaves the tail
         // unresolved, so filling them as zero would publish a contribution they
-        // have not had the chance to make; narrow the domain to the players who
-        // completed before the pause and let the continuation extend it.
+        // have not had the chance to make. Narrow the domain to the players who
+        // COMPLETED before the pause — the pausing player is excluded too: they
+        // are sitting on a choice they have not answered, so a `Min` read taken
+        // mid-pause must not see them as a zero contributor. Where the pause
+        // came after their own producing clause they already hold a real entry,
+        // and the fill is a no-op for them.
+        //
+        // WHAT THIS DOES NOT FIX, measured: each resumed continuation leg
+        // REPLACES the table rather than extending it —
+        // `install_previous_effect_counts_by_player`'s `Some` arm assigns
+        // `last_effect_counts_by_player` outright, and `split_player_scope_chain`
+        // clears `player_scope` on the resumed legs, so each leg publishes only
+        // its own entry. A paused four-seat fan-out measured `{P0:1, P1:0}` at
+        // the pause and `{P2:1}` after the next leg. That is PRE-EXISTING and
+        // not specific to an aggregate: `last_effect_amount` is derived from the
+        // same table (`.values().sum()`), so the `Sum` class loses the same
+        // counts. It is reachable here because the forced whole-hand discard
+        // branch can still pause on a replacement choice
+        // (`effects/discard.rs`, which documents its own related
+        // `EffectResolved` gap at that site). Repairing it means making the
+        // per-clause table accumulate across continuation legs, which is
+        // resume-machinery work well outside a draw-count change.
         let mut applied_domain_end = matching_players.len();
         // CR 608.2e: each clause's equalization minimum is fixed when that
         // clause begins; the snapshot is per `player_scope` link, captured
@@ -9944,7 +9964,10 @@ fn resolve_chain_body(
                 if tail.is_some() {
                     append_to_pending_continuation(state, tail);
                 }
-                applied_domain_end = i + 1;
+                // `i`, not `i + 1`: player `i` is the one who just paused, so
+                // they have NOT completed the clause and must not be filled as
+                // a zero contributor.
+                applied_domain_end = i;
                 paused = true;
                 break;
             }
@@ -18615,6 +18638,76 @@ mod tests {
             vec![(0, 1), (1, 1), (2, 1), (3, 0)],
             "the driver must publish the empty-handed seat as a zero contributor, \
              not omit it from the reduction domain"
+        );
+    }
+
+    /// CR 608.2c: the zero-fill's domain on a PAUSED fan-out. Seat 1 holds two
+    /// cards facing a "discard a card" fan-out, so its iteration stops on a
+    /// `DiscardChoice` it has not answered. Seat 0 completed; seats 1..3 did not.
+    ///
+    /// The bound is `i`, not `i + 1`: publishing the pausing seat as a zero says
+    /// it contributed nothing, when in fact it has not yet been given the chance
+    /// to contribute — a `Min` read taken mid-pause would answer 0 off that.
+    ///
+    /// This pins the domain only. It deliberately does NOT assert that the table
+    /// survives the continuation: each resumed leg replaces it rather than
+    /// extending it, which is pre-existing and documented at the fill site.
+    #[test]
+    fn paused_fan_out_excludes_the_seat_that_has_not_answered_its_choice() {
+        let mut state = GameState::new(FormatConfig::standard(), 4, 42);
+        // Seat 0: exactly one card — a forced discard, no choice, completes.
+        // Seat 1: two cards — must choose, so the fan-out pauses here.
+        for (seat, cards) in [(0u8, 1u32), (1, 2), (2, 1), (3, 1)] {
+            for n in 0..cards {
+                create_object(
+                    &mut state,
+                    CardId(100 + u64::from(seat) * 10 + u64::from(n)),
+                    PlayerId(seat),
+                    format!("P{seat} Card {n}"),
+                    Zone::Hand,
+                );
+            }
+        }
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Discard {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::ScopedPlayer,
+                selection: crate::types::ability::CardSelectionMode::Chosen,
+                unless_filter: None,
+                filter: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        ability.player_scope = Some(PlayerFilter::All);
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        assert!(
+            matches!(
+                state.waiting_for,
+                crate::types::game_state::WaitingFor::DiscardChoice { .. }
+            ),
+            "reach guard: the fan-out must actually be paused on seat 1's choice, \
+             got {:?}",
+            state.waiting_for
+        );
+
+        let mut rows: Vec<(u8, i32)> = state
+            .last_effect_counts_by_player
+            .iter()
+            .map(|(p, n)| (p.0, *n))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![(0, 1)],
+            "only the seat that COMPLETED before the pause belongs to the domain; \
+             the paused seat has not had the chance to contribute and must not be \
+             published as a zero"
         );
     }
 

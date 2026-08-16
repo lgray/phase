@@ -15987,4 +15987,42 @@ mod tests {
             "CantHaveKeyword(Flying) should be covered by is_data_carrying_static()"
         );
     }
+    /// The `fmt_quantity_ref` `PreviousEffectAmount` arms are ORDER-DEPENDENT:
+    /// the `(_, Sum)` arm must stay first so every Excess-channel corpus card
+    /// (all of which are `Sum`) keeps rendering the pre-change string. Nothing
+    /// enforced that ordering — reordering the arms would silently move the
+    /// coverage signature of every Excess card, reddening CI's coverage check
+    /// with no indication of the cause. These four assertions are that guard.
+    #[test]
+    fn previous_effect_amount_renders_all_four_channel_aggregate_pairs() {
+        use crate::types::ability::{AggregateFunction, DamageChannel};
+        let render = |channel, aggregate| {
+            fmt_quantity_ref(&QuantityRef::PreviousEffectAmount { channel, aggregate })
+        };
+
+        // Order-dependent: `(_, Sum)` is matched before the Excess catch-all, so
+        // the Excess+Sum pair renders the SUM string, not the excess one.
+        assert_eq!(
+            render(DamageChannel::Total, AggregateFunction::Sum),
+            "amount from preceding effect"
+        );
+        assert_eq!(
+            render(DamageChannel::Excess, AggregateFunction::Sum),
+            "amount from preceding effect",
+            "the (_, Sum) arm must stay FIRST: Excess+Sum is the shape the corpus \
+             actually holds, and it must keep the pre-change signature"
+        );
+        assert_eq!(
+            render(DamageChannel::Total, AggregateFunction::Max),
+            "greatest single player's amount from preceding effect"
+        );
+        assert_eq!(
+            render(DamageChannel::Total, AggregateFunction::Min),
+            "least single player's amount from preceding effect"
+        );
+        assert_eq!(
+            render(DamageChannel::Excess, AggregateFunction::Max),
+            "excess amount from preceding effect"
+        );
+    }
 }

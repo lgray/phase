@@ -19073,9 +19073,16 @@ mod stage2_injector_tests {
                 // located by CONTENT in this worktree — never by indexing a line of
                 // `upstream/main`, which moves and once produced a phantom 79-line
                 // discrepancy in this very lane.
+                //
+                // Final-review round: ONE producer moved and two did not —
+                // `:10404 ⇒ :10427` (+23) with `:7061`/`:7138` unchanged — because that
+                // round's edits (the paused-domain comment and its `i`-not-`i+1` note)
+                // land BETWEEN the second and third producers. This is the sharpest case
+                // in this log against a "+N to all three" assumption. Window `d7fd67fd…`
+                // unchanged, both neighbours differing as controls.
                 "game/effects/mod.rs:7061".to_string(),
                 "game/effects/mod.rs:7138".to_string(),
-                "game/effects/mod.rs:10404".to_string(),
+                "game/effects/mod.rs:10427".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.
