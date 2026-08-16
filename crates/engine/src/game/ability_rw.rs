@@ -3911,7 +3911,14 @@ fn walk_ability(
         target_choice_timing: _,
         description: _,
         selected_mode_labels: _, // display snapshots, no game-state read/write
-        min_x_value: _,          // u32, no read
+        // CR 700.2: mode-root position marker — reads and writes NOTHING on any
+        // of the profiler's axes (kind+scope, `reads_member_bound`,
+        // `reads_event_live`, `writes_event_object`). It gates when the chain's
+        // tracked-set identity RESETS, which narrows what a later member-bound
+        // read can see; narrowing never adds a read, and the member-bound axis is
+        // already set by the `TrackedSet`-bearing effects themselves.
+        modal_instruction_ordinal: _,
+        min_x_value: _, // u32, no read
         cant_be_copied: _,
         copy_count_status: _,
         forward_result: _,

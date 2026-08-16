@@ -3144,6 +3144,7 @@ fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
         target_choice_timing,
         description,
         selected_mode_labels,
+        modal_instruction_ordinal,
         repeat_for,
         min_x_value,
         announced_x,
@@ -3206,6 +3207,14 @@ fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
         && *target_choice_timing == TargetChoiceTiming::Stack
         && description.is_none()
         && selected_mode_labels.is_empty()
+        // CR 700.2 + CR 700.2d: a mode root is the head of ONE selected
+        // instruction of a modal ability, and its ordinal gates the
+        // per-mode reset of the chain-local tracked-set identity in
+        // `resolve_ability_chain`. A batch collapses N stack entries into a
+        // SINGLE chain entry, so it would fire that per-instruction boundary
+        // once instead of N times. That is outside what this batch proof
+        // covers, so decline — declining only costs the optimization.
+        && modal_instruction_ordinal.is_none()
         && repeat_for.is_none()
         && *min_x_value == 0
         // CR 601.2b: an announce-locked X makes this ability's X board-dependent;
@@ -3361,6 +3370,7 @@ fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbili
         target_choice_timing,
         description: _,
         selected_mode_labels,
+        modal_instruction_ordinal,
         repeat_for,
         min_x_value,
         announced_x,
@@ -3417,6 +3427,14 @@ fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbili
         && target_constraints.is_empty()
         && *target_choice_timing == TargetChoiceTiming::Stack
         && selected_mode_labels.is_empty()
+        // CR 700.2 + CR 700.2d: a mode root is the head of ONE selected
+        // instruction of a modal ability, and its ordinal gates the
+        // per-mode reset of the chain-local tracked-set identity in
+        // `resolve_ability_chain`. A batch collapses N stack entries into a
+        // SINGLE chain entry, so it would fire that per-instruction boundary
+        // once instead of N times. That is outside what this batch proof
+        // covers, so decline — declining only costs the optimization.
+        && modal_instruction_ordinal.is_none()
         && repeat_for.is_none()
         && *min_x_value == 0
         && announced_x.is_none()
@@ -3558,6 +3576,7 @@ fn fixed_opponent_lose_life_ability_is_batch_candidate(ability: &ResolvedAbility
         target_choice_timing,
         description: _,
         selected_mode_labels,
+        modal_instruction_ordinal,
         repeat_for,
         min_x_value,
         announced_x,
@@ -3614,6 +3633,14 @@ fn fixed_opponent_lose_life_ability_is_batch_candidate(ability: &ResolvedAbility
         && target_constraints.is_empty()
         && *target_choice_timing == TargetChoiceTiming::Stack
         && selected_mode_labels.is_empty()
+        // CR 700.2 + CR 700.2d: a mode root is the head of ONE selected
+        // instruction of a modal ability, and its ordinal gates the
+        // per-mode reset of the chain-local tracked-set identity in
+        // `resolve_ability_chain`. A batch collapses N stack entries into a
+        // SINGLE chain entry, so it would fire that per-instruction boundary
+        // once instead of N times. That is outside what this batch proof
+        // covers, so decline — declining only costs the optimization.
+        && modal_instruction_ordinal.is_none()
         && repeat_for.is_none()
         && *min_x_value == 0
         && announced_x.is_none()
@@ -4202,6 +4229,17 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         target_choice_timing: a_target_choice_timing,
         description: _,
         selected_mode_labels: a_selected_mode_labels,
+        // CR 700.2: deliberately NOT part of run identity. At the ROOT it is
+        // provably `None` — this function is entered ONLY through the three
+        // `*_ability_is_batch_candidate` gates, each of which now requires
+        // `modal_instruction_ordinal.is_none()`. That guarantee is ONE HOP
+        // deep: the `sub_ability`/`else_ability` recursions below re-enter
+        // this function directly, without re-checking a gate, so a deeper node
+        // could in principle carry an ordinal. Ignoring it is still right —
+        // this equality is issue #5946's `SourceIndependent` inert-trigger RUN
+        // IDENTITY, not a modal check, and two runs that differ only in which
+        // mode produced them are still the same run.
+        modal_instruction_ordinal: _,
         repeat_for: a_repeat_for,
         min_x_value: a_min_x_value,
         announced_x: a_announced_x,
@@ -4260,6 +4298,17 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         target_choice_timing: b_target_choice_timing,
         description: _,
         selected_mode_labels: b_selected_mode_labels,
+        // CR 700.2: deliberately NOT part of run identity. At the ROOT it is
+        // provably `None` — this function is entered ONLY through the three
+        // `*_ability_is_batch_candidate` gates, each of which now requires
+        // `modal_instruction_ordinal.is_none()`. That guarantee is ONE HOP
+        // deep: the `sub_ability`/`else_ability` recursions below re-enter
+        // this function directly, without re-checking a gate, so a deeper node
+        // could in principle carry an ordinal. Ignoring it is still right —
+        // this equality is issue #5946's `SourceIndependent` inert-trigger RUN
+        // IDENTITY, not a modal check, and two runs that differ only in which
+        // mode produced them are still the same run.
+        modal_instruction_ordinal: _,
         repeat_for: b_repeat_for,
         min_x_value: b_min_x_value,
         announced_x: b_announced_x,

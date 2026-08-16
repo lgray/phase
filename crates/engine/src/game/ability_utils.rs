@@ -303,8 +303,12 @@ pub fn build_chained_resolved(
     controller: PlayerId,
 ) -> Result<ResolvedAbility, EngineError> {
     if indices.is_empty() {
-        // CR 700.2a: "Choose up to one" permits choosing no modes. The ability
-        // still resolves, but it has no instructions to perform.
+        // CR 700.2: the modes are the bulleted options, chosen per "instructions
+        // for a player to choose A NUMBER of those options" — and under "choose up
+        // to one" that number may be zero. The ability still resolves; it just has
+        // no instructions to perform. (Not CR 700.2a, which is about WHEN modes are
+        // chosen and illegal modes; not CR 700.2i, whose "choose up to" is specific
+        // to pawprint {P} worth of modes.)
         return Ok(ResolvedAbility::new(
             Effect::GenericEffect {
                 static_abilities: Vec::new(),
@@ -321,11 +325,19 @@ pub fn build_chained_resolved(
     let ordered = ordered_selected_mode_indices(indices);
 
     let mut result: Option<ResolvedAbility> = None;
-    for &idx in ordered.iter().rev() {
+    for (ordinal, &idx) in ordered.iter().enumerate().rev() {
         let def = abilities
             .get(idx)
             .ok_or_else(|| EngineError::InvalidAction(format!("Mode index {idx} out of range")))?;
         let mut resolved = build_resolved_from_def(def, source_id, controller);
+        // CR 700.2 ("each of those options is a mode") + CR 700.2d: stamp this
+        // mode root with its OCCURRENCE ORDINAL within the ordered selection —
+        // taken from `enumerate()`, never from `idx`. `ordered_selected_mode_indices`
+        // preserves duplicates, so an `allow_repeat_modes` card (Eldrazi
+        // Confluence, `[1, 1]`) has two distinct instructions at one printed
+        // index; keying on `idx` would collapse them into one. This is the ONLY
+        // write site for the field (see its doc on `ResolvedAbility`).
+        resolved.modal_instruction_ordinal = Some(ordinal);
         // CR 700.2d: When chaining multiple modes, append subsequent modes after
         // the current mode's own sub_ability chain (e.g., Cathartic Pyre mode 2's
         // "discard, then draw that many" must preserve the draw sub_ability).
@@ -9601,6 +9613,178 @@ mod tests {
         assert!(
             matches!(discard_node.effect, Effect::Discard { .. }),
             "Third link should be mode 2 (Discard) — printed last"
+        );
+    }
+
+    /// CR 700.2d: the mode-root stamp is the OCCURRENCE ORDINAL, not the printed
+    /// mode index. "If a particular mode is chosen multiple times, the spell is
+    /// treated as if that mode appeared that many times in sequence" — so a
+    /// repeated mode is two independent instructions and must carry two distinct
+    /// ordinals even though both live at the same printed index.
+    ///
+    /// DISCRIMINATION: key the stamp on `idx` instead of `enumerate()`'s counter
+    /// and the `[1, 1]` arm reads `Some(1), Some(1)` — the two occurrences
+    /// collapse into one instruction, which is exactly what a mode-boundary
+    /// consumer must not see. The `[0, 1, 2]` arm cannot distinguish the two
+    /// keyings (index == ordinal there), which is why the repeat arm is here.
+    #[test]
+    fn build_chained_resolved_stamps_occurrence_ordinals_not_printed_indices() {
+        let mode = |effect| AbilityDefinition::new(AbilityKind::Spell, effect);
+        let abilities = vec![
+            mode(Effect::Destroy {
+                target: TargetFilter::Any,
+                cant_regenerate: false,
+            }),
+            mode(Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            }),
+            mode(Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player: TargetFilter::Controller,
+            }),
+        ];
+
+        let distinct =
+            build_chained_resolved(&abilities, &[0, 1, 2], ObjectId(1), PlayerId(0)).unwrap();
+        let second = distinct.sub_ability.as_deref().expect("mode 1 follows");
+        let third = second.sub_ability.as_deref().expect("mode 2 follows");
+        assert_eq!(
+            (
+                distinct.modal_instruction_ordinal,
+                second.modal_instruction_ordinal,
+                third.modal_instruction_ordinal,
+            ),
+            (Some(0), Some(1), Some(2)),
+            "CR 700.2: every mode root is stamped, including the first"
+        );
+
+        // CR 700.2d: Eldrazi Confluence's `allow_repeat_modes` shape.
+        let repeated =
+            build_chained_resolved(&abilities, &[1, 1], ObjectId(1), PlayerId(0)).unwrap();
+        let repeated_second = repeated
+            .sub_ability
+            .as_deref()
+            .expect("the repeated mode occurs twice in sequence");
+        assert!(
+            matches!(repeated.effect, Effect::Draw { .. })
+                && matches!(repeated_second.effect, Effect::Draw { .. }),
+            "reach-guard: both occurrences must really be printed mode 1, or the \
+             distinct-ordinal assertion below is about the wrong nodes"
+        );
+        assert_eq!(
+            (
+                repeated.modal_instruction_ordinal,
+                repeated_second.modal_instruction_ordinal,
+            ),
+            (Some(0), Some(1)),
+            "CR 700.2d: two occurrences of ONE printed mode are two instructions. \
+             Keying on the printed index would give (Some(1), Some(1))"
+        );
+
+        // CR 700.2: the modes are the bulleted options, so "choose up to one"
+        // with zero chosen has no instructions at all — it builds a bare
+        // `GenericEffect` root, which is not a mode root.
+        let none = build_chained_resolved(&abilities, &[], ObjectId(1), PlayerId(0)).unwrap();
+        assert_eq!(none.modal_instruction_ordinal, None);
+    }
+
+    /// PROVENANCE PIN for `ResolvedAbility::modal_instruction_ordinal`: exactly
+    /// ONE non-test writer in the whole engine crate.
+    ///
+    /// The field's meaning ("this node begins a new CR 700.2 instruction") is only
+    /// sound while `build_chained_resolved` — the one function that linearizes
+    /// selected modes into a chain — is its only author. A second writer would let
+    /// a non-mode-root claim a mode boundary and reset the chain-local tracked-set
+    /// identity mid-instruction.
+    ///
+    /// Classification is by WRITE, not by name occurrence: the identifier also
+    /// appears at every exhaustive `ResolvedAbility` literal as `: None` (a
+    /// default, not a write) and at each of the eight exhaustive destructures.
+    ///
+    /// Test regions are excluded by the `#[cfg(test)] mod` boundary, not by
+    /// filename — a filename-keyed scan of this crate has produced a wrong census
+    /// before (13 "src" sites that were all inside `#[cfg(test)] mod tests`).
+    #[test]
+    fn modal_instruction_ordinal_has_exactly_one_non_test_writer() {
+        // Assembled so this test's own source cannot be counted.
+        let needle = format!("modal_instruction_{}", "ordinal");
+        let write_forms = [format!("{needle} = "), format!("{needle}: Some(")];
+        // POSITIVE CONTROL: `build_chained_resolved`'s OWN other write, five lines
+        // from the one under census, in the same non-test region of the same file.
+        // If the walk or the `#[cfg(test)]` cut ever stops reaching that function,
+        // this reads 0 and the "exactly 1 writer" assertion below would be
+        // counterfeit. Counted per file rather than crate-wide: the needle is
+        // written 17 times across the crate, a number that drifts with unrelated
+        // work, and a crate-wide pin would be a maintenance tax that measures
+        // nothing this row cares about.
+        let control = format!("sub_link = SubAbilityLink::{}", "SequentialSibling");
+        let control_file = "ability_utils.rs";
+
+        let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![src_root];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        assert!(files.len() > 100, "reach-guard: the walk found the crate");
+
+        let mut writers: Vec<String> = Vec::new();
+        let mut control_hits = 0usize;
+        for path in &files {
+            let text = std::fs::read_to_string(path).expect("read source");
+            // Comment halves removed by the shared authority, so a needle written
+            // in prose is neither counted nor able to hide a deleted writer.
+            let code = crate::source_census::code_lines(&text);
+            let lines: Vec<&str> = code.lines().collect();
+            // Cut at the `#[cfg(test)] mod ...` boundary. `#[cfg(test)]` also
+            // guards individual `use`/`fn` items in this crate; those are NOT the
+            // boundary, and treating them as one would hide real writers.
+            let end = lines
+                .iter()
+                .position(|line| line.trim_start().starts_with("#[cfg(test)]"))
+                .filter(|i| {
+                    lines[i + 1..]
+                        .iter()
+                        .find(|l| !l.trim().is_empty())
+                        .is_some_and(|l| l.trim_start().starts_with("mod "))
+                })
+                .unwrap_or(lines.len());
+            let rel = path.display().to_string();
+            for line in &lines[..end] {
+                if write_forms.iter().any(|f| line.contains(f.as_str())) {
+                    writers.push(format!("{rel}: {}", line.trim()));
+                }
+                if rel.ends_with(control_file) {
+                    control_hits += line.matches(control.as_str()).count();
+                }
+            }
+        }
+
+        assert_eq!(
+            control_hits, 1,
+            "POSITIVE CONTROL: `build_chained_resolved`'s `SequentialSibling` write \
+             must be visible to this scan, or a zero writer count is counterfeit. \
+             control_hits={control_hits}"
+        );
+        assert_eq!(
+            writers.len(),
+            1,
+            "CR 700.2: `modal_instruction_ordinal` must have exactly one non-test \
+             writer (`build_chained_resolved`). writers: {writers:#?}"
+        );
+        assert!(
+            writers[0].contains("ability_utils.rs"),
+            "the one writer must be `build_chained_resolved`, got {:?}",
+            writers[0]
         );
     }
 

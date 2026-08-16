@@ -26002,6 +26002,32 @@ pub struct ResolvedAbility {
     /// individual instructions selected from those modes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub selected_mode_labels: Vec<String>,
+    /// CR 700.2 + CR 608.2c: Marks this node as the ROOT of one selected mode's
+    /// instructions, and gives its position in the resolution order.
+    ///
+    /// CR 700.2: "Each of those options is a mode" — distinct modes are distinct
+    /// instructions, not continuations of each other. CR 608.2c ("follows its
+    /// instructions in the order written … apply the rules of English") makes an
+    /// anaphor like "those cards" / "it" bind to its NEAREST antecedent, which
+    /// can never be a sibling mode's population. `build_chained_resolved`
+    /// linearizes every selected mode into ONE `sub_ability` chain, erasing that
+    /// boundary from the chain shape; this field restores it.
+    ///
+    /// CR 700.2d: the value is the OCCURRENCE ORDINAL (0-based position within
+    /// the ordered selection), NOT the printed mode index — "if a particular
+    /// mode is chosen multiple times, the spell is treated as if that mode
+    /// appeared that many times in sequence", so Eldrazi Confluence's `[1, 1]`
+    /// yields ordinals `0` and `1` at the same printed index. Index-keying would
+    /// collide the two occurrences into one instruction.
+    ///
+    /// `None` on every non-mode-root node, including within-mode continuation
+    /// steps and every ability of a non-modal spell.
+    ///
+    /// SOLE WRITER: `game::ability_utils::build_chained_resolved`. Do not stamp
+    /// it anywhere else — consumers rely on "is a mode root" being decidable
+    /// from this field alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modal_instruction_ordinal: Option<usize>,
     /// CR 608.2c: Repeat this ability N times (from "for each [X], [effect]").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat_for: Option<QuantityExpr>,
@@ -26228,6 +26254,7 @@ impl ResolvedAbility {
             target_choice_timing: TargetChoiceTiming::Stack,
             description: None,
             selected_mode_labels: Vec::new(),
+            modal_instruction_ordinal: None,
             repeat_for: None,
             min_x_value: 0,
             announced_x: None,
