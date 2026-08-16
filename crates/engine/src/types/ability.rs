@@ -6907,7 +6907,7 @@ pub enum QuantityRef {
     /// behind — the same axis, and the same `DamageChannel`, already carried by
     /// the condition peer [`AbilityCondition::PreviousEffectAmount`]:
     ///
-    /// - [`DamageChannel::Total`] (default): the total amount (CR 120.6), via
+    /// - [`DamageChannel::Total`] (default): the total amount, via
     ///   `GameState::last_effect_amount`. Every non-damage producer (life lost,
     ///   counters removed, cards drawn) stamps only this channel.
     /// - [`DamageChannel::Excess`]: the EXCESS amount (CR 120.10) — damage dealt
@@ -6918,14 +6918,46 @@ pub enum QuantityRef {
     ///
     /// A sibling `PreviousEffectExcessAmount` variant would be the textbook
     /// sibling-cluster smell: the channel is a leaf parameterization of one
-    /// structural axis, and it lies wholly inside CR 120 (120.6 total /
-    /// 120.10 excess), so it is a parameterization, not a new leaf.
+    /// structural axis, and both channels lie wholly inside CR 120 (the excess
+    /// channel at CR 120.10), so it is a parameterization, not a new leaf.
     ///
     /// `Total` is serde-elided, so every pre-existing serialized card is
     /// byte-identical.
     PreviousEffectAmount {
         #[serde(default, skip_serializing_if = "is_total_damage_channel")]
         channel: DamageChannel,
+        /// CR 608.2c + CR 608.2i: how the completed instruction's per-player
+        /// result table (`GameState::last_effect_counts_by_player`) is reduced
+        /// to the one number this look-back reference reads.
+        ///
+        /// - `Sum` (default): the cross-player TOTAL, read from
+        ///   `GameState::last_effect_amount` — which
+        ///   `install_previous_effect_counts_by_player`
+        ///   (`game/effects/mod.rs`) stamps as the sum of the table, and the
+        ///   ONLY channel a non-per-player producer (damage, life, counters,
+        ///   draw, die roll) leaves behind. Byte-identical to the
+        ///   pre-`aggregate` behaviour for every existing consumer.
+        /// - `Max`: the GREATEST single player's contribution — Windfall,
+        ///   Jace's Archivist, Whispering Madness ("draws cards equal to the
+        ///   greatest number of cards a player discarded this way"). Scryfall
+        ///   census 2026-08-15 returns exactly these three.
+        /// - `Min`: no printed card uses it (same census: zero
+        ///   "least/fewest … this way" cards). Present because
+        ///   `AggregateFunction` is a shared 3-valued enum matched
+        ///   exhaustively; the arm is a one-line `.min()`, not a stub.
+        ///
+        /// The `Excess` channel (CR 120.10) publishes a scalar, not a table
+        /// (`GameState::last_effect_excess_amount`), so on that channel
+        /// Max/Min/Sum of the single value coincide — degenerate by
+        /// construction, not silently ignored.
+        ///
+        /// `Sum` is serde-elided, so every pre-existing serialized card,
+        /// scenario and IR snapshot is byte-identical.
+        #[serde(
+            default = "default_sum_aggregate",
+            skip_serializing_if = "is_sum_aggregate"
+        )]
+        aggregate: AggregateFunction,
     },
     /// Engine bookkeeping for the immediately preceding resolution-local effect
     /// count. This reads `GameState::last_effect_count` directly, defaults an
@@ -7133,8 +7165,8 @@ pub enum QuantityRef {
         source: Box<TargetFilter>,
         target: Box<TargetFilter>,
         #[serde(
-            default = "default_damage_aggregate",
-            skip_serializing_if = "is_default_damage_aggregate"
+            default = "default_sum_aggregate",
+            skip_serializing_if = "is_sum_aggregate"
         )]
         aggregate: AggregateFunction,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -15388,7 +15420,7 @@ fn default_counter_transfer_mode() -> CounterTransferMode {
     CounterTransferMode::Move
 }
 
-fn default_damage_aggregate() -> AggregateFunction {
+fn default_sum_aggregate() -> AggregateFunction {
     AggregateFunction::Sum
 }
 
@@ -15457,7 +15489,7 @@ fn default_most_prevalent_scope() -> ControllerRef {
     ControllerRef::You
 }
 
-fn is_default_damage_aggregate(a: &AggregateFunction) -> bool {
+fn is_sum_aggregate(a: &AggregateFunction) -> bool {
     matches!(a, AggregateFunction::Sum)
 }
 
@@ -30005,7 +30037,7 @@ mod tests {
         let modern_total = QuantityRef::DamageDealtThisTurn {
             source: Box::new(TargetFilter::Any),
             target: Box::new(TargetFilter::Any),
-            aggregate: default_damage_aggregate(),
+            aggregate: default_sum_aggregate(),
             group_by: None,
             damage_kind: default_damage_kind(),
             channel: DamageChannel::Total,
@@ -30046,7 +30078,7 @@ mod tests {
         let modern_excess = QuantityRef::DamageDealtThisTurn {
             source: Box::new(TargetFilter::Any),
             target: Box::new(TargetFilter::Any),
-            aggregate: default_damage_aggregate(),
+            aggregate: default_sum_aggregate(),
             group_by: None,
             damage_kind: default_damage_kind(),
             channel: DamageChannel::Excess,

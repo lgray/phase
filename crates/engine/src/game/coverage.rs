@@ -1585,7 +1585,28 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
             format!("# of counter kinds among {}", fmt_target(filter))
         }
         QuantityRef::VoteCount { choice_index } => format!("# of votes for choice {choice_index}"),
-        QuantityRef::PreviousEffectAmount { .. } => "amount from preceding effect".into(),
+        QuantityRef::PreviousEffectAmount { channel, aggregate } => match (channel, aggregate) {
+            // Byte-identical to the pre-change string, so no existing card's
+            // coverage signature moves. Must stay FIRST: the Excess-channel
+            // corpus cards are all `Sum` and must keep hitting this arm.
+            (_, AggregateFunction::Sum) => "amount from preceding effect".into(),
+            // CR 120.10: excess damage is "equal to the difference" beyond lethal —
+            // one amount per damaged permanent, never a per-player tally. Naming a
+            // "single player's" extremum over it would describe a reduction that
+            // never happened. (The per-player table the Total channel publishes is
+            // an engine structure; no CR governs its shape, so none is cited for it.)
+            // No parser path builds that pair today; the arm exists so the renderer
+            // stays honest if one ever does.
+            (crate::types::ability::DamageChannel::Total, AggregateFunction::Max) => {
+                "greatest single player's amount from preceding effect".into()
+            }
+            (crate::types::ability::DamageChannel::Total, AggregateFunction::Min) => {
+                "least single player's amount from preceding effect".into()
+            }
+            (crate::types::ability::DamageChannel::Excess, _) => {
+                "excess amount from preceding effect".into()
+            }
+        },
         QuantityRef::PreviousEffectCount => "count from preceding effect".into(),
         QuantityRef::TrackedSetSize => "cards moved".into(),
         QuantityRef::FilteredTrackedSetSize { filter, .. } => {

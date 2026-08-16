@@ -1377,6 +1377,7 @@ mod wheel_of_misfortune_secret_numbers;
 mod where_x_coverage_runtime;
 mod where_x_quantity_channel_binds;
 mod where_x_totality_guard;
+mod windfall_greatest_discard_aggregate;
 mod winding_way_reveal_partition_2931;
 mod witchs_oven_food_tokens;
 mod xantid_swarm_defending_player_cant_cast;

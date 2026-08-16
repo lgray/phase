@@ -2216,6 +2216,7 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
                 if let Effect::DamageEachPlayer { amount, .. } = def.effect.as_mut() {
                     amount.rebind_event_context_amount(&QuantityRef::PreviousEffectAmount {
                         channel: DamageChannel::Total,
+                        aggregate: AggregateFunction::Sum,
                     });
                 }
             }

@@ -3977,21 +3977,55 @@ fn resolve_ref(
             }
             count
         }
-        // CR 608.2c: Numeric result from the preceding effect in a sub_ability chain.
-        // The resolver stamps this from the parent effect's semantic event class.
-        //
-        // CR 120.6 / CR 120.10: `channel` picks WHICH tally the preceding effect
-        // left behind. Both are stamped by the damage effects and cleared at
-        // depth-0, so the two channels are read from the same resolution scope —
-        // this arm only chooses between them. Mirrors the condition peer
-        // `AbilityCondition::PreviousEffectAmount`, which already reads both.
-        QuantityRef::PreviousEffectAmount { channel } => match channel {
-            // CR 120.6: the total amount dealt/lost/removed.
-            DamageChannel::Total => state.last_effect_amount.unwrap_or(0),
+        // CR 608.2c + CR 608.2i: a "this way" look-back at the numeric result of
+        // the preceding instruction in this resolution. `channel` selects WHICH
+        // tally that instruction left behind; `aggregate` selects how the
+        // per-player table is reduced to the one number this reference reads.
+        QuantityRef::PreviousEffectAmount { channel, aggregate } => match channel {
+            DamageChannel::Total => {
+                let total = state.last_effect_amount.unwrap_or(0);
+                let per_player = state.last_effect_counts_by_player.values().copied();
+                match aggregate {
+                    AggregateFunction::Sum => total,
+                    // An absent table means the producer published NO per-player
+                    // breakdown: only `Effect::Discard | DiscardCard |
+                    // ChangeZoneAll` populate it; every other producer takes the
+                    // `None` arm in `install_previous_effect_counts_by_player`,
+                    // which clears it. For a SINGLE-subject producer the scalar
+                    // IS the extremum, so the fallback is exact. For a
+                    // MULTI-subject non-count producer — `Effect::DamageEachPlayer`,
+                    // `Effect::DamageAll`, `Effect::LoseLife` under `player_scope`
+                    // — the scalar is a cross-player SUM and a Max read would
+                    // over-report. Unreachable today, measured: the Scryfall
+                    // census (2026-08-15) returns exactly 3 cards in the Max
+                    // class and all 3 follow an `Effect::Discard`, a count
+                    // producer. The real-zero case is also safe: the discard
+                    // fan-out zero-fills an empty producer table with one entry
+                    // per matching player, so a discard-of-nothing yields a
+                    // non-empty all-zero table (Max = 0), never the fallback.
+                    //
+                    // The mirror-image hazard is a STALE PRESERVED table, not
+                    // an absent one: `install_previous_effect_counts_by_player`
+                    // KEEPS the prior table on its `None` arm when
+                    // `preserve_counts_for_current_consumer` (`player_scope.is_none()
+                    // && effect_consumes_event_context_amount`). In a chain
+                    // A(count producer) -> B(EventContextAmount consumer, no
+                    // player_scope) -> C(PreviousEffectAmount{Max}), C would
+                    // fold A's table while `Sum` reads B's re-stamped scalar.
+                    // Unreachable for the closed Max/Min class, measured: all 3
+                    // class cards are `Discard{All} -> Draw{PEA}` with the
+                    // consumer in the IMMEDIATELY following link, so no B can
+                    // interpose; and `Sum` is unaffected either way because it
+                    // reads `last_effect_amount`, exactly as before this change.
+                    AggregateFunction::Max => per_player.max().unwrap_or(total),
+                    AggregateFunction::Min => per_player.min().unwrap_or(total),
+                }
+            }
             // CR 120.10: only the damage dealt BEYOND lethal — "the amount of
             // excess damage dealt to that creature this way" (Goblin
             // Negotiation, Hell to Pay, Lacerate Flesh), "that excess damage"
-            // (Contest of Claws). 0 when the preceding effect dealt no excess.
+            // (Contest of Claws). A scalar channel with no per-player table, so
+            // every aggregate reduces to it. 0 when no excess was dealt.
             DamageChannel::Excess => state.last_effect_excess_amount.unwrap_or(0),
         },
         // Read the preceding continuation-local effect count directly.

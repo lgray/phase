@@ -38527,6 +38527,7 @@ fn for_each_prefix_pump_threads_self_ref_target() {
         Some(QuantityExpr::Ref {
             qty: QuantityRef::PreviousEffectAmount {
                 channel: crate::types::ability::DamageChannel::Total,
+                aggregate: AggregateFunction::Sum,
             },
         }),
         "repeat_for should scale by counters removed in the activation cost"

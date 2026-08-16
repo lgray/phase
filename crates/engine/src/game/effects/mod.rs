@@ -18429,6 +18429,7 @@ mod tests {
                 amount: QuantityExpr::Ref {
                     qty: QuantityRef::PreviousEffectAmount {
                         channel: crate::types::ability::DamageChannel::Total,
+                        aggregate: AggregateFunction::Sum,
                     },
                 },
                 player: TargetFilter::Controller,
@@ -23155,6 +23156,7 @@ mod tests {
                 count: QuantityExpr::Ref {
                     qty: QuantityRef::PreviousEffectAmount {
                         channel: crate::types::ability::DamageChannel::Total,
+                        aggregate: AggregateFunction::Sum,
                     },
                 },
                 target: TargetFilter::Controller,
@@ -30333,6 +30335,7 @@ mod tests {
                 count: QuantityExpr::Ref {
                     qty: QuantityRef::PreviousEffectAmount {
                         channel: DamageChannel::Total,
+                        aggregate: AggregateFunction::Sum,
                     },
                 },
                 target: TargetFilter::Controller,
@@ -30650,6 +30653,7 @@ mod tests {
                 amount: QuantityExpr::Ref {
                     qty: QuantityRef::PreviousEffectAmount {
                         channel: DamageChannel::Total,
+                        aggregate: AggregateFunction::Sum,
                     },
                 },
                 target: None,
@@ -30665,6 +30669,7 @@ mod tests {
                 count: QuantityExpr::Ref {
                     qty: QuantityRef::PreviousEffectAmount {
                         channel: DamageChannel::Total,
+                        aggregate: AggregateFunction::Sum,
                     },
                 },
                 target: TargetFilter::Controller,
@@ -30741,6 +30746,7 @@ mod tests {
                 count: QuantityExpr::Ref {
                     qty: QuantityRef::PreviousEffectAmount {
                         channel: DamageChannel::Total,
+                        aggregate: AggregateFunction::Sum,
                     },
                 },
                 target: TargetFilter::SelfRef,
