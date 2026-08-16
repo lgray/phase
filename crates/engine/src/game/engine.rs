@@ -19080,9 +19080,14 @@ mod stage2_injector_tests {
                 // land BETWEEN the second and third producers. This is the sharpest case
                 // in this log against a "+N to all three" assumption. Window `d7fd67fd…`
                 // unchanged, both neighbours differing as controls.
+                //
+                // Delta-re-review correction: `:10427 ⇒ :10432` (+5), third producer only
+                // again, because the corrected measurement in that comment is five lines
+                // longer than the wrong one it replaced. Window `d7fd67fd…` unchanged,
+                // both neighbours differing as controls.
                 "game/effects/mod.rs:7061".to_string(),
                 "game/effects/mod.rs:7138".to_string(),
-                "game/effects/mod.rs:10427".to_string(),
+                "game/effects/mod.rs:10432".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.

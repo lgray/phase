@@ -9865,17 +9865,22 @@ fn resolve_chain_body(
         // have not had the chance to make. Narrow the domain to the players who
         // COMPLETED before the pause — the pausing player is excluded too: they
         // are sitting on a choice they have not answered, so a `Min` read taken
-        // mid-pause must not see them as a zero contributor. Where the pause
-        // came after their own producing clause they already hold a real entry,
-        // and the fill is a no-op for them.
+        // mid-pause must not see them as a zero contributor. A seat that already
+        // holds an entry is unaffected either way — `fill_zero_contributors` is
+        // `or_insert(0)`, so it is PRESENCE in the table, not completion, that
+        // makes the fill a no-op for them.
         //
-        // WHAT THIS DOES NOT FIX, measured: each resumed continuation leg
-        // REPLACES the table rather than extending it —
-        // `install_previous_effect_counts_by_player`'s `Some` arm assigns
+        // WHAT THIS DOES NOT FIX, measured on the tree this comment ships in:
+        // each resumed continuation leg REPLACES the table rather than extending
+        // it — `install_previous_effect_counts_by_player`'s `Some` arm assigns
         // `last_effect_counts_by_player` outright, and `split_player_scope_chain`
         // clears `player_scope` on the resumed legs, so each leg publishes only
-        // its own entry. A paused four-seat fan-out measured `{P0:1, P1:0}` at
-        // the pause and `{P2:1}` after the next leg. That is PRE-EXISTING and
+        // its own entry. A four-seat fan-out pausing on seat 1 measures
+        // `[(0, 1)]` at the pause and `[(3, 1)]` once the continuation runs — the
+        // remaining seats chain into ONE leg, so even seat 2's publication is
+        // replaced before the fan-out ends, and `last_effect_amount` reads
+        // `Some(1)` where an accumulating table would give 4. That is
+        // PRE-EXISTING and
         // not specific to an aggregate: `last_effect_amount` is derived from the
         // same table (`.values().sum()`), so the `Sum` class loses the same
         // counts. It is reachable here because the forced whole-hand discard

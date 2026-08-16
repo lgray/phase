@@ -15992,9 +15992,11 @@ mod tests {
     /// (all of which are `Sum`) keeps rendering the pre-change string. Nothing
     /// enforced that ordering — reordering the arms would silently move the
     /// coverage signature of every Excess card, reddening CI's coverage check
-    /// with no indication of the cause. These four assertions are that guard.
+    /// with no indication of the cause. rustc emits NO `unreachable pattern`
+    /// warning for the reorder, so the compiler will not catch it either. These
+    /// six assertions -- one per channel/aggregate pair -- are that guard.
     #[test]
-    fn previous_effect_amount_renders_all_four_channel_aggregate_pairs() {
+    fn previous_effect_amount_renders_every_channel_aggregate_pair() {
         use crate::types::ability::{AggregateFunction, DamageChannel};
         let render = |channel, aggregate| {
             fmt_quantity_ref(&QuantityRef::PreviousEffectAmount { channel, aggregate })
@@ -16022,6 +16024,14 @@ mod tests {
         );
         assert_eq!(
             render(DamageChannel::Excess, AggregateFunction::Max),
+            "excess amount from preceding effect"
+        );
+        // The pair space is 2 channels x 3 aggregates = 6, which is more than the
+        // four match arms; `(Excess, Min)` routes through the same catch-all as
+        // `(Excess, Max)` and is asserted so the name's claim of completeness is
+        // literally true rather than true-of-the-arms.
+        assert_eq!(
+            render(DamageChannel::Excess, AggregateFunction::Min),
             "excess amount from preceding effect"
         );
     }
