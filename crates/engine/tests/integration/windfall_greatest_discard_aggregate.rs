@@ -42,15 +42,17 @@ const WINDFALL: &str = "Each player discards their hand, then draws cards equal 
 ///
 /// The aggregate axis is guarded at unit level instead — see
 /// `game/quantity.rs`'s `previous_effect_amount_live_when_no_snapshot` and
-/// `previous_effect_amount_aggregates_are_mutually_distinct`. Measured: no
-/// printed card yields a clean integration-level Sum-vs-Max discriminator.
+/// `previous_effect_amount_aggregates_are_mutually_distinct`. Measured: no card
+/// in the **Sum class** yields a clean integration-level Sum-vs-Max
+/// discriminator — the Max class does, and it is the first test in this file.
 const SYPHON_MIND: &str =
     "Each other player discards a card. You draw a card for each card discarded this way.";
 
-/// Blood Tithe — the drain shape, and the class the corpus actually populates:
-/// 40 of the 44 cards carrying both a `player_scope` and a
-/// `PreviousEffectAmount` are this `LoseLife` → `GainLife { PreviousEffectAmount }`
-/// form.
+/// Blood Tithe — the drain shape, and the class the corpus actually populates.
+/// Measured: 44 cards carry both a `player_scope` and a `PreviousEffectAmount`
+/// somewhere; 3 hold it only outside the scoped subtree, in a condition. Of the
+/// 41 that hold it inside, in a quantity position, 38 carry it on a `GainLife` —
+/// this `LoseLife` → `GainLife { PreviousEffectAmount }` form.
 ///
 /// Unlike Syphon Mind this DOES build `PreviousEffectAmount`, with `aggregate`
 /// absent and therefore `Sum`. CR 119.3: an effect causing a player to gain or
@@ -140,7 +142,6 @@ fn windfall_draws_the_greatest_single_players_discard_not_the_cross_player_sum()
         .iter()
         .map(|p| zone_len(&outcome, *p, Zone::Graveyard))
         .collect();
-    eprintln!("PROBE windfall/cast: drawn={drawn:?} hands={hands:?} graveyards={graveyards:?}");
 
     // CR 701.9a reach guard: every player really did discard their whole hand.
     assert!(
@@ -169,8 +170,11 @@ fn windfall_draws_the_greatest_single_players_discard_not_the_cross_player_sum()
 /// cannot see a change to that ref's `aggregate` and stays green under both
 /// revert arms. The cross-aggregate guard lives at unit level, in
 /// `game/quantity.rs`'s `previous_effect_amount_aggregates_are_mutually_distinct`
-/// and `previous_effect_amount_live_when_no_snapshot` — no printed card gives a
-/// clean integration-level Sum-vs-Max discriminator.
+/// and `previous_effect_amount_live_when_no_snapshot` — no card in the **Sum
+/// class** gives a clean integration-level Sum-vs-Max discriminator. (The Max
+/// class does: `windfall_draws_the_greatest_single_players_discard_not_the_cross_player_sum`
+/// above separates MAX 8 / SUM 21 / MIN 3. The gap is specific to the Sum class,
+/// whose producers publish no per-player table for an aggregate to reduce over.)
 #[test]
 fn syphon_mind_shape_still_draws_the_cross_player_total() {
     let mut scenario = GameScenario::new_n_player(4, 42);
@@ -192,7 +196,6 @@ fn syphon_mind_shape_still_draws_the_cross_player_total() {
         .iter()
         .map(|p| zone_len(&outcome, *p, Zone::Graveyard))
         .sum();
-    eprintln!("PROBE syphon/cast: drawn={drawn} opponents_discarded={opponents_discarded}");
 
     // Reach guard: the discard step ran for all three opponents (CR 701.9a).
     assert_eq!(
@@ -214,13 +217,24 @@ fn syphon_mind_shape_still_draws_the_cross_player_total() {
 ///
 /// SCOPE — this asserts the NON-REGRESSION half only: the greatest discard is
 /// still 8, so every player including the empty-handed one still draws 8. It
-/// does NOT assert the table's contents, and deliberately so:
-/// `last_effect_counts_by_player` is cleared at the player-action boundary, so
-/// it reads `[]` from `outcome.state()` regardless of the fix. An earlier
-/// revision asserted on it and failed with `left: []` — an INSTRUMENT failure,
-/// not a fix failure. The table's contents are asserted where they survive, at
-/// unit level: `game/effects/mod.rs`'s `fill_zero_contributors_*` tests, which
-/// pin `Min` at 0 filled versus 3 unfilled.
+/// does NOT assert the table's contents, and deliberately so: by the time
+/// `outcome.state()` is readable the table is already `[]` regardless of the
+/// fix. An earlier revision asserted on it and failed with `left: []` — an
+/// INSTRUMENT failure, not a fix failure.
+///
+/// The clearer is this card's OWN draw tail, not the player-action boundary:
+/// `Effect::Draw` is not a count producer, so its postlude calls
+/// `install_previous_effect_counts_by_player(.., None, ..)` and takes the arm
+/// that clears — inside the same resolution, long before `apply()`'s
+/// start-of-action clear could matter. Two tests bracket this: a bare `Discard`
+/// fan-out with no tail leaves the table populated
+/// (`game/effects/mod.rs`'s `player_scope_fan_out_publishes_a_zero_for_the_empty_handed_seat`),
+/// and adding the draw tail — this test — empties it.
+///
+/// The table's contents are therefore asserted where they survive, at unit
+/// level: that same production-wire test pins the zero entry, and
+/// `game/quantity.rs`'s `previous_effect_amount_min_counts_the_zero_contributor`
+/// pins `Min` at 0 filled versus 3 unfilled.
 #[test]
 fn windfall_zero_contributor_board_still_draws_the_greatest() {
     let mut scenario = GameScenario::new_n_player(4, 42);
@@ -248,7 +262,6 @@ fn windfall_zero_contributor_board_still_draws_the_greatest() {
         .iter()
         .map(|p| zone_len(&outcome, *p, Zone::Graveyard))
         .collect();
-    eprintln!("PROBE windfall/zero-contributor: drawn={drawn:?} graveyards={graveyards:?}");
 
     // CR 701.9a reach guard: the discard step ran, and P3 really contributed
     // nothing — without this, an all-8 draw could pass on a board that never
@@ -273,8 +286,8 @@ fn windfall_zero_contributor_board_still_draws_the_greatest() {
 ///
 /// Blood Tithe in a four-player game: each of the three opponents loses 3 life,
 /// so "the life lost this way" is 3 + 3 + 3 = 9 (CR 119.3) and the controller
-/// gains 9. This is the shape 40 of the 44 corpus cards carrying both a
-/// `player_scope` and a `PreviousEffectAmount` take, so it is the widest
+/// gains 9. This is the shape 38 of the 41 quantity-position corpus carriers
+/// take (see `BLOOD_TITHE`'s note for the full split), so it is the widest
 /// non-regression this file has.
 ///
 /// WHAT IT DISCRIMINATES, measured by sentinel probe: the ref is genuinely
@@ -327,11 +340,11 @@ fn blood_tithe_drain_still_gains_the_cross_player_total() {
                 .life
         })
         .collect();
-    eprintln!("PROBE blood-tithe/cast: life={life:?}");
 
-    // Reach guard: the loss step actually ran for all three opponents, so the
-    // per-player table really does hold three entries. Without this, a gain of 9
-    // could be read off a table that never fanned out.
+    // Reach guard: the loss step actually ran for all three opponents, so the 9
+    // really is a three-way total and not a single 3 read off a fan-out that
+    // never happened. (It is NOT evidence about the per-player table, which is
+    // empty here — see the degeneracy note above.)
     assert_eq!(
         &life[1..],
         &[17, 17, 17],
@@ -340,7 +353,7 @@ fn blood_tithe_drain_still_gains_the_cross_player_total() {
     assert_eq!(
         life[0], 29,
         "controller gains the cross-player TOTAL life lost (9) via \
-         PreviousEffectAmount — a reach guard for the 40-card drain class, not an \
+         PreviousEffectAmount — a reach guard for the 38-card drain class, not an \
          aggregate discriminator (see the degeneracy note above)"
     );
 }
@@ -386,10 +399,6 @@ fn windfall_short_library_does_not_shrink_later_players_draws() {
             depth - zone_len(&outcome, *p, Zone::Library)
         })
         .collect();
-    eprintln!(
-        "PROBE windfall/short-library: drawn={drawn:?} waiting={:?}",
-        outcome.final_waiting_for()
-    );
     assert_eq!(
         drawn,
         vec![5, 8, 8, 8],

@@ -19051,9 +19051,31 @@ mod stage2_injector_tests {
                 // producer set. Window hashes `ad615ce4…`, `a958f070…`, `d7fd67fd…`
                 // re-measured at these coordinates, with the off-by-one neighbour
                 // (`8251728c…`, `e3830eb5…`, `85037f22…`) differing as a control.
-                "game/effects/mod.rs:7045".to_string(),
-                "game/effects/mod.rs:7122".to_string(),
-                "game/effects/mod.rs:10377".to_string(),
+                //
+                // Delta-re-review round: a further non-uniform `+16/+16/+27`
+                // (`:7045/:7122/:10377 ⇒ :7061/:7138/:10404`) for the same structural
+                // reason — the corrected corpus comment sits above all three, while the
+                // paused-path domain narrowing, the CR 120.6 strike and the
+                // non-scoped-install note land above only the third. The production-wire
+                // test sits above none of them: it is in `mod tests`, below every producer.
+                //
+                // RE-PINNED TWICE IN THAT ROUND. The first measurement was correct and was
+                // then invalidated by a LATER edit of mine above all three producers; the
+                // suite had already gone green before that edit, so nothing in the run
+                // would have caught it. A pin measurement is only valid against the tree
+                // actually committed — re-measure after the FINAL edit, not the first.
+                //
+                // This census has been re-pinned on this branch at every review round that
+                // inserted a line above a producer AND at every rebase, several of them
+                // forced by unrelated upstream commits. That is the standing argument for
+                // anchoring it on a symbol or a stable marker rather than a line number;
+                // see the PR's scope-expansion disclosure. Every coordinate here was
+                // located by CONTENT in this worktree — never by indexing a line of
+                // `upstream/main`, which moves and once produced a phantom 79-line
+                // discrepancy in this very lane.
+                "game/effects/mod.rs:7061".to_string(),
+                "game/effects/mod.rs:7138".to_string(),
+                "game/effects/mod.rs:10404".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.

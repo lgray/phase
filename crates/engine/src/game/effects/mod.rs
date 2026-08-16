@@ -4477,16 +4477,32 @@ fn collect_clause_minimum_refs<'a>(expr: &'a QuantityExpr, out: &mut Vec<&'a Qua
                     // `EventContextAmount` is per-iteration. A sub-link RETAINED
                     // inside the scoped template whose `PreviousEffectAmount` is
                     // meant to read *that iteration's* preceding effect would be
-                    // frozen at the pre-clause value instead. No card does this
-                    // today, measured: of the 44 corpus cards carrying both a
-                    // `player_scope` and a `PreviousEffectAmount`, 4 hold it in
-                    // the scoped node itself (Windfall, Jace's Archivist,
-                    // Whispering Madness, Thorna and Twigtooth) and the other 40
-                    // are the drain shape `LoseLife` → `GainLife { PEA }`, which
-                    // DETACHES because `effect_has_iteration_bound_recipient`
-                    // returns false for `GainLife`. If a future card needs a
-                    // per-iteration reading here, it wants `EventContextAmount`,
-                    // not a guard on this arm.
+                    // frozen at the pre-clause value instead.
+                    //
+                    // No card does this today, measured over the corpus: 44 CARDS
+                    // carry both a `player_scope` and a `PreviousEffectAmount`
+                    // somewhere. 3 of them (Parallax Nexus/Tide/Wave) hold it
+                    // only OUTSIDE the scoped subtree, in a condition, so they
+                    // never reach this arm. The other 41 hold it inside the
+                    // scoped subtree in a quantity position — 42 NODES, because
+                    // Thorna and Twigtooth holds two. (Node and card counts
+                    // differ here; an earlier revision of this comment conflated
+                    // them and mis-partitioned the result.)
+                    //
+                    // The split that discriminates is which effect carries the
+                    // ref: 38 `GainLife` — the drain tail, which DETACHES because
+                    // `effect_has_iteration_bound_recipient` has no `GainLife`
+                    // arm — 3 `Draw` (Windfall, Jace's Archivist, Whispering
+                    // Madness), and 1 `LoseLife` (Thorna).
+                    //
+                    // Thorna is the only RETAINED-side carrier, so it is the one
+                    // card that could falsify the precondition — it does not:
+                    // "each opponent loses X life ... where X is the number of
+                    // counters removed this way" fixes X once for the whole
+                    // clause, which is exactly the pre-clause value the freeze
+                    // supplies. If a future card needs a per-iteration reading
+                    // here, it wants `EventContextAmount`, not a guard on this
+                    // arm.
                     | QuantityRef::PreviousEffectAmount { .. }
             ) {
                 out.push(qty);
@@ -8352,10 +8368,6 @@ fn previous_effect_counts_by_player_from_events(
     Some(counts)
 }
 
-/// CR 608.2c: Install the terminal-window per-player counts for a completed
-/// instruction. `Some(empty)` is a real zero-result producer and must replace
-/// an older table; `None` means this effect has no such count channel, so clear
-/// the old table before callers preserve their ordinary scalar/excess fallback.
 /// CR 608.2c: give every player the clause applied to an entry in the
 /// completed-instruction table, defaulting a non-contributor to zero.
 ///
@@ -8382,6 +8394,10 @@ fn fill_zero_contributors(
     counts_by_player
 }
 
+/// CR 608.2c: Install the terminal-window per-player counts for a completed
+/// instruction. `Some(empty)` is a real zero-result producer and must replace
+/// an older table; `None` means this effect has no such count channel, so clear
+/// the old table before callers preserve their ordinary scalar/excess fallback.
 fn install_previous_effect_counts_by_player(
     state: &mut GameState,
     counts_by_player: Option<HashMap<PlayerId, i32>>,
@@ -9843,6 +9859,12 @@ fn resolve_chain_body(
 
         let initial_waiting_for = state.waiting_for.clone();
         let mut paused = false;
+        // CR 608.2c: the zero-fill's reduction domain is the set of players the
+        // clause has actually applied to. A mid-fan-out pause leaves the tail
+        // unresolved, so filling them as zero would publish a contribution they
+        // have not had the chance to make; narrow the domain to the players who
+        // completed before the pause and let the continuation extend it.
+        let mut applied_domain_end = matching_players.len();
         // CR 608.2e: each clause's equalization minimum is fixed when that
         // clause begins; the snapshot is per `player_scope` link, captured
         // before fan-out (the board is now exactly the clause's pre-clause
@@ -9922,6 +9944,7 @@ fn resolve_chain_body(
                 if tail.is_some() {
                     append_to_pending_continuation(state, tail);
                 }
+                applied_domain_end = i + 1;
                 paused = true;
                 break;
             }
@@ -9932,16 +9955,20 @@ fn resolve_chain_body(
             scoped_template.source_id,
             scoped_events,
         );
-        let counts_by_player =
-            counts_by_player.map(|counts| fill_zero_contributors(counts, &matching_players));
+        let counts_by_player = counts_by_player
+            .map(|counts| fill_zero_contributors(counts, &matching_players[..applied_domain_end]));
         if !install_previous_effect_counts_by_player(state, counts_by_player, false) {
             if let Some(amount) =
                 previous_effect_amount_from_events(state, &scoped_template, scoped_events)
             {
                 state.last_effect_amount = Some(amount);
-                // CR 120.10: stamp the resolution-local excess channel alongside the
-                // CR 120.6 total so a follow-up "if excess damage was dealt this way"
-                // condition reads overkill-beyond-lethal.
+                // CR 120.10: stamp the resolution-local excess channel alongside
+                // the running total so a follow-up "if excess damage was dealt
+                // this way" condition reads overkill-beyond-lethal. CR 120.6 was
+                // cited for that total and is struck: it governs damage MARKED on
+                // a creature until the cleanup step, not the amount one clause
+                // leaves for a later clause in the same resolution — that
+                // carry-forward is CR 608.2c.
                 let excess = previous_effect_excess_amount_from_events(
                     state,
                     &scoped_template,
@@ -11075,6 +11102,11 @@ fn resolve_chain_body(
         ability.source_id,
         parent_events,
     );
+    // No `fill_zero_contributors` here, unlike the `player_scope` loop: the
+    // reduction domain of a fan-out is the set of players the clause applied to,
+    // and this path has no such set to fill from — a bare effect applies to whom
+    // its own target names, and a player who emitted no event was never in the
+    // domain rather than being a zero contributor within it.
     let preserve_counts_for_current_consumer =
         ability.player_scope.is_none() && effect_consumes_event_context_amount(&ability.effect);
     if !install_previous_effect_counts_by_player(
@@ -11085,8 +11117,11 @@ fn resolve_chain_body(
         if let Some(amount) = previous_effect_amount_from_events(state, ability, parent_events) {
             state.last_effect_amount = Some(amount);
             // CR 120.10: stamp the resolution-local excess channel alongside the
-            // CR 120.6 total so a follow-up "if excess damage was dealt this way"
-            // condition reads overkill-beyond-lethal.
+            // running total so a follow-up "if excess damage was dealt this way"
+            // condition reads overkill-beyond-lethal. CR 120.6 was cited for that
+            // total and is struck: it governs damage MARKED on a creature until
+            // the cleanup step, not the amount one clause leaves for a later
+            // clause in the same resolution — that carry-forward is CR 608.2c.
             let excess = previous_effect_excess_amount_from_events(state, ability, parent_events);
             state.last_effect_excess_amount = excess;
         }
@@ -18527,6 +18562,60 @@ mod tests {
         let mut rows: Vec<(u8, i32)> = filled.iter().map(|(p, n)| (p.0, *n)).collect();
         rows.sort();
         assert_eq!(rows, vec![(0, 0), (1, 0), (2, 0)]);
+    }
+
+    /// CR 608.2c: the PRODUCTION wire, not the helper. The three tests above call
+    /// `fill_zero_contributors` directly, so they stay green even if the driver
+    /// stops calling it — this one drives a real `player_scope` fan-out through
+    /// `resolve_ability_chain` and reads the table the driver actually published.
+    ///
+    /// Four seats, hands 1/1/1/**0**: the empty-handed seat emits no discard event
+    /// and is therefore absent from the event-derived table. It is still a player
+    /// the clause applied to, so the published reduction domain must carry it as a
+    /// zero rather than omit it.
+    #[test]
+    fn player_scope_fan_out_publishes_a_zero_for_the_empty_handed_seat() {
+        let mut state = GameState::new(FormatConfig::standard(), 4, 42);
+        for seat in 0..3u8 {
+            create_object(
+                &mut state,
+                CardId(10 + u64::from(seat)),
+                PlayerId(seat),
+                format!("P{seat} Card"),
+                Zone::Hand,
+            );
+        }
+        // PlayerId(3) is dealt no card: the zero contributor under test.
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Discard {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::ScopedPlayer,
+                selection: crate::types::ability::CardSelectionMode::Chosen,
+                unless_filter: None,
+                filter: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        ability.player_scope = Some(PlayerFilter::All);
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        let mut rows: Vec<(u8, i32)> = state
+            .last_effect_counts_by_player
+            .iter()
+            .map(|(p, n)| (p.0, *n))
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![(0, 1), (1, 1), (2, 1), (3, 0)],
+            "the driver must publish the empty-handed seat as a zero contributor, \
+             not omit it from the reduction domain"
+        );
     }
 
     #[test]
