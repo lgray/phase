@@ -6206,11 +6206,19 @@ fn materialize_object_growth_shortcut(
     // ELIDED period and the batched arm re-performs it 0x. `token_profile.is_some()` is therefore
     // UNSOUND as a cast-side narrowing (a counter loop driven by a buyback recast has a cast
     // trigger and no token profile) and the period-side alternative — "only a period that CASTS
-    // can re-fire a cast trigger" — is either unsound (`LoopAction` names the DRIVING action, so
-    // excluding `Activate` batches a period whose activated ability casts during resolution) or
-    // vacuous (excluding only `TapLandForMana` is sound, but a mana-engine period registers
-    // nothing at all). Narrowing by the trigger's own matcher is F-route-precision, blocked on a
-    // per-cycle matcher-invariance proof.
+    // can re-fire a cast trigger" — is rejected here in TWO of its three forms only. The
+    // ACTION-SHAPE form is unsound (`LoopAction` names the DRIVING action, so excluding
+    // `Activate` batches a period whose activated ability casts during resolution); the
+    // `TapLandForMana`-ONLY form is vacuous (sound, but a mana-engine period registers nothing at
+    // all). The third, FRAME-DELTA form — diff `spells_cast_this_turn` across
+    // `drive_one_period_frames`' two returned clones — is UN-EVALUATED: the action-shape
+    // objection does not touch it, because it reads what the period actually did rather than what
+    // its driving action was named. Registered as follow-up `F-route-period-cast`, whose entry
+    // condition includes re-deriving `mana_engine_with_cast_trigger_registers_nothing`'s
+    // discrimination (that row discriminates the `!batched.is_empty()` guard ONLY because
+    // `cast_sourced` is true on its rig; a period-side conjunct makes it false and the row would
+    // pass for a different reason). Narrowing by the trigger's own matcher is a separate
+    // deferral, F-route-precision, blocked on a per-cycle matcher-invariance proof.
     //
     // SINGLE AUTHORITY for what the batched arm registers: the exact item list the `Batched` arm
     // below hands to `register_pending_materialization`, built ONCE here and consumed as a VALUE
@@ -6245,18 +6253,31 @@ fn materialize_object_growth_shortcut(
     // reintroduce the hole.)
     let sequence = state.last_loop_action_sequence.clone();
     // `!batched.is_empty()` is the SYMMETRY guard, and it is a conjunct of the whole disjunction
-    // rather than a narrowing bolted onto the cast leg. MEASURED REGRESSION without it: the two
-    // arms are ASYMMETRIC — the batched arm registers CONDITIONALLY (a mana engine has no token
-    // profile, no counter growth and no life growth, so it registers NOTHING; the shape asserted
-    // by `loop_shortcut_mana_engine::mana_engine_accept_still_renders_its_infinity_badge`'s
-    // reach-guard (2)), while the replay arm registers a `DriveSequence` UNCONDITIONALLY. Since
-    // `cast_sourced` is the only disjunct with no axis-shaped conjunct, a mana engine sharing a
-    // board with ANY functioning cast trigger — controlled by any player; the scan walks
-    // `state.objects.values()` and is NOT controller-filtered — flipped from registering nothing
-    // to scheduling a collapse naming its own `Mana(_)` axis, which `scheduled_collapse_axes` puts
-    // into `axes_to_remove` at the CR 500.5 boundary, ENDING an ∞ mana mark the board is entitled
-    // to keep. Pinned by
-    // `loop_shortcut_cast_route::mana_engine_with_cast_trigger_registers_nothing`.
+    // rather than a narrowing bolted onto the cast leg. Its merit is INDEPENDENT of the ∞-mark
+    // bookkeeping: a replay with nothing deferred to deliver is pure cost — UNCAPPED and cubic in
+    // N (`LoopCollapseRoute::Replay`'s own doc: N=1000 measured at 552 s release; the per-route
+    // iteration budget was withdrawn by USER ruling and does not exist) — plus a spurious CR 500.5
+    // collapse prompt for a loop that has nothing to collapse (the prompt gate
+    // `next_apnap_player_with_pending_materialization` tests STASH PRESENCE only, so an empty
+    // `collapsed_axes` still prompts). A materialization out of nothing is not a materialization.
+    // Pinned by `loop_shortcut_cast_route::mana_engine_with_cast_trigger_registers_nothing`.
+    //
+    // The mark-collapse harm this guard once also covered — a cast-trigger board dragging a mana
+    // engine onto the replay and ENDING its own `Mana(_)` ∞ mark — is now closed PER AXIS at the
+    // `Replay` arm below (`ResourceAxis::unbounded_mark_kind`), not here. Do NOT replace this
+    // guard with `!accountable.is_empty()`: `growths` / `life` are derived from
+    // `current_period_counter_growth` / `current_period_life_growth` at accept time, a DIFFERENT
+    // derivation from the offer-time `proposal.unbounded`, and `derived_views`' ∞-counter-
+    // registration doc states the two can disagree in exactly the required direction ("∞ counter
+    // targets are registered for the whole beneficial-counter partition, while a `DriveSequence`
+    // collapse names only the axes its own proposal carried"). Where they disagree an
+    // accountable-set guard would route an OBSERVED counter loop to the batched arm — the exact
+    // regression `counter_observed` exists to prevent. The two guards ask different questions and
+    // both are needed.
+    //
+    // DISCLOSED (review-LOW, pre-existing, chartered to F-route-residual): a pure mana engine
+    // registers nothing, so any per-cycle side effect on a non-batched axis is re-performed 0×.
+    // Not closed here.
     //
     // Hoisting it is EXACTLY equivalent to narrowing the cast leg alone, because the other three
     // disjuncts already imply it: `counter_observed` requires `!growths.is_empty()` (⇒ a `Counters`
@@ -6277,15 +6298,37 @@ fn materialize_object_growth_shortcut(
     // here rather than silently inherit one of these two registrations.
     match route {
         LoopCollapseRoute::Replay => {
-            // CR 732.2a: OBSERVED batchable growth — one DriveSequence collapses the WHOLE loop
-            // (all axes); replaying the captured sequence recreates every per-cycle effect
-            // honoring observers. Do NOT also register batched items (the routes are exclusive
-            // per accept).
+            // CR 732.2a: OBSERVED batchable growth — one DriveSequence collapses the loop;
+            // replaying the captured sequence recreates every per-cycle effect honoring
+            // observers. Do NOT also register batched items (the routes are exclusive per accept).
+            //
+            // `collapsed_axes` is the set this materialization is ACCOUNTABLE for — computed per
+            // axis, NEVER a wholesale copy of `proposal.unbounded`. The copy asserted that every
+            // ∞-marked axis is one this collapse ends, which is false for a STANDING capability:
+            // MEASURED at the pre-fix tip, a mana+life loop on a cast-trigger board registered
+            // `collapsed=[Mana(Colorless), Life(P0)]`, and `clear_collapsed_materializations` then
+            // dropped P0's whole `unbounded_resources` entry — ending an ∞-mana mark whose only
+            // authority is CR 500.5 + CR 106.4 (`turns::drain_pending_phase_transition_progress`,
+            // which deliberately EXCLUDES `debug_infinite_mana` seats). See
+            // `ResourceAxis::unbounded_mark_kind` for the criterion and the per-axis table.
+            //
+            // The replay drives the WHOLE period, so it delivers every DEFERRED axis regardless
+            // of whether a batched item for that axis exists yet — batchability is a separate
+            // question, owned by `LoopCollapseAxis::from_resource_axis`, and a subset-of-batchable
+            // filter here would refuse the mill board this lane exists to serve.
             state.register_pending_materialization(
                 proposal.proposer,
                 crate::types::game_state::PersistentAxisMaterialization::DriveSequence {
                     sequence,
-                    collapsed_axes: proposal.unbounded.clone(),
+                    collapsed_axes: proposal
+                        .unbounded
+                        .iter()
+                        .copied()
+                        .filter(|axis| {
+                            axis.unbounded_mark_kind()
+                                == crate::analysis::resource::UnboundedMarkKind::DeferredAccrual
+                        })
+                        .collect(),
                 },
             );
         }

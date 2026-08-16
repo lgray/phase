@@ -43,15 +43,28 @@
 //! the replay route is only ever the better version of a registration the BATCHED arm would have
 //! made, never a registration out of nothing. Without that guard the seam's two arms are
 //! asymmetric (the batched arm registers conditionally, the replay arm unconditionally), so a mana
-//! engine — which batches NOTHING — gets dragged onto the replay by any cast trigger on the board,
-//! and has its own `Mana(_)` ∞ mark collapsed at the CR 500.5 boundary. That was a MEASURED
-//! regression in the first cut; `mana_engine_with_cast_trigger_registers_nothing` below is its pin.
+//! engine — which batches NOTHING — gets dragged onto the replay by any cast trigger on the board.
+//! HISTORICAL, and true when written: in the first cut that drag ALSO had its own `Mana(_)` ∞ mark
+//! collapsed at the CR 500.5 boundary — a MEASURED regression, and the reason this guard exists.
+//! That consequence is now closed PER AXIS by `ResourceAxis::unbounded_mark_kind`, not by this
+//! guard; what the guard still buys is the uncapped cubic replay cost plus a spurious CR 500.5
+//! collapse prompt for a loop with nothing to collapse.
+//! `mana_engine_with_cast_trigger_registers_nothing` below is its pin.
 //!
-//! REVERT PROBES (RUN, output pasted in the phase-1 gate log — an asserted revert probe is not a
-//! revert probe). (1) Delete the `cast_sourced` disjunct at the `engine.rs` route seam ⇒ the
-//! grafted arms register `Tokens` again ⇒ every row below that asserts `ExpectedRoute::Replay` goes
-//! RED. (2) Delete only the `!batched.is_empty()` guard ⇒ the Replay rows stay green and
+//! REVERT PROBES (RUN at the final candidate tip, output captured to
+//! `/home/lgray/vibe-coding/item4-run/wba-p1-logs/` — an asserted revert probe is not a revert
+//! probe; see the gate log for the tip SHA and the per-probe output).
+//! (1) Delete the `cast_sourced` disjunct at the `engine.rs` route seam ⇒ the grafted arms
+//! register `Tokens` again ⇒ every row below that asserts `ExpectedRoute::Replay` goes RED.
+//! (2) Delete only the `!batched.is_empty()` guard ⇒ the Replay rows stay green and
 //! `mana_engine_with_cast_trigger_registers_nothing` goes RED with `[DriveSequence]`.
+//! (3) Restore `collapsed_axes: proposal.unbounded.clone()` at the `Replay` arm ⇒ the three
+//! mixed-axis rows in `combo_infinite_pile` go RED at all three levels (registration, the direct
+//! boundary clear, and the full production round-trip).
+//! (4) Classify `LibraryDelta` as `StandingCapability` ⇒ `analysis::resource`'s
+//! `unbounded_mark_kind_classifies_every_axis_by_termination_authority` goes RED.
+//! (5) Move `ResourceAxis::Mana(_)` out of `derived_views::object_growth_backing`'s `None` arm to
+//! `Some(false)` ⇒ the mixed-axis registration row's assertion (d) goes RED.
 
 use engine::analysis::decision_template::IterationCount;
 use engine::analysis::loop_check::ShortcutResponse;
@@ -317,6 +330,65 @@ fn cast_trigger_board_routes_to_replay_untouched_board_stays_batched() {
     assert_route(&grafted_at_ceiling, ExpectedRoute::Replay);
 }
 
+/// **V3 — the NON-BLANKET discriminator.** The per-axis `collapsed_axes` filter at the `Replay`
+/// arm keeps every `DeferredAccrual` axis: this already-shipped realistic dump's `DriveSequence`
+/// still names the loop's marked axis set EXACTLY, with nothing dropped.
+///
+/// WHY IT EXISTS AS ITS OWN ROW. The mixed-axis rows in `combo_infinite_pile` assert that a
+/// `Mana(_)` axis is EXCLUDED. An over-aggressive implementation that empties every
+/// `collapsed_axes` — the trivial "reject `DeferredAccrual`", or "keep only `StandingCapability`"
+/// — passes their `Mana` half, and passes the function-level preservation half too. This row is
+/// what stops it: it upgrades the sibling above's DISCRIMINANT-only route assertion to an
+/// EXACT-SET assertion on the same board.
+///
+/// REVERT PROBE: invert the filter at `game::engine::materialize_object_growth_shortcut`'s
+/// `Replay` arm (keep only `StandingCapability`, or drop `DeferredAccrual`) ⇒ `collapsed_axes`
+/// empties ⇒ RED here while the mixed-axis rows stay green.
+///
+/// REACH-GUARD: the shipped [`assert_route`] instrument on the same arm. Without it an
+/// over-aggressive filter could be masked by a ROUTE regression that makes the exact-set assertion
+/// unreachable — `assert_route` panics on an empty stash precisely so that cannot happen quietly.
+#[test]
+fn replay_collapse_names_every_deferred_axis_the_loop_marked() {
+    let mut grafted = offer_state(true);
+    declare_and_accept_all(&mut grafted, P0, 100);
+
+    // REACH-GUARD: a real replay registration exists to read an exact set off.
+    assert_route(&grafted, ExpectedRoute::Replay);
+
+    // The ∞-mark set this accept wrote — the input the filter narrows. Sorted, because it comes
+    // from a `BTreeSet`.
+    let marked: Vec<ResourceAxis> = grafted
+        .unbounded_resources
+        .get(&P0)
+        .expect("the accept marks P0's ∞ axes")
+        .iter()
+        .copied()
+        .collect();
+    assert!(
+        !marked.is_empty(),
+        "reach-guard: an empty ∞-mark set would make the exact-set assertion below vacuous"
+    );
+
+    let stash = registered_routes(&grafted);
+    let [PersistentAxisMaterialization::DriveSequence { collapsed_axes, .. }] = stash else {
+        panic!("assert_route already pinned the Replay route; got {stash:?}")
+    };
+
+    // EXACT SET, not `contains`: every axis this board marks is `DeferredAccrual`
+    // (`ResourceAxis::unbounded_mark_kind`), so the accountability filter must drop NOTHING here.
+    // `collapsed_axes` preserves `proposal.unbounded`'s order, so it is sorted for the comparison.
+    let mut named = collapsed_axes.clone();
+    named.sort();
+    assert_eq!(
+        named, marked,
+        "CR 732.2c: this loop marks only DEFERRED axes, so the accountability filter is the \
+         IDENTITY on it. A filter that empties or narrows `collapsed_axes` reds here while the \
+         mixed-axis rows in `combo_infinite_pile` stay green — which is the whole reason this row \
+         is separate from them. marked={marked:?}"
+    );
+}
+
 /// **R-mixed** — the multi-authority hostile fixture. Two accepts by one controller in ONE phase
 /// produce TWO route decisions sharing ONE stash and ONE boundary amount.
 ///
@@ -406,7 +478,11 @@ fn two_accepts_one_phase_one_batched_one_replay_share_one_boundary() {
 
 /// **R-mana.** A real Basalt Monolith + Power Artifact mana engine carrying a functioning cast
 /// trigger still registers NOTHING — the shipped unscheduled-axis shape — instead of scheduling a
-/// `DriveSequence` that would collapse the loop's own `Mana(_)` axis.
+/// `DriveSequence` that would deliver nothing: uncapped cubic replay cost plus a spurious CR 500.5
+/// collapse prompt for a loop with nothing to collapse. (Post-`ResourceAxis::unbounded_mark_kind`
+/// a `DriveSequence` on this rig would name NO axis at all — `Mana(_)` is the board's only ∞ axis
+/// and it classifies `StandingCapability` — which is why the guard's merit is the cost and the
+/// prompt, not a mark collapse.)
 ///
 /// MEASURED REGRESSION, not a hypothetical. At the prior candidate `b560049f` this row is RED with
 /// `[DriveSequence]`; the `!batched.is_empty()` guard at the route seam is what makes it GREEN. The
@@ -417,8 +493,12 @@ fn two_accepts_one_phase_one_batched_one_replay_share_one_boundary() {
 /// `functioning_board_trigger_defs` walks `state.objects.values()` with NO controller filter, so an
 /// OPPONENT's Monastery Mentor is enough — flipped this board from registering nothing to
 /// scheduling a collapse. At the CR 500.5 boundary that stash raises a `PayableResource::LoopCollapse`
-/// prompt this shape has never raised, and `scheduled_collapse_axes` puts `Mana(_)` into
-/// `axes_to_remove` — ending the ∞ mana mark HEAD keeps for the rest of the phase.
+/// prompt this shape has never raised — that half is unchanged, because the prompt gate
+/// `next_apnap_player_with_pending_materialization` reads STASH PRESENCE only — and, at the prior
+/// candidate, `scheduled_collapse_axes` put `Mana(_)` into `axes_to_remove`, ending the ∞ mana
+/// mark for the rest of the phase. That second harm is now closed PER AXIS by
+/// `ResourceAxis::unbounded_mark_kind`, leaving the prompt and the replay cost as this guard's
+/// remaining merit.
 ///
 /// REACHABILITY, proved in-row rather than assumed, because a fixture that never reaches the
 /// disjunct would pass vacuously. `functioning_board_trigger_defs` is
@@ -538,7 +618,8 @@ fn mana_engine_with_cast_trigger_registers_nothing() {
             .is_empty(),
         "a mana engine registers NO deferred materialization even with a functioning cast trigger \
          on the board — the batched arm would register nothing, so there is nothing for the \
-         replay to be a better version OF, and scheduling one collapses the Mana(_) axis this \
-         board is entitled to keep; observed {observed:?}"
+         replay to be a better version OF, and scheduling one buys uncapped cubic replay cost \
+         plus a spurious CR 500.5 collapse prompt for a loop with nothing to collapse; observed \
+         {observed:?}"
     );
 }

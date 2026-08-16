@@ -840,10 +840,13 @@ fn real_4p_observed_drive_sequence_replays_captured_period_n_times() {
     );
     drive_all_accept_n(&mut state, 3);
 
-    // An OBSERVED loop's accept registers ONE DriveSequence over the whole loop (all axes) instead
-    // of the batched Tokens/Counters/Life. Emulate that route: drop the batched token stash the
-    // accept wrote for THIS (unobserved) fixture and graft the DriveSequence the observed route
-    // would emit, carrying the SAME ∞ axes the token loop marked.
+    // An OBSERVED loop's accept registers ONE DriveSequence over every `DeferredAccrual` axis the
+    // loop marked (`engine::analysis::resource::ResourceAxis::unbounded_mark_kind`) instead of the
+    // batched Tokens/Counters/Life. Emulate that route: drop the batched token stash the accept
+    // wrote for THIS (unobserved) fixture and graft the DriveSequence the observed route would
+    // emit, carrying the SAME ∞ axes the token loop marked. That reuse stays PRODUCTION-FAITHFUL
+    // for this dump because every axis it marks is `DeferredAccrual` — production would have
+    // filtered nothing out of it.
     let collapsed_axes: Vec<_> = state
         .unbounded_resources
         .get(&P0)
@@ -2559,6 +2562,9 @@ fn loop_collapse_axis_from_materializations_maps_each_shape() {
     );
 
     // A non-materializable DriveSequence axis contributes no label → Mixed (defensive).
+    // No accept can build this stash post-`ResourceAxis::unbounded_mark_kind` — production filters
+    // `Mana(_)` out of `collapsed_axes`. The case is retained because `from_materializations` reads
+    // whatever is STORED, including a reloaded pre-fix save or a future stash producer.
     let drive_mana = [PersistentAxisMaterialization::DriveSequence {
         sequence: vec![],
         collapsed_axes: vec![ResourceAxis::Mana(ManaType::Colorless)],
@@ -3007,15 +3013,23 @@ fn low3_unobserved_life_growth_accept_registers_batched_life() {
     );
 }
 
-/// Whether [`low3_life_engine_accepted`] installs a FUNCTIONING battlefield-entry trigger on the
-/// board before the loop is driven. `Present` is the hostile arm for the `token_profile.is_some()`
-/// conjunct of `life_etb_sourced` (engine.rs): it makes `board_has_functioning_etb_trigger` TRUE
-/// while the loop stays mana-only, so the conjunct is the ONLY thing still holding the route on the
-/// batched arm.
+/// Which FUNCTIONING board trigger (if any) [`low3_life_engine_accepted`] installs before the loop
+/// is driven — the one-object difference between this rig's arms.
+///
+/// `Present` is the hostile arm for the `token_profile.is_some()` conjunct of `life_etb_sourced`
+/// (engine.rs): it makes `board_has_functioning_etb_trigger` TRUE while the loop stays mana-only,
+/// so the conjunct is the ONLY thing still holding the route on the batched arm.
+///
+/// `CastPresent` is the hostile arm for `cast_sourced`, the one route disjunct with NO axis-shaped
+/// conjunct. It makes `board_has_functioning_cast_trigger` TRUE, which flips this same mana+life
+/// loop onto the `Replay` route — producing the only MIXED-axis (`Mana` + `Life`) `DriveSequence`
+/// registration reachable on a production path today. One arm rather than a parallel enum: the
+/// question is "which board graft", and the arms are leaf-level variants of it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Low3BoardEtbTrigger {
     Absent,
     Present,
+    CastPresent,
 }
 
 /// A minimal functioning battlefield-entry life trigger (the Prosperous Innkeeper shape, built
@@ -3083,6 +3097,37 @@ fn low3_life_engine_accepted(etb: Low3BoardEtbTrigger) -> GameRunner {
                     && active.definition.mode == engine::types::triggers::TriggerMode::ChangesZone
             ),
             "reach-guard: the grafted battlefield-entry trigger must be ACTIVE on the host"
+        );
+    }
+    if etb == Low3BoardEtbTrigger::CastPresent {
+        // Same timing discipline as the `Present` arm: grafted BEFORE the drive so the board is
+        // identical every cycle and the predicate the accept reads is the one this board has.
+        // A BARE `TriggerMode::SpellCast` def, no `valid_card` and no `execute`:
+        // `board_has_functioning_cast_trigger` keys on `TriggerEventKey::SpellCast(_)` with the
+        // payload DISCARDED, so the bare mode is exactly what it must see. Nothing is cast during
+        // the mana+life period, so it never fires — the predicate is a board-shape question.
+        let host = create_life_gainer(runner.state_mut(), P0, "Grafted Cast Probe");
+        graft_trigger(
+            runner.state_mut(),
+            host,
+            TriggerDefinition::new(engine::types::triggers::TriggerMode::SpellCast),
+        );
+        // REACH-GUARD (ATTRIBUTION): the graft must survive the layer rebuild and be ACTIVE (CR
+        // 113.6). This is what attributes the `Replay` route to `cast_sourced` specifically — the
+        // shipped `low3_unobserved_life_growth_accept_registers_batched_life` shows this same rig
+        // routes BATCHED without the graft, so with the graft active, `cast_sourced` is the only
+        // disjunct that changed. Without this guard, a future change flipping the rig to `Replay`
+        // through `counter_observed` / `life_observed` / `life_etb_sourced` would leave the rows
+        // below green while they silently stopped testing the cast route.
+        let state = runner.state();
+        let host_obj = &state.objects[&host];
+        assert!(
+            engine::game::functioning_abilities::active_trigger_definitions(state, host_obj)
+                .any(|active| active.definition.mode
+                    == engine::types::triggers::TriggerMode::SpellCast),
+            "reach-guard: the grafted cast trigger must be ACTIVE on the host — a dropped graft \
+             leaves `board_has_functioning_cast_trigger` false, which is the `Absent` arm wearing \
+             a new name"
         );
     }
 
@@ -3207,6 +3252,358 @@ fn low3_mana_only_life_growth_stays_batched_despite_board_etb_trigger() {
             .iter()
             .any(|m| matches!(m, PersistentAxisMaterialization::DriveSequence { .. })),
         "a token-less life loop must not route to the concrete replay, got {stash:?}"
+    );
+}
+
+// ═════════ CR 732.2a: PER-AXIS COLLAPSE ACCOUNTABILITY — the mixed-axis replay rows ═════════
+//
+// The rig below is the only PRODUCTION-PATH construction of a MIXED ∞-mark set on the `Replay`
+// route: the same mana+life Lifedynamo loop, plus one bare functioning cast trigger, so
+// `cast_sourced` — the one route disjunct with no axis-shaped conjunct — carries it onto the
+// replay while `batched = [Life{P0,1}]` keeps the `!batched.is_empty()` guard satisfied.
+//
+// The two axes it marks have TWO DIFFERENT termination authorities, which is the whole point:
+//   * `Life(P0)` — CR 732.2c. Nothing has been gained yet; the accepted materialization is what
+//     delivers it, so applying that materialization is what ends the mark.
+//   * `Mana(Colorless)` — CR 500.5 + CR 106.4. The pool is ALREADY at the infinite cap
+//     (`mana_payment::refill_infinite_mana` re-tops it off this very store), so the mark is a
+//     capability the player is exercising, and the step/phase end owns its expiry.
+//
+// MEASURED at the pre-fix tip: this accept registered `collapsed_axes = [Mana(Colorless),
+// Life(P0)]`, and `clear_collapsed_materializations` on that stash dropped P0's ENTIRE
+// `unbounded_resources` entry — a shortcut collapse acting as a second authority over a mark it
+// does not own. `ResourceAxis::unbounded_mark_kind` is what closes that per axis.
+
+/// **V1** — on a MIXED `{Mana, Life}` loop routed to `Replay`, the registered
+/// `DriveSequence.collapsed_axes` names `Life(P0)` and NOT `Mana(_)`.
+///
+/// REVERT-FAILING ASSERTION: restore `collapsed_axes: proposal.unbounded.clone()` at the `Replay`
+/// arm of `game::engine::materialize_object_growth_shortcut` ⇒ the exact-set assertion below reads
+/// `[Mana(Colorless), Life(P0)]` ⇒ RED. That value is PRE-MEASURED at the pre-fix tip, not
+/// predicted.
+///
+/// REACH-GUARDS, and why each is needed rather than decorative:
+/// * **(a) the store really holds BOTH axes.** Not "the fixture looks mixed" — DISCRIMINATION. If
+///   this rig ever stops carrying a `Mana(_)` axis, the pre-fix and post-fix `collapsed_axes`
+///   become identical (`[Life(P0)]` both ways), the revert probe cannot flip, and this row stops
+///   testing anything. Guard (a) is what makes the matched pair a pair.
+/// * **(b) the grafted `SpellCast` def is ACTIVE** — asserted inside
+///   [`low3_life_engine_accepted`]'s `CastPresent` arm, in the same shape as its `Present`
+///   sibling. ATTRIBUTION: it is what pins the `Replay` route to `cast_sourced` rather than to a
+///   future `counter_observed` / `life_observed` / `life_etb_sourced` flip.
+/// * **(c) the route really is `Replay`** — exactly one registered item and it is a
+///   `DriveSequence`. REACHABILITY: the row fails loudly instead of becoming unreachable.
+///
+/// WHY NOT VACUOUS: a blanket "empty `collapsed_axes`" implementation passes the `Mana` half and
+/// FAILS the `Life` half. (The converse blanket — never filtering — is what the revert probe is.)
+///
+/// **ASSERTION (d)** is a SECOND discriminator with its own, DIFFERENT revert direction, and it
+/// exists because this very fix moves what holds the mana HUD row up. Post-fix
+/// `accepted_collapse_axes` stops naming `Mana(_)`, so conjunct 1 of `derive_views`' row-loop
+/// withholding test flips TRUE and the row survives on conjunct 2 ALONE —
+/// `object_growth_backing(.., Mana(_)) == None ≠ Some(false)`. `derived_views.rs` calls that
+/// agreement "an accident between two functions, not an invariant either of them states". The one
+/// suite row that renders a mana row under a scheduled collapse
+/// (`loop_shortcut_mana_engine::scheduled_drive_still_renders_the_already_spendable_mana_badge`)
+/// is a DELIBERATE SUPERSET production can no longer construct, so without (d) the
+/// production-reachable state has zero coverage.
+/// (d)'s REVERT DIRECTION: move `ResourceAxis::Mana(_)` out of `object_growth_backing`'s `None`
+/// arm and answer `Some(false)` ⇒ both conjuncts TRUE ⇒ the `continue` fires ⇒ the row disappears
+/// ⇒ RED. Pre-fix that same flip is GREEN (conjunct 1 was FALSE), so (d) is a discriminator for
+/// the POST-fix tree specifically.
+#[test]
+fn low3_mixed_axis_replay_collapses_only_the_deferred_life_axis() {
+    use engine::analysis::resource::ResourceAxis;
+    use engine::game::derived_views::UnboundedResourceView;
+    use engine::types::mana::ManaType;
+
+    let runner = low3_life_engine_accepted(Low3BoardEtbTrigger::CastPresent);
+
+    // ── (a) REACH-GUARD / DISCRIMINATION: the store holds BOTH axes ──
+    let marked: &BTreeSet<ResourceAxis> = runner
+        .state()
+        .unbounded_resources
+        .get(&P0)
+        .expect("the accept marks P0's ∞ axes");
+    assert!(
+        marked.contains(&ResourceAxis::Mana(ManaType::Colorless))
+            && marked.contains(&ResourceAxis::Life(P0)),
+        "reach-guard: this rig's whole discriminating power is that the ∞-mark set is MIXED — \
+         without a Mana(_) axis the pre-fix and post-fix collapsed sets coincide and the revert \
+         probe cannot flip; got {marked:?}"
+    );
+
+    // ── (c) REACH-GUARD / REACHABILITY: the cast disjunct really took the Replay route ──
+    let stash = runner
+        .state()
+        .pending_unbounded_materialization
+        .get(&P0)
+        .expect("the accept registers a materialization");
+    assert_eq!(
+        stash.len(),
+        1,
+        "reach-guard: the replay route registers exactly ONE item (the routes are exclusive per \
+         accept), got {stash:?}"
+    );
+    let PersistentAxisMaterialization::DriveSequence {
+        sequence,
+        collapsed_axes,
+    } = &stash[0]
+    else {
+        panic!(
+            "reach-guard: the cast-trigger board must route to the concrete replay, got {stash:?}"
+        )
+    };
+    assert_eq!(
+        sequence.len(),
+        3,
+        "reach-guard: the DriveSequence carries the real 3-step [mana, gain-life, untap] period"
+    );
+
+    // ── DISCRIMINATOR: the accountable set is the DEFERRED axis only ──
+    assert_eq!(
+        collapsed_axes,
+        &vec![ResourceAxis::Life(P0)],
+        "CR 732.2c: the collapse is accountable for the growth it DELIVERS. `Life(P0)` is deferred \
+         and lands here; `Mana(Colorless)` is a standing capability whose ∞ ends at CR 500.5 + CR \
+         106.4. Pre-fix this read [Mana(Colorless), Life(P0)] — restoring \
+         `proposal.unbounded.clone()` reds exactly this line. Got {collapsed_axes:?}"
+    );
+
+    // ── (d) M-1 / NEW-1: post-`unbounded_mark_kind` the mana ∞ row survives the accept→boundary
+    // window on conjunct 2 ALONE (`object_growth_backing` answers `None`, never `Some(false)`,
+    // for `Mana(_)`), because conjunct 1 no longer holds it up. Pin the observable so the
+    // "accident" the row loop documents cannot be moved silently. CR 500.5 + CR 106.4 own this
+    // axis's expiry, not the collapse. ──
+    let views = derive_views(runner.state(), Some(P0));
+    assert!(
+        views.unbounded_resources.contains(&UnboundedResourceView {
+            player: P0,
+            axis: ResourceAxis::Mana(ManaType::Colorless),
+        }),
+        "the standing mana ∞ row must still project while the DeferredAccrual collapse is merely \
+         scheduled, got {:?}",
+        views.unbounded_resources
+    );
+}
+
+/// **V2** — applying that collapse ENDS `Life(P0)` and PRESERVES `Mana(Colorless)`.
+///
+/// THE MULTI-AUTHORITY HOSTILE FIXTURE at function level: one loop, two axes, two termination
+/// authorities. A "preserve everything" bug and a "remove everything" bug fail on OPPOSITE halves,
+/// so neither blanket implementation survives this row.
+///
+/// REVERT-FAILING ASSERTION: restore `proposal.unbounded.clone()` ⇒ `axes_to_remove` strips both
+/// axes ⇒ P0's axis set empties ⇒ the entry is dropped ⇒ `unbounded_resources.get(&P0)` is `None`
+/// ⇒ RED on BOTH halves. Pre-measured at the pre-fix tip by exactly this call, at exactly this
+/// level.
+///
+/// LEVEL STATED HONESTLY: this row calls the boundary clear DIRECTLY rather than driving a full CR
+/// 500.5 boundary, because `turns::drain_pending_phase_transition_progress` has already removed a
+/// NON-DEBUG seat's `Mana(_)` axes before the collapse prompt — so a full-boundary row on a
+/// non-debug seat would be vacuous on the mana half. `low3_mixed_axis_boundary_preserves_debug_
+/// infinite_mana` drives the live victim end to end; the two rows sit at two different levels and
+/// both are kept.
+#[test]
+fn low3_mixed_axis_collapse_clears_life_and_preserves_mana() {
+    use engine::analysis::resource::ResourceAxis;
+    use engine::types::mana::ManaType;
+
+    let mut runner = low3_life_engine_accepted(Low3BoardEtbTrigger::CastPresent);
+
+    // Reach-guard: both axes marked and one DriveSequence stashed (see V1 for why (a) is about
+    // discrimination rather than fixture shape).
+    let stash = runner
+        .state()
+        .pending_unbounded_materialization
+        .get(&P0)
+        .expect("the accept registers a materialization")
+        .clone();
+    assert!(
+        matches!(
+            stash.as_slice(),
+            [PersistentAxisMaterialization::DriveSequence { .. }]
+        ),
+        "reach-guard: the seam under test is the DriveSequence route, got {stash:?}"
+    );
+    assert!(
+        runner
+            .state()
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|a| a.contains(&ResourceAxis::Mana(ManaType::Colorless))
+                && a.contains(&ResourceAxis::Life(P0))),
+        "reach-guard: both axes are marked before the clear, so both halves below are real \
+         questions"
+    );
+
+    // THE SEAM: the axis-scoped boundary clear, called with the REAL post-accept stash.
+    runner
+        .state_mut()
+        .clear_collapsed_materializations(P0, &stash);
+
+    let after = runner
+        .state()
+        .unbounded_resources
+        .get(&P0)
+        .expect(
+            "CR 500.5 + CR 106.4: the standing Mana(_) capability keeps P0's entry alive. Pre-fix \
+             this was `None` — the collapse dropped the WHOLE entry, ending a mark it does not own",
+        )
+        .clone();
+    assert!(
+        after.contains(&ResourceAxis::Mana(ManaType::Colorless)),
+        "PRESERVED: the shortcut collapse is not an authority over a standing mana capability; \
+         CR 500.5 + CR 106.4 end it at the step/phase end. Got {after:?}"
+    );
+    assert!(
+        !after.contains(&ResourceAxis::Life(P0)),
+        "ENDED: CR 732.2c — the accepted materialization delivered the life growth, so it owns \
+         that mark's termination. This half fails any 'preserve everything' bug. Got {after:?}"
+    );
+}
+
+/// **V2b** — the named LIVE victim, driven end to end through the production consumption path.
+///
+/// A seat established by a REAL `DebugAction::SetInfiniteMana` toggle, holding a mixed ∞ set,
+/// crosses a real CR 500.5 boundary, surfaces a real `PayableResource::LoopCollapse` prompt, and
+/// submits a real `GameAction::SubmitPayAmount`. Afterwards `unbounded_resources[&P0]` still
+/// contains `Mana(Colorless)` and no longer contains `Life(P0)`.
+///
+/// WHY A `SetInfiniteMana` SEAT, and why the fixture's hostility must stay documented: the CR
+/// 500.5 loop-mana clear in `turns::drain_pending_phase_transition_progress` filters
+/// `!state.debug_infinite_mana.contains(pid)`, so a debug seat's `Mana(_)` axes SURVIVE to the
+/// collapse prompt. That is what makes the wholesale copy destructive there — and what makes a
+/// NON-debug row vacuous on the mana half, since its mana axes are already gone before the prompt.
+/// It is the only live victim today. Do not "normalize" this seat away.
+///
+/// WHY THE REVERT EXPECTATION IS "no longer contains `Mana(Colorless)`" AND NOT `is_none()`:
+/// `SetInfiniteMana` set-unions all six `INFINITE_MANA_AXES` into the entry
+/// (`mark_unbounded_loop` is documented "Idempotent set-union"), so under the pre-fix clear the
+/// entry SURVIVES holding the other five mana axes. A reader who "tightens" this to `is_none()`
+/// turns a passing revert probe into a failing one for the wrong reason.
+///
+/// REVERT-FAILING ASSERTION: restore `proposal.unbounded.clone()` ⇒ pre-fix
+/// `collapsed_axes = {Mana(Colorless), Life(P0)}` ⇒ `axes_to_remove` strips both ⇒ `get(&P0)` is
+/// `Some(_)` WITHOUT `Mana(Colorless)` ⇒ RED.
+///
+/// `review-engine-plan` check 9: the consumption side runs through `WaitingFor` / `GameAction`, so
+/// a helper-only row would not have discharged this.
+#[test]
+fn low3_mixed_axis_boundary_preserves_debug_infinite_mana() {
+    use engine::analysis::resource::ResourceAxis;
+    use engine::types::actions::DebugAction;
+    use engine::types::mana::ManaType;
+
+    // (1) the accept happens on an UNMODIFIED board.
+    let mut runner = low3_life_engine_accepted(Low3BoardEtbTrigger::CastPresent);
+
+    // (2) harness switch, not game state under test.
+    runner.state_mut().debug_mode = true;
+
+    // (3) the toggle runs AFTER the accept, so it cannot perturb detection, routing or the offer.
+    // (Independently safe even earlier: `debug_infinite_mana` is documented INTENTIONALLY EXCLUDED
+    // from `PartialEq`, `normalize_for_loop` and `loop_fingerprint`, so CR 104.4b loop equality
+    // cannot see it.)
+    runner
+        .act(GameAction::Debug(DebugAction::SetInfiniteMana {
+            player_id: P0,
+            enabled: true,
+        }))
+        .expect(
+            "the debug infinite-mana toggle is submittable — Debug bypasses WaitingFor dispatch",
+        );
+
+    // (4a) REACH-GUARD: the carve-out seat is really established by the toggle.
+    assert!(
+        runner.state().debug_infinite_mana.contains(&P0),
+        "reach-guard: without the carve-out seat the CR 500.5 clear removes the mana axes before \
+         the prompt and this row is vacuous on its mana half"
+    );
+    // (4b) REACH-GUARD / DISCRIMINATION: ⊇, not equality — step (3) set-unions five more mana
+    // axes. If the mana axis were already cleared at the prompt, `axes_to_remove` would be
+    // {Mana, Life} pre-fix and {Life} post-fix, BOTH would empty the entry and drop the key, the
+    // revert probe could not flip, and the row would go RED on both arms — which reads as "the fix
+    // is broken" when it means "the fixture is broken". This guard makes that failure legible.
+    assert!(
+        runner
+            .state()
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|a| a.contains(&ResourceAxis::Mana(ManaType::Colorless))
+                && a.contains(&ResourceAxis::Life(P0))),
+        "reach-guard: the mixed ∞ set must still hold BOTH axes at the prompt, got {:?}",
+        runner.state().unbounded_resources.get(&P0)
+    );
+
+    // (5) the real CR 500.5 boundary.
+    drive_priority_to_next_boundary(runner.state_mut());
+    // (4c) REACH-GUARD: the boundary really surfaced the collapse prompt for P0. Fails loudly
+    // instead of passing fast if the phase advanced with no prompt.
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::PayAmountChoice {
+                player,
+                resource: PayableResource::LoopCollapse { .. },
+                ..
+            } if player == P0
+        ),
+        "reach-guard: the CR 500.5 boundary must prompt P0 for the collapse count, got {:?}",
+        runner.state().waiting_for
+    );
+    // (4d) REACH-GUARD / ROUTE ATTRIBUTION. MEASURED, not assumed: with the `cast_sourced`
+    // disjunct deleted this rig registers a BATCHED `Life` item instead, `axes_to_remove` is
+    // `{Life(P0)}` either way, and BOTH assertions at the end of this row still pass — so guards
+    // (a)-(c) alone do NOT pin the route. Without this guard the row would go on passing while it
+    // had silently stopped exercising the `DriveSequence` apply arm and its axis-scoped cash-out,
+    // which is the seam it exists to drive.
+    assert!(
+        matches!(
+            runner
+                .state()
+                .pending_unbounded_materialization
+                .get(&P0)
+                .map(Vec::as_slice),
+            Some([PersistentAxisMaterialization::DriveSequence { .. }])
+        ),
+        "reach-guard: the stash the boundary is about to apply must be the DriveSequence this fix \
+         changed, got {:?}",
+        runner.state().pending_unbounded_materialization.get(&P0)
+    );
+
+    // (6) a real submit. `amount: 1` deliberately: the DriveSequence arm replays real cycles
+    // through `apply()` and the replay is uncapped and cubic, so N=1 keeps the row cheap while
+    // exercising exactly the same apply → axis-scoped cash-out path. This row asserts AXIS
+    // BOOKKEEPING, not growth arithmetic.
+    apply(
+        runner.state_mut(),
+        P0,
+        GameAction::SubmitPayAmount { amount: 1 },
+    )
+    .expect("P0 submits the collapse count at the CR 500.5 boundary");
+
+    // (7) the bookkeeping, after the production cash-out.
+    let after = runner
+        .state()
+        .unbounded_resources
+        .get(&P0)
+        .expect(
+            "the debug seat's mana capability keeps P0's entry alive across the collapse — pre-fix \
+             the entry survived too, but WITHOUT Mana(Colorless), which is the RED this row's \
+             revert probe produces",
+        )
+        .clone();
+    assert!(
+        after.contains(&ResourceAxis::Mana(ManaType::Colorless)),
+        "CR 500.5 + CR 106.4 own this axis: the collapse must PRESERVE the debug infinite-mana \
+         capability that `turns::drain_pending_phase_transition_progress` deliberately excludes \
+         from its own clear. Got {after:?}"
+    );
+    assert!(
+        !after.contains(&ResourceAxis::Life(P0)),
+        "CR 732.2c: the collapse the boundary just applied delivered the life growth, so it ends \
+         that mark. This half fails any 'preserve everything' bug. Got {after:?}"
     );
 }
 

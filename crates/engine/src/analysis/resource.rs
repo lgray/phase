@@ -1317,6 +1317,90 @@ pub enum ResourceAxis {
     Poison(PlayerId),
 }
 
+/// CR 732.2a + CR 732.1b: what an `∞` mark on ONE [`ResourceAxis`] MEANS, and therefore WHO is
+/// allowed to end it.
+///
+/// The single authority for the question `GameState::clear_collapsed_materializations` needs
+/// answered: an accepted materialization ends the marks it DELIVERS, and only those.
+///
+/// NOT the batchability question. Whether a DEFERRED axis can be delivered by a batched
+/// per-axis item or only by the `DriveSequence` replay is answered by
+/// `types::game_state::LoopCollapseAxis::from_resource_axis` — `Some(_)` = a batched item exists,
+/// `None` = replay-only. **That `None` arm is the ledger of not-yet-batchable axes**; do not
+/// duplicate it here. A `StandingCapability` axis and a not-yet-batchable axis both map to `None`
+/// there, for entirely different reasons — which is exactly why this second classifier exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnboundedMarkKind {
+    /// DEFERRED ACCRUAL — the mark stands for growth that is NOT on the board yet. CR 732.2c
+    /// ("the shortcut is taken") makes the accepted materialization the thing that delivers it,
+    /// so applying that materialization is what ends the mark.
+    DeferredAccrual,
+    /// STANDING CAPABILITY — the resource is ALREADY at its unbounded value, held there by a
+    /// live realizer for as long as the mark stands, so the mark is a capability the player is
+    /// exercising rather than a promise. Its expiry belongs to the rule that governs the
+    /// resource itself, and a shortcut collapse must never be a second authority over it.
+    StandingCapability,
+}
+
+impl ResourceAxis {
+    /// CR 732.2a: classify this axis's `∞` mark. **Exhaustive, no wildcard** — a future
+    /// `ResourceAxis` variant build-breaks here and forces a deliberate decision, matching the
+    /// guarantee `LoopCollapseAxis::from_resource_axis` and `derived_views::family_of` give for
+    /// their own questions.
+    ///
+    /// THE CRITERION a new variant is decided by (not "is it mana"): an axis is
+    /// `StandingCapability` iff the engine holds a LIVE REALIZER that keeps the resource at its
+    /// unbounded value while the mark stands. MEASURED: `unbounded_resources` has exactly one
+    /// such reader — `game::mana_payment::refill_infinite_mana`, gated on `ResourceAxis::Mana(_)`
+    /// and pinned by `refill_infinite_mana_gated_on_mana_axis_only`. Every other read of that map
+    /// is the `derived_views` HUD projection, a writer, or a clear authority.
+    pub(crate) fn unbounded_mark_kind(self) -> UnboundedMarkKind {
+        match self {
+            // CR 500.5 + CR 106.4: a mana pool empties at the end of each step and phase, so an
+            // ∞-mana mark is ended by `GameState::clear_unbounded_mana_loop`
+            // (`game::turns::drain_pending_phase_transition_progress`) on a schedule the accepted
+            // collapse count does not move. `refill_infinite_mana` holds the pool at
+            // `INFINITE_MANA_PER_TYPE` meanwhile, so the player is SPENDING the infinity, not
+            // waiting for it. A collapse that also removed this axis would be a SECOND authority
+            // over one mark — and for a `debug_infinite_mana` seat, which that CR 500.5 clear
+            // deliberately EXCLUDES, it would silently destroy the capability
+            // `game::engine_resolution_choices` already promises to preserve at the boundary.
+            ResourceAxis::Mana(_) => UnboundedMarkKind::StandingCapability,
+
+            // CR 732.2c: every remaining axis is growth the collapse delivers, so the collapse
+            // ends its mark. Listed by name (never `_`) so an 18th variant is decided, not
+            // defaulted. Reachability at the object-growth producer, MEASURED:
+            //   * CR 119.1 `Life`, CR 122.1 `Counter`, `TokensCreated` — reachable today, each
+            //     with a batched item (`LoopCollapseAxis::from_resource_axis` => `Some`).
+            //   * CR 401 `LibraryDelta` — reachable POSITIVE today; NEGATIVE once the mill board
+            //     is admitted (`ResourceVector::unbounded_components`' CR 401 exemption keeps a
+            //     negative library delta). Replay-only for now: no batched item exists.
+            //   * CR 704.5c `Poison` — blocked today by `has_no_loss_axis` (`poison <= 0`).
+            //   * The event-fed axes — `delta` here is a two-`snapshot` diff and only
+            //     `tokens_created` is fed back in, so they read 0 at this producer.
+            // Reachability is deliberately NOT encoded in this enum: it is a different question
+            // and would conflate two abstraction layers. Each arm states what is CORRECT if the
+            // axis becomes reachable.
+            ResourceAxis::Life(_)
+            | ResourceAxis::DamageDealt(_)
+            | ResourceAxis::LibraryDelta(_)
+            | ResourceAxis::Counter(_, _)
+            | ResourceAxis::Trigger(_)
+            | ResourceAxis::TokensCreated
+            | ResourceAxis::CardsDrawn
+            | ResourceAxis::Casts
+            | ResourceAxis::LandfallTriggers
+            | ResourceAxis::CombatPhases
+            | ResourceAxis::ExtraTurns
+            | ResourceAxis::DeathTriggers
+            | ResourceAxis::EtbTriggers
+            | ResourceAxis::LtbTriggers
+            | ResourceAxis::SacTriggers
+            | ResourceAxis::Poison(_) => UnboundedMarkKind::DeferredAccrual,
+        }
+    }
+}
+
 /// CR 122.1: classify a counter-bearing object by its core types.
 pub(crate) fn object_class(core_types: &[CoreType]) -> ObjectClass {
     if core_types.contains(&CoreType::Creature) {
@@ -4764,6 +4848,50 @@ fn functioning_board_trigger_defs(
     })
 }
 
+/// CR 603.2: the payload-agnostic CLASS of a `TriggerEventKey`, for the CR 732.2a route
+/// firewalls that ask "does this board carry ANY functioning trigger of this shape".
+///
+/// Both keys these firewalls scan for carry an `Option<CoreType>` narrowing that the firewalls
+/// deliberately DISCARD (a sound over-approximation — see each wrapper's doc), so the test is on
+/// the VARIANT, not on the key value. That is why this cannot reuse `board_has_event_observer`'s
+/// payload-SENSITIVE `contains(&trig_key)`: they ask different questions of the same scan.
+///
+/// A new class is one arm here plus a one-line wrapper. The sibling coverage gap
+/// (`Taps` / `TapsForMana` / `AbilityOrCopyActivated` / `Sacrificed`) is chartered to
+/// F-route-residual and is deliberately NOT pre-added — parameterizing is what makes each of
+/// those a one-line arm when its own soundness argument is discharged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoardTriggerClass {
+    /// CR 603.6a: a permanent entered the battlefield.
+    EnterBattlefield,
+    /// CR 601.2i (CR 707.10: cast OR copied): a spell was cast.
+    SpellCast,
+}
+
+impl BoardTriggerClass {
+    /// Exhaustive on `self`, so a third class build-breaks; the inner `matches!` is the
+    /// payload discard that is the whole point.
+    fn matches(self, key: &crate::types::triggers::TriggerEventKey) -> bool {
+        use crate::types::triggers::TriggerEventKey;
+        match self {
+            Self::EnterBattlefield => matches!(key, TriggerEventKey::EnterBattlefield(_)),
+            Self::SpellCast => matches!(key, TriggerEventKey::SpellCast(_)),
+        }
+    }
+}
+
+/// CR 603.2 + CR 113.6 / CR 113.6b: does ANY functioning board trigger fire on an event of
+/// `class`? The single scan the per-class route firewalls below specialize; the zone gate lives
+/// in [`functioning_board_trigger_defs`].
+fn board_has_functioning_trigger(state: &GameState, class: BoardTriggerClass) -> bool {
+    functioning_board_trigger_defs(state).any(|def| {
+        crate::game::trigger_index::keys_from_trigger_def(def)
+            .0
+            .iter()
+            .any(|key| class.matches(key))
+    })
+}
+
 /// CR 603.6a: does ANY functioning board trigger fire on a battlefield entry?
 ///
 /// The route firewall for a batched collapse that MINTS TOKENS: each minted token is a real
@@ -4798,13 +4926,7 @@ fn functioning_board_trigger_defs(
 /// A sound OVER-approximation in the same idiom as its siblings: a true result routes to the
 /// discrete N-cycle driver, which is always correct (only slower).
 pub(crate) fn board_has_functioning_etb_trigger(state: &GameState) -> bool {
-    use crate::types::triggers::TriggerEventKey;
-    functioning_board_trigger_defs(state).any(|def| {
-        crate::game::trigger_index::keys_from_trigger_def(def)
-            .0
-            .iter()
-            .any(|key| matches!(key, TriggerEventKey::EnterBattlefield(_)))
-    })
+    board_has_functioning_trigger(state, BoardTriggerClass::EnterBattlefield)
 }
 
 /// CR 601.2i: does ANY functioning board trigger fire on a spell being cast?
@@ -4844,19 +4966,18 @@ pub(crate) fn board_has_functioning_etb_trigger(state: &GameState) -> bool {
 /// `trigger_index::keys_from_trigger_def` folds `TriggerMode::SpellCast`, `SpellCastOrCopy` and
 /// `SpellCopy` into it — one arm, three authoring modes.
 pub(crate) fn board_has_functioning_cast_trigger(state: &GameState) -> bool {
-    use crate::types::triggers::TriggerEventKey;
-    functioning_board_trigger_defs(state).any(|def| {
-        crate::game::trigger_index::keys_from_trigger_def(def)
-            .0
-            .iter()
-            .any(|key| matches!(key, TriggerEventKey::SpellCast(_)))
-    })
+    board_has_functioning_trigger(state, BoardTriggerClass::SpellCast)
 }
 
 /// CR 732.2a / CR 603.4 / CR 614.1: does any battlefield/command-FUNCTIONING trigger fire on
 /// `trig_key`, or any active battlefield/command replacement replace `repl_event`? The shared
 /// per-event observer scan for the axis-specific firewalls, classifying triggers via the same
 /// `keys_from_trigger_def` registry the trigger index uses.
+///
+/// Deliberately NOT folded into [`board_has_functioning_trigger`]: this `contains(&trig_key)` is
+/// payload-SENSITIVE (the exact key, narrowing included), while the route firewalls ask the
+/// payload-AGNOSTIC class question. Unifying them would cross that question boundary and silently
+/// change one of the two answers.
 fn board_has_event_observer(
     state: &GameState,
     trig_key: crate::types::triggers::TriggerEventKey,
@@ -18446,6 +18567,161 @@ mod tests {
             board_has_functioning_cast_trigger(&grafted),
             "R1: a battlefield-resident cast trigger with empty `trigger_zones` FUNCTIONS under CR \
              113.6's default branch, so the predicate must see it"
+        );
+    }
+
+    /// **V4** — `ResourceAxis::unbounded_mark_kind` VALUE-covers all 17 variants, which is what the
+    /// exhaustive `match` only TYPE-covers.
+    ///
+    /// THE STANDING GUARD AGAINST THE REJECTED SUBSET RULE. The rejected fix #2 for this seam was
+    /// "collapse only the axes a batched item could deliver", which amounts to classifying
+    /// `LibraryDelta` as a non-collapsed axis. `ResourceVector::unbounded_components` keeps a
+    /// NEGATIVE `LibraryDelta` by its CR 401 exemption, so the mill board this lane exists to
+    /// serve puts `LibraryDelta(_)` into `proposal.unbounded` — and a subset rule there would
+    /// refuse the replay on that very board. The `LibraryDelta` row below is what makes that
+    /// re-introduction RED under a new name.
+    ///
+    /// Non-vacuity, both directions: the `Mana(_)` row fails the trivial "delete the filter"
+    /// regression (an all-`DeferredAccrual` implementation), and every `DeferredAccrual` row fails
+    /// an all-`StandingCapability` one. Neither blanket implementation passes this table.
+    ///
+    /// `Poison(_)` is UNREACHABLE at the object-growth producer today (`has_no_loss_axis` forces
+    /// `poison <= 0` and `unbounded_components` requires `n > 0`), so it is covered here at the
+    /// CLASSIFIER level only — stated rather than silently implied.
+    #[test]
+    fn unbounded_mark_kind_classifies_every_axis_by_termination_authority() {
+        use crate::types::mana::ManaType;
+        use crate::types::player::PlayerId;
+
+        let p0 = PlayerId(0);
+
+        // CR 500.5 + CR 106.4 own this axis's expiry — the ONLY StandingCapability today, because
+        // `mana_payment::refill_infinite_mana` is the only live realizer reading
+        // `unbounded_resources`.
+        assert_eq!(
+            ResourceAxis::Mana(ManaType::Colorless).unbounded_mark_kind(),
+            UnboundedMarkKind::StandingCapability,
+            "a mana ∞ is already materialized in the pool; the shortcut collapse must not be a \
+             second authority over it"
+        );
+        assert_eq!(
+            ResourceAxis::Mana(ManaType::Green).unbounded_mark_kind(),
+            UnboundedMarkKind::StandingCapability,
+            "the classification is on the VARIANT, not on one mana type"
+        );
+
+        // CR 732.2c owns every remaining axis: the accepted materialization delivers the growth,
+        // so applying it is what ends the mark. All 16 remaining variants, by name.
+        for (axis, why) in [
+            (
+                ResourceAxis::Life(p0),
+                "CR 119.1 life growth is deferred until the boundary applies it",
+            ),
+            (
+                ResourceAxis::DamageDealt(p0),
+                "event-fed; deferred if it ever reaches this producer",
+            ),
+            (
+                ResourceAxis::LibraryDelta(p0),
+                "CR 401: the mill board's axis MUST stay accountable — classifying it \
+                 StandingCapability is the rejected subset guard under a new name, and it would \
+                 refuse the replay on this lane's own target board",
+            ),
+            (
+                ResourceAxis::Counter(CounterClass::Plus1Plus1, ObjectClass::Creature),
+                "CR 122.1 counter growth is deferred",
+            ),
+            (
+                ResourceAxis::Trigger(TriggerKind::Proliferate),
+                "event-fed; deferred",
+            ),
+            (
+                ResourceAxis::TokensCreated,
+                "the batched Tokens item / the replay mints them at the boundary",
+            ),
+            (ResourceAxis::CardsDrawn, "event-fed; deferred"),
+            (ResourceAxis::Casts, "event-fed; deferred"),
+            (ResourceAxis::LandfallTriggers, "event-fed; deferred"),
+            (ResourceAxis::CombatPhases, "event-fed; deferred"),
+            (ResourceAxis::ExtraTurns, "event-fed; deferred"),
+            (ResourceAxis::DeathTriggers, "event-fed; deferred"),
+            (ResourceAxis::EtbTriggers, "event-fed; deferred"),
+            (ResourceAxis::LtbTriggers, "event-fed; deferred"),
+            (ResourceAxis::SacTriggers, "event-fed; deferred"),
+            (
+                ResourceAxis::Poison(p0),
+                "CR 704.5c; unreachable at this producer today, classified for correctness",
+            ),
+        ] {
+            assert_eq!(
+                axis.unbounded_mark_kind(),
+                UnboundedMarkKind::DeferredAccrual,
+                "{axis:?} must be DeferredAccrual — {why}"
+            );
+        }
+    }
+
+    /// **V6** — the MED-2 parameterization preserves BOTH predicates exactly, and the class
+    /// argument is really read.
+    ///
+    /// REVERT PROBE: swap the two arms of `BoardTriggerClass::matches` ⇒ both halves below go RED.
+    /// A parameterization that ignored `class` (returning "any functioning trigger") would pass a
+    /// single-class test, which is why this row asserts the MATCHED PAIR on one board: the graft
+    /// is `SpellCast`-mode, so `SpellCast` must be TRUE and `EnterBattlefield` must be FALSE for
+    /// that same object's key set.
+    ///
+    /// The shipped `board_has_functioning_cast_trigger_reads_the_zone_gate` above stays byte
+    /// unchanged — including its zero-census positive control, which is what distinguishes a real
+    /// zero from a mis-specified-predicate zero (charter row R1-neg). This row adds the
+    /// `EnterBattlefield` mirror through the same instrument rather than re-arguing it.
+    #[test]
+    fn board_trigger_class_matches_reads_its_class_argument() {
+        use crate::types::triggers::TriggerEventKey;
+
+        // The payload is DISCARDED by design (a sound over-approximation — see each wrapper's
+        // doc), so a payload-bearing key must still match its own class.
+        let etb = TriggerEventKey::EnterBattlefield(None);
+        let cast = TriggerEventKey::SpellCast(None);
+
+        assert!(
+            BoardTriggerClass::EnterBattlefield.matches(&etb),
+            "CR 603.6a: the EnterBattlefield class matches an EnterBattlefield key"
+        );
+        assert!(
+            !BoardTriggerClass::EnterBattlefield.matches(&cast),
+            "swap-arm probe: the EnterBattlefield class must REJECT a SpellCast key — without \
+             this half a class-ignoring implementation passes"
+        );
+        assert!(
+            BoardTriggerClass::SpellCast.matches(&cast),
+            "CR 601.2i (CR 707.10: cast OR copied): the SpellCast class matches a SpellCast key"
+        );
+        assert!(
+            !BoardTriggerClass::SpellCast.matches(&etb),
+            "swap-arm probe: the SpellCast class must REJECT an EnterBattlefield key"
+        );
+
+        // MIRROR of R1 on the SAME instrument, for the EnterBattlefield class: the shipped row
+        // above proves the cast half end-to-end through `board_has_functioning_trigger`; this
+        // proves the delegation carries the class through for the sibling.
+        let base = dump_state(include_bytes!(
+            "../../tests/fixtures/sprout_witherbloom_realistic_lands_4p.json.gz"
+        ));
+        let gated_etb = gated_etb_keyed_defs(&base);
+        assert!(
+            gated_etb > 0,
+            "reach-guard: this board must carry at least one GATED EnterBattlefield-keyed def for \
+             the mirror to be non-vacuous, found {gated_etb}"
+        );
+        assert!(
+            board_has_functioning_trigger(&base, BoardTriggerClass::EnterBattlefield),
+            "the parameterized scan must see the {gated_etb} gated ETB defs this board carries"
+        );
+        assert!(
+            !board_has_functioning_trigger(&base, BoardTriggerClass::SpellCast),
+            "…and must NOT see a cast trigger on the same board, whose cast-keyed defs are all \
+             excluded by the CR 113.6b zone gate. One board, two classes, two answers — a scan \
+             that ignored `class` could not produce both"
         );
     }
 }

@@ -1013,8 +1013,10 @@ fn mana_engine_accept_records_no_collapse_bound() {
 }
 
 /// R6a FIX-ROUND-3 (CR 500.5), now the MULTI-AXIS row: the
-/// `PersistentAxisMaterialization::DriveSequence` arm of `scheduled_collapse_axes` returns the
-/// loop's WHOLE axis set (`collapsed_axes` == `proposal.unbounded`), so ONE stash here names TWO
+/// `PersistentAxisMaterialization::DriveSequence` arm of `scheduled_collapse_axes` returns
+/// WHATEVER `collapsed_axes` the stash carries. Production now stores only the `DeferredAccrual`
+/// subset (`engine::analysis::resource::ResourceAxis::unbounded_mark_kind`); this row's stash is
+/// grafted BROADER on purpose — see (ii) below — so ONE stash here names TWO
 /// axes — an already-materialized `Mana(Colorless)` and a deferred `Life(P0)`. Both keep their ∞
 /// row while the collapse is merely scheduled, and they get there for DIFFERENT reasons, which is
 /// what makes this the strongest rig in the file for the projection's schedule-independence.
@@ -1042,8 +1044,13 @@ fn mana_engine_accept_records_no_collapse_bound() {
 /// the `DriveSequence` arm (`game::engine::materialize_object_growth_shortcut`). So the stash is
 /// grafted through the same single-authority writers the accept path itself calls
 /// (`GameState::mark_unbounded_loop` for the second axis, `register_pending_materialization` for
-/// the item), with `collapsed_axes` set to exactly the store's mark set — byte-for-byte the
-/// `proposal.unbounded.clone()` that production writes. Same graft technique as
+/// the item), with `collapsed_axes` set to exactly the store's mark set — **(ii)** a DELIBERATE
+/// SUPERSET of what production writes, not a mirror of it. Production filters `Mana(_)` out of
+/// `collapsed_axes` (`ResourceAxis::unbounded_mark_kind`), so a real accept could never name the
+/// mana axis here. The graft names it anyway, because this row is about the PROJECTION — "if a
+/// mana axis WERE scheduled, does the badge still render the spendable pool?" — and a graft
+/// narrowed to production's own output would make the mana half of the row UNREACHABLE rather than
+/// merely hostile. Same graft technique as
 /// `combo_infinite_pile::real_4p_observed_drive_sequence_replays_captured_period_n_times`.
 ///
 /// REVERT-PROBE (RP-1d, RUN): restore `if collapse_scheduled(controller, &axis) { continue; }` in
@@ -1091,7 +1098,10 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
         .expect("opponent accepts");
 
     // (1) REACH-GUARD: the real accept marked the Mana axis in the STORE. Capture the exact
-    // axes — the graft below reuses them as `collapsed_axes`, mirroring production.
+    // axes — the graft below reuses them as `collapsed_axes`, a deliberate SUPERSET of what
+    // production writes, NOT a mirror of it: production filters `Mana(_)` out
+    // (`engine::analysis::resource::ResourceAxis::unbounded_mark_kind`), and this row grafts it
+    // back so the projection question stays reachable.
     let mana_axes: Vec<ResourceAxis> = rig
         .runner
         .state()
@@ -1145,6 +1155,9 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
     // (4) REACH-GUARD ON THE SEAM: the collapse authority really does name BOTH axes, so a
     // schedule-keyed hide filter would have suppressed both rows below. Without this, (5) and (6)
     // could pass because the stash never reached the `DriveSequence` arm at all.
+    // It names both BECAUSE OF THE GRAFT, not because production would produce it — a later
+    // reader "simplifying" the graft to match production silently vacates the mana half of this
+    // row (`unbounded_mark_kind` filters `Mana(_)` at the registration site).
     let state = rig.runner.state();
     let scheduled = state.scheduled_collapse_axes(
         state
@@ -1155,8 +1168,9 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
     assert!(
         scheduled.contains(&ResourceAxis::Mana(ManaType::Colorless))
             && scheduled.contains(&ResourceAxis::Life(P0)),
-        "reach-guard: scheduled_collapse_axes returns BOTH axes unfiltered (the boundary must \
-         still clear the mana one), got {scheduled:?}"
+        "reach-guard: scheduled_collapse_axes returns BOTH axes unfiltered (this graft's stash \
+         names the mana axis, so the clear still removes it here; production no longer names it — \
+         ResourceAxis::unbounded_mark_kind), got {scheduled:?}"
     );
 
     for viewer in [None, Some(P0), Some(P1)] {

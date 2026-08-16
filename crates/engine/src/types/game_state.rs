@@ -3890,8 +3890,12 @@ pub enum PersistentAxisMaterialization {
     /// The `sequence` is CLONED into the stash (it serializes; round-trip verified) so the
     /// boundary read survives save/reload and does NOT rely on the serde-skipped live
     /// `last_loop_action_sequence` (sidesteps the Kilo FIX-3 drop-on-load scar).
-    /// `collapsed_axes` is the exact ∞-mark set this loop set (== `proposal.unbounded`),
-    /// captured at accept for a scoped clear.
+    /// `collapsed_axes` is the subset of the loop's ∞-mark set that THIS materialization is
+    /// accountable for ending — the `DeferredAccrual` axes, per
+    /// `analysis::resource::ResourceAxis::unbounded_mark_kind`, captured at accept for a scoped
+    /// clear. It is deliberately NOT `proposal.unbounded`: a `StandingCapability` axis (today,
+    /// `Mana(_)`) is already materialized in the pool and its `∞` ends under CR 500.5 + CR 106.4,
+    /// not with this collapse.
     DriveSequence {
         sequence: Vec<LoopActionContext>,
         collapsed_axes: Vec<ResourceAxis>,
@@ -24329,8 +24333,11 @@ impl GameState {
     /// projecting, because the marks and their enablers are still live. This set says nothing
     /// about them — it names what the boundary will REMOVE, not what the display may show.
     ///
-    /// Returns the axes UNFILTERED, including any `Mana(_)` a `DriveSequence` names, because the
-    /// caller MUST remove that axis at the boundary. Note the two axis classes end their `∞` by
+    /// Returns the axes UNFILTERED because filtering is the REGISTRATION site's job, not this
+    /// reader's — `game::engine::materialize_object_growth_shortcut` stores only `DeferredAccrual`
+    /// axes (`analysis::resource::ResourceAxis::unbounded_mark_kind`), so a stored `Mana(_)` can
+    /// now arrive only from a pre-fix save or a deliberate test graft, and this function reports
+    /// faithfully what is stored rather than hiding it. Note the two axis classes end their `∞` by
     /// different routes: `Tokens` / `Counters` / `Life` are DEFERRED and end here, when the
     /// boundary applies the growth; a `Mana(_)` is already materialized in the pool
     /// (`mana_payment::refill_infinite_mana` re-tops it off this very store) and its `∞` ends at
@@ -24345,6 +24352,9 @@ impl GameState {
     /// FAIL-CLOSED: only an axis some REGISTERED item actually collapses is returned, so an
     /// ∞ axis with no registration (a mana engine registers nothing) is never removed here —
     /// it keeps its badge until CR 500.5 ends it.
+    /// The `DriveSequence` arm's verbatim `extend` is correct *because* the stored set is now
+    /// computed at REGISTRATION rather than copied from the loop's whole ∞-mark set — see
+    /// `analysis::resource::ResourceAxis::unbounded_mark_kind`.
     /// EXHAUSTIVE over `PersistentAxisMaterialization` (no wildcard) — a future variant
     /// build-breaks here instead of silently leaking a stale `∞`.
     pub fn scheduled_collapse_axes(
@@ -24397,13 +24407,20 @@ impl GameState {
     ///   its axis + pill).
     /// - `Life { player, .. }` ⇒ remove `ResourceAxis::Life(player)`.
     /// - `DriveSequence { collapsed_axes, .. }` ⇒ remove exactly `collapsed_axes` and the
-    ///   display targets those axes back (the driven loop collapses whole).
+    ///   display targets those axes back (the driven loop collapses its `DeferredAccrual` axes;
+    ///   a `StandingCapability` axis it never named is not collapsed here — see
+    ///   `analysis::resource::ResourceAxis::unbounded_mark_kind`).
     ///
     /// PRESERVES any coexisting NON-collapsed axis (a debug `SetInfiniteMana` `Mana(_)`
     /// axis, or a second uncollapsed loop). The batched `Tokens` / `Counters` / `Life` items
-    /// never name a `Mana(_)` axis, so a batched collapse preserves mana by construction; a
-    /// `DriveSequence` CAN name one (its `collapsed_axes` is the loop's whole `proposal.unbounded`
-    /// set) and then removing it here is correct — that loop's mana really did end with it.
+    /// never name a `Mana(_)` axis, so a batched collapse preserves mana by construction; and NO
+    /// PRODUCTION PATH constructs a `DriveSequence` naming one either —
+    /// `game::engine::materialize_object_growth_shortcut` is the only production registration
+    /// site and it filters `collapsed_axes` to `DeferredAccrual`. So both routes now preserve a
+    /// standing `Mana(_)` capability by the SAME rule, and the preservation promise in
+    /// `game::engine_resolution_choices` holds on both. (Deliberately "no production path", not
+    /// "cannot exist": shipped fixtures graft `Mana(_)`-naming `DriveSequence`s by hand to
+    /// exercise the projection, and this function reports whatever is stored.)
     /// Drops `unbounded_resources[controller]`
     /// (and its `unbounded_loop_enablers` entry in engine-state lockstep, mirroring
     /// `clear_unbounded_mana_loop`) only when its axis set becomes empty. Always removes
@@ -35080,5 +35097,111 @@ mod tests {
         let legacy: ResolveAllConsentRun =
             serde_json::from_value(legacy_wire).expect("legacy run without the new field loads");
         assert_eq!(legacy.auto_pass_baseline, None);
+    }
+
+    /// **V5** — the BATCHABILITY split is load-bearing, not decorative: every axis a batched
+    /// `Tokens` / `Counters` / `Life` item can produce through [`GameState::scheduled_collapse_axes`]
+    /// is `DeferredAccrual`, and `LoopCollapseAxis::from_resource_axis` returns `Some` for exactly
+    /// those.
+    ///
+    /// WHY IT LIVES HERE AND NOT IN `analysis/resource.rs` BESIDE `unbounded_mark_kind`:
+    /// `LoopCollapseAxis::from_resource_axis` is declared with NO visibility modifier, so it is
+    /// private to this module. A row in `analysis/resource.rs` asserting over its return value
+    /// would be cross-module access to a private item ⇒ E0603, would not compile. The test moves
+    /// to the symbol; the symbol does NOT move to the test — widening `from_resource_axis` to host
+    /// a test would add production visibility surface for test convenience and weaken the
+    /// encapsulation that makes it the uncontested batchability authority. (V4, the classifier's
+    /// own table, correspondingly stays in `analysis/resource.rs` for the same reason.)
+    ///
+    /// REVERT PROBE: flip `TokensCreated` to `StandingCapability` in
+    /// `ResourceAxis::unbounded_mark_kind` ⇒ RED (a batched item would then produce an axis no
+    /// materialization is accountable for).
+    ///
+    /// VACUOUS-UNIVERSAL GUARD: the claim is a `∀` over the produced set, which an EMPTY produced
+    /// set satisfies trivially. The non-empty assertion below is what forbids that, and it is also
+    /// what makes this row go RED when a FOURTH batched `PersistentAxisMaterialization` variant
+    /// lands without the partition being revisited — the exhaustive `match` in
+    /// `scheduled_collapse_axes` build-breaks first, but if the new arm is written to produce an
+    /// axis, this row is what asks whether that axis is accountable.
+    #[test]
+    fn every_batched_item_axis_is_deferred_accrual_and_batchable() {
+        use crate::analysis::resource::UnboundedMarkKind;
+        use crate::game::printed_cards::intrinsic_copiable_values;
+
+        let mut state = GameState::new_two_player(7);
+        let bearer = create_object(
+            &mut state,
+            CardId(9001),
+            PlayerId(0),
+            "Counter Bearer".to_string(),
+            Zone::Battlefield,
+        );
+        let profile_host = create_object(
+            &mut state,
+            CardId(9002),
+            PlayerId(0),
+            "Fodder Profile".to_string(),
+            Zone::Battlefield,
+        );
+        let profile = intrinsic_copiable_values(
+            state
+                .objects
+                .get(&profile_host)
+                .expect("the just-created profile host is in `objects`"),
+        );
+
+        // One item of EACH batched kind — the three arms `scheduled_collapse_axes` can take that
+        // are not `DriveSequence`.
+        let batched = [
+            PersistentAxisMaterialization::Tokens(Box::new(profile)),
+            PersistentAxisMaterialization::Counters(vec![CounterGrowth {
+                object: bearer,
+                counter: CounterType::Plus1Plus1,
+                per_cycle_delta: 1,
+            }]),
+            PersistentAxisMaterialization::Life {
+                player: PlayerId(0),
+                per_cycle_delta: 1,
+            },
+        ];
+
+        let produced = state.scheduled_collapse_axes(&batched);
+        assert_eq!(
+            produced.len(),
+            3,
+            "reach-guard (vacuous-universal): the three batched kinds must produce three distinct \
+             axes, or the ∀ below is satisfied by an empty set. Got {produced:?}"
+        );
+
+        for axis in &produced {
+            assert_eq!(
+                axis.unbounded_mark_kind(),
+                UnboundedMarkKind::DeferredAccrual,
+                "CR 732.2c: an axis a BATCHED item delivers is by definition growth the collapse \
+                 performs, so it must be DeferredAccrual — otherwise the batched route would \
+                 deliver growth for a mark no materialization is accountable for. Got {axis:?}"
+            );
+            assert!(
+                LoopCollapseAxis::from_resource_axis(*axis).is_some(),
+                "the batchability ledger must carry a prompt label for every axis a batched item \
+                 produces; a `None` here means `from_materializations` would silently fold it into \
+                 `Mixed`. Got {axis:?}"
+            );
+        }
+
+        // The CONVERSE, so this is a partition rather than a one-way implication: the standing
+        // axis is the one the batched items never produce, and it is exactly the one
+        // `from_resource_axis` has no label for.
+        assert_eq!(
+            ResourceAxis::Mana(ManaType::Colorless).unbounded_mark_kind(),
+            UnboundedMarkKind::StandingCapability,
+            "the two classifiers answer DIFFERENT questions, and this is the axis where they \
+             visibly diverge from 'batchable'"
+        );
+        assert!(
+            !produced.contains(&ResourceAxis::Mana(ManaType::Colorless)),
+            "no batched item can schedule a mana axis — which is why a batched collapse preserved \
+             mana by construction long before the DriveSequence route did"
+        );
     }
 }

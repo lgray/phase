@@ -1780,6 +1780,16 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
             // read here, deliberately not the display-filtered one: `object_growth_backing`
             // returns `None` for `Mana(_)` today, so the two happen to agree — an accident
             // between two functions, not an invariant either of them states.
+            //
+            // AND THAT ACCIDENT NOW CARRIES MORE WEIGHT. Before
+            // `analysis::resource::ResourceAxis::unbounded_mark_kind`, a `Replay` collapse put
+            // `Mana(_)` into `accepted_collapse_axes`, so conjunct 1 was FALSE and the row was
+            // kept for that reason. Now conjunct 1 is TRUE for a mana axis and the row is kept by
+            // conjunct 2 ALONE — i.e. solely by `object_growth_backing`'s `None` arm. The
+            // projected row set is unchanged either way (verified: `None != Some(false)`), but if
+            // that arm ever moves, `Mana(_)` rows would start disappearing during the
+            // accept→boundary window. Decide it deliberately there. Pinned by
+            // `combo_infinite_pile`'s mixed-axis replay row, assertion (d).
             if !accepted_axes.contains_key(&axis)
                 && object_growth_backing(state, controller, axis) == Some(false)
             {
@@ -2204,13 +2214,20 @@ fn accepted_collapse_axes(
 /// promise is false the moment it is made; this one can only become false later, which is why the
 /// two are handled differently.
 ///
-/// Note this exclusion is also NOT "no materialization touches mana": a `DriveSequence` names the
-/// loop's whole `proposal.unbounded` set, so `clear_collapsed_materializations` really does drop
-/// the `Mana(_)` axis when that collapse applies. (On the production path that drop is usually a
-/// no-op, because `turns::drain_pending_phase_transition_progress` has already removed the mana
-/// axis at CR 500.5 before the prompt that reaches it; it stays live for `debug_infinite_mana`
-/// seats, which that clear excludes.) The badge still must not promise a bound the player's
-/// spendable pool never had.
+/// This exclusion answers a DIFFERENT question from the collapse filter at the registration site:
+/// what the badge may PROMISE during the accept→boundary window, versus which authority ends the
+/// axis. The collapse no longer drops the `Mana(_)` axis at all —
+/// `game::engine::materialize_object_growth_shortcut` stores only `DeferredAccrual` axes in a
+/// `DriveSequence`'s `collapsed_axes` (`analysis::resource::ResourceAxis::unbounded_mark_kind`),
+/// and the batched items never named one — so no `PersistentAxisMaterialization` kind can schedule
+/// a `Mana(_)` axis, and this `retain` is a no-op on every production path today.
+///
+/// It is kept deliberately, as DEFENSE IN DEPTH: a future stash kind that scheduled a mana axis
+/// would otherwise silently start promising a bound on a pool the player is already spending
+/// without bound. That is the same posture this file uses elsewhere — a guard whose RED is a
+/// build-or-behaviour break rather than a silent widening. Deleting a documented guard because it
+/// became redundant on one path is exactly how the drift this file's own census catalogues
+/// happens. The badge still must not promise a bound the player's spendable pool never had.
 fn scheduled_display_axes(
     accepted: &BTreeMap<ResourceAxis, CollapseCertainty>,
 ) -> BTreeMap<ResourceAxis, CollapseCertainty> {
@@ -5895,8 +5912,12 @@ mod tests {
                 ResourceAxis::Mana(ManaType::White),
             ],
         );
-        // A DriveSequence naming the whole unbounded set — the one stash kind that would schedule
-        // a mana axis if the exclusion were dropped.
+        // A DELIBERATELY HOSTILE graft. Post-`ResourceAxis::unbounded_mark_kind`, production
+        // filters `Mana(_)` out of a `DriveSequence`'s `collapsed_axes`, so NO accept can build
+        // this stash. It is constructed by hand precisely so the `scheduled_display_axes`
+        // exclusion is still exercised: the row asks "if a mana axis DID reach the announcement,
+        // would the badge fold and stay `Unscheduled`?", which is a question about the PROJECTION,
+        // not about the filter. Do not "simplify" it to match production — that vacates the row.
         state.register_pending_materialization(
             p0,
             PersistentAxisMaterialization::DriveSequence {
