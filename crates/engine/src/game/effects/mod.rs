@@ -19485,7 +19485,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // The CR 616.1 discard-batch carrier.
+    // The discard-batch carrier (CR 608.2c parked order + CR 614.6 replacement).
     // ---------------------------------------------------------------------
 
     /// A `player_scope: All` "each player discards a card" clause template.

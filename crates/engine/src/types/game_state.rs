@@ -16809,8 +16809,9 @@ declare_game_state! {
     /// `EffectZoneChoice`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_player_scope_sacrifice_choice: Option<PendingPlayerScopeSacrificeChoice>,
-    /// CR 616.1 + CR 701.9a: a discard instruction parked by a
-    /// replacement-application choice. See [`PendingDiscardBatch`].
+    /// CR 608.2c + CR 701.9a: a discard instruction parked by a
+    /// replacement-application choice. See [`PendingDiscardBatch`], whose doc
+    /// records why CR 616.1 does not govern this path.
     ///
     /// Boxed: `GameState` is moved by value through the phase-server action and
     /// AI paths under a hard stack budget (`types/game_state_size.rs`), and this
@@ -25943,8 +25944,12 @@ mod tests {
         let record = persisted_zone_change_record(ObjectId(9_101), 19, 0);
         state.zone_changes_this_turn.push_back(record.clone());
         state.pending_discard_batch = Some(parked_discard_batch(record));
-        // CR 616.1: the prompt a parked batch is waiting on. Without it the
-        // save is not mid-pause and this test measures nothing.
+        // The prompt a parked batch is waiting on. Without it the save is not
+        // mid-pause and this test measures nothing. CR 616.1 is accurate for THIS
+        // fixture, which builds a two-candidate ordering prompt; the production
+        // discard pause is a single optional apply-or-decline, which CR 616.1 does
+        // not govern. The carrier does not read the prompt's arity, so the
+        // persistence measured here is identical either way.
         state.waiting_for = WaitingFor::ReplacementChoice {
             player: PlayerId(0),
             candidate_count: 2,

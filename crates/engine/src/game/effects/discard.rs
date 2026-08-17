@@ -1273,8 +1273,8 @@ mod random_discard_authority_tests {
                 .map(ObjectIncarnationRef::from_object),
             "the parked pin must equal the live pre-move occurrence"
         );
-        // CR 616.1: the published chooser must be the seat this authority
-        // actually prompted. A re-parking caller reads `chooser` to rebuild the
+        // The published chooser must be the seat this authority actually
+        // prompted. A re-parking caller reads `chooser` to rebuild the
         // prompt, so if the two ever disagree the wrong seat is asked. Compared
         // against `waiting_for` rather than against the request's player,
         // because agreeing with the request is the very assumption this pins

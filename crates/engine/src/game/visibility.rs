@@ -6188,7 +6188,7 @@ mod tests {
         );
     }
 
-    /// CR 400.2 + CR 616.1: `pending_discard_batch` is the EFFECT layer's twin
+    /// CR 400.2 + CR 608.2c: `pending_discard_batch` is the EFFECT layer's twin
     /// of the cost cursor above. It retains the object IDs of cards still in a
     /// HAND — a hidden zone — plus the instruction's pre-pause event span, so it
     /// must be absent from every viewer projection, including the projection of

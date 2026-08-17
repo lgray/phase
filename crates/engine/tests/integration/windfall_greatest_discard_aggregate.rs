@@ -414,7 +414,8 @@ fn windfall_short_library_does_not_shrink_later_players_draws() {
 }
 
 // ---------------------------------------------------------------------------
-// The CR 616.1 pause arms. A replacement choice interrupts the discard fan-out
+// The replacement-pause arms (CR 608.2c: replacement effects may modify an
+// instruction's actions). A replacement choice interrupts the discard fan-out
 // mid-batch; the clause must still publish ONE complete per-player table.
 // ---------------------------------------------------------------------------
 
@@ -527,8 +528,11 @@ fn optional_graveyard_exile_replacement() -> ReplacementDefinition {
 /// ARM A — gate 1 (`ReplacementEvent::Discard`, Library of Leng), the fan-out
 /// discriminator.
 ///
-/// CR 616.1: P0 controls an optional discard replacement, so every one of P0's
-/// seven discards raises a choice. CR 608.2f: the discard action is taken on
+/// P0 controls an OPTIONAL discard replacement, so every one of P0's seven
+/// discards raises an apply-or-decline choice. Deliberately NOT cited to
+/// CR 616.1: that rule governs choosing among two or more competing
+/// replacements, and this arm has exactly one. CR 614.6 is what makes the
+/// applied-or-declined event resolve as it does. CR 608.2f: the discard action is taken on
 /// four players and cannot be processed simultaneously once it pauses, so it is
 /// processed per player — but it is still ONE action, and the look-back
 /// (CR 608.2i) that feeds the draw clause must see every seat's contribution.
@@ -606,7 +610,7 @@ fn windfall_paused_mid_fan_out_still_draws_the_greatest() {
             drawn: vec![7, 7, 7, 7],
             hands: vec![7, 7, 7, 7],
         },
-        "a CR 616.1 pause must not truncate the batch (prompts/graveyards) nor split \
+        "a replacement pause must not truncate the batch (prompts/graveyards) nor split \
          the clause's per-player table (drawn/hands)"
     );
 }

@@ -331,7 +331,7 @@ fn random_discard_cost_with_no_cards_still_sacrifices() {
 /// mid-batch pause.
 const HYMN_TO_TOURACH: &str = "Target player discards two cards at random.";
 
-/// CR 701.9b + CR 616.1: an EFFECT-caused random discard that pauses on its
+/// CR 701.9b + CR 608.2c: an EFFECT-caused random discard that pauses on its
 /// first pick must still make its second one.
 ///
 /// This is the random sibling of the forced whole-hand arm in
