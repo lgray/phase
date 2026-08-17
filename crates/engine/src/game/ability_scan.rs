@@ -97,7 +97,8 @@ use crate::types::ability::{
     ForEachCategoryAction, GuessSubject, KeeperConstraint, ManaProduction, ModalChoice,
     MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, PtValue, QuantityExpr, QuantityRef,
     RepeatContinuation, ReplacementCondition, ResolvedAbility, StaticCondition, TargetFilter,
-    TrackedAnaphorSource, TriggerCondition, TypedFilter,
+    TrackedAnaphorSource, TriggerCondition, TriggerConstraint, TriggerDefinition, TypedFilter,
+    UnlessPayModifier,
 };
 use crate::types::game_state::TargetSelectionConstraint;
 use crate::types::keywords::{DisguiseCost, Keyword};
@@ -3272,6 +3273,174 @@ fn scan_object_scope(x: &ObjectScope) -> Axes {
     }
 }
 
+/// CR 604.1 + CR 732.2a: the read-axis surface of a GRANTED `TriggerDefinition`
+/// (`ContinuousModification::GrantTrigger`) — the trigger-side twin of
+/// [`ability_definition_axes`].
+///
+/// Block (1) of the object-growth firewall already scans an INSTALLED trigger's
+/// `condition` + `execute` on the same layer-flushed frame (`analysis::resource`
+/// blocks (1b)/(5b)), so the blanket `Axes::CONSERVATIVE` this replaces was a
+/// redundant SECOND veto on content already read. Descending is what lets the
+/// firewall NOT over-veto a granted trigger whose body reads nothing (Bello, Bard
+/// of the Brambles' "Whenever this creature deals combat damage to a player, draw
+/// a card") — the same reason the sibling `GrantAbility` arm descends.
+///
+/// **EXHAUSTIVE destructure with NO `..` rest pattern**, the discipline
+/// [`ability_definition_axes`] and [`resolved_ability_axes`] use: a FUTURE
+/// `TriggerDefinition` field fails to compile here until it is classified as
+/// scanned or read-free. Every `_` binding below carries its justification.
+fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
+    let TriggerDefinition {
+        // ---- read-bearing: scanned into `acc` below ----
+        execute,
+        condition,
+        // CR 603.2 + CR 603.2h: a fire-count / fire-window gate, which can carry
+        // its own spell filter. NOT an event matcher, and no firewall surface
+        // reads it (`analysis::resource` reads only `condition` and `execute`), so
+        // this walker is its ONLY classifier ⇒ scanned, never read-free.
+        constraint,
+        // CR 118.12: a resolution-time "unless [player] pays [cost]" payload, NOT
+        // an event matcher. The same `UnlessPayModifier` type that
+        // `ability_definition_axes` already binds fail-closed rather than ignoring.
+        unless_pay,
+
+        // ---- read-free: EVENT-MATCHER filters. CR 603.2 — "whenever a game event
+        //      or game state MATCHES a triggered ability's trigger event, that
+        //      ability automatically triggers". These select WHICH event fires the
+        //      trigger; they are not resolution-time reads, and matcher-observation
+        //      is handled by the firewall's class-scoped relief (block (1a)), never
+        //      by a read axis.
+        valid_card: _,
+        valid_target: _,
+        valid_subject_player: _,
+        valid_source: _,
+        zone_change_clauses: _,
+
+        // ---- read-free: pure event SHAPE (CR 603.2). 173 `TriggerMode` variants,
+        //      of which exactly 4 carry a payload (an ability tag, a planeswalk
+        //      role, an ability-lifecycle point, and an `Unknown(String)`
+        //      fallback); none reaches a `TargetFilter` or a `QuantityExpr`.
+        //      ⚠ `mode: _` is load-bearing for COMPILATION as well as for
+        //      classification: binding this field by name would shadow the
+        //      `mode: ScanMode` parameter that every delegation below threads.
+        mode: _,
+
+        // ---- read-free: zone / phase / flag / literal-threshold metadata. None
+        //      reaches a `TargetFilter` or a `QuantityExpr` (measured by resolving
+        //      each field's declared type and recursing its payload positions;
+        //      9 of the 36 fields reach one, and all 9 are handled above).
+        origin: _,
+        origin_zones: _,
+        destination: _,
+        destination_constraint: _,
+        trigger_zones: _,
+        phase: _,
+        optional: _,
+        damage_kind: _,
+        secondary: _,
+        spell_cast_origin: _,
+        description: _,
+        counter_filter: _,
+        saga_chapter: _,
+        batched: _,
+        die_sides: _,
+        expend_threshold: _,
+        attack_target_filter: _,
+        player_actions: _,
+        scry_bottom_count: _,
+        damage_amount: _,
+        life_amount: _,
+        coin_flip_result: _,
+        die_result: _,
+        taps_for_mana_produced: _,
+        mana_ability_produced: _,
+        clash_result: _,
+    } = t;
+
+    let mut acc = Axes::NONE;
+    if let Some(exec) = execute {
+        acc = acc.or(ability_definition_axes(exec, mode));
+    }
+    if let Some(cond) = condition {
+        acc = acc.or(scan_trigger_condition(cond, mode));
+    }
+    if let Some(c) = constraint {
+        acc = acc.or(scan_trigger_constraint(c, mode));
+    }
+    if let Some(UnlessPayModifier { cost, payer }) = unless_pay {
+        acc = acc.or(scan_ability_cost(cost, mode));
+        // CR 118.12: `payer` names WHO PAYS — a player selector, not a board
+        // census; nothing here counts objects. Same field class as
+        // `target_chooser` and `optional_player`, which `ability_definition_axes`
+        // already routes at `SnapshotOrEvent`. ADD-1's census default is
+        // DISCHARGED by measurement rather than assumed away: 0 of 556 real
+        // `unless_pay.payer` values in the card corpus express a board-scoped read
+        // (the 4 `Typed` ones carry `properties: []`, so `typed_filter_axes`
+        // yields `Axes::NONE`). This is NOT a relaxation hole — a payer that DOES
+        // read the board still reports `sibling` through `typed_filter_axes` ->
+        // `scan_filter_prop`'s census recursion; `SnapshotOrEvent` declines only
+        // this call site's OWN injection, and `cost` stays scanned regardless.
+        acc = acc.or(scan_target_filter(
+            payer,
+            FilterReadContext::SnapshotOrEvent,
+            mode,
+        ));
+    }
+    acc
+}
+
+/// CR 603.2 + CR 603.2h: read-axes of a trigger's fire-count / fire-window
+/// constraint.
+///
+/// TOTALITY, TWO LEVELS — both load-bearing, and the second is STRICTER than this
+/// file's own convention, so do not "tidy" either away:
+///  1. NO `_` wildcard arm ⇒ a new `TriggerConstraint` variant is `E0004` until
+///     classified (the discipline `scan_filter_prop` documents).
+///  2. NO `..` field rest in ANY arm ⇒ a new field on an EXISTING variant is
+///     `E0027` until classified. The sibling scanners deliberately do NOT do this
+///     — `scan_filter_prop` writes `FilterProp::Counters { count, .. }` — so
+///     rewriting this as `NthSpellThisTurn { filter, .. }` would read as a
+///     consistency fix while silently deleting level 2. A `filter` field added to
+///     a SECOND `TriggerConstraint` variant is exactly how this walker would go
+///     stale, and level 2 is the only thing that would catch it.
+fn scan_trigger_constraint(x: &TriggerConstraint, mode: ScanMode) -> Axes {
+    match x {
+        // CR 603.2: a filtered spell-count gate — "your second [qualifier] spell
+        // each turn" counts only spells matching `filter`. ADD-1: a newly-added
+        // filter call site is `LiveBoardCensus` until PROVEN snapshot/event, and
+        // the same-file precedent for count-gate filters is unanimous
+        // (`QuantityRef::ObjectCount`, `TriggerCondition::ControlsType`,
+        // `TriggerCondition::ControlCount` all route here). Deliberately NOT
+        // `payer`'s `SnapshotOrEvent` answer: that is a player selector, this is a
+        // count gate — adjacency is not an argument.
+        TriggerConstraint::NthSpellThisTurn {
+            filter,
+            n: _,
+            comparator: _,
+        } => filter.as_ref().map_or(Axes::NONE, |f| {
+            scan_target_filter(f, FilterReadContext::LiveBoardCensus, mode)
+        }),
+        // CR 109.5 + CR 603.2: the gate reads the triggering event's cause
+        // relative to the trigger's controller — routed through the shared
+        // controller-ref classifier rather than assumed read-free.
+        TriggerConstraint::EventSourceControlledBy { controller } => {
+            scan_controller_ref(controller)
+        }
+        // CR 603.2h fire-count gates, turn/phase windows, and class levels:
+        // literal thresholds and per-turn counters only. No filter, no board
+        // aggregate, no player resource.
+        TriggerConstraint::OncePerTurn
+        | TriggerConstraint::OncePerGame
+        | TriggerConstraint::OnlyDuringYourTurn
+        | TriggerConstraint::NthDrawThisTurn { n: _ }
+        | TriggerConstraint::OnlyDuringOpponentsTurn
+        | TriggerConstraint::OnlyDuringYourMainPhase
+        | TriggerConstraint::AtClassLevel { level: _ }
+        | TriggerConstraint::MaxTimesPerTurn { max: _ }
+        | TriggerConstraint::OncePerOpponentPerTurn => Axes::NONE,
+    }
+}
+
 fn scan_trigger_condition(x: &TriggerCondition, mode: ScanMode) -> Axes {
     match x {
         TriggerCondition::GainedLife { minimum: _ } => Axes {
@@ -5315,9 +5484,10 @@ fn scan_mana_production(p: &ManaProduction, mode: ScanMode) -> Axes {
 /// CR 613.1 + CR 732.2a: does a continuous modification READ a mutable board
 /// aggregate (`sibling`) or a projected player resource (`projected`)? EXHAUSTIVE
 /// over all 53 `ContinuousModification` variants, NO `_` wildcard — a new variant
-/// fails to compile until classified. `mode` is threaded to the granted-ability
-/// descent (`GrantAbility`) so a token body inside a grant is classified in the
-/// same mode. The AST is finite and acyclic, so the mutual recursion terminates.
+/// fails to compile until classified. `mode` is threaded to both granted-body
+/// descents (`GrantAbility` / `GrantTrigger`) so a token body inside a grant is
+/// classified in the same mode. The AST is finite and acyclic, so the mutual
+/// recursion terminates.
 fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> Axes {
     match m {
         // descend the dynamic P/T / dynamic-keyword / enter-counter QuantityExpr (8)
@@ -5340,20 +5510,20 @@ fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> A
         ContinuousModification::GrantAbility { definition } => {
             ability_definition_axes(definition, mode)
         }
-        // fail-closed CONSERVATIVE: inner payloads with no walker (9). `GrantTrigger`
-        // carries a `TriggerDefinition` (a `TriggerMode`, not a `TriggerCondition`)
-        // that is outside the scanner's traversal closure — conservative is the
-        // documented fail-safe (over-veto = missed offer). A full `TriggerDefinition`
-        // walker is a follow-up.
+        // descend a granted TRIGGER body (GrantTrigger) — the same move, and the
+        // same reason, as the `GrantAbility` arm directly above. See
+        // `scan_trigger_definition` for the per-field scanned/read-free split.
+        ContinuousModification::GrantTrigger { trigger } => scan_trigger_definition(trigger, mode),
+        // fail-closed CONSERVATIVE: inner payloads with no walker (11).
         ContinuousModification::CopyValues { .. }
         // CR 707.2c (Metamorphic Alteration): the copy-marker stands in for a
         // copy that grants the donor's whole ability set — fail-closed alongside
         // its `CopyValues` sibling (the real grant is the installed TCE).
         | ContinuousModification::CopyChosen
-        | ContinuousModification::GrantTrigger { .. }
         // A granted object-hosted replacement's `ReplacementDefinition` execute
         // is outside the scanner's traversal closure — fail-closed CONSERVATIVE,
-        // same class as GrantTrigger / GrantStaticAbility.
+        // same class as GrantStaticAbility (`GrantTrigger` left this group when
+        // `scan_trigger_definition` gave its payload a walker).
         | ContinuousModification::GrantReplacement { .. }
         | ContinuousModification::GrantAllActivatedAbilitiesOf { .. }
         | ContinuousModification::GrantAllTriggeredAbilitiesOf { .. }
@@ -6461,13 +6631,19 @@ pub(crate) fn spell_ability_bears_randomness(def: &AbilityDefinition) -> bool {
 mod tests {
     use super::*;
     use crate::types::ability::{
-        AggregateFunction, CastManaObjectScope, CastManaSpentMetric, Comparator, ManaContribution,
-        StaticDefinition,
+        AbilityKind, AggregateFunction, CastManaObjectScope, CastManaSpentMetric, Comparator,
+        CostDerivation, DamageKindFilter, DestinationConstraint, ManaContribution,
+        OriginConstraint, ReplacementDefinition, StaticDefinition, ZoneChangeClause,
     };
     use crate::types::counter::CounterType;
     use crate::types::identifiers::ObjectId;
-    use crate::types::mana::ManaColor;
+    use crate::types::keywords::CostBearingKeywordKind;
+    use crate::types::mana::{ManaColor, ManaCost};
     use crate::types::player::{PlayerCounterKind, PlayerId};
+    use crate::types::replacements::ReplacementEvent;
+    use crate::types::statics::StaticMode;
+    use crate::types::triggers::TriggerMode;
+    use crate::types::zones::Zone;
 
     #[test]
     fn property_aggregate_source_scan_axes_are_exhaustive() {
@@ -8334,5 +8510,464 @@ mod tests {
         assert!(axes.event, "must be event-bound");
         assert!(!axes.sibling);
         assert!(!axes.projected);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // PHASE-B VERIFICATION ROWS — the `TriggerDefinition` walker (S4/S5).
+    // Each row is paired with a revert probe that must flip it; the reverts live
+    // in `.wba-phaseB-probes/run_probes.sh` and are keyed on this walker's source
+    // text. Names and assert messages are the harness's registry keys: do not
+    // reword them without updating `ROW_MSG`.
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /// The NON-DEGENERATE filter value every B-1a/B-1b path is populated with.
+    ///
+    /// E-1 ADDENDUM (a) requires each of the seven paths to hold a filter that
+    /// WOULD self-assert `sibling: true` if that path were scanned — otherwise
+    /// "still `sibling == false`" is uninformative for that path (the degenerate
+    /// window one abstraction up).
+    ///
+    /// This value self-asserts in BOTH `FilterReadContext`s, so its non-degeneracy
+    /// is a property of the VALUE and not of the context a revert happens to pick:
+    /// the `Typed` arm -> `typed_filter_axes` -> `scan_filter_prop` ->
+    /// `FilterProp::Targets` -> `scan_target_filter(.., LiveBoardCensus, ..)`,
+    /// whose `base` injects `sibling: true`. A bare `Typed{Creature}` would NOT
+    /// do: under `LoopFirewall` the `Typed` arm relaxes to `props.sibling`.
+    fn census_asserting_filter() -> TargetFilter {
+        TargetFilter::Typed(TypedFilter {
+            properties: vec![FilterProp::Targets {
+                filter: Box::new(TargetFilter::Any),
+            }],
+            ..TypedFilter::creature()
+        })
+    }
+
+    /// NON-DEGENERACY SELF-CHECK (the positive control for all seven paths).
+    /// If this ever goes green-by-vacuity the seven population assertions below
+    /// are measuring nothing. Asserted in the RELAXED context, which is the strong
+    /// direction: `SnapshotOrEvent` gives `base == Axes::NONE`, so a `true` here
+    /// can only have come from the filter's own shape.
+    #[test]
+    fn nondegeneracy_fixture_filter_self_asserts_sibling() {
+        assert!(
+            scan_target_filter(
+                &census_asserting_filter(),
+                FilterReadContext::SnapshotOrEvent,
+                ScanMode::LoopFirewall,
+            )
+            .sibling,
+            "fixture filter must self-assert sibling from its OWN shape (relaxed ctx)"
+        );
+        // Control on the shape that would make the population degenerate.
+        assert!(
+            !scan_target_filter(
+                &TargetFilter::Typed(TypedFilter::creature()),
+                FilterReadContext::SnapshotOrEvent,
+                ScanMode::LoopFirewall,
+            )
+            .sibling,
+            "a bare Typed{{Creature}} must RELAX under LoopFirewall — if it does not, \
+             the fixture above proves nothing about FilterProp recursion"
+        );
+    }
+
+    /// Bello, Bard of the Brambles' granted trigger, verbatim from its Oracle text
+    /// ("Whenever this creature deals combat damage to a player, draw a card").
+    fn bello_granted_trigger() -> TriggerDefinition {
+        TriggerDefinition {
+            execute: Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+            ))),
+            valid_source: Some(TargetFilter::SelfRef),
+            valid_target: Some(TargetFilter::Player),
+            damage_kind: DamageKindFilter::CombatOnly,
+            ..TriggerDefinition::new(TriggerMode::DamageDone)
+        }
+    }
+
+    fn grant_trigger(def: TriggerDefinition) -> ContinuousModification {
+        ContinuousModification::GrantTrigger {
+            trigger: Box::new(def),
+        }
+    }
+
+    fn sibling_of(m: &ContinuousModification) -> bool {
+        scan_continuous_modification(m, ScanMode::LoopFirewall).sibling
+    }
+
+    // ── B-1 (POSITIVE) ──────────────────────────────────────────────────────
+    /// B-1: Bello's exact shape clears. Revert probe R-B1: return the arm to the
+    /// blanket `CONSERVATIVE` group ⇒ this row flips to `sibling == true`.
+    #[test]
+    fn b1_bello_exact_shape_clears() {
+        assert!(
+            !sibling_of(&grant_trigger(bello_granted_trigger())),
+            "B-1: Bello's granted trigger reads nothing sibling-mutable"
+        );
+    }
+
+    /// B-1 PAIRED POSITIVE REACH-GUARD. The identical `execute` body routed through
+    /// the ALREADY-descending `GrantAbility` arm must already read nothing.
+    /// Without this, B-1's green is unattributable: it could mean "the walker
+    /// works" or "this Draw body was never capable of reporting an axis". It is
+    /// also what makes B-1's pre-mechanism RED gate interpretable (see
+    /// run_probes.sh stage RED).
+    #[test]
+    fn b1_reach_guard_grant_ability_draw_body_is_clean() {
+        let body = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+        );
+        assert!(
+            !sibling_of(&ContinuousModification::GrantAbility {
+                definition: Box::new(body),
+            }),
+            "reach-guard: the Draw body itself is clean through the GrantAbility arm"
+        );
+    }
+
+    // ── B-1a (POSITIVE ×5) — the five EVENT-MATCHER paths bind `_` read-free ──
+    // Each row (i) populates exactly ONE path with the non-degenerate filter,
+    // (ii) asserts that population's non-degeneracy inline, (iii) asserts the
+    // walker still clears. Each has its OWN revert probe (E-1 ADDENDUM (b)).
+
+    macro_rules! nondegenerate {
+        ($f:expr) => {
+            assert!(
+                scan_target_filter(
+                    $f,
+                    FilterReadContext::SnapshotOrEvent,
+                    ScanMode::LoopFirewall
+                )
+                .sibling,
+                "population is DEGENERATE: this filter would not self-assert sibling \
+                 even if the path were scanned, so the row below proves nothing"
+            );
+        };
+    }
+
+    /// B-1a path 1 — `valid_card`.
+    /// Revert R-1: route `valid_card` through `scan_target_filter(.., LiveBoardCensus, ..)`.
+    #[test]
+    fn b1a_p1_valid_card_is_read_free() {
+        let f = census_asserting_filter();
+        nondegenerate!(&f);
+        let def = TriggerDefinition {
+            valid_card: Some(f),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            !sibling_of(&grant_trigger(def)),
+            "B-1a p1: valid_card read-free"
+        );
+    }
+
+    /// B-1a path 2 — `valid_target`.
+    /// Revert R-2: route `valid_target` through `LiveBoardCensus`.
+    #[test]
+    fn b1a_p2_valid_target_is_read_free() {
+        let f = census_asserting_filter();
+        nondegenerate!(&f);
+        let def = TriggerDefinition {
+            valid_target: Some(f),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            !sibling_of(&grant_trigger(def)),
+            "B-1a p2: valid_target read-free"
+        );
+    }
+
+    /// B-1a path 3 — `valid_subject_player`.
+    /// Revert R-3: route `valid_subject_player` through `LiveBoardCensus`.
+    #[test]
+    fn b1a_p3_valid_subject_player_is_read_free() {
+        let f = census_asserting_filter();
+        nondegenerate!(&f);
+        let def = TriggerDefinition {
+            valid_subject_player: Some(f),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            !sibling_of(&grant_trigger(def)),
+            "B-1a p3: valid_subject_player read-free"
+        );
+    }
+
+    /// B-1a path 4 — `valid_source`.
+    /// Revert R-4: route `valid_source` through `LiveBoardCensus`.
+    #[test]
+    fn b1a_p4_valid_source_is_read_free() {
+        let f = census_asserting_filter();
+        nondegenerate!(&f);
+        let def = TriggerDefinition {
+            valid_source: Some(f),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            !sibling_of(&grant_trigger(def)),
+            "B-1a p4: valid_source read-free"
+        );
+    }
+
+    /// B-1a path 5 — `zone_change_clauses` -> `ZoneChangeClause::valid_card`.
+    /// Populated with a NON-EMPTY vec whose clause carries the filter: `vec![]` is
+    /// the degeneracy E-1 ADDENDUM (a) names explicitly.
+    /// Revert R-5: route each clause's `valid_card` through `LiveBoardCensus`.
+    #[test]
+    fn b1a_p5_zone_change_clause_valid_card_is_read_free() {
+        let f = census_asserting_filter();
+        nondegenerate!(&f);
+        let clause = ZoneChangeClause {
+            origin: OriginConstraint::Any,
+            destination: Some(Zone::Battlefield),
+            destination_constraint: DestinationConstraint::Any,
+            valid_card: Some(f),
+        };
+        let def = TriggerDefinition {
+            zone_change_clauses: vec![clause],
+            ..bello_granted_trigger()
+        };
+        assert!(
+            !sibling_of(&grant_trigger(def)),
+            "B-1a p5: clause valid_card read-free"
+        );
+        // Guard the vec is actually populated (the named degeneracy trap).
+        let empty = TriggerDefinition {
+            zone_change_clauses: vec![],
+            ..bello_granted_trigger()
+        };
+        assert!(
+            !sibling_of(&grant_trigger(empty)),
+            "control: the empty-vec form is the DEGENERATE population — it must not \
+             be what row p5 is measuring"
+        );
+    }
+
+    // ── B-1b (POSITIVE ×3) — the two NON-MATCHER paths are FAIL-CLOSED ────────
+    // These paths are scanned, not read-free. Measured justification: no firewall
+    // surface reads them (`analysis::resource` reads only `condition` and
+    // `execute`), and `ability_definition_axes` already binds the SAME
+    // `UnlessPayModifier` type fail-closed. Their reverts flip the OTHER way —
+    // binding the path `_` read-free must turn these red.
+
+    /// B-1b path 6 — `constraint` -> `NthSpellThisTurn { filter }`.
+    /// Revert R-6: bind `constraint: _` read-free ⇒ this row flips to false.
+    #[test]
+    fn b1b_p6_constraint_filter_is_scanned() {
+        let f = census_asserting_filter();
+        nondegenerate!(&f);
+        let def = TriggerDefinition {
+            constraint: Some(TriggerConstraint::NthSpellThisTurn {
+                n: 1,
+                comparator: Comparator::EQ,
+                filter: Some(f),
+            }),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            sibling_of(&grant_trigger(def)),
+            "B-1b p6: a filtered spell-count constraint is a scanned read surface"
+        );
+        // PRECISION control: an unfiltered constraint must NOT veto. This is what
+        // distinguishes descending `constraint` from a blanket
+        // `constraint.is_some() => CONSERVATIVE`, and `OncePerTurn` is exactly the
+        // populated-but-filterless variant E-1 ADDENDUM (a) names.
+        let once = TriggerDefinition {
+            constraint: Some(TriggerConstraint::OncePerTurn),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            !sibling_of(&grant_trigger(once)),
+            "B-1b p6 precision: OncePerTurn carries no filter and must not veto"
+        );
+    }
+
+    /// B-1b path 7a — `unless_pay.payer`.
+    /// Revert R-7: drop the `payer` delegation ⇒ this row flips to false.
+    #[test]
+    fn b1b_p7a_unless_pay_payer_is_scanned() {
+        let f = census_asserting_filter();
+        nondegenerate!(&f);
+        let def = TriggerDefinition {
+            unless_pay: Some(UnlessPayModifier {
+                // Read-free cost, so this row isolates the `payer` sub-surface.
+                cost: AbilityCost::Tap,
+                payer: f,
+            }),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            sibling_of(&grant_trigger(def)),
+            "B-1b p7a: unless_pay.payer is a scanned filter surface"
+        );
+    }
+
+    /// B-1b path 7b — `unless_pay.cost`, the `AbilityCost` sub-surface E-1's
+    /// second-order note flags for phase D. Guarded independently of `payer`
+    /// because they are separate delegations that can be dropped separately.
+    /// Revert R-8: drop the `scan_ability_cost` delegation ⇒ this row flips.
+    #[test]
+    fn b1b_p7b_unless_pay_cost_is_scanned() {
+        let def = TriggerDefinition {
+            unless_pay: Some(UnlessPayModifier {
+                cost: AbilityCost::ManaDynamic {
+                    quantity: object_count(),
+                },
+                // Read-free payer, so this row isolates the `cost` sub-surface.
+                payer: TargetFilter::Controller,
+            }),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            sibling_of(&grant_trigger(def)),
+            "B-1b p7b: a board-dynamic unless-pay cost is a scanned read surface"
+        );
+    }
+
+    // ── B-2 / B-3 / B-4 (NEGATIVE) ────────────────────────────────────────────
+
+    /// B-2 (MANDATORY): the walker is PRECISE, not permissive — it tests whether
+    /// the walker DESCENDS AT ALL. Discriminator: `QuantityRef::ObjectCount`
+    /// self-asserts `sibling: true` unconditionally. This is NOT a
+    /// filter-precision test.
+    /// Revert R-9: replace the walker body with `Axes::NONE` ⇒ this row flips.
+    #[test]
+    fn b2_walker_descends_execute_object_count() {
+        let def = TriggerDefinition {
+            execute: Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: object_count(),
+                    target: TargetFilter::Controller,
+                },
+            ))),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            sibling_of(&grant_trigger(def)),
+            "B-2: a granted execute reading a board ObjectCount must still veto"
+        );
+    }
+
+    /// B-3: the `condition` surface too. Discriminator is
+    /// `TriggerCondition::ControlsType`'s OWN `sibling: true` — deliberately NOT
+    /// `ObjectCount`'s, so B-2 and B-3 fail independently (the charter's wording
+    /// routed both through the same self-assertion, which would let one edit red
+    /// both and make neither attributable).
+    /// Revert R-10: drop the `scan_trigger_condition` delegation ⇒ this row flips.
+    #[test]
+    fn b3_walker_descends_condition() {
+        let def = TriggerDefinition {
+            condition: Some(TriggerCondition::ControlsType {
+                filter: TargetFilter::Typed(TypedFilter::creature()),
+            }),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            sibling_of(&grant_trigger(def)),
+            "B-3: a granted condition reading the board must still veto"
+        );
+    }
+
+    /// B-4: the read-free binding is JUSTIFIED, not blanket. The SAME filter value
+    /// sits in two positions and gets OPPOSITE verdicts: on `execute`'s target it
+    /// is a read (reached via the `FilterProp` recursion); on the matcher fields it
+    /// is read-free. One fixture, both halves — a blanket read-free binding of
+    /// `execute`/`condition` cannot satisfy it, and neither can scanning matchers.
+    /// Revert R-11: bind `execute`/`condition` `_` read-free alongside the matchers
+    /// ⇒ this row flips to false.
+    #[test]
+    fn b4_execute_census_scanned_while_matchers_stay_read_free() {
+        let f = census_asserting_filter();
+        nondegenerate!(&f);
+        let def = TriggerDefinition {
+            execute: Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: f.clone(),
+                },
+            ))),
+            valid_card: Some(f.clone()),
+            valid_target: Some(f.clone()),
+            valid_subject_player: Some(f.clone()),
+            valid_source: Some(f),
+            ..bello_granted_trigger()
+        };
+        assert!(
+            sibling_of(&grant_trigger(def)),
+            "B-4: the identical filter is a READ on execute's target while staying \
+             read-free on all four matcher fields"
+        );
+    }
+
+    // ── B-5 (scope guard) ─────────────────────────────────────────────────────
+    /// B-5: the other blanket-arm members are untouched. The arm holds ELEVEN
+    /// members after `GrantTrigger` left it — not the stale "(9)" its comment
+    /// claimed before this change.
+    ///
+    /// TEN of the eleven are exercised. The one omission is deliberate and priced:
+    /// `CopyValues` needs a 13-field `CopiableValues` literal (`ManaCost`,
+    /// `CardType`, `PrintedLoyalty`, three `Arc<Vec<_>>`) plus a `DisplaySource`
+    /// from `game::game_object` — no `Default`, no constructor — and every field
+    /// of it would be a guess written without a build to check it against. The
+    /// residual risk it leaves is small: `scan_continuous_modification` is
+    /// exhaustive with NO `_` wildcard, so a member cannot silently LEAVE the
+    /// match; only a deliberate move into another arm would evade this row, and
+    /// that is visible in a diff.
+    /// No revert probe (a scope guard, not a mechanism claim).
+    #[test]
+    fn b5_other_blanket_members_stay_conservative() {
+        let survivors: Vec<ContinuousModification> = vec![
+            ContinuousModification::CopyChosen,
+            ContinuousModification::RetainAllOtherAbilitiesFromSource,
+            ContinuousModification::GrantAllActivatedAbilitiesOf {
+                source: TargetFilter::Any,
+                cap: None,
+            },
+            ContinuousModification::GrantAllTriggeredAbilitiesOf {
+                source: TargetFilter::Any,
+            },
+            ContinuousModification::RetainPrintedTriggerFromSource {
+                source_trigger_index: 0,
+            },
+            ContinuousModification::RetainPrintedAbilityFromSource {
+                source_ability_index: 0,
+            },
+            ContinuousModification::AddStaticMode {
+                mode: StaticMode::Continuous,
+            },
+            ContinuousModification::GrantStaticAbility {
+                definition: Box::new(StaticDefinition::continuous()),
+            },
+            ContinuousModification::AddKeywordWithDerivedCost {
+                kind: CostBearingKeywordKind::Foretell,
+                derivation: CostDerivation::ManaCostReducedBy(ManaCost::default()),
+            },
+            ContinuousModification::GrantReplacement {
+                replacement: Box::new(ReplacementDefinition::new(ReplacementEvent::Destroy)),
+            },
+        ];
+        assert_eq!(
+            survivors.len(),
+            10,
+            "scope guard covers 10 of the arm's 11 members; CopyValues is the \
+             documented omission"
+        );
+        for m in &survivors {
+            let axes = scan_continuous_modification(m, ScanMode::LoopFirewall);
+            assert!(
+                axes.event && axes.sibling && axes.projected,
+                "B-5: blanket member must stay fail-closed CONSERVATIVE"
+            );
+        }
     }
 }
