@@ -3649,6 +3649,192 @@ fn execute_ledger_condition_provably_excludes_class(
         })
 }
 
+/// SIBLING DISJUNCT of [`execute_ledger_condition_provably_excludes_class`] at the SAME
+/// block-(1b) consult (phase C arm S1, Pyreswipe Hawk's attack pump): does this trigger
+/// `execute` body's `Effect::Pump` read a board aggregate whose id population PROVABLY
+/// excludes `class_member`? Returns `true` iff so — then the pump's value is invariant
+/// across the loop's growth and this def does not observe the loop.
+///
+/// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan`'s arm is
+/// `Effect::Pump { .. } => Axes::CONSERVATIVE` (ability_scan.rs:501) — BLANKET, payload
+/// discarded. No scanner change can distinguish a class-reading aggregate from a
+/// class-disjoint one, so the distinction has to be drawn where the class is known.
+///
+/// SOUNDNESS rests on the SAME ordered pair of invariants as its sibling — see that
+/// function's doc and the GAP-1 comment at this arm's call site:
+/// `derived_fodder_class`'s ONE-CLASS rule on the first accept-time frame pair, then
+/// `board_covers_modulo_fodder`'s all-zones stable-partition content equality at its ONLY
+/// call site (`:3020`), which PRECEDES the only firewall call any of these arms can reach
+/// (`:3046`; the `:2839` call passes `class_members: None`, so no arm runs there).
+/// Do not reorder the `board_covers_modulo_fodder` gate after the firewall.
+/// CR 608.2h (MagicCompRules.txt): "If an effect requires information from the game (such
+/// as the number of creatures on the battlefield), the answer is determined only once,
+/// when the effect is applied" — so a pump whose aggregate cannot count any member of the
+/// growing class has the same value on every cycle of the loop.
+///
+/// ⛔ ARG-EQUIVALENCE PIN. Conjunct (d) calls
+/// `game::quantity::object_count_matching_ids(state, filter, &ctx, source.id)` — literally
+/// the call the `QuantityRef::Aggregate` resolver arm makes at game/quantity.rs:3692 — so
+/// this predicate asks THE SAME id-population authority the resolver will ask, about the
+/// NEW class member. `aggregate_property_over` (game/quantity.rs:3693) is deliberately NOT
+/// called: it aggregates over exactly those ids, so an id population that excludes the
+/// member makes its value invariant whatever the absolute value is. Do not "simplify" this
+/// into `matches_target_filter`: that is a different authority (zone selection and the
+/// `OtherThanTriggerObject` exclusion live in `object_count_matching_ids`).
+///
+/// SAME STATED RESIDUAL AS THE SIBLING, restated because this arm's filter reads exactly
+/// the field the residual is about. The member-quantified test proves exclusion for the
+/// members LIVE IN THE COMPARED FRAME; growth beyond them is covered by
+/// `derived_fodder_class`'s ONE-CLASS rule, and `fodder_content_eq` routes through
+/// `object_content_eq`, which does NOT compare `card_types`. `TypedFilter::type_filters` is
+/// a `card_types` predicate. So two objects can be in the same fodder class while this
+/// filter counts one and not the other — ESTABLISHED here is "exclusion carries to every
+/// member agreeing with the tested ones on `card_types`", NOT "members must so agree".
+/// That is the sibling's residual verbatim, not a new one, and it is STATED rather than
+/// accepted. Do not restate it as "all fodder members differ only in `object_id`" — that
+/// sentence is false and has been shipped once already.
+///
+/// ⛔ CONTEXT-SHAPE GUARD, and why relief WITHOUT it would be unsound. At fire time
+/// `resolve_ref` builds the filter context from the RESOLVING ability
+/// (`FilterContext::from_ability_with_controller(a, a.original_controller.unwrap_or(a.controller))`,
+/// game/quantity.rs:3218-3221). At firewall time no `ResolvedAbility` exists, so this arm
+/// must build `FilterContext::from_source_with_controller(source.id, source.controller)`.
+/// The two differ in `ability`, `trigger_source`, `scoped_iteration_player` and
+/// `recipient_id` (game/filter.rs:1116-1133, :1200-1209, :1296-1308). That difference is
+/// immaterial ONLY for a filter that reads none of them, so conjunct (d) additionally
+/// requires an empty `properties` list and a `controller` of `None` or
+/// `ControllerRef::You` on the `TypedFilter`, and refuses every non-`Typed` `TargetFilter`.
+/// A filter carrying ANY property keeps its veto — that is this arm's honest coverage
+/// ceiling, not an oversight (regression row: the `FilterProp::Another` negative).
+///
+/// NOT A VISITOR (#4603 error direction), same as its sibling — four fail-closed conjuncts,
+/// each keeping the conservative veto whenever it cannot prove its half:
+///   (0) NO ACTIVATION RESTRICTIONS: `ability_definition_axes` destructures
+///       `activation_restrictions: _` (ability_scan.rs:4601 — re-measured at this commit;
+///       the sibling arm's doc above still cites the pre-drift `:4238`), so the scan is
+///       BLIND to them
+///       and conjunct (a)'s rescan would answer `false` even with a class-matching
+///       `ActivationRestriction::RequiresCondition` on the same def.
+///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the EFFECT
+///       with `Effect::NoOp` (`Effect::NoOp => Axes::NONE`, ability_scan.rs:822) and re-run
+///       `ability_definition_reads_sibling_mutable_for_loop`. Only if THAT is `false` is the
+///       effect the def's only sibling read — `ability_definition_axes` destructures with
+///       NO `..` (ability_scan.rs:4573-4619), so the rescan covers `sub_ability`,
+///       `else_ability`, `duration`, `condition`, `multi_target`, `target_constraints`,
+///       `modal`, `mode_abilities`, `repeat_for`, `announced_x`, `player_scope`,
+///       `starting_with`, `target_chooser`, `repeat_until`, `unless_pay`, `distribute`,
+///       `cost_reduction` and `optional_player` without this arm enumerating any of them.
+///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`, and NO `..` on
+///       `Effect::Pump`, so a new `Pump` field is a compile error here rather than a silent
+///       unscanned read.
+///   (c) the member must be LIVE in the scanned frame: an absent id is trivially absent
+///       from any id population, which would be relief with no evidence.
+///   (d) BOTH P/T halves must be provably invariant — `toughness` as much as `power`
+///       (`Pump` carries two independent `PtValue`s and either can hold the aggregate).
+fn pump_aggregate_provably_excludes_class(
+    exec: &crate::types::ability::AbilityDefinition,
+    state: &GameState,
+    class_member: ObjectId,
+    source: &GameObject,
+) -> bool {
+    use crate::types::ability::Effect;
+
+    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4601) —
+    // fail closed.
+    if !exec.activation_restrictions.is_empty() {
+        return false;
+    }
+    // (a) sole-source by single-field clone-and-rescan.
+    let mut probe = exec.clone();
+    *probe.effect = Effect::NoOp;
+    if crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&probe) {
+        return false;
+    }
+    // (b) shape — single level, `_ => false` via let-else, no `..`.
+    let Effect::Pump {
+        power,
+        toughness,
+        target: _,
+    } = exec.effect.as_ref()
+    else {
+        return false;
+    };
+    // (c) fail-closed if the member is gone from the scanned frame.
+    if !state.objects.contains_key(&class_member) {
+        return false;
+    }
+    // (d) both halves, against the pinned context.
+    let ctx = crate::game::filter::FilterContext::from_source_with_controller(
+        source.id,
+        source.controller,
+    );
+    pt_value_aggregate_provably_excludes_class(power, state, class_member, source.id, &ctx)
+        && pt_value_aggregate_provably_excludes_class(
+            toughness,
+            state,
+            class_member,
+            source.id,
+            &ctx,
+        )
+}
+
+/// One `PtValue` half of [`pump_aggregate_provably_excludes_class`] — see that function's
+/// doc for the arg-equivalence pin and the context-shape guard, which are implemented here.
+fn pt_value_aggregate_provably_excludes_class(
+    pt: &crate::types::ability::PtValue,
+    state: &GameState,
+    class_member: ObjectId,
+    source_id: ObjectId,
+    ctx: &crate::game::filter::FilterContext<'_>,
+) -> bool {
+    use crate::types::ability::{ControllerRef, PtValue, QuantityExpr, QuantityRef, TargetFilter};
+
+    let filter = match pt {
+        // A literal reads nothing, so it is invariant under growth by construction.
+        PtValue::Fixed(_) => return true,
+        PtValue::Quantity(QuantityExpr::Ref {
+            qty:
+                QuantityRef::Aggregate {
+                    function: _,
+                    property: _,
+                    filter,
+                },
+        }) => filter,
+        // `PtValue::Variable` (an announced X, resolved from the ability's own record) and
+        // every other `QuantityExpr` / `QuantityRef` fall through and KEEP the veto.
+        _ => return false,
+    };
+    // CONTEXT-SHAPE GUARD: only a filter that reads none of the four fields the two
+    // `FilterContext` constructors disagree about may be evaluated with the firewall's own
+    // context. Any non-`Typed` `TargetFilter` (`Or`, `Not`, `And`, `TrackedSet`, …) keeps
+    // the veto rather than being walked here.
+    let TargetFilter::Typed(typed) = filter else {
+        return false;
+    };
+    if !typed.properties.is_empty() || !matches!(typed.controller, None | Some(ControllerRef::You))
+    {
+        return false;
+    }
+    // The resolver's OTHER context branch is unreachable for this shape, and that is a
+    // measured property of the type rather than of this fixture: `resolve_ref` swaps in a
+    // scoped context when `filter.references_exiled_by_source()` (game/quantity.rs:3673-3691),
+    // and that predicate answers `true` only for `ExiledBySource` / `And` / `Or` /
+    // `TrackedSetFiltered`, with `_ => false` covering `Typed` (types/ability.rs:15911-15923).
+    // The guard above has already refused every non-`Typed` filter, so this holds by
+    // construction. Stated as a `debug_assert!` and NOT as a `return false` branch: a
+    // runtime arm here would be dead code, and its usual justification ("a future
+    // `TypedFilter` field could reopen it") is FALSE — that predicate matches on the
+    // `TargetFilter` variant and never looks inside `TypedFilter`.
+    debug_assert!(
+        !filter.references_exiled_by_source(),
+        "a `TargetFilter::Typed` can never reference the source's exile set; if it can, the \
+         arg-equivalence pin below is against the wrong `FilterContext`"
+    );
+    // ARG-EQUIVALENCE PIN — game/quantity.rs:3692.
+    !crate::game::quantity::object_count_matching_ids(state, filter, ctx, source_id)
+        .contains(&class_member)
+}
+
 /// §5.3a firewall (BLOCKER-S1 + S5 + MAJOR-A): does ANY live off-stack fire-time
 /// observer read the growing class (the axis-2 `sibling` read)? Scans, on the
 /// FLUSHED current: (1) trigger conditions AND `execute` bodies; (2) [S5] EVERY
@@ -3787,13 +3973,26 @@ fn fire_time_conditions_read_growing_class_scoped(
                 // Fail-closed on `class_members: None` (the OFFLINE cover passes `None` and
                 // is therefore untouched BY this narrowing — note that the CR 117.1b /
                 // CR 510.2 scope guards above are NOT class_members-gated and DO reach it).
+                //
+                // The two exclusion predicates are SIBLING DISJUNCTS of ONE consult, not two
+                // relief points: a def is relieved when EVERY member is excluded by EITHER
+                // the ledger read's entry matcher (block-(1a)'s sibling) or the S1 pump
+                // aggregate's id population, so the `.all()` / `!is_empty()` guard is SHARED
+                // and reasoned about once. Both are CR 608.2h value-invariance claims over
+                // the SAME member set; adding a disjunct cannot relieve a def that neither
+                // predicate can prove disjoint.
+                //
+                // `!members.is_empty()` is LOAD-BEARING for BOTH disjuncts (an empty set must
+                // not make `.all()` vacuously true) — see block (1)'s ETB gate above for the
+                // full rationale, and the `..._empty_class_member_set_does_not_relieve` rows,
+                // which now carry one fixture per surface.
                 if scan::ability_definition_reads_sibling_mutable_for_loop(exec)
                     && !class_members.is_some_and(|members| {
                         !members.is_empty()
                             && members.iter().all(|&m| {
                                 execute_ledger_condition_provably_excludes_class(
                                     exec, state, m, obj,
-                                )
+                                ) || pump_aggregate_provably_excludes_class(exec, state, m, obj)
                             })
                     })
                 {
@@ -10006,10 +10205,42 @@ mod tests {
 
     /// A CONSERVATIVE (sibling-reading) effect: `Effect::Pump` classifies
     /// `Axes::CONSERVATIVE` regardless of its fields (ability_scan.rs).
+    ///
+    /// ⚠ SCOPE, since phase C's S1: this body reads NOTHING — it is
+    /// `Pump{Fixed(0), Fixed(0)}`, and it classifies `Axes::CONSERVATIVE` only because
+    /// `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (ability_scan.rs:501) discards the
+    /// payload. That over-approximation is still the whole veto at every surface S1 does
+    /// NOT narrow — block (2)'s `obj.abilities` scan, which is where every remaining caller
+    /// puts it — so this helper is correct and unchanged there. It is NOT a valid stand-in
+    /// veto at the block-(1b) `def.execute` surface any more: `pump_aggregate_provably_
+    /// excludes_class` is precise about exactly this payload and correctly relieves a fixed
+    /// pump. Use [`class_reading_pump_effect`] for a block-(1b) fixture.
     fn sibling_reading_effect() -> crate::types::ability::Effect {
         use crate::types::ability::{Effect, PtValue, TargetFilter};
         Effect::Pump {
             power: PtValue::Fixed(0),
+            toughness: PtValue::Fixed(0),
+            target: TargetFilter::SelfRef,
+        }
+    }
+
+    /// A pump that GENUINELY reads the growing class: its power aggregates mana value over
+    /// `Typed{Creature}`, so a creature-token fodder member is inside the id population
+    /// `pump_aggregate_provably_excludes_class` consults, and the def keeps its veto for a
+    /// real reason rather than by scanner over-approximation.
+    fn class_reading_pump_effect() -> crate::types::ability::Effect {
+        use crate::types::ability::{
+            AggregateFunction, Effect, ObjectProperty, PtValue, QuantityExpr, QuantityRef,
+            TargetFilter, TypedFilter,
+        };
+        Effect::Pump {
+            power: PtValue::Quantity(QuantityExpr::Ref {
+                qty: QuantityRef::Aggregate {
+                    function: AggregateFunction::Max,
+                    property: ObjectProperty::ManaValue,
+                    filter: TargetFilter::Typed(TypedFilter::creature()),
+                },
+            }),
             toughness: PtValue::Fixed(0),
             target: TargetFilter::SelfRef,
         }
@@ -10593,20 +10824,31 @@ mod tests {
     /// FIREWALL block(1) matched pair (CR 603.6a): the ETB-observer gate skips ONLY a
     /// PROVABLY-disjoint observer, and only when a fodder-class representative is supplied.
     ///
-    /// Non-vacuity / reach-guard: case (c) (`None`) proves the observer's sibling-reading execute
+    /// Non-vacuity / reach-guard: case (c) (`None`) proves the observer's class-reading execute
     /// body alone trips the block(1) execute scan — so case (a)'s `false` is the GATE skipping the
     /// observer, not a body that never vetoes. It also pins the object-growth (`None`) path
     /// byte-identical. Revert-probe: hardcoding `etb_observer_provably_excludes_class` to `false`
     /// (or deleting its body) flips (a) `false → true`; breaking `valid_card_matches` to always
     /// `false` flips (b) `true → false`.
+    ///
+    /// FIXTURE CHANGE, phase C S1 — an ARGUMENT, not a re-baseline. The execute body was
+    /// `sibling_reading_effect()` = `Pump{Fixed(0), Fixed(0)}`, which reads NOTHING; it
+    /// vetoed only through the blanket `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` arm
+    /// (ability_scan.rs:501). S1 makes block (1b) precise about exactly that payload, so a
+    /// fixed pump is now correctly relieved there and case (b) would have asserted "a broad
+    /// matcher still vetoes" against a def with no reason to veto — green, discriminating
+    /// nothing. The body is therefore replaced by [`class_reading_pump_effect`], which
+    /// genuinely counts the fodder. NO assertion is weakened: all three cases keep their
+    /// exact expectations, and (b)'s veto now has a real source instead of an
+    /// over-approximated one.
     #[test]
     fn etb_observer_gate_skips_only_provably_disjoint_observer() {
         use crate::types::ability::{AbilityDefinition, AbilityKind};
 
         // The P0 fodder Saproling creature-token id (the growing-class representative).
         let member = ObjectId(900);
-        // Minimal state: a P1 ETB observer carrying `valid_card` + a firewall-flagged
-        // (sibling-reading) execute body, watching the battlefield, plus the P0 fodder member.
+        // Minimal state: a P1 ETB observer carrying `valid_card` + a genuinely class-reading
+        // execute body, watching the battlefield, plus the P0 fodder member.
         let build = |valid_card: TargetFilter| {
             let mut state = GameState::new_two_player(7);
             let m = inert_token(&mut state, 900, 0, "Saproling");
@@ -10622,7 +10864,7 @@ mod tests {
                 .valid_card(valid_card)
                 .execute(AbilityDefinition::new(
                     AbilityKind::Spell,
-                    sibling_reading_effect(),
+                    class_reading_pump_effect(),
                 ));
             state
                 .objects
@@ -13244,6 +13486,403 @@ mod tests {
             .expect("the constructed oracle must parse a trigger execute body")
     }
 
+    /// This lane's target dump, loaded through the production decoder.
+    fn wba_dump_state() -> GameState {
+        dump_state(include_bytes!(
+            "../../tests/fixtures/witherbloom_altar_sprout_swarm_4p.json.gz"
+        ))
+    }
+
+    /// The dump's Pyreswipe Hawk — the ONE card block (1b) vetoes on. Pinned by NAME, and
+    /// its measured coordinates are asserted at the call site, so a dump swap fails loudly
+    /// instead of silently making every row below vacuous.
+    fn wba_hawk(state: &GameState) -> GameObject {
+        state
+            .objects
+            .values()
+            .find(|o| o.name == "Pyreswipe Hawk")
+            .cloned()
+            .expect(
+                "VACUOUS-BY-FIXTURE: the WBA dump must carry Pyreswipe Hawk — S1 exists \
+                     for its attack pump, and a dump without it reaches nothing",
+            )
+    }
+
+    /// Hawk's `execute` bodies through the SAME enumeration block (1b) walks.
+    fn hawk_trigger_execs(
+        state: &GameState,
+        hawk: &GameObject,
+    ) -> Vec<crate::types::ability::AbilityDefinition> {
+        crate::game::functioning_abilities::active_trigger_definitions(state, hawk)
+            .filter_map(|active| active.definition.execute.as_deref().cloned())
+            .collect()
+    }
+
+    /// Hawk's OWN `power` aggregate with ONLY `filter` swapped. Every S1 negative differs
+    /// from the positive on the field the relief reads — never on the enum variant — so a
+    /// negative cannot pass because it took a different arm.
+    fn hawk_power_with_filter(
+        base: &crate::types::ability::AbilityDefinition,
+        filter: TargetFilter,
+    ) -> crate::types::ability::PtValue {
+        use crate::types::ability::PtValue;
+        let Effect::Pump { power, .. } = base.effect.as_ref() else {
+            panic!("fixture: the Hawk def[0] execute body must be an `Effect::Pump`");
+        };
+        let mut power = power.clone();
+        let PtValue::Quantity(QuantityExpr::Ref {
+            qty: QuantityRef::Aggregate { filter: slot, .. },
+        }) = &mut power
+        else {
+            panic!("fixture: Hawk's `power` must be an aggregate quantity");
+        };
+        *slot = filter;
+        power
+    }
+
+    /// Hawk's own `Typed{["Artifact"], You, []}` aggregate filter, so a negative can be built
+    /// by changing exactly one of its three fields.
+    fn hawk_aggregate_typed_filter(base: &crate::types::ability::AbilityDefinition) -> TypedFilter {
+        use crate::types::ability::PtValue;
+        let Effect::Pump {
+            power:
+                PtValue::Quantity(QuantityExpr::Ref {
+                    qty:
+                        QuantityRef::Aggregate {
+                            filter: TargetFilter::Typed(typed),
+                            ..
+                        },
+                }),
+            ..
+        } = base.effect.as_ref()
+        else {
+            panic!("fixture: Hawk's aggregate filter must be `TargetFilter::Typed`");
+        };
+        typed.clone()
+    }
+
+    /// Rebuild Hawk's def with the two `PtValue` halves replaced (S1-N3 moves the aggregate
+    /// from `power` to `toughness`; everything else stays the card's own AST).
+    fn hawk_pump_with_pt(
+        base: &crate::types::ability::AbilityDefinition,
+        new_power: crate::types::ability::PtValue,
+        new_toughness: crate::types::ability::PtValue,
+    ) -> crate::types::ability::AbilityDefinition {
+        let mut out = base.clone();
+        let Effect::Pump {
+            power, toughness, ..
+        } = out.effect.as_mut()
+        else {
+            panic!("fixture: the Hawk def[0] execute body must be an `Effect::Pump`");
+        };
+        *power = new_power;
+        *toughness = new_toughness;
+        out
+    }
+
+    /// Block-(1b) fixture for S1: a P0 Saproling fodder member, a P0 ARTIFACT so the
+    /// `Typed{Artifact, You}` aggregate has a NON-EMPTY id population, and a P0 source
+    /// permanent carrying `exec` as an `Attacks` trigger's execute body.
+    ///
+    /// The artifact is not decoration. Without it the aggregate counts nothing on this
+    /// board, every member is trivially outside an EMPTY id set, and the positive arm would
+    /// pass while discriminating nothing — the VACUOUS-BY-FIXTURE shape. Its presence is
+    /// asserted as an id-membership control in each row that uses this fixture.
+    ///
+    /// Returns `(state, member, source_id, artifact)`.
+    fn pump_firewall_fixture(
+        exec: crate::types::ability::AbilityDefinition,
+    ) -> (GameState, ObjectId, ObjectId, ObjectId) {
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state); // ObjectId(800), P0 creature token
+        let source = ledger_observer_source(&mut state); // ObjectId(801), P0 permanent
+        let artifact = inert_token(&mut state, 802, 0, "Aggregate Bauble");
+        state
+            .objects
+            .get_mut(&artifact)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Artifact];
+
+        let def = TriggerDefinition::new(TriggerMode::Attacks).execute(exec);
+        // ── REACH-GUARDS on the fixture itself, before any row can assert an outcome ──
+        assert!(
+            crate::game::triggers::trigger_definition_functions_in_zone(&def, Zone::Battlefield),
+            "reach-guard: block (1b) zone-gates every def it walks, so a def that does not \
+             function on the battlefield is `continue`d before the consult and every row \
+             below would pass without reaching the arm"
+        );
+        let exec = def
+            .execute
+            .as_deref()
+            .expect("fixture: the def carries the execute body just installed");
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(exec),
+            "reach-guard: `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (ability_scan.rs:501) \
+             must make this body read the sibling axis — that veto is the whole subject of S1, \
+             and without it the consult's first conjunct is false and no row proves anything"
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .trigger_definitions
+            .push(def);
+        (state, member, source, artifact)
+    }
+
+    /// **S1-P1 / S1-N1 / S1-N2 / S1-N3** — the phase-C S1 arm
+    /// (`pump_aggregate_provably_excludes_class`) as the block-(1b) consult reaches it.
+    /// Every arm drives the production predicate `fire_time_conditions_read_growing_class`,
+    /// not the arm in isolation, so the sibling-disjunct WIRING is under test too.
+    ///
+    /// The fixture def is the REAL Pyreswipe Hawk `execute` body lifted from this lane's
+    /// target dump — not a paraphrase and not a hand-built `Pump`, either of which can take
+    /// a different internal arm than the card the relief exists for. Each negative changes
+    /// EXACTLY ONE field of that AST.
+    ///
+    /// REVERT / MUTATION PROBES, each named with the arm it flips:
+    /// * delete the `|| pump_aggregate_provably_excludes_class(..)` disjunct ⇒ **(i) FAILS**.
+    /// * widen the relief to "any aggregate" (drop conjunct (d)'s id-membership test, or
+    ///   accept any `filter`) ⇒ **(ii) FAILS**.
+    /// * delete the context-shape guard's `typed.properties.is_empty()` ⇒ **(iii) FAILS**.
+    /// * check only `power` and drop the `toughness` half ⇒ **(iv) FAILS**.
+    /// * drop conjunct (c)'s liveness test ⇒ **(v) FAILS**.
+    #[test]
+    fn pump_aggregate_gate_is_precise_and_fail_closed() {
+        use crate::types::ability::{PtValue, TypeFilter};
+
+        let dump = wba_dump_state();
+        let hawk = wba_hawk(&dump);
+        let execs = hawk_trigger_execs(&dump, &hawk);
+        let hawk_pump = execs
+            .first()
+            .expect("fixture: Hawk's first trigger carries the attack-pump execute body")
+            .clone();
+        let hawk_typed = hawk_aggregate_typed_filter(&hawk_pump);
+        assert_eq!(
+            hawk_typed.type_filters,
+            vec![TypeFilter::Artifact],
+            "fixture pin: Hawk's aggregate is over ARTIFACTS — the negatives below are built \
+             by changing one field of THIS filter, so a card-data change that moves it must \
+             fail here rather than silently re-point every row"
+        );
+
+        // ── (i) S1-P1 — the card's own def is RELIEVED ────────────────────────────────
+        let (state, member, source, artifact) = pump_firewall_fixture(hawk_pump.clone());
+        let source_obj = state.objects[&source].clone();
+        // Non-vacuity control: the aggregate's id population is NON-EMPTY on this board —
+        // the P0 artifact IS counted, so the relief below is about MEMBERSHIP and not about
+        // an unanswerable filter that counts nothing.
+        assert!(
+            !pump_aggregate_provably_excludes_class(&hawk_pump, &state, artifact, &source_obj),
+            "non-vacuity: the `Typed{{Artifact, You}}` aggregate DOES count the P0 artifact, so \
+             the id population is non-empty and (i)'s relief discriminates on membership"
+        );
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "S1-P1: a `Pump` whose aggregate counts only artifacts cannot count the growing \
+             Saproling class, so per CR 608.2h its value is invariant across the loop's growth \
+             and block (1b) must SKIP the def. Deleting the \
+             `|| pump_aggregate_provably_excludes_class(..)` disjunct restores the veto"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([artifact]))),
+            "matched control on the SAME def: a growing class of ARTIFACTS is counted by the \
+             very same aggregate, so the veto must survive — the relief is a property of the \
+             class, not of the def"
+        );
+
+        // ── (v) conjunct (c): a member absent from the scanned frame proves nothing ───
+        assert!(
+            !pump_aggregate_provably_excludes_class(
+                &hawk_pump,
+                &state,
+                ObjectId(9_999),
+                &source_obj
+            ),
+            "fail-closed: an id with no object in the scanned frame is trivially absent from \
+             ANY id population — relieving on it would be relief with no evidence"
+        );
+
+        // ── (ii) S1-N1 — same shape, `type_filters` is the ONLY difference ────────────
+        let n1 = hawk_pump_with_pt(
+            &hawk_pump,
+            hawk_power_with_filter(
+                &hawk_pump,
+                TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![TypeFilter::Creature],
+                    ..hawk_typed.clone()
+                }),
+            ),
+            PtValue::Fixed(0),
+        );
+        let (n1_state, n1_member, ..) = pump_firewall_fixture(n1);
+        assert!(
+            fire_time_conditions_read_growing_class(&n1_state, Some(&HashSet::from([n1_member]))),
+            "S1-N1: same `Effect::Pump`, same `PtValue::Quantity`, same `QuantityRef::Aggregate` \
+             — only `filter.type_filters` differs, and a `Typed{{Creature, You}}` aggregate DOES \
+             count the P0 Saproling member, so the def genuinely observes the loop and the veto \
+             must survive. Widening the relief to 'any aggregate' makes this FAIL"
+        );
+
+        // ── (iii) S1-N2 — the context-shape guard; `properties` is the ONLY difference ─
+        let n2 = hawk_pump_with_pt(
+            &hawk_pump,
+            hawk_power_with_filter(
+                &hawk_pump,
+                TargetFilter::Typed(TypedFilter {
+                    properties: vec![FilterProp::Another],
+                    ..hawk_typed.clone()
+                }),
+            ),
+            PtValue::Fixed(0),
+        );
+        let (n2_state, n2_member, ..) = pump_firewall_fixture(n2);
+        assert!(
+            fire_time_conditions_read_growing_class(&n2_state, Some(&HashSet::from([n2_member]))),
+            "S1-N2: the aggregate STILL cannot count a Saproling, so this row is not about the \
+             answer — it is about whether the firewall may ask the question at all. The firewall \
+             builds `FilterContext::from_source_with_controller`, which differs from the \
+             resolver's `from_ability_with_controller` in `ability` / `trigger_source` / \
+             `scoped_iteration_player` / `recipient_id`; a filter carrying ANY `FilterProp` may \
+             read them, so it must KEEP its veto. Deleting the `properties.is_empty()` guard \
+             makes this FAIL"
+        );
+
+        // ── (iv) S1-N3 — `toughness` carries the class-counting aggregate (R10) ───────
+        let n3 = hawk_pump_with_pt(
+            &hawk_pump,
+            PtValue::Fixed(1),
+            hawk_power_with_filter(
+                &hawk_pump,
+                TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![TypeFilter::Creature],
+                    ..hawk_typed.clone()
+                }),
+            ),
+        );
+        let (n3_state, n3_member, ..) = pump_firewall_fixture(n3);
+        assert!(
+            fire_time_conditions_read_growing_class(&n3_state, Some(&HashSet::from([n3_member]))),
+            "S1-N3: `Effect::Pump` carries TWO independent `PtValue`s and either can hold the \
+             aggregate. Here `power` is `Fixed(1)` (invariant) and `toughness` counts creatures, \
+             so the def observes the loop. Checking only `power` makes this FAIL"
+        );
+
+        // ── (vi) DELIBERATE WIDENING, pinned so it is not "fixed" back ────────────────
+        // S1's relief class is not "Hawk's aggregate"; it is "a pump whose BOTH halves are
+        // provably invariant", and `PtValue::Fixed` is invariant by construction. A fixed
+        // pump reads no game information at all, so vetoing it was pure scanner
+        // over-approximation (`Effect::Pump {{ .. }} => Axes::CONSERVATIVE` discards the
+        // payload). This row exists because relieving it BROKE a landed fixture that used
+        // `Pump{Fixed(0), Fixed(0)}` as a stand-in veto — the correct reading is that the
+        // fixture leaned on the over-approximation, not that S1 is too wide.
+        let fixed = hawk_pump_with_pt(&hawk_pump, PtValue::Fixed(2), PtValue::Fixed(2));
+        let (fixed_state, fixed_member, ..) = pump_firewall_fixture(fixed);
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &fixed_state,
+                Some(&HashSet::from([fixed_member]))
+            ),
+            "a `Pump` with two `PtValue::Fixed` halves reads NOTHING, so per CR 608.2h its \
+             value is trivially invariant across the loop's growth and block (1b) must skip \
+             it. If this row goes red because someone narrowed S1 to require an aggregate, \
+             the narrowing is keeping a veto that is provably unnecessary — re-argue it, do \
+             not delete this row"
+        );
+    }
+
+    /// **S1 on the REAL card, on this lane's real target dump** — the arm-level companion to
+    /// the firewall-level rows above. It answers a question the synthetic rows cannot: does
+    /// the arm match the AST the card actually carries in a committed 4-player dump?
+    ///
+    /// Whole-firewall assertions are deliberately NOT made here: at this commit blocks (2)
+    /// and (3) still veto on the WBA board (5 and 5 respectively, per the plan's P-11/P-6b),
+    /// so `fire_time_conditions_read_growing_class` returns `true` on this dump whatever S1
+    /// does. Pinning it would be a row that cannot fail. The block-(1b) surface is what C1
+    /// changes, so that is what this row measures.
+    ///
+    /// MEASURED at `e343ad2d0`: `ObjectId(298)`, Battlefield, controller `PlayerId(3)`, two
+    /// trigger definitions and `abilities: []`; def[0] `mode: Attacks`,
+    /// `Pump{power: Quantity(Ref{Aggregate{Max, ManaValue, Typed{["Artifact"], You, []}}}),
+    /// toughness: Fixed(0), target: SelfRef}`, `duration: UntilEndOfTurn`; the aggregate's id
+    /// population under the firewall context is exactly `[ObjectId(285)]`
+    /// (`Sicarian Infiltrator`, P3's artifact); seven P0 Saprolings on the battlefield.
+    #[test]
+    fn pump_aggregate_relieves_real_pyreswipe_hawk_on_wba_dump() {
+        let state = wba_dump_state();
+        let hawk = wba_hawk(&state);
+        assert_eq!(
+            (hawk.zone, hawk.controller),
+            (Zone::Battlefield, PlayerId(3)),
+            "fixture pin: Hawk is a battlefield permanent controlled by P3 — `ControllerRef::You` \
+             in its aggregate binds to THAT player, which is what makes the P0 fodder disjoint"
+        );
+        let execs = hawk_trigger_execs(&state, &hawk);
+        assert_eq!(
+            execs.len(),
+            2,
+            "fixture pin: Hawk carries two trigger definitions with execute bodies"
+        );
+
+        // ── REACH-GUARD: def[0] is a LIVE block-(1b) veto without S1 ──────────────────
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&execs[0]),
+            "reach-guard: the attack pump must be a live veto surface (blanket \
+             `Effect::Pump {{ .. }} => Axes::CONSERVATIVE`); if it were not, S1 would be relieving \
+             a def that never vetoed and this row would prove nothing"
+        );
+        // ── NON-VACUITY: the aggregate genuinely counts on this board ─────────────────
+        const P3_ARTIFACT: ObjectId = ObjectId(285); // Sicarian Infiltrator
+        assert_eq!(
+            state.objects[&P3_ARTIFACT].name, "Sicarian Infiltrator",
+            "fixture pin: the one artifact P3 controls, i.e. the aggregate's whole id population"
+        );
+        assert!(
+            !pump_aggregate_provably_excludes_class(&execs[0], &state, P3_ARTIFACT, &hawk),
+            "HOSTILE NEGATIVE on the field the relief reads (id membership): the artifact the \
+             aggregate DOES count keeps its veto. This is also the non-vacuity control — the id \
+             population is non-empty, so the relief below is not 'the filter counts nothing'"
+        );
+
+        // ── S1-P1 on the real fodder class: EVERY live P0 Saproling is excluded ───────
+        let saprolings: Vec<ObjectId> = state
+            .battlefield
+            .iter()
+            .copied()
+            .filter(|id| {
+                state.objects.get(id).is_some_and(|o| {
+                    o.name == "Saproling" && o.controller == PlayerId(0) && o.is_token
+                })
+            })
+            .collect();
+        assert_eq!(
+            saprolings.len(),
+            7,
+            "fixture pin: the dump carries seven P0 Saproling tokens — the real fodder class"
+        );
+        for member in saprolings {
+            assert!(
+                pump_aggregate_provably_excludes_class(&execs[0], &state, member, &hawk),
+                "S1-P1 (real card, real board): Hawk's attack pump aggregates mana value over \
+                 P3's ARTIFACTS, so per CR 608.2h its value cannot change as P0's Saproling \
+                 class grows and block (1b) must skip it. Failed on {member:?}"
+            );
+        }
+
+        // ── The other half of 'Hawk is cleared at block (1b)': def[1] never vetoed ────
+        assert!(
+            !crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(
+                &execs[1]
+            ),
+            "R1 / plan U-1, re-measured at this commit: Hawk's `GainControl` expend trigger does \
+             NOT read the sibling axis, so S1 alone clears this card at block (1b) and the \
+             dropped S1' arm stays unnecessary. If this flips, C1 no longer clears Hawk"
+        );
+    }
+
     /// K4-N3 + NW-2 — the CR 608.2i + CR 608.2j exclusion predicate, SEVEN arms, both polarities on
     /// every axis. Each `false` arm is paired with a `true` arm in the same row, so a
     /// constant implementation fails at least one.
@@ -13644,9 +14283,16 @@ mod tests {
         );
     }
 
-    /// FIREWALL block-(1) EMPTY-SET vacuity guard, TWO fixtures — one per gate (the
-    /// ETB-entry-matcher gate and the battlefield-entry-ledger gate), so a firing arm
-    /// is ATTRIBUTABLE to the gate it names.
+    /// FIREWALL block-(1) EMPTY-SET vacuity guard, THREE fixtures — one per relieving
+    /// surface (the ETB-entry-matcher gate, the battlefield-entry-ledger disjunct, and the
+    /// S1 pump-aggregate disjunct), so a firing arm is ATTRIBUTABLE to the surface it names.
+    ///
+    /// ARM 3 IS S1's U-8 ROW, and its honest scope is stated rather than overclaimed: S1 is
+    /// a SIBLING DISJUNCT inside the block-(1b) consult, so it introduces NO new
+    /// `!members.is_empty()` site — it shares arm 2's. Arm 3 therefore does not test a
+    /// different guard; it tests that guard on the surface S1 adds, which is the only way
+    /// the mutation can be observed through a `Pump` def at all (arm 2's ledger fixture
+    /// would keep vetoing if the pump arm alone were broken, and vice versa).
     ///
     /// WHY TWO FIXTURES (this supersedes a single-fixture design that could not attribute):
     /// both gates are probed by the same call shape, so on a fixture carrying BOTH an
@@ -13760,6 +14406,24 @@ mod tests {
             "control: a PROVEN one-member class lets the ledger gate exclude this \
              Artifact-filtered read"
         );
+        // FIXTURE 3 (S1, U-8): the REAL Pyreswipe Hawk attack pump on the block-(1b)
+        // fixture. `pump_firewall_fixture` carries its own reach-guards (zone-of-function
+        // and "this body really does read the sibling axis").
+        let dump = wba_dump_state();
+        let hawk = wba_hawk(&dump);
+        let hawk_pump = hawk_trigger_execs(&dump, &hawk)
+            .first()
+            .expect("fixture: Hawk's attack-pump execute body")
+            .clone();
+        let (pump_state, pump_member, ..) = pump_firewall_fixture(hawk_pump);
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &pump_state,
+                Some(&HashSet::from([pump_member]))
+            ),
+            "control: a PROVEN one-member class lets the S1 disjunct skip this pump, so the \
+             empty-set veto in arm 3 is attributable to `!members.is_empty()` and nothing else"
+        );
 
         // ── ARM 1 (B-2a) — block (1) ETB gate ─────────────────────────────────────────
         assert!(
@@ -13784,6 +14448,17 @@ mod tests {
              also cannot be skipped by the ETB gate — it carries no `valid_card`, which \
              `etb_observer_provably_excludes_class` requires — but that is a property of the \
              unmutated closure body, which an empty set short-circuits past.)"
+        );
+        // ── ARM 3 (U-8, S1) — block (1b) PUMP-AGGREGATE disjunct ──────────────────────
+        assert!(
+            fire_time_conditions_read_growing_class(&pump_state, Some(&HashSet::new())),
+            "BLOCK-(1b) PUMP DISJUNCT (S1's U-8 row): the same vacuity, observed through the \
+             surface S1 adds. Deleting `!members.is_empty() &&` from the block-(1b) consult \
+             makes the inner `all()` vacuously true for BOTH disjuncts, `is_some_and` true, \
+             which negates to `false` and relieves this `Effect::Pump` def with a class set \
+             that proves nothing. ATTRIBUTION rests on ARM ORDER (arms 1 and 2 fire first \
+             with their own messages), and on the fixture: a `Pump` body is refused by the \
+             LEDGER disjunct at its shape conjunct, so only the pump disjunct can relieve it"
         );
     }
 
