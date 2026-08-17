@@ -7673,4 +7673,61 @@ mod tests {
             "half (iii)'s own positive control: with no dispatch live the same direct call retires it"
         );
     }
+
+    /// CR 701.9a vs CR 701.21a: the two adjacent post-replacement drains in
+    /// `handle_choose_replacement` publish their completion DIFFERENTLY, and the
+    /// asymmetry is deliberate. The sacrifice drain stamps
+    /// `ThisWayCause::Sacrificed`; the discard drain immediately below stamps
+    /// nothing, because the UN-paused discard path does not stamp either
+    /// (`grep stamp_active_player_action_completion effects/discard.rs` → 0), so
+    /// a stamping resume would give a paused discard a provenance its own
+    /// un-paused twin never has.
+    ///
+    /// Nothing else pins this. A reader "fixing the inconsistency" between two
+    /// blocks twenty-five lines apart would silently change `Discarded`-this-way
+    /// provenance for the whole class.
+    ///
+    /// This is a SOURCE census rather than a behavioural assertion, and that is
+    /// a measured choice, not a shortcut: `stamp_active_player_action_completion`
+    /// early-returns unless an active ability continuation frame holds a
+    /// `CompletePlayerAction` chain, so in a drain unit test — which has no such
+    /// frame — adding the call would change no observable state. A behavioural
+    /// assertion there would be vacuous. The census is discriminating because it
+    /// carries its own positive control: half (a) proves the scan reaches a
+    /// region that DOES stamp, so half (b)'s zero cannot be a scan that missed.
+    ///
+    /// REVERT PROBES:
+    ///   * add a `stamp_active_player_action_completion(… ThisWayCause::Discarded …)`
+    ///     call to the discard `Completed` arm → half (b) fails.
+    ///   * delete the sacrifice arm's existing stamp → half (a) fails, proving
+    ///     the slicing is anchored on real code and not on absent text.
+    #[test]
+    fn the_resumed_discard_drain_does_not_stamp_a_completion_while_its_sacrifice_sibling_does() {
+        let source = include_str!("engine_replacement.rs");
+        let needle = concat!("stamp_active_player_action_", "completion(");
+
+        let sacrifice_arm = source
+            .split_once("PendingPlayerScopeSacrificeOutcome::Completed {")
+            .expect("the sacrifice drain's Completed arm exists")
+            .1;
+        let sacrifice_arm = &sacrifice_arm[..sacrifice_arm
+            .find("PendingDiscardBatchOutcome::Idle")
+            .expect("the discard drain follows the sacrifice drain in this function")];
+        assert!(
+            sacrifice_arm.contains(needle),
+            "(a) positive control: the sacrifice arm must stamp, or this scan is              reading the wrong region and (b)'s zero would mean nothing"
+        );
+
+        let discard_arm = source
+            .split_once("PendingDiscardBatchOutcome::Completed =>")
+            .expect("the discard drain's Completed arm exists")
+            .1;
+        let discard_arm = &discard_arm[..discard_arm
+            .find("drain_pending_continuation")
+            .expect("the discard arm runs the parked continuation")];
+        assert!(
+            !discard_arm.contains(needle),
+            "(b) the resumed discard must publish exactly what the un-paused              discard publishes — no CompletePlayerAction stamp"
+        );
+    }
 }

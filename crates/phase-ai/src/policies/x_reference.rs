@@ -443,8 +443,17 @@ mod tests {
             body.contains("chain-derived"),
             "the rationale for treating both channels alike must survive the strike"
         );
+        // Matched on the ANNOTATION FORM, not on one punctuation variant: an
+        // earlier revision asserted only on `"CR 120.10:"`, which a re-added
+        // `// CR 120.10 both channels …` (no colon) would have slipped past —
+        // while the surrounding window deliberately contains the prose "The
+        // former CR 120.10 tag is STRUCK", so a bare substring test cannot be
+        // used either. Any comment line whose first token after `//` is the
+        // citation is a restored annotation.
         assert!(
-            !body.contains("CR 120.10:"),
+            !body
+                .lines()
+                .any(|line| line.trim_start().starts_with("// CR 120.10")),
             "an AI scoring heuristic implements no game rule, so it carries no CR annotation"
         );
     }

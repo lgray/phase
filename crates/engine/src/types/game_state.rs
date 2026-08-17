@@ -4062,6 +4062,20 @@ pub enum PendingPlayerScopeSacrificeFollowUp {
 /// that type first — every mechanism here is its, with the two deliberate
 /// divergences noted on `preceding_events` and in `drain_pending_discard_batch`.
 ///
+/// SCOPE OF THE CR 616.1 CITATIONS HERE, stated because a reader who looks the
+/// rule up will otherwise find it describing a case the fixtures never hit.
+/// CR 616.1 governs the two-or-more-applicable case: "If **two or more**
+/// replacement and/or prevention effects are attempting to modify the way an
+/// event affects an object or player, the affected object's controller … or
+/// the affected player chooses one to apply." The engine ALSO surfaces a
+/// `ReplacementChoice` prompt for a *single* `ReplacementMode::Optional`
+/// replacement — apply-or-decline — which 616.1 does not describe. Every pause
+/// this type carries is of that second kind in practice (the Library of Leng
+/// arm's seven prompts all come from one optional replacement). 616.1 is cited
+/// throughout for the choice MECHANISM and its APNAP ordering, which both kinds
+/// share; CR 614.6 is what says a replaced event never happens and a modified
+/// one happens instead.
+///
 /// PERSISTENCE ASYMMETRY, stated because it will otherwise mis-triage a bug
 /// report: this field IS serialized, while `GameState::clause_minimum_snapshot`
 /// — the CR 608.2h freeze the resumed draw clause reads — is `#[serde(skip)]`.
@@ -25777,6 +25791,25 @@ mod tests {
     /// the `expect` below — which is also why `default` must NOT be sold as
     /// insurance for that change. On a non-`Option` field it would fabricate a
     /// `Default` for a missing key instead of failing loudly.
+    /// The state-machine half is pinned against a save taken GENUINELY
+    /// mid-pause. An earlier revision built this fixture at
+    /// `GameState::new_two_player`, whose `waiting_for` is already `Priority`,
+    /// and then asserted `Priority` after the round trip — restating an input
+    /// property, so it could not fail for the reason its message named. The
+    /// prompt below is therefore installed before serializing, which is the
+    /// only shape in which "the batch is missing but the prompt says paused"
+    /// can arise at all.
+    ///
+    /// REVERT PROBES:
+    ///   * change `waiting_for` back to the default `Priority` before
+    ///     serializing → the `ReplacementChoice` assertion below stops
+    ///     discriminating (it passes for the wrong reason); the `matches!` on
+    ///     the restored prompt fails outright, which is what makes the
+    ///     mid-pause input load-bearing rather than decorative.
+    ///   * add a load-time "repair" that resets `waiting_for` to `Priority`
+    ///     when `pending_discard_batch` is absent → the same assertion fails.
+    ///     That repair would be WRONG: it silently discards a real prompt and
+    ///     converts a detectable inconsistency into a plausible-looking state.
     #[test]
     fn absent_pending_discard_batch_deserializes_as_none() {
         let mut state = GameState::new_two_player(42);
@@ -25784,6 +25817,17 @@ mod tests {
         let record = persisted_zone_change_record(ObjectId(9_101), 19, 0);
         state.zone_changes_this_turn.push_back(record.clone());
         state.pending_discard_batch = Some(parked_discard_batch(record));
+        // CR 616.1: the prompt a parked batch is waiting on. Without it the
+        // save is not mid-pause and this test measures nothing.
+        state.waiting_for = WaitingFor::ReplacementChoice {
+            player: PlayerId(0),
+            candidate_count: 2,
+            candidates: Vec::new(),
+        };
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::Priority { .. }),
+            "reach guard: the INPUT must not already satisfy the property under test"
+        );
 
         let mut wire = serde_json::to_value(&state).expect("fixture serializes");
         assert!(
@@ -25798,8 +25842,13 @@ mod tests {
             serde_json::from_value(wire).expect("an absent parked batch defaults to None");
         assert!(restored.pending_discard_batch.is_none());
         assert!(
-            matches!(restored.waiting_for, WaitingFor::Priority { .. }),
-            "the restored state machine is intact, not orphaned mid-pause"
+            matches!(
+                restored.waiting_for,
+                WaitingFor::ReplacementChoice { player, .. } if player == PlayerId(0)
+            ),
+            "a batch-less mid-pause save must round-trip its prompt VERBATIM, so the \
+             inconsistency stays observable to a caller instead of being silently \
+             rewritten into a plausible-looking state"
         );
     }
 
