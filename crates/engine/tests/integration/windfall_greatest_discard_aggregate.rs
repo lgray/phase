@@ -21,10 +21,17 @@
 //! set to a cross-player SUM, Windfall drew 8+7+3+3 = 21 for every player
 //! instead of the greatest single player's 8.
 
-use engine::game::scenario::{GameScenario, Outcome, P0, P1};
+use engine::game::scenario::{GameRunner, GameScenario, Outcome, P0, P1};
+use engine::types::ability::{
+    AbilityDefinition, AbilityKind, Effect, ReplacementDefinition, ReplacementMode, TargetFilter,
+};
+use engine::types::actions::GameAction;
+use engine::types::game_state::WaitingFor;
+use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaCost;
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
+use engine::types::replacements::ReplacementEvent;
 use engine::types::zones::Zone;
 
 const WINDFALL: &str = "Each player discards their hand, then draws cards equal to the greatest number of cards a player discarded this way.";
@@ -403,5 +410,295 @@ fn windfall_short_library_does_not_shrink_later_players_draws() {
         drawn,
         vec![5, 8, 8, 8],
         "P0's short library caps only P0; every later player still draws the greatest discard (8)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The CR 616.1 pause arms. A replacement choice interrupts the discard fan-out
+// mid-batch; the clause must still publish ONE complete per-player table.
+// ---------------------------------------------------------------------------
+
+/// Library of Leng, verbatim Scryfall (re-fetched 2026-08-16 via
+/// `curl -s 'https://api.scryfall.com/cards/named?exact=Library%20of%20Leng' | jq -r .oracle_text`).
+///
+/// Line 2 parses to a `ReplacementEvent::Discard` definition in
+/// `ReplacementMode::Optional` with `valid_card: Typed { controller: You }`
+/// (`parser/oracle_replacement.rs`'s `parse_discard_to_library_top_replacement`),
+/// so the engine raises an Accept/Decline prompt for its controller's discards
+/// and for nobody else's. That is what makes this fixture's pause count
+/// predictable: exactly one prompt per card P0 discards.
+const LIBRARY_OF_LENG: &str = "You have no maximum hand size.\nIf an effect causes you to discard a card, discard it, but you may put it on top of your library instead of into your graveyard.";
+
+/// Hands beside Windfall. The MAXIMUM sits on P0 — the seat whose batch pauses —
+/// so the aggregate is only correct if that seat is present AND complete in the
+/// published table. Reference values over `{P0:7, P1:3, P2:5, P3:2}`:
+/// MAX 7, MAX-without-P0 5, MAX-with-P0's-paused-card-uncounted 6, last-seat 2.
+/// Four mutually distinct numbers, one per failure mode.
+const PAUSED_HANDS: [usize; 4] = [7, 3, 5, 2];
+
+fn seed_hand_ids(scenario: &mut GameScenario, player: PlayerId, n: usize) -> Vec<ObjectId> {
+    (0..n)
+        .map(|i| scenario.add_card_to_hand(player, &format!("Hand Filler {player:?} {i}")))
+        .collect()
+}
+
+fn state_zone_len(runner: &GameRunner, player: PlayerId, zone: Zone) -> usize {
+    let p = runner
+        .state()
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .expect("player exists");
+    match zone {
+        Zone::Hand => p.hand.len(),
+        Zone::Library => p.library.len(),
+        Zone::Graveyard => p.graveyard.len(),
+        other => panic!("state_zone_len does not cover {other:?}"),
+    }
+}
+
+/// Answer every `ReplacementChoice` the board raises with the named option,
+/// returning how many were answered. The count is the reach guard for every
+/// assertion below: a run that raised no prompt never exercised the pause path
+/// at all, and would pass a bare zone-count check for the wrong reason.
+fn answer_every_replacement_choice(runner: &mut GameRunner, description: &str) -> usize {
+    for (prompts, _) in (0..64).enumerate() {
+        let WaitingFor::ReplacementChoice { candidates, .. } = runner.state().waiting_for.clone()
+        else {
+            return prompts;
+        };
+        let index = candidates
+            .iter()
+            .position(|c| c.description == description)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no {description:?} option among {:?}",
+                    candidates
+                        .iter()
+                        .map(|c| c.description.clone())
+                        .collect::<Vec<_>>()
+                )
+            });
+        runner
+            .act(GameAction::ChooseReplacement { index })
+            .expect("ChooseReplacement must be accepted");
+    }
+    panic!("the replacement-choice loop never terminated");
+}
+
+/// Every observable of the paused clause, asserted as ONE value so a failure
+/// prints the whole signature rather than the first divergent field.
+#[derive(Debug, PartialEq, Eq)]
+struct PausedFanOutSignature {
+    prompts: usize,
+    graveyards: Vec<usize>,
+    drawn: Vec<usize>,
+    hands: Vec<usize>,
+}
+
+/// Rest in Peace class, made OPTIONAL so it surfaces an Accept/Decline choice.
+/// Copied in shape from `random_discard_cost_replacement_resume.rs`'s
+/// `optional_graveyard_exile_replacement`; narrowed per call site with
+/// `valid_card`.
+fn optional_graveyard_exile_replacement() -> ReplacementDefinition {
+    ReplacementDefinition::new(ReplacementEvent::Moved)
+        .destination_zone(Zone::Graveyard)
+        .mode(ReplacementMode::Optional { decline: None })
+        .execute(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::ChangeZone {
+                origin: None,
+                destination: Zone::Exile,
+                target: TargetFilter::SelfRef,
+                owner_library: false,
+                enter_transformed: false,
+                enters_under: None,
+                enter_tapped: engine::types::zones::EtbTapState::Unspecified,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
+                enters_modified_if: None,
+                face_down_profile: None,
+            },
+        ))
+}
+
+/// ARM A — gate 1 (`ReplacementEvent::Discard`, Library of Leng), the fan-out
+/// discriminator.
+///
+/// CR 616.1: P0 controls an optional discard replacement, so every one of P0's
+/// seven discards raises a choice. CR 608.2f: the discard action is taken on
+/// four players and cannot be processed simultaneously once it pauses, so it is
+/// processed per player — but it is still ONE action, and the look-back
+/// (CR 608.2i) that feeds the draw clause must see every seat's contribution.
+///
+/// Discriminating: with `{P0:7, P1:3, P2:5, P3:2}` the correct MAX is 7, and 7
+/// is unreachable under every partial-table failure mode — a table missing P0
+/// yields 5, a table holding only the last resumed leg yields 2, and a table
+/// where P0's paused card went uncounted yields 6.
+///
+/// Reach guards, both inside the asserted signature: `prompts == 7` proves the
+/// pause path really ran seven times (a zero-prompt run would trivially satisfy
+/// a graveyard check), and `graveyards == [8, 3, 5, 2]` proves all four seats
+/// discarded their whole hands. P0's 8 is seven discards PLUS Windfall itself:
+/// CR 608.2n — "As the final part of an instant or sorcery spell's resolution,
+/// the spell is put into its owner's graveyard." That is the same reason the
+/// first test in this file asserts `>= 8` rather than `== 8`.
+#[test]
+fn windfall_paused_mid_fan_out_still_draws_the_greatest() {
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    for (seat, hand) in SEATS.iter().zip(PAUSED_HANDS) {
+        seed_hand_ids(&mut scenario, *seat, hand);
+        seed_library(&mut scenario, *seat, LIBRARY_DEPTH);
+    }
+    let leng = scenario
+        .add_creature_from_oracle(P0, "Library of Leng", 1, 1, LIBRARY_OF_LENG)
+        .as_artifact()
+        .id();
+    let windfall = scenario
+        .add_spell_to_hand_from_oracle(P0, "Windfall", false, WINDFALL)
+        .with_mana_cost(ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+
+    // Fixture self-checks — the prop must be what the derivation assumes.
+    assert_eq!(
+        format!("{:?}", runner.state().objects[&leng].card_types.core_types),
+        "[Artifact]",
+        "the Leng prop must be an artifact, not a creature"
+    );
+    assert_eq!(
+        runner.state().objects[&leng].replacement_definitions.len(),
+        1,
+        "Library of Leng's second line must parse to exactly one replacement"
+    );
+
+    // The cast driver stops at the first ReplacementChoice it is not told how
+    // to answer; from there this test drives the prompts itself so it can count
+    // them.
+    runner.cast(windfall).resolve();
+    let prompts = answer_every_replacement_choice(&mut runner, "Decline");
+    runner.advance_until_stack_empty();
+
+    let observed = PausedFanOutSignature {
+        prompts,
+        graveyards: SEATS
+            .iter()
+            .map(|p| state_zone_len(&runner, *p, Zone::Graveyard))
+            .collect(),
+        drawn: SEATS
+            .iter()
+            .map(|p| LIBRARY_DEPTH - state_zone_len(&runner, *p, Zone::Library))
+            .collect(),
+        hands: SEATS
+            .iter()
+            .map(|p| state_zone_len(&runner, *p, Zone::Hand))
+            .collect(),
+    };
+
+    assert_eq!(
+        observed,
+        PausedFanOutSignature {
+            prompts: 7,
+            graveyards: vec![8, 3, 5, 2],
+            drawn: vec![7, 7, 7, 7],
+            hands: vec![7, 7, 7, 7],
+        },
+        "a CR 616.1 pause must not truncate the batch (prompts/graveyards) nor split \
+         the clause's per-player table (drawn/hands)"
+    );
+}
+
+/// Every observable of the gate-2 arm, asserted as ONE value.
+#[derive(Debug, PartialEq, Eq)]
+struct GateTwoSignature {
+    prompts: usize,
+    p0_graveyard: usize,
+    redirected_card_zone: Zone,
+    exiled_total: usize,
+    drawn: Vec<usize>,
+}
+
+/// ARM B — gate 2 (`ReplacementEvent::Moved` on the inner hand → graveyard
+/// move), the discriminator for the paused card's OWN count.
+///
+/// CR 614.6: a replaced event never happens; the modified event happens
+/// instead — the card is still discarded (CR 701.9a) and must still be counted.
+/// The gate-2 resume returns through terminal zone delivery, which emits no
+/// `GameEvent::Discarded` for an unframed discard, so the paused card is the one
+/// card that can silently vanish from the table even after the batch resumes.
+///
+/// Discriminating: exactly one card in the game can prompt (`valid_card` is a
+/// `SpecificObject`), the redirect is ACCEPTED, and P0's counted discards are 7
+/// while P0's graveyard tops out at 7 (six discards + Windfall) because the
+/// seventh went to exile. If the paused card is uncounted the aggregate is 6,
+/// not 7 — the only arm in this file that separates that facet from the batch
+/// truncation arm above.
+///
+/// Reach guards, inside the asserted signature: `prompts == 1` proves the pause
+/// happened, and `redirected_card_zone == Exile` / `exiled_total == 1` prove the
+/// redirect was actually applied (on a board where it silently did not apply,
+/// the card would be in the graveyard and the count would be right for the
+/// wrong reason).
+#[test]
+fn windfall_counts_a_card_redirected_out_of_the_graveyard_mid_batch() {
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let mut p0_hand = Vec::new();
+    for (seat, hand) in SEATS.iter().zip(PAUSED_HANDS) {
+        let ids = seed_hand_ids(&mut scenario, *seat, hand);
+        if *seat == P0 {
+            p0_hand = ids;
+        }
+        seed_library(&mut scenario, *seat, LIBRARY_DEPTH);
+    }
+    let redirected = p0_hand[3];
+    // Hosted on P1 so it cannot be confused with the discarding seat's own
+    // permanents; narrowed to a single card so the prompt count is exactly 1.
+    scenario
+        .add_creature(P1, "Graveyard Warden", 1, 1)
+        .with_replacement_definition(
+            optional_graveyard_exile_replacement()
+                .valid_card(TargetFilter::SpecificObject { id: redirected }),
+        );
+    let windfall = scenario
+        .add_spell_to_hand_from_oracle(P0, "Windfall", false, WINDFALL)
+        .with_mana_cost(ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+
+    runner.cast(windfall).resolve();
+    let prompts = answer_every_replacement_choice(&mut runner, "Accept");
+    runner.advance_until_stack_empty();
+
+    let observed = GateTwoSignature {
+        prompts,
+        p0_graveyard: state_zone_len(&runner, P0, Zone::Graveyard),
+        redirected_card_zone: runner.state().objects[&redirected].zone,
+        exiled_total: runner
+            .state()
+            .objects
+            .values()
+            .filter(|o| o.zone == Zone::Exile)
+            .count(),
+        drawn: SEATS
+            .iter()
+            .map(|p| LIBRARY_DEPTH - state_zone_len(&runner, *p, Zone::Library))
+            .collect(),
+    };
+
+    assert_eq!(
+        observed,
+        GateTwoSignature {
+            prompts: 1,
+            p0_graveyard: 7,
+            redirected_card_zone: Zone::Exile,
+            exiled_total: 1,
+            drawn: vec![7, 7, 7, 7],
+        },
+        "a card redirected out of the graveyard mid-batch was still discarded \
+         (CR 614.6 + CR 701.9a) and must still be counted"
     );
 }
