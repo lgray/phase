@@ -4108,7 +4108,15 @@ pub struct PendingDiscardBatch {
     /// `GameEvent::Discarded` for an unframed discard, so the drain stamps one
     /// from this id. Without it the paused card is the one card that silently
     /// leaves the ledger even though the batch resumed correctly.
-    pub paused_card: ObjectId,
+    ///
+    /// CR 400.7: pinned as an incarnation reference, not a bare `ObjectId`. The
+    /// pause parks the pre-move occurrence; the departure that settles it is
+    /// that same occurrence leaving the hand. A later same-`ObjectId` occurrence
+    /// (the card returned to hand and left again) is a different object and must
+    /// not be able to satisfy this pause — see
+    /// `stamp_resumed_discard_if_unrecorded`, which matches the departing
+    /// occurrence carried on the zone-change record rather than the id alone.
+    pub paused_card: ObjectIncarnationRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discard_frame: Option<crate::types::identifiers::DiscardFrameId>,
     /// CR 608.2f: the clause and the seats it has not reached, installed by the
@@ -25781,7 +25789,7 @@ mod tests {
             },
             source_id: ObjectId(9_300),
             effect_kind: crate::types::ability::EffectKind::Discard,
-            paused_card: ObjectId(9_303),
+            paused_card: ObjectIncarnationRef::of(ObjectId(9_303), 0),
             discard_frame: None,
             fan_out: None,
             preceding_events: vec![persisted_zone_change_event(record)],

@@ -11,7 +11,7 @@ use crate::types::ability::{
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
-use crate::types::identifiers::ObjectId;
+use crate::types::identifiers::{ObjectId, ObjectIncarnationRef, LEGACY_INCARNATION};
 use crate::types::player::PlayerId;
 use crate::types::proposed_event::{AppliedReplacementKey, ProposedEvent};
 use crate::types::zones::Zone;
@@ -177,7 +177,7 @@ fn park_discard_batch(
     cursor: crate::types::game_state::DiscardBatchCursor,
     source_id: ObjectId,
     effect_kind: EffectKind,
-    paused_card: ObjectId,
+    paused_card: ObjectIncarnationRef,
     discard_frame: Option<crate::types::identifiers::DiscardFrameId>,
     preceding_events: Vec<GameEvent>,
 ) {
@@ -193,6 +193,25 @@ fn park_discard_batch(
         fan_out: None,
         preceding_events,
     }));
+}
+
+/// CR 400.7: pin the occurrence a replacement pause parked, while the card is
+/// still in its pre-move zone.
+///
+/// A pause is only ever raised for a live hand card, so the lookup cannot
+/// legitimately miss. The fallback pins `LEGACY_INCARNATION`, which no live
+/// object can carry — the resume match then fails closed instead of letting a
+/// bare `ObjectId` settle the pause against whichever occurrence happens to be
+/// leaving the hand.
+pub(crate) fn pin_paused_occurrence(
+    state: &GameState,
+    object_id: ObjectId,
+) -> ObjectIncarnationRef {
+    state
+        .objects
+        .get(&object_id)
+        .map(ObjectIncarnationRef::from_object)
+        .unwrap_or_else(|| ObjectIncarnationRef::of(object_id, LEGACY_INCARNATION))
 }
 
 /// CR 701.9a: To discard a card, move it from owner's hand to their graveyard.
@@ -586,7 +605,8 @@ pub fn resolve(
                         },
                         ability.source_id,
                         EffectKind::from(&ability.effect),
-                        *obj_id,
+                        // CR 400.7: the pause parks the pre-move occurrence.
+                        pin_paused_occurrence(state, *obj_id),
                         discard_frame,
                         events[events_before_self..].to_vec(),
                     );
@@ -724,7 +744,11 @@ pub(crate) enum RandomDiscardOutcome {
         /// card was still discarded and the effect layer's drain needs its
         /// identity to stamp the terminal `Discarded` the resumed zone-change
         /// arm cannot emit. The cost layer does not consume it.
-        paused_card: ObjectId,
+        ///
+        /// CR 400.7: the PRE-move occurrence, captured while the card is still
+        /// in hand. The drain settles the pause against this exact occurrence
+        /// leaving the hand, so a later same-id occurrence cannot claim it.
+        paused_card: ObjectIncarnationRef,
         /// The replacement pipeline's selected chooser. Published by this
         /// authority rather than re-derived at the call site, because it is NOT
         /// always the discarding player — see the commander carve-out in
@@ -820,7 +844,9 @@ pub(crate) fn discard_at_random(
                 // The paused pick is settled by the replacement itself, so the
                 // resumed batch owes only the picks after it.
                 remaining_count: count - pick - 1,
-                paused_card: obj_id,
+                // CR 400.7: pinned before the redirect moves it, so the resume
+                // settles against this occurrence and not a later same-id one.
+                paused_card: pin_paused_occurrence(state, obj_id),
                 // Same value this function just set `waiting_for` from, so a
                 // re-parking caller cannot drift from the prompt actually shown.
                 chooser,
@@ -1232,8 +1258,20 @@ mod random_discard_authority_tests {
         // The cursor's two halves must agree on WHICH card paused: the reported
         // paused card is the one missing from the un-picked pool.
         assert!(
-            hand.contains(&paused_card) && !remaining_eligible.contains(&paused_card),
+            hand.contains(&paused_card.object_id)
+                && !remaining_eligible.contains(&paused_card.object_id),
             "the paused card must be a hand card that left the un-picked pool"
+        );
+        // CR 400.7: the pin is the PRE-move occurrence, so it must still name
+        // the live hand card. A pin taken after the redirect would carry the
+        // bumped incarnation and never match the departure it is meant to settle.
+        assert_eq!(
+            Some(paused_card),
+            state
+                .objects
+                .get(&paused_card.object_id)
+                .map(ObjectIncarnationRef::from_object),
+            "the parked pin must equal the live pre-move occurrence"
         );
         // CR 616.1: the published chooser must be the seat this authority
         // actually prompted. A re-parking caller reads `chooser` to rebuild the

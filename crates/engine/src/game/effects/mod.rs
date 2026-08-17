@@ -9486,7 +9486,10 @@ pub(crate) fn drain_pending_discard_batch(
                     batch.cursor = DiscardBatchCursor::All {
                         remaining: remaining[i + 1..].to_vec(),
                     };
-                    batch.paused_card = *obj_id;
+                    // CR 400.7: pin the pre-move occurrence, matching the park
+                    // the `Random` arm below already receives from
+                    // `discard_at_random`.
+                    batch.paused_card = discard::pin_paused_occurrence(state, *obj_id);
                     repark_discard_batch(state, batch, events, chooser);
                     return Ok(PendingDiscardBatchOutcome::PausedForReplacement);
                 }
@@ -9681,7 +9684,8 @@ fn stamp_resumed_discard_if_unrecorded(
     batch: &crate::types::game_state::PendingDiscardBatch,
     events: &mut Vec<GameEvent>,
 ) {
-    let card = batch.paused_card;
+    let paused = batch.paused_card;
+    let card = paused.object_id;
     let already_recorded = events.iter().any(|event| {
         matches!(
             event,
@@ -9691,14 +9695,31 @@ fn stamp_resumed_discard_if_unrecorded(
     if already_recorded {
         return;
     }
+    // CR 400.7: "An object that moves from one zone to another becomes a new
+    // object with no memory of, or relation to, its previous existence." The
+    // departure that settles this pause is the parked occurrence leaving the
+    // hand — not any hand departure that happens to reuse the `ObjectId`. A
+    // same-id round trip (the card returns to hand and leaves again) produces a
+    // later occurrence, and stamping this batch's `Discarded` from it would
+    // credit the discard to an object the pause never parked.
+    //
+    // The departing occurrence is already on the wire: every production record
+    // is built by `GameObject::snapshot_for_zone_change` BEFORE the incarnation
+    // bump, so `trigger_source_context.identity` is exactly the pre-move
+    // occurrence and its `expected_zone` is the zone it left. A record without
+    // that context is legacy/hand-built; it fails closed here rather than
+    // falling back to the id, which is the same policy the record's own doc
+    // states ("Callers must not reconstruct a source from a current object").
     let left_hand = events.iter().any(|event| {
         matches!(
             event,
             GameEvent::ZoneChanged {
-                object_id,
                 from: Some(crate::types::zones::Zone::Hand),
+                record,
                 ..
-            } if *object_id == card
+            } if record
+                .trigger_source_context()
+                .is_some_and(|context| context.identity.reference == paused)
         )
     });
     if !left_hand {
@@ -19505,7 +19526,10 @@ mod tests {
                 cursor: DiscardBatchCursor::All { remaining },
                 source_id,
                 effect_kind: EffectKind::Discard,
-                paused_card: ObjectId(9_999_999),
+                paused_card: crate::types::identifiers::ObjectIncarnationRef::of(
+                    ObjectId(9_999_999),
+                    0,
+                ),
                 discard_frame: None,
                 fan_out,
                 preceding_events: Vec::new(),
@@ -19595,6 +19619,123 @@ mod tests {
             state.last_effect_count,
             Some(3),
             "the published count spans the pause: 1 pre-pause discard + 2 owed"
+        );
+    }
+
+    /// Drive one `ObjectId` through hand → graveyard → hand → graveyard with the
+    /// production zone authority, returning the live occurrence pinned before
+    /// each hand departure together with that departure's real `ZoneChanged`.
+    ///
+    /// Both records are produced by `GameObject::snapshot_for_zone_change`, so
+    /// the identity under test is the one production writes, not a hand-built
+    /// stand-in. The batch itself is still parked directly because no card in
+    /// the corpus returns a card to hand mid-instruction — see the PR notes.
+    fn hand_departures_across_a_round_trip(
+        state: &mut GameState,
+        card: ObjectId,
+    ) -> [(crate::types::identifiers::ObjectIncarnationRef, GameEvent); 2] {
+        let mut departures = Vec::new();
+        for to in [Zone::Graveyard, Zone::Hand, Zone::Graveyard] {
+            let before =
+                crate::types::identifiers::ObjectIncarnationRef::from_object(&state.objects[&card]);
+            let from_hand = state.objects[&card].zone == Zone::Hand;
+            let mut moved = Vec::new();
+            crate::game::zones::move_to_zone(state, card, to, &mut moved);
+            if from_hand {
+                let event = moved
+                    .into_iter()
+                    .find(|event| {
+                        matches!(
+                            event,
+                            GameEvent::ZoneChanged { object_id, from: Some(Zone::Hand), .. }
+                                if *object_id == card
+                        )
+                    })
+                    .expect("a hand departure emits its ZoneChanged");
+                departures.push((before, event));
+            }
+        }
+        let [first, second]: [_; 2] = departures
+            .try_into()
+            .unwrap_or_else(|_| panic!("the round trip makes exactly two hand departures"));
+        assert_ne!(
+            first.0.incarnation, second.0.incarnation,
+            "reach guard: the round trip must really advance the incarnation, \
+             otherwise the two arms below are the same test twice"
+        );
+        [first, second]
+    }
+
+    /// CR 400.7: "An object that moves from one zone to another becomes a new
+    /// object with no memory of, or relation to, its previous existence."
+    ///
+    /// The parked batch pins the occurrence whose replacement paused. After a
+    /// same-`ObjectId` round trip, a LATER occurrence's hand departure must not
+    /// settle that pause — stamping it would credit the parked discard to an
+    /// object the batch never parked. The matched positive arm proves the pin
+    /// still accepts its own departure, so the negative arm is a discriminator
+    /// and not a blanket refusal to stamp.
+    ///
+    /// REVERT PROBE (RUN, not reasoned): restore the bare-id predicate in
+    /// `stamp_resumed_discard_if_unrecorded` —
+    /// `GameEvent::ZoneChanged { object_id, from: Some(Zone::Hand), .. } if
+    /// *object_id == card`. Observed failure — "a later incarnation's hand
+    /// departure must not settle this pause / left: 1 / right: 0". The positive
+    /// arm keeps passing under the revert, which is what makes the negative arm
+    /// the discriminating one.
+    #[test]
+    fn resumed_discard_stamp_rejects_a_later_incarnation_of_the_paused_card() {
+        let stamped_discards = |state: &mut GameState,
+                                card: ObjectId,
+                                pin: crate::types::identifiers::ObjectIncarnationRef,
+                                departure: GameEvent| {
+            let source = ObjectId(100);
+            park_batch(state, source, PlayerId(0), Vec::new(), None);
+            state.pending_discard_batch.as_mut().unwrap().paused_card = pin;
+            let mut events = vec![departure];
+            drain_pending_discard_batch(state, &mut events).unwrap();
+            events
+                .iter()
+                .filter(|event| {
+                    matches!(event, GameEvent::Discarded { object_id, .. } if *object_id == card)
+                })
+                .count()
+        };
+
+        let mut state = GameState::new_two_player(42);
+        let card = create_object(
+            &mut state,
+            CardId(4_000),
+            PlayerId(0),
+            "Round Tripper".to_string(),
+            Zone::Hand,
+        );
+        let [(first_pin, first_departure), (later_pin, later_departure)] =
+            hand_departures_across_a_round_trip(&mut state, card);
+
+        // Negative arm: the pause parked the FIRST occurrence; the resume window
+        // carries only the LATER occurrence's departure.
+        assert_eq!(
+            stamped_discards(&mut state, card, first_pin, later_departure),
+            0,
+            "a later incarnation's hand departure must not settle this pause"
+        );
+
+        // Positive arm: the same pin, offered its own departure, still stamps.
+        assert_eq!(
+            stamped_discards(&mut state, card, first_pin, first_departure.clone()),
+            1,
+            "the parked occurrence's own departure must still stamp exactly one \
+             Discarded, or the negative arm above proves nothing"
+        );
+
+        // The later pin is equally bound: it accepts its own departure and not
+        // the earlier one, so the predicate is an equality on the occurrence
+        // rather than an ordering test.
+        assert_eq!(
+            stamped_discards(&mut state, card, later_pin, first_departure),
+            0,
+            "an earlier incarnation's departure must not settle a later pause"
         );
     }
 
