@@ -19301,8 +19301,12 @@ mod stage2_injector_tests {
                 // all MATCH). The round's other edits are the two new `#[cfg(test)]`
                 // tests, which are below all three and mint no prompt, so the `in_test`
                 // total is unchanged.
-                "game/effects/mod.rs:7319".to_string(),
-                "game/effects/mod.rs:7396".to_string(),
+                // #7496's parked Cipher frame extends the exhaustive resume dispatch above
+                // all three producers. It adds six lines without assigning an optional-effect
+                // prompt, so the measured production producers move uniformly by `+6`.
+                "game/effects/mod.rs:7267".to_string(),
+                "game/effects/mod.rs:7344".to_string(),
+                "game/effects/mod.rs:10624".to_string(),
                 // Incarnation-pin round: `:11103 ⇒ :11124`, a pure +21 line shift from
                 // the `stamp_resumed_discard_if_unrecorded` CR 400.7 comment block and
                 // the new round-trip regression, both of which sit ABOVE this producer

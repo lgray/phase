@@ -1525,7 +1525,7 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // exiles+encodes on accept, or routes the card to its graveyard on decline.
     // Skipped (resolution proceeds to graveyard normally) when there is no legal
     // host. `is_spell` gates out triggered/activated stack entries.
-    if is_spell && super::cipher::begin_encode_choice(state, entry.id, entry.controller) {
+    if is_spell && super::cipher::begin_encode_choice(state, entry.id, entry.controller, events) {
         events.push(GameEvent::StackResolved {
             object_id: entry.id,
         });

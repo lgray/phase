@@ -6337,7 +6337,15 @@ fn damage_target_filter_to_prevent_target(filter: Option<&DamageTargetFilter>) -
 /// The detector IS the parser: the one-shot branch is gated by the
 /// `tag("the next time ")` prefix combinator succeeding, never a string
 /// heuristic. Returns `None` (fall-through) when the prefix or grammar fails.
-pub(crate) fn parse_oneshot_damage_replacement(norm_lower: &str) -> Option<Effect> {
+///
+/// `ctx.in_trigger` is read only by the `parse_oneshot_target_source_prevent`
+/// sub-branch (the "that creature" subject form is a target-source anaphor that
+/// must not fire inside a trigger body, where "that creature" resolves to the
+/// triggering creature's event context instead).
+pub(crate) fn parse_oneshot_damage_replacement(
+    norm_lower: &str,
+    ctx: &ParseContext,
+) -> Option<Effect> {
     // CR 614.9: passive-voice one-shot redirection — "the next N damage that
     // would be dealt to ~ this turn is dealt to <recipient> instead" (the en-Kor
     // cycle). This "would be dealt to" (passive, recipient-first) spine is not
@@ -6352,6 +6360,19 @@ pub(crate) fn parse_oneshot_damage_replacement(norm_lower: &str) -> Option<Effec
     // (Daughter of Autumn, Vassal's Duty). Tried after the self-recipient form so
     // the en-Kor "...dealt to ~ this turn..." case is claimed there first.
     if let Some(effect) = parse_oneshot_next_n_damage_to_target_redirect(norm_lower) {
+        return Some(effect);
+    }
+
+    // CR 615.1a + CR 614.1a + CR 115.1: Awe-Strike-class one-shot target-source
+    // prevention — "the next time [target creature | that creature] would deal
+    // damage this turn, prevent that damage". The subject is a DECLARED TARGET
+    // (or the non-trigger anaphor "that creature"), so the prevention must carry
+    // the chosen creature as the damage source (CR 609.7a capture) with a typed
+    // CR 609.7b recheck leaf. Tried before the generic "would deal ... this
+    // turn" gate so the target subject is claimed here; on subject mismatch it
+    // returns `None` and falls through to the existing generic branch below
+    // (byte-for-byte unchanged).
+    if let Some(effect) = parse_oneshot_target_source_prevent(norm_lower, ctx) {
         return Some(effect);
     }
 
@@ -6488,6 +6509,158 @@ pub(crate) fn parse_oneshot_damage_replacement(norm_lower: &str) -> Option<Effec
     }
 
     None
+}
+
+/// CR 615.1a + CR 614.1a + CR 115.1 + CR 609.7a + CR 609.7b: Parse the
+/// Awe-Strike-class one-shot TARGET-SOURCE prevention —
+///
+///   "The next time target creature would deal damage this turn, prevent that
+///    damage."  (Awe Strike)
+///
+/// The subject of the "would deal" clause is a DECLARED TARGET ("target
+/// creature", "another target creature", "other target creature") or the
+/// non-trigger anaphor "that creature". The prevention is source-scoped: the
+/// chosen creature is captured as the damage source (CR 609.7a `ParentTargetSlot`
+/// sentinel, concretized to `SpecificObject` at resolution) with a typed
+/// CR 609.7b recheck leaf (`Typed(creature)`), and the recipient slot stays
+/// `Any` (CR 115.1: the target slot is hosted by the source-filter `And`).
+///
+/// Pure nom combinators — the subject is isolated with `peek(take_until(...))`
+/// after the `tag("the next time ")` prefix, the declared-target prefix is
+/// matched with the shared `parse_declared_target_prefix` building block, the
+/// noun phrase resolves through `parse_target`, and the duration ("this turn" /
+/// "this combat") via `parse_duration`. Returns `None` (fall-through) when the
+/// subject is not a declared-target / that-creature form, so the generic
+/// one-shot branch below claims the sentence unchanged (CoP:Red's "a red source
+/// of your choice", Desperate Gambit's "it", ...).
+fn parse_oneshot_target_source_prevent(norm_lower: &str, ctx: &ParseContext) -> Option<Effect> {
+    // CR 603.1: inside a trigger body "that creature" is an event-context
+    // anaphor resolved by the trigger machinery, not a target-source capture —
+    // the Awe Strike class of target-source prevention only exists in
+    // spell/activated-ability bodies. Ria Ivor (trigger body) and Impulsive
+    // Maneuvers (activated body) both keep their fall-through shapes.
+    if ctx.in_trigger {
+        return None;
+    }
+
+    // CR 614.1a: "the next time " prefix + the subject slice before "would deal".
+    let (after_prefix, _) = preceded(
+        tag::<_, _, OracleError<'_>>("the next time "),
+        peek(take_until::<_, _, OracleError<'_>>("would deal")),
+    )
+    .parse(norm_lower)
+    .ok()?;
+    // CR 511.2: the one-shot window is "this turn" (CR 514.2 cleanup) or "this
+    // combat" (end-of-combat expiry).
+    if !nom_primitives::scan_contains(after_prefix, "would deal")
+        || !(nom_primitives::scan_contains(after_prefix, "this turn")
+            || nom_primitives::scan_contains(after_prefix, "this combat"))
+    {
+        return None;
+    }
+    let body = after_prefix.trim();
+
+    // Subject split: the head noun phrase before "would deal".
+    let (_, (subject, _)) = nom_primitives::split_once_on(body, "would deal").ok()?;
+    let subject = subject.trim();
+
+    // CR 115.1: declared-target subject — "target creature" / "another target
+    // creature" / "other target creature" — or the non-trigger anaphor "that
+    // creature". The shared `parse_declared_target_prefix` combinator is the
+    // single authority for the target-prefix family.
+    let (target_filter, after_subject) = if let Ok((after_prefix, _)) =
+        crate::parser::oracle_nom::target::parse_declared_target_prefix(subject)
+    {
+        let (filter, rest) = parse_target(after_prefix);
+        if rest.trim().is_empty() {
+            (filter, None)
+        } else {
+            (TargetFilter::Any, Some(rest))
+        }
+    } else if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("that creature").parse(subject) {
+        // CR 608.2c: "that creature" in a NON-trigger context is an anaphor
+        // to the chosen target creature (Dazzling Reflection). The typed
+        // `Typed(creature)` leaf is emitted DIRECTLY rather than routed
+        // through `parse_target`: a ctx-free `parse_target` call resolves the
+        // demonstrative via `resolve_pronoun_target`'s default branch to
+        // `ParentTarget`, which would drop the CR 609.7b recheck leaf and
+        // break the exact-shape contract of
+        // `is_oneshot_target_source_prevent_shape` (`And{[ParentTargetSlot{0},
+        // Typed(creature)]}`). Theoretical gap (noted): "that creature" with a
+        // QUALIFIER ("that creature spell", "that creature you control") is
+        // not in the current corpus; if it ever appears, this branch must
+        // extend to parse the qualified noun phrase and the shape predicate
+        // must be revisited accordingly.
+        if rest.trim().is_empty() {
+            (TargetFilter::Typed(TypedFilter::creature()), None)
+        } else {
+            (TargetFilter::Any, Some(rest))
+        }
+    } else {
+        (TargetFilter::Any, None)
+    };
+
+    // Out-of-bounds protection: any unconsumed subject tail (e.g. "target
+    // creature card", "target creature or player") or a subject that is not a
+    // declared-target/that-creature form falls through to the generic branch.
+    if after_subject.is_some() || target_filter == TargetFilter::Any {
+        return None;
+    }
+
+    // CR 615.1a: the prevention body must be a "prevent that damage" /
+    // "prevent the damage" result clause (the whole one-shot sentence, from
+    // "would deal" onward).
+    let (would_clause, result_clause) = split_would_deal_clause(body);
+    if !nom_primitives::scan_contains(result_clause, "prevent that damage")
+        && !nom_primitives::scan_contains(result_clause, "prevent the damage")
+    {
+        return None;
+    }
+
+    // CR 511.2: "this turn" → UntilEndOfTurn (expires at cleanup, CR 514.2);
+    // "this combat" → UntilEndOfCombat (combat-scoped one-shots). The shared
+    // `parse_duration` authority recognizes both via `parse_current_phase_duration`.
+    //
+    // The duration is MANDATORY for this branch: the sentence already proved a
+    // "this turn" / "this combat" phrase at the gate above, so a parse failure
+    // here means the phrase shape is one this branch must not claim — return
+    // `None` (fail-closed, fall through to the generic one-shot branch) rather
+    // than emitting a `prevention_duration: None` shield that would resolve
+    // without an EndOfCombat expiry and let a "this combat" effect bleed past
+    // the end of combat (CR 511.2).
+    let duration: Option<Duration> = match nom_primitives::scan_preceded(body, parse_duration) {
+        Some((_, d, _)) => Some(d),
+        None => return None,
+    };
+
+    // CR 506.2: "combat damage" narrows the scope to combat damage only.
+    let scope = if nom_primitives::scan_contains(would_clause, "combat damage") {
+        crate::types::ability::PreventionScope::CombatDamage
+    } else {
+        crate::types::ability::PreventionScope::AllDamage
+    };
+
+    Some(Effect::PreventDamage {
+        amount: PreventionAmount::All,
+        amount_dynamic: None,
+        // CR 115.1: the target slot is hosted by `damage_source_filter`'s `And`
+        // (`ParentTargetSlot { 0 }` captures the chosen creature, CR 609.7a);
+        // `Any` here means "no additional recipient scope" and is not consulted
+        // on the source-scoped prevent path.
+        target: TargetFilter::Any,
+        scope,
+        damage_source_filter: Some(TargetFilter::And {
+            filters: vec![
+                // CR 609.7a: the chosen target creature is captured as the
+                // damage SOURCE via the first target slot.
+                TargetFilter::ParentTargetSlot { index: 0 },
+                // CR 609.7b: the typed leaf rechecks the source's properties at
+                // damage time ("a creature").
+                target_filter,
+            ],
+        }),
+        prevention_duration: duration,
+    })
 }
 
 /// CR 614.11 + CR 614.6 + CR 514.2: Parse a one-shot delayed DRAW replacement —
@@ -19717,7 +19890,7 @@ mod tests {
             ),
         ] {
             assert!(
-                parse_oneshot_damage_replacement(clause).is_none(),
+                parse_oneshot_damage_replacement(clause, &ParseContext::default()).is_none(),
                 "{label} must not be claimed by the continuous redirection class"
             );
         }
@@ -19727,6 +19900,7 @@ mod tests {
         // not by the whole family being unreachable.
         let effect = parse_oneshot_damage_replacement(
             "all damage that would be dealt to you is dealt to the chosen creature instead",
+            &ParseContext::default(),
         )
         .expect("the in-class control clause must parse");
         assert!(matches!(
@@ -19746,6 +19920,7 @@ mod tests {
         // trigger head is a separate, still-unsupported gap — see the report).
         let effect = parse_oneshot_damage_replacement(
             "all damage that would be dealt this turn to you and permanents you control is dealt to enchanted creature instead",
+            &ParseContext::default(),
         )
         .expect("Saving Grace's redirection clause must parse");
         assert!(matches!(
@@ -19762,7 +19937,11 @@ mod tests {
         // Pariah's printed static, which belongs to `parse_replacement_line`'s
         // durable spine and must never be claimed as an effect-created shield.
         assert!(
-            parse_oneshot_damage_replacement("enchanted creature gets +2/+2").is_none(),
+            parse_oneshot_damage_replacement(
+                "enchanted creature gets +2/+2",
+                &ParseContext::default(),
+            )
+            .is_none(),
             "an unrelated attachment-host line must not be claimed"
         );
     }
@@ -22597,7 +22776,7 @@ mod snapshot_tests {
         // Desperate Gambit win-branch.
         let effect = parse_oneshot_damage_replacement(
             "the next time that source would deal damage this turn, it deals double that damage instead",
-        )
+            &ParseContext::default())
         .expect("must parse amount one-shot");
         match effect {
             Effect::CreateDamageReplacement {
@@ -22616,7 +22795,7 @@ mod snapshot_tests {
         // Soltari Guerrillas.
         let effect = parse_oneshot_damage_replacement(
             "the next time ~ would deal combat damage to an opponent this turn, it deals that damage to target creature instead",
-        )
+            &ParseContext::default())
         .expect("must parse redirection one-shot");
         match effect {
             Effect::CreateDamageReplacement {
@@ -22646,7 +22825,7 @@ mod snapshot_tests {
         // you control.
         let effect = parse_oneshot_damage_replacement(
             "the next 1 damage that would be dealt to ~ this turn is dealt to target creature you control instead",
-        )
+            &ParseContext::default())
         .expect("must parse the en-Kor one-shot redirection");
         match effect {
             Effect::CreateDamageReplacement {
@@ -22673,7 +22852,7 @@ mod snapshot_tests {
         // Beacon of Destiny — passive "that damage is dealt to ~ instead".
         let effect = parse_oneshot_damage_replacement(
             "the next time a source of your choice would deal damage to you this turn, that damage is dealt to ~ instead",
-        )
+            &ParseContext::default())
         .expect("must parse passive redirection one-shot");
         match effect {
             Effect::CreateDamageReplacement {
@@ -22692,7 +22871,7 @@ mod snapshot_tests {
         // Jade Monolith.
         let effect = parse_oneshot_damage_replacement(
             "the next time a source of your choice would deal damage to target creature this turn, that source deals that damage to you instead",
-        )
+            &ParseContext::default())
         .expect("must parse redirect-to-you one-shot");
         match effect {
             Effect::CreateDamageReplacement {
@@ -22717,7 +22896,7 @@ mod snapshot_tests {
         // Goblin Psychopath.
         let effect = parse_oneshot_damage_replacement(
             "the next time it would deal combat damage this turn, it deals that damage to you instead",
-        )
+            &ParseContext::default())
         .expect("must parse Goblin Psychopath one-shot");
         match effect {
             Effect::CreateDamageReplacement {
@@ -22738,6 +22917,7 @@ mod snapshot_tests {
         // keeps bare "it" as SelfRef; chains with ChooseDamageSource rewrite at lower time.
         let effect = parse_oneshot_damage_replacement(
             "the next time it would deal damage this turn, prevent that damage",
+            &ParseContext::default(),
         )
         .expect("must parse prevention sibling");
         match effect {
@@ -22764,7 +22944,7 @@ mod snapshot_tests {
         // rechecks color at damage time — NOT dropped to an unconstrained shield.
         let effect = parse_oneshot_damage_replacement(
             "the next time a red source of your choice would deal damage to you this turn, prevent that damage",
-        )
+            &ParseContext::default())
         .expect("Circle of Protection: Red must parse");
         match effect {
             Effect::PreventDamage {
@@ -22802,7 +22982,7 @@ mod snapshot_tests {
         // (distinct from the color-qualified Circles/Runes).
         let effect = parse_oneshot_damage_replacement(
             "the next time a land source of your choice would deal damage to you this turn, prevent that damage",
-        )
+            &ParseContext::default())
         .expect("Rune of Protection: Lands must parse");
         match effect {
             Effect::PreventDamage {
@@ -22832,13 +23012,15 @@ mod snapshot_tests {
         // A draw-form "the next time" must not be hijacked by the DAMAGE parser
         // (it has no "would deal" spine) — the draw parser claims it instead.
         assert!(parse_oneshot_damage_replacement(
-            "the next time you would draw a card this turn, draw two cards instead"
+            "the next time you would draw a card this turn, draw two cards instead",
+            &ParseContext::default()
         )
         .is_none());
         // A genuinely-unrelated "the next time" (not draw, not damage) parses to
         // neither one-shot replacement.
         assert!(parse_oneshot_damage_replacement(
-            "the next time you would gain life this turn, you gain twice that much instead"
+            "the next time you would gain life this turn, you gain twice that much instead",
+            &ParseContext::default()
         )
         .is_none());
         assert!(parse_oneshot_draw_replacement(
@@ -23111,7 +23293,7 @@ mod snapshot_tests {
         // itself (`~` → SourceObject), which needs no redirect slot.
         let effect = parse_oneshot_damage_replacement(
             "the next 1 damage that would be dealt to target white creature this turn is dealt to ~ instead",
-        )
+            &ParseContext::default())
         .expect("must parse redirect-target-to-source one-shot");
         match effect {
             Effect::CreateDamageReplacement {
@@ -23138,7 +23320,7 @@ mod snapshot_tests {
         // redirect destination is the controller (`you` → Controller).
         let effect = parse_oneshot_damage_replacement(
             "the next 1 damage that would be dealt to target legendary creature you control this turn is dealt to you instead",
-        )
+            &ParseContext::default())
         .expect("must parse redirect-target-to-controller one-shot");
         match effect {
             Effect::CreateDamageReplacement {
@@ -23163,7 +23345,7 @@ mod snapshot_tests {
         // SelfRef), NOT the new target-recipient arm.
         let effect = parse_oneshot_damage_replacement(
             "the next 1 damage that would be dealt to ~ this turn is dealt to target creature you control instead",
-        )
+            &ParseContext::default())
         .expect("en-Kor self redirect must still parse");
         assert!(
             matches!(
@@ -23186,7 +23368,7 @@ mod snapshot_tests {
         // destination are chosen object targets (two slots).
         let effect = parse_oneshot_damage_replacement(
             "the next 3 damage that would be dealt to target creature you control this turn is dealt to another target creature instead",
-        )
+            &ParseContext::default())
         .expect("must parse redirect-target-to-chosen-target one-shot");
         match effect {
             Effect::CreateDamageReplacement {
@@ -23216,14 +23398,14 @@ mod snapshot_tests {
         assert!(
             parse_oneshot_damage_replacement(
                 "the next 1 damage that would be dealt to ~ this turn is dealt to any target instead",
-            )
+                &ParseContext::default())
             .is_none(),
             "en-Kor 'any target' redirect must fail closed (object-only resolver)"
         );
         assert!(
             parse_oneshot_damage_replacement(
                 "the next 1 damage that would be dealt to target creature you control this turn is dealt to any target instead",
-            )
+                &ParseContext::default())
             .is_none(),
             "chosen-recipient 'any target' redirect must fail closed (object-only resolver)"
         );
@@ -23621,6 +23803,404 @@ mod snapshot_tests {
             None,
             "the 'to you' player shield must not be flipped to SelfRef"
         );
+    }
+
+    // ── Awe Strike class: one-shot target-source prevention ────────────────
+
+    /// Awe Strike front clause, verbatim (non-trigger context): must parse to
+    /// the one-shot target-source `PreventDamage` — recipient `Any`, source
+    /// filter `And { [ParentTargetSlot { 0 }, Typed(creature)] }`, all-damage
+    /// scope, until-end-of-turn duration. Reverting the new branch drops the
+    /// target creature (source filter `None`, target `Any`) — the primary
+    /// discriminating assertion is the `And` source-filter shape.
+    #[test]
+    fn awe_strike_front_clause_parses_target_source_prevent() {
+        let effect = parse_oneshot_damage_replacement(
+            "the next time target creature would deal damage this turn, prevent that damage",
+            &ParseContext::default(),
+        )
+        .expect("Awe Strike front clause must parse to the target-source prevention");
+        match effect {
+            Effect::PreventDamage {
+                amount,
+                target,
+                scope,
+                damage_source_filter,
+                prevention_duration,
+                ..
+            } => {
+                assert_eq!(amount, PreventionAmount::All);
+                assert_eq!(target, TargetFilter::Any);
+                assert_eq!(scope, crate::types::ability::PreventionScope::AllDamage);
+                assert_eq!(
+                    damage_source_filter,
+                    Some(TargetFilter::And {
+                        filters: vec![
+                            TargetFilter::ParentTargetSlot { index: 0 },
+                            TargetFilter::Typed(TypedFilter::creature()),
+                        ],
+                    }),
+                    "the chosen target creature must be captured as the damage source \
+                     (CR 609.7a) with the typed CR 609.7b recheck leaf"
+                );
+                assert_eq!(
+                    prevention_duration,
+                    Some(Duration::UntilEndOfTurn),
+                    "CR 514.2: 'this turn' ends at cleanup"
+                );
+            }
+            other => panic!("expected PreventDamage, got {other:?}"),
+        }
+    }
+
+    /// Blocker-2 regression (review #7334): this branch must NEVER emit a
+    /// `PreventionOneShot`-class shield with `prevention_duration: None` — the
+    /// resolver keys the EndOfCombat expiry (CR 511.2) off the parsed
+    /// duration, and a "this combat" shield without one would bleed past the
+    /// end of combat. The duration parse is therefore MANDATORY for the
+    /// branch: `scan_preceded(body, parse_duration)` failing means the branch
+    /// returns `None` (fail-closed, falls through to the generic one-shot
+    /// branch) instead of lowering with a `None` duration.
+    ///
+    /// Reachability note (honest): with today's `parse_duration` coverage the
+    /// fail-closed arm is defensive rather than reachable — the branch's own
+    /// gate (`scan_contains` on "this turn"/"this combat") and
+    /// `parse_current_phase_duration` recognize exactly the same phrases, so a
+    /// gate-passing sentence always resolves a duration. The `?` is the
+    /// tripwire for the day `parse_duration` coverage drifts (e.g. a "this
+    /// combat" arm removed): the branch then fails closed to `None` instead of
+    /// silently shipping a `None`-duration shield. These assertions pin that
+    /// contract at its observable surface: every canonical one-shot
+    /// target-source form carries `Some(duration)`, and the no-phrase form is
+    /// `None` (the existing gate, CR 511.2).
+    #[test]
+    fn target_source_prevent_duration_failure_falls_through_to_none() {
+        // "this turn" form → Some(UntilEndOfTurn), never None.
+        let turn = parse_oneshot_damage_replacement(
+            "the next time target creature would deal damage this turn, prevent that damage",
+            &ParseContext::default(),
+        )
+        .expect("'this turn' form must parse");
+        let Effect::PreventDamage {
+            prevention_duration,
+            ..
+        } = &turn
+        else {
+            panic!("expected PreventDamage, got {turn:?}");
+        };
+        assert_eq!(
+            *prevention_duration,
+            Some(Duration::UntilEndOfTurn),
+            "CR 514.2: 'this turn' ends at cleanup — a None duration would leave the \
+             shield without an expiry"
+        );
+
+        // "this combat" form → Some(UntilEndOfCombat), never None.
+        let combat = parse_oneshot_damage_replacement(
+            "the next time target creature would deal combat damage to one or more players this combat, prevent that damage",
+            &ParseContext::default(),
+        )
+        .expect("'this combat' form must parse");
+        let Effect::PreventDamage {
+            prevention_duration,
+            ..
+        } = &combat
+        else {
+            panic!("expected PreventDamage, got {combat:?}");
+        };
+        assert_eq!(
+            *prevention_duration,
+            Some(Duration::UntilEndOfCombat),
+            "CR 511.2: 'this combat' expires at end of combat — a None duration would let \
+             the shield bleed into a later combat"
+        );
+
+        // "that creature" subject with "this turn" → Some as well.
+        let that_creature = parse_oneshot_damage_replacement(
+            "the next time that creature would deal damage this turn, prevent that damage",
+            &ParseContext::default(),
+        )
+        .expect("'that creature' form must parse");
+        let Effect::PreventDamage {
+            prevention_duration,
+            ..
+        } = &that_creature
+        else {
+            panic!("expected PreventDamage, got {that_creature:?}");
+        };
+        assert_eq!(
+            *prevention_duration,
+            Some(Duration::UntilEndOfTurn),
+            "the anaphor form must carry the duration too, never None"
+        );
+
+        // Negative: no duration phrase at all — the gate (CR 511.2 window
+        // requirement) rejects the sentence before the duration step.
+        assert!(
+            parse_oneshot_damage_replacement(
+                "the next time target creature would deal damage, prevent that damage",
+                &ParseContext::default(),
+            )
+            .is_none(),
+            "a target-source prevention without a this turn/this combat phrase must be None"
+        );
+    }
+
+    /// "that creature" subject, non-trigger context: the anaphor lowers to the
+    /// typed `Typed(creature)` leaf in the same `And` shape.
+    #[test]
+    fn that_creature_subject_parses_target_source_prevent() {
+        let effect = parse_oneshot_damage_replacement(
+            "the next time that creature would deal damage this turn, prevent that damage",
+            &ParseContext::default(),
+        )
+        .expect("that-creature subject must parse");
+        let Effect::PreventDamage {
+            damage_source_filter,
+            ..
+        } = effect
+        else {
+            panic!("expected PreventDamage, got {effect:?}");
+        };
+        assert_eq!(
+            damage_source_filter,
+            Some(TargetFilter::And {
+                filters: vec![
+                    TargetFilter::ParentTargetSlot { index: 0 },
+                    TargetFilter::Typed(TypedFilter::creature()),
+                ],
+            })
+        );
+    }
+
+    /// Combat-scoped variant ("this combat" + "combat damage") → CombatDamage
+    /// scope and UntilEndOfCombat duration.
+    #[test]
+    fn combat_scoped_target_source_prevent_sets_combat_scope_and_combat_duration() {
+        let effect = parse_oneshot_damage_replacement(
+            "the next time target creature would deal combat damage to one or more players this combat, prevent that damage",
+            &ParseContext::default(),
+        )
+        .expect("combat-scoped target-source prevention must parse");
+        match effect {
+            Effect::PreventDamage {
+                scope,
+                damage_source_filter,
+                prevention_duration,
+                ..
+            } => {
+                assert_eq!(scope, crate::types::ability::PreventionScope::CombatDamage);
+                assert_eq!(
+                    prevention_duration,
+                    Some(Duration::UntilEndOfCombat),
+                    "CR 511.2: 'this combat' expires at end of combat"
+                );
+                assert_eq!(
+                    damage_source_filter,
+                    Some(TargetFilter::And {
+                        filters: vec![
+                            TargetFilter::ParentTargetSlot { index: 0 },
+                            TargetFilter::Typed(TypedFilter::creature()),
+                        ],
+                    })
+                );
+            }
+            other => panic!("expected PreventDamage, got {other:?}"),
+        }
+    }
+
+    /// Ria Ivor, Bane of Bladehold — the one-shot prevention lives in a
+    /// TRIGGER body ("At the beginning of combat on your turn, the next time
+    /// target creature would deal combat damage ... prevent that damage. If
+    /// damage is prevented this way, create ..."). Inside a trigger, the new
+    /// target-source branch must NOT claim it (the `ctx.in_trigger` gate):
+    /// the prevention sentence stays an honest `Unimplemented` gap and the
+    /// rider stays a `SequentialSibling`. Reverting the gate mis-parses the
+    /// trigger body's "target creature" as a spell-side declared target.
+    #[test]
+    fn ria_ivor_trigger_body_keeps_fall_through_shapes() {
+        use crate::types::ability::SubAbilityLink;
+        use crate::types::triggers::TriggerMode;
+
+        let parsed = parse_oracle_text(
+            "At the beginning of combat on your turn, the next time target creature would deal combat damage to one or more players this combat, prevent that damage. If damage is prevented this way, create that many 1/1 colorless Phyrexian Mite artifact creature tokens with toxic 1 and \"This token can't block.\"",
+            "Ria Ivor, Bane of Bladehold",
+            &[],
+            &["Creature".to_string()],
+            &["Phyrexian".to_string(), "Human".to_string(), "Soldier".to_string()],
+        );
+        let trigger = parsed
+            .triggers
+            .iter()
+            .find(|t| t.mode == TriggerMode::Phase)
+            .expect("beginning-of-combat trigger must exist");
+        let body = trigger.execute.as_deref().expect("trigger body");
+        // Reach guard: the prevention sentence IS parsed by the chain (as an
+        // honest Unimplemented gap, not dropped).
+        assert!(
+            matches!(&*body.effect, Effect::Unimplemented { .. }),
+            "the trigger-body prevention sentence must stay an honest Unimplemented gap, got {:?}",
+            body.effect
+        );
+        // The rider is an independent sibling, not a folded shield rider.
+        assert_eq!(
+            body.sub_ability.as_ref().map(|s| s.sub_link),
+            Some(SubAbilityLink::SequentialSibling),
+            "the rider must stay a SequentialSibling in a trigger body"
+        );
+        assert!(matches!(
+            body.sub_ability.as_ref().map(|s| s.effect.as_ref()),
+            Some(Effect::Token { .. })
+        ));
+    }
+
+    /// Circle of Protection: Red — verbatim. The "a red source of your choice"
+    /// subject must NOT be claimed by the target-source branch: it keeps the
+    /// `ChosenDamageSource { filter: Some(red) }` shape with
+    /// `target: Controller` ("to you"). The `target: Controller` assertion is
+    /// the reach guard proving the generic prevention branch still runs.
+    #[test]
+    fn circle_of_protection_red_stays_chosen_damage_source() {
+        let effect = parse_oneshot_damage_replacement(
+            "the next time a red source of your choice would deal damage to you this turn, prevent that damage",
+            &ParseContext::default(),
+        )
+        .expect("CoP: Red must parse");
+        match effect {
+            Effect::PreventDamage {
+                target,
+                damage_source_filter,
+                ..
+            } => {
+                assert_eq!(target, TargetFilter::Controller);
+                let Some(TargetFilter::ChosenDamageSource {
+                    filter: Some(inner),
+                }) = damage_source_filter
+                else {
+                    panic!("expected qualified ChosenDamageSource, got {damage_source_filter:?}");
+                };
+                match *inner {
+                    TargetFilter::Typed(tf) => assert!(
+                        tf.properties.iter().any(|p| matches!(
+                            p,
+                            FilterProp::HasColor {
+                                color: ManaColor::Red
+                            }
+                        )),
+                        "inner qualifier must constrain to red sources, got {tf:?}"
+                    ),
+                    other => panic!("expected Typed color qualifier, got {other:?}"),
+                }
+            }
+            other => panic!("expected PreventDamage, got {other:?}"),
+        }
+    }
+
+    /// Desperate Gambit lose-branch ("it would deal damage this turn, prevent
+    /// that damage") must keep its bare-`SelfRef` source filter — the "it"
+    /// subject is not a declared target.
+    #[test]
+    fn desperate_gambit_lose_branch_keeps_self_ref_source() {
+        let effect = parse_oneshot_damage_replacement(
+            "the next time it would deal damage this turn, prevent that damage",
+            &ParseContext::default(),
+        )
+        .expect("Desperate Gambit lose-branch must parse");
+        let Effect::PreventDamage {
+            damage_source_filter,
+            ..
+        } = effect
+        else {
+            panic!("expected PreventDamage, got {effect:?}");
+        };
+        assert_eq!(
+            damage_source_filter,
+            Some(TargetFilter::SelfRef),
+            "the isolated 'it' subject keeps SelfRef (chain threading rewrites at lower time)"
+        );
+    }
+
+    /// Reverse Damage vs Awe Strike, full verbatim texts: the bare
+    /// "damage prevented this way" rider folds into the shield ONLY for the
+    /// one-shot target-source prevention (Awe Strike → ContinuationStep);
+    /// Reverse Damage's `ChosenDamageSource` root keeps the rider as a
+    /// SequentialSibling.
+    #[test]
+    fn bare_prevented_this_way_rider_folds_only_for_target_source_prevent() {
+        use crate::types::ability::SubAbilityLink;
+
+        let awe_strike = parse_oracle_text(
+            "The next time target creature would deal damage this turn, prevent that damage. You gain life equal to the damage prevented this way.",
+            "Awe Strike",
+            &[],
+            &["Instant".to_string()],
+            &[],
+        );
+        let awe_ability = &awe_strike.abilities[0];
+        assert!(
+            matches!(&*awe_ability.effect, Effect::PreventDamage { .. }),
+            "Awe Strike must parse to PreventDamage"
+        );
+        assert_eq!(
+            awe_ability.sub_ability.as_ref().map(|s| s.sub_link),
+            Some(SubAbilityLink::ContinuationStep),
+            "Awe Strike's bare rider must fold into the shield as a ContinuationStep"
+        );
+        assert!(matches!(
+            awe_ability.sub_ability.as_ref().map(|s| s.effect.as_ref()),
+            Some(Effect::GainLife { .. })
+        ));
+
+        let reverse_damage = parse_oracle_text(
+            "The next time a source of your choice would deal damage to you this turn, prevent that damage. You gain life equal to the damage prevented this way.",
+            "Reverse Damage",
+            &[],
+            &["Instant".to_string()],
+            &[],
+        );
+        let reverse_ability = &reverse_damage.abilities[0];
+        assert!(
+            matches!(&*reverse_ability.effect, Effect::PreventDamage { .. }),
+            "Reverse Damage must parse to PreventDamage (reach guard for the sibling assertion)"
+        );
+        assert_eq!(
+            reverse_ability.sub_ability.as_ref().map(|s| s.sub_link),
+            Some(SubAbilityLink::SequentialSibling),
+            "Reverse Damage's ChosenDamageSource root must keep the bare rider a SequentialSibling"
+        );
+    }
+
+    /// P7: Awe Strike's full verbatim text must NOT route through
+    /// `parse_static_line` (it is an effect-creating one-shot, not a static
+    /// replacement).
+    #[test]
+    fn awe_strike_full_text_is_not_a_static_line() {
+        assert!(crate::parser::oracle_static::parse_static_line(
+            "The next time target creature would deal damage this turn, prevent that damage. You gain life equal to the damage prevented this way.",
+        )
+        .is_none());
+    }
+
+    /// P8: `ShieldKind::PreventionOneShot` serializes and round-trips, and old
+    /// JSON without the variant (pre-change exports) still deserializes.
+    #[test]
+    fn prevention_oneshot_shield_kind_serializes_and_roundtrips() {
+        use crate::types::ability::ShieldKind;
+
+        let json = serde_json::to_string(&ShieldKind::PreventionOneShot)
+            .expect("one-shot shield kind must serialize");
+        assert_eq!(json, "\"PreventionOneShot\"");
+        let back: ShieldKind =
+            serde_json::from_str(&json).expect("one-shot shield kind must deserialize");
+        assert_eq!(back, ShieldKind::PreventionOneShot);
+
+        // Old JSON (pre-variant exports): the omitted `shield_kind` field
+        // defaults to `ShieldKind::None` via `#[serde(default)]`.
+        let old = r#"{"event":"DamageDone","consume_on_apply":true}"#;
+        let repl: ReplacementDefinition =
+            serde_json::from_str(old).expect("old JSON without shield_kind must load");
+        assert_eq!(repl.shield_kind, ShieldKind::None);
+        assert_eq!(repl.event, ReplacementEvent::DamageDone);
     }
 }
 

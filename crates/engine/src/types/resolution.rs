@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
+pub use frame_vec::ChildStackDepth;
 use frame_vec::{FrameSlot, FrameVec};
 
 use crate::types::ability::{AbilityDefinition, DiscardedCardResult, ResolvedAbility, TargetRef};
@@ -155,6 +156,50 @@ pub struct PendingMutateMerge {
     pub controller: PlayerId,
 }
 
+/// CR 702.99a: Context stored when a Cipher spell has finished its own effects
+/// and owes its controller the "you may exile this card encoded on a creature
+/// you control" offer.
+///
+/// The frame exists so the offer OWNS its prompt like every other direct
+/// choice. Before it existed, `begin_encode_choice` set `WaitingFor` with no
+/// frame behind it; when the spell's own resolution was still paused on a
+/// player answer (Hidden Strings: "You may tap or untap ..."), that overwrote
+/// the live prompt, stranded its frame, and left the stack permanently invalid
+/// — the next prompt of any kind then failed `validate` (issue #7470).
+///
+/// Ordering is the other half: the encode is the spell's LAST instruction, so
+/// when a direct-choice owner is already active this frame is inserted as its
+/// PARENT and arms only once that owner is consumed.
+/// Whether a parked Cipher offer is already asking its question.
+///
+/// CR 702.99a + the single-prompt-owner invariant: only ONE frame may own the
+/// live prompt, so an offer parked beneath the spell's own still-open choice
+/// must not claim ownership yet. It becomes [`Self::Armed`] when
+/// `resume_resolution_frames` reaches it, i.e. once the frames above it are
+/// gone. Mirrors `RepeatedOptionalPaymentFrame`, whose gate is likewise a
+/// direct choice only while it actually holds a pending offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CipherEncodeStage {
+    /// Waiting for the spell's own effects to finish. Owns no prompt.
+    Parked,
+    /// Asking its controller which creature hosts the card.
+    Armed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingCipherEncode {
+    /// Whether the offer currently owns the prompt.
+    pub stage: CipherEncodeStage,
+    /// The resolved Cipher card, held off the stack until the offer settles.
+    pub card_id: ObjectId,
+    /// The spell's controller — the player who chooses the host (CR 702.99a).
+    pub controller: PlayerId,
+    /// Legal hosts captured when the offer was parked. Re-validated against the
+    /// live board by `handle_encode_choice`, which already re-checks the chosen
+    /// creature, so a host that left the battlefield meanwhile simply declines.
+    pub creatures: Vec<ObjectId>,
+}
+
 /// The ChangeZone owner plus the only sidecar that is not already embedded in
 /// `PendingChangeZoneIteration`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -219,6 +264,7 @@ pub enum ResolutionFrame {
     LifeTotalAssignment(PendingLifeTotalAssignment),
     SpellResolution(PendingSpellResolution),
     MutateMerge(PendingMutateMerge),
+    CipherEncode(PendingCipherEncode),
     PostReplacement(PostReplacementDrainStack),
 }
 
@@ -251,6 +297,7 @@ pub enum FrameKind {
     LifeTotalAssignment,
     SpellResolution,
     MutateMerge,
+    CipherEncode,
     PostReplacement,
 }
 
@@ -282,6 +329,7 @@ impl ResolutionFrame {
             Self::LifeTotalAssignment(_) => FrameKind::LifeTotalAssignment,
             Self::SpellResolution(_) => FrameKind::SpellResolution,
             Self::MutateMerge(_) => FrameKind::MutateMerge,
+            Self::CipherEncode(_) => FrameKind::CipherEncode,
             Self::PostReplacement(_) => FrameKind::PostReplacement,
         }
     }
@@ -318,6 +366,7 @@ impl ResolutionFrame {
             | Self::ConniveReentry(_)
             | Self::LifeTotalAssignment(_)
             | Self::SpellResolution(_)
+            | Self::CipherEncode(_)
             | Self::PostReplacement(_) => true,
         }
     }
@@ -335,7 +384,15 @@ impl ResolutionFrame {
             Self::CoinFlip(_) => FrameGate::DirectChoice(DirectChoiceGate::CoinFlipKeep),
             Self::Proliferate(_) => FrameGate::DirectChoice(DirectChoiceGate::Proliferate),
             Self::MutateMerge(_) => FrameGate::DirectChoice(DirectChoiceGate::MutateMerge),
-            Self::AbilityContinuation(_)
+            Self::CipherEncode(PendingCipherEncode {
+                stage: CipherEncodeStage::Armed,
+                ..
+            }) => FrameGate::DirectChoice(DirectChoiceGate::CipherEncode),
+            Self::CipherEncode(PendingCipherEncode {
+                stage: CipherEncodeStage::Parked,
+                ..
+            })
+            | Self::AbilityContinuation(_)
             | Self::RepeatFor(_)
             | Self::RepeatUntil(_)
             | Self::RepeatedOptionalPayment(RepeatedOptionalPaymentFrame {
@@ -378,6 +435,7 @@ pub enum DirectChoiceGate {
     CoinFlipKeep,
     Proliferate,
     MutateMerge,
+    CipherEncode,
 }
 
 impl DirectChoiceGate {
@@ -391,6 +449,7 @@ impl DirectChoiceGate {
                 | (Self::CoinFlipKeep, WaitingFor::CoinFlipKeepChoice { .. })
                 | (Self::Proliferate, WaitingFor::ProliferateChoice { .. })
                 | (Self::MutateMerge, WaitingFor::MutateMergeChoice { .. })
+                | (Self::CipherEncode, WaitingFor::CipherEncodeChoice { .. })
         )
     }
 }
@@ -411,19 +470,19 @@ pub enum ResolutionStackError {
         "child-stack boundary {child_stack_start} is not below the active child stack of length {stack_len}"
     )]
     InvalidChildBoundary {
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
         stack_len: usize,
     },
     #[error(
         "child-stack boundary {child_stack_start} has {actual:?} immediately below it, expected {expected:?}"
     )]
     UnexpectedChildBoundaryParent {
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
         expected: FrameKind,
         actual: FrameKind,
     },
     #[error("child-stack boundary {child_stack_start} does not retain the ChangeZone owner being re-parked")]
-    MismatchedChangeZoneBoundaryOwner { child_stack_start: usize },
+    MismatchedChangeZoneBoundaryOwner { child_stack_start: ChildStackDepth },
     #[error("top frame {frame:?} does not match waiting prompt {waiting_for}")]
     PromptMismatch {
         frame: FrameKind,
@@ -437,14 +496,44 @@ pub enum ResolutionStackError {
     InvalidPayload { frame: FrameKind, message: String },
 }
 
+/// Where a frame that owns no prompt goes while another frame owns the live one.
+///
+/// Parking is not "insert below the top". Which position keeps the stack valid
+/// depends on what is currently on it, and one shape answers differently:
+/// `validate` requires a paused post-replacement/draw pair to stay immediately
+/// adjacent (CR 614.11a + CR 121.6b — every action a replacement requires is
+/// completed before the draw sequence resumes), and admits exactly one frame
+/// above such a pair, the direct-choice owner holding the live prompt. Inserting
+/// below the top lands INSIDE the pair in both of those shapes.
+///
+/// Naming the position makes the placement a decision the stack takes from its
+/// own shape. A caller that instead guesses "below the top" and inspects an
+/// `Err` afterwards has no way to recover: by then it has already retained its
+/// card off the normal resolution route (issue #7496 review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParkedFramePlacement {
+    /// Nothing is on the stack, so the parked frame is the only frame. This is
+    /// reachable while a question is open: a live prompt need not have a frame
+    /// behind it — a discard choice does not.
+    OnlyFrame,
+    /// Immediately below the active child — the ordinary case.
+    BelowActiveChild,
+    /// Immediately below a complete paused post-replacement/draw pair, i.e.
+    /// outside it, whether that pair is the active operation itself or sits
+    /// under the direct-choice owner of the choice it paused for.
+    OutsidePausedDrawPair,
+}
+
 /// An ordered, LIFO stack of suspended resolution work.
 ///
 /// Its backing storage is intentionally private, and the privacy is enforced by
 /// the type system rather than by convention: [`FrameVec`] hands out positions
 /// only as opaque [`FrameSlot`]s minted from the top, from an adjacent frame, or
 /// from a [`PostReplacementFrameId`]. A frame located any other way — by
-/// scanning, by arithmetic on the length — yields a `usize` that no accessor
-/// accepts, so a positional search cannot be spent even when it can be written.
+/// scanning, by arithmetic on the length — yields a `usize`, and the only
+/// thing that accepts one is [`FrameVec::frame_at_offset`], which hands back
+/// a frame to read and never a position to address, so a positional search
+/// still cannot be spent on a mutation even when it can be written.
 /// See [`frame_vec`] for why that replaced a grep-based guard.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResolutionStack {
@@ -531,6 +620,15 @@ impl ResolutionStack {
 
     pub fn len(&self) -> usize {
         self.frames.len()
+    }
+
+    /// Record the current stack depth, before running a child producer.
+    ///
+    /// This is the public face of the only [`ChildStackDepth`] constructor;
+    /// even this module cannot build one directly, because the field is private
+    /// to [`frame_vec`] and this module is its parent, not its descendant.
+    pub fn capture_child_boundary(&self) -> ChildStackDepth {
+        self.frames.capture_depth()
     }
 
     pub fn last(&self) -> Option<&ResolutionFrame> {
@@ -1031,7 +1129,7 @@ impl ResolutionStack {
     pub fn insert_change_zone_parent_at_child_boundary(
         &mut self,
         pending: PendingChangeZoneIteration,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         let Some(boundary) = self.frames.slot_at_captured_depth(child_stack_start) else {
             return Err(ResolutionStackError::InvalidChildBoundary {
@@ -1087,7 +1185,7 @@ impl ResolutionStack {
     pub fn replace_change_zone_parent_at_child_boundary(
         &mut self,
         pending: PendingChangeZoneIteration,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         let logical_group_id = pending.logical_zone_change_group.logical_group_id;
         let boundary = self.frames.slot_at_captured_depth(child_stack_start);
@@ -1484,7 +1582,7 @@ impl ResolutionStack {
     pub fn insert_copy_token_parent_at_child_boundary(
         &mut self,
         pending: PendingCopyTokenResolution,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         self.insert_parent_at_child_boundary(ResolutionFrame::CopyToken(pending), child_stack_start)
     }
@@ -1528,7 +1626,7 @@ impl ResolutionStack {
     pub fn insert_debug_card_entries_parent_at_child_boundary(
         &mut self,
         pending: PendingDebugCardEntries,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         self.insert_parent_at_child_boundary(
             ResolutionFrame::DebugCardEntries(Box::new(pending)),
@@ -1606,7 +1704,7 @@ impl ResolutionStack {
     pub fn insert_each_player_copy_chosen_parent_at_child_boundary(
         &mut self,
         pending: PendingEachPlayerCopyChosen,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         self.insert_parent_at_child_boundary(
             ResolutionFrame::EachPlayerCopyChosen(pending),
@@ -1948,6 +2046,50 @@ impl ResolutionStack {
     /// Parks one mutate-merge top/bottom choice resolution.
     pub fn push_mutate_merge(&mut self, frame: PendingMutateMerge) {
         self.push_inner(ResolutionFrame::MutateMerge(frame));
+    }
+
+    /// CR 702.99a: Consumes exactly the active Cipher encode offer once its
+    /// controller has named a host (or declined).
+    pub fn take_active_cipher_encode(
+        &mut self,
+    ) -> Result<Option<PendingCipherEncode>, ResolutionStackError> {
+        match self.last() {
+            None => Ok(None),
+            Some(ResolutionFrame::CipherEncode(_)) => {
+                let ResolutionFrame::CipherEncode(frame) =
+                    self.pop_expected(FrameKind::CipherEncode)?
+                else {
+                    unreachable!("checked cipher-encode frame kind must match")
+                };
+                Ok(Some(frame))
+            }
+            Some(frame) => Err(ResolutionStackError::UnexpectedTop {
+                expected: FrameKind::CipherEncode,
+                actual: frame.kind(),
+            }),
+        }
+    }
+
+    /// Reads the active Cipher encode offer without consuming it.
+    pub fn active_cipher_encode(&self) -> Option<&PendingCipherEncode> {
+        match self.last() {
+            Some(ResolutionFrame::CipherEncode(frame)) => Some(frame),
+            Some(_) | None => None,
+        }
+    }
+
+    /// Mutable access to the active Cipher encode offer, for the parked → armed
+    /// transition. Mirrors `active_mutate_merge_mut`.
+    pub fn active_cipher_encode_mut(&mut self) -> Option<&mut PendingCipherEncode> {
+        match self.frames.last_mut() {
+            Some(ResolutionFrame::CipherEncode(frame)) => Some(frame),
+            Some(_) | None => None,
+        }
+    }
+
+    /// Parks one Cipher encode offer.
+    pub fn push_cipher_encode(&mut self, frame: PendingCipherEncode) {
+        self.push_inner(ResolutionFrame::CipherEncode(frame));
     }
 
     /// Re-parks the active mutate-merge owner without exposing an empty-stack
@@ -2824,6 +2966,77 @@ impl ResolutionStack {
         Ok(())
     }
 
+    /// The post-replacement parent of a complete paused draw pair `active`
+    /// either belongs to or rests on, if there is one.
+    ///
+    /// Adjacent access only: the pair is reached by stepping down from the
+    /// located `active` slot, never by searching for a frame kind.
+    fn paused_draw_pair_parent(&self, active: FrameSlot) -> Option<FrameSlot> {
+        // The pair IS the active operation: the draw child is on top and its
+        // post-replacement parent immediately beneath it.
+        if self.has_active_post_replacement_draw_pair() {
+            return self.frames.below(active);
+        }
+        // Otherwise the pair may be paused for a player's choice, in which case
+        // the frame owning that choice sits above it — the one frame `validate`
+        // admits there. Anything else on top means there is no pair to protect.
+        if !matches!(
+            self.frames.get(active).map(|frame| frame.gate()),
+            Some(FrameGate::DirectChoice(_))
+        ) {
+            return None;
+        }
+        let child = self.frames.below(active)?;
+        let parent = self.frames.below(child)?;
+        match (self.frames.get(parent), self.frames.get(child)) {
+            (
+                Some(ResolutionFrame::PostReplacement(drains)),
+                Some(ResolutionFrame::MultiDraw(_)),
+            ) if matches!(
+                drains.resident().map(|drain| &drain.status),
+                Some(DrainStatus::Paused | DrainStatus::Dispatching)
+            ) =>
+            {
+                Some(parent)
+            }
+            _ => None,
+        }
+    }
+
+    /// The placement and the slot to insert below, if any.
+    ///
+    /// There is deliberately no public "where would this go?" companion: no
+    /// caller needs to know the position without taking it, and a reader that
+    /// could ask separately would invite deciding on the answer elsewhere —
+    /// which is the split this whole authority exists to close.
+    fn park_target(&self) -> (ParkedFramePlacement, Option<FrameSlot>) {
+        let Some(active) = self.frames.top() else {
+            return (ParkedFramePlacement::OnlyFrame, None);
+        };
+        match self.paused_draw_pair_parent(active) {
+            Some(parent) => (ParkedFramePlacement::OutsidePausedDrawPair, Some(parent)),
+            None => (ParkedFramePlacement::BelowActiveChild, Some(active)),
+        }
+    }
+
+    /// Park a frame that owns no prompt beneath the frame that owns the live
+    /// one, and report where it went.
+    ///
+    /// Infallible by construction, which is the point: the stack chooses the
+    /// position from its own shape rather than accepting one from a caller, so
+    /// there is no structural guess left for the caller to recover from. It is
+    /// still the caller's job to bring a frame whose gate is not
+    /// [`FrameGate::DirectChoice`] — parking a second prompt owner under a live
+    /// prompt is rejected by `validate`, and rightly so.
+    pub fn park_beneath_live_prompt(&mut self, frame: ResolutionFrame) -> ParkedFramePlacement {
+        let (placement, slot) = self.park_target();
+        match slot {
+            None => self.push_inner(frame),
+            Some(slot) => self.frames.insert_below(slot, frame),
+        }
+        placement
+    }
+
     /// Install an outer frame immediately below the child stack a producer
     /// created after recording its pre-resolution boundary.
     ///
@@ -2834,7 +3047,7 @@ impl ResolutionStack {
     pub fn insert_parent_at_child_boundary(
         &mut self,
         frame: ResolutionFrame,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         let stack_len = self.frames.len();
         if stack_len == 0 {
@@ -4210,6 +4423,9 @@ fn project_frames_into_legacy_state(
             ResolutionFrame::MutateMerge(pending) => {
                 projected.push_mutate_merge_frame(pending.clone())
             }
+            ResolutionFrame::CipherEncode(pending) => {
+                projected.push_cipher_encode_frame(pending.clone())
+            }
             ResolutionFrame::MultiDraw(frame) => {
                 projected.resolution_stack.push_multi_draw(frame.clone())
             }
@@ -5069,8 +5285,9 @@ mod tests {
             stack.insert_parent_of_active(continuation_frame(1)),
             Err(ResolutionStackError::NoActiveChild)
         );
+        let empty_boundary = stack.capture_child_boundary();
         assert_eq!(
-            stack.insert_parent_at_child_boundary(continuation_frame(1), 0),
+            stack.insert_parent_at_child_boundary(continuation_frame(1), empty_boundary),
             Err(ResolutionStackError::NoActiveChild)
         );
 
@@ -5091,10 +5308,11 @@ mod tests {
                 FrameKind::AbilityContinuation,
             ]
         );
+        let at_top = stack.capture_child_boundary();
         assert_eq!(
-            stack.insert_parent_at_child_boundary(continuation_frame(3), stack.len()),
+            stack.insert_parent_at_child_boundary(continuation_frame(3), at_top),
             Err(ResolutionStackError::InvalidChildBoundary {
-                child_stack_start: stack.len(),
+                child_stack_start: at_top,
                 stack_len: stack.len(),
             })
         );
@@ -5265,6 +5483,153 @@ mod tests {
         );
     }
 
+    fn parked_cipher_encode_frame() -> ResolutionFrame {
+        ResolutionFrame::CipherEncode(PendingCipherEncode {
+            stage: CipherEncodeStage::Parked,
+            card_id: ObjectId(41),
+            controller: PlayerId(0),
+            creatures: vec![ObjectId(42)],
+        })
+    }
+
+    fn opponent_may_owner_frame() -> ResolutionFrame {
+        ResolutionFrame::OptionalEffect(OptionalEffectFrame {
+            ability: Box::new(resolved_draw(7)),
+            trigger_event: None,
+            trigger_events: Vec::new(),
+            trigger_match_count: None,
+        })
+    }
+
+    fn opponent_may_prompt() -> WaitingFor {
+        WaitingFor::OpponentMayChoice {
+            player: PlayerId(1),
+            source_id: ObjectId(7),
+            description: None,
+            remaining: Vec::new(),
+        }
+    }
+
+    /// Parking answers from the stack's shape, and every shape has an answer.
+    ///
+    /// The three placements are exhaustive over what can be beneath a live
+    /// prompt: no frame at all (a discard prompt owns none), an ordinary active
+    /// child, or a paused post-replacement/draw pair whose adjacency
+    /// `validate` protects (CR 614.11a + CR 121.6b).
+    #[test]
+    fn parking_beneath_a_live_prompt_places_a_frame_by_stack_shape() {
+        let mut empty = ResolutionStack::default();
+        assert_eq!(
+            empty.park_beneath_live_prompt(parked_cipher_encode_frame()),
+            ParkedFramePlacement::OnlyFrame
+        );
+        assert_eq!(
+            empty.iter().map(ResolutionFrame::kind).collect::<Vec<_>>(),
+            vec![FrameKind::CipherEncode]
+        );
+
+        let mut ordinary = ResolutionStack::default();
+        ordinary.push_inner(opponent_may_owner_frame());
+        assert_eq!(
+            ordinary.park_beneath_live_prompt(parked_cipher_encode_frame()),
+            ParkedFramePlacement::BelowActiveChild
+        );
+        assert_eq!(
+            ordinary
+                .iter()
+                .map(ResolutionFrame::kind)
+                .collect::<Vec<_>>(),
+            vec![FrameKind::CipherEncode, FrameKind::OptionalEffect],
+            "the ordinary case still parks immediately below the active child"
+        );
+        ordinary
+            .validate(&opponent_may_prompt())
+            .expect("a parked frame owns no prompt, so the live one keeps its owner");
+    }
+
+    /// The shape the #7496 review named: the pair must not be split.
+    ///
+    /// Both admitted forms are covered — the pair as the active operation, and
+    /// the pair beneath the single direct-choice owner `validate` allows above
+    /// it. The second is the one a "below the top" insert gets wrong, and the
+    /// last assertion measures exactly that rather than asserting it.
+    #[test]
+    fn parking_stays_outside_a_paused_post_replacement_draw_pair() {
+        let mut pair_active = ResolutionStack::default();
+        pair_active
+            .install_adjacent_post_replacement_draw(
+                paused_post_replacement_frame(),
+                active_multi_draw_frame(),
+            )
+            .expect("the fixture is the shipped adjacent pair");
+        assert_eq!(
+            pair_active.park_beneath_live_prompt(parked_cipher_encode_frame()),
+            ParkedFramePlacement::OutsidePausedDrawPair
+        );
+        assert_eq!(
+            pair_active
+                .iter()
+                .map(ResolutionFrame::kind)
+                .collect::<Vec<_>>(),
+            vec![
+                FrameKind::CipherEncode,
+                FrameKind::PostReplacement,
+                FrameKind::MultiDraw
+            ],
+            "the parked frame goes beneath the pair, never between its halves"
+        );
+
+        let mut pair_under_owner = ResolutionStack::default();
+        pair_under_owner
+            .install_adjacent_post_replacement_draw(
+                paused_post_replacement_frame(),
+                active_multi_draw_frame(),
+            )
+            .expect("the fixture is the shipped adjacent pair");
+        pair_under_owner.push_inner(opponent_may_owner_frame());
+        assert_eq!(
+            pair_under_owner.park_beneath_live_prompt(parked_cipher_encode_frame()),
+            ParkedFramePlacement::OutsidePausedDrawPair
+        );
+        assert_eq!(
+            pair_under_owner
+                .iter()
+                .map(ResolutionFrame::kind)
+                .collect::<Vec<_>>(),
+            vec![
+                FrameKind::CipherEncode,
+                FrameKind::PostReplacement,
+                FrameKind::MultiDraw,
+                FrameKind::OptionalEffect
+            ]
+        );
+        pair_under_owner
+            .validate(&opponent_may_prompt())
+            .expect("parking outside the pair leaves both the pair and the prompt intact");
+
+        // What the placement is FOR: the same frame inserted below the top
+        // instead lands between the pair's halves, and the stack rejects it.
+        let mut naive = ResolutionStack::default();
+        naive
+            .install_adjacent_post_replacement_draw(
+                paused_post_replacement_frame(),
+                active_multi_draw_frame(),
+            )
+            .expect("the fixture is the shipped adjacent pair");
+        naive.push_inner(opponent_may_owner_frame());
+        naive
+            .insert_parent_of_active(parked_cipher_encode_frame())
+            .expect("the structural insert itself succeeds — it is validation that refuses");
+        assert!(
+            matches!(
+                naive.validate(&opponent_may_prompt()),
+                Err(ResolutionStackError::InvalidAdjacentPair(_))
+            ),
+            "inserting below the top splits the pair, which is why placement is the \
+             stack's decision and not the caller's"
+        );
+    }
+
     #[test]
     fn adjacent_pair_operations_never_search_for_a_non_top_parent() {
         let mut stack = ResolutionStack::default();
@@ -5381,6 +5746,21 @@ mod tests {
     }
 
     #[test]
+    fn captured_child_boundaries_order_by_stack_growth() {
+        let mut stack = ResolutionStack::default();
+        let empty = stack.capture_child_boundary();
+
+        stack.push_inner(continuation_frame(1));
+        let after_push = stack.capture_child_boundary();
+        assert!(after_push > empty);
+
+        stack
+            .pop_expected(FrameKind::AbilityContinuation)
+            .expect("the pushed continuation is the top frame");
+        assert_eq!(stack.capture_child_boundary(), empty);
+    }
+
+    #[test]
     fn change_zone_repark_keeps_a_distinct_nested_change_zone_child() {
         let ResolutionFrame::ChangeZone(outer) = change_zone_frame(160) else {
             unreachable!("helper constructs a ChangeZone frame")
@@ -5403,10 +5783,11 @@ mod tests {
 
         let mut stack = ResolutionStack::default();
         stack.push_inner(ResolutionFrame::ChangeZone(outer));
+        let boundary = stack.capture_child_boundary();
         stack.push_inner(ResolutionFrame::ChangeZone(child));
 
         stack
-            .replace_change_zone_parent_at_child_boundary(replacement, 1)
+            .replace_change_zone_parent_at_child_boundary(replacement, boundary)
             .expect("the outer ChangeZone owner remains immediately below its child");
 
         let frames = stack.iter().collect::<Vec<_>>();

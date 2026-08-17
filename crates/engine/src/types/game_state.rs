@@ -48,9 +48,10 @@ use super::replacements::ReplacementEvent;
 #[cfg(debug_assertions)]
 use super::resolution::debug_assert_runtime_resolution_invariants;
 use super::resolution::{
-    AbilityContinuationFrame, ChangeZoneFrame, FrameGate, MultiDrawFrame, OptionalEffectFrame,
-    PendingCoinFlip, PendingMutateMerge, PendingProliferateActions, RepeatedOptionalPaymentFrame,
-    ResolutionFrame, ResolutionStack, ResolutionStackError, ResolutionStateWire,
+    AbilityContinuationFrame, ChangeZoneFrame, ChildStackDepth, FrameGate, MultiDrawFrame,
+    OptionalEffectFrame, PendingCoinFlip, PendingMutateMerge, PendingProliferateActions,
+    RepeatedOptionalPaymentFrame, ResolutionFrame, ResolutionStack, ResolutionStackError,
+    ResolutionStateWire,
 };
 use super::resolved_commands::{
     ManaPaymentRecipient, ResolvedContinuousEffectCommand,
@@ -19049,9 +19050,13 @@ impl GameState {
     pub fn push_change_zone_iteration_after_child(
         &mut self,
         pending: PendingChangeZoneIteration,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) {
-        match self.resolution_stack.len().cmp(&child_stack_start) {
+        match self
+            .resolution_stack
+            .capture_child_boundary()
+            .cmp(&child_stack_start)
+        {
             std::cmp::Ordering::Less => {
                 panic!("ChangeZone move removed a parent before it could be parked")
             }
@@ -19083,9 +19088,13 @@ impl GameState {
     pub fn replace_active_change_zone_iteration_after_child(
         &mut self,
         pending: PendingChangeZoneIteration,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) {
-        match self.resolution_stack.len().cmp(&child_stack_start) {
+        match self
+            .resolution_stack
+            .capture_child_boundary()
+            .cmp(&child_stack_start)
+        {
             std::cmp::Ordering::Less => {
                 panic!("ChangeZone move removed its active owner before it could be re-parked")
             }
@@ -19286,7 +19295,7 @@ impl GameState {
     pub fn insert_copy_token_parent_at_child_boundary(
         &mut self,
         pending: PendingCopyTokenResolution,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         self.resolution_stack
             .insert_copy_token_parent_at_child_boundary(pending, child_stack_start)
@@ -19316,7 +19325,7 @@ impl GameState {
     pub fn insert_debug_card_entries_parent_at_child_boundary(
         &mut self,
         pending: PendingDebugCardEntries,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         self.resolution_stack
             .insert_debug_card_entries_parent_at_child_boundary(pending, child_stack_start)
@@ -19364,7 +19373,7 @@ impl GameState {
     pub fn insert_each_player_copy_chosen_parent_at_child_boundary(
         &mut self,
         pending: PendingEachPlayerCopyChosen,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         self.resolution_stack
             .insert_each_player_copy_chosen_parent_at_child_boundary(pending, child_stack_start)
@@ -19407,7 +19416,7 @@ impl GameState {
     pub fn insert_repeat_for_parent_at_child_boundary(
         &mut self,
         pending: PendingRepeatIteration,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         self.resolution_stack.insert_parent_at_child_boundary(
             super::resolution::ResolutionFrame::RepeatFor(pending),
@@ -19450,7 +19459,7 @@ impl GameState {
     pub fn insert_repeat_until_parent_at_child_boundary(
         &mut self,
         pending: PendingRepeatUntil,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         self.resolution_stack.insert_parent_at_child_boundary(
             super::resolution::ResolutionFrame::RepeatUntil(pending),
@@ -19497,7 +19506,7 @@ impl GameState {
     pub fn insert_vote_ballot_parent_at_child_boundary(
         &mut self,
         pending: PendingVoteBallotIteration,
-        child_stack_start: usize,
+        child_stack_start: ChildStackDepth,
     ) -> Result<(), ResolutionStackError> {
         self.resolution_stack.insert_parent_at_child_boundary(
             super::resolution::ResolutionFrame::VoteBallot(pending),
@@ -19697,6 +19706,44 @@ impl GameState {
     /// Parks one mutate-merge top/bottom choice resolution.
     pub fn push_mutate_merge_frame(&mut self, pending: PendingMutateMerge) {
         self.resolution_stack.push_mutate_merge(pending);
+    }
+
+    /// CR 702.99a: Park a Cipher encode offer as the active prompt owner.
+    pub fn push_cipher_encode_frame(&mut self, pending: super::resolution::PendingCipherEncode) {
+        self.resolution_stack.push_cipher_encode(pending);
+    }
+
+    /// CR 702.99a: Park a Cipher encode offer beneath the frame that owns the
+    /// spell's own prompt, so the encode arms only after that owner is
+    /// consumed.
+    ///
+    /// The position is the stack's decision, not this caller's: a parked offer
+    /// owns no prompt while `Parked`, and where such a frame may sit is a
+    /// property of the stack's current shape — see
+    /// [`ParkedFramePlacement`](super::resolution::ParkedFramePlacement). This
+    /// deliberately does NOT go through `InsertParentOfActive`: inserting below
+    /// the top is a structural guess that lands inside a paused
+    /// post-replacement/draw pair, and by the time the resulting `Err` came
+    /// back the caller had already retained its card off the normal resolution
+    /// route.
+    pub fn park_cipher_encode_beneath_live_prompt(
+        &mut self,
+        pending: super::resolution::PendingCipherEncode,
+    ) -> Result<(), ResolutionStackError> {
+        self.resolve_and_apply_frame_transition(ResolvedFrameTransition::ParkBeneathLivePrompt {
+            frame: super::resolution::ResolutionFrame::CipherEncode(pending),
+        })
+        .map(|_| ())
+        .map_err(|error| match error {
+            ResolvedFrameTransitionReplayInvariantError::Stack(error) => error,
+        })
+    }
+
+    /// CR 702.99a: Consume the active Cipher encode offer once answered.
+    pub fn take_active_cipher_encode_frame(
+        &mut self,
+    ) -> Result<Option<super::resolution::PendingCipherEncode>, ResolutionStackError> {
+        self.resolution_stack.take_active_cipher_encode()
     }
 
     /// Re-parks the active mutate-merge owner without exposing an empty-stack
@@ -20544,6 +20591,9 @@ impl GameState {
             ResolvedFrameTransition::Push { frame } => resolution_stack.push_inner(frame.clone()),
             ResolvedFrameTransition::InsertParentOfActive { frame } => {
                 resolution_stack.insert_parent_of_active(frame.clone())?;
+            }
+            ResolvedFrameTransition::ParkBeneathLivePrompt { frame } => {
+                let _ = resolution_stack.park_beneath_live_prompt(frame.clone());
             }
             ResolvedFrameTransition::PopExpected { kind } => {
                 let _ = resolution_stack.pop_expected(*kind)?;
