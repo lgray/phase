@@ -2699,28 +2699,33 @@ pub(super) fn handle_resolution_choice(
                             continue;
                         }
                         match item {
-                            PersistentAxisMaterialization::Tokens(profile) => {
-                                // CR 707.2 (+ CR 111.10): mint N tapped copy-tokens of the
-                                // fodder profile — a source-less mint, so route through
-                                // `drive_copy_token_batches` (`ObjectId(0)` sentinel source).
+                            PersistentAxisMaterialization::Tokens(growth) => {
+                                // CR 707.2 (+ CR 111.3): mint `per_cycle_delta × N` tapped
+                                // copy-tokens of the fodder profile — a source-less mint, so route
+                                // through `drive_copy_token_batches` (`ObjectId(0)` sentinel).
                                 //
-                                // CR 732.2a k≡1 INVARIANT: this mints `count: amount` == k·amount
-                                // with the per-cycle fodder count k STRUCTURALLY ≡ 1. A `Tokens`
-                                // stash is only registered under `if let Some(profile)` in
-                                // `materialize_object_growth_shortcut` (engine.rs), whose
-                                // `current_period_fodder` derives the profile from
-                                // `derived_fodder_class` (`game/engine.rs`), which returns `None`
-                                // unless EXACTLY one new battlefield object appeared per period
-                                // (`let id = new_ids.next()?; if new_ids.next().is_some() { None }`).
-                                // A k>1 period (two+ new objects/cycle) fails that gate ⇒ no `Tokens`
-                                // stash ⇒ this arm is never reached for k≠1. So `count: amount` is
-                                // EXACT, not a k·N undercount. (Counters/Life instead carry a measured
-                                // `per_cycle_delta`, so those axes handle k>1 by construction.)
+                                // CR 732.2a k-MULTISET INVARIANT: `per_cycle_delta` is the per-cycle
+                                // fodder count k measured by `derived_fodder_class`
+                                // (`game/engine.rs`), and `per_cycle_delta × amount` is EXACT for
+                                // two reasons, both established before this arm is reachable:
+                                //   (i) HOMOGENEITY — `derived_fodder_class` returns `None` unless
+                                //       EVERY new battlefield object of the period is equal under
+                                //       BOTH `analysis::resource::fodder_content_eq` and
+                                //       `game::printed_cards::intrinsic_copiable_values`, so this
+                                //       ONE profile faithfully represents all k members;
+                                //   (ii) NO DOUBLE-APPLY — this mint re-runs the replacement
+                                //       pipeline (`replace_event` below), so a k that already
+                                //       included a `CreateToken` replacement's multiplication would
+                                //       have it applied twice. `materialize_object_growth_shortcut`'s
+                                //       route guard sends any such period to `DriveSequence`
+                                //       instead (`analysis::resource::token_growth_is_observed`,
+                                //       gated on k > 1), so it never reaches here.
+                                // (Counters/Life carry the same `per_cycle_delta` field.)
                                 let batch = crate::types::game_state::PendingCopyTokenBatch {
                                     owner: player,
-                                    count: amount,
+                                    count: growth.per_cycle_delta.saturating_mul(amount),
                                     copy: Box::new(crate::types::proposed_event::CopyTokenSpec {
-                                        values: profile.clone(),
+                                        values: growth.profile.clone(),
                                         display_source:
                                             crate::game::game_object::DisplaySource::Token,
                                         printed_ref: None,
@@ -10802,7 +10807,12 @@ mod tests {
         use crate::game::derived_views::CollapseCertainty;
 
         let kinds = [
-            PersistentAxisMaterialization::Tokens(boundary_census_token_profile()),
+            PersistentAxisMaterialization::Tokens(Box::new(
+                crate::types::game_state::TokenGrowth {
+                    profile: boundary_census_token_profile(),
+                    per_cycle_delta: 1,
+                },
+            )),
             PersistentAxisMaterialization::Counters(vec![]),
             PersistentAxisMaterialization::Life {
                 player: PlayerId(0),

@@ -2852,11 +2852,16 @@ pub(crate) fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone
 /// `analysis::resource::loop_states_cover_modulo_fodder_growth`, guarantee the fodder is the ONLY
 /// class that changes across the covered cycle:
 ///
-/// 1. the FIRST accept-time frame pair's single-new-battlefield-object is guaranteed by
-///    `game::engine::derived_fodder_class` (it returns `None` if more than one object entered the
-///    battlefield that cycle, so a `Some` fodder class means the fodder was the sole entrant;
-///    note it also has a second, display-only caller — the soundness-bearing one is inside the
-///    fodder-cover arm); and
+/// 1. the FIRST accept-time frame pair's ONE-CLASS entry set is guaranteed by
+///    `game::engine::derived_fodder_class` (it returns `None` unless EVERY object that entered the
+///    battlefield that cycle is the same class under BOTH
+///    `analysis::resource::fodder_content_eq` AND
+///    `game::printed_cards::intrinsic_copiable_values`, so a `Some` fodder class means the k >= 1
+///    entrants were all fodder and nothing else entered. What this invariant needs is "one class",
+///    not "one object": the earlier single-entrant rule delivered that by CARDINALITY, this
+///    delivers it by CONTENT on a strictly wider equality — a strengthening of the disjointness
+///    premise, not a relaxation. Note it also has a second, display-only caller — the
+///    soundness-bearing one is inside the fodder-cover arm); and
 /// 2. the SECOND cover frame pair's "only the fodder partition grows" is guaranteed SOLELY by
 ///    `analysis::resource::board_covers_modulo_fodder`, whose all-zones
 ///    stable-partition content-equality is enforced by its own return value at its ONLY call

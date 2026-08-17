@@ -5608,24 +5608,53 @@ fn normalize_recast_frame(
     s
 }
 
-/// CR 111.10: the content class of the reproduced token — the single battlefield object
-/// present in `after` but absent from `before` (the one predefined token the recast
-/// creates). `None` unless EXACTLY one new battlefield object appeared (the target class
-/// creates one Saproling; zero or several ⇒ not this shape ⇒ fail-closed).
+/// CR 111.3 / CR 707.2: the content class of the reproduced fodder, and the per-cycle count `k`
+/// of members the period reproduces — the battlefield objects present in `after` but absent from
+/// `before`. `None` unless EVERY new battlefield object of the period belongs to ONE class;
+/// `Some((class, k))` with `k >= 1` otherwise. Zero new objects ⇒ `None` (not this shape).
+///
+/// CR 111.3 (`MagicCompRules.txt:649`) is the authority for a created token's characteristics —
+/// "the spell or ability that creates a token may define the values of any number of
+/// characteristics ... they define the token's COPIABLE VALUES", with a Saproling as its own
+/// example. It is cited here in place of the CR 111.10 this doc used to carry: CR 111.10's scope
+/// is PREDEFINED tokens (Treasure, Food, ...), which does not cover the fodder class this gate
+/// derives.
+///
+/// HOMOGENEITY IS A CONJUNCTION, and the second conjunct is not optional.
+/// [`crate::analysis::resource::fodder_content_eq`] routes through `object_content_eq`
+/// (`types/game_state.rs`), whose per-id justification — "card-intrinsic fields are immutable FOR
+/// A GIVEN OBJECT ID" — does not transfer to this CROSS-id compare: it compares neither
+/// `card_types`, `color` nor `keywords`. Those three are exactly the characteristics
+/// CR 707.2 (`MagicCompRules.txt:5626`) says a copy acquires, and the boundary mint reproduces the
+/// class by copying `intrinsic_copiable_values` — so a multiset homogeneous only under
+/// `fodder_content_eq` could mint k*N copies of ONE representative while the period produced k
+/// DIFFERENT permanents. The `CopiableValues` equality closes that on exactly the axis the mint
+/// reads.
 fn derived_fodder_class(
     before: &GameState,
     after: &GameState,
-) -> Option<crate::game::game_object::GameObject> {
-    let mut new_ids = after
+) -> Option<(crate::game::game_object::GameObject, u32)> {
+    let new_ids: Vec<_> = after
         .battlefield
         .iter()
         .copied()
-        .filter(|id| !before.battlefield.contains(id));
-    let id = new_ids.next()?;
-    if new_ids.next().is_some() {
-        return None;
+        .filter(|id| !before.battlefield.contains(id))
+        .collect();
+    let mut members = new_ids.iter().filter_map(|id| after.objects.get(id));
+    let class = members.next()?.clone();
+    let class_values = crate::game::printed_cards::intrinsic_copiable_values(&class);
+    let mut k: u32 = 1;
+    for other in members {
+        if !crate::analysis::resource::fodder_content_eq(&class, other)
+            || crate::game::printed_cards::intrinsic_copiable_values(other) != class_values
+        {
+            return None;
+        }
+        k += 1;
     }
-    after.objects.get(&id).cloned()
+    // Fail-closed on a partial resolve: an id in `after.battlefield` with no `after.objects` entry
+    // was silently skipped by the `filter_map` above and must not be counted as homogeneous.
+    (k as usize == new_ids.len()).then_some((class, k))
 }
 
 /// The reproduced fodder class of one accepted object-growth period, plus whether that
@@ -5635,6 +5664,10 @@ fn derived_fodder_class(
 /// clone-drive that derives the class.
 struct PeriodFodder {
     class: crate::game::game_object::GameObject,
+    /// CR 111.3: the per-cycle count `k` of class members the period reproduces, measured by
+    /// [`derived_fodder_class`] on the same one-period drive. `>= 1`. The boundary mint multiplies
+    /// by it (`PersistentAxisMaterialization::Tokens`' `per_cycle_delta`).
+    per_cycle_count: u32,
     taps_fodder: bool,
 }
 
@@ -5681,9 +5714,11 @@ fn drive_one_period_frames(state: &GameState) -> Option<(GameState, GameState)> 
 /// CR 732.2a / CR 111.1: re-derive the reproduced fodder class of the accepted
 /// object-growth period by driving ONE iteration of `last_loop_action_sequence` on a
 /// clone (`drive_one_period_frames`), and measure whether that period taps a fodder member.
-/// `None` when the sequence is empty or the period reproduces no single new battlefield
-/// object (a multi-activation mana engine → no fodder pile to display). Same
-/// `derived_fodder_class` single-new-object rule as the detection drive. Called at
+/// `None` when the sequence is empty or the period reproduces no HOMOGENEOUS multiset of new
+/// battlefield objects (a multi-activation mana engine reproduces none → no fodder pile to
+/// display; a heterogeneous multi-entry period is not this shape). Same
+/// `derived_fodder_class` one-class rule as the detection drive, and the same per-cycle count
+/// `k` it measures. Called at
 /// materialize (with the sequence still intact) to snapshot the ∞ pile and its tapped-growth
 /// axis. The post-drive `derived_fodder_class` / `tapped_fodder_members` inspections are pure
 /// (they never read the probe flag), so running them after the shared kernel's guard has
@@ -5691,7 +5726,7 @@ fn drive_one_period_frames(state: &GameState) -> Option<(GameState, GameState)> 
 fn current_period_fodder(state: &GameState) -> Option<PeriodFodder> {
     let controller = state.last_loop_action_sequence.first()?.controller;
     let (before, after) = drive_one_period_frames(state)?;
-    let class = derived_fodder_class(&before, &after)?;
+    let (class, per_cycle_count) = derived_fodder_class(&before, &after)?;
     // CR 702.51a: the period taps a fodder iff the driven tapped-fodder multiset GREW across the
     // one-period drive. `select_convoke_taps` sorts fodder (`is_token`) FIRST, so a convoke/
     // tap-cost period taps a reproduced fodder → this grows; a mana-paid untapped-growth period
@@ -5700,7 +5735,11 @@ fn current_period_fodder(state: &GameState) -> Option<PeriodFodder> {
     let taps_fodder = crate::analysis::resource::tapped_fodder_members(&after, controller, &class)
         .len()
         > crate::analysis::resource::tapped_fodder_members(&before, controller, &class).len();
-    Some(PeriodFodder { class, taps_fodder })
+    Some(PeriodFodder {
+        class,
+        per_cycle_count,
+        taps_fodder,
+    })
 }
 
 /// CR 122.1 + CR 732.2a: THE SINGLE per-object counter derivation of an accepted period — drive
@@ -5933,15 +5972,16 @@ fn try_offer_object_growth_shortcut(
         normalize_recast_frame(&s_n2, &seq[0]),
     );
     // CR 732.2a board recurrence on BOTH pairs — two disjoint recurrence shapes:
-    //  - fodder-growth (a token was reproduced each period, `derived_fodder_class` is `Some`):
-    //    cover modulo the inert reproduced fodder class (the P3 object-growth path, unchanged).
+    //  - fodder-growth (one HOMOGENEOUS class of k >= 1 members was reproduced each period,
+    //    `derived_fodder_class` is `Some`): cover modulo the inert reproduced fodder class (the
+    //    P3 object-growth path, unchanged — the cover consumes only the class, never k).
     //  - pure resource growth (NO new battlefield object — the multi-activation mana-engine class):
     //    the board returns EQUAL modulo projected resources (mana grows +N/period, board identical).
     //    PROBE-1 measured `loop_states_equal_modulo_resources` TRUE on real Basalt+Power sequence
     //    boundaries. A PARTIAL period never reaches here board-equal (the drive re-taps a tapped
     //    source and aborts first), so the drive+cover IS the period-boundary check.
     let cover_ok = match derived_fodder_class(&s_n, &s_n1) {
-        Some(mut fodder) => {
+        Some((mut fodder, _k)) => {
             crate::analysis::resource::project_object_for_loop(&mut fodder);
             crate::analysis::resource::loop_states_cover_modulo_fodder_growth(
                 &cs_n, &cs_n1, &fodder,
@@ -6098,7 +6138,11 @@ fn materialize_object_growth_shortcut(
     // DISPLAY (hoisted, unconditional — runs for BOTH the observed and unobserved routes so an
     // observed token+X loop keeps its on-battlefield ∞ pile accept→boundary): seed the pile's
     // anchors and register it, capturing the token copiable profile for the batched Tokens stash.
-    let token_profile: Option<crate::types::ability::CopiableValues> =
+    // PAIRED, not two bindings: the per-cycle count `k` travels WITH the profile so
+    // `per_cycle_delta > 1 ⇒ token_profile.is_some()` is enforced by the type rather than by a
+    // reader remembering it. A `k` bound outside this `if let` (defaulted to 1) would compile and
+    // silently disable the route guard below.
+    let token_growth: Option<(crate::types::ability::CopiableValues, u32)> =
         if let Some(period) = current_period_fodder(state) {
             let class = &period.class;
             // CR 732.2a / CR 707.2: capture the fodder's copiable profile NOW, while the recast
@@ -6146,7 +6190,7 @@ fn materialize_object_growth_shortcut(
             let pile =
                 crate::analysis::resource::tapped_fodder_members(state, proposal.proposer, class);
             state.register_unbounded_loop_pile(proposal.proposer, pile);
-            Some(profile)
+            Some((profile, period.per_cycle_count))
         } else {
             None
         };
@@ -6197,7 +6241,7 @@ fn materialize_object_growth_shortcut(
     // `apply_life_gain` from four resolvers, including CR 702.15b lifelink on an ETB damage
     // trigger (the Terror of the Peaks shape), which no effect-shape test can see.
     let life_etb_sourced = !life.is_empty()
-        && token_profile.is_some()
+        && token_growth.is_some()
         && crate::analysis::resource::board_has_functioning_etb_trigger(state);
     // CR 601.2i + CR 732.2a: a per-cycle side effect the board re-earns from the loop's own CAST
     // also belongs on the concrete replay. The conjuncts above are AXIS-shaped because the
@@ -6227,11 +6271,22 @@ fn materialize_object_growth_shortcut(
     // drift this shape forecloses. A future fourth batched axis is a fourth push HERE and feeds
     // the route guard for free, because the arm has no per-axis condition of its own left to
     // forget to update.
+    // HOISTED before the move below (`token_growth` is consumed by the `if let` in `batched`),
+    // exactly as `life_etb_sourced` reads it before the same move. `u32` is `Copy`, so this is a
+    // read, not a clone. 0 when no `Tokens` item exists — which is the only honest value there,
+    // and never 1 (a 1 would read as "one token per cycle" and switch the route guard off for a
+    // stash that does not exist).
+    let token_per_cycle_delta: u32 = token_growth.as_ref().map_or(0, |(_, k)| *k);
     let batched: Vec<crate::types::game_state::PersistentAxisMaterialization> = {
-        use crate::types::game_state::PersistentAxisMaterialization;
+        use crate::types::game_state::{PersistentAxisMaterialization, TokenGrowth};
         let mut items = Vec::new();
-        if let Some(profile) = token_profile {
-            items.push(PersistentAxisMaterialization::Tokens(Box::new(profile)));
+        if let Some((profile, per_cycle_delta)) = token_growth {
+            items.push(PersistentAxisMaterialization::Tokens(Box::new(
+                TokenGrowth {
+                    profile: Box::new(profile),
+                    per_cycle_delta,
+                },
+            )));
         }
         if !growths.is_empty() {
             items.push(PersistentAxisMaterialization::Counters(growths));
@@ -6286,8 +6341,38 @@ fn materialize_object_growth_shortcut(
     // true of the seam — the replay route is only ever the BETTER VERSION of a registration the
     // batched arm would have made, never a registration out of nothing — and a future fifth
     // disjunct inherits the guard instead of having to remember it.
+    // CR 614.1a + CR 603.6a: the batched `Tokens` mint collapses k·N real creations into ONE
+    // `ProposedEvent::CreateToken` of size k·N, and RE-RUNS the replacement pipeline on it
+    // (`game::effects::token_copy`'s `replace_event` call; the key dispatch is
+    // `game::replacement::replacement_event_keys_for_event`). Faithful only if nothing re-derives
+    // a count from that event or from the entries it produces — so at k > 1 the board must be
+    // quiet on both.
+    //
+    // WHAT THE `k > 1` GATE DOES, AND WHAT IT DOES NOT CLAIM:
+    //   * k > 1 ⇒ the multiplicity came from SOMEWHERE, and the batched arm cannot tell a
+    //     replacement's factor from the period's own count. Refuse to guess: replay. Without this
+    //     the mint would propose k·N and the doubler would multiply it again — elision 2k·N
+    //     against performance k·N, a #7045 break this phase would otherwise CREATE.
+    //   * k == 1 is left EXACTLY as shipped. This is a narrowing of a NEW guard, not a claim that
+    //     the old path was exact: a rider-only `CreateToken` replacement (one carrying `execute`
+    //     but no `quantity_modification`) changes no count, so it never produces k >= 2 and the
+    //     gate switches this conjunct off — yet it fires once per EVENT, so a lump mint fires it
+    //     1x where N cycles fire it Nx. The same hole exists for a NON-TOKEN fodder class, whose
+    //     per-cycle creation never passes through `ProposedEvent::CreateToken`. Both exposures are
+    //     PRE-EXISTING (shipped has no token-axis firewall at all); phase A neither creates nor
+    //     widens them. Filed as `F-token-replacement-seat`.
+    //   * the k-gate is also what keeps every currently-green LoopShortcut row on its current
+    //     route (all are k == 1), and what makes an OPPONENT-controlled doubler a no-op: doublers
+    //     match by `token_owner_scope` (gated in `game::replacement`), so an opponent's doubler
+    //     contributes nothing to this seat's observed k.
+    let token_growth_needs_replay =
+        token_per_cycle_delta > 1 && crate::analysis::resource::token_growth_is_observed(state);
     let route = if !batched.is_empty()
-        && (counter_observed || life_observed || life_etb_sourced || cast_sourced)
+        && (counter_observed
+            || life_observed
+            || life_etb_sourced
+            || cast_sourced
+            || token_growth_needs_replay)
         && !sequence.is_empty()
     {
         LoopCollapseRoute::Replay

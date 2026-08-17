@@ -185,9 +185,14 @@ fn probe_c_multi_cycle_with_altar() {
     multi_cycle(load_wb(), "C");
 }
 
-/// The 2×2 factorial. `derived_fodder_class` (engine.rs:5175) is fail-closed at EXACTLY ONE new
-/// battlefield object per period, so Doubling Season (2 Saprolings/cycle) is a suppressor
-/// INDEPENDENT of Altar. Removing DS isolates the Altar/mill axis.
+/// The 2×2 factorial. HISTORICAL NOTE, kept because the arm names encode it:
+/// `game::engine::derived_fodder_class` (cited by SYMBOL — a line number here went stale once
+/// already) USED to be fail-closed at exactly one new battlefield object per period, which made
+/// Doubling Season (2 Saprolings/cycle) a suppressor INDEPENDENT of Altar. It is now a one-CLASS
+/// gate that admits a homogeneous k-multiset and reports k, so DS no longer suppresses the class
+/// derivation. What DS still does on this board is ROUTE: a k > 1 period with a live `CreateToken`
+/// replacement takes the `DriveSequence` replay instead of the batched mint
+/// (`analysis::resource::token_growth_is_observed`). Removing DS isolates the Altar/mill axis.
 fn remove(state: &mut GameState, id: ObjectId) {
     state.battlefield.retain(|x| *x != id);
     state.objects.remove(&id);

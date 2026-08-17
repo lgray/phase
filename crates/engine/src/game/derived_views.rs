@@ -3150,7 +3150,12 @@ mod tests {
             if accepted {
                 state.register_pending_materialization(
                     p0,
-                    PersistentAxisMaterialization::Tokens(family_test_token_profile()),
+                    PersistentAxisMaterialization::Tokens(Box::new(
+                        crate::types::game_state::TokenGrowth {
+                            profile: family_test_token_profile(),
+                            per_cycle_delta: 1,
+                        },
+                    )),
                 );
             }
             let mut events: Vec<GameEvent> = Vec::new();
@@ -5748,9 +5753,12 @@ mod tests {
         // `Tokens` is Conditional, because its boundary mint can park on a replacement choice.
         state.register_pending_materialization(
             PlayerId(0),
-            crate::types::game_state::PersistentAxisMaterialization::Tokens(
-                family_test_token_profile(),
-            ),
+            crate::types::game_state::PersistentAxisMaterialization::Tokens(Box::new(
+                crate::types::game_state::TokenGrowth {
+                    profile: family_test_token_profile(),
+                    per_cycle_delta: 1,
+                },
+            )),
         );
         let scheduled_views = derive_views(&state, None);
         assert!(

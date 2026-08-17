@@ -2865,8 +2865,7 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
 /// [`object_content_eq`] so the `_gameobject_partition_is_total` guard
 /// (game_object.rs) governs the fodder field set — no hand-rolled field list. This
 /// single point keeps the fodder compare honest as `GameObject` grows.
-#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests.
-fn fodder_content_eq(a: &GameObject, b: &GameObject) -> bool {
+pub(crate) fn fodder_content_eq(a: &GameObject, b: &GameObject) -> bool {
     let mut probe = a.clone();
     probe.tapped = b.tapped;
     crate::types::game_state::object_content_eq(&probe, b)
@@ -3474,7 +3473,10 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
 /// SOUNDNESS rests on the SAME disjointness premise as
 /// `etb_observer_provably_excludes_class` (the GAP-1 doc on this function's caller): the
 /// fodder is the only class that changes across the covered cycle, guaranteed IN ORDER by
-/// `game::engine::derived_fodder_class` — which also has a second, display-only caller;
+/// `game::engine::derived_fodder_class`'s ONE-CLASS rule (it returns `None` unless every new
+/// battlefield object of the cycle is the same class under BOTH `fodder_content_eq` AND
+/// `game::printed_cards::intrinsic_copiable_values`, so a `Some` means k >= 1 members of one class
+/// and nothing else) — which also has a second, display-only caller;
 /// the soundness-bearing one is inside the fodder-cover arm — then
 /// `board_covers_modulo_fodder` at its ONLY call site, which PRECEDES this call. Do not
 /// reorder that gate after the firewall.
@@ -3712,8 +3714,15 @@ fn fire_time_conditions_read_growing_class_scoped(
             // per-cycle token creation, so it does NOT observe the loop — skip it rather than
             // veto. GAP-1 (soundness + ordering, load-bearing): this is sound only because the
             // fodder is the ONLY class that changed across the covered cycle, guaranteed IN ORDER
-            // by (a) `game::engine::derived_fodder_class`'s single-new-battlefield-object rule
-            // on the FIRST accept-time frame pair — that fn also has a second, display-only
+            // by (a) `game::engine::derived_fodder_class`'s ONE-CLASS rule on the FIRST
+            // accept-time frame pair — it returns `None` unless EVERY new battlefield object of
+            // that cycle is the same class under BOTH `fodder_content_eq` AND
+            // `game::printed_cards::intrinsic_copiable_values`, so a `Some` fodder class means the
+            // entrants were k >= 1 members of that one class and nothing else. (STRENGTHENED, not
+            // weakened, by the k-multiset relaxation: the old rule delivered one class by
+            // CARDINALITY — one entrant is trivially one class — where this delivers it by
+            // CONTENT, on a strictly wider equality than the cover below uses. What the relief
+            // needs is "one class", and it still gets it.) That fn also has a second, display-only
             // caller; the soundness-bearing one is inside the fodder-cover arm — and (b)
             // `board_covers_modulo_fodder`'s all-zones stable-partition content-equality, at
             // its ONLY call site, on the SECOND cover frame pair, which PRECEDES this firewall
@@ -4990,14 +4999,66 @@ fn board_has_event_observer(
     }) {
         return true;
     }
-    for (_, obj, def) in crate::game::functioning_abilities::active_replacements(state) {
-        // CR 614.1 / CR 113.6: `active_replacements` is all-zones; a life/counter-event
-        // replacement functions on the battlefield or in the command zone.
-        if matches!(obj.zone, Zone::Battlefield | Zone::Command) && def.event == repl_event {
-            return true;
-        }
-    }
-    false
+    functioning_board_replacement_defs(state).any(|def| def.event == repl_event)
+}
+
+/// CR 614.1 / CR 113.6: every replacement definition FUNCTIONING on the battlefield or in the
+/// command zone. The shared walk the per-event replacement questions specialize — the mirror of
+/// [`functioning_board_trigger_defs`] on the replacement side, extracted (not copied) because
+/// [`token_growth_is_observed`] asks a differently-FILTERED question of the same walk than
+/// [`board_has_event_observer`] does.
+///
+/// The zone narrowing is this walk's whole contribution: `active_replacements` is all-zones, and
+/// dropping the narrowing would let a graveyard-resident replacement route loops.
+fn functioning_board_replacement_defs(
+    state: &GameState,
+) -> impl Iterator<Item = &crate::types::ability::ReplacementDefinition> {
+    crate::game::functioning_abilities::active_replacements(state)
+        .filter(|(_, obj, _)| matches!(obj.zone, Zone::Battlefield | Zone::Command))
+        .map(|(_, _, def)| def)
+}
+
+/// CR 614.1d / CR 614.12: is any battlefield/command-functioning replacement watching ANY of
+/// `repl_events` in a way that could apply to a permanent this collapse would CREATE? Slice-taking
+/// so one board walk answers the whole set.
+///
+/// SELF-SCOPED REPLACEMENTS ARE EXCLUDED, and that exclusion is what makes this predicate mean
+/// anything. The two rules are cited for two different halves of the argument, and neither
+/// substitutes for the other:
+/// - **CR 614.1d** (`MagicCompRules.txt:3064`) is the TEMPLATING authority — it distinguishes
+///   "[This permanent] enters . . ." from "[Objects] enter [the battlefield] . . .", which is
+///   exactly the `valid_card: SelfRef` / non-`SelfRef` split, and is the sub-rule
+///   `game::replacement`'s `apply_state_level_gates` names for the `valid_card` gate.
+/// - **CR 614.12** (`:3100`) is the APPLICABILITY authority — "Such effects may come from the
+///   permanent itself IF THEY AFFECT ONLY THAT PERMANENT (as opposed to a general subset of
+///   permanents that includes it)", with the Orb of Dreams example spelling out the negative
+///   ("It won't affect itself").
+///
+/// So a `valid_card: SelfRef` replacement ("~ enters tapped") applies ONLY to the object carrying
+/// it — the same rule `game::replacement`'s entering-object gate enforces by testing
+/// `repl_def.valid_card != Some(TargetFilter::SelfRef)`. Such a definition can never observe a
+/// DIFFERENT, newly-created permanent entering, and MEASURED on this lane's own target dump all 12
+/// battlefield entry replacements are exactly that shape (taplands). Without the exclusion this
+/// predicate is TRUE on every realistic board, which is not conservatism — it is a firewall that
+/// has stopped discriminating.
+///
+/// A self-replacement carried BY a minted token still applies to that token, identically on both
+/// routes (once per entering copy), so excluding the board's own self-replacements cannot make the
+/// batched arm diverge from the replay.
+///
+/// Every other `valid_card` shape stays fail-closed (counted as an observer), because deciding
+/// whether an arbitrary filter matches a permanent that does not exist yet is not decidable here.
+pub(crate) fn board_has_active_replacement_among(
+    state: &GameState,
+    repl_events: &[ReplacementEvent],
+) -> bool {
+    functioning_board_replacement_defs(state).any(|def| {
+        repl_events.contains(&def.event)
+            && !matches!(
+                def.valid_card,
+                Some(crate::types::ability::TargetFilter::SelfRef)
+            )
+    })
 }
 
 /// CR 732.2a + CR 122.1 / CR 701.34a: is the growing COUNTER axis OBSERVED — does any live
@@ -5044,6 +5105,73 @@ pub(crate) fn life_growth_is_observed(state: &GameState) -> bool {
             state,
             TriggerEventKey::LifeChanged,
             ReplacementEvent::GainLife,
+        )
+}
+
+/// CR 614.1a + CR 603.6a + CR 111.3 + CR 732.2a: is the growing TOKEN axis OBSERVED — does
+/// anything live re-derive a count from, or react to, the events the batched mint collapses? A
+/// sound OVER-approximation: a true result ROUTES the loop to the discrete N-cycle driver (always
+/// correct, only slower), never a wrong single-batch. Third member of the axis-firewall family
+/// with [`counter_growth_is_observed`] and [`life_growth_is_observed`].
+///
+/// TWO EVENTS, because the mint emits two. (1) `ProposedEvent::CreateToken` — an active
+/// `CreateToken` replacement re-derives the count from it, and a `TokenCreated` trigger fires on
+/// it. (2) The resulting battlefield ENTRIES (CR 603.6a) — an entry trigger or entry replacement
+/// fires once per entry, and a per-cycle observer that itself CREATES objects compounds against a
+/// batched mint that does not re-derive its own k. Both halves are payload-DISCARDING, exactly as
+/// [`board_has_functioning_etb_trigger`].
+///
+/// GATED ON `per_cycle_delta > 1` AT THE CALL SITE (`game::engine`), and that gate is load-bearing
+/// in both directions — see the route comment there.
+///
+/// The batched `per_cycle_delta * N` token collapse is sound ONLY when this is false, and the
+/// reason is the MIRROR IMAGE of its two siblings. `apply_counter_addition` / `apply_life_gain`
+/// make [`counter_growth_is_observed`] / [`life_growth_is_observed`] necessary because they BYPASS
+/// or SINGLE-FIRE the replacement pipeline. The token mint is necessary for the opposite reason:
+/// it RE-RUNS the pipeline (`game::effects::token_copy`'s `drive_copy_token_batches` ->
+/// `ProposedEvent::CreateToken` -> `replacement::replace_event`; that module's own comment records
+/// that a different source's replacement — Doubling Season's — still applies). So a per-cycle
+/// count that already included a replacement's multiplication would have it applied a SECOND time
+/// at the boundary: elision `2k*N` against performance `k*N`, a #7045 fidelity break.
+///
+/// SHAPE-AGNOSTIC, exactly as [`board_has_functioning_etb_trigger`]: the replacement's payload is
+/// DISCARDED, so a `CreateToken` replacement that only riders (`execute`) and never touches
+/// `quantity_modification` also routes. That is deliberate — a rider fires once per EVENT, so a
+/// single lump mint fires it 1x where N cycles fire it Nx, the same divergence by another door.
+/// Narrowing by reading `quantity_modification` alone would re-open it. Any narrowing belongs in
+/// the `F-token-route-precision` follow-up, behind a per-cycle invariance proof. (NOT the shipped
+/// `F-route-precision` above, which is scoped to the SpellCast firewall's matcher.)
+///
+/// AXIS-SPECIFIC: an `AddCounter` or `GainLife` replacement does NOT make token growth observed,
+/// matching the two siblings' axis discipline.
+pub(crate) fn token_growth_is_observed(state: &GameState) -> bool {
+    use crate::types::triggers::TriggerEventKey;
+    // EVENT (1) — the creation itself. `board_has_event_observer` asks the TRIGGER and the
+    // REPLACEMENT question in one call: `TriggerMode::TokenCreated` / `TokenCreatedOnce` /
+    // `ConjureAll` all fold to `TriggerEventKey::TokenCreated` (`game::trigger_index`'s
+    // `keys_from_trigger_def`), and a once-per-event trigger diverges N-fold when N creations
+    // collapse into one. NO `BoardTriggerClass` arm: that enum exists ONLY to DISCARD an
+    // `Option<CoreType>` payload (see its doc above), and `TokenCreated` is a bare unit variant
+    // (CR 111.1) with no payload to discard.
+    board_has_event_observer(state, TriggerEventKey::TokenCreated, ReplacementEvent::CreateToken)
+        // EVENT (2) — the battlefield ENTRIES the mint produces (CR 603.6a).
+        || board_has_functioning_etb_trigger(state)
+        // CR 614.12 + CR 614.1d: ALL FOUR entry-replacement keys, fail-closed. THE DISPATCH IS THE
+        // ENUMERATION AUTHORITY, not the variants' doc comments:
+        // `game::replacement`'s `replacement_event_keys_for_event` pushes `ChangeZone`, `Moved`,
+        // `Counter` and `Attached` for one `ProposedEvent::ZoneChange`. The scan tests
+        // `def.event == repl_event`, so a `Counter`- or `Attached`-keyed definition is INVISIBLE
+        // to a `ChangeZone`/`Moved` query — naming two of four is the same hole as naming one of
+        // two. (`Moved` is live for the tapland class: Blackcleave Cliffs' enters-tapped
+        // replacement carries `"event": "Moved"`.)
+        || board_has_active_replacement_among(
+            state,
+            &[
+                ReplacementEvent::ChangeZone,
+                ReplacementEvent::Moved,
+                ReplacementEvent::Counter,
+                ReplacementEvent::Attached,
+            ],
         )
 }
 
@@ -13392,6 +13520,199 @@ mod tests {
              also cannot be skipped by the ETB gate — it carries no `valid_card`, which \
              `etb_observer_provably_excludes_class` requires — but that is a property of the \
              unmutated closure body, which an empty set short-circuits past.)"
+        );
+    }
+
+    /// A-4c — `token_growth_is_observed` reads EVERY event the boundary mint raises, and ONLY
+    /// those. Eight arms built by ONE call path, each differing in exactly one field, each
+    /// injecting exactly ONE observer (a fixture carrying two would mask the conjunct another arm
+    /// tests).
+    ///
+    /// Replacement defs are written to BOTH `base_replacement_definitions` and
+    /// `replacement_definitions` exactly as `game::effects::token_copy`'s shipped doubler fixture
+    /// does — a single-vector write is dropped by the layer reset and every positive silently
+    /// reads `false`.
+    ///
+    /// REVERT PROBES, one per conjunct — arms 1 and 6 are two FIELDS OF ONE CALL, so deleting
+    /// that call reds both and proves neither; their probes are SUBSTITUTIONS:
+    /// - arm 1 (`CreateToken` replacement): swap the call's event to `ReplacementEvent::Draw`
+    ///   ⇒ arm 1 only reds.
+    /// - arm 6 (`TokenCreated` trigger): swap the call's key to `TriggerEventKey::Milled`
+    ///   ⇒ arm 6 only reds.
+    /// - arms 2-5 (`ChangeZone`/`Moved`/`Counter`/`Attached`): delete that element from
+    ///   `board_has_active_replacement_among`'s array ⇒ only that arm reds.
+    /// - arm 7 (ETB trigger): delete the `board_has_functioning_etb_trigger` disjunct.
+    /// - arm 8 (`Draw` replacement, the NARROWNESS guard): asserts `false`, so it holds under
+    ///   every probe above and can never be satisfied by the predicate collapsing to `false`.
+    /// - arm 9 (SELF-SCOPED entry replacement, the APPLICABILITY guard): delete the
+    ///   `valid_card == SelfRef` exclusion in `board_has_active_replacement_among` ⇒ arm 9 flips
+    ///   to `true` ⇒ reds. It is matched with arm 3 (the SAME `Moved` def with no `valid_card`),
+    ///   so the pair differs on exactly `valid_card` and nothing else.
+    #[test]
+    fn token_growth_is_observed_reads_every_mint_event_and_only_those() {
+        use crate::types::ability::{ReplacementDefinition, TargetFilter, TriggerDefinition};
+        use crate::types::triggers::TriggerMode;
+
+        // Reach-guard: a bare battlefield permanent with NO observer reads FALSE. Without it a
+        // predicate stuck at `true` would satisfy every positive arm below for the wrong reason.
+        let mut quiet = GameState::new_two_player(7);
+        bf_object(&mut quiet, 100);
+        assert!(
+            !token_growth_is_observed(&quiet),
+            "reach-guard: a quiet board does not observe token growth"
+        );
+
+        let observed_with_replacement = |def: ReplacementDefinition| {
+            let mut state = GameState::new_two_player(7);
+            let id = bf_object(&mut state, 100);
+            let obj = state
+                .objects
+                .get_mut(&id)
+                .expect("just-created board object");
+            obj.base_replacement_definitions = std::sync::Arc::new(vec![def.clone()]);
+            obj.replacement_definitions = vec![def].into();
+            token_growth_is_observed(&state)
+        };
+        let observed_with_trigger = |def: TriggerDefinition| {
+            let mut state = GameState::new_two_player(7);
+            let id = bf_object(&mut state, 100);
+            state
+                .objects
+                .get_mut(&id)
+                .expect("just-created board object")
+                .trigger_definitions = vec![def].into();
+            token_growth_is_observed(&state)
+        };
+
+        // ARMS 1-5 — the five replacement events the mint's two `ProposedEvent`s key.
+        for event in [
+            ReplacementEvent::CreateToken,
+            ReplacementEvent::ChangeZone,
+            ReplacementEvent::Moved,
+            ReplacementEvent::Counter,
+            ReplacementEvent::Attached,
+        ] {
+            assert!(
+                observed_with_replacement(ReplacementDefinition::new(event.clone())),
+                "arm for {event:?}: a board replacement on an event the mint raises OBSERVES \
+                 token growth"
+            );
+        }
+
+        // ARM 6 — `TriggerMode::TokenCreated` folds to `TriggerEventKey::TokenCreated`.
+        assert!(
+            observed_with_trigger(TriggerDefinition::new(TriggerMode::TokenCreated)),
+            "arm 6: a TokenCreated trigger observes the creation event"
+        );
+        // ARM 7 — the battlefield ENTRIES the mint produces (CR 603.6a). An ETB trigger is
+        // `ChangesZone` with `destination = Battlefield` (`game::trigger_index`'s
+        // `keys_from_trigger_def`); the bare `ChangesZone` the sibling router test uses as its
+        // BENIGN fixture has no destination and is deliberately NOT an ETB key.
+        assert!(
+            observed_with_trigger(
+                TriggerDefinition::new(TriggerMode::ChangesZone).destination(Zone::Battlefield)
+            ),
+            "arm 7: an ETB trigger observes the entries the mint produces"
+        );
+        // ARM 8 — NARROWNESS. An unrelated replacement event does NOT observe token growth.
+        assert!(
+            !observed_with_replacement(ReplacementDefinition::new(ReplacementEvent::Draw)),
+            "arm 8: a Draw replacement is not a token-growth observer (axis discipline)"
+        );
+
+        // ARM 9 — APPLICABILITY. The SAME `Moved` definition as arm 3, scoped to its own bearer
+        // (CR 614.12 — the "~ enters tapped" tapland shape, which is what all 12 battlefield
+        // entry replacements on this lane's target dump actually are). It cannot observe a
+        // DIFFERENT, newly-minted permanent entering, so it must NOT route.
+        assert!(
+            !observed_with_replacement(
+                ReplacementDefinition::new(ReplacementEvent::Moved)
+                    .valid_card(TargetFilter::SelfRef)
+            ),
+            "arm 9: a SelfRef entry replacement (a tapland) applies only to its own bearer and \
+             is NOT a token-growth observer — without this the predicate is TRUE on every \
+             realistic board and the firewall stops discriminating"
+        );
+    }
+
+    /// THE DIRECTION THE WHOLE PHASE TURNS ON, as a single matched pair on ONE board.
+    ///
+    /// MEASURED PREMISE (this lane's target dump, `witherbloom_altar_sprout_swarm_4p`): ALL TWELVE
+    /// of its battlefield `Moved` replacements are taplands — `valid_card: SelfRef` plus a
+    /// `SetTapState { target: SelfRef }` body, i.e. "~ enters tapped". A SelfRef replacement
+    /// applies only to the object carrying it (CR 614.1d templating, CR 614.12 applicability), so
+    /// none of them can observe a newly-minted token entering.
+    ///
+    /// If [`board_has_active_replacement_among`] did NOT exclude them, this predicate would read
+    /// `true` on every realistic board — which is not conservatism, it is a firewall that has
+    /// stopped discriminating, and the phase's route guard would degrade into "always replay".
+    ///
+    /// Both halves run on the SAME board, one object apart, so the row discriminates on the
+    /// `valid_card` FILTER and not on the negative half's board being empty:
+    /// - twelve SelfRef `Moved` taplands, no doubler, no trigger ⇒ **false**;
+    /// - the same twelve PLUS one unfiltered Doubling Season `CreateToken` ⇒ **true**.
+    ///
+    /// REVERT PROBE: delete the `valid_card == SelfRef` exclusion in
+    /// [`board_has_active_replacement_among`] ⇒ the tapland half flips to `true` ⇒ RED, while the
+    /// doubler half stays green (it never depended on the exclusion).
+    #[test]
+    fn tapland_only_board_is_unobserved_but_the_same_board_with_a_doubler_is_observed() {
+        use crate::types::ability::{
+            ControllerRef, QuantityModification, ReplacementDefinition, TargetFilter,
+        };
+
+        let install = |state: &mut GameState, id: u64, def: ReplacementDefinition| {
+            let oid = bf_object(state, id);
+            let obj = state
+                .objects
+                .get_mut(&oid)
+                .expect("just-created board object");
+            // BOTH vectors, or the layer reset drops the definition and every positive below
+            // silently reads `false` for the wrong reason.
+            obj.base_replacement_definitions = std::sync::Arc::new(vec![def.clone()]);
+            obj.replacement_definitions = vec![def].into();
+        };
+
+        // ── The tapland board: twelve "~ enters tapped" lands and nothing else ──
+        let mut taplands = GameState::new_two_player(7);
+        for i in 0..12u64 {
+            install(
+                &mut taplands,
+                200 + i,
+                ReplacementDefinition::new(ReplacementEvent::Moved)
+                    .valid_card(TargetFilter::SelfRef),
+            );
+        }
+        // Reach-guard: the definitions really landed, so a `false` below is the FILTER's verdict
+        // and not an empty board's.
+        assert_eq!(
+            functioning_board_replacement_defs(&taplands)
+                .filter(|d| d.event == ReplacementEvent::Moved)
+                .count(),
+            12,
+            "reach-guard: twelve functioning battlefield `Moved` replacements are installed"
+        );
+        assert!(
+            !token_growth_is_observed(&taplands),
+            "TAPLAND-FALSE: a board of nothing but SelfRef enters-tapped lands does NOT observe \
+             token growth. If this reads true, the `valid_card` exclusion is not working and the \
+             phase is a no-op — the predicate would be true on every realistic board"
+        );
+
+        // ── The SAME board, one object apart: add Doubling Season's UNFILTERED CreateToken ──
+        let mut with_doubler = taplands.clone();
+        install(
+            &mut with_doubler,
+            300,
+            ReplacementDefinition::new(ReplacementEvent::CreateToken)
+                .token_owner_scope(ControllerRef::You)
+                .quantity_modification(QuantityModification::DOUBLE),
+        );
+        assert!(
+            token_growth_is_observed(&with_doubler),
+            "DOUBLER-TRUE: the same board plus one unfiltered `CreateToken` doubler DOES observe \
+             token growth — so the negative half above is the filter's verdict, not an artifact \
+             of the predicate being unable to say `true` on this board"
         );
     }
 

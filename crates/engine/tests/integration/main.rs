@@ -1145,6 +1145,7 @@ mod waiting_for_actor_authority_census;
 mod ward_of_bones_relative_count_cast_prohibition;
 mod ward_of_bones_relative_count_land_prohibition;
 mod warped_space_alt_cost_from_exile;
+mod wba_fodder_multiset;
 mod wedding_announcement_transform;
 mod wedding_ring_etb_token_copy;
 mod well_of_lost_dreams_may_pay_x;

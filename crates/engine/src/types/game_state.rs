@@ -3868,15 +3868,16 @@ pub struct PendingCopyTokenBatch {
 /// every seam honest — a new variant will not compile until classified).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PersistentAxisMaterialization {
-    /// CR 707.2 + CR 111.1: mint N tapped copy-tokens of this fodder profile
-    /// (the `TokensCreated` axis). Carries NO per-cycle count because the per-cycle
-    /// fodder count k is STRUCTURALLY ≡ 1: this stash is only registered when
-    /// `materialize_object_growth_shortcut`'s `derived_fodder_class`
-    /// found EXACTLY one new battlefield object per period
-    /// (a two+-object period returns `None` ⇒ no `Tokens` stash), so the boundary
-    /// mint of `count: amount` == k·amount is EXACT. (Contrast `Counters`/`Life`,
-    /// which carry a measured `per_cycle_delta` to handle k>1.)
-    Tokens(Box<CopiableValues>),
+    /// CR 707.2 + CR 111.1: mint `per_cycle_delta × N` tapped copy-tokens of this fodder profile
+    /// (the `TokensCreated` axis). `per_cycle_delta` is the per-cycle fodder count k, which
+    /// `materialize_object_growth_shortcut`'s `derived_fodder_class` proves is a HOMOGENEOUS
+    /// multiset — every member equal under `analysis::resource::fodder_content_eq` AND under
+    /// `game::printed_cards::intrinsic_copiable_values`, so one profile faithfully represents all
+    /// k. A count contributed by a live `CreateToken` replacement is NOT in k: that period routes
+    /// to `DriveSequence` instead (`analysis::resource::token_growth_is_observed`), because this
+    /// arm re-runs the replacement pipeline and would otherwise apply it twice.
+    /// (Mirrors `Counters`/`Life`, which carry the same field.)
+    Tokens(Box<TokenGrowth>),
     /// CR 122.1 / CR 701.34a: apply `per_cycle_delta × N` counters to each captured
     /// target (the beneficial-growable counter axis: Generic / +1/+1 / loyalty / defense).
     Counters(Vec<CounterGrowth>),
@@ -3968,6 +3969,26 @@ pub(crate) fn collapsed_counter_axis(
         .map(|o| object_class(o.card_types.core_types.as_slice()))
         .unwrap_or(ObjectClass::Other);
     ResourceAxis::Counter(CounterClass::from_counter_type(ct), oc)
+}
+
+/// CR 111.3 + CR 707.2: the fodder profile the boundary mint copies, plus the per-cycle count
+/// `k` the certified period reproduces. Mirrors [`CounterGrowth`]'s `per_cycle_delta`; the mint
+/// applies `per_cycle_delta * N` exactly as the `Counters`/`Life` arms do.
+///
+/// CR 111.3, not CR 111.10: a created token's characteristics are the ones the creating spell or
+/// ability defines, and those ARE its copiable values. CR 111.10's scope is predefined tokens
+/// (Treasure, Food, ...) and does not cover this profile.
+///
+/// `per_cycle_delta` is the count the period's OWN effects create. A count contributed by a live
+/// `CreateToken` REPLACEMENT is deliberately NOT in it: the boundary mint re-runs that pipeline
+/// (`game::effects::token_copy::drive_copy_token_batches` -> `ProposedEvent::CreateToken` ->
+/// `replacement::replace_event`), so folding the replacement's multiplication in here would apply
+/// it twice. Such a period never reaches this struct — it routes to `DriveSequence`; see
+/// `analysis::resource::token_growth_is_observed`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenGrowth {
+    pub profile: Box<CopiableValues>,
+    pub per_cycle_delta: u32,
 }
 
 /// CR 122.1: one object's per-cycle beneficial counter growth captured at accept, for
@@ -30128,7 +30149,10 @@ mod tests {
         let mut b = a.clone();
         b.register_pending_materialization(
             PlayerId(0),
-            PersistentAxisMaterialization::Tokens(dummy_copiable_profile("Saproling")),
+            PersistentAxisMaterialization::Tokens(Box::new(TokenGrowth {
+                profile: dummy_copiable_profile("Saproling"),
+                per_cycle_delta: 1,
+            })),
         );
         // Sanity: the populated field really does differ between the two states.
         assert_ne!(
@@ -30374,7 +30398,10 @@ mod tests {
         );
         state.register_pending_materialization(
             PlayerId(0),
-            PersistentAxisMaterialization::Tokens(dummy_copiable_profile("Saproling")),
+            PersistentAxisMaterialization::Tokens(Box::new(TokenGrowth {
+                profile: dummy_copiable_profile("Saproling"),
+                per_cycle_delta: 1,
+            })),
         );
         state.register_unbounded_loop_pile(PlayerId(0), BTreeSet::from([ObjectId(1)]));
 
@@ -30415,7 +30442,10 @@ mod tests {
         state.mark_unbounded_loop(PlayerId(0), &[ResourceAxis::TokensCreated]);
         state.register_pending_materialization(
             PlayerId(0),
-            PersistentAxisMaterialization::Tokens(dummy_copiable_profile("Saproling")),
+            PersistentAxisMaterialization::Tokens(Box::new(TokenGrowth {
+                profile: dummy_copiable_profile("Saproling"),
+                per_cycle_delta: 1,
+            })),
         );
 
         let collapsed = state
@@ -30769,7 +30799,10 @@ mod tests {
         );
         state.register_pending_materialization(
             PlayerId(0),
-            PersistentAxisMaterialization::Tokens(dummy_copiable_profile("Saproling")),
+            PersistentAxisMaterialization::Tokens(Box::new(TokenGrowth {
+                profile: dummy_copiable_profile("Saproling"),
+                per_cycle_delta: 1,
+            })),
         );
         state.register_unbounded_loop_pile(PlayerId(0), BTreeSet::from([ObjectId(1)]));
         // Non-vacuity: the pre-state really holds both axes + pile + stash.
@@ -35185,7 +35218,10 @@ mod tests {
         // One item of EACH batched kind — the three arms `scheduled_collapse_axes` can take that
         // are not `DriveSequence`.
         let batched = [
-            PersistentAxisMaterialization::Tokens(Box::new(profile)),
+            PersistentAxisMaterialization::Tokens(Box::new(TokenGrowth {
+                profile: Box::new(profile),
+                per_cycle_delta: 1,
+            })),
             PersistentAxisMaterialization::Counters(vec![CounterGrowth {
                 object: bearer,
                 counter: CounterType::Plus1Plus1,

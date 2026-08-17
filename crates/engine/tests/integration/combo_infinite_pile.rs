@@ -1317,7 +1317,13 @@ fn real_4p_mana_and_token_boundary_drains_mana_and_still_collapses() {
         room_halves: None,
         name_origin: Default::default(),
     });
-    state.register_pending_materialization(P0, PersistentAxisMaterialization::Tokens(profile));
+    state.register_pending_materialization(
+        P0,
+        PersistentAxisMaterialization::Tokens(Box::new(engine::types::game_state::TokenGrowth {
+            profile,
+            per_cycle_delta: 1,
+        })),
+    );
 
     // Seed so the drain has a real delta.
     refill_infinite_mana(&mut state);
