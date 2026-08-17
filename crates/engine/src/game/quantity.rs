@@ -276,6 +276,11 @@ fn visit_characteristic_leaf<'s>(
         // equals the bound cause; drawn members are unstamped and excluded.
         // `None` admits every member. Mirrors `FilteredTrackedSetSize`'s set
         // selection (highest set id) and cause filter.
+        // CR 700.2 + CR 608.2c: "highest id" == "the set the currently-resolving
+        // instruction published" — the ordering argument is written once, on
+        // `effects::publish_tracked_set`. Deliberately not routed through
+        // `targeting::resolve_tracked_set_id`: that authority SKIPS empty sets, and
+        // under mode scoping not skipping is the correct semantics here.
         CardTypeSetSource::TrackedSet { caused_by } => {
             if let Some((set_id, ids)) = state.tracked_object_sets.iter().max_by_key(|(id, _)| id.0)
             {
@@ -4053,6 +4058,11 @@ fn resolve_ref(
         // An unavailable count resolves to zero.
         QuantityRef::PreviousEffectCount => state.last_effect_count.unwrap_or(0),
         // CR 608.2c: "for each [thing] this way" — read the most recent tracked set size.
+        // CR 700.2 + CR 608.2c: "highest id" == "the set the currently-resolving
+        // instruction published" — the ordering argument is written once, on
+        // `effects::publish_tracked_set`. Deliberately not routed through
+        // `targeting::resolve_tracked_set_id`: that authority SKIPS empty sets, and
+        // under mode scoping not skipping is the correct semantics here.
         QuantityRef::TrackedSetSize => state
             .tracked_object_sets
             .iter()
@@ -4063,6 +4073,11 @@ fn resolve_ref(
         // set that also satisfy the inner filter. Used for "for each nontoken
         // creature you controlled that was destroyed this way" — the tracked set
         // holds all destroyed creatures; the filter narrows to controlled nontokens.
+        // CR 700.2 + CR 608.2c: "highest id" == "the set the currently-resolving
+        // instruction published" — the ordering argument is written once, on
+        // `effects::publish_tracked_set`. Deliberately not routed through
+        // `targeting::resolve_tracked_set_id`: that authority SKIPS empty sets, and
+        // under mode scoping not skipping is the correct semantics here.
         QuantityRef::FilteredTrackedSetSize { filter, caused_by } => {
             let Some((set_id, ids)) = state.tracked_object_sets.iter().max_by_key(|(id, _)| id.0)
             else {
@@ -4130,6 +4145,11 @@ fn resolve_ref(
             let ids: Vec<ObjectId> = match source {
                 // Chain-published tracked set ("those exiled cards"): the set the
                 // immediately-preceding chain effect published (highest id).
+                // CR 700.2 + CR 608.2c: "highest id" == "the set the currently-resolving
+                // instruction published" — the ordering argument is written once, on
+                // `effects::publish_tracked_set`. Deliberately not routed through
+                // `targeting::resolve_tracked_set_id`: that authority SKIPS empty sets, and
+                // under mode scoping not skipping is the correct semantics here.
                 TrackedAnaphorSource::ChainSet => state
                     .tracked_object_sets
                     .iter()
@@ -7227,6 +7247,11 @@ pub(crate) fn possessed_tracked_set_member(
     controller: PlayerId,
     source_id: ObjectId,
 ) -> bool {
+    // CR 700.2 + CR 608.2c: "highest id" == "the set the currently-resolving
+    // instruction published" — the ordering argument is written once, on
+    // `effects::publish_tracked_set`. Deliberately not routed through
+    // `targeting::resolve_tracked_set_id`: that authority SKIPS empty sets, and
+    // under mode scoping not skipping is the correct semantics here.
     let Some((set_id, ids)) = state.tracked_object_sets.iter().max_by_key(|(id, _)| id.0) else {
         return false;
     };

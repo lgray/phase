@@ -156,9 +156,8 @@ export function createAIController(config: AIControllerConfig): AIController {
       return null;
     }
     if (waitingFor.type === "ResolveAllConsent") {
-      return waitingFor.data.representative === PLAYER_ID
-        ? null
-        : waitingFor.data.representative;
+      const { representative } = waitingFor.data;
+      return aiPlayerIds.has(representative) ? representative : null;
     }
     if (
       !("data" in waitingFor) ||

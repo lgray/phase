@@ -51,11 +51,12 @@ use crate::types::zones::{EtbTapState, Zone};
 // These are private to oracle_effect but accessible here as a descendant module.
 use super::subject;
 use super::{
-    each_target_filter_mut, has_typed_target, parse_effect_clause,
+    each_target_filter_mut, has_typed_target, is_broadcast_population_filter, parse_effect_clause,
     parse_event_context_ref_with_ctx, parse_for_each_object_copy_parts,
     refine_damage_target_remainder, replace_player_anaphor_with_parent_target,
     scan_contains_phrase, target_filter_controller_ref,
 };
+use crate::game::effects::effect::generic_effect_population_filter;
 
 pub(super) fn rewrite_player_anaphor_targets_in_definition(def: &mut AbilityDefinition) {
     replace_player_anaphor_with_parent_target(def.effect.as_mut());
@@ -232,31 +233,47 @@ pub(super) fn patch_self_ref_head_tap_anaphor(def: &mut AbilityDefinition) {
     walk(def, false);
 }
 
-/// CR 608.2c + CR 122.1: After a mass counter placement (`PutCounterAll`), a
-/// chained "then untap them" continuation refers to the set of objects that
-/// received counters (Lulu, Loyal Hollyphant). Phase-trigger bodies carry
+/// CR 608.2c: After a head that FREEZES a broadcast population, a chained
+/// "then untap them" continuation refers to that population (Lulu, Loyal
+/// Hollyphant; Jeskai Ascendancy, issue #6857). Phase-trigger bodies carry
 /// `ctx.subject = Any`, so `resolve_it_pronoun` wrongly binds "them" to
-/// `SelfRef` (the trigger source). Rewrite to `TrackedSet(0)` so the runtime
-/// binds the published counter set via `affected_objects_from_events`. Sibling
-/// of [`patch_self_ref_head_tap_anaphor`] for the population-head / plural-
-/// anaphor polarity.
+/// `SelfRef` (the trigger source), and a spell body defaults it to
+/// `ParentTarget`. Rewrite to `TrackedSet(0)` so the runtime binds the
+/// published population via `affected_objects_from_events`. Sibling of
+/// [`patch_self_ref_head_tap_anaphor`] for the population-head / plural-anaphor
+/// polarity.
 pub(super) fn patch_population_head_tap_anaphor(def: &mut AbilityDefinition) {
-    fn is_population_counter_publisher(effect: &Effect) -> bool {
-        matches!(
-            effect,
-            Effect::PutCounterAll { target, .. }
-                if !matches!(
-                    target,
-                    TargetFilter::SelfRef
-                        | TargetFilter::ParentTarget
-                        | TargetFilter::TriggeringSource
-                        | TargetFilter::CostPaidObject
-                )
-        )
+    /// CR 608.2c + CR 611.2c: heads that freeze a broadcast population at
+    /// resolution and publish it as the chain tracked set. Mirrors the
+    /// publishers in `game/effects/mod.rs::affected_objects_from_events`:
+    ///   * `PutCounterAll` -> `CounterAdded` events (CR 122.1 — counters are
+    ///     the signal for THIS leg only)          (Lulu, The Fifth Doctor)
+    ///   * `PumpAll`       -> `pump::pump_all_affected_objects` (issue #6857)
+    ///   * `GenericEffect` -> filter re-enumeration            (issue #6682)
+    ///
+    /// The broadcast test is `is_broadcast_population_filter`, NOT the
+    /// runtime's `generic_effect_affected_uses_inherited_targets`: the latter
+    /// does not exclude `SelfRef`, and using it here would rewrite self-scoped
+    /// grants whose `SelfRef`/`ParentTarget` tail is already correct.
+    fn is_population_publisher(effect: &Effect) -> bool {
+        match effect {
+            Effect::PutCounterAll { target, .. } | Effect::PumpAll { target, .. } => {
+                is_broadcast_population_filter(target)
+            }
+            // Same authority the runtime publish arm selects with, so a head can
+            // never be routed here and then declined there (or vice versa).
+            Effect::GenericEffect {
+                static_abilities,
+                target,
+                ..
+            } => generic_effect_population_filter(target.as_ref(), static_abilities)
+                .is_some_and(is_broadcast_population_filter),
+            _ => false,
+        }
     }
 
     fn walk(def: &mut AbilityDefinition, carried_population: bool) {
-        let active_population = if is_population_counter_publisher(&def.effect) {
+        let active_population = if is_population_publisher(&def.effect) {
             true
         } else {
             match def.effect.target_filter() {
@@ -272,7 +289,24 @@ pub(super) fn patch_population_head_tap_anaphor(def: &mut AbilityDefinition) {
                     ..
                 } = sub.effect.as_mut()
                 {
-                    if matches!(target, TargetFilter::SelfRef | TargetFilter::ParentTarget) {
+                    // CR 608.2c: under a broadcast-population head the anaphor's
+                    // antecedent is that frozen population, whichever resolver
+                    // produced the placeholder — the spell-body default
+                    // `ParentTarget` (`oracle_target::resolve_pronoun_target`),
+                    // the self-subject trigger default `SelfRef`, or the
+                    // named-subject trigger default `TriggeringSource`
+                    // (`oracle_effect::resolve_it_pronoun`). All three name a
+                    // SINGLE referent, and a head that has just frozen a
+                    // population is the only live antecedent, so all three
+                    // rebind to the published set. `scope: Single` stays in the
+                    // pattern above: a mass "untap all …" is a population filter
+                    // in its own right, not an anaphor.
+                    if matches!(
+                        target,
+                        TargetFilter::SelfRef
+                            | TargetFilter::ParentTarget
+                            | TargetFilter::TriggeringSource
+                    ) {
                         *target = TargetFilter::TrackedSet {
                             id: crate::types::identifiers::TrackedSetId(0),
                         };

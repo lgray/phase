@@ -9538,6 +9538,9 @@ fn park_entry_controller_choice(
         depth,
         is_optional: false,
         library_placement: None,
+        exile_controller: None,
+        exile_duration: None,
+        exile_tracking: crate::types::game_state::ZoneDeliveryExileTracking::None,
         excess_recipient: None,
         lifelink_bonus: 0,
         may_cost_paid: false,
@@ -9601,6 +9604,9 @@ fn pipeline_loop(
                     // CR 701.24a: set by the W3 library-placement arm after parking
                     // (the pipeline doesn't know the caller's placement here).
                     library_placement: None,
+                    exile_controller: None,
+                    exile_duration: None,
+                    exile_tracking: crate::types::game_state::ZoneDeliveryExileTracking::None,
                     // CR 120.4a: set by `apply_damage_to_target` right after this
                     // park returns NeedsChoice (the ctx rider isn't known here).
                     excess_recipient: None,
@@ -9654,6 +9660,9 @@ fn pipeline_loop(
                 is_optional: false,
                 // CR 701.24a: set by the W3 library-placement arm after parking.
                 library_placement: None,
+                exile_controller: None,
+                exile_duration: None,
+                exile_tracking: crate::types::game_state::ZoneDeliveryExileTracking::None,
                 // CR 120.4a: set by `apply_damage_to_target` right after this park
                 // returns NeedsChoice (the ctx rider isn't known here).
                 excess_recipient: None,
@@ -9985,6 +9994,9 @@ fn continue_replacement_impl(
                     depth: reparked_depth,
                     is_optional: true,
                     library_placement: reparked_library_placement,
+                    exile_controller: None,
+                    exile_duration: None,
+                    exile_tracking: crate::types::game_state::ZoneDeliveryExileTracking::None,
                     // CR 120.4a: this MayCost re-park path is a zone-change /
                     // permanent-entry accept, never a damage hit, so no excess
                     // rider applies here.
@@ -12692,6 +12704,9 @@ mod tests {
             depth: 0,
             is_optional: true,
             library_placement: None,
+            exile_controller: None,
+            exile_duration: None,
+            exile_tracking: crate::types::game_state::ZoneDeliveryExileTracking::None,
             excess_recipient: None,
             lifelink_bonus: 0,
             may_cost_paid: false,
@@ -12751,6 +12766,9 @@ mod tests {
                 depth: 0,
                 is_optional: true,
                 library_placement: None,
+                exile_controller: None,
+                exile_duration: None,
+                exile_tracking: crate::types::game_state::ZoneDeliveryExileTracking::None,
                 excess_recipient: None,
                 lifelink_bonus: 0,
                 may_cost_paid: false,
@@ -12831,6 +12849,9 @@ mod tests {
             depth: 0,
             is_optional: false,
             library_placement: None,
+            exile_controller: None,
+            exile_duration: None,
+            exile_tracking: crate::types::game_state::ZoneDeliveryExileTracking::None,
             excess_recipient: None,
             lifelink_bonus: 0,
             may_cost_paid: false,
@@ -16326,6 +16347,9 @@ mod tests {
             depth: 0,
             is_optional: false,
             library_placement: None,
+            exile_controller: None,
+            exile_duration: None,
+            exile_tracking: crate::types::game_state::ZoneDeliveryExileTracking::None,
             excess_recipient: None,
             lifelink_bonus: 0,
             may_cost_paid: false,

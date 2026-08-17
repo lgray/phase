@@ -3198,6 +3198,7 @@ export type ExileLinkKind =
   | "HideawayLookable"
   | "CraftMaterial"
   | { UntilSourceLeaves: { return_zone: Zone } }
+  | { UntilOpponentBecomesMonarch: { return_zone: Zone; controller: PlayerId } }
   | { ParadigmSource: { player: PlayerId } };
 
 export interface GameState {

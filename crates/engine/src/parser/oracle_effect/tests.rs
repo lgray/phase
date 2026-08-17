@@ -19722,6 +19722,48 @@ fn delayed_trigger_in_effect_chain() {
     ));
 }
 
+/// CR 610.3 + CR 725.1: Palace Jailer must exile immediately and retain the
+/// event-bounded return metadata needed by the immediate exile-link pipeline.
+#[test]
+fn palace_jailer_monarch_bounded_exile_preserves_return_provenance() {
+    let clause = parse_effect_clause(
+        "exile target creature an opponent controls until an opponent becomes the monarch",
+        &mut ParseContext::default(),
+    );
+
+    assert!(matches!(
+        clause.effect,
+        Effect::ChangeZone {
+            origin: None,
+            destination: Zone::Exile,
+            target: TargetFilter::Typed(_),
+            ..
+        }
+    ));
+    assert_eq!(
+        clause.duration,
+        Some(Duration::UntilOpponentBecomesMonarch),
+        "the event-bounded return must be represented on the immediate exile"
+    );
+    assert!(
+        clause.sub_ability.is_none(),
+        "CR 610.3 return must not be a triggered-ability sub-chain"
+    );
+}
+
+#[test]
+fn palace_jailer_monarch_bounded_exile_rejects_other_player_scope() {
+    let clause = parse_effect_clause(
+        "exile target creature an opponent controls until a player becomes the monarch",
+        &mut ParseContext::default(),
+    );
+    assert!(
+        matches!(clause.effect, Effect::Unimplemented { .. }),
+        "unsupported player-scope variant must remain a strict parser gap: {:?}",
+        clause.effect
+    );
+}
+
 #[test]
 fn effect_emblem_ninjas_get_plus_one() {
     let e = parse_effect("You get an emblem with \"Ninjas you control get +1/+1.\"");

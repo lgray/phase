@@ -2,14 +2,16 @@
 
 use engine::ai_support::{candidate_actions, legal_actions_for_viewer};
 use engine::game::elimination::eliminate_player;
-use engine::game::engine::apply;
+use engine::game::engine::{apply, resolve_all_ready_prefix};
 use engine::game::interaction::{
     bind_interaction_authority, derive_viewer_interaction, resolve_interaction_response,
 };
 use engine::game::visibility::filter_state_for_viewer;
+use engine::types::ability::{CopyRetargetPermission, Effect, ResolvedAbility, TargetFilter};
 use engine::types::actions::{GameAction, ResolveAllConsentDecision};
 use engine::types::format::FormatConfig;
-use engine::types::game_state::{GameState, WaitingFor};
+use engine::types::game_state::{GameState, StackEntry, StackEntryKind, WaitingFor};
+use engine::types::identifiers::ObjectId;
 use engine::types::interaction::{
     InteractionOpportunityResponse, InteractionResponse, InteractionSessionId,
     InteractionSubmission,
@@ -60,6 +62,10 @@ fn consent_queue_reaches_inert_ready_only_after_every_representative_grants() {
         &state.waiting_for,
         WaitingFor::ResolveAllReady { epoch: ready_epoch } if *ready_epoch == epoch
     ));
+    assert_eq!(
+        state.priority_player, P0,
+        "Ready preserves the saved priority cursor"
+    );
     assert!(apply(&mut state, P1, GameAction::PassPriority).is_err());
     assert!(matches!(
         &state.waiting_for,
@@ -174,6 +180,58 @@ fn queued_response_and_candidate_keep_the_frozen_submitter_after_control_changes
         },
     )
     .expect("frozen submitter, not the new live controller, answers the prompt");
+    assert!(apply(
+        &mut state,
+        P0,
+        GameAction::RespondResolveAllConsent {
+            epoch,
+            decision: ResolveAllConsentDecision::Grant,
+        },
+    )
+    .is_err());
+}
+
+#[test]
+fn rotated_three_player_consent_reaches_the_ready_prefix() {
+    let mut state = GameState::new(FormatConfig::free_for_all(), 3, 49);
+    let entry = StackEntry {
+        id: ObjectId(1),
+        source_id: ObjectId(1),
+        controller: P0,
+        kind: StackEntryKind::ActivatedAbility {
+            source_id: ObjectId(1),
+            ability: Box::new(ResolvedAbility::new(Effect::NoOp, vec![], ObjectId(1), P0)),
+        },
+    };
+    state.stack.push_back(entry);
+    let epoch = begin(&mut state);
+
+    apply(
+        &mut state,
+        P1,
+        GameAction::RespondResolveAllConsent {
+            epoch,
+            decision: ResolveAllConsentDecision::Grant,
+        },
+    )
+    .expect("first queued representative grants");
+    assert!(matches!(
+        state.waiting_for,
+        WaitingFor::ResolveAllConsent { representative, .. } if representative == P2
+    ));
+    apply(
+        &mut state,
+        P2,
+        GameAction::RespondResolveAllConsent {
+            epoch,
+            decision: ResolveAllConsentDecision::Grant,
+        },
+    )
+    .expect("second queued representative grants");
+
+    let result = resolve_all_ready_prefix(&mut state, P0);
+    assert_eq!(result.items_resolved, 1);
+    assert!(state.stack.is_empty());
 }
 
 #[test]
@@ -334,4 +392,58 @@ fn ready_state_transport_materializes_each_grantors_frozen_revoke() {
             representative: P0,
         }
     );
+}
+
+#[test]
+fn ready_consent_collapses_the_safe_prefix_before_a_stack_growing_resolution() {
+    let entry = |id, effect| StackEntry {
+        id: ObjectId(id),
+        source_id: ObjectId(id),
+        controller: P0,
+        kind: StackEntryKind::ActivatedAbility {
+            source_id: ObjectId(id),
+            ability: Box::new(ResolvedAbility::new(effect, vec![], ObjectId(id), P0)),
+        },
+    };
+    let mut state = GameState::new_two_player(48);
+    state.waiting_for = WaitingFor::Priority { player: P0 };
+    state.priority_player = P0;
+    state.stack = vec![
+        entry(
+            1,
+            Effect::CopySpell {
+                target: TargetFilter::SelfRef,
+                retarget: CopyRetargetPermission::KeepOriginalTargets,
+                copier: None,
+                additional_modifications: vec![],
+                starting_loyalty_from_casualty_sacrifice: false,
+            },
+        ),
+        entry(2, Effect::NoOp),
+        entry(3, Effect::NoOp),
+    ]
+    .into_iter()
+    .collect();
+    let epoch = begin(&mut state);
+    apply(
+        &mut state,
+        P1,
+        GameAction::RespondResolveAllConsent {
+            epoch,
+            decision: ResolveAllConsentDecision::Grant,
+        },
+    )
+    .expect("second representative grants");
+
+    let result = resolve_all_ready_prefix(&mut state, P0);
+
+    assert_eq!(
+        result.items_resolved,
+        2,
+        "safe-prefix result={result:?}, waiting={:?}, stack_len={}",
+        state.waiting_for,
+        state.stack.len(),
+    );
+    assert_eq!(state.stack.len(), 1, "the stack-growing item remains live");
+    assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
 }

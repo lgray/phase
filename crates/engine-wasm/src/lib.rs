@@ -13,8 +13,9 @@ use engine::ai_support::{
 };
 use engine::database::legality::{any_ai_difficulty_is_cedh, validate_cedh_bracket};
 use engine::database::{CardDatabase, CardSearchQuery};
-use engine::game::engine::{apply, apply_for_simulation};
-use engine::game::engine_resolve_batch::resolve_all_ready_prefix;
+use engine::game::engine::{
+    apply, apply_for_simulation, resolve_all_ready_is_authorized, resolve_all_ready_prefix,
+};
 use engine::game::interaction::{bind_interaction_authority, submit_interaction};
 use engine::game::preview::{compute_preview_diff, preview_auto_payment_sources};
 use engine::game::{
@@ -3025,32 +3026,13 @@ pub fn submit_ai_action_proposal(token: &str, actor: u8, action: JsValue) -> JsV
 /// events, so the WASM boundary intentionally returns empty event/log arrays
 /// instead of serializing thousands of records for pathological stacks.
 ///
-/// Stop conditions (all CR-compliant):
-/// - Stack empties
-/// - Stack grows beyond the chunk-origin depth
-/// - An interactive `WaitingFor` appears (target selection, scry, etc.)
-/// - An unknown/non-requester human actor receives priority
-/// - AI declines to pass priority
-/// - Game ends
-/// - Safety cap reached (prevents infinite loops from cascading triggers)
-#[expect(
-    dead_code,
-    reason = "the legacy Resolve All wire payload remains validated for compatibility, but unanimous engine consent now owns seat decisions"
-)]
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AiSeatConfig {
-    player_id: u8,
-    difficulty: String,
-}
-
 #[wasm_bindgen]
 pub fn resolve_all(
     requester: u8,
     ai_seats_json: &str,
     max_resolutions: u32,
 ) -> Result<JsValue, JsValue> {
-    let ai_seats: Vec<AiSeatConfig> = serde_json::from_str(ai_seats_json)
+    let _: serde_json::Value = serde_json::from_str(ai_seats_json)
         .map_err(|e| JsValue::from_str(&format!("Failed to deserialize AI seats: {e}")))?;
 
     let requester = PlayerId(requester);
@@ -3061,8 +3043,8 @@ pub fn resolve_all(
         // call; Resolve All must never ask an AI about a speculative future
         // priority window. Keep the legacy payload parse as a wire-compatible
         // boundary while the consent action owns the authoritative cap.
-        let _ = (ai_seats, max_resolutions);
-        if !matches!(&state.waiting_for, WaitingFor::ResolveAllReady { .. }) {
+        let _ = max_resolutions;
+        if !resolve_all_ready_is_authorized(state, requester) {
             return Err(JsValue::from_str("Resolve All consent is not ready"));
         }
         let mut result = resolve_all_ready_prefix(state, requester);
@@ -3232,6 +3214,7 @@ mod tests {
     use std::sync::Arc;
 
     use engine::game::deck_loading::create_object_from_card_face;
+    use engine::game::engine::ResolveAllFastForwardResult as BatchResolveResult;
     use engine::game::scenario::{GameScenario, P0, P1};
     use engine::game::zones::create_object;
     use engine::types::ability::{
@@ -3239,6 +3222,7 @@ mod tests {
         ContinuousModification, Duration, Effect, QuantityExpr, QuantityRef, ResolvedAbility,
         TargetFilter, TargetRef,
     };
+    use engine::types::actions::ResolveAllConsentDecision;
     use engine::types::card::CardFace;
     use engine::types::card_type::{CardType, CoreType};
     use engine::types::counter::{CounterMatch, CounterType};
@@ -4494,7 +4478,6 @@ mod tests {
         state.active_player = PlayerId(1);
         state.turn_decision_controller = Some(PlayerId(0));
         state.priority_player = PlayerId(0);
-        state.priority_passes.insert(PlayerId(0));
         state.stack.push_back(no_op_stack_entry(1, PlayerId(1)));
         apply(
             &mut state,
@@ -4522,6 +4505,28 @@ mod tests {
             WaitingFor::ResolveAllReady { epoch: ready_epoch } if ready_epoch == epoch
         ));
         GAME_STATE.with(|cell| cell.set(Some(state)));
+
+        with_state_mut(|state| {
+            apply(
+                state,
+                PlayerId(0),
+                GameAction::BeginResolveAll { max_resolutions: 0 },
+            )
+            .expect("turn controller may begin the consent run");
+            let WaitingFor::ResolveAllConsent { epoch, .. } = &state.waiting_for else {
+                panic!("controlled priority should queue Resolve All consent");
+            };
+            apply(
+                state,
+                PlayerId(0),
+                GameAction::RespondResolveAllConsent {
+                    epoch: *epoch,
+                    decision: ResolveAllConsentDecision::Grant,
+                },
+            )
+            .expect("frozen turn controller may grant for the queued representative");
+        })
+        .expect("test state remains installed");
 
         let value = resolve_all(0, "[]", 0).unwrap();
         let result: BatchResolveResult = serde_wasm_bindgen::from_value(value).unwrap();

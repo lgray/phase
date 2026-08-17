@@ -130,7 +130,7 @@ pub fn resolve_all_ready_prefix(
     // Authorization is one run only. Once the proved prefix ends (including
     // a zero-length or cap boundary), return the remaining stack to ordinary
     // priority; no later stack entry inherits this consent.
-    state.resolve_all_consent_run = None;
+    turn_control::invalidate_resolve_all_consent(state);
     finalize_display_state(state);
     interaction::ensure_interaction_authority(state);
 
@@ -155,14 +155,19 @@ pub fn resolve_all_ready_requester_is_authorized(state: &GameState, requester: P
 /// Validates the frozen Phase-1 consent against the live topology before the
 /// Ready state is materialized. A changed controller, eliminated player, or
 /// stale requester fails closed without invoking a speculative callback.
+pub fn resolve_all_ready_is_authorized(state: &GameState, requester: PlayerId) -> bool {
+    ready_consent_run(state, requester).is_some()
+}
+
 fn ready_consent_run(state: &GameState, requester: PlayerId) -> Option<&ResolveAllConsentRun> {
     let WaitingFor::ResolveAllReady { epoch } = &state.waiting_for else {
         return None;
     };
-    let run = state
-        .resolve_all_consent_run
-        .as_ref()
-        .filter(|run| run.epoch == *epoch && run.participants.iter().all(|p| p.granted))?;
+    let run = state.resolve_all_consent_run.as_ref().filter(|run| {
+        state.auto_pass.is_empty()
+            && run.epoch == *epoch
+            && run.participants.iter().all(|p| p.granted)
+    })?;
     (run.participants
         .iter()
         .any(|participant| participant.authorized_submitter == requester)
@@ -185,14 +190,11 @@ fn consent_authorization_matches(state: &GameState, run: &ResolveAllConsentRun) 
     };
     representatives.rotate_left(current_index);
     representatives.len() == run.participants.len()
-        && representatives
-            .iter()
-            .zip(&run.participants)
-            .all(|(live, frozen)| {
-                *live == frozen.representative
-                    && turn_control::authorized_submitter_for_player(state, *live)
-                        == frozen.authorized_submitter
-            })
+        && run.participants.iter().all(|frozen| {
+            representatives.contains(&frozen.representative)
+                && turn_control::authorized_submitter_for_player(state, frozen.representative)
+                    == frozen.authorized_submitter
+        })
 }
 
 /// Performs exactly one actual priority cycle on a proof clone. Every seeded
@@ -486,7 +488,7 @@ mod tests {
     use crate::types::actions::ResolveAllConsentDecision;
     use crate::types::card_type::{CardType, CoreType};
     use crate::types::format::FormatConfig;
-    use crate::types::game_state::{PublicStateDirty, StackEntry, StackEntryKind};
+    use crate::types::game_state::{AutoPassMode, PublicStateDirty, StackEntry, StackEntryKind};
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::mana::ManaColor;
     use crate::types::phase::{Phase, PhaseStop, PhaseStopScope};
@@ -916,7 +918,13 @@ mod tests {
 
         let result = resolve_all_ready_prefix(&mut state, PlayerId(0));
 
-        assert_eq!(result.items_resolved, 2);
+        assert_eq!(
+            result.items_resolved,
+            2,
+            "safe-prefix proof unexpectedly stopped: result={result:?}, waiting={:?}, stack_len={}",
+            state.waiting_for,
+            state.stack.len(),
+        );
         assert_eq!(state.stack.len(), 1, "unsafe item remains on the stack");
         assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
         assert!(state.resolve_all_consent_run.is_none());
@@ -956,6 +964,23 @@ mod tests {
     fn changed_controller_invalidates_ready_consent_without_resolving() {
         let mut state = ready_state(vec![no_op_entry(1, PlayerId(0))]);
         state.turn_decision_controller = Some(PlayerId(1));
+        let result = resolve_all_ready_prefix(&mut state, PlayerId(0));
+
+        assert_eq!(result.items_resolved, 0);
+        assert_eq!(state.stack.len(), 1);
+        assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
+        assert!(state.resolve_all_consent_run.is_none());
+    }
+
+    #[test]
+    fn ready_consent_refuses_to_collapse_while_an_auto_pass_preference_is_active() {
+        let mut state = ready_state(vec![no_op_entry(1, PlayerId(0))]);
+        state.auto_pass.insert(
+            PlayerId(0),
+            AutoPassMode::UntilStackEmpty {
+                initial_stack_len: state.stack.len(),
+            },
+        );
 
         let result = resolve_all_ready_prefix(&mut state, PlayerId(0));
 
