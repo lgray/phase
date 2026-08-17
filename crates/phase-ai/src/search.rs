@@ -437,6 +437,13 @@ fn choose_action_with_session_inner(
         }
     }
 
+    // Resolve All is a user-proposed shortcut, not a tactical game decision.
+    // Answer its finite engine-issued consent domain directly so tactical
+    // scoring cannot randomly select Decline when Grant is available.
+    if matches!(state.waiting_for, WaitingFor::ResolveAllConsent { .. }) {
+        return direct(fallback_action(state, config, &contract).and_then(&bind_specialist));
+    }
+
     if let Some(action) = fast_priority_action(state, ai_player, config, session)
         .filter(|action| durable_pact_routes || !is_certified_pact_root(state, ai_player, action))
     {
@@ -1232,14 +1239,14 @@ pub fn fallback_action(
         // Terminal — no action possible.
         WaitingFor::GameOver { .. } => None,
 
-        // Resolve All is opt-in. If no policy selected one of the engine-issued
-        // consent actions, decline the shortcut rather than leave its
-        // representative's decision unanswered.
+        // A local player explicitly proposed this shortcut. AI seats accept the
+        // engine-issued consent so the authoritative Ready consumer can
+        // materialize the already-agreed priority cycle.
         WaitingFor::ResolveAllConsent { .. } => issued(|action| {
             matches!(
                 action,
                 GameAction::RespondResolveAllConsent {
-                    decision: engine::types::actions::ResolveAllConsentDecision::Decline,
+                    decision: engine::types::actions::ResolveAllConsentDecision::Grant,
                     ..
                 }
             )
@@ -3007,6 +3014,15 @@ fn score_candidates_core(
     session: &Arc<AiSession>,
     deadline_override: Option<engine::util::Deadline>,
 ) -> Vec<(GameAction, f64)> {
+    // The scored/parallel-worker path bypasses `choose_action_with_session_inner`.
+    // Preserve Resolve All's user-proposed shortcut semantics here as well: Grant
+    // is chosen from the engine-issued consent domain without tactical scoring.
+    if matches!(state.waiting_for, WaitingFor::ResolveAllConsent { .. }) {
+        let contract = AiDecisionContract::issue(state, ai_player);
+        return fallback_action(state, config, &contract)
+            .map(|action| vec![(action, 1.0)])
+            .unwrap_or_default();
+    }
     if matches!(
         state.waiting_for,
         WaitingFor::ChooseManaColor {
@@ -5318,6 +5334,102 @@ mod tests {
             fallback_action_default(&state),
             Some(GameAction::DeclineShortcut),
             "the no-score fallback must select DeclineShortcut from engine legal actions"
+        );
+    }
+
+    #[test]
+    fn resolve_all_consent_fallback_accepts_the_user_proposed_shortcut() {
+        let mut state = make_state();
+        engine::game::engine::apply(
+            &mut state,
+            P0,
+            GameAction::BeginResolveAll { max_resolutions: 5 },
+        )
+        .expect("the priority holder may propose Resolve All");
+
+        let epoch = match state.waiting_for {
+            engine::types::game_state::WaitingFor::ResolveAllConsent { epoch, .. } => epoch,
+            ref waiting_for => panic!("expected Resolve All consent, got {waiting_for:?}"),
+        };
+
+        assert_eq!(
+            fallback_action_default(&state),
+            Some(GameAction::RespondResolveAllConsent {
+                epoch,
+                decision: engine::types::actions::ResolveAllConsentDecision::Grant,
+            }),
+            "an AI responder must accept the engine-issued shortcut proposal so it can reach Ready"
+        );
+    }
+
+    #[test]
+    fn choose_action_accepts_resolve_all_consent_before_tactical_scoring() {
+        let mut state = make_state();
+        engine::game::engine::apply(
+            &mut state,
+            P0,
+            GameAction::BeginResolveAll { max_resolutions: 5 },
+        )
+        .expect("the priority holder may propose Resolve All");
+
+        let epoch = match state.waiting_for {
+            engine::types::game_state::WaitingFor::ResolveAllConsent { epoch, .. } => epoch,
+            ref waiting_for => panic!("expected Resolve All consent, got {waiting_for:?}"),
+        };
+        assert!(
+            AiDecisionContract::issue(&state, PlayerId(1))
+                .candidates
+                .len()
+                > 1,
+            "Resolve All consent must issue both Grant and Decline before testing AI preference"
+        );
+        let action = choose_action(
+            &state,
+            PlayerId(1),
+            &create_config(AiDifficulty::Medium, Platform::Native),
+            &mut SmallRng::seed_from_u64(7),
+        );
+
+        assert_eq!(
+            action,
+            Some(GameAction::RespondResolveAllConsent {
+                epoch,
+                decision: engine::types::actions::ResolveAllConsentDecision::Grant,
+            }),
+            "normal AI selection must not route this user-proposed shortcut through tactical scoring"
+        );
+    }
+
+    #[test]
+    fn scored_candidates_accept_resolve_all_consent_before_tactical_scoring() {
+        let mut state = make_state();
+        engine::game::engine::apply(
+            &mut state,
+            P0,
+            GameAction::BeginResolveAll { max_resolutions: 5 },
+        )
+        .expect("the priority holder may propose Resolve All");
+
+        let epoch = match state.waiting_for {
+            engine::types::game_state::WaitingFor::ResolveAllConsent { epoch, .. } => epoch,
+            ref waiting_for => panic!("expected Resolve All consent, got {waiting_for:?}"),
+        };
+        let scored = score_candidates(
+            &state,
+            PlayerId(1),
+            &create_config(AiDifficulty::Medium, Platform::Native),
+        );
+
+        assert_eq!(
+            scored,
+            vec![(
+                GameAction::RespondResolveAllConsent {
+                    epoch,
+                    decision: engine::types::actions::ResolveAllConsentDecision::Grant,
+                },
+                1.0,
+            )],
+            "the scored/parallel-worker path must not tactically prefer Decline"
         );
     }
 
