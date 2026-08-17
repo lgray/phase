@@ -4051,6 +4051,151 @@ pub enum PendingPlayerScopeSacrificeFollowUp {
     Exploit { exploiter: ObjectId },
 }
 
+/// One discard instruction, parked mid-batch because a replacement-application
+/// choice interrupted it (CR 616.1: "the affected object's controller … or the
+/// affected player chooses one to apply").
+///
+/// This is [`PendingPlayerScopeSacrificeChoice`]'s sibling one layer down, and
+/// it carries the same two things across the pause: the **cursor** is what the
+/// instruction still owes, `preceding_events` is what it has already done, and
+/// the two are reunited into one terminal window when the batch settles. Read
+/// that type first — every mechanism here is its, with the two deliberate
+/// divergences noted on `preceding_events` and in `drain_pending_discard_batch`.
+///
+/// PERSISTENCE ASYMMETRY, stated because it will otherwise mis-triage a bug
+/// report: this field IS serialized, while `GameState::clause_minimum_snapshot`
+/// — the CR 608.2h freeze the resumed draw clause reads — is `#[serde(skip)]`.
+/// A save taken mid-pause therefore restores the parked batch but not the
+/// frozen count. That is pre-existing and out of this type's scope.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingDiscardBatch {
+    /// The discarding seat whose batch paused.
+    pub player: PlayerId,
+    /// What this seat still owes.
+    pub cursor: DiscardBatchCursor,
+    /// The object that caused the discard. Together with `effect_kind` and
+    /// `player` this is the batch's identity: the driver hand-off below refuses
+    /// any batch whose identity does not match the clause it is running.
+    pub source_id: ObjectId,
+    /// The terminal marker this batch must emit once it settles. Held as
+    /// `EffectKind` rather than `Effect` because both `Effect::Discard` and
+    /// `Effect::DiscardCard` route here and the count authority
+    /// (`previous_effect_counts_by_player_from_events`) selects on kind alone.
+    pub effect_kind: EffectKind,
+    /// The card whose replacement is being chosen right now.
+    ///
+    /// CR 614.6: "If an event is replaced, it never happens. A modified event
+    /// occurs instead." A hand → graveyard `Moved` redirect therefore still
+    /// discarded the card (CR 701.9a), but the resumed zone-change arm emits no
+    /// `GameEvent::Discarded` for an unframed discard, so the drain stamps one
+    /// from this id. Without it the paused card is the one card that silently
+    /// leaves the ledger even though the batch resumed correctly.
+    pub paused_card: ObjectId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discard_frame: Option<crate::types::identifiers::DiscardFrameId>,
+    /// CR 608.2f: the clause and the seats it has not reached, installed by the
+    /// `player_scope` driver when this pause interrupted its fan-out. `None`
+    /// for a single-subject discard, which owns no fan-out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fan_out: Option<Box<PendingDiscardFanOut>>,
+    /// The events this instruction emitted BEFORE the pause.
+    ///
+    /// COPIED, not drained — the one place this type diverges from
+    /// `PendingPlayerScopeSacrificeCompletion::deferred_events`. That sibling
+    /// drains because its terminal co-departure stamping (CR 603.10a look-back
+    /// zone-change triggers) has to rewrite the live event buffer. Discard does
+    /// no co-departure stamping, so draining would reorder client-visible
+    /// events across two actions for no rules benefit; copying yields the
+    /// identical terminal count window with no observable change.
+    ///
+    /// CR 608.2i: at completion the window is `preceding_events ++ events`, read
+    /// by the same authority the un-paused path uses. That rule's precondition
+    /// holds here — "if such an effect requires information from the game about
+    /// an object or group of objects, **and that effect is not taking any
+    /// actions on those objects**" — because a count ledger takes no actions on
+    /// the cards it counts. A Madness redirect (CR 702.35a: "that player
+    /// discards it, but exiles it instead") therefore counts here exactly as it
+    /// counts on the un-paused path, by construction rather than by a second
+    /// hand-written rule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preceding_events: Vec<GameEvent>,
+}
+
+/// What a paused discard batch still owes, by selection mode.
+///
+/// CR 701.9b: "By default, effects that cause a player to discard a card allow
+/// the affected player to choose which card to discard. Some effects, however,
+/// require a random discard …" — the two modes differ only in how the next card
+/// is chosen, which is the axis `CardSelectionMode` already names on
+/// `Effect::Discard`. One parameterized cursor rather than two pending states.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum DiscardBatchCursor {
+    /// CR 701.9a: every remaining card of a forced whole-hand discard, in hand
+    /// order. Excludes the card whose replacement paused — that one is settled
+    /// by the replacement itself.
+    All { remaining: Vec<ObjectId> },
+    /// CR 701.9b: `remaining` further picks drawn at random from `pool`.
+    /// Mirrors `RandomDiscardOutcome::NeedsReplacementChoice`'s payload exactly.
+    Random {
+        pool: Vec<ObjectId>,
+        remaining: usize,
+    },
+}
+
+/// The remainder of a `player_scope` discard clause whose fan-out was
+/// interrupted.
+///
+/// CR 608.2f: "Some spells and abilities include actions taken on multiple
+/// players … If the action can't be processed simultaneously, it's instead
+/// processed considering each affected player or object individually. APNAP
+/// order is used to make the primary determination of the order of those
+/// actions." A replacement choice is exactly what makes the discard action
+/// non-simultaneous — but it is still ONE action, so the roster is held by the
+/// batch rather than pushed onto `pending_continuation`, which is what lets the
+/// whole clause publish ONE per-player table.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingDiscardFanOut {
+    /// The scoped template — `player_scope` already removed by
+    /// `split_player_scope_chain`.
+    pub scoped_template: Box<ResolvedAbility>,
+    /// The outer ability, which the shared clause postlude consults for
+    /// tracked-set and linked-exile decisions.
+    pub outer: Box<ResolvedAbility>,
+    pub original_controller: PlayerId,
+    /// CR 101.4: seats not yet iterated, in APNAP order.
+    pub remaining_players: Vec<PlayerId>,
+    /// CR 608.2f: the clause's full reduction domain, for the terminal
+    /// zero-fill. Latched at the pause and never re-derived: a player joining
+    /// or leaving the matching set afterwards cannot alter an action that has
+    /// already begun being processed per subject.
+    pub matching_players: Vec<PlayerId>,
+    /// CR 607.2a: carried across the pause so the terminal publication makes the
+    /// same linked-exile decision the un-paused postlude would.
+    ///
+    /// ORDERING NOTE for the driver's hand-off (`resolve_chain_body`), recorded
+    /// here rather than at the call site so the CR 603.5 prompt-census pin in
+    /// `engine.rs` — which pins a line coordinate in `effects/mod.rs` BELOW that
+    /// call site — does not have to be re-derived for a comment. The hand-off is
+    /// placed AFTER `mark_exile_choice_tracks_by_source` so the batch pause route
+    /// keeps the exact side-effect the ordinary per-seat leg route already had;
+    /// placing it before would make the two pause routes for one clause diverge.
+    /// Only that side-effect differs between the placements — this flag itself
+    /// survives either way, which is what this field is for.
+    ///
+    /// UNREACHABLE in the corpus, measured rather than assumed. A python walk of
+    /// `data/card-data.json` (35798 cards) finds 0 `player_scope` clause nodes
+    /// that carry BOTH a discard effect and a linked-exile consumer tag
+    /// (`LINKED_EXILE_CONSUMER_TAGS`, `game/exile_links.rs`) anywhere in the
+    /// clause subtree. The subtree strictly CONTAINS the tail
+    /// `split_player_scope_chain` detaches, so the filter over-approximates the
+    /// real condition and the zero is sound. Three positive controls on the same
+    /// walk, all non-zero: 1530 `player_scope` clause nodes of any effect, 202 of
+    /// those carrying a discard effect, 290 cards carrying a linked-exile tag.
+    /// That is why the flag-true x batch-pause combination has no fixture.
+    pub after_scope_needs_linked_exile: bool,
+}
+
 /// CR 101.4 + CR 701.23i: APNAP state for a self-library search instruction
 /// whose selected cards are delivered only after every searching player has
 /// made their private choice. The original spell's controller remains on
@@ -8968,6 +9113,10 @@ fn visit_persisted_live_zone_changed_records(
         "consumed_before_priority_trigger_events",
         "pending_attack_trigger_events",
         "pending_player_scope_sacrifice_choice",
+        // `PendingDiscardBatch::preceding_events` holds this turn's `ZoneChanged`
+        // records, whose `turn_zone_change_index` must be rebound on load —
+        // exactly the reason its sacrifice sibling is listed above.
+        "pending_discard_batch",
         "stack",
         "waiting_for",
         "resolution_stack",
@@ -16592,6 +16741,15 @@ declare_game_state! {
     /// `EffectZoneChoice`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_player_scope_sacrifice_choice: Option<PendingPlayerScopeSacrificeChoice>,
+    /// CR 616.1 + CR 701.9a: a discard instruction parked by a
+    /// replacement-application choice. See [`PendingDiscardBatch`].
+    ///
+    /// Boxed: `GameState` is moved by value through the phase-server action and
+    /// AI paths under a hard stack budget (`types/game_state_size.rs`), and this
+    /// payload is populated only during a pause — the shape that file says to
+    /// box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_discard_batch: Option<Box<PendingDiscardBatch>>,
     /// CR 401.4: Remaining per-owner library-order batches for a mass
     /// `ChangeZoneAll` instruction paused on `EffectZoneChoice`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -16827,6 +16985,16 @@ declare_game_state! {
     /// preceding count-producing effect in the current ability chain. Used by
     /// carried-subject continuations like "Each player discards ..., then draws
     /// that many ..." after all players have completed the discard pass.
+    ///
+    /// CR 608.2i is what makes such a continuation legal at all, and its
+    /// precondition is worth quoting rather than paraphrasing: an effect may
+    /// look back at a previous game state "if such an effect requires
+    /// information from the game about an object or group of objects, **and
+    /// that effect is not taking any actions on those objects**". This table is
+    /// a pure count ledger — it takes no actions on the cards it counts — so the
+    /// exception to CR 608.2h holds. A consumer that instead wanted to ACT on
+    /// the counted objects would not be covered by 608.2i and must not be built
+    /// on this field.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_map")]
     pub last_effect_counts_by_player: HashMap<PlayerId, i32>,
@@ -21284,6 +21452,7 @@ impl GameState {
             merged_card_component_route: None,
             resolution_coin_flip: None,
             pending_player_scope_sacrifice_choice: None,
+            pending_discard_batch: None,
             pending_mass_library_order_choice: None,
             pending_scoped_library_search: None,
             pending_library_search_delivery: None,
@@ -23239,7 +23408,14 @@ fn _gamestate_partition_is_total(s: &GameState) {
         //     explicitly. It is `None` at every sample beat (cleared whenever `waiting_for ==
         //     Priority`, effects/mod.rs:759) or a constant direct-assigned count across a real
         //     copy-token loop, so COMPARING never suppresses a legitimate loop's detection.
+        //   - `pending_discard_batch`: COMPARED (hand-written `impl PartialEq` conjunct) — a
+        //     paused discard-batch interaction state, the direct sibling of
+        //     `pending_player_scope_sacrifice_choice` above and classified identically. Its cursor
+        //     only SHRINKS as the batch drains and it is `None` outside a pause, so a differing
+        //     value is correctly not a fixed-point repeat and COMPARING it can never suppress a
+        //     legitimate loop's detection.
         pending_player_scope_sacrifice_choice: _,
+        pending_discard_batch: _,
         pending_mass_library_order_choice: _,
         pending_scoped_library_search: _,
         pending_library_search_delivery: _,
@@ -23452,6 +23628,7 @@ impl PartialEq for GameState {
             && self.resolution_coin_flip == other.resolution_coin_flip
             && self.pending_player_scope_sacrifice_choice
                 == other.pending_player_scope_sacrifice_choice
+            && self.pending_discard_batch == other.pending_discard_batch
             && self.pending_mass_library_order_choice
                 == other.pending_mass_library_order_choice
             && self.pending_scoped_library_search == other.pending_scoped_library_search
@@ -25490,6 +25667,126 @@ mod tests {
                 vec![(19, 0), (19, 1)]
             );
         }
+    }
+
+    /// A mid-pause discard batch carrying one current-turn `ZoneChanged`.
+    /// The event is the point: `preceding_events` is a LIVE event carrier, so
+    /// its records must be rebound on load like every other one.
+    fn parked_discard_batch(record: ZoneChangeRecord) -> Box<PendingDiscardBatch> {
+        Box::new(PendingDiscardBatch {
+            player: PlayerId(0),
+            cursor: DiscardBatchCursor::All {
+                remaining: vec![ObjectId(9_301), ObjectId(9_302)],
+            },
+            source_id: ObjectId(9_300),
+            effect_kind: crate::types::ability::EffectKind::Discard,
+            paused_card: ObjectId(9_303),
+            discard_frame: None,
+            fan_out: None,
+            preceding_events: vec![persisted_zone_change_event(record)],
+        })
+    }
+
+    /// Registration surfaces 4 and 5 for `pending_discard_batch`: the
+    /// hand-written `PartialEq` conjunct, and membership in
+    /// `LIVE_EVENT_CARRIER_FIELDS`.
+    ///
+    /// REVERT PROBES:
+    ///   * delete `"pending_discard_batch"` from `LIVE_EVENT_CARRIER_FIELDS` →
+    ///     the visitor reaches no record and `erased > 0` fails inside
+    ///     `erase_persisted_event_occurrence_fields`.
+    ///   * delete the `self.pending_discard_batch == other.pending_discard_batch`
+    ///     conjunct → the `assert_ne!` below sees two states as equal.
+    #[test]
+    fn parked_discard_batch_is_a_live_event_carrier_and_a_compared_field() {
+        let mut state = GameState::new_two_player(42);
+        state.turn_number = 19;
+        let record = persisted_zone_change_record(ObjectId(9_101), 19, 0);
+        state.zone_changes_this_turn.push_back(record.clone());
+        state.pending_discard_batch = Some(parked_discard_batch(record));
+
+        let bare = {
+            let mut bare = state.clone();
+            bare.pending_discard_batch = None;
+            bare
+        };
+        assert_ne!(
+            state, bare,
+            "a paused discard batch is interaction state and must be COMPARED"
+        );
+
+        let mut persisted = serde_json::to_value(PersistedGameState::Raw(Box::new(state.clone())))
+            .expect("fixture serializes");
+        // Asserts internally that the traversal reached at least one record —
+        // which it can only do if the field is a declared live-event carrier.
+        erase_persisted_event_occurrence_fields(persisted_state_payload_mut(&mut persisted));
+        let restored = serde_json::from_value::<PersistedGameState>(persisted)
+            .expect("the parked batch's records reconcile")
+            .into_game_state();
+        let batch = restored
+            .pending_discard_batch
+            .as_ref()
+            .expect("the parked batch survives the round trip");
+        let GameEvent::ZoneChanged { record, .. } = &batch.preceding_events[0] else {
+            panic!("the fixture stores one ZoneChanged");
+        };
+        assert_eq!(
+            (record.recorded_turn_number, record.turn_zone_change_index),
+            (19, 0),
+            "the carried record is rebound to this turn's ledger on load"
+        );
+        assert_eq!(
+            batch.cursor,
+            DiscardBatchCursor::All {
+                remaining: vec![ObjectId(9_301), ObjectId(9_302)],
+            },
+            "the cursor round-trips unchanged"
+        );
+    }
+
+    /// Registration surface 1's save-compat property: a save written before this
+    /// field existed — or by any writer that skipped it — must load as `None`
+    /// and leave the state machine intact, rather than failing deserialization.
+    ///
+    /// NOT a revert probe for `#[serde(default)]`. MEASURED, not assumed:
+    /// deleting `default` from the declaration leaves this test and all 195
+    /// `types::game_state::` tests green, because serde's derive already maps a
+    /// missing `Option` field to `None`. The attribute is redundant TODAY and is
+    /// kept only for symmetry with the sibling pause carriers
+    /// (`pending_player_scope_sacrifice_choice`,
+    /// `pending_mass_library_order_choice`, `pending_scoped_library_search`),
+    /// so a later reader does not "restore" it without this measurement.
+    ///
+    /// This is therefore a characterization test of the save-compat contract,
+    /// not a discriminator for the attribute. What it does discriminate is the
+    /// contract itself: make the field non-`Option` and `from_value` errors on
+    /// the `expect` below — which is also why `default` must NOT be sold as
+    /// insurance for that change. On a non-`Option` field it would fabricate a
+    /// `Default` for a missing key instead of failing loudly.
+    #[test]
+    fn absent_pending_discard_batch_deserializes_as_none() {
+        let mut state = GameState::new_two_player(42);
+        state.turn_number = 19;
+        let record = persisted_zone_change_record(ObjectId(9_101), 19, 0);
+        state.zone_changes_this_turn.push_back(record.clone());
+        state.pending_discard_batch = Some(parked_discard_batch(record));
+
+        let mut wire = serde_json::to_value(&state).expect("fixture serializes");
+        assert!(
+            wire.as_object_mut()
+                .expect("state is an object")
+                .remove("pending_discard_batch")
+                .is_some(),
+            "reach guard: the field must actually have been serialized to remove"
+        );
+
+        let restored: GameState =
+            serde_json::from_value(wire).expect("an absent parked batch defaults to None");
+        assert!(restored.pending_discard_batch.is_none());
+        assert!(
+            matches!(restored.waiting_for, WaitingFor::Priority { .. }),
+            "the restored state machine is intact, not orphaned mid-pause"
+        );
     }
 
     #[test]

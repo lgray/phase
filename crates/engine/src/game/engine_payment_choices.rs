@@ -937,6 +937,11 @@ pub(super) fn handle_unless_payment(
                         crate::game::effects::discard::RandomDiscardOutcome::NeedsReplacementChoice {
                             remaining_eligible,
                             remaining_count,
+                            // Effect-layer field: the parked EFFECT batch stamps
+                            // the paused card's terminal `Discarded`. A cost
+                            // payment publishes no such ledger, so this caller
+                            // has nothing to do with it.
+                            paused_card: _,
                         } => {
                             state.pending_cost_move_resume =
                                 Some(PendingCostMoveResume::RandomDiscardUnlessPayment(Box::new(
@@ -2115,6 +2120,8 @@ pub(super) fn resume_random_discard_unless_payment(
             crate::game::effects::discard::RandomDiscardOutcome::NeedsReplacementChoice {
                 remaining_eligible,
                 remaining_count,
+                // Effect-layer field — see the sibling site above.
+                paused_card: _,
             } => {
                 state.pending_cost_move_resume =
                     Some(PendingCostMoveResume::RandomDiscardUnlessPayment(Box::new(
