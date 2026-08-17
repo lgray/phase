@@ -4082,11 +4082,9 @@ pub enum PendingPlayerScopeSacrificeFollowUp {
 /// share; CR 614.6 is what says a replaced event never happens and a modified
 /// one happens instead.
 ///
-/// PERSISTENCE ASYMMETRY, stated because it will otherwise mis-triage a bug
-/// report: this field IS serialized, while `GameState::clause_minimum_snapshot`
-/// — the CR 608.2h freeze the resumed draw clause reads — is `#[serde(skip)]`.
-/// A save taken mid-pause therefore restores the parked batch but not the
-/// frozen count. That is pre-existing and out of this type's scope.
+/// The companion `GameState::clause_minimum_snapshot` persists with this batch:
+/// a save taken mid-pause must resume the same CR 608.2h application with its
+/// original frozen value, rather than determine it again after restore.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PendingDiscardBatch {
     /// The discarding seat whose batch paused.
@@ -14688,9 +14686,12 @@ impl StackEntryKind {
 /// been correct, and Windfall would rightly pay out the last discard rather
 /// than the greatest.
 ///
-/// Transient — never serialized. Captured before a `player_scope` link's
-/// fan-out and cleared when the link completes, so the next clause re-enters
-/// the driver with `None` and re-captures against the post-clause board.
+/// Resolution-scoped, but persisted while a choice pauses the resolution.
+/// Captured before a `player_scope` link's fan-out and cleared when the link
+/// completes, so the next clause re-enters the driver with `None` and
+/// re-captures against the post-clause board. A save during a replacement
+/// choice must retain this frozen answer: the resumed clause is still the same
+/// application of the effect, not a new time to determine it.
 ///
 /// # Single-cell invariant
 ///
@@ -14707,7 +14708,7 @@ impl StackEntryKind {
 /// snapshot would be silently corrupted by the inner capture. At that point
 /// this field MUST become a `Vec<ClauseMinimumSnapshot>` stack with
 /// push/pop bracketing each `player_scope` link entry/exit.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClauseMinimumSnapshot {
     /// Reduced cross-player aggregates keyed by the originating quantity
     /// reference, so multiple distinct refs in one clause do not collide.
@@ -17075,8 +17076,10 @@ declare_game_state! {
     /// completes, so every player in that clause resolves against the same
     /// pre-clause board. The per-link lifecycle is deliberately narrower than
     /// `last_vote_ballots`' per-chain reset — three Balance clauses are three
-    /// links in one chain and must each snapshot independently. Transient.
-    #[serde(skip)]
+    /// links in one chain and must each snapshot independently. Resolution-
+    /// scoped, but serialized across a paused resolution so the frozen value
+    /// survives authoritative save/restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clause_minimum_snapshot: Option<ClauseMinimumSnapshot>,
 
     /// CR 400.7 + CR 608.2c: Number of cards exiled from a hand by the most recent

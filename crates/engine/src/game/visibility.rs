@@ -260,6 +260,11 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     // itself. Viewer projections are display-only clones; the authoritative
     // state the drain resumes from is never filtered.
     filtered.pending_discard_batch = None;
+    // CR 608.2h: a paused player-scope clause retains its frozen aggregate in
+    // authoritative state so save/restore resumes the same application. The
+    // value can encode hidden-zone information (for example, hand sizes), so it
+    // belongs with the private discard cursor rather than any viewer payload.
+    filtered.clause_minimum_snapshot = None;
     // Deferred life-cost owners can embed a complete PendingCast, including
     // hidden card and target context. The projected WaitingFor is the only
     // viewer-facing interaction surface.
@@ -6219,6 +6224,8 @@ mod tests {
                 fan_out: None,
                 preceding_events: Vec::new(),
             }));
+        state.clause_minimum_snapshot =
+            Some(crate::types::game_state::ClauseMinimumSnapshot::default());
 
         let authoritative = serde_json::to_string(&state.pending_discard_batch)
             .expect("the authoritative batch serializes");
@@ -6232,6 +6239,10 @@ mod tests {
             assert!(
                 view.pending_discard_batch.is_none(),
                 "viewer {viewer:?} must not receive the parked discard batch"
+            );
+            assert!(
+                view.clause_minimum_snapshot.is_none(),
+                "viewer {viewer:?} must not receive the paused clause's private aggregate"
             );
             let wire = serde_json::to_string(&view).expect("the filtered snapshot serializes");
             assert!(
