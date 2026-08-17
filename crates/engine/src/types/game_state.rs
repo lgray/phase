@@ -22069,6 +22069,17 @@ impl GameState {
         // Private shortcut capabilities are live interaction state, never part
         // of a CR 104.4b position sample.
         clone.precast_shortcut_runtime = PrecastShortcutRuntime::default();
+        // CR 700.2 + CR 104.4b: the mode-boundary edge latch is resolution-scoped
+        // and is cleared only at depth-0 chain ENTRY, so between resolutions it
+        // holds the LAST resolved mode's ordinal as pure residue. Two otherwise
+        // identical positions reached via different last-resolved modes would
+        // then differ here alone and never confirm a repeated position. It is
+        // eq-compared (AI-search dedup legitimately reads it), so it is
+        // normalized away HERE rather than excluded from `PartialEq`.
+        // NOTE: its lockstep partner `chain_tracked_set_id` carries the same
+        // residue and is deliberately NOT cleared here — that is pre-existing
+        // behavior with its own follow-up, not something this line may widen.
+        clone.resolving_modal_instruction = None;
         // CR 104.4b + CR 400.7: the all-zone incarnation bump advances a source's
         // epoch on every zone change, so a mandatory loop that cycles its source's
         // zones would otherwise carry a growing `TriggerSourceContext` into loop
@@ -28400,6 +28411,39 @@ mod tests {
         assert!(
             loop_states_equal(&base.normalize_for_loop(), &later.normalize_for_loop()),
             "states differing only in volatile counters must confirm as a repeat"
+        );
+    }
+
+    /// CR 700.2 + CR 104.4b: the mode-boundary edge latch
+    /// (`resolving_modal_instruction`) is resolution-scoped and is cleared only at
+    /// depth-0 chain ENTRY, so between resolutions it holds the last resolved
+    /// mode's ordinal as pure residue. Two identical positions reached via
+    /// different last-resolved modes must still confirm as a repeated position.
+    ///
+    /// DISCRIMINATION: delete `clone.resolving_modal_instruction = None;` from
+    /// `normalize_for_loop` and this test FAILS — the field is eq-compared, so the
+    /// residue alone defeats the CR 104.4b repeat. The `a != b` assertion is the
+    /// paired non-vacuity witness: it proves the two inputs really do differ
+    /// BEFORE normalization, so the positive assertion cannot pass by the two
+    /// sides being trivially identical.
+    #[test]
+    fn normalize_for_loop_clears_the_modal_boundary_latch_residue() {
+        let mut first = GameState::new_two_player(7);
+        let mut second = first.clone();
+        // The ONLY difference: which mode resolved last. Same board, same stack.
+        first.resolving_modal_instruction = Some(0);
+        second.resolving_modal_instruction = Some(2);
+
+        assert!(
+            first != second,
+            "non-vacuity: the two states must differ before normalization, else the \
+             equality assertion below proves nothing"
+        );
+
+        assert!(
+            loop_states_equal(&first.normalize_for_loop(), &second.normalize_for_loop()),
+            "CR 104.4b: positions differing only in the resolution-scoped mode-boundary \
+             latch must confirm as a repeat"
         );
     }
 
