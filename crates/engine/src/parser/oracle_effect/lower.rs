@@ -56,7 +56,7 @@ use super::{
     refine_damage_target_remainder, replace_player_anaphor_with_parent_target,
     scan_contains_phrase, target_filter_controller_ref,
 };
-use crate::game::effects::effect::generic_effect_application_filter;
+use crate::game::effects::effect::generic_effect_population_filter;
 
 pub(super) fn rewrite_player_anaphor_targets_in_definition(def: &mut AbilityDefinition) {
     replace_player_anaphor_with_parent_target(def.effect.as_mut());
@@ -260,23 +260,13 @@ pub(super) fn patch_population_head_tap_anaphor(def: &mut AbilityDefinition) {
             Effect::PutCounterAll { target, .. } | Effect::PumpAll { target, .. } => {
                 is_broadcast_population_filter(target)
             }
+            // Same authority the runtime publish arm selects with, so a head can
+            // never be routed here and then declined there (or vice versa).
             Effect::GenericEffect {
                 static_abilities,
                 target,
                 ..
-            } => static_abilities
-                .iter()
-                .find(|sd| {
-                    matches!(
-                        sd.mode,
-                        StaticMode::Continuous
-                            | StaticMode::MustAttack
-                            | StaticMode::MustAttackDefender { .. }
-                    )
-                })
-                .and_then(|sd| {
-                    generic_effect_application_filter(target.as_ref(), sd.affected.as_ref())
-                })
+            } => generic_effect_population_filter(target.as_ref(), static_abilities)
                 .is_some_and(is_broadcast_population_filter),
             _ => false,
         }

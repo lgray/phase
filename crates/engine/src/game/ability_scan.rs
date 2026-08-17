@@ -252,6 +252,10 @@ fn resolved_ability_axes(a: &ResolvedAbility, mode: ScanMode) -> Axes {
         // here". The instructions themselves are `effect`/`sub_ability`, already
         // scanned above, so the axes of a chain are identical with or without it.
         modal_instruction_ordinal: _,
+        // CR 608.2c: structural record of what a chain SPLIT detached. Read-FREE:
+        // it selects nothing from game state and gates only whether a producer
+        // may publish its population, which can narrow but never widen.
+        detached_remainder: _,
         min_x_value: _,                  // u32
         cant_be_copied: _,               // bool
         copy_count_status: _,            // status tag
@@ -7264,7 +7268,7 @@ mod tests {
     ///     helper-enumerator mass reads on existing relaxed variants; raw-iteration mass
     ///     reads rely on the oracle's no-wildcard forcing.
     ///   - BOUNDED raw-iter / O(1) reads are deliberately kept OUT of `CLASSIFIED` (so the
-    ///     set-equality stays over the 14 idiom-matched files — no allowlist pollution):
+    ///     set-equality stays over the 15 idiom-matched files — no allowlist pollution):
     ///     `vote.rs` (`votes_per_session_for` = 1 + count of `GrantsExtraVote` statics,
     ///     snapshotted at session start — bounded single outcome) and `switch_pt.rs`
     ///     (O(1) `state.battlefield.contains()` over the effect's own `ids` — bounded
@@ -7327,6 +7331,14 @@ mod tests {
                 true,
                 "PhaseOut/PhaseIn: targets-empty -> battlefield_phased_in_ids / \
                  state.battlefield mass scan (CR 702.26)",
+            ),
+            (
+                "pump.rs",
+                true,
+                "PumpAll (pump_all_affected_objects): battlefield_phased_in_ids mass pump, \
+                 a read that scales with the board; single Pump path also present in-file. \
+                 Joined the idiom in #7484, when the producer moved off a raw \
+                 state.battlefield scan onto the same enumeration goad.rs uses",
             ),
             (
                 "turn_face_up.rs",
@@ -7426,6 +7438,7 @@ mod tests {
             ("counters.rs", "PutCounterAll"),
             ("goad.rs", "GoadAll"),
             ("phase_out.rs", "PhaseOut"),
+            ("pump.rs", "PumpAll"),
             ("turn_face_up.rs", "TurnFaceUp"),
             ("turn_face_down.rs", "TurnFaceDown"),
         ];

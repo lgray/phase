@@ -3918,6 +3918,10 @@ fn walk_ability(
         // read can see; narrowing never adds a read, and the member-bound axis is
         // already set by the `TrackedSet`-bearing effects themselves.
         modal_instruction_ordinal: _,
+        // CR 608.2c: structural record of what a chain SPLIT detached. Read-FREE:
+        // it selects nothing from game state and gates only whether a producer
+        // may publish its population, which can narrow but never widen.
+        detached_remainder: _,
         min_x_value: _, // u32, no read
         cant_be_copied: _,
         copy_count_status: _,

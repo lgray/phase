@@ -97,6 +97,7 @@ mod tests {
         scope: SkipScope,
     ) -> ResolvedAbility {
         ResolvedAbility {
+            detached_remainder: crate::types::ability::DetachedRemainder::NoProducer,
             effect: Effect::SkipNextStep {
                 target: TargetFilter::Controller,
                 step,

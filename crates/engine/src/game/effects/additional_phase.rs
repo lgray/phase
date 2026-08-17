@@ -254,6 +254,7 @@ mod tests {
         count: QuantityExpr,
     ) -> ResolvedAbility {
         ResolvedAbility {
+            detached_remainder: crate::types::ability::DetachedRemainder::NoProducer,
             effect: Effect::AdditionalPhase {
                 target,
                 phase,

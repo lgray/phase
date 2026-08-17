@@ -39,6 +39,7 @@ mod tests {
 
     fn make_ability() -> ResolvedAbility {
         ResolvedAbility {
+            detached_remainder: crate::types::ability::DetachedRemainder::NoProducer,
             effect: Effect::ReverseTurnOrder,
             controller: PlayerId(0),
             original_controller: None,

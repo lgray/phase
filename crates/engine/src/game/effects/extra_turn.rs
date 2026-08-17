@@ -66,6 +66,7 @@ mod tests {
 
     fn make_ability(target: TargetFilter, controller: PlayerId) -> ResolvedAbility {
         ResolvedAbility {
+            detached_remainder: crate::types::ability::DetachedRemainder::NoProducer,
             effect: Effect::ExtraTurn { target },
             controller,
             original_controller: None,

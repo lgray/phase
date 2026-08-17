@@ -318,6 +318,7 @@ mod tests {
         targets: Vec<TargetRef>,
     ) -> ResolvedAbility {
         ResolvedAbility {
+            detached_remainder: crate::types::ability::DetachedRemainder::NoProducer,
             effect: Effect::Double {
                 target_kind,
                 target,

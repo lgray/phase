@@ -169,8 +169,8 @@ pub fn resolve_all(
 /// A discriminating test for the flush hazard needs a filter reading a pumped
 /// characteristic (e.g. "creatures with power 2 or less").
 ///
-/// NOTE for a future zone-aware `resolve_all`: this scans `state.battlefield`,
-/// so Elvish Elegy's `InZone: Graveyard` filter returns `[]` today. That is NOT
+/// NOTE for a future zone-aware `resolve_all`: this scans the battlefield, so
+/// Elvish Elegy's `InZone: Graveyard` filter returns `[]` today. That is NOT
 /// what keeps its milled tracked set intact — the `is_sole_chain_producer`
 /// guard at the publish site does, because the preceding `Mill` already
 /// published. Making this zone-aware is therefore safe.
@@ -188,11 +188,23 @@ pub(crate) fn pump_all_affected_objects(
     let target_filter = crate::game::effects::resolved_object_filter(ability, target);
     // CR 107.3a + CR 601.2b: ability-context filter evaluation.
     let ctx = filter::FilterContext::from_ability(ability);
+    // CR 702.26b: a phased-out permanent "is treated as though it does not
+    // exist". CR 702.26e is the specific rule for this producer: a continuous
+    // effect from a resolving spell/ability that modifies characteristics does
+    // NOT include phased-out permanents in its set of affected objects.
+    //
+    // Deliberately redundant with `filter_inner`'s own CR 702.26b choke point in
+    // `filter.rs`, which already excludes phased-out objects from every
+    // `matches_target_filter` call — measured (see the test's DISCRIMINATION
+    // table), not assumed. Kept because this function is the single authority for
+    // BOTH the pump and the published tracked set, so it holds the invariant
+    // locally rather than inheriting it from a matcher whose own comment reserves
+    // the right to be bypassed by "targeted callers". Enumerates exactly as the
+    // sibling `goad_targets` authority does.
     state
-        .battlefield
-        .iter()
-        .filter(|id| filter::matches_target_filter(state, **id, &target_filter, &ctx))
-        .copied()
+        .battlefield_phased_in_ids()
+        .into_iter()
+        .filter(|id| filter::matches_target_filter(state, *id, &target_filter, &ctx))
         .collect()
 }
 
@@ -424,6 +436,7 @@ fn resolve_variable_pt(value: &str, ability: &ResolvedAbility) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::game_object::{PhaseOutCause, PhaseStatus};
     use crate::game::layers::evaluate_layers;
     use crate::game::zones::create_object;
     use crate::types::ability::{
@@ -557,6 +570,82 @@ mod tests {
         // Opponent unchanged
         assert_eq!(state.objects[&opp].power, Some(3));
         assert_eq!(state.objects[&opp].toughness, Some(3));
+    }
+
+    /// CR 702.26b + CR 702.26e: a phased-out permanent "is treated as though it
+    /// does not exist", and a continuous effect from a resolving spell/ability
+    /// does NOT include it in its set of affected objects.
+    ///
+    /// Covers BOTH halves the review asked for with one assertion each, because
+    /// `pump_all_affected_objects` is the single authority for the pump AND for
+    /// the published tracked set (that identity is pinned by the sibling test
+    /// below): excluding the phased-out creature from this population excludes
+    /// it from the set a later "those creatures" consumer reads.
+    ///
+    /// DISCRIMINATION, measured as a 2x2 rather than claimed — two independent
+    /// guards enforce this invariant, so reverting either ALONE leaves the test
+    /// green, and only the conjunction is load-bearing:
+    ///
+    /// | `filter_inner` CR 702.26b choke point | this fn's `battlefield_phased_in_ids()` | result |
+    /// |---|---|---|
+    /// | on  | on  | pass |
+    /// | on  | off | pass |
+    /// | off | on  | pass |
+    /// | off | off | **FAIL** — population comes back `[phased_in, phased_out]` |
+    ///
+    /// So this test does not prove the local enumeration is *necessary* today; it
+    /// pins that the producer keeps excluding phased-out permanents if EITHER
+    /// guard is later removed or routed around. The phased-IN creature's
+    /// assertions are the paired non-vacuity witness: without them a helper that
+    /// returned `[]` for everything would pass.
+    #[test]
+    fn pump_all_excludes_a_phased_out_creature_from_the_population_and_the_pump() {
+        let mut state = GameState::new_two_player(7);
+        let phased_in = make_creature(&mut state, "Phased In", 2, 2, PlayerId(0));
+        let phased_out = make_creature(&mut state, "Phased Out", 2, 2, PlayerId(0));
+        if let Some(obj) = state.objects.get_mut(&phased_out) {
+            obj.phase_status = PhaseStatus::PhasedOut {
+                cause: PhaseOutCause::Directly,
+            };
+        }
+
+        let yours: TargetFilter = TypedFilter::creature()
+            .controller(ControllerRef::You)
+            .into();
+        let ability = ResolvedAbility::new(
+            Effect::PumpAll {
+                power: PtValue::Fixed(1),
+                toughness: PtValue::Fixed(1),
+                target: yours.clone(),
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+
+        assert_eq!(
+            pump_all_affected_objects(&state, &ability, &yours),
+            vec![phased_in],
+            "CR 702.26e: a phased-out permanent must not enter the frozen population, \
+             which is also the set the publish site republishes"
+        );
+
+        let mut events = Vec::new();
+        resolve_all(&mut state, &ability, &mut events).unwrap();
+        // The pump installs a transient continuous effect; P/T only materializes
+        // once the layer system evaluates (see this module's FLUSH HAZARD note).
+        evaluate_layers(&mut state);
+        assert_eq!(
+            state.objects[&phased_in].power,
+            Some(3),
+            "non-vacuity: the phased-IN creature must actually be pumped, else the \
+             exclusion above could pass on an empty population"
+        );
+        assert_eq!(
+            state.objects[&phased_out].power,
+            Some(2),
+            "CR 702.26b: the phased-out creature must be untouched by the pump"
+        );
     }
 
     /// CR 611.2c (issue #6857): `pump_all_affected_objects` is the SINGLE

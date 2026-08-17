@@ -19033,9 +19033,21 @@ mod stage2_injector_tests {
                 // right one, and it is what establishes the set was preserved. This
                 // branch writes `state.waiting_for` nowhere: the publish arms return
                 // `Vec<ObjectId>` and prompt for nothing, so it adds no producer here.
-                "game/effects/mod.rs:7225".to_string(),
-                "game/effects/mod.rs:7302".to_string(),
-                "game/effects/mod.rs:10582".to_string(),
+                //
+                // #7484 maintainer review round 4 (same branch, no rebase):
+                // `:7225/:7302/:10582` => `:7261/:7338/:10618`, UNIFORM `+36`, and this
+                // time uniformity IS available as corroboration because every insertion
+                // sits above all three: the `GenericEffect` publish arm's
+                // `is_sole_chain_producer` gate at `:6037` and its comment block. Still
+                // located by digest rather than by arithmetic — each producer's 9-line
+                // block was hashed at this branch's committed tip and re-found at exactly
+                // one coordinate in the working tree (`cffb4348`/`0c3bdd6d`/`393bb75a`,
+                // all MATCH). The round's other edits are the two new `#[cfg(test)]`
+                // tests, which are below all three and mint no prompt, so the `in_test`
+                // total is unchanged.
+                "game/effects/mod.rs:7261".to_string(),
+                "game/effects/mod.rs:7338".to_string(),
+                "game/effects/mod.rs:10618".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.

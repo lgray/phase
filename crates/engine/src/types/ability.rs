@@ -25884,6 +25884,29 @@ pub enum ParentTargetMissingReason {
     RevealHandChoice,
 }
 
+/// CR 608.2c: what a chain split — a `player_scope` fan-out, or a multi-target
+/// player subject — DETACHED from this node's chain.
+///
+/// Why this exists: the publish gate for a tracked-set producer must judge the
+/// PRE-SPLIT chain. A splitter hands the per-iteration resolution a template
+/// whose remainder has been detached, so a structural walk over that template
+/// cannot see a producer surviving in the detached tail — the head would publish
+/// where the undetached chain declines, binding a later `TrackedSet` consumer to
+/// the wrong population. The verdict is purely structural, so it is computed
+/// once at split time and carried on the template rather than re-derived.
+///
+/// SOLE WRITERS: `split_player_scope_chain`, `split_multi_target_player_chain`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DetachedRemainder {
+    /// Nothing was detached, or the detached remainder holds no producer in
+    /// publisher position. The template's own walk is the whole truth.
+    #[default]
+    NoProducer,
+    /// The detached remainder holds a node in publisher position, so this node
+    /// is NOT the sole producer of its pre-split chain and must not publish.
+    HoldsPublisher,
+}
+
 /// Runtime ability data passed to effect handlers at resolution time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedAbility {
@@ -26028,6 +26051,11 @@ pub struct ResolvedAbility {
     /// from this field alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modal_instruction_ordinal: Option<usize>,
+    /// CR 608.2c: the publisher-position verdict of the chain remainder a
+    /// splitter detached from this node. See [`DetachedRemainder`]. Default
+    /// (`NoProducer`) on every node that was never split.
+    #[serde(default)]
+    pub detached_remainder: DetachedRemainder,
     /// CR 608.2c: Repeat this ability N times (from "for each [X], [effect]").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat_for: Option<QuantityExpr>,
@@ -26255,6 +26283,7 @@ impl ResolvedAbility {
             description: None,
             selected_mode_labels: Vec::new(),
             modal_instruction_ordinal: None,
+            detached_remainder: DetachedRemainder::NoProducer,
             repeat_for: None,
             min_x_value: 0,
             announced_x: None,

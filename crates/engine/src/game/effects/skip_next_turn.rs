@@ -80,6 +80,7 @@ mod tests {
         count: QuantityExpr,
     ) -> ResolvedAbility {
         ResolvedAbility {
+            detached_remainder: crate::types::ability::DetachedRemainder::NoProducer,
             effect: Effect::SkipNextTurn { target, count },
             controller,
             original_controller: None,

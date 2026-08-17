@@ -576,6 +576,9 @@ pub(crate) fn chain_offers_choice(a: &ResolvedAbility) -> bool {
         // above); this records only where each chosen mode's instructions begin
         // in the linearized chain. It raises no `WaitingFor` and gates no prompt.
         modal_instruction_ordinal: _,
+        // CR 608.2c: split-remainder marker. Raises no `WaitingFor` and gates no
+        // prompt; it only decides whether a producer publishes its tracked set.
+        detached_remainder: _,
         min_x_value: _,                  // u32
         cant_be_copied: _,               // bool
         copy_count_status: _,            // status tag

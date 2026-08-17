@@ -11,12 +11,12 @@ use crate::game::speed::has_max_speed;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, CardPlayMode, CardTypeSetSource,
     ChosenAttribute, CommanderOwnership, ControllerRef, CopyRetargetPermission,
-    CostPaidObjectSnapshot, EachDamageRecipient, Effect, EffectError, EffectKind,
-    EffectOutcomeSignal, EffectResolutionResult, EffectScope, FilterProp, ManaProduction,
-    OpponentMayScope, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef, RepeatContinuation,
-    ResolvedAbility, RevealUntilDisposition, SacrificeCost, SacrificeRequirement, SharedQuality,
-    SharedQualityRelation, SiblingCondition, SubAbilityLink, TapStateChange, TargetChoiceTiming,
-    TargetFilter, TargetRef, ThisWayCause,
+    CostPaidObjectSnapshot, DetachedRemainder, EachDamageRecipient, Effect, EffectError,
+    EffectKind, EffectOutcomeSignal, EffectResolutionResult, EffectScope, FilterProp,
+    ManaProduction, OpponentMayScope, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef,
+    RepeatContinuation, ResolvedAbility, RevealUntilDisposition, SacrificeCost,
+    SacrificeRequirement, SharedQuality, SharedQualityRelation, SiblingCondition, SubAbilityLink,
+    TapStateChange, TargetChoiceTiming, TargetFilter, TargetRef, ThisWayCause,
 };
 #[cfg(test)]
 use crate::types::ability::{AttackScope, AttackSubject};
@@ -4405,7 +4405,19 @@ fn split_player_scope_chain(
     let mut scoped = ability.clone();
     scoped.player_scope = None;
     let tail = detach_after_player_scope_local_chain(&mut scoped, scope, false);
+    scoped.detached_remainder = detached_remainder_verdict(tail.as_deref());
     (scoped, tail)
+}
+
+/// CR 608.2c: classify a detached chain remainder for the publish gate. The walk
+/// is the same one leg 2 uses, applied to the detached node itself.
+fn detached_remainder_verdict(tail: Option<&ResolvedAbility>) -> DetachedRemainder {
+    match tail {
+        Some(node) if node_or_later_is_publisher_position(node) => {
+            DetachedRemainder::HoldsPublisher
+        }
+        _ => DetachedRemainder::NoProducer,
+    }
 }
 
 /// CR 608.2c: A multi-target player subject owns only its same-sentence
@@ -4418,6 +4430,9 @@ fn split_multi_target_player_chain(
 ) -> (ResolvedAbility, Option<Box<ResolvedAbility>>) {
     let mut per_target = ability.clone();
     let tail = detach_after_multi_target_player_local_chain(&mut per_target);
+    // Same hazard, same primitive: the per-target template loses sight of a
+    // producer left in the detached remainder.
+    per_target.detached_remainder = detached_remainder_verdict(tail.as_deref());
     (per_target, tail)
 }
 
@@ -5416,14 +5431,17 @@ pub(crate) fn chain_references_tracked_set(ability: &ResolvedAbility) -> bool {
 /// harvest, which yields `[]` for every head in this class (they emit no
 /// `ZoneChanged`) — i.e. byte-identical to the pre-#6857 engine.
 ///
-/// KNOWN GAP, unexercised today: under a `player_scope` fan-out the publish
-/// site hands `affected_objects_with_causes` the `scoped_template`, whose tail
-/// `split_player_scope_chain` has already DETACHED, while the surrounding gate
-/// reads the full `ability`. Leg 2 therefore cannot see a later producer that
-/// lives in the detached tail, and would let the head publish where the
-/// undetached chain would have declined. Measured unreachable at the time of
-/// writing: 0 of the 627 event-less heads in the corpus carry a `player_scope`.
-/// If one ever does, leg 2 needs the pre-split ability, not the template.
+/// CLOSED by leg 3 (was a documented gap): under a `player_scope` fan-out the
+/// publish site hands `affected_objects_with_causes` the `scoped_template`,
+/// whose tail `split_player_scope_chain` has already DETACHED, while the
+/// surrounding gate reads the full `ability`. Leg 2 alone therefore cannot see a
+/// later producer living in the detached tail, and would let the head publish
+/// where the undetached chain declines. It was measured unreachable when first
+/// written (0 of the 627 event-less heads in the corpus carried a
+/// `player_scope`), but "unreachable today" is not a fix: the splitter now
+/// records the remainder's publisher-position verdict on the template
+/// (`DetachedRemainder`), and leg 3 reads it, so the gate judges the PRE-SPLIT
+/// chain without the per-iteration resolution losing its scoped template.
 /// The mode-boundary stop is neither wider nor narrower than that gap: it is the
 /// same walk over the same pre-split ability. On the fan-out path itself the stop
 /// is REDUNDANT rather than load-bearing — `split_player_scope_chain` has already
@@ -5440,7 +5458,14 @@ fn is_sole_chain_producer(state: &GameState, ability: &ResolvedAbility) -> bool 
             .get(&id)
             .is_none_or(|set| set.is_empty())
     });
-    no_earlier_producer && !later_node_is_publisher_position(ability)
+    // CR 608.2c: leg 3 — a producer that survives in a remainder DETACHED by a
+    // chain split still competes for the anaphor, and the template handed to the
+    // per-iteration resolution cannot see it. The splitter records that verdict
+    // structurally; without this leg the head publishes where the undetached
+    // chain declines. Closes the fan-out gap the leg-2 doc describes.
+    no_earlier_producer
+        && !later_node_is_publisher_position(ability)
+        && ability.detached_remainder == DetachedRemainder::NoProducer
 }
 
 /// Any strictly-later node of this chain that the publish site would itself
@@ -5466,25 +5491,39 @@ fn is_sole_chain_producer(state: &GameState, ability: &ResolvedAbility) -> bool 
 /// binds nothing. The stop is applied inside `walk`, which covers the seed and
 /// both recursions uniformly.
 fn later_node_is_publisher_position(ability: &ResolvedAbility) -> bool {
-    fn walk(node: Option<&ResolvedAbility>) -> bool {
-        node.is_some_and(|n| {
-            if crosses_modal_boundary(n) {
-                return false;
-            }
-            // CR 603.7: production's own predicate, unmodified — a node whose
-            // consumer merely DEFERS (a `CreateDelayedTrigger
-            // { uses_tracked_set: true }`, which acts at a later time) still
-            // counts as a publisher position here. Excluding deferring consumers
-            // from this leg would let a head publish across a `CopyTokenOf` +
-            // delayed-exile chain (Twinflame, Myra the Magnificent), putting the
-            // ORIGINAL creature into the set the delayed "exile those tokens"
-            // then binds — measured, not predicted.
-            next_sub_needs_tracked_set(n)
-                || walk(n.sub_ability.as_deref())
-                || walk(n.else_ability.as_deref())
-        })
+    ability
+        .sub_ability
+        .as_deref()
+        .is_some_and(node_or_later_is_publisher_position)
+}
+
+/// CR 603.7 + CR 700.2: is THIS node, or any strictly-later node of its chain,
+/// in publisher position? Stops at a mode boundary, exactly like its caller.
+///
+/// Split out of [`later_node_is_publisher_position`] so that a chain remainder a
+/// splitter DETACHED can be judged by the same predicate: there the detached
+/// node ITSELF is a candidate, not merely its descendants.
+fn node_or_later_is_publisher_position(node: &ResolvedAbility) -> bool {
+    if crosses_modal_boundary(node) {
+        return false;
     }
-    walk(ability.sub_ability.as_deref())
+    // CR 603.7: production's own predicate, unmodified — a node whose
+    // consumer merely DEFERS (a `CreateDelayedTrigger
+    // { uses_tracked_set: true }`, which acts at a later time) still
+    // counts as a publisher position here. Excluding deferring consumers
+    // from this leg would let a head publish across a `CopyTokenOf` +
+    // delayed-exile chain (Twinflame, Myra the Magnificent), putting the
+    // ORIGINAL creature into the set the delayed "exile those tokens"
+    // then binds — measured, not predicted.
+    next_sub_needs_tracked_set(node)
+        || node
+            .sub_ability
+            .as_deref()
+            .is_some_and(node_or_later_is_publisher_position)
+        || node
+            .else_ability
+            .as_deref()
+            .is_some_and(node_or_later_is_publisher_position)
 }
 
 fn ability_or_branch_references_tracked_set(ability: &ResolvedAbility) -> bool {
@@ -5995,28 +6034,25 @@ fn affected_objects_from_events(
         // (oracle_effect/mod.rs), which still gates only the MustAttack/
         // MustAttackDefender coercion pair for its own (unrelated)
         // ParentTarget-rewrite purpose.
+        // CR 608.2c: gated on `is_sole_chain_producer` exactly as the three
+        // event-less sibling arms below (`PumpAll` / `GoadAll` / `GiveControl`)
+        // are. This head is the same class the gate's doc describes — it moves
+        // nothing and emits no object-affecting event — so a mixed chain whose
+        // LATER node is the real antecedent must not have its anaphor bound by
+        // this broadcast coercion/grant. When the gate declines, the arm falls
+        // through to the `_ =>` `ZoneChanged` harvest, which is `[]` for this
+        // head (it emits none), leaving the later producer to publish.
         Effect::GenericEffect {
             static_abilities,
             target,
             ..
-        } => {
-            // Select the first static whose population is meant to be frozen
-            // at resolution rather than re-evaluated live at each future
-            // check — a coercion requirement or a Continuous grant.
-            let Some(static_def) = static_abilities.iter().find(|sd| {
-                matches!(
-                    sd.mode,
-                    crate::types::statics::StaticMode::MustAttack
-                        | crate::types::statics::StaticMode::MustAttackDefender { .. }
-                        | crate::types::statics::StaticMode::Continuous
-                )
-            }) else {
-                return Vec::new();
-            };
-            let Some(governing) = effect::generic_effect_application_filter(
-                target.as_ref(),
-                static_def.affected.as_ref(),
-            ) else {
+        } if is_sole_chain_producer(state, ability) => {
+            // Which static names the frozen population is decided by ONE
+            // authority shared with the parser's routing predicate, so lowering
+            // cannot mark a head a publisher that this arm then declines.
+            let Some(governing) =
+                effect::generic_effect_population_filter(target.as_ref(), static_abilities)
+            else {
                 return Vec::new();
             };
             // CR 608.2c: an inherited-reference affected filter (ParentTarget /
@@ -23304,6 +23340,230 @@ mod tests {
                 WaitingFor::UnlessPayment { .. } | WaitingFor::DiscardChoice { .. }
             ),
             "no extra unless/discard prompts after both iterations"
+        );
+    }
+
+    /// CR 608.2c (maintainer review, #7484): the publish gate must judge the
+    /// PRE-SPLIT chain. A `player_scope` fan-out hands the per-player resolution
+    /// a template whose remainder has been DETACHED, so a walk over that
+    /// template alone cannot see a producer surviving in the tail — and the head
+    /// would publish where the undetached chain declines, binding a later
+    /// `TrackedSet` consumer to the wrong population.
+    ///
+    /// MATCHED PAIR, so the assertion is discriminating rather than decorative:
+    /// the two chains differ ONLY in whether the detached tail is in publisher
+    /// position. Delete the `detached_remainder` leg from
+    /// `is_sole_chain_producer` and the first case flips to `true` (wrongly
+    /// publishing) while the second stays `true` — i.e. the leg is what
+    /// separates them.
+    #[test]
+    fn player_scope_split_carries_a_detached_publisher_into_the_gate() {
+        let state = GameState::new_two_player(7);
+        let pump = |scope: Option<PlayerFilter>| {
+            let mut a = ResolvedAbility::new(
+                Effect::PumpAll {
+                    power: PtValue::Fixed(1),
+                    toughness: PtValue::Fixed(1),
+                    target: TargetFilter::Any,
+                },
+                vec![],
+                ObjectId(1),
+                PlayerId(0),
+            );
+            a.player_scope = scope;
+            a
+        };
+
+        // Tail that IS a publisher position: its own sub consumes the set.
+        let mut publishing_tail = pump(None);
+        publishing_tail.sub_link = SubAbilityLink::SequentialSibling;
+        publishing_tail.sub_ability = Some(Box::new(ResolvedAbility::new(
+            Effect::SetTapState {
+                target: TargetFilter::TrackedSet {
+                    id: crate::types::identifiers::TrackedSetId(0),
+                },
+                scope: EffectScope::Single,
+                state: TapStateChange::Untap,
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        )));
+        let mut head = pump(Some(PlayerFilter::All));
+        head.sub_ability = Some(Box::new(publishing_tail));
+
+        let (scoped, tail) = split_player_scope_chain(&head, &PlayerFilter::All);
+        assert!(
+            tail.is_some(),
+            "precondition: the sibling tail must actually be detached, else this \
+             test proves nothing about the detached case"
+        );
+        assert_eq!(
+            scoped.detached_remainder,
+            DetachedRemainder::HoldsPublisher,
+            "the splitter must record that the detached remainder still holds a producer"
+        );
+        assert!(
+            !is_sole_chain_producer(&state, &scoped),
+            "CR 608.2c: the head is NOT the sole producer of its pre-split chain, so it \
+             must not publish — the detached tail's consumer owns that population"
+        );
+
+        // Same shape, tail NOT a publisher position (its sub consumes nothing).
+        let mut inert_tail = pump(None);
+        inert_tail.sub_link = SubAbilityLink::SequentialSibling;
+        let mut head2 = pump(Some(PlayerFilter::All));
+        head2.sub_ability = Some(Box::new(inert_tail));
+
+        let (scoped2, tail2) = split_player_scope_chain(&head2, &PlayerFilter::All);
+        assert!(
+            tail2.is_some(),
+            "precondition: same detachment as the case above"
+        );
+        assert_eq!(
+            scoped2.detached_remainder,
+            DetachedRemainder::NoProducer,
+            "a detached remainder with no consumer must not veto the head"
+        );
+        assert!(
+            is_sole_chain_producer(&state, &scoped2),
+            "non-vacuity: with nothing consuming downstream the head DOES publish, so the \
+             veto above is caused by the publisher position and not by the split itself"
+        );
+    }
+
+    /// CR 608.2c (maintainer review, #7484): the event-less `GenericEffect`
+    /// broadcast head is gated on `is_sole_chain_producer` exactly as its three
+    /// sibling arms are. Before this gate the head published unconditionally, so
+    /// a mixed chain whose LATER node owns the anaphor had its `TrackedSet`
+    /// consumer bound to the coercion/grant population instead.
+    ///
+    /// MATCHED PAIR through the production publish function
+    /// (`affected_objects_from_events`), not the predicate: the two chains differ
+    /// ONLY in whether a later producer occupies publisher position. Remove the
+    /// `if is_sole_chain_producer(state, ability)` guard from the `GenericEffect`
+    /// arm and the first case flips from `[]` to `[creature]`; the second case is
+    /// the paired non-vacuity witness that the empty result is caused by the gate
+    /// and not by the head failing to enumerate at all.
+    #[test]
+    fn generic_effect_publish_defers_to_a_later_producer_in_the_chain() {
+        let mut state = GameState::new_two_player(7);
+        let creature = reflexive_test_creature(&mut state, PlayerId(0), "Bear");
+
+        let broadcast_head = || {
+            ResolvedAbility::new(
+                Effect::GenericEffect {
+                    static_abilities: vec![
+                        StaticDefinition::continuous().affected(TargetFilter::Any)
+                    ],
+                    duration: None,
+                    target: None,
+                    end_cost: None,
+                },
+                vec![],
+                ObjectId(1),
+                PlayerId(0),
+            )
+        };
+
+        // Later node in publisher position: a producer whose own sub consumes the
+        // published set, i.e. the real antecedent of "those creatures".
+        let mut later_producer = ResolvedAbility::new(
+            Effect::PumpAll {
+                power: PtValue::Fixed(1),
+                toughness: PtValue::Fixed(1),
+                target: TargetFilter::Any,
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        );
+        later_producer.sub_link = SubAbilityLink::SequentialSibling;
+        later_producer.sub_ability = Some(Box::new(ResolvedAbility::new(
+            Effect::SetTapState {
+                target: TargetFilter::TrackedSet {
+                    id: crate::types::identifiers::TrackedSetId(0),
+                },
+                scope: EffectScope::Single,
+                state: TapStateChange::Untap,
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        )));
+
+        let mut mixed = broadcast_head();
+        mixed.sub_ability = Some(Box::new(later_producer));
+        assert_eq!(
+            affected_objects_from_events(&state, &mixed, &mixed.effect, &[]),
+            Vec::<ObjectId>::new(),
+            "CR 608.2c: a later producer in the same chain owns the anaphor, so this \
+             broadcast head must not publish its own population"
+        );
+
+        let alone = broadcast_head();
+        assert_eq!(
+            affected_objects_from_events(&state, &alone, &alone.effect, &[]),
+            vec![creature],
+            "non-vacuity: as the chain's sole producer the same head DOES publish, so \
+             the empty result above is the gate and not a failure to enumerate"
+        );
+    }
+
+    /// CR 608.2c (maintainer review, #7484): which static names the frozen
+    /// population is decided by `generic_effect_population_filter`, the ONE
+    /// authority the parser's routing predicate and this publish arm now share.
+    ///
+    /// The selection must be `find_map`, not `find`-then-ask: an earlier eligible
+    /// static carrying no application filter (a bare `Continuous` with neither an
+    /// outer `target` nor an `affected`) would otherwise be taken and returned as
+    /// `None`, suppressing the later broadcast static that actually names the
+    /// population — so neither routing nor publishing would see it.
+    ///
+    /// DISCRIMINATING: restore `.find(eligible).and_then(application_filter)` and
+    /// BOTH assertions fail (`None` / `[]`). The single-static case is the paired
+    /// witness that the multi-static result is not an artifact of the fixture.
+    #[test]
+    fn generic_effect_population_filter_skips_an_earlier_static_with_no_application_filter() {
+        let mut state = GameState::new_two_player(7);
+        let creature = reflexive_test_creature(&mut state, PlayerId(0), "Bear");
+
+        let statics = || {
+            vec![
+                // Earlier, eligible, but names no population.
+                StaticDefinition::continuous(),
+                // Later, and the one that actually broadcasts.
+                StaticDefinition::continuous().affected(TargetFilter::Any),
+            ]
+        };
+
+        assert_eq!(
+            effect::generic_effect_population_filter(None, &statics()),
+            Some(&TargetFilter::Any),
+            "selection must skip the filterless earlier static and reach the broadcast one"
+        );
+        assert_eq!(
+            effect::generic_effect_population_filter(None, &[StaticDefinition::continuous()]),
+            None,
+            "non-vacuity: a chain of ONLY filterless statics still names no population"
+        );
+
+        // The runtime arm must honour that selection end-to-end.
+        let ability = ResolvedAbility::new(
+            Effect::GenericEffect {
+                static_abilities: statics(),
+                duration: None,
+                target: None,
+                end_cost: None,
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        );
+        assert_eq!(
+            affected_objects_from_events(&state, &ability, &ability.effect, &[]),
+            vec![creature],
+            "CR 611.2c: the published population is the later static's broadcast set"
         );
     }
 

@@ -1,8 +1,8 @@
 use crate::types::ability::{
-    AbilityKind, ContinuousModification, CopyCountStatus, Duration, Effect, EffectKind, FilterProp,
-    KeywordAction, ObjectScope, PlayerFilter, QuantityExpr, QuantityRef, ResolvedAbility,
-    SiblingCondition, SpellContext, SubAbilityLink, TargetChoiceTiming, TargetFilter, TargetRef,
-    TargetSelectionMode, TriggerCondition,
+    AbilityKind, ContinuousModification, CopyCountStatus, DetachedRemainder, Duration, Effect,
+    EffectKind, FilterProp, KeywordAction, ObjectScope, PlayerFilter, QuantityExpr, QuantityRef,
+    ResolvedAbility, SiblingCondition, SpellContext, SubAbilityLink, TargetChoiceTiming,
+    TargetFilter, TargetRef, TargetSelectionMode, TriggerCondition,
 };
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
@@ -3145,6 +3145,7 @@ fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
         description,
         selected_mode_labels,
         modal_instruction_ordinal,
+        detached_remainder,
         repeat_for,
         min_x_value,
         announced_x,
@@ -3215,6 +3216,7 @@ fn self_counter_ability_is_batch_candidate(ability: &ResolvedAbility) -> bool {
         // once instead of N times. That is outside what this batch proof
         // covers, so decline — declining only costs the optimization.
         && modal_instruction_ordinal.is_none()
+        && matches!(detached_remainder, DetachedRemainder::NoProducer)
         && repeat_for.is_none()
         && *min_x_value == 0
         // CR 601.2b: an announce-locked X makes this ability's X board-dependent;
@@ -3371,6 +3373,7 @@ fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbili
         description: _,
         selected_mode_labels,
         modal_instruction_ordinal,
+        detached_remainder,
         repeat_for,
         min_x_value,
         announced_x,
@@ -3435,6 +3438,7 @@ fn fixed_controller_gain_life_ability_is_batch_candidate(ability: &ResolvedAbili
         // once instead of N times. That is outside what this batch proof
         // covers, so decline — declining only costs the optimization.
         && modal_instruction_ordinal.is_none()
+        && matches!(detached_remainder, DetachedRemainder::NoProducer)
         && repeat_for.is_none()
         && *min_x_value == 0
         && announced_x.is_none()
@@ -3577,6 +3581,7 @@ fn fixed_opponent_lose_life_ability_is_batch_candidate(ability: &ResolvedAbility
         description: _,
         selected_mode_labels,
         modal_instruction_ordinal,
+        detached_remainder,
         repeat_for,
         min_x_value,
         announced_x,
@@ -3641,6 +3646,7 @@ fn fixed_opponent_lose_life_ability_is_batch_candidate(ability: &ResolvedAbility
         // once instead of N times. That is outside what this batch proof
         // covers, so decline — declining only costs the optimization.
         && modal_instruction_ordinal.is_none()
+        && matches!(detached_remainder, DetachedRemainder::NoProducer)
         && repeat_for.is_none()
         && *min_x_value == 0
         && announced_x.is_none()
@@ -4240,6 +4246,9 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         // IDENTITY, not a modal check, and two runs that differ only in which
         // mode produced them are still the same run.
         modal_instruction_ordinal: _,
+        // CR 608.2c: split-remainder marker. Guaranteed `NoProducer` ONE HOP
+        // upstream by the batch-candidate checks, same as the modal ordinal.
+        detached_remainder: _,
         repeat_for: a_repeat_for,
         min_x_value: a_min_x_value,
         announced_x: a_announced_x,
@@ -4309,6 +4318,9 @@ fn inert_trigger_abilities_eq_ignoring_provenance(
         // IDENTITY, not a modal check, and two runs that differ only in which
         // mode produced them are still the same run.
         modal_instruction_ordinal: _,
+        // CR 608.2c: split-remainder marker. Guaranteed `NoProducer` ONE HOP
+        // upstream by the batch-candidate checks, same as the modal ordinal.
+        detached_remainder: _,
         repeat_for: b_repeat_for,
         min_x_value: b_min_x_value,
         announced_x: b_announced_x,
