@@ -9450,10 +9450,11 @@ pub(crate) enum PendingDiscardBatchOutcome {
 /// Finish a discard instruction that a replacement-application choice parked
 /// mid-batch, and publish its terminal result ONCE.
 ///
-/// CR 616.1 is what parked it. CR 608.2f is why the remainder belongs here and
-/// not on the generic continuation queue: the clause is one action taken on
-/// several players, processed per player only because it could not be processed
-/// simultaneously — so it still has exactly one terminal result.
+/// CR 614.1: the replacement application pauses the event as it happens. CR
+/// 608.2f is why the remainder belongs here and not on the generic continuation
+/// queue: the clause is one action taken on several players, processed per
+/// player only because it could not be processed simultaneously — so it still
+/// has exactly one terminal result.
 ///
 /// Composability: an arbitrary number of sequential re-pauses compose, because
 /// each resume re-enters this same function through the same hook.
@@ -9524,8 +9525,8 @@ pub(crate) fn drain_pending_discard_batch(
                     remaining: remaining_count,
                 };
                 batch.paused_card = paused_card;
-                // CR 616.1: the chooser comes from the authority that raised
-                // the choice, exactly as the `All` arm above threads its own.
+                // The chooser comes from the authority that raised the choice,
+                // exactly as the `All` arm above threads its own.
                 // It was `batch.player` here, which happens to agree today
                 // because a hand card's `affected_player` is its controller —
                 // but `replacement_choice_player`'s commander carve-out proves

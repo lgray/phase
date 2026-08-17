@@ -4058,9 +4058,8 @@ pub enum PendingPlayerScopeSacrificeFollowUp {
     Exploit { exploiter: ObjectId },
 }
 
-/// One discard instruction, parked mid-batch because a replacement-application
-/// choice interrupted it (CR 616.1: "the affected object's controller … or the
-/// affected player chooses one to apply").
+/// One discard instruction, parked mid-batch while an optional replacement
+/// application awaits its apply-or-decline choice.
 ///
 /// This is [`PendingPlayerScopeSacrificeChoice`]'s sibling one layer down, and
 /// it carries the same two things across the pause: the **cursor** is what the
@@ -4069,19 +4068,10 @@ pub enum PendingPlayerScopeSacrificeFollowUp {
 /// that type first — every mechanism here is its, with the two deliberate
 /// divergences noted on `preceding_events` and in `drain_pending_discard_batch`.
 ///
-/// SCOPE OF THE CR 616.1 CITATIONS HERE, stated because a reader who looks the
-/// rule up will otherwise find it describing a case the fixtures never hit.
-/// CR 616.1 governs the two-or-more-applicable case: "If **two or more**
-/// replacement and/or prevention effects are attempting to modify the way an
-/// event affects an object or player, the affected object's controller … or
-/// the affected player chooses one to apply." The engine ALSO surfaces a
-/// `ReplacementChoice` prompt for a *single* `ReplacementMode::Optional`
-/// replacement — apply-or-decline — which 616.1 does not describe. Every pause
-/// this type carries is of that second kind in practice (the Library of Leng
-/// arm's seven prompts all come from one optional replacement). 616.1 is cited
-/// throughout for the choice MECHANISM and its APNAP ordering, which both kinds
-/// share; CR 614.6 is what says a replaced event never happens and a modified
-/// one happens instead.
+/// CR 614.1: replacement effects apply as events happen. This batch preserves
+/// the cursor and already-produced events while the selected optional
+/// replacement is applied or declined, then resumes the same discard
+/// instruction.
 ///
 /// The companion `GameState::clause_minimum_snapshot` persists with this batch:
 /// a save taken mid-pause must resume the same CR 608.2h application with its
