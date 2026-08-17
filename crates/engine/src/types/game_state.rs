@@ -4179,10 +4179,20 @@ pub struct PendingDiscardFanOut {
     pub original_controller: PlayerId,
     /// CR 101.4: seats not yet iterated, in APNAP order.
     pub remaining_players: Vec<PlayerId>,
-    /// CR 608.2f: the clause's full reduction domain, for the terminal
-    /// zero-fill. Latched at the pause and never re-derived: a player joining
-    /// or leaving the matching set afterwards cannot alter an action that has
-    /// already begun being processed per subject.
+    /// The clause's full reduction domain, for the terminal zero-fill. Latched
+    /// at the pause and never re-derived, for PARITY rather than by rule: the
+    /// un-paused driver computes this domain once at clause entry and never
+    /// re-derives it either, so a paused clause that re-derived would answer
+    /// differently from an identical un-paused one — the exact divergence this
+    /// carrier exists to prevent. CR 800.4i is what keeps a seat that has since
+    /// left the game well-defined here: "the effect uses the last known
+    /// information about that player before they left the game", and its
+    /// truthful contribution is zero. `elimination.rs` therefore prunes
+    /// `remaining_players` and deliberately leaves this list whole.
+    ///
+    /// (An earlier revision cited CR 608.2f for the latching. It does not
+    /// support it: read in full, 608.2f is about simultaneity and APNAP ORDER,
+    /// and both its examples are about ordering.)
     pub matching_players: Vec<PlayerId>,
     /// CR 607.2a: carried across the pause so the terminal publication makes the
     /// same linked-exile decision the un-paused postlude would.
@@ -25807,9 +25817,14 @@ mod tests {
     ///     the restored prompt fails outright, which is what makes the
     ///     mid-pause input load-bearing rather than decorative.
     ///   * add a load-time "repair" that resets `waiting_for` to `Priority`
-    ///     when `pending_discard_batch` is absent → the same assertion fails.
-    ///     That repair would be WRONG: it silently discards a real prompt and
-    ///     converts a detectable inconsistency into a plausible-looking state.
+    ///     when `pending_discard_batch` is absent, in
+    ///     `PersistedGameState::into_game_state()` → the same assertion fails.
+    ///     The load below deliberately goes through that chokepoint rather than
+    ///     bare `from_value::<GameState>`, because it is where this repo puts
+    ///     load-time repairs; deserializing the struct directly would leave this
+    ///     probe guarding a door no repair would ever come through. That repair
+    ///     would be WRONG: it silently discards a real prompt and converts a
+    ///     detectable inconsistency into a plausible-looking state.
     #[test]
     fn absent_pending_discard_batch_deserializes_as_none() {
         let mut state = GameState::new_two_player(42);
@@ -25829,26 +25844,39 @@ mod tests {
             "reach guard: the INPUT must not already satisfy the property under test"
         );
 
-        let mut wire = serde_json::to_value(&state).expect("fixture serializes");
+        // Loaded through `PersistedGameState::into_game_state()`, NOT bare
+        // `from_value::<GameState>`. That chokepoint is where this repo puts
+        // load-time repairs, so it is the only door a "helpfully" reset
+        // `waiting_for` would come through; deserializing the struct directly
+        // would leave the second revert probe below guarding a door nobody uses.
+        let mut wire = serde_json::to_value(PersistedGameState::Raw(Box::new(state)))
+            .expect("fixture serializes");
         assert!(
             wire.as_object_mut()
-                .expect("state is an object")
+                .expect("a raw persisted state is an object")
                 .remove("pending_discard_batch")
                 .is_some(),
             "reach guard: the field must actually have been serialized to remove"
         );
 
-        let restored: GameState =
-            serde_json::from_value(wire).expect("an absent parked batch defaults to None");
+        let restored = serde_json::from_value::<PersistedGameState>(wire)
+            .expect("an absent parked batch defaults to None")
+            .into_game_state();
         assert!(restored.pending_discard_batch.is_none());
         assert!(
             matches!(
                 restored.waiting_for,
-                WaitingFor::ReplacementChoice { player, .. } if player == PlayerId(0)
+                WaitingFor::ReplacementChoice {
+                    player,
+                    candidate_count,
+                    ..
+                } if player == PlayerId(0) && candidate_count == 2
             ),
-            "a batch-less mid-pause save must round-trip its prompt VERBATIM, so the \
-             inconsistency stays observable to a caller instead of being silently \
-             rewritten into a plausible-looking state"
+            "a batch-less mid-pause save must round-trip its prompt VERBATIM — player \
+             AND candidate_count, since asserting only the variant would pass for a \
+             prompt rebuilt with different contents — so the inconsistency stays \
+             observable to a caller instead of being silently rewritten into a \
+             plausible-looking state"
         );
     }
 

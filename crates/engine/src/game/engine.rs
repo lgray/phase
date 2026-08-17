@@ -19026,6 +19026,18 @@ mod stage2_injector_tests {
                 // Coordinates located by CONTENT in THIS worktree, never by indexing a
                 // line of `upstream/main` — that ref moves, and using it as a coordinate
                 // origin once produced a phantom 79-line discrepancy in this very lane.
+                //
+                // WINDOWING RULE, stated because a digest a reader cannot recompute is
+                // decoration, not evidence (review could not reproduce these from the
+                // obvious guesses): for a producer at line N in `effects/mod.rs`, the
+                // window is the inclusive 41-line span N-20..N+20, hashed raw and
+                // untrimmed, i.e. exactly
+                //   sed -n "$((N-20)),$((N+20))p" crates/engine/src/game/effects/mod.rs \
+                //     | sha256sum | cut -c1-8
+                // The off-by-one control is the same span shifted by one line. This is
+                // THIS branch's convention and is not main's — the `9869a19f…` triple
+                // recorded above spans differently, so the two sets are not comparable.
+                //
                 // Re-measured at the rebased coordinates rather than carried forward: the
                 // 41-line window centred on each producer hashes to `ad615ce4…`,
                 // `a958f070…`, `d7fd67fd…` — byte-for-byte the pre-rebase triple — with the

@@ -860,16 +860,38 @@ fn route_discard(
     // player's graveyard." A card that is not in a hand cannot be discarded, so
     // there is no event to propose.
     //
-    // This is the single chokepoint every discard routes through — effect and
-    // cost layers, whole-hand and random cursors — so the guard belongs here
-    // rather than at each caller. It became load-bearing with the parked batch:
-    // a cursor is a hand snapshot latched BEFORE an action boundary, and it is
-    // drained after one, so anything that moved a listed card in between would
-    // otherwise be "discarded" out of whatever zone it now occupies —
-    // `complete_discard_to_graveyard` lowers to a hard-coded `from: Hand`.
-    // Un-paused callers build and consume their snapshot inside one action and
-    // cannot observe a difference, so this narrows nothing that works today.
+    // Placed here because every *proposed* discard routes through this function
+    // — effect and cost layers, whole-hand and random cursors — so one guard
+    // covers them all. (Not the same as every discard: three callers reach
+    // `complete_discard_to_graveyard` directly, at `:397` here and in
+    // `engine_replacement.rs` / `engine_payment_choices.rs`. Those are RESUMES of
+    // an event this function already proposed and guarded, which is why they are
+    // not a hole — but the claim is "every proposal", not "every discard".)
+    //
+    // It became load-bearing with the parked batch: a cursor is a hand snapshot
+    // latched BEFORE an action boundary and drained after one, so anything that
+    // moved a listed card in between would otherwise be "discarded" out of
+    // whatever zone it now occupies — `complete_discard_to_graveyard` lowers to
+    // a hard-coded `from: Hand`. Un-paused callers build and consume their
+    // snapshot inside one action and cannot observe a difference.
+    //
+    // Modelled EXACTLY on the `Prevented` arm below, deliberately: that arm is
+    // this file's existing answer to "the card never left the hand, so no
+    // discard occurred", and it retires the discard frame and reports
+    // `Complete`. Retiring matters — a `DiscardedCardMatchesFilter` frame left
+    // active would leak when every listed card has already moved.
+    //
+    // `Complete` is a known imprecision INHERITED from that arm, not introduced
+    // here: `DiscardOutcome` has no "nothing happened" variant, so a cost caller
+    // reads `Complete` as paid. A prevented discard already launders an unpayable
+    // cost the same way (CR 118.3 wants all-or-nothing). Fixing it means a third
+    // variant threaded through every caller, which is a change this PR has no
+    // mandate for and no test for; the shape is recorded here rather than in a
+    // commit message so the next person to touch `DiscardOutcome` finds it.
     if state.objects.get(&object_id).map(|obj| obj.zone) != Some(Zone::Hand) {
+        if let Some(frame_id) = discard_frame {
+            retire_discard_frame(state, frame_id);
+        }
         return DiscardOutcome::Complete;
     }
     let proposed = ProposedEvent::Discard {

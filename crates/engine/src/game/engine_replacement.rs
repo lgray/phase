@@ -7679,7 +7679,7 @@ mod tests {
     /// asymmetry is deliberate. The sacrifice drain stamps
     /// `ThisWayCause::Sacrificed`; the discard drain immediately below stamps
     /// nothing, because the UN-paused discard path does not stamp either
-    /// (`grep stamp_active_player_action_completion effects/discard.rs` → 0), so
+    /// (`grep stamp_active_player_action_completion effects/discard.rs` -> 0), so
     /// a stamping resume would give a paused discard a provenance its own
     /// un-paused twin never has.
     ///
@@ -7687,47 +7687,103 @@ mod tests {
     /// blocks twenty-five lines apart would silently change `Discarded`-this-way
     /// provenance for the whole class.
     ///
-    /// This is a SOURCE census rather than a behavioural assertion, and that is
-    /// a measured choice, not a shortcut: `stamp_active_player_action_completion`
-    /// early-returns unless an active ability continuation frame holds a
-    /// `CompletePlayerAction` chain, so in a drain unit test — which has no such
-    /// frame — adding the call would change no observable state. A behavioural
-    /// assertion there would be vacuous. The census is discriminating because it
-    /// carries its own positive control: half (a) proves the scan reaches a
-    /// region that DOES stamp, so half (b)'s zero cannot be a scan that missed.
+    /// A SOURCE census rather than a behavioural assertion, and that is measured:
+    /// `stamp_active_player_action_completion` early-returns unless an active
+    /// ability continuation frame holds a `CompletePlayerAction` chain, so in a
+    /// drain unit test -- which has neither -- adding the call would change no
+    /// observable state and a behavioural assertion would itself be vacuous.
+    ///
+    /// THE WINDOWS ARE BRACE-BALANCED, NOT END-ANCHORED, and that is the whole
+    /// difficulty of this instrument. An earlier revision ended each slice at a
+    /// guessed marker; the marker for the second window happened to sit inside
+    /// the arm, so the "guarded" region collapsed to **36 characters of a
+    /// five-line arm** and the named revert probe only flipped if a stamp landed
+    /// as the arm's very first statement. A census whose window is wrong reports
+    /// a zero that means nothing, and it reports it silently.
+    ///
+    /// Three defences, because a negative result needs all of them:
+    ///   1. each anchor must match EXACTLY ONCE in the file, so a deleted
+    ///      production arm cannot let the scan retarget some other text (this
+    ///      doc comment deliberately never spells an anchor literally);
+    ///   2. each window is closed by brace balance, so it always spans the whole
+    ///      arm body;
+    ///   3. each window asserts its OWN non-degeneracy. The positive control on
+    ///      the sacrifice arm proves the file and that anchor are real, but it
+    ///      says nothing about the extent of the DISCARD window -- and the
+    ///      discard window is the one whose zero carries the claim.
     ///
     /// REVERT PROBES:
-    ///   * add a `stamp_active_player_action_completion(… ThisWayCause::Discarded …)`
-    ///     call to the discard `Completed` arm → half (b) fails.
-    ///   * delete the sacrifice arm's existing stamp → half (a) fails, proving
-    ///     the slicing is anchored on real code and not on absent text.
+    ///   * add a stamp call ANYWHERE in the discard arm -- first statement, last
+    ///     statement, or nested inside its `if` -- and half (b) fails. Only the
+    ///     brace-balanced window makes all three positions equivalent.
+    ///   * delete the sacrifice arm's existing stamp -> half (a) fails.
+    ///   * delete either arm outright -> the exactly-once assertion fails, rather
+    ///     than the scan silently sliding onto other text.
     #[test]
     fn the_resumed_discard_drain_does_not_stamp_a_completion_while_its_sacrifice_sibling_does() {
+        /// The arm body that follows `anchor`, delimited by brace balance.
+        fn arm_body<'a>(source: &'a str, anchor: &str) -> &'a str {
+            assert_eq!(
+                source.matches(anchor).count(),
+                1,
+                "anchor {anchor:?} must identify exactly one site; a second \
+                 occurrence lets a deleted arm retarget the scan silently"
+            );
+            let after = source.find(anchor).expect("anchor present") + anchor.len();
+            let open = after
+                + source[after..]
+                    .find('{')
+                    .expect("the arm opens a block after its anchor");
+            let mut depth = 0usize;
+            for (offset, ch) in source[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &source[open..=open + offset];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unbalanced braces after {anchor:?}");
+        }
+
         let source = include_str!("engine_replacement.rs");
         let needle = concat!("stamp_active_player_action_", "completion(");
+        let sacrifice_anchor = concat!("PendingPlayerScopeSacrifice", "Outcome::Completed {");
+        let discard_anchor = concat!("PendingDiscardBatch", "Outcome::Completed =>");
 
-        let sacrifice_arm = source
-            .split_once("PendingPlayerScopeSacrificeOutcome::Completed {")
-            .expect("the sacrifice drain's Completed arm exists")
-            .1;
-        let sacrifice_arm = &sacrifice_arm[..sacrifice_arm
-            .find("PendingDiscardBatchOutcome::Idle")
-            .expect("the discard drain follows the sacrifice drain in this function")];
+        let sacrifice = arm_body(source, sacrifice_anchor);
+        let discard = arm_body(source, discard_anchor);
+
+        // (0) Non-degeneracy, asserted per window. Both arms run a multi-line
+        // body ending in a `drain_pending_continuation` call guarded by a
+        // `waiting_for` re-check, so a window that cannot see that call has not
+        // spanned its arm and any verdict drawn from it is worthless.
+        for (label, window) in [("sacrifice", sacrifice), ("discard", discard)] {
+            assert!(
+                window.contains("drain_pending_continuation"),
+                "{label} window must span its whole arm body; it stops before the \
+                 arm's last statement, so a scan of it proves nothing (got {} chars)",
+                window.len()
+            );
+        }
+
+        // (a) Positive control: proves the instrument finds a stamp where one
+        // exists. Necessary but NOT sufficient for (b) -- different window.
         assert!(
-            sacrifice_arm.contains(needle),
-            "(a) positive control: the sacrifice arm must stamp, or this scan is              reading the wrong region and (b)'s zero would mean nothing"
+            sacrifice.contains(needle),
+            "(a) positive control: the sacrifice arm must stamp, or this scan is \
+             reading the wrong region and (b)'s zero would mean nothing"
         );
 
-        let discard_arm = source
-            .split_once("PendingDiscardBatchOutcome::Completed =>")
-            .expect("the discard drain's Completed arm exists")
-            .1;
-        let discard_arm = &discard_arm[..discard_arm
-            .find("drain_pending_continuation")
-            .expect("the discard arm runs the parked continuation")];
+        // (b) The claim.
         assert!(
-            !discard_arm.contains(needle),
-            "(b) the resumed discard must publish exactly what the un-paused              discard publishes — no CompletePlayerAction stamp"
+            !discard.contains(needle),
+            "(b) the resumed discard must publish exactly what the un-paused \
+             discard publishes -- no CompletePlayerAction stamp"
         );
     }
 }
