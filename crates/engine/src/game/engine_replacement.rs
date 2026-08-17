@@ -1019,6 +1019,31 @@ pub(super) fn handle_replacement_choice(
                 }
             }
 
+            // CR 616.1 + CR 608.2f: a discard instruction parked mid-batch by a
+            // replacement-application choice finishes what it still owes BEFORE
+            // any parked continuation runs — the same ordering the simultaneous
+            // sacrifice block above states, for the same reason: the clause is
+            // ONE action, so the instructions after it must not resume until it
+            // has settled and published its terminal result.
+            if matches!(waiting_for, WaitingFor::Priority { .. })
+                && state.pending_discard_batch.is_some()
+            {
+                match effects::drain_pending_discard_batch(state, events)
+                    .map_err(|error| EngineError::InvalidAction(error.to_string()))?
+                {
+                    effects::PendingDiscardBatchOutcome::Idle => {}
+                    effects::PendingDiscardBatchOutcome::PausedForReplacement => {
+                        waiting_for = state.waiting_for.clone();
+                    }
+                    effects::PendingDiscardBatchOutcome::Completed => {
+                        effects::drain_pending_continuation(state, events);
+                        if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+                            waiting_for = state.waiting_for.clone();
+                        }
+                    }
+                }
+            }
+
             if matches!(waiting_for, WaitingFor::Priority { .. })
                 && (state.active_ability_continuation().is_some()
                     || state.active_change_zone_frame().is_some())

@@ -154,6 +154,46 @@ pub(crate) fn hand_off_recruit_discard_result(
     true
 }
 
+/// Park what this seat's discard instruction still owes so the replacement
+/// resume can finish it.
+///
+/// CR 616.1 is the pause: "the affected object's controller … or the affected
+/// player chooses one to apply". CR 701.9a is what is still owed: each remaining
+/// card must still be moved from its owner's hand to their graveyard. This is
+/// the SINGLE AUTHORITY for "this batch paused" — both selection modes park
+/// through it, so the two cannot drift on what a parked batch means.
+///
+/// Deliberately private and called ONLY from `resolve`, the effect layer. The
+/// cost layer owns its own typed cursor (`PendingCostMoveResume::
+/// RandomDiscardUnlessPayment`), because it additionally owes an unless-payment
+/// this carrier knows nothing about; sharing one carrier across the two would
+/// launder a cost payment into an effect, which is exactly what [`DiscardCause`]
+/// exists to make unrepresentable.
+#[allow(clippy::too_many_arguments)]
+fn park_discard_batch(
+    state: &mut GameState,
+    player: PlayerId,
+    cursor: crate::types::game_state::DiscardBatchCursor,
+    source_id: ObjectId,
+    effect_kind: EffectKind,
+    paused_card: ObjectId,
+    discard_frame: Option<crate::types::identifiers::DiscardFrameId>,
+    preceding_events: Vec<GameEvent>,
+) {
+    state.pending_discard_batch = Some(Box::new(crate::types::game_state::PendingDiscardBatch {
+        player,
+        cursor,
+        source_id,
+        effect_kind,
+        paused_card,
+        discard_frame,
+        // The `player_scope` driver installs the fan-out remainder, if any,
+        // as it unwinds — this layer only knows about one seat.
+        fan_out: None,
+        preceding_events,
+    }));
+}
+
 /// CR 701.9a: To discard a card, move it from owner's hand to their graveyard.
 /// If targets specify specific cards, discard those; otherwise discard from end of hand.
 pub fn resolve(
@@ -174,6 +214,12 @@ pub fn resolve(
             ),
             _ => None,
         });
+    // CR 608.2i: the terminal count window for this instruction starts here.
+    // Everything this node emits before a replacement-application pause is
+    // carried into the parked batch so the reunited window is exactly what the
+    // un-paused path would have published. The `player_scope` driver widens it
+    // to the whole clause's span when the pause interrupted a fan-out.
+    let events_before_self = events.len();
     // CR 701.9b + CR 608.2d: Peel `UpTo` from the count expression to derive
     // the upper-bound expression and the may-pick-fewer flag. Plain
     // `QuantityExpr` means a mandatory count; wrapped in `UpTo` means the
@@ -442,28 +488,42 @@ pub fn resolve(
             // CR 701.9a: this is a resolving effect, so Library-of-Leng-class
             // replacements DO apply — `DiscardCause::Effect`.
             //
-            // PRE-EXISTING GAP (unchanged by the extraction, called out so the
-            // asymmetry with the cost caller below is not mistaken for an
-            // oversight): a replacement choice mid-batch drops the remaining
-            // picks, because the effect layer has no batch cursor to resume
-            // through. The returned cursor is therefore ignored here. The cost
-            // caller DOES persist it, since it additionally owes a pending
-            // unless-payment that would otherwise never settle.
-            if matches!(
-                discard_at_random(
-                    state,
-                    RandomDiscardRequest {
-                        player: discard_player,
-                        source_id: ability.source_id,
-                        count,
-                        eligible: hand_cards,
-                        cause: DiscardCause::Effect,
-                        discard_frame,
-                    },
-                    events,
-                ),
-                RandomDiscardOutcome::NeedsReplacementChoice { .. }
+            // CR 616.1: a replacement-application choice mid-batch parks the
+            // cursor `discard_at_random` returns rather than dropping it;
+            // `drain_pending_discard_batch` (effects/mod.rs) finishes the
+            // remaining picks and publishes the terminal marker. The COST caller
+            // persists the same cursor in its own carrier, because it
+            // additionally owes an unless-payment this layer has no business
+            // settling.
+            if let RandomDiscardOutcome::NeedsReplacementChoice {
+                remaining_eligible,
+                remaining_count,
+                paused_card,
+            } = discard_at_random(
+                state,
+                RandomDiscardRequest {
+                    player: discard_player,
+                    source_id: ability.source_id,
+                    count,
+                    eligible: hand_cards,
+                    cause: DiscardCause::Effect,
+                    discard_frame,
+                },
+                events,
             ) {
+                park_discard_batch(
+                    state,
+                    discard_player,
+                    crate::types::game_state::DiscardBatchCursor::Random {
+                        pool: remaining_eligible,
+                        remaining: remaining_count,
+                    },
+                    ability.source_id,
+                    EffectKind::from(&ability.effect),
+                    paused_card,
+                    discard_frame,
+                    events[events_before_self..].to_vec(),
+                );
                 return Ok(());
             }
         } else if hand_cards.is_empty() {
@@ -471,7 +531,7 @@ pub fn resolve(
         } else if !up_to && hand_cards.len() <= count {
             // Forced discard — no choice needed, discard all eligible cards.
             // When up_to=true, always present the choice (player may discard fewer).
-            for obj_id in &hand_cards {
+            for (i, obj_id) in hand_cards.iter().enumerate() {
                 if let DiscardOutcome::NeedsReplacementChoice(player) =
                     discard_caused_by_effect_with_source_and_frame(
                         state,
@@ -484,8 +544,24 @@ pub fn resolve(
                 {
                     state.waiting_for =
                         crate::game::replacement::replacement_choice_waiting_for(player, state);
-                    // Known limitation: EffectResolved is not emitted when replacement
-                    // choice interrupts forced-discard (same systemic gap as sacrifice).
+                    // CR 616.1 + CR 701.9a: park the un-iterated tail instead of
+                    // abandoning it. `hand_cards[i + 1..]` and not `[i..]`: the
+                    // paused card is settled by the replacement itself, exactly
+                    // as `discard_at_random`'s cursor documents. The terminal
+                    // `EffectResolved` below is unreachable from here, so the
+                    // drain emits it — see `drain_pending_discard_batch`.
+                    park_discard_batch(
+                        state,
+                        discard_player,
+                        crate::types::game_state::DiscardBatchCursor::All {
+                            remaining: hand_cards[i + 1..].to_vec(),
+                        },
+                        ability.source_id,
+                        EffectKind::from(&ability.effect),
+                        *obj_id,
+                        discard_frame,
+                        events[events_before_self..].to_vec(),
+                    );
                     return Ok(());
                 }
             }
@@ -615,6 +691,12 @@ pub(crate) enum RandomDiscardOutcome {
         remaining_eligible: Vec<ObjectId>,
         /// Picks still owed AFTER the paused one resolves.
         remaining_count: usize,
+        /// The card whose replacement raised the choice. CR 614.6: the replaced
+        /// event never happens and a modified event happens instead, so this
+        /// card was still discarded and the effect layer's drain needs its
+        /// identity to stamp the terminal `Discarded` the resumed zone-change
+        /// arm cannot emit. The cost layer does not consume it.
+        paused_card: ObjectId,
     },
 }
 
@@ -700,6 +782,7 @@ pub(crate) fn discard_at_random(
                 // The paused pick is settled by the replacement itself, so the
                 // resumed batch owes only the picks after it.
                 remaining_count: count - pick - 1,
+                paused_card: obj_id,
             };
         }
     }
@@ -1043,6 +1126,7 @@ mod random_discard_authority_tests {
         let RandomDiscardOutcome::NeedsReplacementChoice {
             remaining_eligible,
             remaining_count,
+            paused_card,
         } = outcome
         else {
             panic!("expected a replacement pause, got {outcome:?}");
@@ -1055,6 +1139,12 @@ mod random_discard_authority_tests {
             remaining_eligible.len(),
             3,
             "the un-picked pool excludes only the paused card"
+        );
+        // The cursor's two halves must agree on WHICH card paused: the reported
+        // paused card is the one missing from the un-picked pool.
+        assert!(
+            hand.contains(&paused_card) && !remaining_eligible.contains(&paused_card),
+            "the paused card must be a hand card that left the un-picked pool"
         );
     }
 

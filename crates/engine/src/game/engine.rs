@@ -19085,9 +19085,35 @@ mod stage2_injector_tests {
                 // again, because the corrected measurement in that comment is five lines
                 // longer than the wrong one it replaced. Window `d7fd67fd…` unchanged,
                 // both neighbours differing as controls.
+                //
+                // Paused-discard-batch unit (base 3b89667ba): `:10432 ⇒ :10798`, +366,
+                // THIRD PRODUCER ONLY. LOCAL, not upstream, so the CI-vs-local diagnosis in
+                // the header does not apply. `git diff -U0 3b89667ba` on effects/mod.rs has
+                // twelve hunks at or above the old coordinate, and they sum to exactly the
+                // shift: `+9` (the count authority's new doc comment), `-2` (its `&Effect`
+                // producer gate replaced by a two-line `match kind`), `+91`
+                // (`publish_player_scope_clause_results`, the extraction the driver and the
+                // resumed batch now share), `+282` (`drain_pending_discard_batch` and its two
+                // helpers), `+48` (the driver hand-off's identity triple, INSIDE
+                // `resolve_chain_body` and above its gate), and `-62` (the publication block
+                // this producer's function used to inline, now a call to the extraction).
+                // 9 - 2 + 91 + 282 + 48 - 62 = 366, and `10432 + 366` equals the observed
+                // coordinate exactly. None of the six adds or removes a prompt mint: the
+                // drain RESUMES an instruction that already minted its `ReplacementChoice`
+                // before the pause, and the hand-off only re-routes a roster.
+                // Identity re-established, not assumed, and re-measured after the rebase
+                // rather than carried forward: the producer window at `:10798` is
+                // sha256-identical to `3b89667ba:effects/mod.rs` at `:10432`
+                // (`d7fd67fd769a2e2e`) and is still inside `resolve_chain_body`.
+                // The diff instrument discriminates: the OLD coordinate `:10432` now holds a
+                // prose line from the resolution-time target-binding comment, which mints
+                // nothing. Set preservation: the two asserts above this one ran FIRST and
+                // both fired GREEN on the run that caught this (partition still 5/8/28), the
+                // other two effects/mod.rs entries sit ABOVE every hunk and did not move, and
+                // neither `scoped_library_search.rs` nor this file's own producer was touched.
                 "game/effects/mod.rs:7061".to_string(),
                 "game/effects/mod.rs:7138".to_string(),
-                "game/effects/mod.rs:10432".to_string(),
+                "game/effects/mod.rs:10798".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.
