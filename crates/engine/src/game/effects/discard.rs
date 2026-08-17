@@ -104,7 +104,7 @@ pub(crate) fn complete_discard_to_graveyard(
             return DiscardOutcome::Complete;
         }
         ReplacementResult::NeedsChoice(player) => {
-            // CR 616.1: The event retains `discard_frame` on the paused
+            // CR 614.1: The replacement-effect pipeline retains `discard_frame` on the paused
             // ZoneChange. Generic replacement resume returns to terminal zone
             // delivery, which appends the exact result and emits bookkeeping.
             return DiscardOutcome::NeedsReplacementChoice(player);
@@ -158,11 +158,11 @@ pub(crate) fn hand_off_recruit_discard_result(
 /// Park what this seat's discard instruction still owes so the replacement
 /// resume can finish it.
 ///
-/// CR 616.1 is the pause: "the affected object's controller … or the affected
-/// player chooses one to apply". CR 701.9a is what is still owed: each remaining
-/// card must still be moved from its owner's hand to their graveyard. This is
-/// the SINGLE AUTHORITY for "this batch paused" — both selection modes park
-/// through it, so the two cannot drift on what a parked batch means.
+/// CR 614.1: a replacement effect can pause this instruction while it is being
+/// applied. CR 701.9a is what is still owed: each remaining card must still be
+/// moved from its owner's hand to their graveyard. This is the SINGLE AUTHORITY
+/// for "this batch paused" — both selection modes park through it, so the two
+/// cannot drift on what a parked batch means.
 ///
 /// Deliberately private and called ONLY from `resolve`, the effect layer. The
 /// cost layer owns its own typed cursor (`PendingCostMoveResume::
@@ -511,7 +511,7 @@ pub fn resolve(
             // CR 701.9a: this is a resolving effect, so Library-of-Leng-class
             // replacements DO apply — `DiscardCause::Effect`.
             //
-            // CR 616.1: a replacement-application choice mid-batch parks the
+            // CR 614.1: a replacement-application choice mid-batch parks the
             // cursor `discard_at_random` returns rather than dropping it;
             // `drain_pending_discard_batch` (effects/mod.rs) finishes the
             // remaining picks and publishes the terminal marker. The COST caller
@@ -572,7 +572,7 @@ pub fn resolve(
                 {
                     state.waiting_for =
                         crate::game::replacement::replacement_choice_waiting_for(player, state);
-                    // CR 616.1 + CR 701.9a: park the un-iterated tail instead of
+                    // CR 614.1 + CR 701.9a: park the un-iterated tail instead of
                     // abandoning it. `hand_cards[i + 1..]` and not `[i..]`: the
                     // paused card is settled by the replacement itself, exactly
                     // as `discard_at_random`'s cursor documents. The terminal
@@ -725,14 +725,14 @@ pub(crate) enum RandomDiscardOutcome {
         /// identity to stamp the terminal `Discarded` the resumed zone-change
         /// arm cannot emit. The cost layer does not consume it.
         paused_card: ObjectId,
-        /// CR 616.1: the player who chooses among the applicable replacement
-        /// effects. Published by this authority rather than re-derived at the
-        /// call site, because it is NOT always the discarding player — see the
-        /// commander carve-out in `replacement_choice_player`, where the choice
-        /// belongs to a seat other than the affected one. A re-parking caller
-        /// that assumed `request.player` would prompt the wrong seat the moment
-        /// such a case reaches a random discard. Mirrors the `chooser` the
-        /// single-card `DiscardOutcome::NeedsReplacementChoice` already carries,
+        /// The replacement pipeline's selected chooser. Published by this
+        /// authority rather than re-derived at the call site, because it is NOT
+        /// always the discarding player — see the commander carve-out in
+        /// `replacement_choice_player`, where the choice belongs to a seat other
+        /// than the affected one. A re-parking caller that assumed
+        /// `request.player` would prompt the wrong seat the moment such a case
+        /// reaches a random discard. Mirrors the `chooser` the single-card
+        /// `DiscardOutcome::NeedsReplacementChoice` already carries,
         /// so both cursor arms read one contract.
         chooser: PlayerId,
     },

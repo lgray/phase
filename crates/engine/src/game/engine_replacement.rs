@@ -1036,12 +1036,11 @@ pub(super) fn handle_replacement_choice(
                 }
             }
 
-            // CR 616.1 + CR 608.2f: a discard instruction parked mid-batch by a
+            // CR 608.2c: a discard instruction parked mid-batch by a
             // replacement-application choice finishes what it still owes BEFORE
-            // any parked continuation runs — the same ordering the simultaneous
-            // sacrifice block above states, for the same reason: the clause is
-            // ONE action, so the instructions after it must not resume until it
-            // has settled and published its terminal result.
+            // any parked continuation runs. The resolving effect follows its
+            // instructions in written order, so later instructions cannot resume
+            // until this action has settled and published its terminal result.
             if matches!(waiting_for, WaitingFor::Priority { .. })
                 && state.pending_discard_batch.is_some()
             {

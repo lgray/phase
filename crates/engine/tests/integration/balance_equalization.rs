@@ -40,8 +40,6 @@ control equal to the number of lands controlled by the player who controls \
 the fewest, then sacrifices the rest. Players discard cards and sacrifice \
 creatures the same way.";
 
-const LIBRARY_OF_LENG_ORACLE: &str = "You have no maximum hand size.\nIf an effect causes you to discard a card, discard it, but you may put it on top of your library instead of into your graveyard.";
-
 /// Build Balance's resolved ability chain controlled by `controller`.
 fn balance_ability(controller: PlayerId, source_id: ObjectId) -> ResolvedAbility {
     let def = parse_effect_chain(BALANCE_ORACLE, AbilityKind::Spell);
@@ -364,26 +362,24 @@ fn balance_three_player_interactive_fan_out_equalizes() {
     }
 }
 
-/// A replacement choice pauses Balance's discard-down-to-the-fewest-cards
-/// clause after its cross-player hand-size minimum has been frozen. The
-/// authoritative save/restore path must preserve that still-live value: resume
-/// continues the same application rather than determining a new minimum.
+/// Balance's discard choice pauses after its cross-player hand-size minimum has
+/// been frozen. The authoritative save/restore path must preserve that
+/// still-live value: resume continues the same application rather than
+/// determining a new minimum.
 ///
 /// Discriminating: P0's three-card hand must discard down to P1's one-card
-/// minimum. The test saves only after the real cast pipeline parks the discard
-/// batch at a `ReplacementChoice`; removing the snapshot's serde support leaves
-/// the restored reach guard empty before the resumed production path runs.
+/// minimum. The test saves only after the real cast pipeline reaches the
+/// `DiscardChoice` that selects P0's two discards; removing the snapshot's
+/// serde support leaves the restored reach guard empty before the resumed
+/// production path runs.
 #[test]
-fn balance_save_during_discard_replacement_preserves_frozen_hand_minimum() {
+fn balance_save_during_discard_choice_preserves_frozen_hand_minimum() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     for i in 0..3 {
         scenario.add_card_to_hand(P0, &format!("P0 hand card {i}"));
     }
     scenario.add_card_to_hand(P1, "P1 hand card");
-    scenario
-        .add_creature_from_oracle(P0, "Library of Leng", 1, 1, LIBRARY_OF_LENG_ORACLE)
-        .as_artifact();
     let balance = scenario
         .add_spell_to_hand_from_oracle(P0, "Balance", false, BALANCE_ORACLE)
         .with_mana_cost(ManaCost::zero())
@@ -392,10 +388,9 @@ fn balance_save_during_discard_replacement_preserves_frozen_hand_minimum() {
 
     runner.cast(balance).resolve();
     assert!(
-        matches!(runner.state().waiting_for, WaitingFor::ReplacementChoice { .. })
-            && runner.state().pending_discard_batch.is_some()
+        matches!(runner.state().waiting_for, WaitingFor::DiscardChoice { .. })
             && runner.state().clause_minimum_snapshot.is_some(),
-        "reach guard: the production cast must park Balance's discard batch with its frozen hand minimum"
+        "reach guard: the production cast must park Balance's discard choice with its frozen hand minimum"
     );
 
     let saved = serde_json::to_string(&PersistedGameState::capture(runner.state().clone()))
@@ -409,20 +404,17 @@ fn balance_save_during_discard_replacement_preserves_frozen_hand_minimum() {
     );
 
     let mut prompts = 0;
-    while let WaitingFor::ReplacementChoice { candidates, .. } = runner.state().waiting_for.clone()
-    {
-        let index = candidates
-            .iter()
-            .position(|candidate| candidate.description == "Decline")
-            .expect("Library of Leng must offer Decline");
+    while let WaitingFor::DiscardChoice { cards, count, .. } = runner.state().waiting_for.clone() {
         runner
-            .act(GameAction::ChooseReplacement { index })
-            .expect("declining Library of Leng must resume the parked batch");
+            .act(GameAction::SelectCards {
+                cards: cards.into_iter().take(count).collect(),
+            })
+            .expect("selecting Balance's required discards must resume the cast");
         prompts += 1;
     }
     runner.advance_until_stack_empty();
 
-    assert_eq!(prompts, 2, "P0's two required discards must each pause");
+    assert_eq!(prompts, 1, "P0's two required discards share one choice");
     assert_eq!(hand_len(runner.state(), P0), 1, "P0 must discard down to 1");
     assert_eq!(
         hand_len(runner.state(), P1),
