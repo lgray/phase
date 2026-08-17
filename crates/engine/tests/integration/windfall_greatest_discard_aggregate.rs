@@ -26,7 +26,7 @@ use engine::types::ability::{
     AbilityDefinition, AbilityKind, Effect, ReplacementDefinition, ReplacementMode, TargetFilter,
 };
 use engine::types::actions::GameAction;
-use engine::types::game_state::{PersistedGameState, WaitingFor};
+use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaCost;
 use engine::types::phase::Phase;
@@ -608,66 +608,6 @@ fn windfall_paused_mid_fan_out_still_draws_the_greatest() {
         },
         "a CR 616.1 pause must not truncate the batch (prompts/graveyards) nor split \
          the clause's per-player table (drawn/hands)"
-    );
-}
-
-/// A replacement choice splits one still-resolving Windfall instruction across
-/// an authoritative save/restore boundary. The draw clause must use the
-/// `PreviousEffectAmount` captured for that in-flight application, rather than
-/// re-read a partially restored ledger or live hand sizes after the pause.
-///
-/// Discriminating: the save occurs only after the real cast pipeline has
-/// parked `PendingDiscardBatch` at a `ReplacementChoice`; removing the
-/// snapshot's serde support fails the restored-snapshot reach guard before the
-/// resumed production pipeline is driven.
-#[test]
-fn windfall_save_during_replacement_choice_preserves_frozen_greatest_discard() {
-    let mut scenario = GameScenario::new_n_player(4, 42);
-    scenario.at_phase(Phase::PreCombatMain);
-    for (seat, hand) in SEATS.iter().zip(PAUSED_HANDS) {
-        seed_hand_ids(&mut scenario, *seat, hand);
-        seed_library(&mut scenario, *seat, LIBRARY_DEPTH);
-    }
-    scenario
-        .add_creature_from_oracle(P0, "Library of Leng", 1, 1, LIBRARY_OF_LENG)
-        .as_artifact();
-    let windfall = scenario
-        .add_spell_to_hand_from_oracle(P0, "Windfall", false, WINDFALL)
-        .with_mana_cost(ManaCost::zero())
-        .id();
-    let mut runner = scenario.build();
-
-    runner.cast(windfall).resolve();
-    assert!(
-        matches!(runner.state().waiting_for, WaitingFor::ReplacementChoice { .. })
-            && runner.state().pending_discard_batch.is_some()
-            && runner.state().clause_minimum_snapshot.is_some(),
-        "reach guard: the production cast must park both the discard continuation and its frozen clause value"
-    );
-
-    let saved = serde_json::to_string(&PersistedGameState::capture(runner.state().clone()))
-        .expect("the authoritative paused state serializes");
-    let restored: PersistedGameState =
-        serde_json::from_str(&saved).expect("the authoritative paused state deserializes");
-    let mut runner = GameRunner::from_state(restored.into_game_state());
-    assert!(
-        runner.state().clause_minimum_snapshot.is_some(),
-        "the paused resolution's frozen clause value must survive authoritative restore"
-    );
-
-    let prompts = answer_every_replacement_choice(&mut runner, "Decline");
-    runner.advance_until_stack_empty();
-
-    assert_eq!(
-        (
-            prompts,
-            SEATS
-                .iter()
-                .map(|p| LIBRARY_DEPTH - state_zone_len(&runner, *p, Zone::Library))
-                .collect::<Vec<_>>(),
-        ),
-        (7, vec![7, 7, 7, 7]),
-        "restoring a parked Windfall must resume the original CR 608.2h draw value"
     );
 }
 
