@@ -14640,6 +14640,20 @@ impl StackEntryKind {
 /// instruction's result); the per-player `left` operand still re-resolves per
 /// iteration, which is correct.
 ///
+/// CR 608.2i ends "This is an exception to 608.2h", which invites the reading
+/// that a look-back is exempt from the snapshot rule outright. It is not, and
+/// the distinction is what makes freezing `PreviousEffectAmount` correct rather
+/// than contradictory. Read in full, the exception is scoped to two things,
+/// both about **objects**: they "don't need to be currently in the zone" they
+/// were in, "nor do they need to currently meet the criteria described in the
+/// action". It relaxes WHERE the objects must be standing; it says nothing
+/// about WHEN the number is determined. So 608.2h's "determined only once, when
+/// the effect is applied" still governs the value — which is precisely the rule
+/// a per-seat re-read violates. Were it otherwise, the pre-fix behaviour (every
+/// seat re-stamping the shared scalar as its own draw completed) would have
+/// been correct, and Windfall would rightly pay out the last discard rather
+/// than the greatest.
+///
 /// Transient — never serialized. Captured before a `player_scope` link's
 /// fan-out and cleared when the link completes, so the next clause re-enters
 /// the driver with `None` and re-captures against the post-clause board.
