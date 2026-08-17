@@ -4987,19 +4987,36 @@ pub(crate) fn board_has_functioning_cast_trigger(state: &GameState) -> bool {
 /// payload-SENSITIVE (the exact key, narrowing included), while the route firewalls ask the
 /// payload-AGNOSTIC class question. Unifying them would cross that question boundary and silently
 /// change one of the two answers.
+///
+/// The TRIGGER half is [`board_has_keyed_trigger`], EXTRACTED (not copied) because
+/// [`life_growth_is_observed`] pairs that same trigger question with a differently-FILTERED
+/// replacement question — the same extract-don't-copy split [`functioning_board_replacement_defs`]
+/// records on the replacement side. Two callers remain ([`counter_growth_is_observed`] and
+/// [`token_growth_is_observed`]'s EVENT-1), and both want the UNFILTERED replacement half.
 fn board_has_event_observer(
     state: &GameState,
     trig_key: crate::types::triggers::TriggerEventKey,
     repl_event: ReplacementEvent,
 ) -> bool {
-    if functioning_board_trigger_defs(state).any(|def| {
+    board_has_keyed_trigger(state, &trig_key)
+        || functioning_board_replacement_defs(state).any(|def| def.event == repl_event)
+}
+
+/// CR 603.2 + CR 113.6: does any battlefield/command-FUNCTIONING trigger fire on exactly
+/// `trig_key`? The payload-SENSITIVE trigger half of [`board_has_event_observer`], split out so an
+/// axis can pair it with a NARROWED replacement question instead of the unfiltered one.
+///
+/// Takes the key by reference because [`crate::types::triggers::TriggerEventKey`] is `Clone`, not
+/// `Copy` (its `EnterBattlefield`/`SpellCast` arms carry an `Option<CoreType>` payload).
+fn board_has_keyed_trigger(
+    state: &GameState,
+    trig_key: &crate::types::triggers::TriggerEventKey,
+) -> bool {
+    functioning_board_trigger_defs(state).any(|def| {
         crate::game::trigger_index::keys_from_trigger_def(def)
             .0
-            .contains(&trig_key)
-    }) {
-        return true;
-    }
-    functioning_board_replacement_defs(state).any(|def| def.event == repl_event)
+            .contains(trig_key)
+    })
 }
 
 /// CR 614.1 / CR 113.6: every replacement definition FUNCTIONING on the battlefield or in the
@@ -5018,13 +5035,30 @@ fn functioning_board_replacement_defs(
         .map(|(_, _, def)| def)
 }
 
-/// CR 614.1d / CR 614.12: is any battlefield/command-functioning replacement watching ANY of
-/// `repl_events` in a way that could apply to a permanent this collapse would CREATE? Slice-taking
-/// so one board walk answers the whole set.
+/// CR 614.1d / CR 614.12 / CR 119.3: is any battlefield/command-functioning replacement watching
+/// ANY of `repl_events` in a way that could apply to the event the collapse would batch?
+/// Slice-taking so one board walk answers the whole set.
+///
+/// TWO CALLERS, TWO AXES, ONE SHARED EXCLUSION — and the exclusion is justified SEPARATELY on each,
+/// because the two rules below are ENTRY-scoped and one caller does not ask an entry question:
+/// - [`token_growth_is_observed`]'s entry keys (`ChangeZone` / `Moved` / `Counter` / `Attached`):
+///   "could this apply to a permanent this collapse would CREATE?" — answered by CR 614.1d +
+///   CR 614.12 below.
+/// - [`life_growth_is_observed`]'s `GainLife`: "could this apply to the batched life gain?" — NOT
+///   an entry question, so neither entry rule reaches it. What justifies the exclusion there is
+///   ENGINE-STRUCTURAL and stated on that predicate: a `LifeGain` event has NO affected object
+///   (CR 119.3 — the subject of a life gain is a PLAYER), so `game::replacement`'s
+///   `replacement_valid_card_matches` reaches `event.affected_object_id().map(..).unwrap_or(false)`
+///   and a `valid_card: SelfRef` `GainLife` definition can NEVER match any life gain at all.
+///
+/// **THE COUNTER AXIS MUST NOT CALL THIS.** See [`counter_growth_is_observed`]'s
+/// `SELFREF IS NOT EXCLUDED HERE` block: an `AddCounter` event's affected object is the RECIPIENT,
+/// so a SelfRef `AddCounter` definition matches whenever recipient == host, and excluding it would
+/// let the boundary batch-apply counters that a `Prevent` definition must prevent.
 ///
 /// SELF-SCOPED REPLACEMENTS ARE EXCLUDED, and that exclusion is what makes this predicate mean
-/// anything. The two rules are cited for two different halves of the argument, and neither
-/// substitutes for the other:
+/// anything on the entry axis. The two rules are cited for two different halves of the ENTRY
+/// argument, and neither substitutes for the other:
 /// - **CR 614.1d** (`MagicCompRules.txt:3064`) is the TEMPLATING authority — it distinguishes
 ///   "[This permanent] enters . . ." from "[Objects] enter [the battlefield] . . .", which is
 ///   exactly the `valid_card: SelfRef` / non-`SelfRef` split, and is the sub-rule
@@ -5070,10 +5104,60 @@ pub(crate) fn board_has_active_replacement_among(
 /// - a battlefield-functioning `CounterAdded` trigger ("whenever a +1/+1 counter is put …").
 /// - an active battlefield/command `AddCounter` replacement (Corpsejack's counter doubler).
 ///
-/// The batched N×δ counter collapse is sound ONLY when this is false: `apply_counter_addition`
-/// emits one lump `CounterAdded` bypassing the replacement doubler pipeline. AXIS-SPECIFIC: a
-/// life observer does NOT make counter growth observed (they read different mutation events), so a
-/// pure counter loop still batches on a board carrying only a life observer.
+/// The batched N×δ counter collapse is sound ONLY when this is false, and THE TWO HALVES FAIL FOR
+/// OPPOSITE REASONS — an earlier revision of this paragraph gave the trigger half's reason for
+/// both, which reads as an argument that the replacement half does not make:
+/// - **TRIGGER half — SINGLE-FIRE.** `apply_counter_addition` (`game::effects::counters`) pushes
+///   ONE lump `GameEvent::CounterAdded { count: δ×N }`, so a `CounterAdded` trigger fires once
+///   where N live cycles fire it N× (CR 603.2c: an ability triggers once per occurrence of its
+///   trigger event).
+/// - **REPLACEMENT half — MID-WINDOW ARRIVAL, *not* the bypass.** That same applier deliberately
+///   does NOT re-enter CR 614's pipeline (`apply_resolved_counter_edit`'s own doc), and that bypass
+///   is what makes δ×N *correct* for a def present at δ-capture: δ was captured from a live cycle
+///   that already ran the doubler, so re-running it would apply the multiplication TWICE (an
+///   unfiltered Corpsejack control AGREES between replay and batch). What the replacement half
+///   actually guards is the def that arrives AFTER δ was pinned — accept→boundary, where the
+///   replay's N cycles apply it and the batched δ×N cannot: DEV-PROBE replay 6 vs batched 3 for an
+///   unfiltered `Times{2}`.
+///
+/// SELFREF IS NOT EXCLUDED HERE, AND THAT IS DELIBERATE. **Do not "fix" this by symmetry with
+/// [`life_growth_is_observed`]** — the two axes look alike and are not:
+/// `ProposedEvent::AddCounter { placement, .. }`'s `affected_object_id()` returns the counter's
+/// RECIPIENT (`types::proposed_event`), so `game::replacement`'s `replacement_valid_card_matches`
+/// DOES match a `valid_card: SelfRef` `AddCounter` definition whenever recipient == host. Excluding
+/// SelfRef here would flip this predicate to `false` on exactly that board and let the boundary
+/// batch-apply counters onto a permanent that cannot have counters put on it — a CORRECTNESS
+/// break, not a fidelity nicety (DEV-PROBE at the boundary with such a def on the recipient: the
+/// replay places 0 counters, a batched apply places 3).
+///
+/// THE CLAIM ABOVE IS PINNED IN-REPO, NOT BY A NUMBER: the test row
+/// `selfref_prevent_counter_replacement_must_stay_observed` reconstructs that board and asserts
+/// this predicate stays `true`, and its revert probe (hand the counter axis
+/// [`board_has_active_replacement_among`]) flips it RED. That row is the re-runnable artifact; run
+/// it, do not try to reproduce the boundary counts.
+///
+/// PROVENANCE OF THE NUMBERS, so nobody mistakes one kind for the other:
+/// - **DEV-PROBE** = measured with throwaway instrumentation during development. NOT re-derivable
+///   by running this tree — no shipped test reproduces those replay-vs-batched counts. Treat them
+///   as calibration for how large the divergence is, never as an assertion you can re-run.
+/// - **CARD-CENSUS** = re-derivable, and here is the instrument: `jq` over `card-data.json` for
+///   `.replacements[] | select(.event=="AddCounter")` grouped by `valid_card`. NOTE THE
+///   PRECONDITION: that file is GITIGNORED (`.gitignore`'s `data/*`) and is ABSENT from a fresh
+///   worktree — generate it with `./scripts/gen-card-data.sh` first, which writes
+///   `data/card-data.json`. Running the `jq` against a missing file yields no rows, which reads
+///   identically to "the shape does not exist" — do not mistake one for the other
+///   yields exactly TWO `SelfRef` cards — Melira's Keepers and Tatterkite, both
+///   `quantity_modification: Prevent`, `execute: null`, "This creature can't have counters put on
+///   it." (CR 113.6i + CR 614.17 + CR 614.6: the prohibition is modelled through the pipeline and
+///   the placement never happens). That is the whole real population of this shape.
+///
+/// The residual imprecision runs the safe way: a SelfRef `AddCounter` def hosted on a permanent
+/// that is NOT the recipient reads `true` here and cannot actually apply, so the loop takes the
+/// O(N) discrete driver for nothing. That is a FAIL-CLOSED over-veto — PERFORMANCE ONLY, NEVER
+/// CORRECTNESS.
+///
+/// AXIS-SPECIFIC: a life observer does NOT make counter growth observed (they read different
+/// mutation events), so a pure counter loop still batches on a board carrying only a life observer.
 pub(crate) fn counter_growth_is_observed(state: &GameState) -> bool {
     use crate::types::triggers::TriggerEventKey;
     fire_time_conditions_read_growing_class(state, None)
@@ -5092,20 +5176,78 @@ pub(crate) fn counter_growth_is_observed(state: &GameState) -> bool {
 ///   ([`stack_entry_reads_projected_resource`]) — a life-total condition / static / replacement body.
 /// - a battlefield-functioning `LifeChanged` trigger (Heliod "whenever you gain life …"; also
 ///   `LifeLost`/`LifeChanged` via the shared event key — an over-approximation, still safe).
-/// - an active battlefield/command `GainLife` replacement (Rhox's life-gain doubler).
+/// - an active battlefield/command `GainLife` replacement (Rhox's life-gain doubler), MINUS the
+///   self-scoped ones — see below.
 ///
-/// The batched N×δ life collapse is sound ONLY when this is false: `apply_life_gain` re-runs the
-/// replacement pipeline, so a lump gain fires a life observer ONCE not N×. AXIS-SPECIFIC: a
-/// counter observer does NOT make life growth observed.
+/// The batched N×δ life collapse is sound ONLY when this is false. `apply_life_gain` re-runs the
+/// replacement pipeline (`game::effects::life` calls `replacement::replace_event`), and that ONE
+/// fact breaks the two halves DIFFERENTLY — stating only the trigger half's consequence, as an
+/// earlier revision did, understates the replacement half:
+/// - **TRIGGER half — SINGLE-FIRE.** A lump gain fires a `LifeChanged` observer ONCE where N live
+///   cycles fire it N× (CR 603.2c).
+/// - **REPLACEMENT half — DOUBLE-APPLY.** δ was captured from a live cycle that already ran the
+///   doubler, so pushing δ×N back through the pipeline multiplies it a SECOND time: DEV-PROBE with
+///   an unfiltered `Times{2}` `GainLife` doubler, replay 6 vs batched 12. THE FIXTURE IS
+///   SYNTHETIC: no real card models life doubling through `quantity_modification` — all 21 real
+///   doublers (Rhox Faithmender, Alhammarret's Archive, Boon Reflection, …) carry
+///   `quantity_modification: null` and multiply inside an `execute` body instead, and the 22nd
+///   (Sulfuric Vortex) is a `Prevent`. The conclusion is unchanged and if anything stronger on the
+///   real shape: an `execute` rider fires once per EVENT, so one lump gain runs it 1× where N
+///   cycles run it N×. This is the same failure mode as
+///   the token mint's, NOT the counter axis's bypass.
+///
+/// AXIS-SPECIFIC: a counter observer does NOT make life growth observed.
+///
+/// CR 119.3: THE REPLACEMENT HALF EXCLUDES `valid_card: SelfRef`, via
+/// [`board_has_active_replacement_among`], because such a definition is STRUCTURALLY INERT on this
+/// event — not merely unlikely. A life gain's subject is a PLAYER, so
+/// `ProposedEvent::LifeGain`'s `affected_object_id()` returns `None`
+/// (`types::proposed_event`); `game::replacement`'s `replacement_valid_card_matches` therefore
+/// reaches its `.map(..).unwrap_or(false)` tail and NO `valid_card` filter of any shape can match a
+/// life gain when the definition is SelfRef-scoped. DEV-PROBE: a SelfRef `GainLife` `Times{2}` on
+/// the board leaves 20→21 (the doubler never applies), while the byte-identical UNFILTERED
+/// definition gives 20→22. So the pre-exclusion `true` on such a board was a PURE FALSE POSITIVE —
+/// it routed a loop to the O(N) driver to protect against a doubler that cannot fire.
+///
+/// THE EXCLUSION DOES NOT REST ON THE HAZARD ANALYSIS ABOVE. The two are independent, and the
+/// correction from "single-fire" to "double-apply" changed the RATIONALE, not the soundness: a
+/// definition that can never MATCH can neither single-fire nor double-apply, so re-classifying the
+/// hazard leaves the exclusion standing on its own structural ground (`affected_object_id()` is
+/// `None`). If anything the double-apply reading makes it cleaner — both hazards flow through the
+/// same match test that a SelfRef `GainLife` def fails unconditionally.
+///
+/// FRAGILITY THIS EXCLUSION DEPENDS ON: it is sound exactly while `LifeGain` has no affected
+/// object. If that arm of `affected_object_id()` ever returns `Some(..)`, a SelfRef `GainLife`
+/// definition becomes matchable and this exclusion becomes unsound; the counter axis is the
+/// worked example of what that looks like (see [`counter_growth_is_observed`]).
+///
+/// PINNED IN-REPO by `selfref_life_replacement_is_inert_but_the_same_unfiltered_def_is_observed`,
+/// which asserts BOTH directions on the same board shape one field apart. That row is the
+/// re-runnable artifact; the DEV-PROBE life totals above are not (see the provenance note on
+/// [`counter_growth_is_observed`] for what the two tags mean).
+///
+/// CARD-CENSUS (`jq` over `card-data.json` for `.replacements[] | select(.event=="GainLife")`
+/// grouped by `valid_card`; generate the file first with `./scripts/gen-card-data.sh` — it is
+/// gitignored and absent from a fresh worktree): all 22 `GainLife` replacement definitions carry
+/// `valid_card: null`. ZERO real cards have the excluded shape today — this is a
+/// precision/uniformity fix on a synthetic board shape, not a live-card bug fix.
+///
+/// AND THE REACH IS NARROWER STILL, so nobody over-reads that "0 real cards": conjunct 1
+/// ([`fire_time_conditions_read_projected_resource`]) already returns `true` for any replacement
+/// whose body is `execute`-based (`replacement_body_may_read_projected`'s
+/// `if def.execute.is_some() { return true; }`), and 21 of the 22 real `GainLife` definitions are
+/// exactly that shape. So conjunct 1 DOMINATES the replacement half on essentially every real
+/// board, and this exclusion can only change an answer for a definition that is SelfRef AND
+/// `execute: None` AND carries no projected-reading condition / `runtime_execute` /
+/// `damage_modification`. That is why the paired test rows install a `quantity_modification`-only
+/// definition and reach-guard conjunct 1 to silence: without that guard the rows would pass on
+/// conjunct 1's verdict and prove nothing about the exclusion.
 pub(crate) fn life_growth_is_observed(state: &GameState) -> bool {
     use crate::types::triggers::TriggerEventKey;
     fire_time_conditions_read_projected_resource(state)
         || state.stack.iter().any(stack_entry_reads_projected_resource)
-        || board_has_event_observer(
-            state,
-            TriggerEventKey::LifeChanged,
-            ReplacementEvent::GainLife,
-        )
+        || board_has_keyed_trigger(state, &TriggerEventKey::LifeChanged)
+        || board_has_active_replacement_among(state, &[ReplacementEvent::GainLife])
 }
 
 /// CR 614.1a + CR 603.6a + CR 111.3 + CR 732.2a: is the growing TOKEN axis OBSERVED — does
@@ -5125,9 +5267,19 @@ pub(crate) fn life_growth_is_observed(state: &GameState) -> bool {
 /// in both directions — see the route comment there.
 ///
 /// The batched `per_cycle_delta * N` token collapse is sound ONLY when this is false, and the
-/// reason is the MIRROR IMAGE of its two siblings. `apply_counter_addition` / `apply_life_gain`
-/// make [`counter_growth_is_observed`] / [`life_growth_is_observed`] necessary because they BYPASS
-/// or SINGLE-FIRE the replacement pipeline. The token mint is necessary for the opposite reason:
+/// reason mirrors ONE sibling, not both. An earlier revision of this paragraph grouped the two as
+/// "BYPASS or SINGLE-FIRE", which conflates appliers that behave OPPOSITELY at the pipeline:
+/// - `apply_counter_addition` BYPASSES it (`apply_resolved_counter_edit` "never re-enters CR 614's
+///   replacement pipeline") — the true MIRROR IMAGE of the mint below.
+/// - `apply_life_gain` RE-RUNS it, exactly as the mint does (`game::effects::life` calls
+///   `replacement::replace_event`), so life is the mint's TWIN on this axis, not its mirror:
+///   DEV-PROBE with an unfiltered `Times{2}` `GainLife` doubler present at δ-capture (SYNTHETIC —
+///   see [`life_growth_is_observed`]; real doublers multiply via `execute`), replay 6 against
+///   batched 12 — δ already carried the doubling and the lump gain ran it a second time.
+///   (DEV-PROBE = development-time instrumentation, not re-derivable by running this tree; the tag
+///   is defined on [`counter_growth_is_observed`].)
+///
+/// The token mint is necessary for the counter axis's opposite reason:
 /// it RE-RUNS the pipeline (`game::effects::token_copy`'s `drive_copy_token_batches` ->
 /// `ProposedEvent::CreateToken` -> `replacement::replace_event`; that module's own comment records
 /// that a different source's replacement — Doubling Season's — still applies). So a per-cycle
@@ -13661,22 +13813,10 @@ mod tests {
             ControllerRef, QuantityModification, ReplacementDefinition, TargetFilter,
         };
 
-        let install = |state: &mut GameState, id: u64, def: ReplacementDefinition| {
-            let oid = bf_object(state, id);
-            let obj = state
-                .objects
-                .get_mut(&oid)
-                .expect("just-created board object");
-            // BOTH vectors, or the layer reset drops the definition and every positive below
-            // silently reads `false` for the wrong reason.
-            obj.base_replacement_definitions = std::sync::Arc::new(vec![def.clone()]);
-            obj.replacement_definitions = vec![def].into();
-        };
-
         // ── The tapland board: twelve "~ enters tapped" lands and nothing else ──
         let mut taplands = GameState::new_two_player(7);
         for i in 0..12u64 {
-            install(
+            install_board_replacement(
                 &mut taplands,
                 200 + i,
                 ReplacementDefinition::new(ReplacementEvent::Moved)
@@ -13701,7 +13841,7 @@ mod tests {
 
         // ── The SAME board, one object apart: add Doubling Season's UNFILTERED CreateToken ──
         let mut with_doubler = taplands.clone();
-        install(
+        install_board_replacement(
             &mut with_doubler,
             300,
             ReplacementDefinition::new(ReplacementEvent::CreateToken)
@@ -13716,13 +13856,194 @@ mod tests {
         );
     }
 
-    /// G6-1 — ROUTER BYTE-IDENTITY. `counter_growth_is_observed` (`:2923`) and
-    /// `life_growth_is_observed` (`:2946`) are ROUTERS, not suppressors: a `true` there
-    /// selects the O(N) discrete driver and the offer still forms. They keep the 2-arg
-    /// wrappers (`LoopWindowScope::unproven()`), so the phase-unreachability narrowing
-    /// must NOT reach them — a `{Phase, End}` observer scanned at `PreCombatMain` still
-    /// reports OBSERVED at both routers even though the identically-shaped observer IS
-    /// relieved at the two suppressing covers (rows X2-1 / X2-2).
+    /// Installs `def` as a FUNCTIONING battlefield replacement on a fresh permanent. The single
+    /// fixture builder for every replacement row in this module — EXTRACTED from the closure the
+    /// tapland row used to carry, not copied alongside it, so the two-vector discipline below has
+    /// exactly one definition site.
+    ///
+    /// WHY BOTH VECTORS — DEFENSIVE, NOT LOAD-BEARING HERE, and the distinction is measured:
+    /// `game::functioning_abilities`'s `active_replacements` (the walk every predicate in this
+    /// module reaches) reads `obj.replacement_definitions` ONLY and never
+    /// `base_replacement_definitions`, and no row in this module triggers a layer recompute
+    /// between install and the predicate call — so writing only `replacement_definitions` would in
+    /// fact work for these rows today. `base_replacement_definitions` is what a layer reset
+    /// restores from (`game::printed_cards`: "purely so they survive a layer reset"), so writing
+    /// both keeps the fixture correct for any future row that DOES recompute layers. The
+    /// "or it is silently dropped" phrasing is INHERITED from the pre-existing tapland closure's
+    /// comment; it describes the hazard this guards against, not an observed failure of these rows.
+    fn install_board_replacement(
+        state: &mut GameState,
+        id: u64,
+        def: crate::types::ability::ReplacementDefinition,
+    ) {
+        let oid = bf_object(state, id);
+        let obj = state
+            .objects
+            .get_mut(&oid)
+            .expect("just-created board object");
+        obj.base_replacement_definitions = std::sync::Arc::new(vec![def.clone()]);
+        obj.replacement_definitions = vec![def].into();
+    }
+
+    /// Asserts every conjunct of [`life_growth_is_observed`] EXCEPT the replacement half is
+    /// silent, so the row's verdict is attributable to that half alone.
+    fn assert_only_the_life_replacement_half_can_speak(state: &GameState) {
+        use crate::types::triggers::TriggerEventKey;
+        assert!(
+            !fire_time_conditions_read_projected_resource(state)
+                && !state.stack.iter().any(stack_entry_reads_projected_resource)
+                && !board_has_keyed_trigger(state, &TriggerEventKey::LifeChanged),
+            "reach-guard: the reader and trigger halves must be quiet, or the row below is not \
+             measuring the replacement half"
+        );
+    }
+
+    /// LIFE AXIS — the SelfRef exclusion, as a matched pair one FIELD apart.
+    ///
+    /// PREMISE (structural, verified in-tree): a life gain's subject is a PLAYER (CR 119.3), so
+    /// `ProposedEvent::LifeGain`'s `affected_object_id()` returns `None` and
+    /// `game::replacement`'s `replacement_valid_card_matches` falls to `.unwrap_or(false)`. A
+    /// `valid_card: SelfRef` `GainLife` definition therefore CANNOT match any life gain — DEV-PROBE
+    /// (development-time instrumentation, NOT reproduced by this row): such a `Times{2}` on the
+    /// board leaves 20→21, the byte-identical unfiltered def gives 20→22. What THIS row proves is
+    /// the predicate-level consequence, which is the part that must not regress. Counting such a
+    /// def as an observer was a pure false positive, and at the boundary consumer
+    /// (`ObservedGrowth::at_boundary` -> `boundary_declines`) a false positive WITHHOLDS an
+    /// accepted finite amount.
+    ///
+    /// CARD-CENSUS (`jq` over `card-data.json`, `.replacements[] | select(.event=="GainLife")`
+    /// grouped by `valid_card`; the file is gitignored and absent from a fresh worktree — run
+    /// `./scripts/gen-card-data.sh` first): all 22 `GainLife` replacement definitions carry
+    /// `valid_card: null`, so the excluded shape has zero real-card population today; this row
+    /// pins the rule, not a live card.
+    ///
+    /// REVERT PROBES (both required — one alone is satisfiable by a constant):
+    /// - drop the `valid_card == SelfRef` exclusion (i.e. put `life_growth_is_observed` back on
+    ///   `board_has_event_observer`) ⇒ the SELFREF-FALSE half flips to `true` ⇒ RED.
+    /// - exclude EVERY replacement regardless of `valid_card` ⇒ the UNFILTERED-TRUE half flips to
+    ///   `false` ⇒ RED. This is the arm that stops "just return false" from passing the first.
+    #[test]
+    fn selfref_life_replacement_is_inert_but_the_same_unfiltered_def_is_observed() {
+        use crate::types::ability::{QuantityModification, ReplacementDefinition, TargetFilter};
+
+        let board_with = |valid_card: Option<TargetFilter>| {
+            let mut state = GameState::new_two_player(7);
+            let mut def = ReplacementDefinition::new(ReplacementEvent::GainLife)
+                .quantity_modification(QuantityModification::DOUBLE);
+            if let Some(filter) = valid_card {
+                def = def.valid_card(filter);
+            }
+            install_board_replacement(&mut state, 400, def);
+            // Reach-guard: the definition really landed and FUNCTIONS, so a `false` below is the
+            // filter's verdict and not a fixture that silently dropped its def.
+            assert_eq!(
+                functioning_board_replacement_defs(&state)
+                    .filter(|d| d.event == ReplacementEvent::GainLife)
+                    .count(),
+                1,
+                "reach-guard: one functioning battlefield `GainLife` replacement is installed"
+            );
+            assert_only_the_life_replacement_half_can_speak(&state);
+            life_growth_is_observed(&state)
+        };
+
+        assert!(
+            !board_with(Some(TargetFilter::SelfRef)),
+            "SELFREF-FALSE: a board whose only life observer is a `valid_card: SelfRef` \
+             `GainLife` doubler does NOT observe life growth — `ProposedEvent::LifeGain` has no \
+             affected object, so that definition can never match a life gain and counting it \
+             withholds an accepted finite amount at the collapse boundary"
+        );
+        assert!(
+            board_with(None),
+            "UNFILTERED-TRUE: the SAME definition with `valid_card: None` (the field value all 22 \
+             real `GainLife` replacements share) DOES observe life growth. Without this half, excluding \
+             replacements unconditionally would still pass the row above"
+        );
+    }
+
+    /// COUNTER AXIS — THE TRIPWIRE. A `valid_card: SelfRef` `AddCounter` replacement MUST keep
+    /// reading OBSERVED. Do not "fix" this by symmetry with the life axis above.
+    ///
+    /// PREMISE (structural, verified in-tree): `ProposedEvent::AddCounter { placement, .. }`'s
+    /// `affected_object_id()` returns `placement.object_id()` — the counter's RECIPIENT, not
+    /// `None` — so `replacement_valid_card_matches` DOES match a SelfRef definition whenever
+    /// recipient == host. The life axis's exclusion has no analogue here.
+    ///
+    /// CARD-CENSUS of this exact shape (`jq` over `card-data.json`, `.replacements[] |
+    /// select(.event=="AddCounter")` grouped by `valid_card`; the file is gitignored and absent
+    /// from a fresh worktree — run `./scripts/gen-card-data.sh` first): 2 cards, Melira's
+    /// Keepers and Tatterkite, both `quantity_modification: Prevent`, `execute: null`, "This
+    /// creature can't have counters put on it." (CR 113.6i + CR 614.17 + CR 614.6).
+    ///
+    /// DEV-PROBE at the collapse boundary with such a def on the recipient (development-time
+    /// instrumentation, NOT reproduced by this row): the concrete replay places 0 counters while a
+    /// batched apply places 3. This row deliberately pins the PREDICATE instead of those counts —
+    /// the predicate is the seam a future symmetry "fix" would touch, and it is assertable here
+    /// without standing up a whole collapse boundary.
+    ///
+    /// REVERT PROBE: give the counter axis the life axis's exclusion (route
+    /// `counter_growth_is_observed` through `board_has_active_replacement_among`) ⇒ this flips to
+    /// `false` ⇒ RED. The residual over-veto it would "fix" (a SelfRef def hosted on a
+    /// NON-recipient) costs only the O(N) driver; the flip costs correctness.
+    #[test]
+    fn selfref_prevent_counter_replacement_must_stay_observed() {
+        use crate::types::ability::{QuantityModification, ReplacementDefinition, TargetFilter};
+
+        let mut state = GameState::new_two_player(7);
+        install_board_replacement(
+            &mut state,
+            410,
+            ReplacementDefinition::new(ReplacementEvent::AddCounter)
+                .valid_card(TargetFilter::SelfRef)
+                .quantity_modification(QuantityModification::Prevent),
+        );
+        // Reach-guards: the def FUNCTIONS, and the count-reader half is silent — so the `true`
+        // below is the replacement half's verdict and the revert probe can actually flip it.
+        assert_eq!(
+            functioning_board_replacement_defs(&state)
+                .filter(|d| d.event == ReplacementEvent::AddCounter)
+                .count(),
+            1,
+            "reach-guard: one functioning battlefield `AddCounter` replacement is installed"
+        );
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, None),
+            "reach-guard: the count-reader half must be quiet, or the row below is not measuring \
+             the replacement half"
+        );
+        assert!(
+            counter_growth_is_observed(&state),
+            "SELFREF-PREVENT-TRUE: a Melira's Keepers / Tatterkite `AddCounter` + SelfRef + \
+             Prevent definition MUST count as a counter observer. Unlike `GainLife`, an \
+             `AddCounter` event HAS an affected object (the recipient), so a SelfRef definition \
+             matches whenever recipient == host. Excluding it by symmetry with the life axis \
+             makes the collapse boundary batch-apply counters onto a permanent that can't have \
+             counters put on it — a correctness break, not a fidelity nicety"
+        );
+    }
+
+    /// G6-1 — ROUTER BYTE-IDENTITY. [`counter_growth_is_observed`] and
+    /// [`life_growth_is_observed`] have TWO CONSUMER KINDS, and only one of them routes —
+    /// an earlier revision of this block called them "ROUTERS, not suppressors" without
+    /// that split, which is false of the second consumer:
+    /// - **ROUTE (`game::engine`'s `materialize_object_growth_shortcut`).** A `true` selects
+    ///   the O(N) discrete driver and the offer still forms — over-approximating there costs
+    ///   time, never correctness. This is the consumer the byte-identity requirement below
+    ///   is about.
+    /// - **SUPPRESS (`game::engine_resolution_choices`'s `ObservedGrowth::at_boundary` ->
+    ///   `boundary_declines`).** A `true` makes the boundary `continue` PAST the stashed
+    ///   `Counters` / `Life` item without applying it, leaving that axis ∞ for manual play
+    ///   (`BoundaryHold::ObservedGrowth`). Over-approximating there withholds a finite amount
+    ///   the table accepted, so a spurious `true` is a real user-visible cost — which is why
+    ///   the life axis's structurally-inert SelfRef false positive was worth removing.
+    ///
+    /// Both predicates keep the 2-arg wrappers (`LoopWindowScope::unproven()`), so the
+    /// phase-unreachability narrowing must NOT reach them — a `{Phase, End}` observer scanned
+    /// at `PreCombatMain` still reports OBSERVED at both, even though the identically-shaped
+    /// observer IS relieved at the two suppressing covers (rows X2-1 / X2-2). Referenced by
+    /// SYMBOL, never by line: the previous `:2923` / `:2946` coordinates had drifted by
+    /// thousands of lines and pointed at unrelated code.
     ///
     /// REVERT-PROBE: switch either router to its `_scoped` sibling with a populated
     /// `phase_invariant` ⇒ the matching assertion flips to `false` ⇒ FAILS.
