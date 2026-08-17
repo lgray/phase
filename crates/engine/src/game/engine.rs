@@ -19111,9 +19111,17 @@ mod stage2_injector_tests {
                 // both fired GREEN on the run that caught this (partition still 5/8/28), the
                 // other two effects/mod.rs entries sit ABOVE every hunk and did not move, and
                 // neither `scoped_library_search.rs` nor this file's own producer was touched.
+                //
+                // Impl-review fix round: `:10798 ⇒ :10803` (+5), third producer
+                // only once more — the `Random` re-park's CR 616.1 chooser note
+                // sits between the second and third producers. Window
+                // `d7fd67fd…` unchanged at the new coordinate, both neighbours
+                // differing as controls. Re-measured AFTER `cargo fmt` and after
+                // the LAST edit of the round, per this log's own rule that a pin
+                // is only valid against the tree actually committed.
                 "game/effects/mod.rs:7061".to_string(),
                 "game/effects/mod.rs:7138".to_string(),
-                "game/effects/mod.rs:10798".to_string(),
+                "game/effects/mod.rs:10803".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.

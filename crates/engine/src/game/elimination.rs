@@ -913,6 +913,22 @@ fn do_eliminate(
             }
         }
     }
+    // CR 800.4a: a seat that has left cannot be iterated, so drop it from the
+    // discard fan-out's not-yet-prompted roster — the same treatment the
+    // scoped-library-search roster above already gets.
+    //
+    // `matching_players` is deliberately NOT pruned. CR 608.2f latches the
+    // clause's reduction domain when the action begins being processed per
+    // subject, so a seat that leaves mid-fan-out still contributes its truthful
+    // zero to the terminal zero-fill. Pruning it would silently change a `Min`
+    // aggregate's answer, which is the opposite of what this repair is for.
+    if let Some(fan_out) = state
+        .pending_discard_batch
+        .as_mut()
+        .and_then(|batch| batch.fan_out.as_mut())
+    {
+        fan_out.remaining_players.retain(|seat| *seat != player);
+    }
     if let Some(crate::types::game_state::PendingBatchDeliveries {
         completion:
             Some(crate::types::game_state::BatchCompletion::LibrarySearchDeliverySettled {

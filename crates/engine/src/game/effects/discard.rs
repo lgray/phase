@@ -404,6 +404,24 @@ pub fn resolve(
                                     events,
                                 )
                             {
+                                // SAME SHAPE, NOT YET REPAIRED. Like the
+                                // whole-hand loop before `park_discard_batch`,
+                                // this exits mid-list with no cursor, so the
+                                // untouched targets are never discarded and no
+                                // terminal `EffectResolved` is emitted. It is
+                                // NOT parked here because a specific-target
+                                // list needs a different provenance contract:
+                                // the whole-hand cursor's remainder is any
+                                // subset of one seat's hand and is order-free,
+                                // while this one must preserve the ANNOUNCED
+                                // target list and its order. Parking it under
+                                // the hand-shaped cursor would silently discard
+                                // the wrong cards. (Deliberately uncited: the
+                                // target-legality rule CR 608.2b runs once, as
+                                // the spell begins to resolve, so it does not
+                                // govern a mid-resolution resume. Whatever
+                                // contract this needs must be derived, not
+                                // borrowed.) Tracked with the rest of the class.
                                 state.waiting_for =
                                     crate::game::replacement::replacement_choice_waiting_for(
                                         player, state,
@@ -447,6 +465,9 @@ pub fn resolve(
                     }
                 }
                 ReplacementResult::NeedsChoice(player) => {
+                    // Same un-parked mid-list bail-out as the arm above; see the
+                    // provenance-contract note there for why the specific-target
+                    // list is not carried by the hand-shaped cursor.
                     state.waiting_for =
                         crate::game::replacement::replacement_choice_waiting_for(player, state);
                     return Ok(());
@@ -499,6 +520,11 @@ pub fn resolve(
                 remaining_eligible,
                 remaining_count,
                 paused_card,
+                // `discard_at_random` already set `waiting_for` from this value
+                // and this path parks without re-setting it, so there is
+                // nothing here to keep in step. The drain that RE-parks does
+                // consume it.
+                chooser: _,
             } = discard_at_random(
                 state,
                 RandomDiscardRequest {
@@ -697,6 +723,16 @@ pub(crate) enum RandomDiscardOutcome {
         /// identity to stamp the terminal `Discarded` the resumed zone-change
         /// arm cannot emit. The cost layer does not consume it.
         paused_card: ObjectId,
+        /// CR 616.1: the player who chooses among the applicable replacement
+        /// effects. Published by this authority rather than re-derived at the
+        /// call site, because it is NOT always the discarding player — see the
+        /// commander carve-out in `replacement_choice_player`, where the choice
+        /// belongs to a seat other than the affected one. A re-parking caller
+        /// that assumed `request.player` would prompt the wrong seat the moment
+        /// such a case reaches a random discard. Mirrors the `chooser` the
+        /// single-card `DiscardOutcome::NeedsReplacementChoice` already carries,
+        /// so both cursor arms read one contract.
+        chooser: PlayerId,
     },
 }
 
@@ -783,6 +819,9 @@ pub(crate) fn discard_at_random(
                 // resumed batch owes only the picks after it.
                 remaining_count: count - pick - 1,
                 paused_card: obj_id,
+                // Same value this function just set `waiting_for` from, so a
+                // re-parking caller cannot drift from the prompt actually shown.
+                chooser,
             };
         }
     }
@@ -817,6 +856,22 @@ fn route_discard(
     discard_frame: Option<crate::types::identifiers::DiscardFrameId>,
     events: &mut Vec<GameEvent>,
 ) -> DiscardOutcome {
+    // CR 701.9a: "To discard a card, move it from its owner's hand to that
+    // player's graveyard." A card that is not in a hand cannot be discarded, so
+    // there is no event to propose.
+    //
+    // This is the single chokepoint every discard routes through — effect and
+    // cost layers, whole-hand and random cursors — so the guard belongs here
+    // rather than at each caller. It became load-bearing with the parked batch:
+    // a cursor is a hand snapshot latched BEFORE an action boundary, and it is
+    // drained after one, so anything that moved a listed card in between would
+    // otherwise be "discarded" out of whatever zone it now occupies —
+    // `complete_discard_to_graveyard` lowers to a hard-coded `from: Hand`.
+    // Un-paused callers build and consume their snapshot inside one action and
+    // cannot observe a difference, so this narrows nothing that works today.
+    if state.objects.get(&object_id).map(|obj| obj.zone) != Some(Zone::Hand) {
+        return DiscardOutcome::Complete;
+    }
     let proposed = ProposedEvent::Discard {
         player_id: player,
         object_id,
@@ -1127,6 +1182,7 @@ mod random_discard_authority_tests {
             remaining_eligible,
             remaining_count,
             paused_card,
+            chooser,
         } = outcome
         else {
             panic!("expected a replacement pause, got {outcome:?}");
@@ -1145,6 +1201,20 @@ mod random_discard_authority_tests {
         assert!(
             hand.contains(&paused_card) && !remaining_eligible.contains(&paused_card),
             "the paused card must be a hand card that left the un-picked pool"
+        );
+        // CR 616.1: the published chooser must be the seat this authority
+        // actually prompted. A re-parking caller reads `chooser` to rebuild the
+        // prompt, so if the two ever disagree the wrong seat is asked. Compared
+        // against `waiting_for` rather than against the request's player,
+        // because agreeing with the request is the very assumption this pins
+        // against — the drain used to re-derive it that way.
+        let prompted = match &state.waiting_for {
+            crate::types::game_state::WaitingFor::ReplacementChoice { player, .. } => *player,
+            other => panic!("expected an installed ReplacementChoice, got {other:?}"),
+        };
+        assert_eq!(
+            chooser, prompted,
+            "the outcome's chooser must equal the seat `waiting_for` was built from"
         );
     }
 

@@ -9239,6 +9239,7 @@ pub(crate) fn drain_pending_discard_batch(
                 remaining_eligible,
                 remaining_count,
                 paused_card,
+                chooser,
             } = discard::discard_at_random(
                 state,
                 discard::RandomDiscardRequest {
@@ -9256,9 +9257,13 @@ pub(crate) fn drain_pending_discard_batch(
                     remaining: remaining_count,
                 };
                 batch.paused_card = paused_card;
-                // `discard_at_random` already set `state.waiting_for`; pass the
-                // seat that is choosing so the re-park helper reads one contract.
-                let chooser = batch.player;
+                // CR 616.1: the chooser comes from the authority that raised
+                // the choice, exactly as the `All` arm above threads its own.
+                // It was `batch.player` here, which happens to agree today
+                // because a hand card's `affected_player` is its controller —
+                // but `replacement_choice_player`'s commander carve-out proves
+                // the engine already has cases where chooser != affected seat,
+                // and re-deriving at the call site is how those drift.
                 repark_discard_batch(state, batch, events, chooser);
                 return Ok(PendingDiscardBatchOutcome::PausedForReplacement);
             }

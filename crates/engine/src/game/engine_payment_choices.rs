@@ -942,6 +942,10 @@ pub(super) fn handle_unless_payment(
                             // payment publishes no such ledger, so this caller
                             // has nothing to do with it.
                             paused_card: _,
+                            // Likewise effect-layer: `discard_at_random` already
+                            // set `waiting_for` from this seat, and this caller
+                            // never re-parks, so it has no prompt to keep in step.
+                            chooser: _,
                         } => {
                             state.pending_cost_move_resume =
                                 Some(PendingCostMoveResume::RandomDiscardUnlessPayment(Box::new(
@@ -2120,8 +2124,9 @@ pub(super) fn resume_random_discard_unless_payment(
             crate::game::effects::discard::RandomDiscardOutcome::NeedsReplacementChoice {
                 remaining_eligible,
                 remaining_count,
-                // Effect-layer field — see the sibling site above.
+                // Effect-layer fields — see the sibling site above.
                 paused_card: _,
+                chooser: _,
             } => {
                 state.pending_cost_move_resume =
                     Some(PendingCostMoveResume::RandomDiscardUnlessPayment(Box::new(
