@@ -26,6 +26,7 @@ use engine::types::ability::{
     AbilityDefinition, AbilityKind, Effect, ReplacementDefinition, ReplacementMode, TargetFilter,
 };
 use engine::types::actions::GameAction;
+use engine::types::card_type::CoreType;
 use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaCost;
@@ -569,8 +570,8 @@ fn windfall_paused_mid_fan_out_still_draws_the_greatest() {
 
     // Fixture self-checks — the prop must be what the derivation assumes.
     assert_eq!(
-        format!("{:?}", runner.state().objects[&leng].card_types.core_types),
-        "[Artifact]",
+        runner.state().objects[&leng].card_types.core_types,
+        vec![CoreType::Artifact],
         "the Leng prop must be an artifact, not a creature"
     );
     assert_eq!(
