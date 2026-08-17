@@ -362,6 +362,9 @@ fn balance_three_player_interactive_fan_out_equalizes() {
     }
 }
 
+/// CR 608.2h: Balance's cross-player hand-size minimum is determined once when
+/// the effect is applied; persisting it across the pause preserves that value.
+///
 /// Balance's discard choice pauses after its cross-player hand-size minimum has
 /// been frozen. The authoritative save/restore path must preserve that
 /// still-live value: resume continues the same application rather than
