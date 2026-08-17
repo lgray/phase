@@ -7701,7 +7701,20 @@ mod tests {
     /// as the arm's very first statement. A census whose window is wrong reports
     /// a zero that means nothing, and it reports it silently.
     ///
-    /// Three defences, because a negative result needs all of them:
+    /// Three defences, because a negative result needs all of them, plus one
+    /// CLOSURE that is deliberately not counted among them:
+    ///   0. the text scanned is the CODE half only, via the shared
+    ///      `source_census` authority. MEASURED INERT on today's tree: raw and
+    ///      stripped text are byte-identical for every quantity this test reads
+    ///      (both anchors and the needle at 1, sacrifice window 716 chars,
+    ///      discard window 281, `drain_pending_continuation` present in both —
+    ///      those two char counts are a SNAPSHOT and will rot on any edit to
+    ///      either arm body; the durable claim is the raw/stripped IDENTITY, not
+    ///      the numbers),
+    ///      which is exactly what `source_census.rs` predicts of any census that
+    ///      scans the real tree. It discriminates nothing here and is listed
+    ///      apart from 1-3 for that reason: it closes a shape not currently
+    ///      present rather than catching one that is;
     ///   1. each anchor must match EXACTLY ONCE in the file, so a deleted
     ///      production arm cannot let the scan retarget some other text (this
     ///      doc comment deliberately never spells an anchor literally);
@@ -7750,7 +7763,21 @@ mod tests {
             panic!("unbalanced braces after {anchor:?}");
         }
 
-        let source = include_str!("engine_replacement.rs");
+        // Routed through the shared comment authority rather than scanned raw,
+        // and this census is exactly the case that module exists for: half (b)
+        // is a NEGATIVE, so a deleted stamp whose spelling survived in a
+        // trailing `//` inside the discard arm would HOLD the zero and hide the
+        // regression, while a comment merely naming the needle would flip it red
+        // on a pure prose edit.
+        //
+        // SCOPE, because "stripping comments" would overclaim: `code_lines`
+        // removes whole-line and trailing `//` comments and a LEADING block
+        // comment. The interior lines of a multi-line `/* … */` survive and are
+        // still scanned — `source_census.rs` says so in its own doc. So a block
+        // comment inside the discard arm naming the needle would still flip
+        // half (b) red. That residue is fail-CLOSED (spurious red, never a
+        // missed site), which is the direction a census may fail in.
+        let source = &crate::source_census::code_lines(include_str!("engine_replacement.rs"));
         let needle = concat!("stamp_active_player_action_", "completion(");
         let sacrifice_anchor = concat!("PendingPlayerScopeSacrifice", "Outcome::Completed {");
         let discard_anchor = concat!("PendingDiscardBatch", "Outcome::Completed =>");

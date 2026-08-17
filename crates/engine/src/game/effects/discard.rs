@@ -875,13 +875,21 @@ fn route_discard(
     // a hard-coded `from: Hand`. Un-paused callers build and consume their
     // snapshot inside one action and cannot observe a difference.
     //
-    // Modelled EXACTLY on the `Prevented` arm below, deliberately: that arm is
-    // this file's existing answer to "the card never left the hand, so no
-    // discard occurred", and it retires the discard frame and reports
-    // `Complete`. Retiring matters — a `DiscardedCardMatchesFilter` frame left
-    // active would leak when every listed card has already moved.
+    // Modelled on this file's `Prevented` arms, which are its existing answer to
+    // "the card never left the hand, so no discard occurred": both retire the
+    // frame and report `Complete`. Retiring matters — a
+    // `DiscardedCardMatchesFilter` frame left active would leak when every
+    // listed card has already moved.
     //
-    // `Complete` is a known imprecision INHERITED from that arm, not introduced
+    // WHICH arms, stated because an earlier revision of this comment named the
+    // wrong one: the two that retire are in `complete_discard_to_graveyard` and
+    // in `resolve`'s specific-target loop, both ABOVE. This function's own
+    // `Prevented` arm below does NOT retire — an inherited asymmetry left
+    // untouched, since whether that arm is reachable at all with a frame present
+    // was not measured here, and writing a fix for an unmeasured path is how the
+    // wrong-arm claim got in.
+    //
+    // `Complete` is a known imprecision INHERITED from those arms, not introduced
     // here: `DiscardOutcome` has no "nothing happened" variant, so a cost caller
     // reads `Complete` as paid. A prevented discard already launders an unpayable
     // cost the same way (CR 118.3 wants all-or-nothing). Fixing it means a third
@@ -1251,6 +1259,159 @@ mod random_discard_authority_tests {
         let outcome = discard_at_random(&mut state, request(5, hand.clone()), &mut events);
         assert_eq!(outcome, RandomDiscardOutcome::Completed);
         assert_eq!(discarded(&state, &hand).len(), 2);
+    }
+
+    /// CR 701.9a: "To discard a card, move it from its owner's hand to that
+    /// player's graveyard." A card that is no longer in a hand when its
+    /// proposal is reached cannot be discarded, so `route_discard` must propose
+    /// nothing for it.
+    ///
+    /// The real shape is a parked batch — a cursor latches a hand snapshot
+    /// BEFORE an action boundary and drains after one, so a listed card can have
+    /// left the hand in between, and `complete_discard_to_graveyard` lowers to a
+    /// hard-coded `from: Hand`. Staged directly here rather than through the
+    /// batch machinery so a failure names the guard and not the driver.
+    ///
+    /// NON-VACUITY is the first assertion, not the second: an inert
+    /// `route_discard` that discarded nothing at all would satisfy the negative
+    /// half. The in-hand card must actually be discarded for the moved card's
+    /// silence to mean anything.
+    ///
+    /// REVERT PROBE (RUN, not reasoned): delete the `!= Some(Zone::Hand)` early
+    /// return at the top of `route_discard`. Observed first failure is the
+    /// `discarded_ids` assertion, which goes `[stays]` -> `[stays, moved]`.
+    ///
+    /// The `relowered` assertion below is therefore DOMINATED under that probe —
+    /// it never gets to run. It is kept deliberately, and its scope is stated
+    /// here rather than left implied: it covers a DIFFERENT failure, one that
+    /// lowers the hand -> graveyard `ZoneChange` while suppressing the
+    /// `Discarded` push. No probe in this lane exercises that one, and this
+    /// fixture passes `discard_frame: None`, so it cannot reach the frame-borne
+    /// route where that split is what actually happens today.
+    #[test]
+    fn route_discard_skips_a_card_that_already_left_the_hand() {
+        let (mut state, hand) = hand_of(42, 2);
+        let (stays, moved) = (hand[0], hand[1]);
+        let mut setup = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, moved, Zone::Graveyard, &mut setup);
+        assert_eq!(
+            state.objects[&moved].zone,
+            Zone::Graveyard,
+            "reach guard: the card under test must genuinely be out of the hand"
+        );
+
+        let mut events = Vec::new();
+        for card in [stays, moved] {
+            route_discard(&mut state, card, PlayerId(0), None, true, None, &mut events);
+        }
+
+        let discarded_ids: Vec<ObjectId> = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::Discarded { object_id, .. } => Some(*object_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            discarded_ids,
+            vec![stays],
+            "the in-hand card must be discarded (non-vacuity) and the already-moved \
+             card must produce no discard"
+        );
+        let relowered = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    GameEvent::ZoneChanged { object_id, from: Some(Zone::Hand), .. }
+                        if *object_id == moved
+                )
+            })
+            .count();
+        assert_eq!(
+            relowered, 0,
+            "no hand -> graveyard move may be lowered for a card that was not in a hand"
+        );
+    }
+
+    /// The frame half of the same guard: a `DiscardedCardMatchesFilter` frame is
+    /// opened by `resolve` for the whole instruction, so bailing out of a listed
+    /// card without retiring it leaves an active frame owning nothing — and
+    /// `active_discard` is LIFO, so the next operation reads it as its own.
+    ///
+    /// TWO frames are installed, and what that buys is ARITY AND DIRECTION, not
+    /// identity: a single-frame fixture cannot separate "retired one frame" from
+    /// "emptied the stack", while nesting catches a retirement that pops zero,
+    /// pops two, or pops from the wrong end.
+    ///
+    /// It does NOT establish that the guard retired the frame it was HANDED, and
+    /// an earlier revision of this doc claimed it did. The fixture hands the
+    /// guard the frame already on top, so "retire the handed frame" and "retire
+    /// the top" are one action here — and they are one action in PRODUCTION too:
+    /// `retire_discard_frame` calls `take_active_discard`, which pops the top
+    /// WHEN THAT TOP IS A `Discard` FRAME — returning `Err(UnexpectedTop)`
+    /// otherwise — with `frame_id` consulted only by a `debug_assert_eq!`.
+    /// The id-keyed property is therefore ABSENT FROM THE CODE rather than
+    /// merely unmeasured, so a test demanding it would red on HEAD. Recorded
+    /// here instead of asserted: a failing test for a property the design does
+    /// not claim is noise, not coverage.
+    ///
+    /// DISCLOSED, NOT REPAIRED, because the qualifier above is load-bearing:
+    /// `retire_discard_frame` swallows that `Err` (and the empty case) in an
+    /// `if let Ok(Some(..))`, so retirement is BEST-EFFORT. If a non-`Discard`
+    /// frame sits on top when this guard fires, the retirement silently no-ops
+    /// and the frame survives owning nothing — precisely the hazard the first
+    /// paragraph of this doc names. Its reachability was not measured, and
+    /// making retirement total is a change to the resolution stack's error
+    /// contract rather than to this guard. Same disposition as `route_discard`'s
+    /// own non-retiring `Prevented` arm.
+    ///
+    /// REVERT PROBES (RUN): delete the `retire_discard_frame` call from inside
+    /// the guard, keeping the early return — reds at this test's own assertion.
+    /// Calling it TWICE also reds, but through `retire_discard_frame`'s
+    /// `debug_assert_eq!`, NOT through this test: `[profile.test] inherits =
+    /// "dev"`, `[profile.release]` never sets `debug-assertions`, and no
+    /// `--release` test invocation exists in the Tiltfile or any workflow — so
+    /// the production assertion fires first in every venue this repo runs.
+    #[test]
+    fn route_discard_retires_the_frame_for_a_card_that_left_the_hand() {
+        let (mut state, hand) = hand_of(7, 1);
+        let card = hand[0];
+        let mut setup = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, card, Zone::Graveyard, &mut setup);
+
+        let outer = state.resolution_stack.begin_discard(Some(ObjectId(499)));
+        let frame = state.resolution_stack.begin_discard(Some(ObjectId(500)));
+        assert_eq!(
+            state
+                .resolution_stack
+                .active_discard()
+                .expect("reach guard: a frame must be active before the call")
+                .id,
+            frame,
+            "reach guard: the INNER frame must be the one on top, or the pop below proves nothing"
+        );
+
+        let mut events = Vec::new();
+        route_discard(
+            &mut state,
+            card,
+            PlayerId(0),
+            None,
+            true,
+            Some(frame),
+            &mut events,
+        );
+
+        assert_eq!(
+            state
+                .resolution_stack
+                .active_discard()
+                .expect("exactly one frame may be retired, leaving the outer one active")
+                .id,
+            outer,
+            "the guard must retire EXACTLY ONE frame, popped from the top: the outer frame survives"
+        );
     }
 }
 

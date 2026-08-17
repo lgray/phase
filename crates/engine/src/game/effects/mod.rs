@@ -19277,6 +19277,67 @@ mod tests {
         );
     }
 
+    /// CR 800.4a ("all objects (see rule 109) owned by that player leave the
+    /// game …") vs CR 800.4i ("the effect uses the last known information about
+    /// that player before they left the game"): a seat that leaves mid-pause is
+    /// dropped from the ITERATION roster and kept in the reduction DOMAIN.
+    ///
+    /// The asymmetry is the whole point of the test: the two lists look like
+    /// duplicates, so the natural "tidy-up" is to prune both. Latching the
+    /// domain is PARITY with the un-paused driver (which derives it once at
+    /// clause entry) rather than a rule; CR 800.4i is what keeps the departed
+    /// seat well-defined in it.
+    ///
+    /// WHAT THIS PINS, stated precisely because the honest scope is narrower
+    /// than the motivation: it pins the SHAPE of the two lists after an
+    /// elimination, and nothing downstream of them. The consequence that makes
+    /// the shape matter — a domain short one zero-contributor changes what a
+    /// `Min` over it answers (`fill_zero_contributors`; `Sum` and `Max` are
+    /// blind to zeros) — is NOT exercised here: no seat in this fixture holds a
+    /// hand, so the drain never runs. Treat that consequence as the reason the
+    /// pin exists, not as something this test measures.
+    ///
+    /// Lives here rather than beside the prune so it can reuse the fan-out
+    /// fixture; `elimination.rs` carries a pointer to it at the prune site.
+    ///
+    /// REVERT PROBES (both RUN, not reasoned):
+    ///   * delete `fan_out.remaining_players.retain(..)` in `elimination.rs`
+    ///     -> the roster assertion fails;
+    ///   * add a matching `fan_out.matching_players.retain(..)` beside it
+    ///     -> the domain assertion fails.
+    #[test]
+    fn eliminating_a_seat_prunes_the_paused_roster_but_not_its_reduction_domain() {
+        let mut state = GameState::new(FormatConfig::standard(), 4, 42);
+        let source = ObjectId(100);
+        let seats = vec![PlayerId(1), PlayerId(2), PlayerId(3)];
+
+        park_batch(&mut state, source, PlayerId(0), Vec::new(), None);
+        state.pending_discard_batch.as_mut().unwrap().fan_out =
+            Some(fan_out_of(source, seats.clone(), seats.clone()));
+
+        let mut events = Vec::new();
+        crate::game::elimination::eliminate_player(&mut state, PlayerId(2), &mut events);
+
+        let fan_out = state
+            .pending_discard_batch
+            .as_ref()
+            .expect("the batch survives an unrelated seat leaving")
+            .fan_out
+            .as_ref()
+            .expect("so does its fan-out");
+        assert_eq!(
+            fan_out.remaining_players,
+            vec![PlayerId(1), PlayerId(3)],
+            "CR 800.4a: a departed seat's objects leave the game, so it has no \
+             hand left and iterating it can only be a no-op"
+        );
+        assert_eq!(
+            fan_out.matching_players, seats,
+            "CR 800.4i: the reduction domain is latched at the pause and keeps \
+             the departed seat, whose truthful contribution is zero"
+        );
+    }
+
     /// CR 608.2f: BOUNDARY. A later seat that pauses on something which is NOT
     /// a batch pause — here an interactive `WaitingFor::DiscardChoice` — hands
     /// the remaining seats back to the generic continuation queue exactly as the

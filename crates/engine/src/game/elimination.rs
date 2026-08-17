@@ -932,6 +932,11 @@ fn do_eliminate(
     // Read in full it is about simultaneity and APNAP ORDER — it latches no
     // domain, and both its examples are about ordering. Same class of stretch as
     // the CR 608.2b citation removed from `discard.rs`.)
+    //
+    // PINNED BY `effects/mod.rs`'s
+    // `eliminating_a_seat_prunes_the_paused_roster_but_not_its_reduction_domain`,
+    // which lives there to reuse the fan-out fixture. It asserts BOTH halves,
+    // so pruning the second list too is a red test rather than a silent change.
     if let Some(fan_out) = state
         .pending_discard_batch
         .as_mut()
