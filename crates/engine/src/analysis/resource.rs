@@ -3835,6 +3835,225 @@ fn pt_value_aggregate_provably_excludes_class(
         .contains(&class_member)
 }
 
+/// BLOCK-(2) ARM (phase C arm S2, Pit of Offerings' exiled-colour mana): does this
+/// battlefield ability's `ChoiceAmongExiledColors` production read a linked-exile set
+/// that PROVABLY excludes `class_member`? Returns `true` iff so — then the legal
+/// colour set is invariant across the loop's growth and this ability does not observe
+/// the loop.
+///
+/// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan`'s arm is
+/// `ManaProduction::ChoiceAmongExiledColors { .. } => Axes::CONSERVATIVE`
+/// (ability_scan.rs:5401) — BLANKET, and it EXPOSES NO SUBJECT SET at all (the link
+/// relation lives in `state.exile_links`, not in the AST), so no scanner change can
+/// distinguish a class-reading link set from a class-disjoint one. The distinction has
+/// to be drawn where the class AND the state are both known.
+///
+/// SOUNDNESS rests on the SAME ordered pair of invariants as the block-(1b) arms —
+/// see [`pump_aggregate_provably_excludes_class`] and the GAP-1 comment at the call
+/// site: `derived_fodder_class`'s ONE-CLASS rule on the first accept-time frame pair,
+/// then `board_covers_modulo_fodder`'s all-zones stable-partition content equality at
+/// its ONLY call site (`:3020`), which PRECEDES the only firewall call any of these
+/// arms can reach (`:3046`; the `:2839` call passes `class_members: None`, so no arm
+/// runs there). Do not reorder the `board_covers_modulo_fodder` gate after the
+/// firewall.
+/// CR 608.2h (MagicCompRules.txt:2808): "If an effect requires information from the
+/// game (such as the number of creatures on the battlefield), the answer is determined
+/// only once, when the effect is applied" — so a production whose link set cannot
+/// contain any member of the growing class offers the same colours on every cycle.
+///
+/// THE EXILE PILE IS CONTENT-PINNED BEFORE ANY RELIEF IS CONSULTED, which is what lets
+/// a subject set living OUTSIDE the battlefield be argued about at all:
+/// `board_covers_modulo_fodder` iterates ALL zones (`:2941-2946`) with
+/// `objects_content_eq`, and precedes this firewall. The member-quantified test below
+/// is kept anyway, so the arm does not REST on that cover — the cover is why the arm
+/// is sound, the test is what makes it fail closed.
+///
+/// ⛔ ARG-EQUIVALENCE PIN. Conjunct (d) calls
+/// `game::effects::mana::linked_exiled_ids(state, scope, source.id)` — literally the
+/// link authority `exiled_color_options` (and therefore the mana resolver, at
+/// game/effects/mana.rs:789) consumes, extracted for exactly this reason. Do not
+/// "simplify" this into an inline `state.exile_links` walk: CR 607.2a scopes a linked
+/// ability to cards *still in the exile zone* that were exiled by *this* object, and
+/// both conjuncts live in that function. An inline copy drifts from the resolver
+/// silently, and this arm's whole claim is that it asks the resolver's own question.
+///
+/// NOT A VISITOR (#4603 error direction), same as the block-(1b) arms — four
+/// fail-closed conjuncts, each keeping the conservative veto whenever it cannot prove
+/// its half:
+///   (0) NO ACTIVATION RESTRICTIONS: `ability_definition_axes` destructures
+///       `activation_restrictions: _` (ability_scan.rs:4601), so the scan is BLIND to
+///       them and conjunct (a)'s rescan would answer `false` even with a
+///       class-matching restriction on the same def.
+///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the
+///       EFFECT with `Effect::NoOp` (`Effect::NoOp => Axes::NONE`, ability_scan.rs:832)
+///       and re-run `ability_definition_reads_sibling_mutable_for_loop`. Only if THAT
+///       is `false` is the effect the def's only sibling read —
+///       `ability_definition_axes` destructures with NO `..`, so the rescan covers
+///       `sub_ability`, `condition`, `cost_reduction`, `unless_pay` and the rest
+///       without this arm enumerating any of them.
+///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`, and NO `..` on
+///       `Effect::Mana`, so a new `Mana` field is a compile error here rather than a
+///       silent unscanned read. `target: None` is part of that shape and is
+///       LOAD-BEARING, not a formality: the `LoopFirewall` arm at
+///       ability_scan.rs:1056 descends `target`'s `declared_filters()` through
+///       `scan_target_filter(.., SnapshotOrEvent)`, so a `Some(role)` veto can be
+///       raised BY THE TARGET's own class-reading filter — which conjunct (d)'s
+///       link-set argument says nothing about. Binding `target: _` would relieve
+///       that veto on evidence that never examined it. Measured coverage cost of
+///       the narrowing: ZERO — all 2 `ChoiceAmongExiledColors` productions in the
+///       card corpus carry `target: None` (positive control: 58 of 2893
+///       `Effect::Mana` productions DO carry a target, so the census can see one).
+///   (c) the member must be LIVE in the scanned frame: an id with no object is
+///       filtered out by `linked_exiled_ids`' own zone conjunct, so relieving on it
+///       would be relief with no evidence.
+///   (d) MEMBER-QUANTIFIED exclusion against that pinned link authority.
+fn exiled_colors_provably_exclude_class(
+    ability: &crate::types::ability::AbilityDefinition,
+    state: &GameState,
+    class_member: ObjectId,
+    source: &GameObject,
+) -> bool {
+    use crate::types::ability::{Effect, ManaProduction};
+
+    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4601) —
+    // fail closed.
+    if !ability.activation_restrictions.is_empty() {
+        return false;
+    }
+    // (a) sole-source by single-field clone-and-rescan.
+    let mut probe = ability.clone();
+    *probe.effect = Effect::NoOp;
+    if crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&probe) {
+        return false;
+    }
+    // (b) shape — single level, `_ => false` via let-else, no `..`.
+    let Effect::Mana {
+        produced: ManaProduction::ChoiceAmongExiledColors { source: link_scope },
+        target: None,
+        restrictions: _,
+        grants: _,
+        expiry: _,
+    } = ability.effect.as_ref()
+    else {
+        return false;
+    };
+    // (c) fail-closed if the member is gone from the scanned frame.
+    if !state.objects.contains_key(&class_member) {
+        return false;
+    }
+    // (d) ARG-EQUIVALENCE PIN — game/effects/mana.rs `linked_exiled_ids`.
+    crate::game::effects::mana::linked_exiled_ids(state, *link_scope, source.id)
+        .all(|id| id != class_member)
+}
+
+/// BLOCK-(2) ARM (phase C arm S3, Glittering Stockpile's stash-counter mana): does this
+/// battlefield ability's `AnyOneColor` production read a counter total on an object
+/// that PROVABLY is not `class_member`? Returns `true` iff so — then the produced
+/// amount is invariant across the loop's growth and this ability does not observe the
+/// loop.
+///
+/// WHY AN ARM AND NOT A SCANNER RELAXATION: `QuantityRef::CountersOn { scope, .. }`
+/// self-asserts `sibling: true` (ability_scan.rs:1958-1964) BEFORE it consults
+/// `scan_object_scope(scope)`. It is the one veto source in this lane that preserves a
+/// subject, and it is still unrelaxable by any scanner change — the self-assertion is
+/// unconditional. Reach chain, measured: `Effect::Mana` (ability_scan.rs:1056,
+/// `LoopFirewall` branch) -> `scan_mana_production` -> `ManaProduction::AnyOneColor`
+/// (`:5334`) -> `scan_quantity_expr(count)` -> `:1958`.
+///
+/// RELIEF CLAIM — IDENTITY, NOT FILTER. CR 122.1 (MagicCompRules.txt:1178): "A counter
+/// is a marker placed on an object or player that modifies its characteristics" —
+/// counters are read off ONE NAMED OBJECT, never a population, so the growing class is
+/// irrelevant to this value unless the named object IS a member.
+/// `ObjectScope::Source` resolves to the ability's own source object on BOTH resolver
+/// branches: `object_id_for_scope`'s `Source` arm returns `ctx.source` when
+/// `trigger_source` is `None` and the captured incarnation's id when it is `Some`, and
+/// `resolve_counters_on_live_or_lki_scope` (game/quantity.rs:5838-5847) routes `Source`
+/// through `source_lki_for_context` in the trigger case — the SAME object's LKI.
+/// ⇒ relief iff the resolved id differs from every member.
+///
+/// ⛔ ARG-EQUIVALENCE PIN, and the `trigger_source` divergence stated rather than
+/// hidden. Conjunct (d) calls `game::quantity::object_id_for_scope` — the resolver's
+/// own scope authority (this arm is why it is `pub(crate)`) — with a firewall-built
+/// `QuantityContext` carrying `trigger_source: None`, because at firewall time no
+/// triggered resolution exists to capture. That differs from a triggered fire-time
+/// context, and the difference is IMMATERIAL HERE ONLY BECAUSE both branches yield the
+/// source's own identity (above), so the verdict is branch-independent. That
+/// branch-independence is not assumed: it is pinned by the S3-P2 row, which asserts it
+/// on BOTH branches. Every other scope keeps its veto at conjunct (b), so no other
+/// context field can be reached.
+///
+/// SAME FOUR FAIL-CLOSED CONJUNCTS as [`exiled_colors_provably_exclude_class`]; see
+/// that function's doc for (0), (a) and the shared soundness bridge. (b) here is a
+/// FOUR-LEVEL but strictly NON-RECURSIVE match — the load-bearing property is
+/// non-recursion, not depth: a compound `QuantityExpr` (`Offset`, `Multiply`,
+/// `DivideRounded`, …) falls to `_` and KEEPS the veto. `target: None` is
+/// load-bearing here for the SAME reason as in the sibling arm (see its (b)): the
+/// scanner descends a `Some(role)`'s declared filters, so a target-raised veto is
+/// not something conjunct (d)'s `object_id_for_scope` identity argument can
+/// discharge. Measured cost: ZERO — all 14 corpus productions of this shape carry
+/// `target: None`.
+fn counters_on_source_provably_excludes_class(
+    ability: &crate::types::ability::AbilityDefinition,
+    state: &GameState,
+    class_member: ObjectId,
+    source: &GameObject,
+) -> bool {
+    use crate::types::ability::{Effect, ManaProduction, ObjectScope, QuantityExpr, QuantityRef};
+
+    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4601) —
+    // fail closed.
+    if !ability.activation_restrictions.is_empty() {
+        return false;
+    }
+    // (a) sole-source by single-field clone-and-rescan.
+    let mut probe = ability.clone();
+    *probe.effect = Effect::NoOp;
+    if crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&probe) {
+        return false;
+    }
+    // (b) shape — bounded, NON-RECURSIVE, `_ => false` via let-else, no `..` at any
+    // level, so a new field on `Effect::Mana` / `AnyOneColor` / `CountersOn` is a
+    // compile error here rather than a silent unscanned read.
+    let Effect::Mana {
+        produced:
+            ManaProduction::AnyOneColor {
+                count:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::CountersOn {
+                                scope: ObjectScope::Source,
+                                counter_type: _,
+                            },
+                    },
+                color_options: _,
+                contribution: _,
+            },
+        target: None,
+        restrictions: _,
+        grants: _,
+        expiry: _,
+    } = ability.effect.as_ref()
+    else {
+        return false;
+    };
+    // (c) fail-closed if the member is gone from the scanned frame.
+    if !state.objects.contains_key(&class_member) {
+        return false;
+    }
+    // (d) ARG-EQUIVALENCE PIN — game/quantity.rs `object_id_for_scope`. Fail closed on
+    // `None`: an unresolvable scope proves nothing about which object is read.
+    let ctx = crate::game::quantity::QuantityContext {
+        entering: None,
+        source: source.id,
+        trigger_source: None,
+        recipient: None,
+        scoped_player: None,
+        damage_source: None,
+    };
+    crate::game::quantity::object_id_for_scope(state, ObjectScope::Source, ctx, &[])
+        .is_some_and(|read_id| read_id != class_member)
+}
+
 /// §5.3a firewall (BLOCKER-S1 + S5 + MAJOR-A): does ANY live off-stack fire-time
 /// observer read the growing class (the axis-2 `sibling` read)? Scans, on the
 /// FLUSHED current: (1) trigger conditions AND `execute` bodies; (2) [S5] EVERY
@@ -4071,7 +4290,51 @@ fn fire_time_conditions_read_growing_class_scoped(
                     // `activator_filter`, 0 of which are growing-class-read candidates.
                     && ability.activator_filter.is_none()
             });
-            !relieved && scan::ability_definition_reads_sibling_mutable_for_loop(ability)
+            // PHASE C arms S2 + S3 — a SEPARATE named local, deliberately NOT a
+            // widening of `relieved`. The two are INDEPENDENT claims about different
+            // rules and must stay that way:
+            //   * `relieved` is a CR 117.1b PRIORITY-REACHABILITY claim ("a player may
+            //     activate an activated ability any time they have priority"), which
+            //     CR 605.3a (MagicCompRules.txt:2694) BOUNDS — a mana ability is
+            //     activatable "whenever they are casting a spell or activating an
+            //     ability that requires a mana payment", i.e. outside the priority
+            //     rule. Both Pit of Offerings and Glittering Stockpile ARE mana
+            //     abilities, so `relieved` is `false` for them by construction.
+            //   * `disjoint` is a CR 608.2h VALUE-INVARIANCE claim, which does not care
+            //     whether the ability is reachable at all.
+            // Widening `relieved` to carry S2/S3 would reopen the CR 605.3a hole for
+            // every foreign mana ability; adding an independent conjunct does not touch
+            // it. Do not merge these two locals.
+            //
+            // `!members.is_empty()` is LOAD-BEARING and mirrors the `std::iter::once`
+            // guard in `execute_ledger_condition_provably_excludes_class`: an empty set
+            // must not make `.all()` vacuously true and relieve every surface.
+            // PER-ABILITY, never per-object — this closure is inside
+            // `obj.abilities.iter().any(..)`, so a sibling ability on the SAME object
+            // that reads the class keeps vetoing on its own turn through the loop.
+            //
+            // ORDERED AFTER the scan, not before it (the one place this differs from the
+            // plan's sketch, and it mirrors block (1b)'s landed shape at `:3989-3997`
+            // where the scan likewise precedes its `class_members` consult): both arms
+            // CLONE the def and re-run the whole scan once PER MEMBER for conjunct (a),
+            // so evaluating them for abilities that carry no veto at all would pay the
+            // arms' cost on every ability of every battlefield permanent to relieve a
+            // veto that was never raised. `&&` over three pure predicates is
+            // order-independent in value, so this is strictly a cost ordering.
+            let disjoint = || {
+                class_members.is_some_and(|members| {
+                    !members.is_empty()
+                        && members.iter().all(|&m| {
+                            exiled_colors_provably_exclude_class(ability, state, m, obj)
+                                || counters_on_source_provably_excludes_class(
+                                    ability, state, m, obj,
+                                )
+                        })
+                })
+            };
+            !relieved
+                && scan::ability_definition_reads_sibling_mutable_for_loop(ability)
+                && !disjoint()
         }) {
             return true;
         }
@@ -20295,6 +20558,933 @@ mod tests {
             "…and must NOT see a cast trigger on the same board, whose cast-keyed defs are all \
              excluded by the CR 113.6b zone gate. One board, two classes, two answers — a scan \
              that ignored `class` could not produce both"
+        );
+    }
+
+    // ───────────────────────── phase C2 — block (2), arms S2 + S3 ─────────────────────
+    //
+    // Structure mirrors the landed block-(1b) S1 rows: every row drives the PRODUCTION
+    // predicate `fire_time_conditions_read_growing_class` (or its `_scoped` sibling), not
+    // the arm in isolation, so the `disjoint` conjunct's WIRING into block (2) is under
+    // test too. Every negative differs from its positive on the FIELD THE RELIEF READS,
+    // never on the enum variant, so a negative cannot pass by taking a different arm.
+
+    /// Pit of Offerings' REAL exiled-colour mana ability, lifted from the card database
+    /// rather than hand-built — a paraphrase can take a different parser branch than the
+    /// card the relief exists for. The `ChoiceAmongExiledColors` shape is asserted here,
+    /// so a card-data change that moves it fails loudly instead of silently re-pointing
+    /// every S2 row.
+    fn pit_exiled_color_ability() -> crate::types::ability::AbilityDefinition {
+        use crate::types::ability::{Effect, ManaProduction};
+        let db = crate::test_support::shared_card_db();
+        let face = db.get_face_by_name("Pit of Offerings").expect(
+            "VACUOUS-BY-FIXTURE: the card db must carry Pit of Offerings — S2 exists for \
+             its exiled-colour mana ability, and a db without it reaches nothing",
+        );
+        let ability = face
+            .abilities
+            .iter()
+            .find(|a| {
+                matches!(
+                    a.effect.as_ref(),
+                    Effect::Mana {
+                        produced: ManaProduction::ChoiceAmongExiledColors { .. },
+                        ..
+                    }
+                )
+            })
+            .expect("fixture pin: Pit of Offerings must carry a ChoiceAmongExiledColors ability")
+            .clone();
+        assert!(
+            crate::game::mana_abilities::is_mana_ability(&ability),
+            "fixture pin: Pit's exiled-colour ability IS a mana ability (CR 605.3a), which \
+             is why `relieved` is false for it by construction and S2's relief has to be an \
+             independent conjunct rather than a widening of `relieved`"
+        );
+        ability
+    }
+
+    /// Glittering Stockpile's REAL abilities, parsed from its verbatim Oracle text
+    /// (MTGJSON `AtomicCards`) through the production parser. The card is absent from the
+    /// committed test card database, so this is the closest available real-AST source —
+    /// and it is still the production parser's own output, not a hand-built AST.
+    fn stockpile_abilities() -> Vec<crate::types::ability::AbilityDefinition> {
+        crate::parser::parse_oracle_text(
+            "{T}: Add {R}. Put a stash counter on this artifact.\n{T}, Sacrifice this \
+             artifact: Add X mana of any one color, where X is the number of stash \
+             counters on this artifact.",
+            "Glittering Stockpile",
+            &[],
+            &["Artifact".to_string()],
+            &[],
+        )
+        .abilities
+    }
+
+    /// Stockpile's SECOND ability — the stash-counter mana ability S3 exists for. Shape
+    /// asserted, so a parser change that moves it fails loudly.
+    fn stockpile_counter_mana_ability() -> crate::types::ability::AbilityDefinition {
+        use crate::types::ability::{
+            Effect, ManaProduction, ObjectScope, QuantityExpr, QuantityRef,
+        };
+        let abilities = stockpile_abilities();
+        assert_eq!(
+            abilities.len(),
+            2,
+            "fixture pin: Glittering Stockpile's Oracle text carries exactly two activated \
+             abilities; a parser change that merges or splits them re-points every S3 row"
+        );
+        let ability = abilities[1].clone();
+        assert!(
+            matches!(
+                ability.effect.as_ref(),
+                Effect::Mana {
+                    produced: ManaProduction::AnyOneColor {
+                        count: QuantityExpr::Ref {
+                            qty: QuantityRef::CountersOn {
+                                scope: ObjectScope::Source,
+                                ..
+                            }
+                        },
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "fixture pin: the second ability must be \
+             `Mana{{AnyOneColor{{count: Ref{{CountersOn{{scope: Source}}}}}}}}` — S3's arm \
+             matches exactly that shape and every negative below is built by changing ONE \
+             field of it"
+        );
+        ability
+    }
+
+    /// A battlefield permanent carrying `abilities`, plus the Saproling class member
+    /// (`ObjectId(800)`). Returns `(state, member, host)`.
+    ///
+    /// REACH-GUARDS on the fixture itself, before any row can assert an outcome: block (2)
+    /// walks only functioning battlefield permanents and consults per ABILITY, so a host
+    /// that is off-battlefield, phased out, or whose ability carries no sibling veto would
+    /// let every row below pass without reaching the arm at all.
+    fn block2_fixture(
+        abilities: Vec<crate::types::ability::AbilityDefinition>,
+    ) -> (GameState, ObjectId, ObjectId) {
+        block2_fixture_for_controller(abilities, 0)
+    }
+
+    fn block2_fixture_for_controller(
+        abilities: Vec<crate::types::ability::AbilityDefinition>,
+        controller: u8,
+    ) -> (GameState, ObjectId, ObjectId) {
+        use std::sync::Arc;
+
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state); // ObjectId(800), P0 creature token
+        let host = inert_token(&mut state, 810, controller, "Block2 Mana Host");
+        assert!(
+            !abilities.is_empty(),
+            "reach-guard: an ability-less host reaches block (2)'s `any(..)` closure zero \
+             times, so every assertion below would be vacuous"
+        );
+        assert!(
+            abilities.iter().any(|a| {
+                crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(a)
+            }),
+            "reach-guard: at least one ability must carry the sibling veto S2/S3 relieve — \
+             without it block (2)'s final conjunct is false and no row proves anything \
+             (this subsumes the `Effect::Unimplemented => Axes::NONE` vacuity)"
+        );
+        {
+            let obj = state.objects.get_mut(&host).unwrap();
+            obj.abilities = Arc::new(abilities);
+        }
+        let obj = &state.objects[&host];
+        assert_eq!(obj.zone, Zone::Battlefield);
+        assert!(!obj.is_phased_out());
+        assert!(
+            obj.trigger_definitions.is_empty(),
+            "reach-guard: block (1) must be silent, so every verdict below is attributable \
+             to block (2)"
+        );
+        (state, member, host)
+    }
+
+    /// Exile `card_id` under `owner` and link it to `link_host` (the `state.exile_links`
+    /// relation CR 607.2a scopes and `linked_exiled_ids` reads).
+    fn exile_linked_to(
+        state: &mut GameState,
+        card_id: u64,
+        link_host: ObjectId,
+        name: &str,
+    ) -> ObjectId {
+        use crate::types::game_state::{ExileLink, ExileLinkKind};
+
+        let oid = ObjectId(card_id);
+        let mut object = crate::game::game_object::GameObject::new(
+            oid,
+            CardId(card_id),
+            PlayerId(0),
+            name.to_string(),
+            Zone::Exile,
+        );
+        object.color = vec![crate::types::mana::ManaColor::Red];
+        state.objects.insert(oid, object);
+        state.exile_links.push(ExileLink {
+            exiled_id: oid,
+            source_id: link_host,
+            kind: ExileLinkKind::TrackedBySource,
+        });
+        oid
+    }
+
+    /// **S2-P1 / S2-N1** — the phase-C arm `exiled_colors_provably_exclude_class` as
+    /// block (2)'s `disjoint` conjunct reaches it, on Pit of Offerings' real AST.
+    ///
+    /// ⛔ NON-VACUITY IS THE WHOLE POINT OF THIS FIXTURE. An EMPTY exile-link set relieves
+    /// trivially — `.all()` on an empty iterator is `true` — so a Pit with no links would
+    /// pass S2-P1 while measuring nothing, the `VACUOUS-BY-FIXTURE` class exactly. This
+    /// board therefore carries a NON-EMPTY link set (measured feature count: **1** linked
+    /// still-exiled card), asserted below before any outcome, so the relief that follows
+    /// is about MEMBERSHIP and not about an unpopulated relation.
+    ///
+    /// REVERT / MUTATION PROBES, each named with the arm it flips:
+    /// * delete the block-(2) `&& !disjoint` conjunct ⇒ **(i) FAILS**.
+    /// * make `linked_exiled_ids` ignore `link.exiled_id` membership (relieve
+    ///   unconditionally) ⇒ **(ii) FAILS**.
+    /// * make `linked_exiled_ids` ignore `link.source_id` ⇒ **(iii) FAILS**.
+    /// * drop conjunct (c)'s liveness test ⇒ **(iv) FAILS**.
+    #[test]
+    fn exiled_colors_gate_is_precise_and_fail_closed() {
+        let (mut state, member, host) = block2_fixture(vec![pit_exiled_color_ability()]);
+        // A linked, still-exiled card that is NOT the class member.
+        let linked = exile_linked_to(&mut state, 820, host, "Linked Exiled Mountain");
+        // A class-shaped object linked to a DIFFERENT host — the `link.source_id`
+        // conjunct's subject.
+        let foreign_host = inert_token(&mut state, 811, 0, "Other Exile Host");
+        let foreign_linked = exile_linked_to(&mut state, 821, foreign_host, "Foreign Linked Card");
+
+        // ── NON-VACUITY / FEATURE-COUNT PIN, before any outcome assertion ─────────────
+        let host_links: Vec<ObjectId> = crate::game::effects::mana::linked_exiled_ids(
+            &state,
+            crate::types::ability::LinkedExileScope::ThisObject,
+            host,
+        )
+        .collect();
+        assert_eq!(
+            host_links,
+            vec![linked],
+            "VACUOUS-BY-FIXTURE guard: Pit's link set must be NON-EMPTY and must be exactly \
+             the one card linked to THIS host. An empty set relieves vacuously (`.all()` on \
+             an empty iterator is true) and a row on it would measure nothing"
+        );
+
+        // ── (i) S2-P1 — the card's own ability is RELIEVED ────────────────────────────
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "S2-P1: a `ChoiceAmongExiledColors` production whose link set cannot contain any \
+             member of the growing Saproling class offers the same colours on every cycle \
+             (CR 608.2h), so block (2) must SKIP the ability. Deleting the `&& !disjoint` \
+             conjunct restores the veto"
+        );
+
+        // ── (ii) S2-N1 — matched control, ONE variable: `link.exiled_id` membership ───
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([linked]))),
+            "S2-N1: the SAME board and the SAME ability, with the growing class made of the \
+             LINKED EXILED card — the production's colour set does read it, so the veto must \
+             survive. The relief is a property of the class, not of the ability"
+        );
+
+        // ── (iii) the `link.source_id` conjunct: a link on ANOTHER host proves nothing ─
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &state,
+                Some(&HashSet::from([foreign_linked]))
+            ),
+            "CR 607.2a scopes a linked ability to cards exiled by THIS object: a class \
+             member linked to a DIFFERENT host is not in Pit's set and must not deny \
+             relief. Dropping `link.source_id != host_id` from `linked_exiled_ids` makes \
+             this FAIL — and would also silently widen the mana resolver"
+        );
+
+        // ── (iv) conjunct (c): a member absent from the scanned frame proves nothing ──
+        let host_obj = state.objects[&host].clone();
+        assert!(
+            !exiled_colors_provably_exclude_class(
+                &state.objects[&host].abilities[0],
+                &state,
+                ObjectId(9_999),
+                &host_obj
+            ),
+            "fail-closed: an id with no object in the scanned frame is trivially absent from \
+             ANY link set — relieving on it would be relief with no evidence"
+        );
+
+        // ── M2 (the `!is_empty()` guard): an EMPTY class relieves NOTHING ─────────────
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::new())),
+            "M2-S2: `!members.is_empty()` is LOAD-BEARING — an empty class must not make \
+             `.all()` vacuously true and relieve the surface. Deleting that guard makes \
+             this FAIL (everything relieved)"
+        );
+    }
+
+    /// **S2-N2** — a FOREIGN battlefield MANA ability whose body reads a live creature
+    /// census still vetoes, with a proven sole driver on the board.
+    ///
+    /// This is the CR 605.3a shape and it pins CONSTRAINT 5: S2/S3's relief is a separate
+    /// `disjoint` local and must never be folded into `relieved`. CR 605.3a
+    /// (MagicCompRules.txt:2694) lets a mana ability be activated "whenever they are
+    /// casting a spell or activating an ability that requires a mana payment" — i.e.
+    /// OUTSIDE the CR 117.1b priority rule `relieved` reasons from — so `relieved` must
+    /// stay `false` for every mana ability however disjoint some other ability is.
+    ///
+    /// REVERT / MUTATION PROBES:
+    /// * delete `&& !is_mana_ability(ability)` from block (2)'s `relieved` closure (the
+    ///   "route the relief through `relieved`" widening) ⇒ **FAILS**.
+    /// * widen S2's arm to accept any `ManaProduction` ⇒ **FAILS**.
+    #[test]
+    fn a_foreign_mana_ability_reading_a_creature_census_still_vetoes() {
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, Effect, ManaProduction, QuantityExpr, QuantityRef,
+            TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::AnyOneColor {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount {
+                            filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+                        },
+                    },
+                    color_options: vec![crate::types::mana::ManaColor::Red],
+                    contribution: crate::types::ability::ManaContribution::Base,
+                },
+                restrictions: Vec::new(),
+                grants: Vec::new(),
+                expiry: None,
+                target: None,
+            },
+        );
+        def.cost = Some(crate::types::ability::AbilityCost::Tap);
+
+        // Host is controlled by P1 while the sole driver is P0 — the exact configuration
+        // in which `relieved` would fire if `!is_mana_ability` were removed.
+        let (state, member, host) = block2_fixture_for_controller(vec![def], 1);
+        let driver_scope = LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: Some(PlayerId(0)),
+            pinned: None,
+            cast_card_ids: None,
+            period: None,
+        };
+        {
+            let obj = &state.objects[&host];
+            assert!(
+                crate::game::mana_abilities::is_mana_ability(&obj.abilities[0]),
+                "reach-guard: the subject must really BE a mana ability — CR 605.3a is what \
+                 carries this row's verdict"
+            );
+            assert_eq!(
+                obj.abilities[0].kind,
+                crate::types::ability::AbilityKind::Activated
+            );
+            assert!(obj.abilities[0].activator_filter.is_none());
+            assert_ne!(
+                obj.controller,
+                PlayerId(0),
+                "reach-guard: the host really is FOREIGN to the sole driver, so every OTHER \
+                 conjunct of `relieved` is satisfied and `is_mana_ability` is the only one \
+                 left holding the veto"
+            );
+        }
+        assert!(
+            fire_time_conditions_read_growing_class_scoped(
+                &state,
+                Some(&HashSet::from([member])),
+                driver_scope
+            ),
+            "S2-N2: a mana ability counting live CREATURES does read the growing Saproling \
+             class, and CR 605.3a puts it outside the priority rule `relieved` reasons \
+             from — so it must keep vetoing. Folding S2/S3's relief into `relieved` (or \
+             dropping `!is_mana_ability`) makes this FAIL"
+        );
+    }
+
+    /// **S3-P1 / S3-N1 / S3-N2** — the phase-C arm
+    /// `counters_on_source_provably_excludes_class` as block (2)'s `disjoint` conjunct
+    /// reaches it, on Glittering Stockpile's real parsed AST.
+    ///
+    /// REVERT / MUTATION PROBES, each named with the arm it flips:
+    /// * delete the block-(2) `&& !disjoint` conjunct ⇒ **(i) FAILS**.
+    /// * relax conjunct (b)'s `ObjectScope::Source` requirement to any scope ⇒
+    ///   **(ii) FAILS**.
+    /// * drop conjunct (d)'s `read_id != class_member` test ⇒ **(iii) FAILS**.
+    /// * relieve the OBJECT once any ability is disjoint, instead of per ABILITY ⇒
+    ///   **(iv) FAILS**.
+    #[test]
+    fn counters_on_source_gate_is_precise_and_fail_closed() {
+        use crate::types::ability::{
+            Effect, ManaProduction, ObjectScope, QuantityExpr, QuantityRef,
+        };
+
+        let subject = stockpile_counter_mana_ability();
+
+        // ── (i) S3-P1 — the card's own second ability is RELIEVED ─────────────────────
+        let (state, member, host) = block2_fixture(vec![subject.clone()]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "S3-P1: CR 122.1 — a counter is a marker on ONE named object, and \
+             `ObjectScope::Source` names the ability's own source, which is not a member of \
+             the growing Saproling class. Per CR 608.2h the produced amount is invariant \
+             across the loop's growth, so block (2) must SKIP the ability. Deleting the \
+             `&& !disjoint` conjunct restores the veto"
+        );
+
+        // ── (iii) S3-N2 — matched control, ONE variable: the id comparison ────────────
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([host]))),
+            "S3-N2: the SAME board and the SAME ability, with the growing class made of the \
+             SOURCE OBJECT ITSELF — the counter read is then a read OF a class member and \
+             the veto must survive. Dropping the `read_id != class_member` test makes this \
+             FAIL"
+        );
+
+        // ── (ii) S3-N1 — same AST, `scope` is the ONLY difference ─────────────────────
+        let mut target_scoped = subject.clone();
+        {
+            let Effect::Mana {
+                produced:
+                    ManaProduction::AnyOneColor {
+                        count:
+                            QuantityExpr::Ref {
+                                qty: QuantityRef::CountersOn { scope, .. },
+                            },
+                        ..
+                    },
+                ..
+            } = target_scoped.effect.as_mut()
+            else {
+                panic!("fixture: the subject's shape was pinned above");
+            };
+            *scope = ObjectScope::Target;
+        }
+        let (n1_state, n1_member, _) = block2_fixture(vec![target_scoped.clone()]);
+        assert!(
+            fire_time_conditions_read_growing_class(&n1_state, Some(&HashSet::from([n1_member]))),
+            "S3-N1: the identical `AnyOneColor{{CountersOn}}` AST with ONLY `scope` changed \
+             Source -> Target reads a counter total on whatever the ability targets, which \
+             the firewall cannot bound — it must keep vetoing. Relaxing conjunct (b)'s \
+             `ObjectScope::Source` requirement makes this FAIL"
+        );
+
+        // ── (iv) MULTI-AUTHORITY: relief is PER-ABILITY, never per-object ─────────────
+        // MEASURED DIVERGENCE from the plan's S3-N1 wording: Stockpile's own FIRST
+        // ability (`Mana{Fixed{Red}}` + a `PutCounter` sub-ability) scores
+        // `ability_definition_reads_sibling_mutable_for_loop == false`, so it does not
+        // veto at all and cannot serve as a "still vetoes" sibling. The per-ability
+        // claim is therefore pinned with a sibling that DOES veto and is NOT relievable —
+        // the `scope: Target` AST above — on the same object as the relievable one.
+        let (multi_state, multi_member, multi_host) =
+            block2_fixture(vec![subject.clone(), target_scoped]);
+        {
+            let abilities = &multi_state.objects[&multi_host].abilities;
+            assert_eq!(
+                abilities.len(),
+                2,
+                "reach-guard: both authorities are on ONE object"
+            );
+            assert!(
+                crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(
+                    &abilities[1]
+                ),
+                "reach-guard: the non-relievable sibling must itself carry the veto, else \
+                 this row passes for the wrong reason"
+            );
+        }
+        assert!(
+            fire_time_conditions_read_growing_class(
+                &multi_state,
+                Some(&HashSet::from([multi_member]))
+            ),
+            "S3-N1 (multi-authority): one object carrying BOTH a relievable stash-counter \
+             mana ability and a non-relievable `scope: Target` sibling must still veto — \
+             block (2) adjudicates per ABILITY, never per object. Relieving the object once \
+             ANY ability is disjoint makes this FAIL"
+        );
+
+        // ── conjunct (c): a member absent from the scanned frame proves nothing ───────
+        let host_obj = state.objects[&host].clone();
+        assert!(
+            !counters_on_source_provably_excludes_class(
+                &subject,
+                &state,
+                ObjectId(9_999),
+                &host_obj
+            ),
+            "fail-closed: an id with no object in the scanned frame proves nothing about \
+             which object the counter read names"
+        );
+
+        // ── M2 (the `!is_empty()` guard): an EMPTY class relieves NOTHING ─────────────
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::new())),
+            "M2-S3: `!members.is_empty()` is LOAD-BEARING — an empty class must not make \
+             `.all()` vacuously true and relieve the surface. Deleting that guard makes \
+             this FAIL (everything relieved)"
+        );
+    }
+
+    /// **S3-P2** — the `object_id_for_scope` ARG-EQUIVALENCE PIN, on BOTH resolver
+    /// branches.
+    ///
+    /// S3's arm calls the resolver's own scope authority with a firewall-built
+    /// `QuantityContext` carrying `trigger_source: None`, because at firewall time no
+    /// triggered resolution exists to capture. A fire-time triggered context carries
+    /// `Some(..)`. This row is what makes that divergence IMMATERIAL rather than merely
+    /// stated: `ObjectScope::Source` yields the source's own identity on both branches,
+    /// so S3's verdict is branch-independent.
+    ///
+    /// REVERT / MUTATION PROBE: change `object_id_for_scope`'s `Source` arm to yield any
+    /// other id (e.g. `ctx.entering`, or a target) ⇒ **FAILS on the matching branch**.
+    #[test]
+    fn object_id_for_scope_source_is_the_sources_own_identity_on_both_branches() {
+        use crate::types::ability::ObjectScope;
+
+        let (state, member, host) = block2_fixture(vec![stockpile_counter_mana_ability()]);
+        let host_obj = state.objects[&host].clone();
+        let ctx_no_trigger = crate::game::quantity::QuantityContext {
+            entering: None,
+            source: host,
+            trigger_source: None,
+            recipient: None,
+            scoped_player: None,
+            damage_source: None,
+        };
+        assert_eq!(
+            crate::game::quantity::object_id_for_scope(
+                &state,
+                ObjectScope::Source,
+                ctx_no_trigger,
+                &[]
+            ),
+            Some(host),
+            "S3-P2 (no-trigger branch): `ObjectScope::Source` must resolve to `ctx.source` — \
+             this is the exact call S3's conjunct (d) makes, so any other id would make the \
+             arm relieve on the wrong object"
+        );
+
+        // The triggered branch: the captured incarnation's id, built through the SAME
+        // production authority a triggered resolution uses.
+        let ctx_triggered = crate::game::quantity::QuantityContext {
+            entering: None,
+            source: host,
+            trigger_source: Some(crate::game::triggers::trigger_source_context_for_latch(
+                &state, &host_obj,
+            )),
+            recipient: None,
+            scoped_player: None,
+            damage_source: None,
+        };
+        assert_eq!(
+            crate::game::quantity::object_id_for_scope(
+                &state,
+                ObjectScope::Source,
+                ctx_triggered,
+                &[]
+            ),
+            Some(host),
+            "S3-P2 (triggered branch): the captured incarnation resolves to the SAME id, so \
+             S3's `trigger_source: None` context is branch-independent and the arm's verdict \
+             does not depend on which branch fire time would take"
+        );
+
+        // Non-vacuity: the pin discriminates between the source and any other object on
+        // this board — a `Source` arm that returned an arbitrary id would be caught.
+        assert_ne!(
+            host, member,
+            "non-vacuity: the source and the class member are distinct objects, so the two \
+             assertions above are not trivially satisfiable"
+        );
+    }
+
+    // ───────── MED-1 / MED-2 fix rows: conjunct (b)'s `target`, and (0) + (a) ─────────
+
+    /// A `TargetFilter` that READS the growing class: `Typed{Creature}` matches the
+    /// Saproling fodder token every block-(2) fixture carries. Used as a mana
+    /// `ManaTargetRole` filter so the veto is raised by the TARGET, which no arm's
+    /// conjunct (d) argument examines.
+    fn class_reading_target_filter() -> crate::types::ability::TargetFilter {
+        use crate::types::ability::{TargetFilter, TypeFilter, TypedFilter};
+        TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature))
+    }
+
+    /// A `ParsedCondition` that READS the growing class: the fodder members are P0
+    /// creatures, so a live "you control N+ creatures" census changes value as the loop
+    /// grows. Used for MED-2's conjunct-(0) and conjunct-(a) halves.
+    fn class_reading_condition() -> crate::types::ability::ParsedCondition {
+        crate::types::ability::ParsedCondition::YouControlCoreTypeCountAtLeast {
+            core_type: CoreType::Creature,
+            count: 3,
+        }
+    }
+
+    /// `ability` with ONLY its `Effect::Mana` `target` field replaced — every other field
+    /// stays the real AST, so a negative built with this cannot pass by taking a
+    /// different arm.
+    fn mana_ability_with_target(
+        ability: &crate::types::ability::AbilityDefinition,
+        role: Option<crate::types::ability::ManaTargetRole>,
+    ) -> crate::types::ability::AbilityDefinition {
+        use crate::types::ability::Effect;
+        let mut out = ability.clone();
+        let Effect::Mana { target, .. } = out.effect.as_mut() else {
+            panic!("fixture: the S2/S3 subject must be an `Effect::Mana`");
+        };
+        *target = role;
+        out
+    }
+
+    /// **MED-1 pin, arm S2** — `exiled_colors_provably_exclude_class` must NOT relieve an
+    /// ability whose own MANA TARGET reads the growing class, even when its link set is
+    /// class-disjoint.
+    ///
+    /// WHY THIS IS NOT COVERED BY THE S2-P1 ROW: conjunct (d) argues only about the
+    /// LINK SET (CR 607.2a). The scanner's veto for this def can also be raised by the
+    /// target — `ability_scan.rs:1056`'s `LoopFirewall` branch descends
+    /// `target`'s `declared_filters()` through `scan_target_filter(.., SnapshotOrEvent)`.
+    /// A shape pattern binding `target: _` grants relief over evidence that never
+    /// examined the target. Conjunct (b) therefore requires `target: None`.
+    ///
+    /// REVERT / MUTATION PROBE: change conjunct (b)'s `target: None` back to `target: _`
+    /// in `exiled_colors_provably_exclude_class` ⇒ **FAILS** on the `S2-MED1` message.
+    #[test]
+    fn s2_arm_refuses_an_ability_whose_mana_target_reads_the_growing_class() {
+        use crate::types::ability::ManaTargetRole;
+
+        let base = pit_exiled_color_ability();
+        let targeted = mana_ability_with_target(
+            &base,
+            Some(ManaTargetRole::Recipient {
+                recipient: class_reading_target_filter(),
+            }),
+        );
+        let (mut state, member, host) = block2_fixture(vec![targeted.clone()]);
+        // The link set is CLASS-DISJOINT, so conjunct (d) is SATISFIED and the ONLY thing
+        // left refusing relief is conjunct (b)'s `target` binding. Without this the row
+        // would pass for the wrong reason.
+        let linked = exile_linked_to(&mut state, 820, host, "Linked Exiled Mountain");
+        let host_obj = state.objects[&host].clone();
+        assert_eq!(
+            crate::game::effects::mana::linked_exiled_ids(
+                &state,
+                crate::types::ability::LinkedExileScope::ThisObject,
+                host,
+            )
+            .collect::<Vec<_>>(),
+            vec![linked],
+            "reach-guard: the link set must be non-empty and class-disjoint, so conjunct (d) \
+             passes and this row isolates conjunct (b)"
+        );
+        assert!(
+            exiled_colors_provably_exclude_class(&base, &state, member, &host_obj),
+            "POSITIVE CONTROL: the SAME board with the SAME link set relieves the UNTARGETED \
+             ability. So this row's negative below is attributable to the `target` field and \
+             to nothing else about the fixture"
+        );
+
+        // REACH CONTROL: the target really does read the growing class.
+        let ctx = crate::game::filter::FilterContext::from_source_with_controller(
+            host_obj.id,
+            host_obj.controller,
+        );
+        let mut declared = 0usize;
+        let Effect::Mana { target, .. } = targeted.effect.as_ref() else {
+            unreachable!("built as an Effect::Mana above")
+        };
+        for (_, filter) in target
+            .as_ref()
+            .expect("built with a declared role above")
+            .declared_filters()
+        {
+            declared += 1;
+            assert!(
+                crate::game::filter::matches_target_filter(&state, member, filter, &ctx),
+                "reach-guard: the declared role filter must MATCH the growing class member — \
+                 a target that cannot see the class would make this row vacuous"
+            );
+        }
+        assert_eq!(
+            declared, 1,
+            "reach-guard: exactly one role filter is declared, and it is the one asserted above"
+        );
+
+        assert!(
+            !exiled_colors_provably_exclude_class(&targeted, &state, member, &host_obj),
+            "S2-MED1: an ability whose MANA TARGET reads the growing class must KEEP its veto. \
+             Conjunct (d) argues only about the CR 607.2a link set and says nothing about the \
+             target, whose own filter raises a veto at ability_scan.rs:1056. Binding \
+             `target: _` instead of `target: None` in conjunct (b) makes this FAIL"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "S2-MED1 (production wiring): block (2) must therefore still veto on this board — \
+             the refusal has to survive all the way through the `disjoint` conjunct, not just \
+             hold inside the arm"
+        );
+    }
+
+    /// **MED-1 pin, arm S3** — mirror of the S2 row for
+    /// `counters_on_source_provably_excludes_class`, using the OTHER `ManaTargetRole`
+    /// variant (`CountSource`, CR 115.1) so both declared-filter roles are covered.
+    ///
+    /// REVERT / MUTATION PROBE: change conjunct (b)'s `target: None` back to `target: _`
+    /// in `counters_on_source_provably_excludes_class` ⇒ **FAILS** on the `S3-MED1`
+    /// message.
+    #[test]
+    fn s3_arm_refuses_an_ability_whose_mana_target_reads_the_growing_class() {
+        use crate::types::ability::ManaTargetRole;
+
+        let base = stockpile_counter_mana_ability();
+        let targeted = mana_ability_with_target(
+            &base,
+            Some(ManaTargetRole::CountSource {
+                count_source: class_reading_target_filter(),
+            }),
+        );
+        let (state, member, host) = block2_fixture(vec![targeted.clone()]);
+        let host_obj = state.objects[&host].clone();
+        assert!(
+            counters_on_source_provably_excludes_class(&base, &state, member, &host_obj),
+            "POSITIVE CONTROL: the UNTARGETED ability relieves on this very board (conjunct \
+             (d)'s `object_id_for_scope` resolves to the host, not the member), so the \
+             negative below is attributable to the `target` field alone"
+        );
+
+        // REACH CONTROL: the count-source filter really does read the growing class.
+        let ctx = crate::game::filter::FilterContext::from_source_with_controller(
+            host_obj.id,
+            host_obj.controller,
+        );
+        let Effect::Mana { target, .. } = targeted.effect.as_ref() else {
+            unreachable!("built as an Effect::Mana above")
+        };
+        let role = target.as_ref().expect("built with a declared role above");
+        assert!(
+            role.count_source().is_some_and(|f| {
+                crate::game::filter::matches_target_filter(&state, member, f, &ctx)
+            }),
+            "reach-guard: the CR 115.1 count-source filter must MATCH the growing class \
+             member, or this row measures nothing"
+        );
+
+        assert!(
+            !counters_on_source_provably_excludes_class(&targeted, &state, member, &host_obj),
+            "S3-MED1: conjunct (d) proves only that the COUNTER is read off an object that is \
+             not a member (CR 122.1). It says nothing about the mana target, whose declared \
+             filter is scanned at ability_scan.rs:1056. Binding `target: _` instead of \
+             `target: None` in conjunct (b) makes this FAIL"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "S3-MED1 (production wiring): block (2) must therefore still veto on this board"
+        );
+    }
+
+    /// **MED-2 pin, arm S2** — conjuncts (0) `activation_restrictions` and (a) the
+    /// `Effect::NoOp` clone-and-rescan, each isolated on Pit's real AST.
+    ///
+    /// Both conjuncts were previously deletable with the whole lib suite still green.
+    /// Each half below is a MATCHED CONTROL against the same board's positive relief, so
+    /// deleting either conjunct flips exactly one assertion.
+    ///
+    /// REVERT / MUTATION PROBES:
+    /// * delete conjunct (0) (`if !ability.activation_restrictions.is_empty()`) from
+    ///   `exiled_colors_provably_exclude_class` ⇒ **FAILS** on `S2-MED2(0)`.
+    /// * delete conjunct (a) (the clone + `*probe.effect = Effect::NoOp` + rescan) ⇒
+    ///   **FAILS** on `S2-MED2(a)`.
+    #[test]
+    fn s2_arm_keeps_its_veto_for_a_restriction_or_a_class_reading_sibling_field() {
+        use crate::types::ability::{
+            AbilityDefinition, ActivationRestriction, Effect, ManaProduction, QuantityExpr,
+            QuantityRef, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        let base = pit_exiled_color_ability();
+        let (mut state, member, host) = block2_fixture(vec![base.clone()]);
+        let linked = exile_linked_to(&mut state, 820, host, "Linked Exiled Mountain");
+        let host_obj = state.objects[&host].clone();
+        assert_ne!(
+            linked, member,
+            "reach-guard: the link set is class-disjoint, so conjunct (d) passes and each \
+             half below isolates the conjunct it names"
+        );
+        assert!(
+            exiled_colors_provably_exclude_class(&base, &state, member, &host_obj),
+            "POSITIVE CONTROL: the unmodified ability relieves on this board. Both negatives \
+             below change exactly ONE field of it, so each is attributable to that field"
+        );
+
+        // ── (0) an ACTIVATION RESTRICTION reading the growing class ──────────────────
+        // The firewall's scan destructures `activation_restrictions: _`, so it is BLIND
+        // here and conjunct (a)'s rescan cannot see this either. Only conjunct (0) refuses.
+        let mut restricted = base.clone();
+        restricted
+            .activation_restrictions
+            .push(ActivationRestriction::RequiresCondition {
+                condition: Some(class_reading_condition()),
+            });
+        assert!(
+            !crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&{
+                let mut probe = restricted.clone();
+                *probe.effect = Effect::NoOp;
+                probe
+            }),
+            "reach-guard for (0): with the effect blanked, the rescan answers FALSE even \
+             though the restriction reads a live creature census — this is exactly the \
+             blindness conjunct (0) exists to cover, and it is why conjunct (a) cannot \
+             substitute for it"
+        );
+        assert!(
+            !exiled_colors_provably_exclude_class(&restricted, &state, member, &host_obj),
+            "S2-MED2(0): an ability carrying an `activation_restrictions` entry must KEEP its \
+             veto — `ability_definition_axes` destructures `activation_restrictions: _`, so \
+             the scan is blind to it and conjunct (a)'s rescan answers `false` regardless. \
+             Deleting conjunct (0) makes this FAIL"
+        );
+
+        // ── (a) a class-reading SIBLING FIELD beside the relievable effect ───────────
+        // `sub_ability` is one of the fields conjunct (a) covers WITHOUT enumerating it.
+        let mut with_sibling = base.clone();
+        with_sibling.sub_ability = Some(Box::new(AbilityDefinition::new(
+            crate::types::ability::AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::AnyOneColor {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount {
+                            filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+                        },
+                    },
+                    color_options: vec![crate::types::mana::ManaColor::Red],
+                    contribution: crate::types::ability::ManaContribution::Base,
+                },
+                restrictions: Vec::new(),
+                grants: Vec::new(),
+                expiry: None,
+                target: None,
+            },
+        )));
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&{
+                let mut probe = with_sibling.clone();
+                *probe.effect = Effect::NoOp;
+                probe
+            }),
+            "reach-guard for (a): with the effect blanked the rescan must still answer TRUE — \
+             that residual `true` IS conjunct (a)'s refusal signal, and without it this row \
+             would pass for the wrong reason"
+        );
+        assert!(
+            !exiled_colors_provably_exclude_class(&with_sibling, &state, member, &host_obj),
+            "S2-MED2(a): the effect is NOT the def's only sibling read — a `sub_ability` \
+             counting live creatures reads the growing class too, so the link-set argument \
+             cannot carry the whole def. Deleting conjunct (a)'s clone-and-rescan makes this \
+             FAIL"
+        );
+    }
+
+    /// **MED-2 pin, arm S3** — mirror of the S2 MED-2 row for
+    /// `counters_on_source_provably_excludes_class`, on Stockpile's real parsed AST.
+    /// Conjunct (a) is driven through `else_ability` here rather than `sub_ability`, so
+    /// the two MED-2 rows cover two different fields of the un-enumerated rescan surface.
+    ///
+    /// REVERT / MUTATION PROBES:
+    /// * delete conjunct (0) ⇒ **FAILS** on `S3-MED2(0)`.
+    /// * delete conjunct (a) ⇒ **FAILS** on `S3-MED2(a)`.
+    #[test]
+    fn s3_arm_keeps_its_veto_for_a_restriction_or_a_class_reading_else_ability() {
+        use crate::types::ability::{
+            AbilityDefinition, ActivationRestriction, Effect, ManaProduction, QuantityExpr,
+            QuantityRef, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        let base = stockpile_counter_mana_ability();
+        let (state, member, host) = block2_fixture(vec![base.clone()]);
+        let host_obj = state.objects[&host].clone();
+        assert!(
+            counters_on_source_provably_excludes_class(&base, &state, member, &host_obj),
+            "POSITIVE CONTROL: the unmodified ability relieves on this board; both negatives \
+             below change exactly ONE field of it"
+        );
+
+        let class_census = class_reading_condition();
+
+        // ── (0) an ACTIVATION RESTRICTION the scan is blind to ──────────────────────
+        let mut restricted = base.clone();
+        restricted
+            .activation_restrictions
+            .push(ActivationRestriction::RequiresCondition {
+                condition: Some(class_census.clone()),
+            });
+        assert!(
+            !crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&{
+                let mut probe = restricted.clone();
+                *probe.effect = Effect::NoOp;
+                probe
+            }),
+            "reach-guard for (0): the blanked rescan answers FALSE despite the class-reading \
+             restriction — conjunct (a) cannot substitute for conjunct (0)"
+        );
+        assert!(
+            !counters_on_source_provably_excludes_class(&restricted, &state, member, &host_obj),
+            "S3-MED2(0): an ability carrying an `activation_restrictions` entry must KEEP its \
+             veto; the firewall's scan destructures that field as `_`. Deleting conjunct (0) \
+             makes this FAIL"
+        );
+
+        // ── (a) a class-reading `else_ability` beside the relievable effect ────────
+        // A DIFFERENT un-enumerated field from the S2 row's `sub_ability`, so the two
+        // MED-2 rows between them show conjunct (a) covers the rescan surface generally
+        // rather than one field. (`AbilityDefinition::condition` is an
+        // `Option<AbilityCondition>` — a cast/resolution rider, not a board census — so
+        // it cannot carry a class read and is the wrong vehicle here.)
+        let mut with_condition = base.clone();
+        with_condition.else_ability = Some(Box::new(AbilityDefinition::new(
+            crate::types::ability::AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::AnyOneColor {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount {
+                            filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+                        },
+                    },
+                    color_options: vec![crate::types::mana::ManaColor::Red],
+                    contribution: crate::types::ability::ManaContribution::Base,
+                },
+                restrictions: Vec::new(),
+                grants: Vec::new(),
+                expiry: None,
+                target: None,
+            },
+        )));
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&{
+                let mut probe = with_condition.clone();
+                *probe.effect = Effect::NoOp;
+                probe
+            }),
+            "reach-guard for (a): the blanked rescan must still answer TRUE — that residual \
+             `true` IS conjunct (a)'s refusal signal"
+        );
+        assert!(
+            !counters_on_source_provably_excludes_class(&with_condition, &state, member, &host_obj),
+            "S3-MED2(a): the effect is NOT the def's only sibling read — an `else_ability` \
+             counting live creatures reads the growing class, so conjunct (d)'s counter \
+             identity argument cannot carry the whole def. Deleting conjunct (a)'s \
+             clone-and-rescan makes this FAIL"
         );
     }
 }
