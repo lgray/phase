@@ -639,7 +639,7 @@ jobs:
         run: cargo check --package engine-wasm --target wasm32-unknown-unknown
 
   tauri-check:
-    name: Tauri compile check
+    name: Tauri compile check + tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -670,12 +670,18 @@ jobs:
 
       - name: Tauri compile check
         # phase-tauri is excluded from the workspace clippy and nextest runs
-        # above (no proptest support, no tests). Without this step, compile
-        # errors in the desktop crate only surface at shell release time.
-        # Catches them on every PR in ~3 min.
+        # above. Without this step, compile errors in the desktop crate only
+        # surface at shell release time. Catches them on every PR in ~3 min.
         # Driven via --manifest-path because client/src-tauri is excluded
         # from the root workspace, so `-p phase-tauri` cannot resolve it.
         run: cargo check --locked --manifest-path client/src-tauri/Cargo.toml
+
+      - name: Tauri tests
+        # phase-tauri's `#[cfg(test)]` unit tests (migration, native_bridge,
+        # native_engine, audio_probe, ...) are excluded from the workspace
+        # nextest run above for the same reason as the compile check, so they
+        # need their own step or they'd never run in CI at all.
+        run: cargo test --locked --manifest-path client/src-tauri/Cargo.toml
 
   rust-check:
     name: Rust (fmt, clippy, test, coverage-gate)
