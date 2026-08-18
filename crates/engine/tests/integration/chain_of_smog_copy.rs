@@ -402,6 +402,68 @@ fn chain_of_smog_discard_choice_resumes_selected_tail_after_library_of_leng() {
     );
 }
 
+#[test]
+fn chain_of_smog_discard_choice_rejects_a_duplicate_card_submission() {
+    let Some(db) = load_db() else {
+        return;
+    };
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let smog = scenario.add_real_card(P0, "Chain of Smog", Zone::Hand, db);
+    for _ in 0..3 {
+        scenario.add_card_to_hand(P1, "Mountain");
+    }
+
+    let mut runner = scenario.build();
+    engine::game::rehydrate_game_from_card_db(runner.state_mut(), db);
+    add_mana(&mut runner, P0, &[ManaType::Black, ManaType::Colorless]);
+    let card_id = runner.state().objects[&smog].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: smog,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("cast Chain of Smog");
+    runner
+        .act(GameAction::SelectTargets {
+            targets: vec![engine::types::ability::TargetRef::Player(P1)],
+        })
+        .expect("target P1");
+
+    let (count, duplicate) = loop {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::DiscardChoice { count, cards, .. } => break (count, cards[0]),
+            WaitingFor::Priority { .. } => {
+                runner
+                    .act(GameAction::PassPriority)
+                    .expect("advance Chain of Smog");
+            }
+            waiting_for => panic!("expected discard choice, got {waiting_for:?}"),
+        }
+    };
+    assert_eq!(count, 2, "Chain of Smog requires two distinct discards");
+
+    let error = runner
+        .act(GameAction::SelectCards {
+            cards: vec![duplicate, duplicate],
+        })
+        .expect_err("one card cannot satisfy Chain of Smog's two-card discard");
+    assert!(matches!(
+        error,
+        engine::game::EngineError::InvalidAction(message)
+            if message == "Selected cards must be distinct"
+    ));
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::DiscardChoice { count: 2, .. }
+    ));
+    assert_eq!(runner.state().objects[&duplicate].zone, Zone::Hand);
+    assert_eq!(hand_size(&runner, P1), 3);
+}
+
 // ---------------------------------------------------------------------------
 // Runtime: the copy is itself a Chain of Smog and carries the same nested
 // optional copy — accepting the re-offered copy must produce a

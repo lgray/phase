@@ -631,8 +631,9 @@ fn batch_or_drain_observer_triggers(
     }
 }
 
-/// Preserve observer triggers emitted by a resolution choice that pauses before
-/// the normal priority-boundary trigger scan can see its event slice.
+/// CR 603.2 + CR 603.3b: Preserve triggers from events that occurred while a
+/// resolution choice paused; they trigger now and wait for the next priority
+/// window's APNAP placement rather than being lost with the action's event slice.
 pub(crate) fn defer_observer_triggers_for_paused_choice(
     state: &mut GameState,
     events: &[GameEvent],
@@ -4689,6 +4690,15 @@ pub(super) fn handle_resolution_choice(
                         chosen.len()
                     )));
                 }
+            }
+
+            // CR 608.2d: A resolving player can't choose one eligible card
+            // more than once to satisfy a multi-card discard selection.
+            let unique_chosen: HashSet<ObjectId> = chosen.iter().copied().collect();
+            if unique_chosen.len() != chosen.len() {
+                return Err(EngineError::InvalidAction(
+                    "Selected cards must be distinct".to_string(),
+                ));
             }
 
             let current_hand: std::collections::HashSet<ObjectId> = state
