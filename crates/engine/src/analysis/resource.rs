@@ -3708,7 +3708,14 @@ fn execute_ledger_condition_provably_excludes_class(
 /// (`FilterContext::from_source_with_controller` / `::from_ability_with_controller`,
 /// `game/filter.rs`), because an enumeration is only worth as much as the reading behind
 /// it — this one shipped once with two entries that do not differ and one omitted that
-/// does:
+/// does, and once more covering five of `FilterContext`'s SIX fields. All six are below;
+/// the count is stated so the next reader can check the enumeration against the struct
+/// rather than against this sentence:
+///   * `source_id` — `source.id` vs `ability.source_id`. Does NOT differ, and the
+///     equivalence is by construction rather than by coincidence: the firewall passes the
+///     id of the very object it is scanning, and this arm's whole reachable set is trigger
+///     `execute` bodies on that same battlefield permanent (see conjunct (b)'s reachable-root
+///     paragraph), so the resolving ability's `source_id` IS that permanent.
 ///   * `ability` — `None` vs `Some(ability)`. Differs.
 ///   * `trigger_source` — `None` vs `ability.trigger_source.as_ref()`. Differs.
 ///   * `source_controller` — `Some(..)` in BOTH, but a DIFFERENT VALUE: the firewall binds
@@ -3816,9 +3823,15 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       identical to a battlefield one is absent from the `Typed{Artifact, You}`
 ///       population — so an id that merely EXISTS is trivially absent from the population
 ///       and satisfies (d) having proved nothing. That is relief with no evidence, exactly
-///       what this conjunct is for. Row: the `M3` arm of
-///       `exiled_colors_gate_is_precise_and_fail_closed`, on the sibling arm carrying the
-///       same conjunct.
+///       what this conjunct is for. Row: the `(v-M3)` arm of
+///       `pump_aggregate_gate_is_precise_and_fail_closed` — THIS arm's own row, driving the
+///       graveyard/battlefield artifact twin the MEASURED sentence above describes.
+///       ⛔ It shipped once citing the SIBLING arm's row
+///       (`exiled_colors_gate_is_precise_and_fail_closed`'s `M3`) as its coverage, which is
+///       not coverage of this conjunct at all: that row calls
+///       `exiled_colors_provably_exclude_class`, so this narrowing was measured by NOTHING.
+///       MEASURED at the time: reverting THIS conjunct to
+///       `state.objects.contains_key(&class_member)` left the full lib suite green.
 ///   (d) BOTH P/T halves must be provably invariant — `toughness` as much as `power`
 ///       (`Pump` carries two independent `PtValue`s and either can hold the aggregate).
 ///
@@ -3845,7 +3858,8 @@ fn pump_aggregate_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::Effect;
 
-    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4627) —
+    // (0) the firewall is BLIND to activation restrictions
+    // (`ability_scan::ability_definition_axes`) —
     // fail closed.
     if !exec.activation_restrictions.is_empty() {
         return false;
@@ -4005,11 +4019,36 @@ fn pt_value_aggregate_provably_excludes_class(
 ///
 /// Colour drift is out of scope here, and that is an argument rather than an omission: no
 /// modelled continuous effect can make an exiled card's colour a function of the growing
-/// class. `StaticMode::SetColor` / `AddColor` carry FIXED colour lists, so they are
-/// classified read-free by the scan and cannot scale with `|G|`. Widening
-/// `object_content_eq` to compare `color` is the alternative, and it is a
+/// class. The three colour-modifying variants are ALL classified read-free
+/// (`Axes::NONE`) by `ability_scan::scan_continuous_modification`, and the enumeration is
+/// stated in full because a 2-of-3 version of it shipped once:
+/// `ContinuousModification::SetColor { colors }` and `AddColor { color }` carry FIXED
+/// colour lists, so they cannot scale with `|G|` by construction; `AddChosenColor { mode }`
+/// is the one that needed arguing, because its own doc says it "Reads from
+/// `chosen_attributes` at layer evaluation time" — NOT a fixed list. It is read-free
+/// anyway, and for the reason that matters here: a `ChosenAttribute::Color` is a
+/// player CHOICE stored on the granting source (CR 105.3 + CR 613.1e), not an aggregate
+/// over a population, so it is not a function of the class SIZE however the class grows.
+/// (`StaticMode` has NO colour-SETTING variant at all, which is why an earlier
+/// `StaticMode::SetColor` citation here named a type path that does not exist. Its FOUR
+/// colour-mentioning members — `DefilerCostReduction { color }` (the colour of the SPELLS a
+/// cost reduction applies to), `SpendManaAsAnyColor`, `PayLifeAsColoredMana { color }` (a
+/// life-for-coloured-mana payment substitution) and `StepEndUnspentMana { filter }` (which
+/// unspent MANA a step-end rule applies to) — are cost / mana-payment / mana-pool rules
+/// that READ or name a colour and set none. MEASURED over the `StaticMode` body in
+/// `types/statics.rs`: those four are every `ManaColor`-bearing member there. Their own CR
+/// citations are deliberately NOT repeated here — this is a type-shape claim, and a
+/// borrowed citation is a referent this arm has not verified.
+/// ⛔ Stated as four because the review finding that raised this named only two of them,
+/// and a half-checked replacement referent is worse than the wrong one it replaces — it
+/// reads as freshly verified. The two enums are real and distinct:
+/// `ContinuousModification::AddStaticMode { mode: StaticMode }` embeds one in the other,
+/// so the original citation was a mis-citation and not shorthand.)
+/// Widening `object_content_eq` to compare `color` is the alternative, and it is a
 /// wide-blast-radius change to the shared CR 104.4b row comparator that every cover gate
-/// in this file consumes — filed as FU-28 rather than smuggled in behind this arm.
+/// in this file consumes — DEFERRED as FU-28 (`color` in `object_content_eq`) rather than
+/// smuggled in behind this arm. FU-N designators in this lane are comment-only labels;
+/// there is no in-repo follow-up registry to check one against.
 ///
 /// The member-quantified test below is kept anyway, so the arm does not REST on that
 /// cover — the cover is why the arm is sound, the test is what makes it fail closed.
@@ -4027,7 +4066,8 @@ fn pt_value_aggregate_provably_excludes_class(
 /// fail-closed conjuncts, each keeping the conservative veto whenever it cannot prove
 /// its half:
 ///   (0) NO ACTIVATION RESTRICTIONS: `ability_definition_axes` destructures
-///       `activation_restrictions: _` (ability_scan.rs:4627), so the scan is BLIND to
+///       `activation_restrictions: _` (`ability_scan::ability_definition_axes`), so the
+///       scan is BLIND to
 ///       them and conjunct (a)'s rescan would answer `false` even with a
 ///       class-matching restriction on the same def.
 ///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the
@@ -4082,7 +4122,8 @@ fn exiled_colors_provably_exclude_class(
 ) -> bool {
     use crate::types::ability::{Effect, ManaProduction};
 
-    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4627) —
+    // (0) the firewall is BLIND to activation restrictions
+    // (`ability_scan::ability_definition_axes`) —
     // fail closed.
     if !ability.activation_restrictions.is_empty() {
         return false;
@@ -4165,6 +4206,21 @@ fn exiled_colors_provably_exclude_class(
 /// not something conjunct (d)'s `object_id_for_scope` identity argument can
 /// discharge. Measured cost: ZERO — all 14 corpus productions of this shape carry
 /// `target: None`.
+///
+/// ⛔ (c) GETS ITS OWN SENTENCE HERE — the cross-reference above does NOT cover it, and
+/// this doc carried none until the review that added the row below. The two sibling arms'
+/// (c) closes a POPULATION vacuity: an off-battlefield id is absent from a
+/// battlefield-scoped id population, or from an Exile-only link set, for ZONE reasons, so
+/// it satisfies their conjunct (d) having measured nothing. Conjunct (d) HERE is an
+/// IDENTITY test, so that argument does not transfer: an off-battlefield id differs from
+/// the source no more trivially than a battlefield one does. What (c) buys here is that
+/// relief is granted only over the class the sole production caller can build — see
+/// [`exiled_colors_provably_exclude_class`]'s (c)/(d) for that caller's `class_members`
+/// construction, from which the ZERO production cost follows identically — and it keeps
+/// this arm fail-closed for every other caller, this file's own tests included. Row: the
+/// `(v-M3)` arm of `counters_on_source_gate_is_precise_and_fail_closed`. It shipped with
+/// NO row at all: reverting this conjunct to `state.objects.contains_key(&class_member)`
+/// left the full lib suite green.
 fn counters_on_source_provably_excludes_class(
     ability: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -4173,7 +4229,8 @@ fn counters_on_source_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::{Effect, ManaProduction, ObjectScope, QuantityExpr, QuantityRef};
 
-    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4627) —
+    // (0) the firewall is BLIND to activation restrictions
+    // (`ability_scan::ability_definition_axes`) —
     // fail closed.
     if !ability.activation_restrictions.is_empty() {
         return false;
@@ -5710,6 +5767,14 @@ fn board_has_keyed_trigger(
 /// name one of two `Moved` replacements on one permanent; `(obj, idx, def)` can, and `idx` was
 /// already in hand — it was being dropped by the same `.map(|(_, obj, def)| ..)` that dropped the
 /// host. Callers that only want the def bind `_idx`.
+///
+/// ⛔ AND IT HAS NO PRODUCTION READER TODAY — stated plainly rather than left implied, because the
+/// paragraphs above read as if one existed. MEASURED (`grep -n '_idx' analysis/resource.rs`): every
+/// non-test consumer of this walk and of [`loop_window_replacement_defs`] binds `_idx`; the ONLY
+/// reader is the `C3A-1` slot-identity row in this file's `mod tests`. The argument for widening is
+/// therefore the capability-deletion law stated above and NOT a current caller, and no forward
+/// consumer is named here, because a named-but-unlanded one would be a referent no reader can
+/// check. When the first production reader lands, replace this paragraph with it.
 fn functioning_board_replacement_defs(
     state: &GameState,
 ) -> impl Iterator<
@@ -14211,6 +14276,8 @@ mod tests {
     /// * delete the context-shape guard's `typed.properties.is_empty()` ⇒ **(iii) FAILS**.
     /// * check only `power` and drop the `toughness` half ⇒ **(iv) FAILS**.
     /// * drop conjunct (c)'s liveness test ⇒ **(v) FAILS**.
+    /// * weaken conjunct (c) to `state.objects.contains_key(&class_member)` ⇒
+    ///   **(v-M3) FAILS** — an id that merely EXISTS is relieved again.
     /// * delete conjunct (0) (`activation_restrictions.is_empty()`) ⇒ **(vii) FAILS**.
     /// * delete conjunct (a) (the `Effect::NoOp` clone-and-rescan) ⇒ **(viii) FAILS**.
     /// * drop the context-shape guard's `controller` clause ⇒ **(ix) FAILS**.
@@ -14275,6 +14342,56 @@ mod tests {
             ),
             "fail-closed: an id with no object in the scanned frame is trivially absent from \
              ANY id population — relieving on it would be relief with no evidence"
+        );
+
+        // ── (v-M3) conjunct (c): EXISTS is not enough — LIVE ON THE BATTLEFIELD ───────
+        // Sibling of the `M3` arm in `exiled_colors_gate_is_precise_and_fail_closed`, ported
+        // here because THIS row block had ZERO off-battlefield fixtures: every id above is
+        // either on the battlefield or absent from `state.objects` outright, so (v) measured
+        // the `is_some_and(..)` half and NOTHING measured the `zone` half. MEASURED: with the
+        // conjunct reverted to `state.objects.contains_key(&class_member)` the whole lib suite
+        // stayed green. A separate fixture instance so the rows below are unperturbed.
+        let (mut m3_state, _, m3_source, m3_artifact) = pump_firewall_fixture(hawk_pump.clone());
+        let m3_source_obj = m3_state.objects[&m3_source].clone();
+        // A GRAVEYARD TWIN of the counted artifact: same controller, same name, same
+        // `core_types` — `zone` is the only difference.
+        let graveyard_twin = ObjectId(803);
+        {
+            let mut object = GameObject::new(
+                graveyard_twin,
+                CardId(803),
+                PlayerId(0),
+                "Aggregate Bauble".into(),
+                Zone::Graveyard,
+            );
+            object.card_types.core_types = vec![CoreType::Artifact];
+            m3_state.objects.insert(graveyard_twin, object);
+        }
+        assert!(
+            !pump_aggregate_provably_excludes_class(
+                &hawk_pump,
+                &m3_state,
+                m3_artifact,
+                &m3_source_obj
+            ),
+            "M3 matched control: the BATTLEFIELD artifact IS in the `Typed{{Artifact, You}}` \
+             population, so it is not excluded and gets no relief. This row is invariant under \
+             conjunct (c)'s wording — it is what makes the twin below attributable to `zone` \
+             and to nothing else"
+        );
+        assert!(
+            !pump_aggregate_provably_excludes_class(
+                &hawk_pump,
+                &m3_state,
+                graveyard_twin,
+                &m3_source_obj
+            ),
+            "M3: the graveyard twin is LIVE in `state.objects` and differs from the counted \
+             artifact ONLY in `zone`. `object_count_matching_ids`' universe for this filter \
+             shape is battlefield-scoped, so the twin is absent from the population BY ZONE \
+             and satisfies conjunct (d) having proved nothing — relief with no evidence. \
+             Reverting conjunct (c) to `state.objects.contains_key(&class_member)` makes this \
+             row FAIL"
         );
 
         // ── (ii) S1-N1 — same shape, `type_filters` is the ONLY difference ────────────
@@ -21958,6 +22075,8 @@ mod tests {
     /// * drop conjunct (d)'s `read_id != class_member` test ⇒ **(iii) FAILS**.
     /// * relieve the OBJECT once any ability is disjoint, instead of per ABILITY ⇒
     ///   **(iv) FAILS**.
+    /// * weaken conjunct (c) to `state.objects.contains_key(&class_member)` ⇒
+    ///   **(v-M3) FAILS** — an id that merely EXISTS is relieved again.
     #[test]
     fn counters_on_source_gate_is_precise_and_fail_closed() {
         use crate::types::ability::{
@@ -22060,6 +22179,46 @@ mod tests {
             ),
             "fail-closed: an id with no object in the scanned frame proves nothing about \
              which object the counter read names"
+        );
+
+        // ── (v-M3) conjunct (c): EXISTS is not enough — LIVE ON THE BATTLEFIELD ───────
+        // Sibling of the `M3` arm in `exiled_colors_gate_is_precise_and_fail_closed`, ported
+        // here because this row block had ZERO off-battlefield fixtures: the row above is the
+        // `is_some_and(..)` half and NOTHING measured the `zone` half. MEASURED: with the
+        // conjunct reverted to `state.objects.contains_key(&class_member)` the whole lib suite
+        // stayed green. See this arm's doc for why the sibling arms' population argument does
+        // NOT transfer to an identity conjunct — which is exactly why this row is needed here
+        // rather than inherited.
+        let mut m3_state = state.clone();
+        // A GRAVEYARD TWIN of the class member: byte-identical to `member` except for `zone`
+        // (and the id it has to carry to coexist with it).
+        let dead_member = ObjectId(803);
+        {
+            let mut object = state.objects[&member].clone();
+            object.id = dead_member;
+            object.zone = Zone::Graveyard;
+            m3_state.objects.insert(dead_member, object);
+        }
+        assert!(
+            counters_on_source_provably_excludes_class(&subject, &m3_state, member, &host_obj),
+            "M3 matched control: the BATTLEFIELD Saproling IS relieved — `ObjectScope::Source` \
+             names the host, which is not that member. This row is invariant under conjunct \
+             (c)'s wording, so the twin below is attributable to `zone` and to nothing else. \
+             It is also this row block's only conjunct-level POSITIVE control: without it the \
+             negative below is satisfied by any refusing conjunct"
+        );
+        assert!(
+            !counters_on_source_provably_excludes_class(
+                &subject,
+                &m3_state,
+                dead_member,
+                &host_obj
+            ),
+            "M3: the twin is LIVE in `state.objects` and differs from the relieved member ONLY \
+             in `zone`. Conjunct (d) is an IDENTITY test, so it answers `read_id != twin` just \
+             as trivially — relief over a member no production caller can hand this arm, on \
+             evidence that never looked at the class. Reverting conjunct (c) to \
+             `state.objects.contains_key(&class_member)` makes this row FAIL"
         );
 
         // ── M2 (the `!is_empty()` guard): an EMPTY class relieves NOTHING ─────────────
