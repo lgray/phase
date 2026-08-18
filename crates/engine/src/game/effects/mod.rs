@@ -24,9 +24,9 @@ use crate::types::events::{GameEvent, PlayerActionKind};
 use crate::types::game_state::{
     AutoMayChoice, CastOfferKind, ClauseMinimumSnapshot, DayNight, DiscardBatchCursor, GameState,
     LKISnapshot, ManaAbilityResume, MayTriggerAutoChoiceKey, PendingContinuation,
-    PendingCopyTokenBatch, PendingCostMoveResume, PendingPlayerScopeSacrificeChoice,
-    PendingPlayerScopeSacrificeCompletion, PendingPlayerScopeSacrificeFollowUp, WaitingFor,
-    ZoneChangeRecord,
+    PendingCopyTokenBatch, PendingCostMoveResume, PendingDiscardBatchCompletion,
+    PendingPlayerScopeSacrificeChoice, PendingPlayerScopeSacrificeCompletion,
+    PendingPlayerScopeSacrificeFollowUp, WaitingFor, ZoneChangeRecord,
 };
 use crate::types::identifiers::{ObjectId, TrackedSetId};
 use crate::types::mana::ManaCost;
@@ -9536,6 +9536,44 @@ pub(crate) fn drain_pending_discard_batch(
                 return Ok(PendingDiscardBatchOutcome::PausedForReplacement);
             }
         }
+        DiscardBatchCursor::Ordered { remaining } => {
+            for (i, card) in remaining.iter().enumerate() {
+                if !card.is_current(state)
+                    || state.objects.get(&card.object_id).map(|object| object.zone)
+                        != Some(Zone::Hand)
+                {
+                    continue;
+                }
+                let player = state.objects[&card.object_id].owner;
+                if let discard::DiscardOutcome::NeedsReplacementChoice(chooser) =
+                    discard::discard_caused_by_effect_with_source_and_frame(
+                        state,
+                        card.object_id,
+                        player,
+                        Some(batch.source_id),
+                        batch.discard_frame,
+                        events,
+                    )
+                {
+                    batch.cursor = DiscardBatchCursor::Ordered {
+                        remaining: remaining[i + 1..].to_vec(),
+                    };
+                    batch.player = player;
+                    batch.paused_card = *card;
+                    repark_discard_batch(state, batch, events, chooser);
+                    return Ok(PendingDiscardBatchOutcome::PausedForReplacement);
+                }
+            }
+        }
+    }
+
+    if matches!(
+        &batch.completion,
+        PendingDiscardBatchCompletion::DiscardChoice { .. }
+    ) {
+        let mut window = batch.preceding_events.clone();
+        window.extend_from_slice(events);
+        finalize_discard_choice_completion(state, &batch.completion, batch.discard_frame, &window);
     }
 
     // CR 608.2c: the terminal marker the pre-pause action could not emit,
@@ -9644,14 +9682,74 @@ pub(crate) fn drain_pending_discard_batch(
         previous_effect_counts_by_player_from_events(batch.effect_kind, batch.source_id, &window),
         false,
     );
-    state.last_zone_changed_ids = window
+    if !matches!(
+        &batch.completion,
+        PendingDiscardBatchCompletion::DiscardChoice { .. }
+    ) {
+        state.last_zone_changed_ids = window
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
+                _ => None,
+            })
+            .collect();
+    }
+    Ok(PendingDiscardBatchOutcome::Completed)
+}
+
+/// Finish the choice-specific bookkeeping that must precede a discard effect's
+/// terminal marker, whether the selected cards settled synchronously or after
+/// one or more replacement choices.
+pub(crate) fn finalize_discard_choice_completion(
+    state: &mut GameState,
+    completion: &PendingDiscardBatchCompletion,
+    discard_frame: Option<crate::types::identifiers::DiscardFrameId>,
+    events: &[GameEvent],
+) {
+    let PendingDiscardBatchCompletion::DiscardChoice { chosen } = completion else {
+        return;
+    };
+    let discarded_to_graveyard: Vec<ObjectId> = events
         .iter()
-        .filter_map(|e| match e {
-            GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
+        .filter_map(|event| match event {
+            GameEvent::ZoneChanged {
+                object_id,
+                to: Zone::Graveyard,
+                ..
+            } => Some(*object_id),
             _ => None,
         })
         .collect();
-    Ok(PendingDiscardBatchOutcome::Completed)
+    if !discarded_to_graveyard.is_empty() {
+        state.last_zone_changed_ids = discarded_to_graveyard.clone();
+        publish_tracked_set_with_causes(
+            state,
+            discarded_to_graveyard
+                .into_iter()
+                .map(|id| (id, Some(ThisWayCause::Discarded)))
+                .collect(),
+        );
+    }
+    if !chosen.is_empty() {
+        if let Some(frame) = state.active_ability_continuation_frame_mut() {
+            frame
+                .pending
+                .chain
+                .set_optional_effect_performed_recursive(true);
+        }
+    }
+    if let Some(frame_id) = discard_frame {
+        discard::hand_off_recruit_discard_result(state, frame_id);
+    }
+    if let Some(snapshot) = parent_referent_context_from_events(state, events) {
+        if let Some(frame) = state.active_ability_continuation_frame_mut() {
+            frame
+                .pending
+                .chain
+                .set_effect_context_object_recursive(snapshot);
+        }
+    }
+    state.last_effect_count = Some(chosen.len() as i32);
 }
 
 /// Re-park a batch that paused again, carrying the resumed action's span into
@@ -19531,6 +19629,7 @@ mod tests {
             Some(Box::new(crate::types::game_state::PendingDiscardBatch {
                 player,
                 cursor: DiscardBatchCursor::All { remaining },
+                completion: crate::types::game_state::PendingDiscardBatchCompletion::Standard,
                 source_id,
                 effect_kind: EffectKind::Discard,
                 paused_card: crate::types::identifiers::ObjectIncarnationRef::of(

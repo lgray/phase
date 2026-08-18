@@ -4082,6 +4082,13 @@ pub struct PendingDiscardBatch {
     pub player: PlayerId,
     /// What this seat still owes.
     pub cursor: DiscardBatchCursor,
+    /// Work that must run exactly once after the cursor has fully settled.
+    ///
+    /// An interactive discard choice normally finalizes in its response
+    /// handler. A replacement can interrupt that handler mid-selection, so its
+    /// completion belongs to the same typed carrier as the remaining cards.
+    #[serde(default)]
+    pub completion: PendingDiscardBatchCompletion,
     /// The object that caused the discard. Together with `effect_kind` and
     /// `player` this is the batch's identity: the driver hand-off below refuses
     /// any batch whose identity does not match the clause it is running.
@@ -4158,6 +4165,24 @@ pub enum DiscardBatchCursor {
         pool: Vec<ObjectId>,
         remaining: usize,
     },
+    /// An announced ordered list of cards. Unlike `All`, these may belong to
+    /// different owners and their exact pre-move occurrences are part of the
+    /// instruction's identity.
+    Ordered {
+        remaining: Vec<ObjectIncarnationRef>,
+    },
+}
+
+/// Terminal work coupled to a parked discard cursor.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum PendingDiscardBatchCompletion {
+    #[default]
+    Standard,
+    /// A player already selected these cards through `WaitingFor::DiscardChoice`.
+    /// Keep their incarnation references so neither an id-reused object nor a
+    /// later hand card can satisfy the original selection after a pause.
+    DiscardChoice { chosen: Vec<ObjectIncarnationRef> },
 }
 
 /// The remainder of a `player_scope` discard clause whose fan-out was
@@ -25836,6 +25861,7 @@ mod tests {
             cursor: DiscardBatchCursor::All {
                 remaining: vec![ObjectId(9_301), ObjectId(9_302)],
             },
+            completion: PendingDiscardBatchCompletion::Standard,
             source_id: ObjectId(9_300),
             effect_kind: crate::types::ability::EffectKind::Discard,
             paused_card: ObjectIncarnationRef::of(ObjectId(9_303), 0),

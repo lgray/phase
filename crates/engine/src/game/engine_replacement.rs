@@ -1050,11 +1050,21 @@ pub(super) fn handle_replacement_choice(
                     effects::PendingDiscardBatchOutcome::Idle => {}
                     effects::PendingDiscardBatchOutcome::PausedForReplacement => {
                         waiting_for = state.waiting_for.clone();
+                        super::engine_resolution_choices::defer_observer_triggers_for_paused_choice(
+                            state,
+                            events,
+                            replacement_action_event_start,
+                        );
                     }
                     effects::PendingDiscardBatchOutcome::Completed => {
                         effects::drain_pending_continuation(state, events);
                         if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
                             waiting_for = state.waiting_for.clone();
+                            super::engine_resolution_choices::defer_observer_triggers_for_paused_choice(
+                                state,
+                                events,
+                                replacement_action_event_start,
+                            );
                         }
                     }
                 }

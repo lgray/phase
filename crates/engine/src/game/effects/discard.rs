@@ -180,10 +180,13 @@ fn park_discard_batch(
     paused_card: ObjectIncarnationRef,
     discard_frame: Option<crate::types::identifiers::DiscardFrameId>,
     preceding_events: Vec<GameEvent>,
+    completion: crate::types::game_state::PendingDiscardBatchCompletion,
 ) {
+    let paused_events = preceding_events.clone();
     state.pending_discard_batch = Some(Box::new(crate::types::game_state::PendingDiscardBatch {
         player,
         cursor,
+        completion,
         source_id,
         effect_kind,
         paused_card,
@@ -193,6 +196,11 @@ fn park_discard_batch(
         fan_out: None,
         preceding_events,
     }));
+    crate::game::engine_resolution_choices::defer_observer_triggers_for_paused_choice(
+        state,
+        &paused_events,
+        0,
+    );
 }
 
 /// CR 400.7: pin the occurrence a replacement pause parked, while the card is
@@ -384,7 +392,7 @@ pub fn resolve(
         || (object_bound_discard && parent_reveal_choice_found_nothing)
     {
         // Discard specific targeted cards
-        for obj_id in specific_targets {
+        for (index, obj_id) in specific_targets.iter().copied().enumerate() {
             let obj = state
                 .objects
                 .get(&obj_id)
@@ -424,28 +432,27 @@ pub fn resolve(
                                     events,
                                 )
                             {
-                                // SAME SHAPE, NOT YET REPAIRED. Like the
-                                // whole-hand loop before `park_discard_batch`,
-                                // this exits mid-list with no cursor, so the
-                                // untouched targets are never discarded and no
-                                // terminal `EffectResolved` is emitted. It is
-                                // NOT parked here because a specific-target
-                                // list needs a different provenance contract:
-                                // the whole-hand cursor's remainder is any
-                                // subset of one seat's hand and is order-free,
-                                // while this one must preserve the ANNOUNCED
-                                // target list and its order. Parking it under
-                                // the hand-shaped cursor would silently discard
-                                // the wrong cards. (Deliberately uncited: the
-                                // target-legality rule CR 608.2b runs once, as
-                                // the spell begins to resolve, so it does not
-                                // govern a mid-resolution resume. Whatever
-                                // contract this needs must be derived, not
-                                // borrowed.) Tracked with the rest of the class.
                                 state.waiting_for =
                                     crate::game::replacement::replacement_choice_waiting_for(
                                         player, state,
                                     );
+                                park_discard_batch(
+                                    state,
+                                    player_id,
+                                    crate::types::game_state::DiscardBatchCursor::Ordered {
+                                        remaining: specific_targets[index + 1..]
+                                            .iter()
+                                            .filter_map(|id| state.objects.get(id))
+                                            .map(ObjectIncarnationRef::from_object)
+                                            .collect(),
+                                    },
+                                    ability.source_id,
+                                    EffectKind::from(&ability.effect),
+                                    pin_paused_occurrence(state, obj_id),
+                                    discard_frame,
+                                    events[events_before_self..].to_vec(),
+                                    crate::types::game_state::PendingDiscardBatchCompletion::Standard,
+                                );
                                 return Ok(());
                             }
                         }
@@ -486,11 +493,25 @@ pub fn resolve(
                     }
                 }
                 ReplacementResult::NeedsChoice(player) => {
-                    // Same un-parked mid-list bail-out as the arm above; see the
-                    // provenance-contract note there for why the specific-target
-                    // list is not carried by the hand-shaped cursor.
                     state.waiting_for =
                         crate::game::replacement::replacement_choice_waiting_for(player, state);
+                    park_discard_batch(
+                        state,
+                        player_id,
+                        crate::types::game_state::DiscardBatchCursor::Ordered {
+                            remaining: specific_targets[index + 1..]
+                                .iter()
+                                .filter_map(|id| state.objects.get(id))
+                                .map(ObjectIncarnationRef::from_object)
+                                .collect(),
+                        },
+                        ability.source_id,
+                        EffectKind::from(&ability.effect),
+                        pin_paused_occurrence(state, obj_id),
+                        discard_frame,
+                        events[events_before_self..].to_vec(),
+                        crate::types::game_state::PendingDiscardBatchCompletion::Standard,
+                    );
                     return Ok(());
                 }
             }
@@ -570,6 +591,7 @@ pub fn resolve(
                     paused_card,
                     discard_frame,
                     events[events_before_self..].to_vec(),
+                    crate::types::game_state::PendingDiscardBatchCompletion::Standard,
                 );
                 return Ok(());
             }
@@ -609,6 +631,7 @@ pub fn resolve(
                         pin_paused_occurrence(state, *obj_id),
                         discard_frame,
                         events[events_before_self..].to_vec(),
+                        crate::types::game_state::PendingDiscardBatchCompletion::Standard,
                     );
                     return Ok(());
                 }

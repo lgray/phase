@@ -6217,6 +6217,7 @@ mod tests {
                 cursor: crate::types::game_state::DiscardBatchCursor::All {
                     remaining: vec![hidden],
                 },
+                completion: crate::types::game_state::PendingDiscardBatchCompletion::Standard,
                 source_id: ObjectId(9_300),
                 effect_kind: crate::types::ability::EffectKind::Discard,
                 paused_card: crate::types::identifiers::ObjectIncarnationRef::of(hidden, 0),

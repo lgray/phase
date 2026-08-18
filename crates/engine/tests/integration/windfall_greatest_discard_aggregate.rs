@@ -21,13 +21,15 @@
 //! set to a cross-player SUM, Windfall drew 8+7+3+3 = 21 for every player
 //! instead of the greatest single player's 8.
 
+use engine::game::engine::apply;
 use engine::game::scenario::{GameRunner, GameScenario, Outcome, P0, P1};
 use engine::types::ability::{
-    AbilityDefinition, AbilityKind, Effect, ReplacementDefinition, ReplacementMode, TargetFilter,
+    AbilityDefinition, AbilityKind, Effect, ReplacementDefinition, ReplacementMode,
+    ResolvedAbility, TargetFilter, TargetRef,
 };
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
-use engine::types::game_state::WaitingFor;
+use engine::types::game_state::{PersistedGameState, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaCost;
 use engine::types::phase::Phase;
@@ -584,6 +586,20 @@ fn windfall_paused_mid_fan_out_still_draws_the_greatest() {
     // to answer; from there this test drives the prompts itself so it can count
     // them.
     runner.cast(windfall).resolve();
+    assert!(
+        runner.state().pending_discard_batch.is_some(),
+        "reach guard: the first Library of Leng prompt must park Windfall's live discard batch"
+    );
+    let saved = serde_json::to_string(&PersistedGameState::capture(runner.state().clone()))
+        .expect("parked Windfall state serializes through the authoritative persistence envelope");
+    let restored: PersistedGameState = serde_json::from_str(&saved)
+        .expect("parked Windfall state restores through the authoritative persistence envelope");
+    let restored = restored.into_game_state();
+    assert!(
+        restored.pending_discard_batch.is_some(),
+        "the live discard cursor must survive save and restore before its replacement choice"
+    );
+    let mut runner = GameRunner::from_state(restored);
     let prompts = answer_every_replacement_choice(&mut runner, "Decline");
     runner.advance_until_stack_empty();
 
@@ -613,6 +629,77 @@ fn windfall_paused_mid_fan_out_still_draws_the_greatest() {
         },
         "a replacement pause must not truncate the batch (prompts/graveyards) nor split \
          the clause's per-player table (drawn/hands)"
+    );
+}
+
+#[test]
+fn replacement_resumed_targeted_discard_preserves_the_announced_multi_owner_tail() {
+    let mut scenario = GameScenario::new_n_player(3, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let first = scenario.add_card_to_hand(P1, "First Target");
+    let second = scenario.add_card_to_hand(P2, "Second Target");
+    let source = scenario
+        .add_spell_to_hand(P0, "Targeted Discard", false)
+        .id();
+    scenario
+        .add_creature(P0, "Graveyard Warden", 1, 1)
+        .with_replacement_definition(
+            optional_graveyard_exile_replacement()
+                .valid_card(TargetFilter::SpecificObject { id: first }),
+        );
+    let mut runner = scenario.build();
+    let ability = ResolvedAbility::new(
+        Effect::DiscardCard {
+            count: 2,
+            target: TargetFilter::SpecificObject { id: first },
+        },
+        vec![TargetRef::Object(first), TargetRef::Object(second)],
+        source,
+        P0,
+    );
+    let mut initial_events = Vec::new();
+    engine::game::effects::resolve_ability_chain(
+        runner.state_mut(),
+        &ability,
+        &mut initial_events,
+        0,
+    )
+    .expect("the announced targeted discard resolves to its first replacement choice");
+
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ReplacementChoice { .. }
+    ));
+    assert!(matches!(
+        runner.state().pending_discard_batch.as_deref().map(|batch| &batch.cursor),
+        Some(engine::types::game_state::DiscardBatchCursor::Ordered { remaining })
+            if remaining.len() == 1 && remaining[0].object_id == second
+    ));
+
+    let result = apply(
+        runner.state_mut(),
+        P1,
+        GameAction::ChooseReplacement { index: 0 },
+    )
+    .expect("accept the first target's graveyard redirect");
+
+    assert_eq!(runner.state().objects[&first].zone, Zone::Exile);
+    assert_eq!(runner.state().objects[&second].zone, Zone::Graveyard);
+    assert!(runner.state().pending_discard_batch.is_none());
+    assert_eq!(
+        result
+            .events
+            .iter()
+            .filter(
+                |event| matches!(event, engine::types::events::GameEvent::EffectResolved {
+                kind: engine::types::ability::EffectKind::DiscardCard,
+                source_id: event_source,
+                ..
+            } if *event_source == source)
+            )
+            .count(),
+        1,
+        "the resumed ordered target list emits its terminal marker exactly once"
     );
 }
 
