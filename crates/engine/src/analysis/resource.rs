@@ -4383,8 +4383,13 @@ fn fire_time_conditions_read_growing_class_scoped(
             // that reads the class keeps vetoing on its own turn through the loop.
             //
             // ORDERED AFTER the scan, not before it (the one place this differs from the
-            // plan's sketch, and it mirrors block (1b)'s landed shape at `:4232-4240`
-            // where the scan likewise precedes its `class_members` consult): both arms
+            // plan's sketch, and it mirrors block (1b)'s landed shape, where the scan
+            // likewise precedes its `class_members` consult). BLOCK (1b) IS PINNED BY
+            // SYMBOL, NEVER BY LINE: its consult is the `members.iter().all(..)` call of
+            // `crate::game::triggers::etb_observer_provably_excludes_class` earlier in
+            // THIS function. The `:4232-4240` coordinate this comment used to carry had
+            // already drifted twice in one round, and a stale pin does not go stale
+            // loudly — it silently cites whatever code moved into those lines. Both arms
             // CLONE the def and re-run the whole scan once PER MEMBER for conjunct (a),
             // so evaluating them for abilities that carry no veto at all would pay the
             // arms' cost on every ability of every battlefield permanent to relieve a
@@ -4412,7 +4417,7 @@ fn fire_time_conditions_read_growing_class_scoped(
     // BOTH stores. The zone argument for the object-attached half, and the argument for why
     // the floating half carries no zone gate at all, now live on the two halves of
     // [`loop_window_replacement_defs`] — that is where the deleted inline gate went.
-    for def in loop_window_replacement_defs(state) {
+    for (_source, def) in loop_window_replacement_defs(state) {
         if def
             .condition
             .as_ref()
@@ -5260,7 +5265,7 @@ fn fire_time_conditions_read_projected_resource_scoped(
     // modification) are treated fail-closed — conservative, fail-safe (no shortcut).
     // BOTH stores, via the same shared walk block (3) uses; see
     // [`loop_window_replacement_defs`] for the per-half zone argument.
-    for def in loop_window_replacement_defs(state) {
+    for (_source, def) in loop_window_replacement_defs(state) {
         if def
             .condition
             .as_ref()
@@ -5523,7 +5528,7 @@ fn board_has_event_observer(
         // BOTH replacement stores (CR 611.3 object-attached + CR 611.2 floating) — see
         // [`loop_window_replacement_defs`]. A floating `CreateToken`/`AddCounter` doubler applies
         // through the same pipeline as a board one, so it is the same observer.
-        || loop_window_replacement_defs(state).any(|def| def.event == repl_event)
+        || loop_window_replacement_defs(state).any(|(_source, def)| def.event == repl_event)
 }
 
 /// CR 603.2 + CR 113.6: does any battlefield/command-FUNCTIONING trigger fire on exactly
@@ -5551,12 +5556,28 @@ fn board_has_keyed_trigger(
 ///
 /// The zone narrowing is this walk's whole contribution: `active_replacements` is all-zones, and
 /// dropping the narrowing would let a graveyard-resident replacement route loops.
+///
+/// IT YIELDS THE HOST OBJECT, AND NARROWING THE ITEM BACK TO THE BARE DEF IS A CAPABILITY
+/// DELETION, NOT A TIDY-UP. The extraction that created this walk discarded `obj`
+/// (`.map(|(_, _, def)| def)`) on the verified ground that the deleted inline zone gate was its
+/// only reader. That was true of the tree at that moment and false one phase later, because
+/// nothing else can supply what `obj` supplies: `ReplacementDefinition` has NO source-id field at
+/// all, and its `source_controller` is documented `None` for exactly the object-attached case —
+/// *"`None` = resolve controller from the source object as before (every object-attached
+/// replacement)"* (`types/ability.rs`, `ReplacementDefinition::source_controller`). So for a board
+/// def the host object is the ONLY route to either the source id or its controller.
+///
+/// The law, stated here because this is the site it governs: *"this field is read only by the code
+/// I am deleting" is a claim about the current tree, not about the abstraction.* When an extraction
+/// narrows a shared walk's item type, the audit question is "what could a caller want that the
+/// narrowed type cannot express?", never "who reads it today?". Callers wanting only the def
+/// discard the object at their own site, where the discard is local and reversible.
 fn functioning_board_replacement_defs(
     state: &GameState,
-) -> impl Iterator<Item = &crate::types::ability::ReplacementDefinition> {
+) -> impl Iterator<Item = (&GameObject, &crate::types::ability::ReplacementDefinition)> {
     crate::game::functioning_abilities::active_replacements(state)
         .filter(|(_, obj, _)| matches!(obj.zone, Zone::Battlefield | Zone::Command))
-        .map(|(_, _, def)| def)
+        .map(|(_, obj, def)| (obj, def))
 }
 
 /// CR 611.2 / CR 614.3: every LIVE game-state-level ("floating") replacement definition —
@@ -5648,10 +5669,28 @@ fn live_floating_replacement_defs(
 /// `matches!(obj.zone, Battlefield | Command)` gate, and every one of them was structurally blind to
 /// the floating store: the gate needs `obj.zone`, and a floating def has no object. Unioning inside
 /// the shared walk closes all three at once instead of repairing one and leaving two.
+///
+/// `Option<&GameObject>` IS THE STORE DISCRIMINANT, AND `None` IS NOT "HOST UNKNOWN" — IT IS "NO
+/// HOST EXISTS". A board def is CR 611.3 continuous-effect machinery hosted BY a permanent, so its
+/// host is always present; a floating def is CR 611.2 machinery installed under the sentinel
+/// `ObjectId(0)`, which has no entry in `state.objects` at all (see
+/// [`live_floating_replacement_defs`], and `ReplacementDefinition::source_controller`'s own doc,
+/// which exists precisely because that sentinel has no controller to resolve). A caller that needs
+/// a source identity therefore gets it for the board half and must decide the floating half on its
+/// own terms — fail-closed being the only sound direction — rather than being handed a synthesized
+/// host that does not exist. The order of the union is part of the contract: board defs first, in
+/// `active_replacements` order, then live floating defs in store order.
 fn loop_window_replacement_defs(
     state: &GameState,
-) -> impl Iterator<Item = &crate::types::ability::ReplacementDefinition> {
-    functioning_board_replacement_defs(state).chain(live_floating_replacement_defs(state))
+) -> impl Iterator<
+    Item = (
+        Option<&GameObject>,
+        &crate::types::ability::ReplacementDefinition,
+    ),
+> {
+    functioning_board_replacement_defs(state)
+        .map(|(obj, def)| (Some(obj), def))
+        .chain(live_floating_replacement_defs(state).map(|def| (None, def)))
 }
 
 /// CR 614.1d / CR 614.12 / CR 119.3: is any battlefield/command-functioning replacement watching
@@ -5705,7 +5744,7 @@ pub(crate) fn board_has_active_replacement_among(
     state: &GameState,
     repl_events: &[ReplacementEvent],
 ) -> bool {
-    functioning_board_replacement_defs(state).any(|def| {
+    functioning_board_replacement_defs(state).any(|(_source, def)| {
         repl_events.contains(&def.event)
             && !matches!(
                 def.valid_card,
@@ -15078,7 +15117,7 @@ mod tests {
         // and not an empty board's.
         assert_eq!(
             functioning_board_replacement_defs(&taplands)
-                .filter(|d| d.event == ReplacementEvent::Moved)
+                .filter(|(_, d)| d.event == ReplacementEvent::Moved)
                 .count(),
             12,
             "reach-guard: twelve functioning battlefield `Moved` replacements are installed"
@@ -15280,6 +15319,188 @@ mod tests {
         );
     }
 
+    /// ★ `C3A-1` — THE BEHAVIOUR-IDENTITY ROW for [`loop_window_replacement_defs`]'s yield
+    /// change. Its assert tag is a REGISTERED DISCRIMINATOR; the wording is load-bearing.
+    ///
+    /// The yield went from `&ReplacementDefinition` to `(Option<&GameObject>, &_)` so a caller can
+    /// reach a board def's host again. NOTHING ELSE MAY MOVE — and "the same defs come out" is a
+    /// claim about a SEQUENCE, not a count: a count-only assertion is satisfied by a permuted set,
+    /// by a def paired with the wrong host, and by a floating def wearing `Some(..)`. So this row
+    /// pins ORDER and IDENTITY at every position.
+    ///
+    /// FIXTURE MINIMA, each present because a smaller one cannot fail: TWO board defs on TWO
+    /// DISTINCT objects (one of each kind cannot exhibit a swap, and with one board object "the
+    /// right host" is not a discriminating claim) and TWO live floating defs. Plus two controls
+    /// that must never appear in the sequence — a graveyard-resident def (it passes
+    /// `object_functions`, so ONLY the zone filter excludes it) and a consumed floating def
+    /// positioned BETWEEN the two live ones, so the liveness filter must skip it rather than
+    /// truncate the tail.
+    ///
+    /// THE ORACLE IS BUILT FROM THE TWO RAW STORES, never by re-calling the walk under test.
+    /// Board order comes from `active_replacements` because `state.objects` is an `im::HashMap`
+    /// whose iteration order is a hash detail, not insertion order — so it is read, not asserted;
+    /// every other axis of the sequence is asserted literally.
+    ///
+    /// REVERT-PROBES (each must RED on `C3A-1`):
+    /// * swap the `.chain()` order in [`loop_window_replacement_defs`];
+    /// * map the floating half to `Some(..)` / the board half to `None`;
+    /// * pair a board def with any object other than its host;
+    /// * drop the board half's zone filter, or the floating half's `!is_consumed` filter.
+    #[test]
+    fn c3a_loop_window_yield_pins_the_def_sequence_and_the_host_binding() {
+        use crate::types::ability::ReplacementDefinition;
+
+        let mut state = GameState::new_two_player(7);
+        install_board_replacement(
+            &mut state,
+            700,
+            ReplacementDefinition::new(ReplacementEvent::CreateToken),
+        );
+        install_board_replacement(
+            &mut state,
+            701,
+            ReplacementDefinition::new(ReplacementEvent::AddCounter),
+        );
+        // ZONE CONTROL: a functioning object OUTSIDE [Battlefield, Command].
+        let gy_def = ReplacementDefinition::new(ReplacementEvent::Draw);
+        let mut gy_obj = GameObject::new(
+            ObjectId(702),
+            CardId(7),
+            PlayerId(1),
+            "Graveyard Resident".to_string(),
+            Zone::Graveyard,
+        );
+        gy_obj.base_replacement_definitions = std::sync::Arc::new(vec![gy_def.clone()]);
+        gy_obj.replacement_definitions = vec![gy_def].into();
+        state.objects.insert(ObjectId(702), gy_obj);
+        // Floating half: live, CONSUMED (control), live — in that store order.
+        install_floating_replacement(
+            &mut state,
+            ReplacementDefinition::new(ReplacementEvent::GainLife),
+        );
+        let mut consumed = ReplacementDefinition::new(ReplacementEvent::Tap);
+        consumed.is_consumed = true;
+        install_floating_replacement(&mut state, consumed);
+        install_floating_replacement(
+            &mut state,
+            ReplacementDefinition::new(ReplacementEvent::Mill),
+        );
+
+        // Reach-guards: the fixture really landed, so an equality below is the walk's verdict and
+        // not two empty vectors agreeing.
+        assert_eq!(
+            crate::game::functioning_abilities::active_replacements(&state).count(),
+            3,
+            "reach-guard: three FUNCTIONING object-attached defs exist (two battlefield, one \
+             graveyard) — the zone control is inside the walk this filters, not outside it"
+        );
+        assert_eq!(
+            state.pending_damage_replacements.len(),
+            3,
+            "reach-guard: three floating defs are installed, one of them consumed"
+        );
+
+        let observed: Vec<(Option<ObjectId>, ReplacementEvent)> =
+            loop_window_replacement_defs(&state)
+                .map(|(host, def)| (host.map(|obj| obj.id), def.event.clone()))
+                .collect();
+
+        let expected: Vec<(Option<ObjectId>, ReplacementEvent)> =
+            crate::game::functioning_abilities::active_replacements(&state)
+                .filter(|(_, obj, _)| obj.zone == Zone::Battlefield)
+                .map(|(_, obj, def)| (Some(obj.id), def.event.clone()))
+                .chain(
+                    state
+                        .pending_damage_replacements
+                        .iter()
+                        .filter(|def| !def.is_consumed)
+                        .map(|def| (None, def.event.clone())),
+                )
+                .collect();
+        // The ORACLE'S own guard: everything about it except the two board objects' relative
+        // order is asserted, so a broken oracle cannot agree with a broken walk.
+        assert_eq!(
+            expected.len(),
+            4,
+            "oracle: two board defs then two live floating defs"
+        );
+        assert_eq!(
+            expected[2..],
+            [
+                (None, ReplacementEvent::GainLife),
+                (None, ReplacementEvent::Mill)
+            ],
+            "oracle: the floating tail is hostless, in store order, with the consumed def skipped"
+        );
+        let board_head: HashSet<(u64, ReplacementEvent)> = expected[..2]
+            .iter()
+            .map(|(host, event)| {
+                (
+                    host.expect("oracle: a board entry always has a host").0,
+                    event.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            board_head,
+            [
+                (700, ReplacementEvent::CreateToken),
+                (701, ReplacementEvent::AddCounter)
+            ]
+            .into_iter()
+            .collect(),
+            "oracle: the board head is exactly the two installed defs on their own hosts"
+        );
+
+        assert_eq!(
+            observed, expected,
+            "C3A-1: the loop-window walk must yield EXACTLY the zone-gated board defs on their \
+             own hosts, in `active_replacements` order, then the LIVE floating defs as hostless \
+             entries in store order. Order and host are both part of this — a permuted sequence, \
+             a def paired with another object, or a floating def wearing `Some(..)` all preserve \
+             the count and all change what a consumer of the host binding would read"
+        );
+
+        // The host binding is REAL, not a coincidence of position: every yielded pair is checked
+        // against the store it actually came from, by pointer identity.
+        for (host, def) in loop_window_replacement_defs(&state) {
+            match host {
+                Some(obj) => assert!(
+                    obj.replacement_definitions
+                        .iter_all()
+                        .any(|owned| std::ptr::eq(owned, def)),
+                    "C3A-1 host: a `Some(..)` entry must carry the object that actually HOSTS \
+                     that def, not merely some battlefield object"
+                ),
+                None => assert!(
+                    state
+                        .pending_damage_replacements
+                        .iter()
+                        .any(|floating| std::ptr::eq(floating, def)),
+                    "C3A-1 host: a `None` entry must come from the floating store, where no host \
+                     exists to bind — never from a board def whose host was dropped"
+                ),
+            }
+        }
+
+        // THE CALL-SITE IDENTITY CLAIM, stated as code: all three call sites read only `def`, so
+        // what they observe is this projection — and it must equal the pre-C3a body verbatim.
+        let via_union: Vec<*const ReplacementDefinition> = loop_window_replacement_defs(&state)
+            .map(|(_, def)| std::ptr::from_ref(def))
+            .collect();
+        let pre_c3a: Vec<*const ReplacementDefinition> = functioning_board_replacement_defs(&state)
+            .map(|(_, def)| def)
+            .chain(live_floating_replacement_defs(&state))
+            .map(std::ptr::from_ref)
+            .collect();
+        assert_eq!(
+            via_union, pre_c3a,
+            "C3A-1 call sites: projecting the host away must reproduce the pre-C3a body \
+             (`functioning_board_replacement_defs(state).chain(live_floating_replacement_defs\
+             (state))`) def-for-def and position-for-position"
+        );
+    }
+
     /// Asserts every conjunct of [`life_growth_is_observed`] EXCEPT the replacement half is
     /// silent, so the row's verdict is attributable to that half alone.
     fn assert_only_the_life_replacement_half_can_speak(state: &GameState) {
@@ -15333,7 +15554,7 @@ mod tests {
             // filter's verdict and not a fixture that silently dropped its def.
             assert_eq!(
                 functioning_board_replacement_defs(&state)
-                    .filter(|d| d.event == ReplacementEvent::GainLife)
+                    .filter(|(_, d)| d.event == ReplacementEvent::GainLife)
                     .count(),
                 1,
                 "reach-guard: one functioning battlefield `GainLife` replacement is installed"
@@ -15397,7 +15618,7 @@ mod tests {
         // below is the replacement half's verdict and the revert probe can actually flip it.
         assert_eq!(
             functioning_board_replacement_defs(&state)
-                .filter(|d| d.event == ReplacementEvent::AddCounter)
+                .filter(|(_, d)| d.event == ReplacementEvent::AddCounter)
                 .count(),
             1,
             "reach-guard: one functioning battlefield `AddCounter` replacement is installed"
