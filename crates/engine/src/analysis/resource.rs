@@ -3656,7 +3656,7 @@ fn execute_ledger_condition_provably_excludes_class(
 /// across the loop's growth and this def does not observe the loop.
 ///
 /// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan`'s arm is
-/// `Effect::Pump { .. } => Axes::CONSERVATIVE` (ability_scan.rs:501) — BLANKET, payload
+/// `Effect::Pump { .. } => Axes::CONSERVATIVE` (ability_scan.rs:511) — BLANKET, payload
 /// discarded. No scanner change can distinguish a class-reading aggregate from a
 /// class-disjoint one, so the distinction has to be drawn where the class is known.
 ///
@@ -3674,9 +3674,9 @@ fn execute_ledger_condition_provably_excludes_class(
 ///
 /// ⛔ ARG-EQUIVALENCE PIN. Conjunct (d) calls
 /// `game::quantity::object_count_matching_ids(state, filter, &ctx, source.id)` — literally
-/// the call the `QuantityRef::Aggregate` resolver arm makes at game/quantity.rs:3692 — so
+/// the call the `QuantityRef::Aggregate` resolver arm makes at game/quantity.rs:3701 — so
 /// this predicate asks THE SAME id-population authority the resolver will ask, about the
-/// NEW class member. `aggregate_property_over` (game/quantity.rs:3693) is deliberately NOT
+/// NEW class member. `aggregate_property_over` (game/quantity.rs:3702) is deliberately NOT
 /// called: it aggregates over exactly those ids, so an id population that excludes the
 /// member makes its value invariant whatever the absolute value is. Do not "simplify" this
 /// into `matches_target_filter`: that is a different authority (zone selection and the
@@ -3697,7 +3697,7 @@ fn execute_ledger_condition_provably_excludes_class(
 /// ⛔ CONTEXT-SHAPE GUARD, and why relief WITHOUT it would be unsound. At fire time
 /// `resolve_ref` builds the filter context from the RESOLVING ability
 /// (`FilterContext::from_ability_with_controller(a, a.original_controller.unwrap_or(a.controller))`,
-/// game/quantity.rs:3218-3221). At firewall time no `ResolvedAbility` exists, so this arm
+/// game/quantity.rs:3227-3230). At firewall time no `ResolvedAbility` exists, so this arm
 /// must build `FilterContext::from_source_with_controller(source.id, source.controller)`.
 /// The two differ in `ability`, `trigger_source`, `scoped_iteration_player` and
 /// `recipient_id` (game/filter.rs:1116-1133, :1200-1209, :1296-1308). That difference is
@@ -3710,16 +3710,16 @@ fn execute_ledger_condition_provably_excludes_class(
 /// NOT A VISITOR (#4603 error direction), same as its sibling — four fail-closed conjuncts,
 /// each keeping the conservative veto whenever it cannot prove its half:
 ///   (0) NO ACTIVATION RESTRICTIONS: `ability_definition_axes` destructures
-///       `activation_restrictions: _` (ability_scan.rs:4601 — re-measured at this commit;
+///       `activation_restrictions: _` (ability_scan.rs:4627 — re-measured at this commit;
 ///       the sibling arm's doc above still cites the pre-drift `:4238`), so the scan is
 ///       BLIND to them
 ///       and conjunct (a)'s rescan would answer `false` even with a class-matching
 ///       `ActivationRestriction::RequiresCondition` on the same def.
 ///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the EFFECT
-///       with `Effect::NoOp` (`Effect::NoOp => Axes::NONE`, ability_scan.rs:822) and re-run
+///       with `Effect::NoOp` (`Effect::NoOp => Axes::NONE`, ability_scan.rs:832) and re-run
 ///       `ability_definition_reads_sibling_mutable_for_loop`. Only if THAT is `false` is the
 ///       effect the def's only sibling read — `ability_definition_axes` destructures with
-///       NO `..` (ability_scan.rs:4573-4619), so the rescan covers `sub_ability`,
+///       NO `..` (ability_scan.rs:4599-4645), so the rescan covers `sub_ability`,
 ///       `else_ability`, `duration`, `condition`, `multi_target`, `target_constraints`,
 ///       `modal`, `mode_abilities`, `repeat_for`, `announced_x`, `player_scope`,
 ///       `starting_with`, `target_chooser`, `repeat_until`, `unless_pay`, `distribute`,
@@ -3739,7 +3739,7 @@ fn pump_aggregate_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::Effect;
 
-    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4601) —
+    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4627) —
     // fail closed.
     if !exec.activation_restrictions.is_empty() {
         return false;
@@ -3817,9 +3817,9 @@ fn pt_value_aggregate_provably_excludes_class(
     }
     // The resolver's OTHER context branch is unreachable for this shape, and that is a
     // measured property of the type rather than of this fixture: `resolve_ref` swaps in a
-    // scoped context when `filter.references_exiled_by_source()` (game/quantity.rs:3673-3691),
+    // scoped context when `filter.references_exiled_by_source()` (game/quantity.rs:3682-3700),
     // and that predicate answers `true` only for `ExiledBySource` / `And` / `Or` /
-    // `TrackedSetFiltered`, with `_ => false` covering `Typed` (types/ability.rs:15911-15923).
+    // `TrackedSetFiltered`, with `_ => false` covering `Typed` (types/ability.rs:16237-16249).
     // The guard above has already refused every non-`Typed` filter, so this holds by
     // construction. Stated as a `debug_assert!` and NOT as a `return false` branch: a
     // runtime arm here would be dead code, and its usual justification ("a future
@@ -3830,7 +3830,7 @@ fn pt_value_aggregate_provably_excludes_class(
         "a `TargetFilter::Typed` can never reference the source's exile set; if it can, the \
          arg-equivalence pin below is against the wrong `FilterContext`"
     );
-    // ARG-EQUIVALENCE PIN — game/quantity.rs:3692.
+    // ARG-EQUIVALENCE PIN — game/quantity.rs:3701.
     !crate::game::quantity::object_count_matching_ids(state, filter, ctx, source_id)
         .contains(&class_member)
 }
@@ -3881,7 +3881,7 @@ fn pt_value_aggregate_provably_excludes_class(
 /// fail-closed conjuncts, each keeping the conservative veto whenever it cannot prove
 /// its half:
 ///   (0) NO ACTIVATION RESTRICTIONS: `ability_definition_axes` destructures
-///       `activation_restrictions: _` (ability_scan.rs:4601), so the scan is BLIND to
+///       `activation_restrictions: _` (ability_scan.rs:4627), so the scan is BLIND to
 ///       them and conjunct (a)'s rescan would answer `false` even with a
 ///       class-matching restriction on the same def.
 ///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the
@@ -3915,7 +3915,7 @@ fn exiled_colors_provably_exclude_class(
 ) -> bool {
     use crate::types::ability::{Effect, ManaProduction};
 
-    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4601) —
+    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4627) —
     // fail closed.
     if !ability.activation_restrictions.is_empty() {
         return false;
@@ -4000,7 +4000,7 @@ fn counters_on_source_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::{Effect, ManaProduction, ObjectScope, QuantityExpr, QuantityRef};
 
-    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4601) —
+    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4627) —
     // fail closed.
     if !ability.activation_restrictions.is_empty() {
         return false;
@@ -4314,7 +4314,7 @@ fn fire_time_conditions_read_growing_class_scoped(
             // that reads the class keeps vetoing on its own turn through the loop.
             //
             // ORDERED AFTER the scan, not before it (the one place this differs from the
-            // plan's sketch, and it mirrors block (1b)'s landed shape at `:3989-3997`
+            // plan's sketch, and it mirrors block (1b)'s landed shape at `:4208-4216`
             // where the scan likewise precedes its `class_members` consult): both arms
             // CLONE the def and re-run the whole scan once PER MEMBER for conjunct (a),
             // so evaluating them for abilities that carry no veto at all would pay the
@@ -5545,9 +5545,9 @@ fn functioning_board_replacement_defs(
 ///
 /// THE LIVENESS FILTER IS PARITY WITH THE PRODUCTION ADMISSION GATE, NOT CAUTION — and the
 /// distinction matters, because only the parity claim survives review. `find_applicable_replacements`
-/// scans this exact store at `game/replacement.rs:7162`
+/// scans this exact store at `game/replacement.rs:7412`
 /// (`for (index, repl_def) in state.pending_damage_replacements.iter().enumerate()`) and its very
-/// next line, `:7163`, is `if repl_def.is_consumed { continue; }`. So `!def.is_consumed` is the same
+/// next line, `:7413`, is `if repl_def.is_consumed { continue; }`. So `!def.is_consumed` is the same
 /// admission test the pipeline itself applies, and it is the ONLY one that scan applies before the
 /// per-event gates. A consumed def therefore CANNOT apply, and declining to count it is EXACT — not
 /// an under-veto, which is the one direction that could break #7045. (No consumed-but-live runtime
@@ -10471,7 +10471,7 @@ mod tests {
     ///
     /// ⚠ SCOPE, since phase C's S1: this body reads NOTHING — it is
     /// `Pump{Fixed(0), Fixed(0)}`, and it classifies `Axes::CONSERVATIVE` only because
-    /// `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (ability_scan.rs:501) discards the
+    /// `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (ability_scan.rs:511) discards the
     /// payload. That over-approximation is still the whole veto at every surface S1 does
     /// NOT narrow — block (2)'s `obj.abilities` scan, which is where every remaining caller
     /// puts it — so this helper is correct and unchanged there. It is NOT a valid stand-in
@@ -11097,7 +11097,7 @@ mod tests {
     /// FIXTURE CHANGE, phase C S1 — an ARGUMENT, not a re-baseline. The execute body was
     /// `sibling_reading_effect()` = `Pump{Fixed(0), Fixed(0)}`, which reads NOTHING; it
     /// vetoed only through the blanket `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` arm
-    /// (ability_scan.rs:501). S1 makes block (1b) precise about exactly that payload, so a
+    /// (ability_scan.rs:511). S1 makes block (1b) precise about exactly that payload, so a
     /// fixed pump is now correctly relieved there and case (b) would have asserted "a broad
     /// matcher still vetoes" against a def with no reason to veto — green, discriminating
     /// nothing. The body is therefore replaced by [`class_reading_pump_effect`], which
@@ -13882,7 +13882,7 @@ mod tests {
             .expect("fixture: the def carries the execute body just installed");
         assert!(
             crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(exec),
-            "reach-guard: `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (ability_scan.rs:501) \
+            "reach-guard: `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (ability_scan.rs:511) \
              must make this body read the sibling axis — that veto is the whole subject of S1, \
              and without it the consult's first conjunct is false and no row proves anything"
         );
