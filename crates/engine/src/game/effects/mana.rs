@@ -978,10 +978,10 @@ pub(crate) fn exiled_color_options(
     source_id: crate::types::identifiers::ObjectId,
 ) -> Vec<ManaType> {
     let mut options: Vec<ManaType> = Vec::new();
-    for exiled_id in linked_exiled_ids(state, scope, source_id) {
-        let Some(exiled) = state.objects.get(&exiled_id) else {
-            continue;
-        };
+    // The object comes back WITH the id: `linked_exiled_ids` already resolved it through
+    // `state.objects.get(&link.exiled_id)?` and drops every id it cannot resolve, so the
+    // second lookup this loop used to do had a provably unreachable `else` arm.
+    for (_, exiled) in linked_exiled_ids(state, scope, source_id) {
         // CR 202.3d + CR 709.4b: a linked exiled card is off the stack, so a split
         // card exposes the combined colors of both halves, not just its front half.
         for color in exiled.effective_colors() {
@@ -997,7 +997,11 @@ pub(crate) fn exiled_color_options(
 /// CR 607.2a: the LINK RELATION an exiled-colour mana ability reads — "the second
 /// ability refers only to cards in the exile zone that were put there as a result of
 /// an instruction to exile them in the first ability". Yields, in `state.exile_links`
-/// order, the ids linked to `source_id` under `scope` that are STILL in exile.
+/// order, the ids linked to `source_id` under `scope` that are STILL in exile, EACH WITH
+/// THE OBJECT IT RESOLVED TO. The object is not a convenience: this filter can only decide
+/// the `zone == Exile` conjunct by resolving `state.objects.get(&link.exiled_id)`, so every
+/// yielded id provably HAS a live entry. Yielding the bare id made every consumer re-do
+/// that lookup behind an `else` arm that could never be taken.
 ///
 /// Extracted verbatim from [`exiled_color_options`] (which now consumes it) so the
 /// resource loop firewall's `exiled_colors_provably_exclude_class` arm
@@ -1020,7 +1024,12 @@ pub(crate) fn linked_exiled_ids(
     state: &GameState,
     scope: LinkedExileScope,
     source_id: crate::types::identifiers::ObjectId,
-) -> impl Iterator<Item = crate::types::identifiers::ObjectId> + '_ {
+) -> impl Iterator<
+    Item = (
+        crate::types::identifiers::ObjectId,
+        &crate::game::game_object::GameObject,
+    ),
+> + '_ {
     let host_id = match scope {
         LinkedExileScope::ThisObject => source_id,
     };
@@ -1035,7 +1044,7 @@ pub(crate) fn linked_exiled_ids(
         if exiled.zone != crate::types::zones::Zone::Exile {
             return None;
         }
-        Some(link.exiled_id)
+        Some((link.exiled_id, exiled))
     })
 }
 
@@ -1193,8 +1202,9 @@ mod tests {
         // survive the CR 607.2a source and CR 400.7 zone conjuncts, so the option vector
         // really has two elements and orderings can disagree. Asserting order here too
         // would shadow the MED-3 assertion below and steal the mutation that proves it.
-        let survivors =
-            linked_exiled_ids(&state, LinkedExileScope::ThisObject, source).collect::<Vec<_>>();
+        let survivors = linked_exiled_ids(&state, LinkedExileScope::ThisObject, source)
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
         assert_eq!(
             survivors.len(),
             2,

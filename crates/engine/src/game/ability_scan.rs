@@ -5603,6 +5603,19 @@ pub(crate) fn effect_target_reads_sibling_mutable_for_loop(
     effect: &Effect,
     target: &TargetFilter,
 ) -> bool {
+    // The doc's "`target` MUST be a target-filter field of `effect`" was a request with
+    // nothing binding the two arguments: a caller passing an unrelated filter would get a
+    // verdict computed under a DIFFERENT effect's census discipline, silently and with no
+    // diagnostic. `Effect::target_filter()` is the authority for that relation and answers
+    // `Some` for `Effect::Pump`, which is this function's whole reason for being
+    // `pub(crate)`. Value equality, not pointer identity — a caller may legitimately hold a
+    // clone of the field.
+    debug_assert!(
+        effect.target_filter() == Some(target),
+        "`effect_target_reads_sibling_mutable_for_loop` derives its `FilterReadContext` from \
+         `effect`, so `target` must BE that effect's target filter — otherwise the verdict is \
+         computed under a census discipline belonging to a different effect"
+    );
     scan_target_filter(
         target,
         effect_target_ctx(effect, ScanMode::LoopFirewall),
@@ -8996,5 +9009,49 @@ mod tests {
                 "B-5: blanket member must stay fail-closed CONSERVATIVE"
             );
         }
+    }
+
+    /// A `Pump` whose `target` is the effect's own field — the ONLY shape
+    /// [`effect_target_reads_sibling_mutable_for_loop`] is contracted to accept.
+    fn pump_with_target(target: TargetFilter) -> Effect {
+        Effect::Pump {
+            power: crate::types::ability::PtValue::Fixed(1),
+            toughness: crate::types::ability::PtValue::Fixed(1),
+            target,
+        }
+    }
+
+    /// **D3 positive** — the contracted call shape passes the binding assert and returns a
+    /// verdict. Without this row the `#[should_panic]` sibling below is satisfiable by an
+    /// assert that fires on EVERYTHING, which would be a debug-build outage rather than a
+    /// binding.
+    #[test]
+    fn effect_target_wrapper_accepts_the_effects_own_target_field() {
+        let effect = pump_with_target(TargetFilter::SelfRef);
+        let Effect::Pump { target, .. } = &effect else {
+            unreachable!("built as Pump")
+        };
+        assert!(
+            !effect_target_reads_sibling_mutable_for_loop(&effect, target),
+            "`SelfRef` reads no board population, so the contracted shape must answer false \
+             — and must not trip the binding assert on its way there"
+        );
+    }
+
+    /// **D3** — the doc's "`target` MUST be a target-filter field of `effect`" is now BOUND,
+    /// not requested. The wrapper derives its `FilterReadContext` from `effect` via
+    /// `effect_target_ctx`, so a `target` belonging to some other effect is answered under
+    /// the wrong census discipline — silently, and with a plausible-looking bool.
+    ///
+    /// MUTATION PROBE: delete the `debug_assert!(effect.target_filter() == Some(target))`
+    /// from [`effect_target_reads_sibling_mutable_for_loop`] ⇒ this row FAILS (no panic).
+    #[test]
+    #[should_panic(expected = "must BE that effect's target filter")]
+    fn effect_target_wrapper_refuses_a_target_that_is_not_the_effects_own() {
+        let effect = pump_with_target(TargetFilter::SelfRef);
+        // A filter that is NOT `effect`'s field. `Effect::target_filter()` is the authority
+        // that says so, and it is what the assert consults.
+        let foreign = TargetFilter::Any;
+        let _ = effect_target_reads_sibling_mutable_for_loop(&effect, &foreign);
     }
 }

@@ -3561,7 +3561,7 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
 /// the conservative veto whenever it cannot prove its half:
 ///   (0) NO ACTIVATION RESTRICTIONS on this def: `exec.activation_restrictions.is_empty()`.
 ///       LOAD-BEARING, and conjunct (a) does NOT cover it — `ability_definition_axes`
-///       destructures `activation_restrictions: _` (ability_scan.rs:4238), so the scan is
+///       destructures `activation_restrictions: _` (`ability_scan::ability_definition_axes`), so the scan is
 ///       BLIND to it and the clone-and-rescan would return `false` even with a
 ///       class-MATCHING `ActivationRestriction::RequiresCondition` on the same def.
 ///       Measured cost: ZERO — no trigger `execute` in the card pool carries any
@@ -3594,7 +3594,7 @@ fn execute_ledger_condition_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::{AbilityCondition, QuantityExpr, QuantityRef};
 
-    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4238) —
+    // (0) the firewall is BLIND to activation restrictions (`ability_scan::ability_definition_axes`) —
     // fail closed.
     if !exec.activation_restrictions.is_empty() {
         return false;
@@ -3656,7 +3656,7 @@ fn execute_ledger_condition_provably_excludes_class(
 /// across the loop's growth and this def does not observe the loop.
 ///
 /// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan`'s arm is
-/// `Effect::Pump { .. } => Axes::CONSERVATIVE` (ability_scan.rs:511) — BLANKET, payload
+/// `Effect::Pump { .. } => Axes::CONSERVATIVE` (`ability_scan::scan_effect`) — BLANKET, payload
 /// discarded. No scanner change can distinguish a class-reading aggregate from a
 /// class-disjoint one, so the distinction has to be drawn where the class is known.
 ///
@@ -3664,8 +3664,13 @@ fn execute_ledger_condition_provably_excludes_class(
 /// function's doc and the GAP-1 comment at this arm's call site:
 /// `derived_fodder_class`'s ONE-CLASS rule on the first accept-time frame pair, then
 /// `board_covers_modulo_fodder`'s all-zones stable-partition content equality at its ONLY
-/// call site (`:3020`), which PRECEDES the only firewall call any of these arms can reach
-/// (`:3046`; the `:2839` call passes `class_members: None`, so no arm runs there).
+/// call site (the `if !board_covers_modulo_fodder(&pa, &pb, fodder_class)` gate inside
+/// [`loop_states_cover_modulo_fodder_growth`], this file), which PRECEDES the only firewall
+/// call any of these arms can reach — the `fire_time_conditions_read_growing_class_scoped`
+/// call in that SAME function, the one passing `Some(&class_members)`. The other production
+/// call, in [`loop_states_cover_modulo_object_growth`], passes `class_members: None`, so no
+/// arm runs there. (VERIFIED: those are the only two production call sites that reach a
+/// firewall with a class set.)
 /// Do not reorder the `board_covers_modulo_fodder` gate after the firewall.
 /// CR 608.2h (MagicCompRules.txt): "If an effect requires information from the game (such
 /// as the number of creatures on the battlefield), the answer is determined only once,
@@ -3699,27 +3704,59 @@ fn execute_ledger_condition_provably_excludes_class(
 /// (`FilterContext::from_ability_with_controller(a, a.original_controller.unwrap_or(a.controller))`,
 /// game/quantity.rs:3227-3230). At firewall time no `ResolvedAbility` exists, so this arm
 /// must build `FilterContext::from_source_with_controller(source.id, source.controller)`.
-/// The two differ in `ability`, `trigger_source`, `scoped_iteration_player` and
-/// `recipient_id` (game/filter.rs:1116-1133, :1200-1209, :1296-1308). That difference is
-/// immaterial ONLY for a filter that reads none of them, so conjunct (d) additionally
-/// requires an empty `properties` list and a `controller` of `None` or
+/// MEASURED field-by-field against the two constructors' bodies
+/// (`FilterContext::from_source_with_controller` / `::from_ability_with_controller`,
+/// `game/filter.rs`), because an enumeration is only worth as much as the reading behind
+/// it — this one shipped once with two entries that do not differ and one omitted that
+/// does:
+///   * `ability` — `None` vs `Some(ability)`. Differs.
+///   * `trigger_source` — `None` vs `ability.trigger_source.as_ref()`. Differs.
+///   * `source_controller` — `Some(..)` in BOTH, but a DIFFERENT VALUE: the firewall binds
+///     the scanned frame's `source.controller`, the resolver binds
+///     `a.original_controller.unwrap_or(a.controller)`. Differs, and this is the one the
+///     admitted `controller` shapes below resolve against.
+///   * `recipient_id`, `scoped_iteration_player` — `None` in BOTH constructors, so they do
+///     not differ HERE. The effective scoped-player read can still diverge, but it routes
+///     through `ability` (`scoped_player_or_controller` consults `ability.scoped_player`
+///     ahead of `scoped_iteration_player`), i.e. through the first bullet, not these.
+///
+/// That difference is immaterial ONLY for a filter that reads none of them, so conjunct
+/// (d) additionally requires an empty `properties` list and a `controller` of `None` or
 /// `ControllerRef::You` on the `TypedFilter`, and refuses every non-`Typed` `TargetFilter`.
+///
+/// ⛔ WHY ADMITTING `Some(ControllerRef::You)` IS SAFE, given it resolves to exactly the
+/// field that differs. `controller_ref_player`'s arm is literally
+/// `ControllerRef::You => source_controller` (and `filter_inner`'s object arm is
+/// `source_controller != Some(obj_ctrl)`), so `You` is a self-referential question — "the
+/// SOURCE's own controller" — and the firewall's binding is that value BY CONSTRUCTION:
+/// it passes `source.controller` off the very object it is scanning. The two contexts can
+/// therefore only disagree if the source's controller MOVED between the resolver's
+/// binding and the scanned frame, and the cover gate forecloses that across the loop
+/// window: the source is a stable-engine object (it is not `fodder_content_eq` to the
+/// class rep), so [`board_covers_modulo_fodder`]'s `stable` partition content-compares it
+/// with `object_content_eq`, whose FIRST compared field is `x.controller`. A control
+/// change inside the window makes the cover reject before this arm is ever consulted.
+/// LATENT, not live. `ControllerRef::Opponent` is refused despite reading the same field
+/// because it is not self-referential: it names the complement population, so a
+/// resolver/firewall disagreement about who "you" is re-partitions the whole board rather
+/// than being absorbed by the cover's pin on one object — see the `(ix)` row in
+/// `pump_aggregate_gate_is_precise_and_fail_closed`.
 /// A filter carrying ANY property keeps its veto — that is this arm's honest coverage
 /// ceiling, not an oversight (regression row: the `FilterProp::Another` negative).
 ///
 /// NOT A VISITOR (#4603 error direction), same as its sibling — four fail-closed conjuncts,
 /// each keeping the conservative veto whenever it cannot prove its half:
 ///   (0) NO ACTIVATION RESTRICTIONS: `ability_definition_axes` destructures
-///       `activation_restrictions: _` (ability_scan.rs:4627 — re-measured at this commit;
-///       the sibling arm's doc above still cites the pre-drift `:4238`), so the scan is
-///       BLIND to them
+///       `activation_restrictions: _` (`ability_scan::ability_definition_axes`; the literal
+///       is unique in that file, so `grep -n 'activation_restrictions: _'` is the pin), so
+///       the scan is BLIND to them
 ///       and conjunct (a)'s rescan would answer `false` even with a class-matching
 ///       `ActivationRestriction::RequiresCondition` on the same def.
 ///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the EFFECT
-///       with `Effect::NoOp` (`Effect::NoOp => Axes::NONE`, ability_scan.rs:832) and re-run
+///       with `Effect::NoOp` (`Effect::NoOp => Axes::NONE` in `ability_scan::scan_effect`) and re-run
 ///       `ability_definition_reads_sibling_mutable_for_loop`. Only if THAT is `false` is the
 ///       effect the def's only sibling read — `ability_definition_axes` destructures with
-///       NO `..` (ability_scan.rs:4599-4645), so the rescan covers `sub_ability`,
+///       NO `..`, so the rescan covers `sub_ability`,
 ///       `else_ability`, `duration`, `condition`, `multi_target`, `target_constraints`,
 ///       `modal`, `mode_abilities`, `repeat_for`, `announced_x`, `player_scope`,
 ///       `starting_with`, `target_chooser`, `repeat_until`, `unless_pay`, `distribute`,
@@ -3729,7 +3766,7 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       unscanned read. (b-t) then requires the bound `target` to contribute NO sibling
 ///       read, for the SAME reason the two sibling arms pattern-match `target: None` (see
 ///       [`exiled_colors_provably_exclude_class`]'s (b)): the relieved veto is the BLANKET
-///       `Effect::Pump { .. } => Axes::CONSERVATIVE` (ability_scan.rs:511), which discards
+///       `Effect::Pump { .. } => Axes::CONSERVATIVE` (`ability_scan::scan_effect`), which discards
 ///       the whole payload — target included — so a board-reading target's veto would be
 ///       relieved on evidence that never examined it. `Effect::Pump` cannot state that as a
 ///       pattern (its `target` is a `TargetFilter`, NOT an `Option<_>`), so it is a
@@ -3737,9 +3774,10 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       `ability_scan::effect_target_reads_sibling_mutable_for_loop`, which derives the
 ///       `FilterReadContext` from THIS effect via `effect_target_ctx` rather than pinning
 ///       one. Measured: `Effect::Pump` sits in the `SnapshotOrEvent` group
-///       (ability_scan.rs:5715 -> `:5915`, RE-measured at this commit — the `:5688` / `:5888`
-///       this doc first shipped were measured before the wrapper landed +27 lines above them,
-///       i.e. this same diff's own insertion) TODAY; hardcoding that would be correct today
+///       (the `SnapshotOrEvent` group in `ability_scan`'s effect-group table, reached via
+///       `effect_target_ctx`) TODAY; earlier revisions of this sentence carried raw line
+///       coordinates that drifted twice inside one round, which is why it now names the
+///       group and the deriving function instead; hardcoding that would be correct today
 ///       and silently desynchronised the moment the grouping changes — which is exactly the
 ///       defect class (b-t) exists to close. MEASURED coverage cost of the narrowing:
 ///       ZERO — but the figure is meaningless
@@ -3750,7 +3788,8 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       loop, and conjunct (b) matches the TOP-LEVEL `exec.effect` only. So the reachable
 ///       root set is TRIGGER EXECUTE BODIES on battlefield permanents — NOT `abilities[]`,
 ///       and never a spell's own effect. Measured by the implementation review over the full
-///       `card-data.json` export and recorded here (NOT re-measured at this commit): 845
+///       `card-data.json` export and recorded here (INHERITED from that review, not
+///       re-measured since — treat the figure as provenance, not as a live count): 845
 ///       `Effect::Pump` defs are reachable at that consult (828 `triggers[].execute` + 17
 ///       granted `modifications[].trigger.execute`); ZERO of them carry a target that reads
 ///       the sibling axis; ~625 already pass the pre-fix relief bound. FIVE match this
@@ -3770,8 +3809,16 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       answers `false` uniformly — arm C of `pump_target_axis_is_not_blind` is that
 ///       control. The zero cost holds over the 845 reachable defs AND over all 2336 defs the
 ///       review's census saw, including the 83 the implementer's own walker never visited.
-///   (c) the member must be LIVE in the scanned frame: an absent id is trivially absent
-///       from any id population, which would be relief with no evidence.
+///   (c) the member must be LIVE ON THE BATTLEFIELD in the scanned frame. `contains_key`
+///       alone was NOT enough and this is a deliberate NARROWING (it removes relief, the
+///       fail-closed direction): `object_count_matching_ids`' universe for the only filter
+///       shape this arm admits is battlefield-scoped — MEASURED, a graveyard artifact
+///       identical to a battlefield one is absent from the `Typed{Artifact, You}`
+///       population — so an id that merely EXISTS is trivially absent from the population
+///       and satisfies (d) having proved nothing. That is relief with no evidence, exactly
+///       what this conjunct is for. Row: the `M3` arm of
+///       `exiled_colors_gate_is_precise_and_fail_closed`, on the sibling arm carrying the
+///       same conjunct.
 ///   (d) BOTH P/T halves must be provably invariant — `toughness` as much as `power`
 ///       (`Pump` carries two independent `PtValue`s and either can hold the aggregate).
 ///
@@ -3784,7 +3831,7 @@ fn execute_ledger_condition_provably_excludes_class(
 /// `effect_target_reads_sibling_mutable_for_loop`, this change's wrapper — answered
 /// `false / false / true` across them. Name it, because the WHOLE-DEF scan
 /// `ability_definition_reads_sibling_mutable_for_loop` cannot tell the three apart: the
-/// blanket `Effect::Pump { .. } => Axes::CONSERVATIVE` (ability_scan.rs:511) makes it `true`
+/// blanket `Effect::Pump { .. } => Axes::CONSERVATIVE` (`ability_scan::scan_effect`) makes it `true`
 /// on all three — indeed block (1b) only reaches this arm once it IS true. Corpus
 /// reachability was ZERO at that measurement, so this was latent rather than live — and the
 /// zero is a fragile corpus intersection, not a structural guarantee, which is why the arm is
@@ -3828,8 +3875,13 @@ fn pump_aggregate_provably_excludes_class(
     ) {
         return false;
     }
-    // (c) fail-closed if the member is gone from the scanned frame.
-    if !state.objects.contains_key(&class_member) {
+    // (c) fail-closed unless the member is live ON THE BATTLEFIELD in the scanned frame —
+    // EXISTS is not enough. See this function's doc for why `contains_key` was vacuous.
+    if !state
+        .objects
+        .get(&class_member)
+        .is_some_and(|o| o.zone == Zone::Battlefield)
+    {
         return false;
     }
     // (d) both halves, against the pinned context.
@@ -3921,21 +3973,46 @@ fn pt_value_aggregate_provably_excludes_class(
 /// see [`pump_aggregate_provably_excludes_class`] and the GAP-1 comment at the call
 /// site: `derived_fodder_class`'s ONE-CLASS rule on the first accept-time frame pair,
 /// then `board_covers_modulo_fodder`'s all-zones stable-partition content equality at
-/// its ONLY call site (`:3020`), which PRECEDES the only firewall call any of these
-/// arms can reach (`:3046`; the `:2839` call passes `class_members: None`, so no arm
-/// runs there). Do not reorder the `board_covers_modulo_fodder` gate after the
+/// its ONLY call site (the `if !board_covers_modulo_fodder(&pa, &pb, fodder_class)` gate
+/// inside [`loop_states_cover_modulo_fodder_growth`], this file), which PRECEDES the only
+/// firewall call any of these arms can reach — the
+/// `fire_time_conditions_read_growing_class_scoped` call in that SAME function, passing
+/// `Some(&class_members)`. The call in [`loop_states_cover_modulo_object_growth`] passes
+/// `class_members: None`, so no arm runs there. Do not reorder the `board_covers_modulo_fodder` gate after the
 /// firewall.
 /// CR 608.2h (MagicCompRules.txt:2808): "If an effect requires information from the
 /// game (such as the number of creatures on the battlefield), the answer is determined
 /// only once, when the effect is applied" — so a production whose link set cannot
 /// contain any member of the growing class offers the same colours on every cycle.
 ///
-/// THE EXILE PILE IS CONTENT-PINNED BEFORE ANY RELIEF IS CONSULTED, which is what lets
-/// a subject set living OUTSIDE the battlefield be argued about at all:
-/// `board_covers_modulo_fodder` iterates ALL zones (`:2941-2946`) with
-/// `objects_content_eq`, and precedes this firewall. The member-quantified test below
-/// is kept anyway, so the arm does not REST on that cover — the cover is why the arm
-/// is sound, the test is what makes it fail closed.
+/// THE EXILE PILE'S LINK MEMBERSHIP IS PINNED BEFORE ANY RELIEF IS CONSULTED, which is
+/// what lets a subject set living OUTSIDE the battlefield be argued about at all.
+/// [`board_covers_modulo_fodder`]'s STABLE-ENGINE partition (its `stable` closure) does
+/// iterate all of `state.objects`, not just the battlefield, and it precedes this
+/// firewall. An exiled card is always IN that partition: the closure removes only
+/// objects that are [`fodder_content_eq`] to the class representative, and
+/// `object_content_eq` compares `zone`, so an Exile-zone object can never match a
+/// battlefield class rep (MEASURED: `fodder_content_eq(exile_saproling, saproling_class)`
+/// = `false`, `fodder_content_eq(bf_saproling, saproling_class)` = `true`).
+///
+/// ⛔ WHAT THAT COVER DOES **NOT** PIN — stated because the claim used to be wider than
+/// the mechanism. `objects_content_eq` delegates to `object_content_eq`, which compares
+/// 32 fields (`types/game_state.rs`) and DELIBERATELY omits `color`. MEASURED:
+/// `object_content_eq` answers `true` for two objects differing only in `color`. The read
+/// this arm relieves is `exiled_color_options` -> `GameObject::effective_colors()` ->
+/// `self.color`, so the cover pins WHICH cards are linked and still exiled — the arm's
+/// actual subject, and what conjunct (d) reasons about — and NOT their colours.
+///
+/// Colour drift is out of scope here, and that is an argument rather than an omission: no
+/// modelled continuous effect can make an exiled card's colour a function of the growing
+/// class. `StaticMode::SetColor` / `AddColor` carry FIXED colour lists, so they are
+/// classified read-free by the scan and cannot scale with `|G|`. Widening
+/// `object_content_eq` to compare `color` is the alternative, and it is a
+/// wide-blast-radius change to the shared CR 104.4b row comparator that every cover gate
+/// in this file consumes — filed as FU-28 rather than smuggled in behind this arm.
+///
+/// The member-quantified test below is kept anyway, so the arm does not REST on that
+/// cover — the cover is why the arm is sound, the test is what makes it fail closed.
 ///
 /// ⛔ ARG-EQUIVALENCE PIN. Conjunct (d) calls
 /// `game::effects::mana::linked_exiled_ids(state, scope, source.id)` — literally the
@@ -3954,7 +4031,7 @@ fn pt_value_aggregate_provably_excludes_class(
 ///       them and conjunct (a)'s rescan would answer `false` even with a
 ///       class-matching restriction on the same def.
 ///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the
-///       EFFECT with `Effect::NoOp` (`Effect::NoOp => Axes::NONE`, ability_scan.rs:832)
+///       EFFECT with `Effect::NoOp` (`Effect::NoOp => Axes::NONE` in `ability_scan::scan_effect`)
 ///       and re-run `ability_definition_reads_sibling_mutable_for_loop`. Only if THAT
 ///       is `false` is the effect the def's only sibling read —
 ///       `ability_definition_axes` destructures with NO `..`, so the rescan covers
@@ -3972,10 +4049,31 @@ fn pt_value_aggregate_provably_excludes_class(
 ///       the narrowing: ZERO — all 2 `ChoiceAmongExiledColors` productions in the
 ///       card corpus carry `target: None` (positive control: 58 of 2893
 ///       `Effect::Mana` productions DO carry a target, so the census can see one).
-///   (c) the member must be LIVE in the scanned frame: an id with no object is
-///       filtered out by `linked_exiled_ids`' own zone conjunct, so relieving on it
-///       would be relief with no evidence.
-///   (d) MEMBER-QUANTIFIED exclusion against that pinned link authority.
+///   (c) the member must be LIVE ON THE BATTLEFIELD in the scanned frame — see the same
+///       conjunct on [`pump_aggregate_provably_excludes_class`] for the measurement. Here
+///       the vacuity is starker still: `linked_exiled_ids` yields only Exile-zone ids, so
+///       under a bare `contains_key` ANY battlefield-absent member was excluded from the
+///       link set by construction and relieved on no evidence at all. Narrowing to
+///       `zone == Zone::Battlefield` costs nothing in production — the sole production
+///       caller's `class_members` are all battlefield ids (see conjunct (d)) — and it is
+///       the fail-closed direction for every other caller. Row: the `M3` arm of
+///       `exiled_colors_gate_is_precise_and_fail_closed`.
+///   (d) MEMBER-QUANTIFIED exclusion against that pinned link authority. ⛔ (d) IS
+///       DEFENCE-IN-DEPTH AT THE PRODUCTION SEAM, NOT THE FAIL-CLOSED MECHANISM — do not
+///       cite it as the thing that keeps this arm honest in production. The sole
+///       production caller is [`loop_states_cover_modulo_fodder_growth`], which builds
+///       `class_members` as `all_fodder` filtered by `cf.objects`, and `all_fodder` is
+///       collected from `pa.battlefield.chain(pb.battlefield)`. `linked_exiled_ids`
+///       yields only `zone == Zone::Exile` ids. The two populations therefore cannot
+///       intersect and (d) is CONSTANT-TRUE on every input production can construct; the
+///       guarantee that actually carries there is the cover above. (d) still earns its
+///       place — it is what makes the arm sound for any future caller that hands it a
+///       differently-built class set, and it is a compile-time-free fail-closed default —
+///       but a row that exercises its `false` branch has to hand-build an Exile-zone
+///       class set (`exiled_colors_gate_is_precise_and_fail_closed`'s (ii) arm does
+///       exactly that, deliberately). The row that reaches this arm the way production
+///       does is `s2_arm_is_reached_through_the_production_class_constructor`, and it
+///       pins the non-intersection as an assertion rather than as prose.
 fn exiled_colors_provably_exclude_class(
     ability: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -4006,13 +4104,18 @@ fn exiled_colors_provably_exclude_class(
     else {
         return false;
     };
-    // (c) fail-closed if the member is gone from the scanned frame.
-    if !state.objects.contains_key(&class_member) {
+    // (c) fail-closed unless the member is live ON THE BATTLEFIELD in the scanned frame —
+    // EXISTS is not enough. See this function's doc for why `contains_key` was vacuous.
+    if !state
+        .objects
+        .get(&class_member)
+        .is_some_and(|o| o.zone == Zone::Battlefield)
+    {
         return false;
     }
     // (d) ARG-EQUIVALENCE PIN — game/effects/mana.rs `linked_exiled_ids`.
     crate::game::effects::mana::linked_exiled_ids(state, *link_scope, source.id)
-        .all(|id| id != class_member)
+        .all(|(id, _)| id != class_member)
 }
 
 /// BLOCK-(2) ARM (phase C arm S3, Glittering Stockpile's stash-counter mana): does this
@@ -4027,7 +4130,8 @@ fn exiled_colors_provably_exclude_class(
 /// subject, and it is still unrelaxable by any scanner change — the self-assertion is
 /// unconditional. Reach chain, measured: `Effect::Mana` (ability_scan.rs:1056,
 /// `LoopFirewall` branch) -> `scan_mana_production` -> `ManaProduction::AnyOneColor`
-/// (`:5334`) -> `scan_quantity_expr(count)` -> `:1958`.
+/// (ability_scan.rs:5334) -> `scan_quantity_expr(count)` -> the
+/// `QuantityRef::CountersOn { scope, .. }` arm (ability_scan.rs:1958).
 ///
 /// RELIEF CLAIM — IDENTITY, NOT FILTER. CR 122.1 (MagicCompRules.txt:1178): "A counter
 /// is a marker placed on an object or player that modifies its characteristics" —
@@ -4105,8 +4209,13 @@ fn counters_on_source_provably_excludes_class(
     else {
         return false;
     };
-    // (c) fail-closed if the member is gone from the scanned frame.
-    if !state.objects.contains_key(&class_member) {
+    // (c) fail-closed unless the member is live ON THE BATTLEFIELD in the scanned frame —
+    // EXISTS is not enough. See this function's doc for why `contains_key` was vacuous.
+    if !state
+        .objects
+        .get(&class_member)
+        .is_some_and(|o| o.zone == Zone::Battlefield)
+    {
         return false;
     }
     // (d) ARG-EQUIVALENCE PIN — game/quantity.rs `object_id_for_scope`. Fail closed on
@@ -4385,11 +4494,32 @@ fn fire_time_conditions_read_growing_class_scoped(
             // ORDERED AFTER the scan, not before it (the one place this differs from the
             // plan's sketch, and it mirrors block (1b)'s landed shape, where the scan
             // likewise precedes its `class_members` consult). BLOCK (1b) IS PINNED BY
-            // SYMBOL, NEVER BY LINE: its consult is the `members.iter().all(..)` call of
-            // `crate::game::triggers::etb_observer_provably_excludes_class` earlier in
-            // THIS function. The `:4232-4240` coordinate this comment used to carry had
-            // already drifted twice in one round, and a stale pin does not go stale
-            // loudly — it silently cites whatever code moved into those lines. Both arms
+            // SYMBOL, NEVER BY LINE: it is the `if let Some(exec) = def.execute` construct
+            // in the block-(1) trigger loop earlier in THIS function — the one whose
+            // condition is `scan::ability_definition_reads_sibling_mutable_for_loop(exec)
+            // && !class_members.is_some_and(..)`, with the
+            // `execute_ledger_condition_provably_excludes_class(..) ||
+            // pump_aggregate_provably_excludes_class(..)` disjunct as its consult.
+            // (1b) is the LAST gate in that loop, and it is NOT the loop itself and NOT
+            // block (1)'s ETB gate — the `members.iter().all(|&member|
+            // etb_observer_provably_excludes_class(..))` `continue`, which this comment
+            // named for a round until three independent reviews caught it.
+            // THE DISCRIMINATOR, stated so it can be re-measured rather than re-read: the
+            // ordering claim above is about a SCAN preceding a `class_members` consult, and
+            // `scan::` is called exactly TWICE in block (1) — `trigger_condition_reads_
+            // sibling_mutable` (the condition gate) and `ability_definition_reads_sibling_
+            // mutable_for_loop` (1b's own first conjunct). BOTH sit AFTER the ETB gate's
+            // consult, so NO scan precedes it and the claim is false of it. What does
+            // precede the ETB gate is `trigger_definition_functions_in_zone` and the
+            // `scope.phase_invariant` gate — two `continue`s, neither of them a scan. (Do
+            // not restate this as "nothing precedes the ETB gate": that is false, it was
+            // asserted during this very fix, and the grep
+            // `awk 'NR>=<block1 start>,NR<=<block1 end>' | grep 'scan::'` is what settles
+            // it.) A symbol pin goes stale as silently as a line pin when it names the
+            // wrong symbol. The `:4232-4240`
+            // coordinate this comment carried before that had already drifted twice in one
+            // round, and a stale pin does not go stale loudly — it silently cites whatever
+            // code moved into those lines. Both arms
             // CLONE the def and re-run the whole scan once PER MEMBER for conjunct (a),
             // so evaluating them for abilities that carry no veto at all would pay the
             // arms' cost on every ability of every battlefield permanent to relieve a
@@ -4417,7 +4547,7 @@ fn fire_time_conditions_read_growing_class_scoped(
     // BOTH stores. The zone argument for the object-attached half, and the argument for why
     // the floating half carries no zone gate at all, now live on the two halves of
     // [`loop_window_replacement_defs`] — that is where the deleted inline gate went.
-    for (_source, def) in loop_window_replacement_defs(state) {
+    for (_source, _idx, def) in loop_window_replacement_defs(state) {
         if def
             .condition
             .as_ref()
@@ -5265,7 +5395,7 @@ fn fire_time_conditions_read_projected_resource_scoped(
     // modification) are treated fail-closed — conservative, fail-safe (no shortcut).
     // BOTH stores, via the same shared walk block (3) uses; see
     // [`loop_window_replacement_defs`] for the per-half zone argument.
-    for (_source, def) in loop_window_replacement_defs(state) {
+    for (_source, _idx, def) in loop_window_replacement_defs(state) {
         if def
             .condition
             .as_ref()
@@ -5528,7 +5658,7 @@ fn board_has_event_observer(
         // BOTH replacement stores (CR 611.3 object-attached + CR 611.2 floating) — see
         // [`loop_window_replacement_defs`]. A floating `CreateToken`/`AddCounter` doubler applies
         // through the same pipeline as a board one, so it is the same observer.
-        || loop_window_replacement_defs(state).any(|(_source, def)| def.event == repl_event)
+        || loop_window_replacement_defs(state).any(|(_source, _idx, def)| def.event == repl_event)
 }
 
 /// CR 603.2 + CR 113.6: does any battlefield/command-FUNCTIONING trigger fire on exactly
@@ -5572,12 +5702,26 @@ fn board_has_keyed_trigger(
 /// narrows a shared walk's item type, the audit question is "what could a caller want that the
 /// narrowed type cannot express?", never "who reads it today?". Callers wanting only the def
 /// discard the object at their own site, where the discard is local and reversible.
+///
+/// THE `usize` IS `ReplacementId::index`, AND IT IS THE SAME REASONING ONE LEVEL DOWN. The
+/// pipeline's instance identity is `ReplacementId { source, index }`
+/// (`types/proposed_event.rs`), and `legacy_object_replacement_candidates` builds it from exactly
+/// this walk's underlying `active_replacements` triple (`game/replacement.rs`). `(obj, def)` cannot
+/// name one of two `Moved` replacements on one permanent; `(obj, idx, def)` can, and `idx` was
+/// already in hand — it was being dropped by the same `.map(|(_, obj, def)| ..)` that dropped the
+/// host. Callers that only want the def bind `_idx`.
 fn functioning_board_replacement_defs(
     state: &GameState,
-) -> impl Iterator<Item = (&GameObject, &crate::types::ability::ReplacementDefinition)> {
+) -> impl Iterator<
+    Item = (
+        &GameObject,
+        usize,
+        &crate::types::ability::ReplacementDefinition,
+    ),
+> {
     crate::game::functioning_abilities::active_replacements(state)
         .filter(|(_, obj, _)| matches!(obj.zone, Zone::Battlefield | Zone::Command))
-        .map(|(_, obj, def)| (obj, def))
+        .map(|(idx, obj, def)| (obj, idx, def))
 }
 
 /// CR 611.2 / CR 614.3: every LIVE game-state-level ("floating") replacement definition —
@@ -5635,9 +5779,10 @@ fn functioning_board_replacement_defs(
 ///
 /// THE LIVENESS FILTER IS PARITY WITH THE PRODUCTION ADMISSION GATE, NOT CAUTION — and the
 /// distinction matters, because only the parity claim survives review. `find_applicable_replacements`
-/// scans this exact store at `game/replacement.rs:7412`
-/// (`for (index, repl_def) in state.pending_damage_replacements.iter().enumerate()`) and its very
-/// next line, `:7413`, is `if repl_def.is_consumed { continue; }`. So `!def.is_consumed` is the same
+/// scans this exact store in `game/replacement.rs` with
+/// `for (index, repl_def) in state.pending_damage_replacements.iter().enumerate()` — grep that
+/// literal, it is the only iteration of the store — and its very next statement is
+/// `if repl_def.is_consumed { continue; }`. So `!def.is_consumed` is the same
 /// admission test the pipeline itself applies, and it is the ONLY one that scan applies before the
 /// per-event gates. A consumed def therefore CANNOT apply, and declining to count it is EXACT — not
 /// an under-veto, which is the one direction that could break #7045. (No consumed-but-live runtime
@@ -5648,13 +5793,22 @@ fn functioning_board_replacement_defs(
 /// `expiry` is DELIBERATELY NOT READ: production does not consult it at apply time either (pruning
 /// is a separate phase-transition pass in `game/turns.rs`), so reading it here would make the
 /// firewall NARROWER than the pipeline it guards — and narrower is the unsound direction.
+///
+/// THE YIELDED `usize` IS THE STORE SLOT, NOT A POSITION IN THIS FILTERED SEQUENCE, and the
+/// `.enumerate()` therefore sits BEFORE the `.filter(..)`. `find_applicable_replacements` numbers
+/// this store with `for (index, repl_def) in state.pending_damage_replacements.iter().enumerate()`
+/// and only THEN does `if repl_def.is_consumed { continue; }`, so a consumed def still consumes an
+/// index. Enumerating after the filter would renumber every live def after a consumed one and hand
+/// a caller a `ReplacementId` addressing the wrong entry. Row: `c3a_loop_window_yield_pins_the_def\
+/// _sequence_and_the_host_binding` keeps a consumed def BETWEEN two live ones for this.
 fn live_floating_replacement_defs(
     state: &GameState,
-) -> impl Iterator<Item = &crate::types::ability::ReplacementDefinition> {
+) -> impl Iterator<Item = (usize, &crate::types::ability::ReplacementDefinition)> {
     state
         .pending_damage_replacements
         .iter()
-        .filter(|def| !def.is_consumed)
+        .enumerate()
+        .filter(|(_, def)| !def.is_consumed)
 }
 
 /// CR 614.1 / CR 611.3 + CR 611.2: every replacement definition that can apply inside a loop
@@ -5673,7 +5827,9 @@ fn live_floating_replacement_defs(
 /// `Option<&GameObject>` IS THE STORE DISCRIMINANT, AND `None` IS NOT "HOST UNKNOWN" — IT IS "NO
 /// HOST EXISTS". A board def is CR 611.3 continuous-effect machinery hosted BY a permanent, so its
 /// host is always present; a floating def is CR 611.2 machinery installed under the sentinel
-/// `ObjectId(0)`, which has no entry in `state.objects` at all (see
+/// `ObjectId(0)` — which is precisely why the accompanying `usize` is NOT redundant with the host:
+/// for the floating half it is the only half of `ReplacementId` this walk can supply, the sentinel
+/// standing in for `source`. That sentinel has no entry in `state.objects` at all (see
 /// [`live_floating_replacement_defs`], and `ReplacementDefinition::source_controller`'s own doc,
 /// which exists precisely because that sentinel has no controller to resolve). A caller that needs
 /// a source identity therefore gets it for the board half and must decide the floating half on its
@@ -5685,12 +5841,13 @@ fn loop_window_replacement_defs(
 ) -> impl Iterator<
     Item = (
         Option<&GameObject>,
+        usize,
         &crate::types::ability::ReplacementDefinition,
     ),
 > {
     functioning_board_replacement_defs(state)
-        .map(|(obj, def)| (Some(obj), def))
-        .chain(live_floating_replacement_defs(state).map(|def| (None, def)))
+        .map(|(obj, idx, def)| (Some(obj), idx, def))
+        .chain(live_floating_replacement_defs(state).map(|(idx, def)| (None, idx, def)))
 }
 
 /// CR 614.1d / CR 614.12 / CR 119.3: is any battlefield/command-functioning replacement watching
@@ -5721,7 +5878,7 @@ fn loop_window_replacement_defs(
 ///   "[This permanent] enters . . ." from "[Objects] enter [the battlefield] . . .", which is
 ///   exactly the `valid_card: SelfRef` / non-`SelfRef` split, and is the sub-rule
 ///   `game::replacement`'s `apply_state_level_gates` names for the `valid_card` gate.
-/// - **CR 614.12** (`:3100`) is the APPLICABILITY authority — "Such effects may come from the
+/// - **CR 614.12** (MagicCompRules.txt:3100) is the APPLICABILITY authority — "Such effects may come from the
 ///   permanent itself IF THEY AFFECT ONLY THAT PERMANENT (as opposed to a general subset of
 ///   permanents that includes it)", with the Orb of Dreams example spelling out the negative
 ///   ("It won't affect itself").
@@ -5744,7 +5901,7 @@ pub(crate) fn board_has_active_replacement_among(
     state: &GameState,
     repl_events: &[ReplacementEvent],
 ) -> bool {
-    functioning_board_replacement_defs(state).any(|(_source, def)| {
+    functioning_board_replacement_defs(state).any(|(_source, _idx, def)| {
         repl_events.contains(&def.event)
             && !matches!(
                 def.valid_card,
@@ -5761,7 +5918,7 @@ pub(crate) fn board_has_active_replacement_among(
         // nothing; inheriting the conclusion anyway would be the reasoning error, not the caution.
         // So: fail-closed. Over-veto costs the O(N) discrete driver (PERFORMANCE ONLY); under-veto is
         // a #7045 elision-vs-performance fidelity break.
-        || live_floating_replacement_defs(state).any(|def| repl_events.contains(&def.event))
+        || live_floating_replacement_defs(state).any(|(_idx, def)| repl_events.contains(&def.event))
 }
 
 /// CR 732.2a + CR 122.1 / CR 701.34a: is the growing COUNTER axis OBSERVED — does any live
@@ -10579,7 +10736,7 @@ mod tests {
     ///
     /// ⚠ SCOPE, since phase C's S1: this body reads NOTHING — it is
     /// `Pump{Fixed(0), Fixed(0)}`, and it classifies `Axes::CONSERVATIVE` only because
-    /// `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (ability_scan.rs:511) discards the
+    /// `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (`ability_scan::scan_effect`) discards the
     /// payload. That over-approximation is still the whole veto at every surface S1 does
     /// NOT narrow — block (2)'s `obj.abilities` scan, which is where every remaining caller
     /// puts it — so this helper is correct and unchanged there. It is NOT a valid stand-in
@@ -11149,11 +11306,16 @@ mod tests {
     }
 
     /// P2-10 (M9, U3): a projected-reading modification (`SetDynamicPower{Ref(LifeTotal)}`)
-    /// on a live static VETOES the firewall via the `:1539` descent's PROJECTED axis
-    /// — the projected-resource firewall has NO modification scan, so this descent is
-    /// the sole guard. AXIS ISOLATION: the modification reads projected, NOT sibling.
-    /// Revert-probe: drop `|| continuous_modification_reads_projected_resource(m)`
-    /// from the `:1539` descent ⇒ firewall false.
+    /// on a live static VETOES the firewall via the MODIFICATION DESCENT — the
+    /// `scan::continuous_modification_reads_sibling_mutable(m)
+    /// || scan::continuous_modification_reads_projected_resource(m)` disjunction in this
+    /// file's block-(4) condition-gated-statics walk. PINNED BY SYMBOL: the old `:1539`
+    /// coordinate had drifted onto an unrelated comment line, which is why the disjunction
+    /// is quoted here instead. The projected-resource firewall has NO modification scan, so
+    /// this descent is the sole guard. AXIS ISOLATION: the modification reads projected,
+    /// NOT sibling. Revert-probe: drop
+    /// `|| continuous_modification_reads_projected_resource(m)` from that disjunction ⇒
+    /// firewall false.
     #[test]
     fn projected_reading_modification_still_vetoes_the_firewall() {
         use crate::game::ability_scan::{
@@ -11205,7 +11367,7 @@ mod tests {
     /// FIXTURE CHANGE, phase C S1 — an ARGUMENT, not a re-baseline. The execute body was
     /// `sibling_reading_effect()` = `Pump{Fixed(0), Fixed(0)}`, which reads NOTHING; it
     /// vetoed only through the blanket `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` arm
-    /// (ability_scan.rs:511). S1 makes block (1b) precise about exactly that payload, so a
+    /// (`ability_scan::scan_effect`). S1 makes block (1b) precise about exactly that payload, so a
     /// fixed pump is now correctly relieved there and case (b) would have asserted "a broad
     /// matcher still vetoes" against a def with no reason to veto — green, discriminating
     /// nothing. The body is therefore replaced by [`class_reading_pump_effect`], which
@@ -13452,7 +13614,10 @@ mod tests {
         );
     }
 
-    /// X4-5 — THE `:1038` BINDING EXPRESSION, pinned through the PRODUCTION entry point.
+    /// X4-5 — THE `cast_card_ids` BINDING EXPRESSION, pinned through the PRODUCTION entry
+    /// point. PINNED BY SYMBOL: it is `cast_card_ids: cast_ids.as_deref()`, fed by
+    /// `let cast_ids = window_cast_card_ids(current, verdicts.proposer());` a few lines
+    /// above it — the old `:1038` coordinate had drifted onto an unrelated doc comment.
     ///
     /// X4-4 tests [`window_cast_card_ids`] directly and X4-1 uses a hand-built scope, so
     /// neither pins the premise *"conjunct (5) derives `cast_card_ids` from
@@ -14005,7 +14170,7 @@ mod tests {
             .expect("fixture: the def carries the execute body just installed");
         assert!(
             crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(exec),
-            "reach-guard: `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (ability_scan.rs:511) \
+            "reach-guard: `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (`ability_scan::scan_effect`) \
              must make this body read the sibling axis — that veto is the whole subject of S1, \
              and without it the consult's first conjunct is false and no row proves anything"
         );
@@ -14018,10 +14183,21 @@ mod tests {
         (state, member, source, artifact)
     }
 
-    /// **S1-P1 / S1-N1 / S1-N2 / S1-N3** — the phase-C S1 arm
+    /// **S1-P1 / S1-N1 / S1-N2 / S1-N3 + the conjunct-per-row block** — the phase-C S1 arm
     /// (`pump_aggregate_provably_excludes_class`) as the block-(1b) consult reaches it.
-    /// Every arm drives the production predicate `fire_time_conditions_read_growing_class`,
+    /// Arms (i)-(iv) drive the production predicate `fire_time_conditions_read_growing_class`,
     /// not the arm in isolation, so the sibling-disjunct WIRING is under test too.
+    ///
+    /// ARMS (vii)-(xi) DELIBERATELY CALL THE ARM DIRECTLY, and the split is the point. A
+    /// production-level `true` is satisfied by ANY surviving veto, so it can prove that the
+    /// firewall still vetoes but never that a NAMED conjunct is what refused. (i)-(iv) pin the
+    /// wiring once; (vii)-(xi) pin one conjunct each against a matched positive control on the
+    /// same `(state, member, source)` triple. Before them, every negative in this row was the
+    /// same `Typed{{[Artifact], You, []}}` aggregate with one field swapped, which reaches
+    /// conjuncts (b)/(c)/(d) only — deleting conjunct (0), conjunct (a), or the
+    /// context-shape guard's `controller` clause flipped NOTHING here. That is the
+    /// conjunct-per-row discipline `ledger_exclusion_is_precise_and_fail_closed` already
+    /// carries, ported rather than reinvented.
     ///
     /// The fixture def is the REAL Pyreswipe Hawk `execute` body lifted from this lane's
     /// target dump — not a paraphrase and not a hand-built `Pump`, either of which can take
@@ -14035,9 +14211,18 @@ mod tests {
     /// * delete the context-shape guard's `typed.properties.is_empty()` ⇒ **(iii) FAILS**.
     /// * check only `power` and drop the `toughness` half ⇒ **(iv) FAILS**.
     /// * drop conjunct (c)'s liveness test ⇒ **(v) FAILS**.
+    /// * delete conjunct (0) (`activation_restrictions.is_empty()`) ⇒ **(vii) FAILS**.
+    /// * delete conjunct (a) (the `Effect::NoOp` clone-and-rescan) ⇒ **(viii) FAILS**.
+    /// * drop the context-shape guard's `controller` clause ⇒ **(ix) FAILS**.
+    /// * turn the non-`Typed` `else { return false }` into an accept ⇒ **(x) FAILS**.
+    /// * turn `pt_value_aggregate_provably_excludes_class`'s `_ => return false` into
+    ///   `_ => return true` ⇒ **(xi) FAILS**.
     #[test]
     fn pump_aggregate_gate_is_precise_and_fail_closed() {
-        use crate::types::ability::{PtValue, TypeFilter};
+        use crate::types::ability::{
+            AbilityCondition, Comparator, ControllerRef, PlayerScope, PtValue, QuantityExpr,
+            QuantityRef, TypeFilter,
+        };
 
         let dump = wba_dump_state();
         let hawk = wba_hawk(&dump);
@@ -14178,6 +14363,154 @@ mod tests {
              the narrowing is keeping a veto that is provably unnecessary — re-argue it, do \
              not delete this row"
         );
+
+        // ══ CONJUNCT-PER-ROW BLOCK (M1) ═══════════════════════════════════════════════
+        // Ported from `ledger_exclusion_is_precise_and_fail_closed`, which carries one row
+        // per conjunct for exactly this reason. The five rows above are all the SAME
+        // `Typed{[Artifact], You, []}` aggregate with one field swapped, so they exercise
+        // conjuncts (b)/(c)/(d) and NOTHING else: deleting conjunct (0), conjunct (a), or
+        // the context-shape guard's `controller` clause flipped none of them.
+        //
+        // These rows call the ARM rather than `fire_time_conditions_read_growing_class`,
+        // deliberately and against this row's general rule. A production-level `true` is
+        // satisfied by ANY surviving veto, so it cannot attribute a refusal to one
+        // conjunct; the wiring is already pinned by (i)-(iv) above. Each row below is the
+        // (i) fixture with EXACTLY ONE field changed, against the same board, so the
+        // matched positive control immediately below is what makes the change attributable.
+        assert!(
+            pump_aggregate_provably_excludes_class(&hawk_pump, &state, member, &source_obj),
+            "CONJUNCT-LEVEL POSITIVE CONTROL: the unmodified Hawk def RELIEVES against this \
+             exact (state, member, source) triple. Every negative below is this call with one \
+             field of the def changed, so a `false` there is attributable to that field. If \
+             this row is red the negatives below are all vacuously true"
+        );
+
+        // ── (vii) conjunct (0): a class-MATCHING activation restriction ───────────────
+        // PROGRAMMATIC BY NECESSITY, same as the ledger arm's NW-2 row: `ability_scan`
+        // destructures `activation_restrictions: _`, so conjunct (a)'s rescan answers
+        // `false` even here and conjunct (0) is the ONLY closure. The S1 block carried
+        // ZERO `activation_restrictions` before this row.
+        let mut restricted = hawk_pump.clone();
+        restricted
+            .activation_restrictions
+            .push(ActivationRestriction::RequiresCondition {
+                condition: Some(crate::types::ability::ParsedCondition::QuantityComparison {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::BattlefieldEntriesThisTurn {
+                            player: PlayerScope::Controller,
+                            filter: TargetFilter::Typed(TypedFilter::creature()),
+                        },
+                    },
+                    comparator: Comparator::GE,
+                    rhs: QuantityExpr::Fixed { value: 2 },
+                }),
+            });
+        assert!(
+            !pump_aggregate_provably_excludes_class(&restricted, &state, member, &source_obj),
+            "(vii) conjunct (0): this def and the control differ in EXACTLY \
+             `activation_restrictions`, and the restriction's own filter COUNTS creatures — \
+             the growing class. The firewall's scan cannot see that field at all, so deleting \
+             `if !exec.activation_restrictions.is_empty() {{ return false; }}` relieves a def \
+             whose gating condition tracks the loop"
+        );
+
+        // ── (viii) conjunct (a): a second sibling read OUTSIDE `exec.effect` ──────────
+        // The five rows above all put every sibling read inside `Effect::Pump`, so the
+        // clone-and-rescan probe had nothing left to find after `Effect::NoOp`.
+        let mut extra_read = hawk_pump.clone();
+        extra_read.condition = Some(AbilityCondition::QuantityCheck {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::BattlefieldEntriesThisTurn {
+                    player: PlayerScope::Controller,
+                    filter: TargetFilter::Typed(TypedFilter::creature()),
+                },
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 2 },
+        });
+        assert!(
+            !pump_aggregate_provably_excludes_class(&extra_read, &state, member, &source_obj),
+            "(viii) conjunct (a): the aggregate argument is untouched and still class-disjoint, \
+             so conjunct (d) is as satisfied as in the control — the def observes the loop \
+             through `condition` instead. Only the `Effect::NoOp` clone-and-rescan can see \
+             that, and dropping it relieves a def on evidence about a field that was never \
+             the def's sole sibling source"
+        );
+
+        // ── (ix) the context-shape guard's `controller` half ──────────────────────────
+        // Sibling of (iii), which probes the `properties` half. Like (iii) this is NOT
+        // about the answer: `Opponent` narrows the population AWAY from the P0 member, so
+        // conjunct (d) would still report exclusion. It is about whether the firewall may
+        // ask at all — `ControllerRef::Opponent` resolves against the resolver's
+        // `source_controller` / `scoped_iteration_player`, which the firewall's
+        // `from_source_with_controller` context does not reproduce.
+        let opponent_controlled = hawk_pump_with_pt(
+            &hawk_pump,
+            hawk_power_with_filter(
+                &hawk_pump,
+                TargetFilter::Typed(TypedFilter {
+                    controller: Some(ControllerRef::Opponent),
+                    ..hawk_typed.clone()
+                }),
+            ),
+            PtValue::Fixed(0),
+        );
+        assert!(
+            !pump_aggregate_provably_excludes_class(
+                &opponent_controlled,
+                &state,
+                member,
+                &source_obj
+            ),
+            "(ix) context-shape guard, `controller` half: only `None` and \
+             `ControllerRef::You` are admitted. `You` resolves to `ctx.source_controller`, \
+             which the firewall binds from the very object it is scanning, and the cover pins \
+             that object's `controller` across the window. `Opponent` reads the same field but \
+             names the COMPLEMENT population, so a resolver/firewall disagreement about who \
+             'you' is re-partitions the board instead of being absorbed by that pin. Dropping \
+             the `matches!(typed.controller, None | Some(ControllerRef::You))` clause relieves \
+             it anyway"
+        );
+
+        // ── (x) the non-`Typed` refusal ───────────────────────────────────────────────
+        // `Or([<Hawk's own filter>])` is semantically the SAME population — that is the
+        // point. The refusal is structural: the guard admits no combinator, so no row can
+        // pass by the walk happening to agree.
+        let wrapped = hawk_pump_with_pt(
+            &hawk_pump,
+            hawk_power_with_filter(
+                &hawk_pump,
+                TargetFilter::Or {
+                    filters: vec![TargetFilter::Typed(hawk_typed.clone())],
+                },
+            ),
+            PtValue::Fixed(0),
+        );
+        assert!(
+            !pump_aggregate_provably_excludes_class(&wrapped, &state, member, &source_obj),
+            "(x) `let TargetFilter::Typed(typed) = filter else {{ return false }}`: every \
+             combinator (`Or` / `And` / `Not` / `TrackedSet`) keeps its veto rather than being \
+             walked here. Turning that `else` into an accept would also walk past the \
+             `references_exiled_by_source` debug-assert, which holds only BECAUSE the filter \
+             is known to be `Typed`"
+        );
+
+        // ── (xi) the `PtValue` / `QuantityExpr` `_ => return false` fall-through ──────
+        // `PtValue::Variable` is an announced X, resolved from the ability's own record —
+        // a value the firewall's context cannot reproduce and the aggregate walk never
+        // reaches.
+        let announced_x = hawk_pump_with_pt(
+            &hawk_pump,
+            PtValue::Variable("X".to_string()),
+            PtValue::Fixed(0),
+        );
+        assert!(
+            !pump_aggregate_provably_excludes_class(&announced_x, &state, member, &source_obj),
+            "(xi) fall-through: only `PtValue::Fixed` (invariant by construction) and an \
+             `Aggregate`-shaped `PtValue::Quantity` are provable here. Turning \
+             `_ => return false` into `_ => return true` relieves every unexamined \
+             `QuantityExpr` shape, announced X included"
+        );
     }
 
     /// **S1-T (the TARGET axis)** — three defs byte-identical to the real Pyreswipe Hawk
@@ -14186,7 +14519,7 @@ mod tests {
     /// separately reports the third as a sibling read. Conjunct (d) proves the P/T AGGREGATE
     /// is class-invariant and says nothing whatever about what the target reads, and the veto
     /// S1 relieves is the BLANKET `Effect::Pump {{ .. }} => Axes::CONSERVATIVE`
-    /// (ability_scan.rs:511) — which discards the target too, so nothing downstream re-checks
+    /// (`ability_scan::scan_effect`) — which discards the target too, so nothing downstream re-checks
     /// it. See conjunct (b-t) on [`pump_aggregate_provably_excludes_class`].
     ///
     /// WHY IT IS NOT VACUOUS, stated as the fixture property that would break it: the three
@@ -14195,6 +14528,21 @@ mod tests {
     /// for the C veto — if the fix over-narrowed to "any target vetoes", A and B go red, and
     /// if it under-narrowed (or the `target: _` bind returns) C goes red. A row asserting only
     /// C would pass against a blanket `return false`.
+    ///
+    /// THE POPULATION CONTROL IS HOISTED OUT OF THE LOOP, and that is a correctness fix, not
+    /// tidying. Per-arm, it asserted `!pump_aggregate_provably_excludes_class(.., artifact,
+    /// ..)`, which ANY refusing conjunct satisfies — and arm C is precisely the arm where
+    /// (b-t) refuses before conjunct (d) is consulted. On C, the control was therefore
+    /// discharged by the conjunct under test and would have held against an EMPTY
+    /// `Typed{{Artifact, You}}` population. It is now asserted once, on the card's own def,
+    /// where (b-t) passes and the answer is conjunct (d)'s.
+    ///
+    /// MEASURED, two-sided, by emptying that population (dropping the fixture artifact's
+    /// `CoreType::Artifact` in [`pump_firewall_fixture`]): the HOISTED control goes RED, while
+    /// the OLD per-arm control restricted to arm C stays GREEN. Scope the claim honestly —
+    /// the per-arm form was NOT worthless, it caught that same mutation on arms A and B,
+    /// where (b-t) passes. It was blind on exactly ONE arm, and that arm is the one whose
+    /// verdict this row exists to establish.
     ///
     /// C's target is Light-Paws' shape (`FilterProp::DifferentNameFrom`, CR 201: "a different
     /// name than each [type] you control") — its legality is decided by ENUMERATING a live
@@ -14248,6 +14596,34 @@ mod tests {
             ..Default::default()
         });
 
+        // ⛔ THE ARTIFACT-MEMBERSHIP CONTROL LIVES OUT HERE, ONCE, AND CANNOT LIVE INSIDE
+        // THE LOOP. It used to be asserted per-arm as
+        // `!pump_aggregate_provably_excludes_class(&def, .., artifact, ..)`, which is
+        // satisfied by ANY refusing conjunct — and on arm C conjunct (b-t) refuses before the
+        // aggregate is ever consulted. So on the one arm whose claim depends on the
+        // population being non-empty, the control was discharged by the very conjunct under
+        // test, and it would have passed against an EMPTY `Typed{Artifact, You}` population.
+        // Asserted here on the CARD'S OWN def, whose (b-t) passes, so the `false` below is
+        // conjunct (d)'s verdict about membership and nothing else. All three arms share this
+        // aggregate byte-for-byte (enforced by the whole-def equality inside the loop), so one
+        // assertion covers all three.
+        let (control_state, _, control_source, control_artifact) =
+            pump_firewall_fixture(hawk_pump.clone());
+        let control_source_obj = control_state.objects[&control_source].clone();
+        assert!(
+            !pump_aggregate_provably_excludes_class(
+                &hawk_pump,
+                &control_state,
+                control_artifact,
+                &control_source_obj
+            ),
+            "non-vacuity: the `Typed{{Artifact, You}}` aggregate DOES count the fixture \
+             artifact, so the id population is non-empty and conjunct (d) discriminates on \
+             MEMBERSHIP rather than answering an empty filter. The card's own def is used \
+             because its (b-t) passes — on arm C, (b-t) refuses first and this call would \
+             return `false` for a reason that says nothing about the population"
+        );
+
         for (label, new_target, relieves) in [
             ("A/SelfRef (the real card)", TargetFilter::SelfRef, true),
             ("B/bare Typed{Creature}", bare_typed, true),
@@ -14269,14 +14645,8 @@ mod tests {
             );
             // `pump_firewall_fixture` re-asserts the pre-relief veto (blanket
             // `Effect::Pump {{ .. }} => Axes::CONSERVATIVE`), so each arm is a live surface.
-            let (state, member, source, artifact) = pump_firewall_fixture(def.clone());
+            let (state, member, source, _artifact) = pump_firewall_fixture(def.clone());
             let source_obj = state.objects[&source].clone();
-            assert!(
-                !pump_aggregate_provably_excludes_class(&def, &state, artifact, &source_obj),
-                "{label} non-vacuity: the `Typed{{Artifact, You}}` aggregate DOES count the \
-                 fixture artifact, so the id population is non-empty and conjunct (d) is \
-                 discriminating on membership rather than answering an empty filter"
-            );
             assert_eq!(
                 pump_aggregate_provably_excludes_class(&def, &state, member, &source_obj),
                 relieves,
@@ -14380,7 +14750,7 @@ mod tests {
             !crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(
                 &execs[1]
             ),
-            "R1 / plan U-1, re-measured at this commit: Hawk's `GainControl` expend trigger does \
+            "R1 / plan U-1: Hawk's `GainControl` expend trigger does \
              NOT read the sibling axis, so S1 alone clears this card at block (1b) and the \
              dropped S1' arm stays unnecessary. If this flips, C1 no longer clears Hawk"
         );
@@ -14395,7 +14765,7 @@ mod tests {
     ///   (ii) FAILS. (a) is measured to PASS for Pegasus, so (c) is the only conjunct
     ///   carrying its refusal.
     /// * (iii) drop conjunct (0) ⇒ FAILS. This is NW-2: the scan destructures
-    ///   `activation_restrictions: _` (ability_scan.rs:4238), so conjunct (a) returns
+    ///   `activation_restrictions: _` (`ability_scan::ability_definition_axes`), so conjunct (a) returns
     ///   `false` and the predicate would wrongly return `true` with a class-MATCHING
     ///   `ActivationRestriction::RequiresCondition` on the very def being relieved.
     /// * (iv) replace conjunct (b)'s `_ => false` with `_ => true` ⇒ FAILS.
@@ -15117,7 +15487,7 @@ mod tests {
         // and not an empty board's.
         assert_eq!(
             functioning_board_replacement_defs(&taplands)
-                .filter(|(_, d)| d.event == ReplacementEvent::Moved)
+                .filter(|(_, _, d)| d.event == ReplacementEvent::Moved)
                 .count(),
             12,
             "reach-guard: twelve functioning battlefield `Moved` replacements are installed"
@@ -15322,30 +15692,67 @@ mod tests {
     /// ★ `C3A-1` — THE BEHAVIOUR-IDENTITY ROW for [`loop_window_replacement_defs`]'s yield
     /// change. Its assert tag is a REGISTERED DISCRIMINATOR; the wording is load-bearing.
     ///
-    /// The yield went from `&ReplacementDefinition` to `(Option<&GameObject>, &_)` so a caller can
-    /// reach a board def's host again. NOTHING ELSE MAY MOVE — and "the same defs come out" is a
+    /// The yield went from `&ReplacementDefinition` to `(Option<&GameObject>, usize, &_)` so a
+    /// caller can reach a board def's host again AND address the def the way the pipeline does.
+    /// NOTHING ELSE MAY MOVE — and "the same defs come out" is a
     /// claim about a SEQUENCE, not a count: a count-only assertion is satisfied by a permuted set,
     /// by a def paired with the wrong host, and by a floating def wearing `Some(..)`. So this row
     /// pins ORDER and IDENTITY at every position.
     ///
-    /// FIXTURE MINIMA, each present because a smaller one cannot fail: TWO board defs on TWO
-    /// DISTINCT objects (one of each kind cannot exhibit a swap, and with one board object "the
-    /// right host" is not a discriminating claim) and TWO live floating defs. Plus two controls
-    /// that must never appear in the sequence — a graveyard-resident def (it passes
-    /// `object_functions`, so ONLY the zone filter excludes it) and a consumed floating def
-    /// positioned BETWEEN the two live ones, so the liveness filter must skip it rather than
-    /// truncate the tail.
+    /// FIXTURE MINIMA, each present because a smaller one cannot fail: board defs on TWO DISTINCT
+    /// objects (one of each kind cannot exhibit a swap, and with one board object "the right host"
+    /// is not a discriminating claim), with TWO defs on ONE of them (below), ONE def on a
+    /// command-zone EMBLEM (below), and TWO live floating defs. Plus two controls that must never
+    /// appear in the sequence — a graveyard-resident def (it passes `object_functions`, so ONLY
+    /// the zone filter excludes it) and a consumed floating def positioned BETWEEN the two live
+    /// ones, so the liveness filter must skip it rather than truncate the tail.
+    ///
+    /// THE INDEX IS PART OF THE IDENTITY, NOT DECORATION. The pipeline addresses an instance as
+    /// `ReplacementId { source, index }`, so `(obj, def)` alone cannot distinguish two defs on
+    /// one permanent — which is why host 701 carries two. It also pins the FLOATING index to the
+    /// store slot rather than to a position in the filtered sequence: the consumed def sits at
+    /// store index 1, so the live def after it is index 2, exactly as
+    /// `find_applicable_replacements` numbers it (`enumerate()` first, `is_consumed` `continue`
+    /// second). An implementation that filtered before enumerating would report 1 and pass every
+    /// other assertion in this row.
+    ///
+    /// THE COMMAND HOST IS NOT DECORATION. [`functioning_board_replacement_defs`] gates on
+    /// `matches!(obj.zone, Zone::Battlefield | Zone::Command)`; with a battlefield-only fixture,
+    /// deleting `| Zone::Command` was MEASURED to leave this row green, and the oracle below then
+    /// filtered `== Zone::Battlefield` — narrower than production, so it could not have caught it
+    /// either. Both halves are fixed: the emblem supplies a witness and the oracle now mirrors
+    /// production's `matches!` character-for-character.
     ///
     /// THE ORACLE IS BUILT FROM THE TWO RAW STORES, never by re-calling the walk under test.
     /// Board order comes from `active_replacements` because `state.objects` is an `im::HashMap`
     /// whose iteration order is a hash detail, not insertion order — so it is read, not asserted;
     /// every other axis of the sequence is asserted literally.
     ///
-    /// REVERT-PROBES (each must RED on `C3A-1`):
+    /// REVERT-PROBES, GROUPED BY WHICH ASSERTION THEY ACTUALLY FIRE. The grouping is the
+    /// point: this row has three independent assertions, and a probe only witnesses the one
+    /// that fires FIRST. Listing them undifferentiated let a probe be credited to an
+    /// assertion it never reached.
+    ///
+    /// Fire the SEQUENCE assertion (`observed == expected`):
     /// * swap the `.chain()` order in [`loop_window_replacement_defs`];
     /// * map the floating half to `Some(..)` / the board half to `None`;
-    /// * pair a board def with any object other than its host;
-    /// * drop the board half's zone filter, or the floating half's `!is_consumed` filter.
+    /// * pair a board def with any object other than its host, or with another of ITS OWN
+    ///   host's indices — MEASURED: this fires the sequence assertion, NOT the host loop,
+    ///   because `expected` derives its host ids from `active_replacements` while `observed`
+    ///   carries the mutated pairing, so the two vectors diverge before the host loop runs.
+    ///   It is therefore NOT a witness for the host assertion, which is what it used to be
+    ///   listed as;
+    /// * filter the floating half before enumerating it (renumbers Mill from 2 to 1);
+    /// * drop the board half's zone filter, or the floating half's `!is_consumed` filter;
+    /// * narrow the board half's zone filter to `Zone::Battlefield` alone (i.e. delete
+    ///   `| Zone::Command`) — the command emblem then disappears from `observed` only.
+    ///
+    /// Fire the HOST/SLOT assertion (the `ptr::eq` loop) — i.e. the probes that ISOLATE it:
+    /// * yield the host's `base_replacement_definitions[idx]` instead of the def
+    ///   `active_replacements` walked. Same id, same index, same CONTENT, DIFFERENT
+    ///   allocation, so `observed == expected` still holds and only pointer identity can
+    ///   see it. MEASURED: this is the probe that reaches the host loop. Any aliasing of
+    ///   two content-equal stores has the same shape.
     #[test]
     fn c3a_loop_window_yield_pins_the_def_sequence_and_the_host_binding() {
         use crate::types::ability::ReplacementDefinition;
@@ -15356,11 +15763,21 @@ mod tests {
             700,
             ReplacementDefinition::new(ReplacementEvent::CreateToken),
         );
-        install_board_replacement(
-            &mut state,
-            701,
+        // TWO defs on ONE host. `ReplacementId`'s `index` is per-object, so with one def per
+        // host every board index is 0 and the `usize` this walk yields is constant — an index
+        // that cannot be wrong proves nothing. This is also the exact case the 2-tuple could not
+        // express: `(obj, def)` cannot tell def[0] from def[1] on the same permanent.
+        let host_701 = bf_object(&mut state, 701);
+        let defs_701 = vec![
             ReplacementDefinition::new(ReplacementEvent::AddCounter),
-        );
+            ReplacementDefinition::new(ReplacementEvent::Moved),
+        ];
+        let obj_701 = state
+            .objects
+            .get_mut(&host_701)
+            .expect("just-created board object");
+        obj_701.base_replacement_definitions = std::sync::Arc::new(defs_701.clone());
+        obj_701.replacement_definitions = defs_701.into();
         // ZONE CONTROL: a functioning object OUTSIDE [Battlefield, Command].
         let gy_def = ReplacementDefinition::new(ReplacementEvent::Draw);
         let mut gy_obj = GameObject::new(
@@ -15373,6 +15790,25 @@ mod tests {
         gy_obj.base_replacement_definitions = std::sync::Arc::new(vec![gy_def.clone()]);
         gy_obj.replacement_definitions = vec![gy_def].into();
         state.objects.insert(ObjectId(702), gy_obj);
+        // COMMAND ARM, the production zone gate's SECOND admitted zone. Without this host the
+        // `| Zone::Command` disjunct in [`functioning_board_replacement_defs`] is deletable with
+        // the row still GREEN — measured, and the reason this fixture exists.
+        // CR 114.4: only an EMBLEM functions from the command zone, which is exactly what
+        // `functioning_abilities::object_functions` enforces (`zone == Command && !is_emblem`
+        // ⇒ not functioning). A non-emblem command object would be filtered one step EARLIER,
+        // inside `active_replacements`, and would leave the zone disjunct just as unprobed.
+        let emblem_def = ReplacementDefinition::new(ReplacementEvent::DamageDone);
+        let mut emblem = GameObject::new(
+            ObjectId(703),
+            CardId(7),
+            PlayerId(1),
+            "Command Emblem".to_string(),
+            Zone::Command,
+        );
+        emblem.is_emblem = true;
+        emblem.base_replacement_definitions = std::sync::Arc::new(vec![emblem_def.clone()]);
+        emblem.replacement_definitions = vec![emblem_def].into();
+        state.objects.insert(ObjectId(703), emblem);
         // Floating half: live, CONSUMED (control), live — in that store order.
         install_floating_replacement(
             &mut state,
@@ -15390,9 +15826,11 @@ mod tests {
         // not two empty vectors agreeing.
         assert_eq!(
             crate::game::functioning_abilities::active_replacements(&state).count(),
-            3,
-            "reach-guard: three FUNCTIONING object-attached defs exist (two battlefield, one \
-             graveyard) — the zone control is inside the walk this filters, not outside it"
+            5,
+            "reach-guard: five FUNCTIONING object-attached defs exist (700 x1 and 701 x2 on the \
+             battlefield, one command-zone emblem, one graveyard) — the zone control is inside \
+             the walk this filters, not outside it. If this drops by one the emblem was refused \
+             by `object_functions` and the `| Zone::Command` disjunct is unprobed again"
         );
         assert_eq!(
             state.pending_damage_replacements.len(),
@@ -15400,43 +15838,56 @@ mod tests {
             "reach-guard: three floating defs are installed, one of them consumed"
         );
 
-        let observed: Vec<(Option<ObjectId>, ReplacementEvent)> =
+        // The triple IS `ReplacementId` plus the event: `source` (the host, `None` under the
+        // floating sentinel `ObjectId(0)`), `index`, and what the def watches.
+        let observed: Vec<(Option<ObjectId>, usize, ReplacementEvent)> =
             loop_window_replacement_defs(&state)
-                .map(|(host, def)| (host.map(|obj| obj.id), def.event.clone()))
+                .map(|(host, idx, def)| (host.map(|obj| obj.id), idx, def.event.clone()))
                 .collect();
 
-        let expected: Vec<(Option<ObjectId>, ReplacementEvent)> =
+        let expected: Vec<(Option<ObjectId>, usize, ReplacementEvent)> =
             crate::game::functioning_abilities::active_replacements(&state)
-                .filter(|(_, obj, _)| obj.zone == Zone::Battlefield)
-                .map(|(_, obj, def)| (Some(obj.id), def.event.clone()))
+                // PRODUCTION'S EXACT GATE, character-for-character — see
+                // [`functioning_board_replacement_defs`]. A narrower oracle (`== Battlefield`)
+                // makes the row blind to the `| Zone::Command` disjunct being deleted.
+                .filter(|(_, obj, _)| matches!(obj.zone, Zone::Battlefield | Zone::Command))
+                .map(|(idx, obj, def)| (Some(obj.id), idx, def.event.clone()))
                 .chain(
                     state
                         .pending_damage_replacements
                         .iter()
-                        .filter(|def| !def.is_consumed)
-                        .map(|def| (None, def.event.clone())),
+                        // ENUMERATE BEFORE FILTERING, exactly as `find_applicable_replacements`
+                        // does: its `is_consumed` `continue` sits INSIDE the `enumerate()` loop,
+                        // so a skipped def still consumes a store slot. Filtering first would
+                        // renumber the tail and silently disagree with the pipeline's own index.
+                        .enumerate()
+                        .filter(|(_, def)| !def.is_consumed)
+                        .map(|(idx, def)| (None, idx, def.event.clone())),
                 )
                 .collect();
         // The ORACLE'S own guard: everything about it except the two board objects' relative
         // order is asserted, so a broken oracle cannot agree with a broken walk.
         assert_eq!(
             expected.len(),
-            4,
-            "oracle: two board defs then two live floating defs"
+            6,
+            "oracle: four board defs (700 x1, 701 x2, one command emblem) then two live floating \
+             defs"
         );
         assert_eq!(
-            expected[2..],
+            expected[4..],
             [
-                (None, ReplacementEvent::GainLife),
-                (None, ReplacementEvent::Mill)
+                (None, 0, ReplacementEvent::GainLife),
+                (None, 2, ReplacementEvent::Mill)
             ],
-            "oracle: the floating tail is hostless, in store order, with the consumed def skipped"
+            "oracle: the floating tail is hostless, in store order, with the consumed def skipped \
+             — and skipped is not renumbered, so Mill keeps store index 2, not 1"
         );
-        let board_head: HashSet<(u64, ReplacementEvent)> = expected[..2]
+        let board_head: HashSet<(u64, usize, ReplacementEvent)> = expected[..4]
             .iter()
-            .map(|(host, event)| {
+            .map(|(host, idx, event)| {
                 (
                     host.expect("oracle: a board entry always has a host").0,
+                    *idx,
                     event.clone(),
                 )
             })
@@ -15444,12 +15895,16 @@ mod tests {
         assert_eq!(
             board_head,
             [
-                (700, ReplacementEvent::CreateToken),
-                (701, ReplacementEvent::AddCounter)
+                (700, 0, ReplacementEvent::CreateToken),
+                (701, 0, ReplacementEvent::AddCounter),
+                (701, 1, ReplacementEvent::Moved),
+                (703, 0, ReplacementEvent::DamageDone)
             ]
             .into_iter()
             .collect(),
-            "oracle: the board head is exactly the two installed defs on their own hosts"
+            "oracle: the board head is exactly the four installed defs on their own hosts at \
+             their own per-host indices — both battlefield permanents (701 twice) AND the \
+             command-zone emblem"
         );
 
         assert_eq!(
@@ -15462,23 +15917,33 @@ mod tests {
         );
 
         // The host binding is REAL, not a coincidence of position: every yielded pair is checked
-        // against the store it actually came from, by pointer identity.
-        for (host, def) in loop_window_replacement_defs(&state) {
+        // against the store it actually came from, by pointer identity. Its isolating witness is
+        // the `base_replacement_definitions` ALIASING probe (see this row's doc) — a
+        // content-equal, differently-allocated store. A foreign-host mutation does NOT witness
+        // this loop: the sequence assertion above diverges first and fires instead.
+        // `(host, index)` IS the pipeline's `ReplacementId`, so this resolves the pair through
+        // the store like production does — `.nth(idx)` / `.get(idx)`, not the O(n) `ptr::eq`
+        // scan-for-membership the 2-tuple forced. Membership said "this def lives somewhere on
+        // that host"; slot identity says "at THAT slot", which is what a `ReplacementId` means.
+        for (host, idx, def) in loop_window_replacement_defs(&state) {
             match host {
                 Some(obj) => assert!(
                     obj.replacement_definitions
                         .iter_all()
-                        .any(|owned| std::ptr::eq(owned, def)),
+                        .nth(idx)
+                        .is_some_and(|owned| std::ptr::eq(owned, def)),
                     "C3A-1 host: a `Some(..)` entry must carry the object that actually HOSTS \
-                     that def, not merely some battlefield object"
+                     that def, at the index `ReplacementId` would address it by — not merely \
+                     some battlefield object, and not merely some slot on the right object"
                 ),
                 None => assert!(
                     state
                         .pending_damage_replacements
-                        .iter()
-                        .any(|floating| std::ptr::eq(floating, def)),
-                    "C3A-1 host: a `None` entry must come from the floating store, where no host \
-                     exists to bind — never from a board def whose host was dropped"
+                        .get(idx)
+                        .is_some_and(|floating| std::ptr::eq(floating, def)),
+                    "C3A-1 host: a `None` entry must come from the floating store at its own \
+                     store index, where no host exists to bind — never from a board def whose \
+                     host was dropped"
                 ),
             }
         }
@@ -15486,11 +15951,11 @@ mod tests {
         // THE CALL-SITE IDENTITY CLAIM, stated as code: all three call sites read only `def`, so
         // what they observe is this projection — and it must equal the pre-C3a body verbatim.
         let via_union: Vec<*const ReplacementDefinition> = loop_window_replacement_defs(&state)
-            .map(|(_, def)| std::ptr::from_ref(def))
+            .map(|(_, _, def)| std::ptr::from_ref(def))
             .collect();
         let pre_c3a: Vec<*const ReplacementDefinition> = functioning_board_replacement_defs(&state)
-            .map(|(_, def)| def)
-            .chain(live_floating_replacement_defs(&state))
+            .map(|(_, _, def)| def)
+            .chain(live_floating_replacement_defs(&state).map(|(_, def)| def))
             .map(std::ptr::from_ref)
             .collect();
         assert_eq!(
@@ -15554,7 +16019,7 @@ mod tests {
             // filter's verdict and not a fixture that silently dropped its def.
             assert_eq!(
                 functioning_board_replacement_defs(&state)
-                    .filter(|(_, d)| d.event == ReplacementEvent::GainLife)
+                    .filter(|(_, _, d)| d.event == ReplacementEvent::GainLife)
                     .count(),
                 1,
                 "reach-guard: one functioning battlefield `GainLife` replacement is installed"
@@ -15618,7 +16083,7 @@ mod tests {
         // below is the replacement half's verdict and the revert probe can actually flip it.
         assert_eq!(
             functioning_board_replacement_defs(&state)
-                .filter(|(_, d)| d.event == ReplacementEvent::AddCounter)
+                .filter(|(_, _, d)| d.event == ReplacementEvent::AddCounter)
                 .count(),
             1,
             "reach-guard: one functioning battlefield `AddCounter` replacement is installed"
@@ -21176,6 +21641,8 @@ mod tests {
     ///   unconditionally) ⇒ **(ii) FAILS**.
     /// * make `linked_exiled_ids` ignore `link.source_id` ⇒ **(iii) FAILS**.
     /// * drop conjunct (c)'s liveness test ⇒ **(iv) FAILS**.
+    /// * weaken conjunct (c) back to `state.objects.contains_key(&class_member)` ⇒
+    ///   **(iii-M3) FAILS** — an id that merely EXISTS is relieved again.
     #[test]
     fn exiled_colors_gate_is_precise_and_fail_closed() {
         let (mut state, member, host) = block2_fixture(vec![pit_exiled_color_ability()]);
@@ -21192,6 +21659,7 @@ mod tests {
             crate::types::ability::LinkedExileScope::ThisObject,
             host,
         )
+        .map(|(id, _)| id)
         .collect();
         assert_eq!(
             host_links,
@@ -21218,16 +21686,52 @@ mod tests {
              survive. The relief is a property of the class, not of the ability"
         );
 
-        // ── (iii) the `link.source_id` conjunct: a link on ANOTHER host proves nothing ─
+        // ── (iii) the `link.source_id` conjunct, ASKED OF ITS OWN AUTHORITY ──────────
+        // This claim is about `linked_exiled_ids`, so it is asserted there. It used to be
+        // routed through the arm with `foreign_linked` as the class member, which conjunct
+        // (c) now refuses on zone (M3) — and an arm that refuses for zone reasons cannot
+        // witness a link-scoping property. Same claim, instrument that can actually see it.
         assert!(
-            !fire_time_conditions_read_growing_class(
+            !crate::game::effects::mana::linked_exiled_ids(
                 &state,
-                Some(&HashSet::from([foreign_linked]))
+                crate::types::ability::LinkedExileScope::ThisObject,
+                host,
+            )
+            .any(|(id, _)| id == foreign_linked),
+            "CR 607.2a scopes a linked ability to cards exiled by THIS object: a card linked \
+             to a DIFFERENT host is not in Pit's set. Dropping `link.source_id != host_id` \
+             from `linked_exiled_ids` makes this FAIL — and would also silently widen the \
+             mana resolver"
+        );
+        assert!(
+            crate::game::effects::mana::linked_exiled_ids(
+                &state,
+                crate::types::ability::LinkedExileScope::ThisObject,
+                foreign_host,
+            )
+            .any(|(id, _)| id == foreign_linked),
+            "matched control for the row above: `foreign_linked` IS in ITS OWN host's set, so \
+             the exclusion is a property of the SOURCE argument and not of a card that is \
+             simply absent from every link set"
+        );
+
+        // ── (iii-M3) conjunct (c): EXISTS is not enough — the member must be ON THE ─────
+        // BATTLEFIELD. `object_count_matching_ids` / `linked_exiled_ids` build populations
+        // that no off-battlefield object can be in, so `contains_key` alone let an
+        // off-battlefield member satisfy the exclusion test VACUOUSLY — relief with no
+        // evidence, which is the direction this conjunct exists to prevent.
+        assert!(
+            !exiled_colors_provably_exclude_class(
+                &state.objects[&host].abilities[0],
+                &state,
+                foreign_linked,
+                &state.objects[&host].clone()
             ),
-            "CR 607.2a scopes a linked ability to cards exiled by THIS object: a class \
-             member linked to a DIFFERENT host is not in Pit's set and must not deny \
-             relief. Dropping `link.source_id != host_id` from `linked_exiled_ids` makes \
-             this FAIL — and would also silently widen the mana resolver"
+            "M3: `foreign_linked` is LIVE in `state.objects` but sits in Zone::Exile. Under \
+             the old `state.objects.contains_key(&class_member)` this was RELIEVED, because \
+             an exiled id is trivially absent from a link set scoped to another host — an \
+             exclusion nothing measured. Reverting conjunct (c) to `contains_key` makes this \
+             row FAIL"
         );
 
         // ── (iv) conjunct (c): a member absent from the scanned frame proves nothing ──
@@ -21249,6 +21753,113 @@ mod tests {
             "M2-S2: `!members.is_empty()` is LOAD-BEARING — an empty class must not make \
              `.all()` vacuously true and relieve the surface. Deleting that guard makes \
              this FAIL (everything relieved)"
+        );
+    }
+
+    /// **S2-C (E2)** — the exile arm reached through the PRODUCTION `class_members`
+    /// constructor, on a real frame pair, instead of a hand-written `HashSet`.
+    ///
+    /// WHY IT EXISTS. Every other S2 row calls the firewall with a class set the test wrote by
+    /// hand, and `exiled_colors_gate_is_precise_and_fail_closed`'s (ii) arm hands it an
+    /// EXILE-zone id. The production constructor cannot emit one: inside
+    /// [`loop_states_cover_modulo_fodder_growth`], `class_members` is `all_fodder` filtered by
+    /// `cf.objects`, and `all_fodder` is collected from `pa.battlefield.chain(pb.battlefield)`.
+    /// So at the production seam conjunct (d)'s membership test is CONSTANT-TRUE — it is
+    /// defence-in-depth, and the guarantee that actually carries there is the cover. That
+    /// asymmetry was argued in prose only until this row; the two reach-guards below pin it.
+    ///
+    /// It also pins the ORDERING every arm's soundness rests on — `board_covers_modulo_fodder`
+    /// runs BEFORE the firewall inside this predicate — by driving the whole predicate rather
+    /// than the firewall alone.
+    ///
+    /// REVERT / MUTATION PROBES:
+    /// * delete block (2)'s `&& !disjoint()` conjunct (or the
+    ///   `exiled_colors_provably_exclude_class` disjunct inside it) ⇒ the POSITIVE goes RED:
+    ///   the Pit host vetoes and the frame pair stops covering.
+    /// * bind `target: _` instead of `target: None` in conjunct (b) ⇒ the ANTI-BLANKET
+    ///   NEGATIVE goes RED.
+    #[test]
+    fn s2_arm_is_reached_through_the_production_class_constructor() {
+        use crate::types::ability::ManaTargetRole;
+        use std::sync::Arc;
+
+        // A frame pair whose ONLY difference is one more Saproling. `class_members` is
+        // therefore built by production from these two battlefields, not by this test.
+        let frames = |ability: crate::types::ability::AbilityDefinition| {
+            let mut prior = GameState::new_two_player(7);
+            prior.phase = Phase::PreCombatMain;
+            inert_token(&mut prior, 800, 0, "Engine");
+            for id in 700..=703 {
+                inert_token(&mut prior, id, 0, "Saproling");
+            }
+            let host = inert_token(&mut prior, 810, 0, "Block2 Mana Host");
+            prior.objects.get_mut(&host).unwrap().abilities = Arc::new(vec![ability]);
+            let linked = exile_linked_to(&mut prior, 820, host, "Linked Exiled Mountain");
+            let mut current = prior.clone();
+            inert_token(&mut current, 704, 0, "Saproling");
+            (prior, current, host, linked)
+        };
+
+        let base = pit_exiled_color_ability();
+        let (prior, current, host, linked) = frames(base.clone());
+
+        // ── REACH-GUARDS, before any outcome ─────────────────────────────────────────
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&base),
+            "reach-guard: Pit's ability must carry the sibling veto S2 relieves, or block (2)'s \
+             final conjunct is false and the cover below holds for an unrelated reason"
+        );
+        assert_eq!(
+            crate::game::effects::mana::linked_exiled_ids(
+                &prior,
+                crate::types::ability::LinkedExileScope::ThisObject,
+                host,
+            )
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+            vec![linked],
+            "reach-guard: the link set must be NON-EMPTY, or conjunct (d) relieves vacuously \
+             (`.all()` on an empty iterator is true) and measures nothing"
+        );
+        // ── THE E2 PIN: the linked card cannot BE a class member here ─────────────────
+        assert!(
+            !prior.battlefield.contains(&linked) && !current.battlefield.contains(&linked),
+            "E2: `all_fodder` is collected from `pa.battlefield.chain(pb.battlefield)`, so an id \
+             in NEITHER battlefield can never reach `class_members`. This is what makes \
+             conjunct (d) constant-true at the production seam — if a future constructor admits \
+             off-battlefield ids, this row must go red and (d)'s doc has to be re-argued"
+        );
+        assert_eq!(
+            prior.objects[&linked].zone,
+            Zone::Exile,
+            "E2: and the link authority yields only Exile-zone ids, which is the other half of \
+             why the two populations cannot intersect"
+        );
+
+        // ── POSITIVE: the arm relieves, so the frame pair covers ─────────────────────
+        assert!(
+            fodder_cover(&prior, &current),
+            "S2-C: Pit's `ChoiceAmongExiledColors` production reads a link set that no member of \
+             the growing Saproling class can be in, so per CR 608.2h it offers the same colours \
+             on every cycle and must not block the cover. This drives the WHOLE predicate — \
+             cover gate first, firewall second — not the firewall alone"
+        );
+
+        // ── ANTI-BLANKET NEGATIVE: the same frames, one field of the ability changed ──
+        // Without this the positive is satisfiable by `fn ..._cover(..) -> bool { true }`.
+        let targeted = mana_ability_with_target(
+            &base,
+            Some(ManaTargetRole::Recipient {
+                recipient: class_reading_target_filter(),
+            }),
+        );
+        let (t_prior, t_current, ..) = frames(targeted);
+        assert!(
+            !fodder_cover(&t_prior, &t_current),
+            "S2-C control: the SAME frame pair and the SAME link set, with the ability's mana \
+             TARGET reading the growing class. Conjunct (b)'s `target: None` refuses relief, \
+             block (2) vetoes, and the cover must fail — so the positive above is the arm's \
+             verdict and not a predicate that always covers"
         );
     }
 
@@ -21606,6 +22217,7 @@ mod tests {
                 crate::types::ability::LinkedExileScope::ThisObject,
                 host,
             )
+            .map(|(id, _)| id)
             .collect::<Vec<_>>(),
             vec![linked],
             "reach-guard: the link set must be non-empty and class-disjoint, so conjunct (d) \
