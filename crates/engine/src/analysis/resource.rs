@@ -3726,11 +3726,70 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       `cost_reduction` and `optional_player` without this arm enumerating any of them.
 ///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`, and NO `..` on
 ///       `Effect::Pump`, so a new `Pump` field is a compile error here rather than a silent
-///       unscanned read.
+///       unscanned read. (b-t) then requires the bound `target` to contribute NO sibling
+///       read, for the SAME reason the two sibling arms pattern-match `target: None` (see
+///       [`exiled_colors_provably_exclude_class`]'s (b)): the relieved veto is the BLANKET
+///       `Effect::Pump { .. } => Axes::CONSERVATIVE` (ability_scan.rs:511), which discards
+///       the whole payload — target included — so a board-reading target's veto would be
+///       relieved on evidence that never examined it. `Effect::Pump` cannot state that as a
+///       pattern (its `target` is a `TargetFilter`, NOT an `Option<_>`), so it is a
+///       PREDICATE through the scanner's own authority:
+///       `ability_scan::effect_target_reads_sibling_mutable_for_loop`, which derives the
+///       `FilterReadContext` from THIS effect via `effect_target_ctx` rather than pinning
+///       one. Measured: `Effect::Pump` sits in the `SnapshotOrEvent` group
+///       (ability_scan.rs:5715 -> `:5915`, RE-measured at this commit — the `:5688` / `:5888`
+///       this doc first shipped were measured before the wrapper landed +27 lines above them,
+///       i.e. this same diff's own insertion) TODAY; hardcoding that would be correct today
+///       and silently desynchronised the moment the grouping changes — which is exactly the
+///       defect class (b-t) exists to close. MEASURED coverage cost of the narrowing:
+///       ZERO — but the figure is meaningless
+///       without its PREDICATE, so state it. This arm's ONLY production consult is the
+///       `execute_ledger_condition_provably_excludes_class(..) ||
+///       pump_aggregate_provably_excludes_class(..)` disjunct inside block (1b)'s
+///       `functioning_abilities::active_trigger_definitions(state, obj)` -> `def.execute`
+///       loop, and conjunct (b) matches the TOP-LEVEL `exec.effect` only. So the reachable
+///       root set is TRIGGER EXECUTE BODIES on battlefield permanents — NOT `abilities[]`,
+///       and never a spell's own effect. Measured by the implementation review over the full
+///       `card-data.json` export and recorded here (NOT re-measured at this commit): 845
+///       `Effect::Pump` defs are reachable at that consult (828 `triggers[].execute` + 17
+///       granted `modifications[].trigger.execute`); ZERO of them carry a target that reads
+///       the sibling axis; ~625 already pass the pre-fix relief bound. FIVE match this
+///       arm's subject shape: Pyreswipe Hawk, Edgar Master Machinist,
+///       Orcish Siegemaster and Rubblebelt Rioters (`SelfRef`) plus Oaken Power Suit (bare
+///       `Typed{Creature}`) — (b-t) relaxes ALL FIVE. Accelerated Mutation and Boon of
+///       Boseiju share the bare-`Typed` shape and were counted here once, but both are
+///       INSTANTS carried at `abilities[]` / `kind: "Spell"`: neither is ever a `def.execute`
+///       on a battlefield permanent, so neither can reach this arm and neither is part of
+///       its cost. Executioner's Swing — the corpus's ONE `Effect::Pump` target that DOES
+///       read the sibling axis (`Typed{Creature, [DealtDamageThisTurn]}`, via
+///       `FilterProp::DealtDamageThisTurn => Axes::CONSERVATIVE`) — is likewise an instant,
+///       at `abilities > [] > effect`, so it is UNREACHABLE by the consult. THAT, not merely
+///       "it is outside the subject-shape set", is the reason the cost is zero. The
+///       corollary, stated rather than left implied: the corpus is NOT a positive control
+///       that (b-t) is non-constant-false, because over the reachable set the predicate
+///       answers `false` uniformly — arm C of `pump_target_axis_is_not_blind` is that
+///       control. The zero cost holds over the 845 reachable defs AND over all 2336 defs the
+///       review's census saw, including the 83 the implementer's own walker never visited.
 ///   (c) the member must be LIVE in the scanned frame: an absent id is trivially absent
 ///       from any id population, which would be relief with no evidence.
 ///   (d) BOTH P/T halves must be provably invariant — `toughness` as much as `power`
 ///       (`Pump` carries two independent `PtValue`s and either can hold the aggregate).
+///
+/// ⛔ DIVERGENCE FROM PLAN r4's S1 SPECIFICATION, recorded here rather than hidden — placed
+/// BELOW the conjunct list so the (0)/(a)/(b)/(c)/(d) enumeration a reader follows the proof
+/// through is not broken in half. r4 specified conjuncts (0)/(a)/(b)/(c)/(d) and did NOT
+/// anticipate the target axis; (b-t) is not in it. It was added because the landed arm was
+/// measured target-BLIND: three byte-identical Pyreswipe Hawk defs differing ONLY in `target`
+/// (`SelfRef` / bare `Typed{Creature}` / board-reading) all relieved, while the TARGET scan —
+/// `effect_target_reads_sibling_mutable_for_loop`, this change's wrapper — answered
+/// `false / false / true` across them. Name it, because the WHOLE-DEF scan
+/// `ability_definition_reads_sibling_mutable_for_loop` cannot tell the three apart: the
+/// blanket `Effect::Pump { .. } => Axes::CONSERVATIVE` (ability_scan.rs:511) makes it `true`
+/// on all three — indeed block (1b) only reaches this arm once it IS true. Corpus
+/// reachability was ZERO at that measurement, so this was latent rather than live — and the
+/// zero is a fragile corpus intersection, not a structural guarantee, which is why the arm is
+/// narrowed rather than left to the corpus. r4 is BYTE-FROZEN; the divergence lives at the arm
+/// it changes. Row: `pump_target_axis_is_not_blind`.
 fn pump_aggregate_provably_excludes_class(
     exec: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -3754,11 +3813,21 @@ fn pump_aggregate_provably_excludes_class(
     let Effect::Pump {
         power,
         toughness,
-        target: _,
+        target,
     } = exec.effect.as_ref()
     else {
         return false;
     };
+    // (b-t) the TARGET must itself contribute no sibling read — conjunct (d) is about the
+    // P/T AGGREGATE and says nothing about what the target reads. Asked through the
+    // scanner's own authority (which derives the census context from THIS effect), never a
+    // pinned `FilterReadContext`. See this function's doc.
+    if crate::game::ability_scan::effect_target_reads_sibling_mutable_for_loop(
+        exec.effect.as_ref(),
+        target,
+    ) {
+        return false;
+    }
     // (c) fail-closed if the member is gone from the scanned frame.
     if !state.objects.contains_key(&class_member) {
         return false;
@@ -4314,7 +4383,7 @@ fn fire_time_conditions_read_growing_class_scoped(
             // that reads the class keeps vetoing on its own turn through the loop.
             //
             // ORDERED AFTER the scan, not before it (the one place this differs from the
-            // plan's sketch, and it mirrors block (1b)'s landed shape at `:4208-4216`
+            // plan's sketch, and it mirrors block (1b)'s landed shape at `:4232-4240`
             // where the scan likewise precedes its `class_members` consult): both arms
             // CLONE the def and re-run the whole scan once PER MEMBER for conjunct (a),
             // so evaluating them for abilities that carry no veto at all would pay the
@@ -13843,6 +13912,21 @@ mod tests {
         out
     }
 
+    /// Hawk's own def with ONLY `Effect::Pump.target` swapped — every other byte, the
+    /// aggregate included, is the card's own AST. The S1-T rows differ from the positive on
+    /// the target field and on NOTHING else, so a row cannot pass by taking a different arm.
+    fn hawk_pump_with_target(
+        base: &crate::types::ability::AbilityDefinition,
+        new_target: TargetFilter,
+    ) -> crate::types::ability::AbilityDefinition {
+        let mut out = base.clone();
+        let Effect::Pump { target, .. } = out.effect.as_mut() else {
+            panic!("fixture: the Hawk def[0] execute body must be an `Effect::Pump`");
+        };
+        *target = new_target;
+        out
+    }
+
     /// Block-(1b) fixture for S1: a P0 Saproling fodder member, a P0 ARTIFACT so the
     /// `Typed{Artifact, You}` aggregate has a NON-EMPTY id population, and a P0 source
     /// permanent carrying `exec` as an `Attacks` trigger's execute body.
@@ -14055,6 +14139,123 @@ mod tests {
              the narrowing is keeping a veto that is provably unnecessary — re-argue it, do \
              not delete this row"
         );
+    }
+
+    /// **S1-T (the TARGET axis)** — three defs byte-identical to the real Pyreswipe Hawk
+    /// execute body EXCEPT for `Effect::Pump.target`. This row exists because the landed arm
+    /// bound `target: _` and was MEASURED blind: all three relieved, although the scan
+    /// separately reports the third as a sibling read. Conjunct (d) proves the P/T AGGREGATE
+    /// is class-invariant and says nothing whatever about what the target reads, and the veto
+    /// S1 relieves is the BLANKET `Effect::Pump {{ .. }} => Axes::CONSERVATIVE`
+    /// (ability_scan.rs:511) — which discards the target too, so nothing downstream re-checks
+    /// it. See conjunct (b-t) on [`pump_aggregate_provably_excludes_class`].
+    ///
+    /// WHY IT IS NOT VACUOUS, stated as the fixture property that would break it: the three
+    /// defs share ONE aggregate (asserted below), so every conjunct except (b-t) answers
+    /// IDENTICALLY on all three. The A/B relief arms are therefore the discriminating control
+    /// for the C veto — if the fix over-narrowed to "any target vetoes", A and B go red, and
+    /// if it under-narrowed (or the `target: _` bind returns) C goes red. A row asserting only
+    /// C would pass against a blanket `return false`.
+    ///
+    /// C's target is Light-Paws' shape (`FilterProp::DifferentNameFrom`, CR 201: "a different
+    /// name than each [type] you control") — its legality is decided by ENUMERATING a live
+    /// battlefield population, so it genuinely scales with the growing class. It reaches
+    /// `scan_target_filter(.., LiveBoardCensus, ..)` (ability_scan.rs, the
+    /// `Box<TargetFilter>`-bearing `FilterProp` group), whose `sibling: true` base is injected
+    /// independent of mode — so C cannot relax under `LoopFirewall` the way B's bare `Typed`
+    /// does.
+    ///
+    /// REVERT / MUTATION PROBES:
+    /// * restore `target: _` (drop conjunct (b-t)) ⇒ **C FAILS**.
+    /// * narrow (b-t) to reject every non-`SelfRef` target ⇒ **B FAILS**.
+    /// * hardcode `FilterReadContext::LiveBoardCensus` in the wrapper, severing the
+    ///   `effect_target_ctx` derivation ⇒ **A FAILS** — the REAL CARD's `SelfRef` target
+    ///   stops relieving. That is why the context is ASKED FOR and never pinned.
+    #[test]
+    fn pump_target_axis_is_not_blind() {
+        use crate::types::ability::TypeFilter;
+
+        let dump = wba_dump_state();
+        let hawk = wba_hawk(&dump);
+        let hawk_pump = hawk_trigger_execs(&dump, &hawk)
+            .first()
+            .expect("fixture: Hawk's first trigger carries the attack-pump execute body")
+            .clone();
+        let Effect::Pump { target, .. } = hawk_pump.effect.as_ref() else {
+            panic!("fixture: the Hawk def[0] execute body must be an `Effect::Pump`");
+        };
+        assert_eq!(
+            *target,
+            TargetFilter::SelfRef,
+            "fixture pin: the real card targets ITSELF, so arm A below is the card verbatim \
+             and not a hand-built stand-in. A card-data change that moves it must fail here \
+             rather than silently re-point the whole row"
+        );
+
+        // A / B / C differ from each other on `target` and on NOTHING else.
+        let bare_typed = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            ..Default::default()
+        });
+        let board_reading = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            properties: vec![FilterProp::DifferentNameFrom {
+                filter: Box::new(TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![TypeFilter::Creature],
+                    controller: Some(ControllerRef::You),
+                    properties: vec![],
+                })),
+            }],
+            ..Default::default()
+        });
+
+        for (label, new_target, relieves) in [
+            ("A/SelfRef (the real card)", TargetFilter::SelfRef, true),
+            ("B/bare Typed{Creature}", bare_typed, true),
+            ("C/board-reading DifferentNameFrom", board_reading, false),
+        ] {
+            let def = hawk_pump_with_target(&hawk_pump, new_target);
+            // "only `target` may differ" enforced as a WHOLE-DEF comparison: normalise the
+            // target back to the card's own and the result must equal `hawk_pump` in every
+            // other field. Comparing only the aggregate `TypedFilter` (as this row first
+            // shipped) could not see a divergence in `toughness`, `condition`, `sub_ability`
+            // or `activation_restrictions` — which conjuncts (0)/(a)/(d) all read — so the
+            // guard did not mean what this comment claims. `AbilityDefinition` derives
+            // `PartialEq`/`Eq` (types/ability.rs:20334), so this compares the whole tree and
+            // (b-t) stays the only conjunct that can move the verdict below.
+            assert_eq!(
+                hawk_pump_with_target(&def, target.clone()),
+                hawk_pump,
+                "{label}: only `target` may differ from the card's own AST"
+            );
+            // `pump_firewall_fixture` re-asserts the pre-relief veto (blanket
+            // `Effect::Pump {{ .. }} => Axes::CONSERVATIVE`), so each arm is a live surface.
+            let (state, member, source, artifact) = pump_firewall_fixture(def.clone());
+            let source_obj = state.objects[&source].clone();
+            assert!(
+                !pump_aggregate_provably_excludes_class(&def, &state, artifact, &source_obj),
+                "{label} non-vacuity: the `Typed{{Artifact, You}}` aggregate DOES count the \
+                 fixture artifact, so the id population is non-empty and conjunct (d) is \
+                 discriminating on membership rather than answering an empty filter"
+            );
+            assert_eq!(
+                pump_aggregate_provably_excludes_class(&def, &state, member, &source_obj),
+                relieves,
+                "{label} (arm level): conjunct (d) proves the AGGREGATE cannot count the \
+                 growing class on all three defs; only the target differs. A target that \
+                 reads a live board population is itself a CR 732.2a sibling read, and the \
+                 blanket `Pump` veto S1 relieves covered it, so relieving it here would be \
+                 relief on evidence that never examined the target"
+            );
+            assert_eq!(
+                !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+                relieves,
+                "{label} (firewall level): the arm is consulted as a block-(1b) disjunct, so \
+                 the WIRING is under test too — a fix that narrowed the arm but left the \
+                 consult reading the old verdict would pass the arm-level row above and fail \
+                 here"
+            );
+        }
     }
 
     /// **S1 on the REAL card, on this lane's real target dump** — the arm-level companion to

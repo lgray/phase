@@ -5584,6 +5584,33 @@ pub(crate) fn ability_definition_reads_sibling_mutable_for_loop(def: &AbilityDef
     ability_definition_axes(def, ScanMode::LoopFirewall).sibling
 }
 
+/// CR 732.2a axis-2 (`sibling`) on ONE effect-TARGET filter, under that effect's OWN
+/// census discipline. `target` MUST be a target-filter field of `effect`: the
+/// `FilterReadContext` is derived from `effect` by [`effect_target_ctx`] — the same
+/// derivation `scan_effect` makes for its own [`scan_target_filter`] calls — so a
+/// future re-grouping of that effect (`SnapshotOrEvent` -> `LiveBoardCensus`) moves
+/// this answer with it instead of desynchronising a caller that pinned the context.
+///
+/// `pub(crate)` for ONE reason: the `analysis::resource` block-(1b) relief arm
+/// `pump_aggregate_provably_excludes_class` must prove `Effect::Pump`'s target
+/// contributes no sibling read before it may relieve the blanket
+/// `Effect::Pump { .. } => Axes::CONSERVATIVE` veto (`:511`). Its two sibling arms
+/// state that as a `target: None` PATTERN; `Effect::Pump` cannot, because its
+/// `target` is a `TargetFilter` and not an `Option<_>`. Exposed as a BOOLEAN so
+/// [`Axes`], [`scan_target_filter`] and [`effect_target_ctx`] all stay private — the
+/// arm gets the verdict, never the walker.
+pub(crate) fn effect_target_reads_sibling_mutable_for_loop(
+    effect: &Effect,
+    target: &TargetFilter,
+) -> bool {
+    scan_target_filter(
+        target,
+        effect_target_ctx(effect, ScanMode::LoopFirewall),
+        ScanMode::LoopFirewall,
+    )
+    .sibling
+}
+
 /// CR 613.1 + CR 732.2a: does a live continuous modification READ a mutable board
 /// aggregate (axis-2 `sibling`)? Consumed by the `analysis::resource` `:1539`
 /// modification firewall descent.
