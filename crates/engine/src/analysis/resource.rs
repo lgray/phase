@@ -4394,10 +4394,19 @@ fn counters_on_source_provably_excludes_class(
 ///    each closed this defect by naming the KNOWN-BAD nodes and each time the next layer down
 ///    leaked (leaf `TargetFilter`s, then `FilterProp`, then `PlayerFilter`). The bad set is
 ///    unbounded and grows with the enums; the good set is a handful of arms, each carrying a
-///    stated proof. So relief now requires every node at all three layers to be RECOGNISED,
+///    stated proof. So relief now requires every node at all four layers to be RECOGNISED,
 ///    and anything unrecognised is refused. **Measured cost: ZERO** — re-running the census
 ///    below over the pinned corpus gives 0 productions on which the pre-inversion guard and
-///    this one disagree, and 0 productions refused.
+///    this one disagree, and 0 productions refused, at every layer including the round-5
+///    `controller` one (whose two admitted arms cover all 41 productions).
+///  * **Round 5 found the leak was not a fifth LAYER but an unscanned FIELD, and that is a
+///    different failure mode with a different fix.** Layers 1-3 were reached by exhaustive
+///    matches, which the compiler keeps honest as VARIANTS are added. The `Typed` node's
+///    fields were reached by FIELD ACCESS (`typed.properties`) — the recipe that compiles
+///    forever as FIELDS are added, and the same recipe `filter.rs`'s own walkers use
+///    (`TypedFilter { properties, .. }`). The fix is therefore structural as well as
+///    classificatory: see the no-`..` destructure in
+///    [`node_has_non_arrival_invariant_property`].
 ///  * **Why the canonical authority is at least as fail-closed.** Its leaf classifier
 ///    `filter_prop_uses_object_population` is an EXHAUSTIVE, wildcard-free `match`, so a new
 ///    `FilterProp` is a COMPILE ERROR until someone classifies it. The deleted allowlist
@@ -4415,10 +4424,14 @@ fn counters_on_source_provably_excludes_class(
 /// the count is invariant on every input `arrival_can_move_a_nonmember_match` admits —
 /// including inputs today's corpus does not contain, because the certification is over the
 /// guard's admitted domain and not over the shapes that happen to be printed. That is an
-/// ALLOWLIST claim: a node not RECOGNISED by the three classifiers below is refused, so a new
-/// enum variant is a compile error rather than a silent admit. It rests on exactly four stated
-/// things, each checkable at one named seam, and if any of the four is falsified this sentence
-/// is too:
+/// ALLOWLIST claim: a node not RECOGNISED by the four classifiers below is refused, so a new
+/// enum variant is a compile error rather than a silent admit — **and, since round 5, so is a
+/// new FIELD on `TypedFilter`**, because the one place the guard sees that struct's fields
+/// destructures it with no `..` and every field named (E0027). The variant half of that
+/// backstop had been holding for three rounds while the field half leaked: `controller` was
+/// never read by ANY of the classifiers, so a new `ControllerRef` variant compiled and was
+/// silently ADMITTED. It rests on exactly five stated things, each checkable at one named
+/// seam, and if any of the five is falsified this sentence is too:
 ///  1. every admitted `TargetFilter` node resolves to a fixed object/player or to the stack /
 ///     triggering event — [`node_reads_mutable_resolution_local_state`], exhaustive and
 ///     wildcard-free, refusal-polarity;
@@ -4426,7 +4439,11 @@ fn counters_on_source_provably_excludes_class(
 ///     [`prop_is_arrival_invariant`], exhaustive and wildcard-free;
 ///  3. every `PlayerFilter` a `FilterProp::ControllerMatches` crosses to is likewise on one —
 ///     [`player_filter_is_arrival_invariant`], exhaustive and wildcard-free;
-///  4. the canonical population authority is consulted at every node on top of 1-3.
+///  4. every `TypedFilter::controller` on every admitted `Typed` node is likewise on one —
+///     [`controller_ref_is_arrival_invariant`], exhaustive and wildcard-free. `type_filters`
+///     is the ONE field deliberately unread, and it is the `card_types` residual already
+///     stated below — not a fourth unscanned axis;
+///  5. the canonical population authority is consulted at every node on top of 1-4.
 ///
 /// ⛔ **SAME STATED RESIDUAL AS THE SIBLINGS, restated because THIS arm's filter reads exactly
 /// the field the residual is about.** `TypedFilter::type_filters` is a `card_types` predicate
@@ -4650,16 +4667,18 @@ fn other_leq_condition_provably_excludes_class(
 ///  * [`crate::game::filter::affected_filter_uses_object_population`] is the canonical
 ///    authority on population DEPENDENCE. It is consulted unchanged, at the complementary
 ///    polarity, and no part of its classification is duplicated here.
-///  * The local content is THREE exhaustive, wildcard-free classifiers, none of which
+///  * The local content is FOUR exhaustive, wildcard-free classifiers, none of which
 ///    re-answers the population question. [`node_reads_mutable_resolution_local_state`] is a
 ///    REFUSAL BY ENUM IDENTITY over `TargetFilter`: it names the leaves the population
 ///    authority answers `false` for while they resolve through state the growth period itself
 ///    writes. [`node_has_non_arrival_invariant_property`] carries the question from a
-///    `TargetFilter` node down onto its `FilterProp` list, and from there
-///    [`prop_is_arrival_invariant`] and [`player_filter_is_arrival_invariant`] are ALLOWLISTS
-///    over the `FilterProp` and `PlayerFilter` layers.
+///    `TargetFilter` node down onto EVERY FIELD of a `Typed` node (destructured with no `..`,
+///    so a new field is a compile error there), and from there
+///    [`prop_is_arrival_invariant`], [`player_filter_is_arrival_invariant`] and
+///    [`controller_ref_is_arrival_invariant`] are ALLOWLISTS over the `FilterProp`,
+///    `PlayerFilter` and `ControllerRef` layers.
 ///
-/// ⛔ **WHY LAYERS 2 AND 3 CANNOT BE EXPRESSED AS A LEAF PREDICATE, WHICH IS WHY THEY ARE
+/// ⛔ **WHY LAYERS 2, 3 AND 4 CANNOT BE EXPRESSED AS A LEAF PREDICATE, WHICH IS WHY THEY ARE
 /// LOCAL.** `filter_contains` is parameterised by `&dyn Fn(&TargetFilter) -> bool`. It DOES
 /// descend `Typed -> filter_prop_contains -> ControllerMatches -> player_filter_contains ->
 /// ControlsCount`, but the only node it ever hands the predicate at the bottom is the INNER
@@ -4671,6 +4690,13 @@ fn other_leq_condition_provably_excludes_class(
 /// against the LIVE `state.battlefield`. Row
 /// `s4_s5_player_axis_board_census_keeps_the_veto` pins it with the four attribution
 /// assertions that show which guard admits and which refuses.
+///
+/// Layer 4 is local for a STRICTER version of the same reason, and it is worth separating:
+/// `TypedFilter::controller` is not merely unreachable by a `&dyn Fn(&TargetFilter) -> bool`,
+/// it is unreachable by `filter.rs`'s walkers AT ALL. Both of them destructure the node as
+/// `TypedFilter { properties, .. }` / `typed.properties`, so the field is dropped before any
+/// predicate — leaf or not — could see it. Row `s4_s5_controller_axis_keeps_the_veto` pins
+/// that with the same attribution shape.
 ///
 /// ⛔ **THE POPULATION AUTHORITY CONTRADICTS ITSELF ON THESE LEAVES, AND THAT — NOT A
 /// DIFFERENCE OF SCOPE — IS WHY THE REFUSAL IS LOCAL.** Its operative clause — the doc
@@ -4705,8 +4731,9 @@ fn other_leq_condition_provably_excludes_class(
 /// `s4_s5_population_dependent_prop_behind_an_untraversed_filter_bearing_prop_keeps_the_veto`
 /// (the `filter_contains` wrapper alone), and
 /// `s4_s5_non_anaphor_resolution_local_ledger_leaf_keeps_the_veto` (the eight non-anaphor
-/// leaves). Each names the mutation that reddens it and the input on which the correct and
-/// mutant designs disagree.
+/// leaves), and `s4_s5_controller_axis_keeps_the_veto` (layer 4, the axis no layer read at
+/// all before round 5). Each names the mutation that reddens it and the input on which the
+/// correct and mutant designs disagree.
 fn arrival_can_move_a_nonmember_match(filter: &crate::types::ability::TargetFilter) -> bool {
     crate::game::filter::filter_contains(filter, &|node| {
         node_reads_mutable_resolution_local_state(node)
@@ -4830,9 +4857,24 @@ fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::Targe
     }
 }
 
-/// **LAYER 2 ADAPTER — carries the guard's question from the `TargetFilter` layer down onto a
-/// node's `FilterProp` list.** `true` means "this node carries a property whose
-/// arrival-invariance is NOT proven", so relief must be refused.
+/// **LAYER 2 ADAPTER — carries the guard's question from the `TargetFilter` layer down onto
+/// EVERY FIELD of a `Typed` node.** `true` means "this node carries a property OR a controller
+/// reference whose arrival-invariance is NOT proven", so relief must be refused. It is the one
+/// place the guard sees a `TypedFilter`'s fields, so it is the one place that can be made to
+/// FAIL TO COMPILE when a field is added — see the no-`..` destructure in the body.
+///
+/// ⛔ **ROUND 5 ADDED THE CONTROLLER AXIS, AND THE REASON IS THE SAME MECHANISM FOUR TIMES
+/// OVER.** Rounds 1-3 each closed a layer and the next one down leaked; round 4 closed the
+/// `PlayerFilter` layer; round 5's finding is that `TypedFilter::controller` had never been
+/// read AT ALL. Not because anybody classified it as safe — because this function reached the
+/// node by FIELD ACCESS (`typed.properties`) and `filter.rs`'s own walkers reach it by
+/// `TypedFilter { properties, .. }`, and neither shape can fail to compile when an axis is
+/// added. Measured at the tree: every one of the 14 `ControllerRef` variants produced a verdict
+/// byte-identical to `controller: None`, while the same node's `properties` axis moved it. The
+/// axis is on 41/41 admitted corpus productions, so it was the ONE axis present on every
+/// production the guard certifies. Nothing here claims a live hazard on it (see
+/// [`controller_ref_is_arrival_invariant`]); the finding is that the ⇒ sentence's
+/// compile-error backstop did not cover the axis, and now it does.
 ///
 /// ⛔ **WHY THIS EXISTS AT ALL — `filter_contains` CANNOT ASK THE QUESTION.** `filter.rs`'s
 /// shape walk is parameterised by a `&dyn Fn(&TargetFilter) -> bool`: the only nodes it ever
@@ -4850,21 +4892,53 @@ fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::Targe
 /// `ControlsCount` against the LIVE `state.battlefield`, so an arriving class member takes
 /// the controller's creature count 0 -> 1 and a PRE-EXISTING Land starts matching.
 ///
-/// ⛔ **EXHAUSTIVE AND WILDCARD-FREE OVER `TargetFilter`, LIKE ITS THREE SIBLINGS.** A
-/// `_ => false` would silently exempt a future variant that boxes a `TypedFilter` from the
-/// property layer entirely — a silent ADMIT, the fail-open direction. The duplication of the
-/// arm list against [`node_reads_mutable_resolution_local_state`] is deliberate: the two
-/// answer different questions (resolution-local mutability vs. property-layer invariance) and
-/// a future variant must be decided on BOTH axes, so they are two matches rather than one.
+/// ⛔ **EXHAUSTIVE AND WILDCARD-FREE OVER `TargetFilter`, LIKE ITS SIBLINGS — AND NO `..` OVER
+/// `TypedFilter`'S FIELDS, WHICH IS THE OTHER HALF OF THE SAME GUARANTEE.** A `_ => false`
+/// would silently exempt a future VARIANT that boxes a `TypedFilter` from the property layer
+/// entirely; a `TypedFilter { properties, .. }` would silently exempt a future FIELD. Both are
+/// the fail-open direction and both are closed here (E0004 and E0027 respectively), because
+/// round 5 measured that the variant half alone had been holding for three rounds while the
+/// field half leaked. The duplication of the arm list against
+/// [`node_reads_mutable_resolution_local_state`] is deliberate: the two answer different
+/// questions (resolution-local mutability vs. property/controller-layer invariance) and a
+/// future variant must be decided on BOTH axes, so they are two matches rather than one.
 fn node_has_non_arrival_invariant_property(node: &crate::types::ability::TargetFilter) -> bool {
-    use crate::types::ability::TargetFilter;
+    use crate::types::ability::{TargetFilter, TypedFilter};
 
     match node {
-        // The only node kind that carries a property list.
-        TargetFilter::Typed(typed) => typed
-            .properties
-            .iter()
-            .any(|prop| !prop_is_arrival_invariant(prop)),
+        // The only node kind that carries a property list — and the only one with FIELDS,
+        // which is why it is DESTRUCTURED WITH NO `..` AND EVERY FIELD NAMED: the idiom
+        // `count_matching_condition_provably_excludes_class` already states one layer up
+        // ("no `..` at any level, so a new field on the variant is a compile error here
+        // rather than a silently unscanned read"), applied here as well. A new field on
+        // `TypedFilter` is then an E0027 compile error at this seam. The pre-round-5 form
+        // was `Typed(typed) => typed.properties.iter()...` — FIELD ACCESS, which reads one
+        // axis and keeps compiling as axes are added; that is how `controller` went four
+        // review rounds unscanned while the exhaustive matches below were catching every
+        // new VARIANT.
+        TargetFilter::Typed(TypedFilter {
+            // NOT the same residual class as `controller`: `type_filters` is the
+            // `card_types` predicate this arm's STATED RESIDUAL is already about (see the
+            // "SAME STATED RESIDUAL AS THE SIBLINGS" block on
+            // `count_matching_condition_provably_excludes_class` — `card_types` lies outside
+            // `object_content_eq`'s compared frame, and refusing type reads would veto the
+            // very class the arm exists to relieve, since all eight corpus filters are type
+            // filters). Bound to `_` so the omission is a DECISION recorded at the seam.
+            type_filters: _,
+            // LAYER 4 (CR 109.4) — the object's controller. This axis is NOT covered by the
+            // residual above: `controller` is INSIDE `object_content_eq`'s compared fields
+            // (`x.controller == y.controller`), so the frame does see it. `None` constrains
+            // nothing and therefore reads nothing.
+            controller,
+            properties,
+        }) => {
+            controller
+                .as_ref()
+                .is_some_and(|c| !controller_ref_is_arrival_invariant(c))
+                || properties
+                    .iter()
+                    .any(|prop| !prop_is_arrival_invariant(prop))
+        }
         // Every other node carries no `FilterProp`. Nested `TargetFilter`s inside these
         // (`Not`/`And`/`Or`/`TrackedSetFiltered`/`ChosenDamageSource`) are visited by
         // `filter_contains` itself and reach this function on their own.
@@ -5133,6 +5207,82 @@ fn player_filter_is_arrival_invariant(filter: &crate::types::ability::PlayerFilt
         | PlayerFilter::PerformedActionThisWay { .. }
         | PlayerFilter::VotedFor { .. }
         | PlayerFilter::PlayerAttribute { .. } => false,
+    }
+}
+
+/// **LAYER 4 — THE `TypedFilter::controller` ALLOWLIST** (CR 109.4: only objects on the stack
+/// or the battlefield have a controller). `true` means "a class member's ARRIVAL provably
+/// cannot change whether a PRE-EXISTING object satisfies this controller constraint".
+///
+/// ⛔ **THIS LAYER IS A BACKSTOP, NOT A HAZARD REPORT — SAY SO PLAINLY.** Round 5 measured
+/// all 14 arms through [`arrival_can_move_a_nonmember_match`] and every one produced a verdict
+/// byte-identical to `controller: None`, i.e. the axis was NEVER READ. The reachability picture
+/// agrees: `filter::controller_ref_player` and `filter_inner_for_object`'s controller block
+/// resolve every arm to a seat — a fixed player, a resolution-scoped choice, the active player,
+/// an attached player — and none of them counts battlefield population. So NO ROW HERE CLAIMS
+/// A LIVE MOVER on this axis. What the finding is about is the ⇒ sentence on
+/// [`count_matching_condition_provably_excludes_class`]: it promises that an unrecognised node
+/// is REFUSED, so a new enum variant is a compile error rather than a silent admit. On this
+/// axis a new `ControllerRef` variant used to compile and be silently ADMITTED. That is the
+/// recurrence mechanism of rounds 1-3, and this function plus the no-`..` destructure in
+/// [`node_has_non_arrival_invariant_property`] are what close it.
+///
+/// **ADMITTED — the two arms whose reads are proven fixed against an arrival, and the only two
+/// the corpus prints:**
+///  * `You` — resolves to `ctx.source_controller`, which both relief arms bind ONCE from the
+///    source (S4 via `replacement::replacement_source_player`, S5 via `from_source`) before
+///    any member arrives, and compares against the candidate's own `effective_controller`. An
+///    arriving object writes neither.
+///  * `Opponent` — the same two reads at the complementary polarity, plus
+///    `players::is_alive`, which reads `state.players[].is_eliminated` (CR 800.4: a player who
+///    has left the game is no longer one of CR 102.1's people in the game). A battlefield
+///    arrival does not eliminate a player, so that read is arrival-invariant too.
+///
+/// **REFUSED — the other twelve, for want of a proof rather than for a named hazard**, which
+/// is the same burden [`node_reads_mutable_resolution_local_state`] states: refusing keeps the
+/// veto and costs nothing, so admission is what has to be earned. **Measured cost of refusing
+/// all twelve: ZERO** — the corpus census over the pinned `AtomicCards.json` prints 41 admitted
+/// productions and every one carries `controller: Some(You)` (36) or `controller:
+/// Some(Opponent)` (5). Re-run that census (its needle and predicate are stated on
+/// [`count_matching_condition_provably_excludes_class`]) before widening this list.
+///
+/// ⛔ **DISCLOSED ASYMMETRY AGAINST LAYERS 1 AND 3, so the next reader does not read it as an
+/// oversight.** [`player_filter_is_arrival_invariant`] admits `PlayerFilter::DefendingPlayer` /
+/// `TriggeringPlayer` / `ParentObjectTarget*` / `ChosenPlayer`, and
+/// [`node_reads_mutable_resolution_local_state`] admits `TargetFilter::ScopedPlayer` /
+/// `SourceChosenPlayer` / `SpecificPlayer`; this layer refuses their `ControllerRef` twins.
+/// The asymmetry is deliberate and runs in the FAIL-CLOSED direction. Those layers' wider sets
+/// were earned arm-by-arm in earlier rounds against the questions THOSE layers ask; this layer
+/// asks a different question at a different seam (`filter_inner_for_object`'s controller block,
+/// not `player_filter_matches` or the shape walk), and transplanting another layer's proof is
+/// exactly the drifting-second-authority pattern the deleted
+/// `filter_props_are_population_independent` allowlist was removed for. Widening this list is
+/// a per-arm proof obligation, not a consistency fix.
+///
+/// ⛔ **EXHAUSTIVE AND WILDCARD-FREE, LIKE ITS THREE SIBLINGS.** A `_ => false` reads as
+/// fail-closed but would be a lie the moment someone wrote `_ => true`, and more to the point
+/// it would stop the compiler asking. With the wildcard gone a new `ControllerRef` variant does
+/// not compile until someone decides which side it belongs on (E0004).
+fn controller_ref_is_arrival_invariant(controller: &crate::types::ability::ControllerRef) -> bool {
+    use crate::types::ability::ControllerRef;
+
+    match controller {
+        // ── ADMITTED: reads bound before the growth period and not written by an arrival ──
+        // CR 109.4 + CR 102.1 + CR 800.4 — see the doc above for each read, per arm.
+        ControllerRef::You | ControllerRef::Opponent => true,
+        // ── REFUSED: no arrival-invariance proof, and zero measured cost to refusing ──
+        ControllerRef::ScopedPlayer
+        | ControllerRef::TargetPlayer
+        | ControllerRef::TargetOpponent
+        | ControllerRef::ParentTargetController
+        | ControllerRef::ParentTargetOwner
+        | ControllerRef::DefendingPlayer
+        | ControllerRef::ChosenPlayer { .. }
+        | ControllerRef::SourceChosenPlayer
+        | ControllerRef::TriggeringPlayer
+        | ControllerRef::EnchantedPlayer
+        | ControllerRef::ActivePlayer
+        | ControllerRef::SpecificPlayer { .. } => false,
     }
 }
 
@@ -24755,6 +24905,13 @@ mod tests {
     /// pinned with an assertion showing the authority answers `false` on the whole filter
     /// while answering `true` on the very node nested inside it. Blanking the leaf
     /// classifier's refused arms does NOT red this row — no ledger leaf appears in it.
+    ///
+    /// ⛔ **WHAT THIS ROW ATTRIBUTES IS REACH, NOT SOLE REFUSAL.** At the inner node the walk
+    /// exposes, `MostPrevalentCreatureTypeIn` is refused by BOTH the population authority and
+    /// [`prop_is_arrival_invariant`]. Pins 1 and 3 measure the two independently, so the
+    /// assertion message cannot be read as "the walk is what says no" — it is what makes
+    /// either of them able to. Deleting either disjunct alone leaves this row green; that is
+    /// the property that makes the wrapper the row's only reddening mutation.
     #[test]
     fn s4_s5_population_dependent_prop_behind_an_untraversed_filter_bearing_prop_keeps_the_veto() {
         use crate::types::ability::{
@@ -24802,6 +24959,16 @@ mod tests {
              authority answers `false`, because `Targets` is one of its leaf-`..` arms. This \
              is the shape a ROOT-ONLY delegation admits, and it is the whole point of the row"
         );
+        assert!(
+            !prop_is_arrival_invariant(&prevalent),
+            "premise pin, part 3 — OVER-DETERMINATION, pinned at the site rather than left to \
+             the reader. At the INNER node the walk reaches, TWO disjuncts refuse: the \
+             population authority (part 1) AND layer 2, because `MostPrevalentCreatureTypeIn` \
+             is also on `prop_is_arrival_invariant`'s refused list. So what the row attributes \
+             to `filter_contains` is REACHING that node; it must not be read as `filter_contains` \
+             being the sole refuser once there. Deleting either disjunct alone leaves the row \
+             green — only deleting the WRAPPER reds it, which is the mutation the doc names"
+        );
 
         // ── S4 ────────────────────────────────────────────────────────────────────────────
         let (s4_state, s4_member, _) = block3_fixture(vec![(
@@ -24820,7 +24987,10 @@ mod tests {
             "nesting guard (S4): minting Saprolings moves which creature type is most \
              prevalent, so a non-member's match can flip while no member is counted. The \
              authority cannot see the property through `Targets`; the `filter_contains` walk \
-             can, and that is what refuses relief"
+             can, and REACHING the inner node is what this row attributes to the wrapper. The \
+             refusal AT that node is OVER-DETERMINED — the population authority and layer 2 \
+             both say no (pins 1 and 3) — so only deleting the wrapper reds this row, not \
+             deleting either classifier"
         );
 
         // ── S5 ────────────────────────────────────────────────────────────────────────────
@@ -25280,6 +25450,182 @@ mod tests {
              and swap ONLY the player leaf for `PlayerFilter::Controller` — a fixed seat \
              designation — and both arms relieve again. The vetoes above are attributable to \
              the live board census on the player axis, not to the crossing itself"
+        );
+    }
+
+    /// ⛔ **LAYER 4: `TypedFilter::controller` — THE AXIS NO LAYER READ AT ALL.** Review round
+    /// 5's finding, and the only one of the five whose defect was STRUCTURAL rather than
+    /// classificatory: `node_has_non_arrival_invariant_property` reached the node by FIELD
+    /// ACCESS (`typed.properties`) and `filter.rs`'s two walkers reach it as
+    /// `TypedFilter { properties, .. }`, so `controller` was dropped before any classifier
+    /// could see it. Measured: all 14 `ControllerRef` variants produced a verdict
+    /// byte-identical to `controller: None`, while the same node's `properties` axis moved it.
+    ///
+    /// ⛔ **THIS ROW IS A BACKSTOP ROW AND SAYS SO — IT DOES NOT CLAIM A LIVE MOVER.** No arm
+    /// of `filter::controller_ref_player` counts battlefield population, so nothing here
+    /// asserts that an arrival flips a controller constraint today. What it asserts is the
+    /// property the ⇒ sentence on `count_matching_condition_provably_excludes_class` SELLS: an
+    /// unrecognised node is REFUSED, so a new enum variant is a compile error and not a silent
+    /// admit. Before round 5 a new `ControllerRef` variant compiled and was silently ADMITTED
+    /// on this axis, which is why the severity is the backstop and not the reach. The corpus
+    /// exposure is total: 41/41 admitted productions carry `controller: Some(_)`.
+    ///
+    /// REVERT / MUTATION PROBE: move `ControllerRef::ActivePlayer` into
+    /// [`controller_ref_is_arrival_invariant`]'s ADMITTED arm ⇒ **this row FAILS** (at the
+    /// end-to-end assertion, not only at a pin — measured by re-running the mutant with the
+    /// pins neutralised) while every other `s4_s5_` row stays GREEN. Two COMPILE-TIME
+    /// mutations back the structural half, because a backstop claim that is not itself
+    /// mutant-tested is the defect this row is about: deleting one `ControllerRef` arm from
+    /// that match gives **E0004**, and deleting the `type_filters: _` field name from the
+    /// no-`..` destructure in `node_has_non_arrival_invariant_property` gives **E0027**. The
+    /// pre-round-5 field-access form compiled under both.
+    #[test]
+    fn s4_s5_controller_axis_keeps_the_veto() {
+        use crate::types::ability::{
+            ControllerRef, FilterProp, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        // `ActivePlayer` is the hostile arm on purpose: it is one of the few `ControllerRef`
+        // variants with NO twin in layer 1 (`TargetFilter::ScopedPlayer` / `SourceChosenPlayer`
+        // / `SpecificPlayer`) or layer 3 (`PlayerFilter::DefendingPlayer` / `TriggeringPlayer`
+        // / `ParentObjectTarget*` / `ChosenPlayer`), all of which those layers ADMIT. Picking a
+        // twinned arm would make the row look like a cross-layer contradiction instead of what
+        // it is — a narrower allowlist at a different seam, disclosed on
+        // `controller_ref_is_arrival_invariant`.
+        let land_controlled_by = |c: Option<ControllerRef>| TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: c,
+            properties: Vec::new(),
+        };
+        let hostile = land_controlled_by(Some(ControllerRef::ActivePlayer));
+
+        // ── ATTRIBUTION PINS: layer 4 is the ONLY thing in the composed guard that refuses ──
+        let uses_pop = crate::game::filter::affected_filter_uses_object_population;
+        let as_target = |t: &TypedFilter| TargetFilter::Typed(t.clone());
+        assert!(
+            !uses_pop(&as_target(&hostile)),
+            "pin 1: the canonical population authority ADMITS it — its `Typed` arm binds only \
+             `properties` and drops the rest with a trailing `..`, so `controller` never \
+             reaches any classification. That `..` is the sibling of the defect this row \
+             closes, and it lives in `filter.rs` (FU-36, not editable from here)"
+        );
+        assert!(
+            !node_reads_mutable_resolution_local_state(&as_target(&hostile)),
+            "pin 2: layer 1 ADMITS it — `TargetFilter::Typed(..)` is a structural node it \
+             defers on, and there is no ledger leaf anywhere in the filter"
+        );
+        assert!(
+            hostile.properties.is_empty(),
+            "pin 3 (REACH GUARD, paired with pin 4): the property list is EMPTY, so layer 2's \
+             `properties` disjunct cannot be what refuses. Without this the row would pass \
+             vacuously if some property snuck in — the empty list is what makes `controller` \
+             the sole non-default axis on the node"
+        );
+        assert!(
+            !prop_is_arrival_invariant(&FilterProp::Unpaired),
+            "pin 4 (INSTRUMENT CONTROL for pin 3): layer 2's property disjunct is live and \
+             CAN refuse — it refuses `Unpaired`. So pin 3's empty list is a real exclusion of \
+             a working disjunct, not a measurement of a dead one"
+        );
+        assert!(
+            node_has_non_arrival_invariant_property(&as_target(&hostile)),
+            "pin 5: with the population authority, layer 1 and layer 2's property disjunct all \
+             excluded, the refusal is attributable to the controller axis and nothing else"
+        );
+        assert!(
+            !controller_ref_is_arrival_invariant(&ControllerRef::ActivePlayer),
+            "pin 6: and within that, it is layer 4's allowlist that says no"
+        );
+        assert!(
+            controller_ref_is_arrival_invariant(&ControllerRef::You)
+                && controller_ref_is_arrival_invariant(&ControllerRef::Opponent),
+            "pin 7 (NON-VACUITY of layer 4): the allowlist is not a blanket refusal — the two \
+             arms the corpus actually prints are ADMITTED, which is what keeps the measured \
+             cost of this layer at zero"
+        );
+
+        // ── S4 ────────────────────────────────────────────────────────────────────────────
+        let (s4_state, s4_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: as_target(&hostile),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s4_state, Some(&HashSet::from([s4_member]))),
+            "controller-axis backstop (S4): a `ControllerRef` arm carrying no arrival-invariance \
+             proof must REFUSE relief. Before round 5 this filter was admitted — not because \
+             anyone classified `ActivePlayer` as safe, but because no classifier ever received \
+             the field"
+        );
+
+        // ── S5 — the same axis through the arm that carries a bare `TypedFilter` ──────────
+        let (s5_state, s5_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: hostile.clone(),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s5_state, Some(&HashSet::from([s5_member]))),
+            "controller-axis backstop (S5): same axis through the other arm, which wraps its \
+             `TypedFilter` before consulting the guard so both hand the walk the same shape"
+        );
+
+        // ── MATCHED CONTROLS: identical node, ONLY the controller arm varies ──────────────
+        // Holds fixed: type_filters, the empty property list, the position, both arms. Varies:
+        // exactly one enum arm. So the vetoes above cannot be re-read as "the guard refuses a
+        // `Typed` node that constrains its controller at all" — and `Some(You)` is the arm 36
+        // of the 41 corpus productions carry, so the control contains the phenomenon.
+        let relieving = |t: TypedFilter| {
+            let (s4s, s4m, _) = block3_fixture(vec![(
+                900,
+                "Sunken Hollow",
+                with_condition(
+                    sunken_hollow_def(),
+                    ReplacementCondition::UnlessControlsCountMatching {
+                        minimum: 2,
+                        filter: TargetFilter::Typed(t.clone()),
+                    },
+                ),
+            )]);
+            let (s5s, s5m, _) = block3_fixture(vec![(
+                902,
+                "Blackcleave Cliffs",
+                with_condition(
+                    blackcleave_cliffs_def(),
+                    ReplacementCondition::UnlessControlsOtherLeq {
+                        count: 2,
+                        filter: t,
+                    },
+                ),
+            )]);
+            !fire_time_conditions_read_growing_class(&s4s, Some(&HashSet::from([s4m])))
+                && !fire_time_conditions_read_growing_class(&s5s, Some(&HashSet::from([s5m])))
+        };
+        assert!(
+            relieving(land_controlled_by(Some(ControllerRef::You))),
+            "matched control 1: swap ONLY the arm for `You` — the corpus's 36-production arm — \
+             and both relief arms grant again"
+        );
+        assert!(
+            relieving(land_controlled_by(Some(ControllerRef::Opponent))),
+            "matched control 2: and for `Opponent`, the Turbulent cycle's 5-production arm"
+        );
+        assert!(
+            relieving(land_controlled_by(None)),
+            "matched control 3: and with no controller constraint at all, which pins that the \
+             new `Option` branch treats `None` as reading nothing rather than as unrecognised"
         );
     }
 
