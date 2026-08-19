@@ -4030,30 +4030,47 @@ fn pt_value_aggregate_provably_excludes_class(
 /// player CHOICE stored on the granting source (CR 105.3 + CR 613.1e), not an aggregate
 /// over a population, so it is not a function of the class SIZE however the class grows.
 /// (`StaticMode` has NO colour-SETTING variant at all, which is why an earlier
-/// `StaticMode::SetColor` citation here named a type path that does not exist. Its FOUR
-/// colour-mentioning members — `DefilerCostReduction { color }` (the colour of the SPELLS a
-/// cost reduction applies to), `SpendManaAsAnyColor`, `PayLifeAsColoredMana { color }` (a
-/// life-for-coloured-mana payment substitution) and `StepEndUnspentMana { filter }` (which
-/// unspent MANA a step-end rule applies to) — are cost / mana-payment / mana-pool rules
-/// that READ or name a colour and set none. MEASURED over the whole `StaticMode` body in
-/// `types/statics.rs` (`pub enum StaticMode {` through its closing brace): those four are
-/// every colour-MENTIONING member there, and exactly THREE of them are `ManaColor`-BEARING
-/// — `DefilerCostReduction { color }`, `PayLifeAsColoredMana { color }` and
-/// `StepEndUnspentMana { filter: Option<ManaColor> }`. `SpendManaAsAnyColor` carries only
-/// `spell_filter` and `activation_source_filter` (both `Option<TargetFilter>`) and names a
-/// colour in prose alone. The distinction is stated because a `grep 'ManaColor'` over that
-/// range returns FOUR hits and the fourth is a DOC line: a doc comment belongs to the item
-/// that FOLLOWS it (`PayLifeAsColoredMana`), so an "enclosing item = last variant opened at
-/// or before" reading mis-attributes it to `SpendManaAsAnyColor`. Read the variant BODIES.
-/// The load-bearing claim is unaffected and is separately measured: `SetColor` / `AddColor`
-/// occur ZERO times anywhere in that range. Their own CR
-/// citations are deliberately NOT repeated here — this is a type-shape claim, and a
-/// borrowed citation is a referent this arm has not verified.
-/// ⛔ Stated as four because the review finding that raised this named only two of them,
-/// and a half-checked replacement referent is worse than the wrong one it replaces — it
-/// reads as freshly verified. The two enums are real and distinct:
-/// `ContinuousModification::AddStaticMode { mode: StaticMode }` embeds one in the other,
-/// so the original citation was a mis-citation and not shorthand.)
+/// `StaticMode::SetColor` citation here named a type path that does not exist. Its
+/// colour-DATA-bearing members are the THREE the `ManaColor` needle finds —
+/// `DefilerCostReduction { color }` (the colour of the SPELLS a cost reduction applies
+/// to), `PayLifeAsColoredMana { color }` (a life-for-coloured-mana payment substitution)
+/// and `StepEndUnspentMana { filter: Option<ManaColor> }` (which unspent MANA a step-end
+/// rule applies to). `SpendManaAsAnyColor` sits beside them in this argument but carries
+/// NO colour data — only `spell_filter` and `activation_source_filter` (both
+/// `Option<TargetFilter>`) — naming a colour in prose alone.
+/// ⛔ NAME THE NEEDLE YOU RAN. An earlier revision called those four "every
+/// colour-MENTIONING member", which is FALSE, and false in a way worth keeping on the
+/// record: it reported a `ManaColor` census under a "mentions a colour" predicate.
+/// Different needle, different set. Re-run either census over the self-locating body
+/// range `R = awk '/^pub enum StaticMode \{/,/^\}/' crates/engine/src/types/statics.rs`:
+///   R | grep -n ManaColor            -> 4 hits, exhaustive for the 3 members above
+///   R | grep -in color               -> 21 hits spanning SIX members, not four
+///   R | grep -cE 'SetColor|AddColor' -> 0, the load-bearing claim
+/// (`grep -n` on that pipe numbers lines WITHIN the slice, not in the file — cite the
+/// ordinal, never an absolute line, or the citation contradicts its own command.)
+/// The two extra owners are `ReduceActionCost` ("a generic cost reduction can't touch
+/// colored/colorless components", CR 118.7a) and `ExileCastPermission`, which is itself
+/// colour-DATA-bearing via `mana_spend_permission: Option<ManaSpendPermission>`
+/// (`AnyColor` / `AnyTypeOrColor`, `types/ability.rs`) — so it would have refuted the
+/// data-bearing count too, had the needle been `color`.
+/// That second census is what carries the argument: it is exhaustive over colour MENTIONS,
+/// and all six owners are cost / mana-payment / mana-pool / cast-permission rules that
+/// READ or name a colour and set none. Stated residual, because the step from "mentions"
+/// to "sets" is inspection of those six and not a grep — a variant setting a colour
+/// through an embedded type that never spells "color" would escape both needles. None of
+/// the six does, and the colour-SETTING variants really do live one enum over (below).
+/// ⛔ DOC-OWNER TRAP, and it governs the `ManaColor` count: of those four hits the SECOND
+/// is a DOC line, and a doc comment belongs to the item that FOLLOWS it
+/// (`PayLifeAsColoredMana`), so an "enclosing item = last variant opened at or before"
+/// reading mis-attributes it to `SpendManaAsAnyColor` and inflates THREE to four. Read the
+/// variant BODIES. The ordinal is load-bearing and was itself wrong here once — it said
+/// "the fourth", which is the doc line's position in no numbering at all.
+/// The `SetColor` / `AddColor` CR citations are deliberately NOT repeated here — this is a
+/// type-shape claim, and a borrowed citation is a referent this arm has not verified.
+/// ⛔ The two enums are real and distinct: `SetColor`, `AddColor` and `AddChosenColor` are
+/// `ContinuousModification` variants (`types/ability.rs`), and
+/// `ContinuousModification::AddStaticMode { mode: StaticMode }` embeds one enum in the
+/// other, so the original citation was a mis-citation and not shorthand.)
 /// Widening `object_content_eq` to compare `color` is the alternative, and it is a
 /// wide-blast-radius change to the shared CR 104.4b row comparator that every cover gate
 /// in this file consumes — DEFERRED as FU-28 (`color` in `object_content_eq`) rather than
