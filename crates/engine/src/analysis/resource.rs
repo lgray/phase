@@ -4316,38 +4316,6 @@ fn counters_on_source_provably_excludes_class(
         .is_some_and(|read_id| read_id != class_member)
 }
 
-/// Is every property in `props` provably independent of the board POPULATION — does each
-/// one's verdict on a given object stay fixed as OTHER objects arrive?
-///
-/// ⛔ **ALLOWLIST, NEVER A DENYLIST, AND THE DIRECTION IS THE WHOLE POINT.** `FilterProp` has
-/// ~99 variants and this arm makes no per-variant judgement about the ones it does not name:
-/// anything unlisted is REFUSED, so a new variant is population-DEPENDENT until someone proves
-/// otherwise and adds it here. `matches!` with no wildcard arm is what delivers that — an
-/// unmatched variant evaluates to `false` by construction. Do NOT "tidy" this into a
-/// `_ => true` fall-through or a denylist of known-bad variants; either inversion silently
-/// admits every future variant as safe, which is the exact failure this guard exists to
-/// prevent.
-///
-/// The two members, both trivially independent of who else is on the battlefield:
-///  * `FilterProp::Another` — SOURCE-relative ("any object that is NOT the trigger source");
-///    its verdict is an id comparison against the ability source, untouched by population.
-///  * `FilterProp::HasSupertype { .. }` — an INTRINSIC card characteristic (Basic / Legendary
-///    / Snow) read off the object itself.
-///
-/// The hazard this closes, named so it is re-testable: `FilterProp::MostPrevalentCreatureTypeIn`
-/// resolves through `most_prevalent_creature_types_in_zone(state, owner, zone)`, so a class
-/// member's ARRIVAL can flip whether a NON-member matches. `ability_scan::scan_filter_prop`
-/// classifies that variant as `scan_controller_ref(scope)` and does not flag the population
-/// axis, so the scanner does not cover it either — which is precisely why the relief arms
-/// cannot lean on the scanner here and carry this guard instead.
-fn filter_props_are_population_independent(props: &[crate::types::ability::FilterProp]) -> bool {
-    use crate::types::ability::FilterProp;
-
-    props
-        .iter()
-        .all(|p| matches!(p, FilterProp::Another | FilterProp::HasSupertype { .. }))
-}
-
 /// **S4** — CR 732.2a block-(3) relief on a replacement effect's
 /// `UnlessControlsCountMatching` condition (CR 614.1d): is the condition's value provably
 /// INVARIANT as the growing class grows by `class_member`?
@@ -4389,27 +4357,77 @@ fn filter_props_are_population_independent(props: &[crate::types::ability::Filte
 /// `scan_controller_ref(scope)`, discarding the population axis). Before this lane the
 /// variant vetoed unconditionally, so RELIEF IS WHAT CREATES THE FAIL-OPEN — it is not
 /// inherited from the scanner, and it is closed here rather than deferred.
-/// [`filter_props_are_population_independent`] is the single authority both arms consult; the
-/// filter must additionally be a bare `TargetFilter::Typed` for a property list to exist at
-/// all, and everything else is refused. ⇒ the count is invariant on every input this arm
-/// relieves, rather than on every input today's corpus happens to contain.
 ///
-/// **The allowlist is COMPLETE FOR TODAY'S CORPUS, and that is a measurement, not a hope.**
-/// Census over the pinned `data/mtgjson/AtomicCards.json`, every card whose Oracle text
-/// contains "unless you control" (111 cards), parsed through `parser::parse_oracle_text`:
-/// **25 `UnlessControlsCountMatching` productions in 7 distinct filters, 11
-/// `UnlessControlsOtherLeq` productions in 1** — every one a bare `TargetFilter::Typed` whose
-/// `type_filters` are intrinsic (`Land` / a basic land subtype) and whose `properties` are a
-/// subset of exactly `{Another, HasSupertype{Basic}}`. No compound filter, no relative
-/// property, in either variant. ⇒ the guard is a FAIL-CLOSED NARROWING OF THE HYPOTHETICAL
-/// with **zero behavioural change on any real card**, which is why every pre-existing row
-/// stays green. The census discriminates rather than merely returning a convenient zero: it
-/// surfaced SEVEN distinct S4 filters, so a divergent production would have shown up.
-/// ⇒ THE STANDING OBLIGATION IS NOW THE INVERSE ONE, AND IT IS SMALL: whoever introduces a
-/// `FilterProp` that IS population-independent must ADD it to the allowlist, or these arms
-/// will silently stop relieving a card they could safely relieve (a performance cost, never a
-/// correctness one). Anything population-dependent is already refused by default and needs no
-/// action. Re-run the census above before widening the allowlist.
+/// ⛔ **AUTHORITY ADJUDICATION — THERE IS EXACTLY ONE, AND THESE ARMS ARE CONSUMERS.**
+/// The canonical authority on population dependence is
+/// [`crate::game::filter::affected_filter_uses_object_population`]. It already answers this
+/// arm's exact question — its own doc names the hazard as "another object entering or
+/// leaving the battlefield can change whether a PRE-EXISTING object satisfies this filter" —
+/// so both relief arms DELEGATE to it rather than restating it.
+///  * **Polarity.** The authority is phrased positively (`true` = population-DEPENDENT). The
+///    arms consume it at the COMPLEMENTARY polarity: `if uses_object_population(..) { return
+///    false; }`, i.e. relief requires a `false`. Reading the polarity backwards inverts a
+///    fail-closed guard into a fail-open one, which is why it is stated here rather than left
+///    to the call site.
+///  * **No local wrapper survives.** An earlier revision of this lane carried a private
+///    `filter_props_are_population_independent` allowlist here. It is DELETED, not wrapped:
+///    a second predicate answering one question is a second authority that can drift from the
+///    first, and the allowlist was strictly weaker — it covered two `FilterProp` variants and
+///    refused every compound `TargetFilter`, where the canonical authority recurses through
+///    `And`/`Or`/`Not` and classifies every variant.
+///  * **Why the canonical authority is at least as fail-closed.** Its leaf classifier
+///    `filter_prop_uses_object_population` is an EXHAUSTIVE, wildcard-free `match`, so a new
+///    `FilterProp` is a COMPILE ERROR until someone classifies it. The deleted allowlist
+///    delivered the same "unclassified is not admitted" property by construction (`matches!`
+///    with no wildcard); the compiler now delivers it over ~99 variants instead of two, and
+///    it cannot silently go stale. Sibling `filter.rs` walkers (`target_filter_characteristic_reads`)
+///    deliberately live beside it so one seam forces both decisions.
+///  * **Sole-sourceness is unaffected.** What discharges it is the CONDITION-level
+///    top-level-only match (`ReplacementCondition::And` falls to the `let ... else` while
+///    `scan_replacement_condition` recurses through compounds) — a different `let ... else`
+///    from the filter-shape one this delegation removed. Row
+///    `s4_s5_compound_condition_keeps_the_veto` measures that surviving refusal.
+///
+/// ⇒ the count is invariant on every input this arm relieves, rather than on every input
+/// today's corpus happens to contain.
+///
+/// **DELEGATION IS ZERO BEHAVIOURAL CHANGE ON EVERY REAL CARD, AND THAT IS A MEASUREMENT.**
+/// The canonical authority is strictly WIDER than the deleted allowlist (it admits compounds
+/// and every leaf-false `FilterProp`), so the swap was gated on measuring the two verdicts
+/// against each other over the whole corpus rather than assumed.
+///
+/// **PREDICATE, NEEDLE, AND INSTRUMENT — stated inline so the next reader can tell what was
+/// counted.** Corpus: the pinned `AtomicCards.json`. Needle: a card face whose lowercased
+/// Oracle text contains `"unless you control "` OR `"unless your opponents control "`. That
+/// needle is STRUCTURAL, not a phrasing guess — it is read off the parser's own producers,
+/// which are the only three in the workspace: `parse_controls_typed_condition` and
+/// `parse_opponents_control_condition` (both `UnlessControlsCountMatching`) and
+/// `parse_fast_condition` (`UnlessControlsOtherLeq`) in `parser/oracle_replacement.rs`, whose
+/// `strip_after` prefixes are exactly those two strings. Predicate: every matching face
+/// parsed through `parser::parse_oracle_text`, every `replacements[].condition` flattened
+/// through `ReplacementCondition::And`, counting each variant production and its filter.
+///
+/// **MEASURED (116 card faces matched the needle):**
+///  * **30 `UnlessControlsCountMatching` productions in 8 distinct filters**;
+///  * **11 `UnlessControlsOtherLeq` productions in 1 distinct filter**;
+///  * **0 productions on which the deleted allowlist and the canonical authority disagree.**
+///
+/// Every one of the 41 is a bare `TargetFilter::Typed` whose `type_filters` are intrinsic
+/// (`Land` / a basic land subtype) and whose `properties` are a subset of exactly
+/// `{Another, HasSupertype{Basic}}` — or EMPTY, which is the 8th filter:
+/// `{type_filters: [Land], controller: Opponent, properties: []}`, the Turbulent
+/// Fen/Moor/Springs/Steppe/Wilderness cycle ("This land enters tapped unless your opponents
+/// control eight or more lands"). No compound filter and no relative property in either
+/// variant. ⇒ the widening is confined to HYPOTHETICALS, which is what keeps this
+/// delegation inside C3b-1's charter instead of being a semantics change.
+///
+/// The census DISCRIMINATES rather than returning a convenient zero: it surfaced EIGHT
+/// distinct S4 filters spanning both `ControllerRef::You` and `ControllerRef::Opponent`, so a
+/// divergent production would have shown up. ⛔ **A PRIOR REVISION OF THIS BLOCK REPORTED
+/// 25 productions in 7 filters over "111 cards".** It under-counted because its needle was
+/// `"unless you control"` alone, which misses the five-card opponent cycle above and with it
+/// the 8th filter — the reason the needle is now derived from the producers rather than from
+/// a phrasing. Re-run THIS census, with THIS needle, before changing either arm's guard.
 ///
 /// ⛔ **CONTROLLER AUTHORITY: `replacement::replacement_source_player`, NEVER the raw
 /// `source.controller` field.** Every production condition site derives the evaluator's
@@ -4443,17 +4461,12 @@ fn count_matching_condition_provably_excludes_class(
     let ReplacementCondition::UnlessControlsCountMatching { minimum: _, filter } = condition else {
         return false;
     };
-    // POPULATION-INDEPENDENCE GUARD. Reaching a `properties` list at all requires the filter
-    // to be a bare `TargetFilter::Typed`; a compound (`And` / `Or` / `Not`) or any other
-    // leaf has no single property list to allowlist, so it is REFUSED rather than guessed at.
-    // Measured cost of both narrowings: ZERO — see the corpus census in this function's own
-    // doc comment above. NOTE the pin below still passes the ORIGINAL `filter`, never
-    // `typed`: the destructure exists only to reach `properties`, and the evaluator's
-    // argument identity must not be disturbed by a guard.
-    let crate::types::ability::TargetFilter::Typed(typed) = filter else {
-        return false;
-    };
-    if !filter_props_are_population_independent(&typed.properties) {
+    // POPULATION-INDEPENDENCE GUARD — delegated at COMPLEMENTARY POLARITY to the canonical
+    // authority; see this function's doc for the adjudication of why that authority is the
+    // only one and why no local wrapper survives. NOTE the pin below still passes the
+    // ORIGINAL `filter`: the guard READS it and never rebinds or reshapes it, so the
+    // evaluator's argument identity is untouched by the guard.
+    if crate::game::filter::affected_filter_uses_object_population(filter) {
         return false;
     }
     // Fail closed on a member with no object in the scanned frame: an id the census cannot
@@ -4514,15 +4527,16 @@ fn other_leq_condition_provably_excludes_class(
     let ReplacementCondition::UnlessControlsOtherLeq { count: _, filter } = condition else {
         return false;
     };
-    // POPULATION-INDEPENDENCE GUARD — the same single authority S4 consults. `filter` is
-    // already a bare `TypedFilter` here, so no unwrapping narrowing is needed.
-    if !filter_props_are_population_independent(&filter.properties) {
+    // POPULATION-INDEPENDENCE GUARD — the same canonical authority S4 consults, at the same
+    // complementary polarity, applied to the ALREADY-WRAPPED filter so both arms hand the
+    // authority the identical `TargetFilter` shape the evaluator itself matches on.
+    let wrapped = TargetFilter::Typed(filter.clone());
+    if crate::game::filter::affected_filter_uses_object_population(&wrapped) {
         return false;
     }
     let Some(member) = state.objects.get(&class_member) else {
         return false;
     };
-    let wrapped = TargetFilter::Typed(filter.clone());
     let ctx = crate::game::filter::FilterContext::from_source(state, source.id);
     !(member.zone == Zone::Battlefield
         && crate::game::filter::matches_target_filter(state, member.id, &wrapped, &ctx))
@@ -23021,6 +23035,19 @@ mod tests {
         )
     }
 
+    /// The only corpus S4 filter that is NOT `ControllerRef::You`: the Turbulent cycle's
+    /// `{type_filters: [Land], controller: Opponent, properties: []}`, produced by
+    /// `parser::oracle_replacement::parse_opponents_control_condition`. VERBATIM Oracle text
+    /// from the pinned `AtomicCards.json`, same rule as the sibling fixtures above.
+    fn turbulent_fen_def() -> crate::types::ability::ReplacementDefinition {
+        tapland_replacement(
+            "Turbulent Fen",
+            "({T}: Add {B} or {G}.)\nThis land enters tapped unless your opponents control \
+             eight or more lands.",
+            &["Swamp", "Forest"],
+        )
+    }
+
     /// Replace ONE field of a parsed tapland condition — the condition's `filter` — leaving
     /// every other byte of the definition alone. Every C3b-1 negative is built this way, so
     /// its divergence from the matched positive is attributable to `filter` and to nothing
@@ -23123,27 +23150,23 @@ mod tests {
         (state, member, hosts)
     }
 
-    /// **S4-P1 / S4-N1** — `count_matching_condition_provably_excludes_class` as block (3)'s
-    /// `condition` surface reaches it, on Sunken Hollow's and Cinder Glade's REAL parsed
-    /// conditions (both are literally in this lane's target dump, `ObjectId(215)` and
-    /// `ObjectId(320)`).
+    /// **S4-P1 (POSITIVE — relief fires)** — `count_matching_condition_provably_excludes_class`
+    /// as block (3)'s `condition` surface reaches it, on Sunken Hollow's and Cinder Glade's
+    /// REAL parsed conditions (both are literally in this lane's target dump, `ObjectId(215)`
+    /// and `ObjectId(320)`).
     ///
-    /// REVERT / MUTATION PROBES, each named with the arm it flips:
-    /// * delete the `&& !condition_disjoint(condition)` conjunct at block (3) ⇒ **S4-P1 FAILS**.
-    /// * drop the `matches_target_filter` conjunct from S4's mirror (relieve on the variant's
-    ///   SHAPE alone — the "relieve on `valid_card == SelfRef` alone" failure mode) ⇒
-    ///   **S4-N1 FAILS**.
-    /// * delete `!members.is_empty()` ⇒ **M2-S4 FAILS** (everything relieved).
-    /// * weaken the missing-member `let ... else` to bank the census's `.values()` walk
-    ///   skipping an absent id ⇒ **the fail-closed row FAILS**.
+    /// ⛔ **ONE ASSERTION DIRECTION PER `#[test]` FN — plan errata E-8.** The positive and the
+    /// negative used to share a single fn, so "row driven RED" could not say WHICH assertion
+    /// fired, and a mis-stated recipe was recorded against the wrong one for two consecutive
+    /// rounds. Each direction is its own fn now, and each registered mutation names the fn it
+    /// reddens plus the input on which the correct and mutant designs disagree.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `&& !condition_disjoint(condition)` conjunct at
+    /// block (3) ⇒ **this row FAILS**. Disagreeing input: the fixture below, whose filter
+    /// censuses BASIC LANDS while the class member is a Saproling creature token.
     #[test]
-    fn s4_arm_relieves_the_real_taplands_and_keeps_the_creature_veto() {
-        use crate::types::ability::{
-            ControllerRef, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
-        };
-
-        // ── S4-P1 — BOTH real cards live at once, both relieved ──────────────────────
-        let (state, member, hosts) = block3_fixture(vec![
+    fn s4_arm_relieves_the_real_taplands() {
+        let (state, member, _) = block3_fixture(vec![
             (900, "Sunken Hollow", sunken_hollow_def()),
             (901, "Cinder Glade", cinder_glade_def()),
         ]);
@@ -23155,8 +23178,30 @@ mod tests {
              Block (3) must SKIP the condition surface. Deleting the \
              `&& !condition_disjoint(..)` conjunct restores the veto"
         );
+    }
 
-        // ── S4-N1 — the SAME two definitions, `filter` the ONLY variable ─────────────
+    /// **S4-N1 (NEGATIVE — veto survives)** — the twin of
+    /// [`s4_arm_relieves_the_real_taplands`], with `condition.filter` as the ONLY variable.
+    ///
+    /// ⛔ **RECIPE CORRECTED — plan errata E-8.** The recipe previously registered against
+    /// this row was *"drop the `matches_target_filter` conjunct from S4's mirror"*. That is
+    /// arithmetically the WRONG mutant here. The arm is
+    /// `!(member.zone == Battlefield && member.id != source.id && matches_target_filter(..))`;
+    /// dropping the third conjunct leaves `!(zone == Battlefield && id != source)`, which is
+    /// **`false`** for any battlefield non-source class member ⇒ no relief ⇒ the veto STANDS
+    /// ⇒ this negative keeps PASSING, while the POSITIVE row reds instead. The rows were never
+    /// vacuous; the recorded proof was pointed at the wrong assertion.
+    ///
+    /// REVERT / MUTATION PROBE (the correct one): replace the arm's final expression with
+    /// `true` — relieve on the variant's SHAPE alone ⇒ **this row FAILS**. Disagreeing input:
+    /// the fixture below, whose `Creature{You}` filter MATCHES the Saproling class member, so
+    /// the correct design refuses relief and the shape-only mutant grants it.
+    #[test]
+    fn s4_arm_keeps_the_creature_veto() {
+        use crate::types::ability::{
+            ControllerRef, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+
         let creature_filter = TargetFilter::Typed(TypedFilter {
             type_filters: vec![TypeFilter::Creature],
             controller: Some(ControllerRef::You),
@@ -23183,19 +23228,49 @@ mod tests {
             "S4-N1: byte-identical definitions with ONLY `condition.filter` changed \
              Land+Basic -> Creature{{You}}. The Saproling token IS a creature P0 controls, so \
              every minted member increments the census and the condition's value MOVES with \
-             the class — the veto must survive. Relieving on the variant's SHAPE alone \
-             (dropping the `matches_target_filter` conjunct) makes this FAIL"
+             the class — the veto must survive. Replacing the arm's final expression with \
+             `true` (relief on the variant's SHAPE alone) makes this FAIL"
         );
+    }
 
-        // ── M2-S4 — an EMPTY class relieves NOTHING ──────────────────────────────────
+    /// **M2-S4 (NEGATIVE — an EMPTY class relieves NOTHING)**, on the same relievable board as
+    /// [`s4_arm_relieves_the_real_taplands`], so the two rows differ only in the class.
+    ///
+    /// REVERT / MUTATION PROBE: delete `!members.is_empty()` ⇒ **this row FAILS** (`.all()`
+    /// goes vacuously true and everything is relieved). Disagreeing input: the EMPTY class
+    /// below — the positive row's non-empty class agrees under both designs.
+    #[test]
+    fn s4_arm_empty_class_relieves_nothing() {
+        let (state, member, _) = block3_fixture(vec![
+            (900, "Sunken Hollow", sunken_hollow_def()),
+            (901, "Cinder Glade", cinder_glade_def()),
+        ]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "matched control: the SAME board with a NON-empty class IS relieved, so the row \
+             below is attributable to the class being empty and to nothing else"
+        );
         assert!(
             fire_time_conditions_read_growing_class(&state, Some(&HashSet::new())),
             "M2-S4: `!members.is_empty()` is LOAD-BEARING — an empty class must not make \
              `.all()` vacuously true and relieve the surface. Deleting that guard makes this \
              FAIL"
         );
+    }
 
-        // ── fail-closed: a member with no object in the scanned frame ────────────────
+    /// **S4 fail-closed (NEGATIVE)** — a class member with no object in the scanned frame
+    /// proves nothing about what the census counts, so it must NOT be relieved.
+    ///
+    /// REVERT / MUTATION PROBE: weaken the missing-member `let ... else` to bank the census's
+    /// `.values()` walk skipping an absent id ⇒ **this row FAILS**. Disagreeing input:
+    /// `ObjectId(9_999)`, absent from `state.objects`; the LIVE member in the matched control
+    /// agrees under both designs.
+    #[test]
+    fn s4_arm_fails_closed_on_a_member_absent_from_the_frame() {
+        let (state, member, hosts) = block3_fixture(vec![
+            (900, "Sunken Hollow", sunken_hollow_def()),
+            (901, "Cinder Glade", cinder_glade_def()),
+        ]);
         let host_obj = state.objects[&hosts[0]].clone();
         let condition = state.objects[&hosts[0]]
             .replacement_definitions
@@ -23221,22 +23296,17 @@ mod tests {
         );
     }
 
-    /// **S5-P1 / S5-N1** — `other_leq_condition_provably_excludes_class` as block (3)'s
-    /// `condition` surface reaches it, on Blackcleave Cliffs' and Copperline Gorge's REAL
-    /// parsed conditions (`ObjectId(183)` and `ObjectId(315)` in this lane's target dump).
+    /// **S5-P1 (POSITIVE — relief fires)** — `other_leq_condition_provably_excludes_class` as
+    /// block (3)'s `condition` surface reaches it, on Blackcleave Cliffs' and Copperline
+    /// Gorge's REAL parsed conditions (`ObjectId(183)` and `ObjectId(315)` in this lane's
+    /// target dump). Split from its negative twin per plan errata E-8 — see
+    /// [`s4_arm_relieves_the_real_taplands`] for why the two directions are separate fns.
     ///
-    /// REVERT / MUTATION PROBES:
-    /// * make S5's arm return `false` (or delete the `|| other_leq_..` disjunct) ⇒
-    ///   **S5-P1 FAILS**.
-    /// * drop the `matches_target_filter` conjunct from S5's mirror ⇒ **S5-N1 FAILS**.
-    /// * delete `!members.is_empty()` ⇒ **M2-S5 FAILS**.
+    /// REVERT / MUTATION PROBE: make S5's arm return `false` (or delete the
+    /// `|| other_leq_..` disjunct) ⇒ **this row FAILS**. Disagreeing input: the fixture below,
+    /// whose filter censuses OTHER LANDS while the class member is a creature token.
     #[test]
-    fn s5_arm_relieves_the_real_taplands_and_keeps_the_creature_veto() {
-        use crate::types::ability::{
-            ControllerRef, FilterProp, ReplacementCondition, TypeFilter, TypedFilter,
-        };
-
-        // ── S5-P1 ────────────────────────────────────────────────────────────────────
+    fn s5_arm_relieves_the_real_taplands() {
         let (state, member, _) = block3_fixture(vec![
             (902, "Blackcleave Cliffs", blackcleave_cliffs_def()),
             (903, "Copperline Gorge", copperline_gorge_def()),
@@ -23249,8 +23319,27 @@ mod tests {
              SKIP the condition surface. Deleting the `|| other_leq_..` disjunct restores \
              the veto"
         );
+    }
 
-        // ── S5-N1 — `filter` the ONLY variable ───────────────────────────────────────
+    /// **S5-N1 (NEGATIVE — veto survives)** — the twin of
+    /// [`s5_arm_relieves_the_real_taplands`], with `condition.filter` as the ONLY variable.
+    ///
+    /// ⛔ **RECIPE CORRECTED — plan errata E-8**, for the same arithmetic reason spelled out
+    /// on [`s4_arm_keeps_the_creature_veto`]: S5's arm is
+    /// `!(member.zone == Battlefield && matches_target_filter(..))`, so dropping the
+    /// `matches_target_filter` conjunct leaves `!(zone == Battlefield)` = `false` for a
+    /// battlefield member ⇒ no relief ⇒ the veto STANDS ⇒ this negative keeps passing and the
+    /// POSITIVE row reds instead.
+    ///
+    /// REVERT / MUTATION PROBE (the correct one): replace the arm's final expression with
+    /// `true` ⇒ **this row FAILS**. Disagreeing input: the fixture below, whose
+    /// `Creature{You}+Another` filter MATCHES the Saproling class member.
+    #[test]
+    fn s5_arm_keeps_the_creature_veto() {
+        use crate::types::ability::{
+            ControllerRef, FilterProp, ReplacementCondition, TypeFilter, TypedFilter,
+        };
+
         let n1_condition = ReplacementCondition::UnlessControlsOtherLeq {
             count: 2,
             filter: TypedFilter {
@@ -23276,10 +23365,26 @@ mod tests {
             "S5-N1: byte-identical definitions with ONLY `condition.filter` changed \
              Land+Another -> Creature{{You}}+Another. Every minted Saproling is another \
              creature P0 controls, so the census MOVES with the class and the veto must \
-             survive. Relieving on the variant's SHAPE alone makes this FAIL"
+             survive. Replacing the arm's final expression with `true` makes this FAIL"
         );
+    }
 
-        // ── M2-S5 ────────────────────────────────────────────────────────────────────
+    /// **M2-S5 (NEGATIVE — an EMPTY class relieves NOTHING)**, on the same relievable board as
+    /// [`s5_arm_relieves_the_real_taplands`].
+    ///
+    /// REVERT / MUTATION PROBE: delete `!members.is_empty()` ⇒ **this row FAILS**.
+    /// Disagreeing input: the EMPTY class below.
+    #[test]
+    fn s5_arm_empty_class_relieves_nothing() {
+        let (state, member, _) = block3_fixture(vec![
+            (902, "Blackcleave Cliffs", blackcleave_cliffs_def()),
+            (903, "Copperline Gorge", copperline_gorge_def()),
+        ]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "matched control: the SAME board with a NON-empty class IS relieved, so the row \
+             below is attributable to the class being empty and to nothing else"
+        );
         assert!(
             fire_time_conditions_read_growing_class(&state, Some(&HashSet::new())),
             "M2-S5: `!members.is_empty()` is LOAD-BEARING — an empty class must not relieve \
@@ -23515,8 +23620,8 @@ mod tests {
         );
     }
 
-    /// **Population-independence guard** — a filter whose match on a NON-member can move when
-    /// a class member ARRIVES must keep its veto, on both arms.
+    /// **Population-independence guard, NEGATIVE direction** — a filter whose match on a
+    /// NON-member can move when a class member ARRIVES must keep its veto, on both arms.
     ///
     /// `FilterProp::MostPrevalentCreatureTypeIn` resolves through
     /// `filter::most_prevalent_creature_types_in_zone(state, owner, zone)`, so minting
@@ -23528,55 +23633,55 @@ mod tests {
     /// Each arm is paired with the SAME definition minus the third property, which IS relieved,
     /// so every verdict below is attributable to `filter.properties` and to nothing else.
     ///
-    /// REVERT / MUTATION PROBE: make `filter_props_are_population_independent` return `true`
-    /// unconditionally (or drop either arm's conjunct) ⇒ **both hostile arms FAIL**.
+    /// REVERT / MUTATION PROBE: make
+    /// `game::filter::affected_filter_uses_object_population` return `false` unconditionally,
+    /// or drop either arm's guard ⇒ **both hostile arms FAIL**. Disagreeing input: the
+    /// `MostPrevalentCreatureTypeIn`-bearing filters below; the matched controls agree under
+    /// both designs.
     #[test]
     fn s4_s5_population_dependent_filter_property_keeps_the_veto() {
         use crate::types::ability::{
             ControllerRef, FilterProp, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
         };
 
-        // The guard itself: allowlisted in, everything else out. Pins the `matches!` shape so a
-        // `_ => true` fall-through or a denylist inversion reds here as well as end to end.
         let prevalent = FilterProp::MostPrevalentCreatureTypeIn {
             zone: Zone::Battlefield,
             scope: ControllerRef::You,
         };
+
+        // The CANONICAL authority, at the polarity these arms consume it: `true` means
+        // population-DEPENDENT, so relief requires `false`. Pinned here so a polarity
+        // inversion at either call site reds a unit assertion as well as end to end.
+        let uses_pop = crate::game::filter::affected_filter_uses_object_population;
+        let with_props = |props: Vec<FilterProp>| {
+            TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Land],
+                controller: Some(ControllerRef::You),
+                properties: props,
+            })
+        };
         assert!(
-            filter_props_are_population_independent(&[]),
-            "an empty property list reads nothing about the population"
+            !uses_pop(&with_props(Vec::new())),
+            "positive control: a property-free land filter reads nothing about the \
+             population, so the authority can say `false` and the `true`s below are it \
+             discriminating rather than a predicate stuck at `true`"
         );
         assert!(
-            filter_props_are_population_independent(&[
-                FilterProp::Another,
-                FilterProp::HasSupertype {
-                    value: Supertype::Basic,
-                },
-            ]),
-            "positive control: BOTH allowlisted properties pass, so the negatives below are \
-             the allowlist discriminating rather than a predicate stuck at `false`"
+            uses_pop(&with_props(std::slice::from_ref(&prevalent).to_vec())),
+            "a population-dependent property is DEPENDENT — relief must be refused"
         );
         assert!(
-            !filter_props_are_population_independent(std::slice::from_ref(&prevalent)),
-            "a population-dependent property is refused"
+            uses_pop(&with_props(vec![FilterProp::Another, prevalent.clone()])),
+            "ONE dependent property poisons the whole list — the authority is `any`, not `all`"
         );
+        // ⛔ COMPOUND RECURSION, the property the deleted local allowlist did NOT have: the
+        // canonical authority walks `And`/`Or`/`Not` instead of refusing them wholesale.
         assert!(
-            !filter_props_are_population_independent(&[FilterProp::Another, prevalent.clone(),]),
-            "ONE unlisted property poisons the whole list — the guard is `all`, not `any`"
-        );
-        // ⛔ THE DIRECTION ROW. `FilterProp::Tapped` is neither allowlisted NOR the named
-        // population-dependent variant above, so it is the ONLY assertion in this test that
-        // distinguishes an ALLOWLIST from a DENYLIST: an allowlist refuses it for being
-        // UNLISTED, a denylist that enumerates known-bad variants admits it. MEASURED, not
-        // assumed — inverting the guard to `!matches!(p, MostPrevalentCreatureTypeIn { .. })`
-        // left every OTHER assertion in this test GREEN, so without this line the very
-        // anti-pattern the guard's doc forbids would have shipped untested.
-        assert!(
-            !filter_props_are_population_independent(&[FilterProp::Tapped]),
-            "ALLOWLIST DIRECTION: an unlisted property is refused because it is UNLISTED, not \
-             because it was enumerated as bad. Inverting the guard into a `_ => true` \
-             fall-through or a denylist of known-bad variants makes this FAIL — and it is the \
-             ONLY assertion here that catches that inversion"
+            uses_pop(&TargetFilter::And {
+                filters: vec![with_props(Vec::new()), with_props(vec![prevalent.clone()]),],
+            }),
+            "a dependent property hidden inside an `And` is still seen — the authority \
+             RECURSES through compounds. A non-recursing guard makes this FAIL"
         );
 
         // ── S4: the real Sunken Hollow filter plus a THIRD, population-dependent property ──
@@ -23604,7 +23709,7 @@ mod tests {
              member-quantified test alone would relieve — but `MostPrevalentCreatureTypeIn` \
              makes a NON-member's match depend on the population, so minting members can move \
              the count without any member ever being counted. Relief must be refused. Making \
-             `filter_props_are_population_independent` return `true` makes this FAIL"
+             `affected_filter_uses_object_population` return `false` makes this FAIL"
         );
 
         // ── S5: the real Blackcleave Cliffs filter plus the same third property ────────────
@@ -23624,7 +23729,7 @@ mod tests {
         assert!(
             fire_time_conditions_read_growing_class(&s5_state, Some(&HashSet::from([s5_member]))),
             "S5 population guard: same hazard through the other arm — both consult the one \
-             shared allowlist, so neither can drift from the other. Dropping S5's conjunct \
+             canonical authority, so neither can drift from the other. Dropping S5's guard \
              makes this FAIL"
         );
 
@@ -23639,32 +23744,222 @@ mod tests {
                     &s5_ok,
                     Some(&HashSet::from([s5_ok_member]))
                 ),
-            "matched controls: with `properties` back inside the allowlist BOTH arms relieve \
-             again, so the two vetoes above are attributable to the third property alone and \
-             the guard is proven not to be a blanket refusal"
+            "matched controls: with the population-dependent property removed BOTH arms \
+             relieve again, so the two vetoes above are attributable to that property alone \
+             and the guard is proven not to be a blanket refusal"
+        );
+    }
+
+    /// ⛔ **THE WIDENING ROW — this is what makes the delegation OBSERVABLE.** A property that
+    /// is population-INDEPENDENT but was outside the deleted two-item allowlist
+    /// (`{Another, HasSupertype}`) must now RELIEVE on both arms.
+    ///
+    /// `FilterProp::Tapped` is classified leaf-`false` by
+    /// `filter::filter_prop_uses_object_population` (a candidate-local characteristic: whether
+    /// THIS object is tapped cannot change because another object entered), and it is not one
+    /// of the two the old allowlist named. Under the old guard it was refused *for being
+    /// unlisted*; under the canonical authority it is admitted *because it was classified*.
+    ///
+    /// REVERT / MUTATION PROBE: restore the deleted allowlist semantics — guard on
+    /// `properties.iter().all(|p| matches!(p, FilterProp::Another | FilterProp::HasSupertype {
+    /// .. }))` instead of delegating ⇒ **both arms FAIL** (`Tapped` is unlisted ⇒ refused ⇒
+    /// the veto returns). Disagreeing input: the `[Tapped]` filters below — every corpus
+    /// filter, whose properties are already inside the old allowlist, agrees under BOTH
+    /// designs, which is exactly why this row and not a corpus card is what proves the
+    /// widening happened.
+    #[test]
+    fn s4_s5_relieve_a_population_independent_property_outside_the_old_allowlist() {
+        use crate::types::ability::{
+            ControllerRef, FilterProp, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        let tapped_lands = TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: Some(ControllerRef::You),
+            properties: vec![FilterProp::Tapped],
+        };
+        assert!(
+            !crate::game::filter::affected_filter_uses_object_population(&TargetFilter::Typed(
+                tapped_lands.clone()
+            )),
+            "reach-guard: the canonical authority classifies `Tapped` as \
+             population-INDEPENDENT, which is the premise both arms below act on"
         );
 
-        // ── The unwrapping narrowing: a COMPOUND filter has no property list to allowlist ──
-        let compound = ReplacementCondition::UnlessControlsCountMatching {
-            minimum: 2,
-            filter: TargetFilter::And {
-                filters: vec![TargetFilter::Typed(TypedFilter::land())],
-            },
-        };
-        let (compound_state, compound_member, _) = block3_fixture(vec![(
+        // ── S4 ────────────────────────────────────────────────────────────────────────────
+        let (s4_state, s4_member, _) = block3_fixture(vec![(
             900,
             "Sunken Hollow",
-            with_condition(sunken_hollow_def(), compound),
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: TargetFilter::Typed(tapped_lands.clone()),
+                },
+            ),
         )]);
         assert!(
-            fire_time_conditions_read_growing_class(
-                &compound_state,
-                Some(&HashSet::from([compound_member]))
+            !fire_time_conditions_read_growing_class(&s4_state, Some(&HashSet::from([s4_member]))),
+            "WIDENING (S4): a census of TAPPED LANDS you control cannot count a Saproling \
+             creature token, and `Tapped` is candidate-local, so the count is invariant and \
+             relief must fire. Restoring the deleted two-item allowlist refuses `Tapped` for \
+             being UNLISTED and makes this FAIL"
+        );
+
+        // ── S5 ────────────────────────────────────────────────────────────────────────────
+        let (s5_state, s5_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: tapped_lands,
+                },
             ),
-            "S4 is `TargetFilter::Typed`-only: a compound carries no single `properties` list \
-             to allowlist, so it is REFUSED rather than guessed at. Measured cost: zero — all \
-             25 corpus productions are bare `Typed`. Relaxing the `Typed` destructure to walk \
-             compounds makes this FAIL"
+        )]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&s5_state, Some(&HashSet::from([s5_member]))),
+            "WIDENING (S5): same property through the other arm, which consults the same \
+             canonical authority. Restoring the allowlist makes this FAIL"
+        );
+    }
+
+    /// ⛔ **THE OTHER HALF OF THE WIDENING — a COMPOUND `TargetFilter` now relieves.** The
+    /// deleted guard reached `properties` through a `let TargetFilter::Typed(..) = filter
+    /// else { return false }`, so it refused every `And`/`Or`/`Not` wholesale. The canonical
+    /// authority RECURSES through compounds, so a compound whose every leaf is
+    /// population-independent is now relieved.
+    ///
+    /// ⚠ **DO NOT CONFUSE THIS WITH `s4_s5_compound_condition_keeps_the_veto`.** That row is
+    /// about a compound `ReplacementCondition` (`ReplacementCondition::And`), which still
+    /// falls to this arm's CONDITION-level `let ... else` and still keeps its veto — that
+    /// `let ... else` is what discharges sole-sourceness and it is untouched. This row is
+    /// about a compound `TargetFilter` INSIDE a single `UnlessControlsCountMatching`
+    /// condition, which the evaluator's own `matches_target_filter` handles natively, so the
+    /// arg-equivalence pin holds for it unchanged.
+    ///
+    /// REVERT / MUTATION PROBE: restore the `let TargetFilter::Typed(typed) = filter else {
+    /// return false; }` destructure ahead of the guard ⇒ **this row FAILS** (the compound is
+    /// refused for its SHAPE). Disagreeing input: the `And { Typed, Not(Typed) }` filter
+    /// below; every corpus filter is a bare `Typed` and agrees under both designs.
+    #[test]
+    fn s4_compound_population_independent_filter_now_relieves() {
+        use crate::types::ability::{
+            ControllerRef, FilterProp, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        // "basic lands you control that are not creatures" — every leaf intrinsic or
+        // candidate-local, so no class member's ARRIVAL can move a non-member's verdict.
+        let compound = TargetFilter::And {
+            filters: vec![
+                TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![TypeFilter::Land],
+                    controller: Some(ControllerRef::You),
+                    properties: vec![FilterProp::HasSupertype {
+                        value: Supertype::Basic,
+                    }],
+                }),
+                TargetFilter::Not {
+                    filter: Box::new(TargetFilter::Typed(TypedFilter {
+                        type_filters: vec![TypeFilter::Creature],
+                        controller: None,
+                        properties: Vec::new(),
+                    })),
+                },
+            ],
+        };
+        assert!(
+            !crate::game::filter::affected_filter_uses_object_population(&compound),
+            "reach-guard: the authority recurses into `And` and `Not` and finds every leaf \
+             population-independent — the premise this row acts on"
+        );
+
+        let (state, member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: compound,
+                },
+            ),
+        )]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "WIDENING (compound): the Saproling is a creature and not a basic land, so it \
+             fails BOTH conjuncts and is never counted; every leaf is population-independent, \
+             so the count is invariant and relief must fire. Restoring the \
+             `TargetFilter::Typed`-only destructure makes this FAIL"
+        );
+    }
+
+    /// **S4 with `ControllerRef::Opponent` (POSITIVE — relief fires)** — the Turbulent land
+    /// cycle, whose condition is the corpus's EIGHTH distinct S4 filter
+    /// (`{type_filters: [Land], controller: Opponent, properties: []}`) and the only one that
+    /// is not `ControllerRef::You`. It is relieved through S4 in production today, so before
+    /// this row the shape had no fixture at all.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `&& !condition_disjoint(condition)` conjunct at
+    /// block (3) ⇒ **this row FAILS**. Disagreeing input: the real Turbulent Fen condition
+    /// below, whose opponent-scoped LAND census cannot count a P0 creature token.
+    #[test]
+    fn s4_arm_relieves_the_real_opponent_controlled_tapland() {
+        let (state, member, _) = block3_fixture(vec![(904, "Turbulent Fen", turbulent_fen_def())]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "S4 opponent scope: CR 614.1d + CR 109.5 — 'unless your opponents control eight \
+             or more lands' censuses lands controlled by the OPPONENTS of the entering \
+             permanent's controller. The growing class is a Saproling creature token P0 \
+             controls, so no member is ever counted and the count is invariant (CR 732.2a). \
+             Deleting the `&& !condition_disjoint(..)` conjunct restores the veto"
+        );
+    }
+
+    /// **S4 with `ControllerRef::Opponent` (NEGATIVE — veto survives)** — the hostile twin of
+    /// [`s4_arm_relieves_the_real_opponent_controlled_tapland`]. The definition is BYTE-IDENTICAL
+    /// (the real parsed Turbulent Fen condition, unmodified); the only variable is WHICH id
+    /// the growing class holds.
+    ///
+    /// This is the row that proves `ControllerRef::Opponent` is resolved rather than ignored:
+    /// an opponent-controlled LAND joining the class DOES increment an opponent-scoped land
+    /// census, so the condition's value moves with the class and relief must be refused.
+    ///
+    /// REVERT / MUTATION PROBE: replace the arm's final expression with `true` (relieve on
+    /// the variant's SHAPE alone) ⇒ **this row FAILS**. Disagreeing input: the
+    /// P1-controlled land below; the P0 Saproling in the matched control agrees under both
+    /// designs.
+    #[test]
+    fn s4_arm_keeps_the_veto_when_an_opponent_controlled_land_joins_the_class() {
+        let (mut state, saproling, _) =
+            block3_fixture(vec![(904, "Turbulent Fen", turbulent_fen_def())]);
+
+        // A land the OPPONENT (P1) controls, added to the same board the control below runs on.
+        let opp_land = ObjectId(805);
+        let mut object = GameObject::new(
+            opp_land,
+            CardId(805),
+            PlayerId(1),
+            "Opponent Land".to_string(),
+            Zone::Battlefield,
+        );
+        object.card_types.core_types = vec![CoreType::Land];
+        state.objects.insert(opp_land, object);
+        state.battlefield.push_back(opp_land);
+
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([saproling]))),
+            "matched control: on the SAME board and the SAME definition, a P0 creature-token \
+             class IS relieved, so the row below is attributable to WHICH id the class holds \
+             and to nothing else"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([opp_land]))),
+            "S4 opponent scope, hostile: the class member is a LAND an OPPONENT of the \
+             source's controller controls, so 'unless your opponents control eight or more \
+             lands' COUNTS it (CR 109.5). The census moves with the class and the veto must \
+             survive. Replacing the arm's final expression with `true` makes this FAIL"
         );
     }
 }
