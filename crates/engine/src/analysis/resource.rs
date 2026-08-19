@@ -3922,7 +3922,9 @@ fn pt_value_aggregate_provably_excludes_class(
     source_id: ObjectId,
     ctx: &crate::game::filter::FilterContext<'_>,
 ) -> bool {
-    use crate::types::ability::{ControllerRef, PtValue, QuantityExpr, QuantityRef, TargetFilter};
+    use crate::types::ability::{
+        ControllerRef, PtValue, QuantityExpr, QuantityRef, TargetFilter, TypedFilter,
+    };
 
     let filter = match pt {
         // A literal reads nothing, so it is invariant under growth by construction.
@@ -3943,11 +3945,33 @@ fn pt_value_aggregate_provably_excludes_class(
     // `FilterContext` constructors disagree about may be evaluated with the firewall's own
     // context. Any non-`Typed` `TargetFilter` (`Or`, `Not`, `And`, `TrackedSet`, …) keeps
     // the veto rather than being walked here.
-    let TargetFilter::Typed(typed) = filter else {
+    // DESTRUCTURED WITH NO `..` AND EVERY FIELD NAMED, for the same reason the property-layer
+    // seam in `node_has_non_arrival_invariant_property` is: the pre-fix form here was
+    // `Typed(typed)` + FIELD ACCESS (`typed.properties` / `typed.controller`), which reads the
+    // axes it names and keeps compiling as axes are ADDED. A new field on `TypedFilter` is now
+    // an E0027 compile error at this seam too, instead of a silently unscanned read inside a
+    // guard whose whole job is to enumerate what the filter may read. The admitted VALUE set
+    // below is unchanged by that reshaping — this is a compile backstop, not a re-litigation of
+    // which values are admitted.
+    let TargetFilter::Typed(TypedFilter {
+        // Bound to `_` so the omission is a DECISION recorded at the seam, on the same grounds
+        // as the sibling's: `type_filters` is a `card_types` predicate, and `card_types` is
+        // exactly what this function's STATED RESIDUAL (see the "SAME STATED RESIDUAL AS THE
+        // SIBLING" block on `pump_aggregate_provably_excludes_class`) is already about. Read
+        // that block for the residual's exact wording — and heed the standing warning that
+        // closes it, which names the false restatement that has shipped once already.
+        type_filters: _,
+        // CR 109.4: only objects on the stack or on the battlefield have a controller. This
+        // axis is NOT covered by the residual above — `controller` is inside
+        // `object_content_eq`'s compared frame — so it is read, and its allowlist is enforced
+        // below rather than deferred.
+        controller,
+        properties,
+    }) = filter
+    else {
         return false;
     };
-    if !typed.properties.is_empty() || !matches!(typed.controller, None | Some(ControllerRef::You))
-    {
+    if !properties.is_empty() || !matches!(controller, None | Some(ControllerRef::You)) {
         return false;
     }
     // The resolver's OTHER context branch is unreachable for this shape, and that is a
@@ -4860,8 +4884,18 @@ fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::Targe
 /// **LAYER 2 ADAPTER — carries the guard's question from the `TargetFilter` layer down onto
 /// EVERY FIELD of a `Typed` node.** `true` means "this node carries a property OR a controller
 /// reference whose arrival-invariance is NOT proven", so relief must be refused. It is the one
-/// place the guard sees a `TypedFilter`'s fields, so it is the one place that can be made to
-/// FAIL TO COMPILE when a field is added — see the no-`..` destructure in the body.
+/// place THIS guard's recursion sees a `TypedFilter`'s fields, so within the recursion it is the
+/// one place that can be made to FAIL TO COMPILE when a field is added — see the no-`..`
+/// destructure in the body.
+///
+/// COUNT PREDICATE, stated so the number is re-derivable rather than recalled — a bare count is
+/// how round 5's sweep reported `0` field-access sites for this file while one existed. Region =
+/// production only (above this module's `#[cfg(test)]`), text = comment-stripped and
+/// whitespace-normalised, needle = a `TargetFilter::Typed` BINDING that is not an exhaustive
+/// no-`..` `TypedFilter` destructure. Under that predicate the file carries TWO no-`..` seams
+/// and ZERO field-access ones: this arm, and the context-shape guard in
+/// [`pt_value_aggregate_provably_excludes_class`], which fix round 6 converted. Expression-
+/// position `TypedFilter { .. }` LITERALS are outside the needle — E0063 already covers those.
 ///
 /// ⛔ **ROUND 5 ADDED THE CONTROLLER AXIS, AND THE REASON IS THE SAME MECHANISM FOUR TIMES
 /// OVER.** Rounds 1-3 each closed a layer and the next one down leaked; round 4 closed the
@@ -15309,7 +15343,7 @@ mod tests {
     /// * delete the `|| pump_aggregate_provably_excludes_class(..)` disjunct ⇒ **(i) FAILS**.
     /// * widen the relief to "any aggregate" (drop conjunct (d)'s id-membership test, or
     ///   accept any `filter`) ⇒ **(ii) FAILS**.
-    /// * delete the context-shape guard's `typed.properties.is_empty()` ⇒ **(iii) FAILS**.
+    /// * delete the context-shape guard's `properties.is_empty()` ⇒ **(iii) FAILS**.
     /// * check only `power` and drop the `toughness` half ⇒ **(iv) FAILS**.
     /// * drop conjunct (c)'s liveness test ⇒ **(v) FAILS**.
     /// * weaken conjunct (c) to `state.objects.contains_key(&class_member)` ⇒
@@ -15621,7 +15655,7 @@ mod tests {
              that object's `controller` across the window. `Opponent` reads the same field but \
              names the COMPLEMENT population, so a resolver/firewall disagreement about who \
              'you' is re-partitions the board instead of being absorbed by that pin. Dropping \
-             the `matches!(typed.controller, None | Some(ControllerRef::You))` clause relieves \
+             the `matches!(controller, None | Some(ControllerRef::You))` clause relieves \
              it anyway"
         );
 
@@ -15641,7 +15675,8 @@ mod tests {
         );
         assert!(
             !pump_aggregate_provably_excludes_class(&wrapped, &state, member, &source_obj),
-            "(x) `let TargetFilter::Typed(typed) = filter else {{ return false }}`: every \
+            "(x) `let TargetFilter::Typed(TypedFilter {{ type_filters, controller, properties }}) \
+             = filter else {{ return false }}` — every field named, no `..`: every \
              combinator (`Or` / `And` / `Not` / `TrackedSet`) keeps its veto rather than being \
              walked here. Turning that `else` into an accept would also walk past the \
              `references_exiled_by_source` debug-assert, which holds only BECAUSE the filter \
