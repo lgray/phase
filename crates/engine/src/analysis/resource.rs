@@ -4363,18 +4363,31 @@ fn counters_on_source_provably_excludes_class(
 /// [`crate::game::filter::affected_filter_uses_object_population`]. It already answers this
 /// arm's exact question — its own doc names the hazard as "another object entering or
 /// leaving the battlefield can change whether a PRE-EXISTING object satisfies this filter" —
-/// so both relief arms DELEGATE to it rather than restating it.
-///  * **Polarity.** The authority is phrased positively (`true` = population-DEPENDENT). The
-///    arms consume it at the COMPLEMENTARY polarity: `if uses_object_population(..) { return
-///    false; }`, i.e. relief requires a `false`. Reading the polarity backwards inverts a
-///    fail-closed guard into a fail-open one, which is why it is stated here rather than left
-///    to the call site.
+/// so both relief arms DELEGATE to it rather than restating it. They reach it through the
+/// shared input-domain guard [`arrival_can_move_a_nonmember_match`], which composes it with
+/// `filter.rs`'s other authority (`filter_contains`, the recursive-SHAPE walk) and adds a
+/// refusal step by enum identity. That guard's doc carries the full argument for why it is a
+/// DOMAIN RESTRICTION on this arm's input and not a second predicate answering the same
+/// question; read it before touching either call site.
+///  * **Polarity.** The authority is phrased positively (`true` = population-DEPENDENT), and
+///    the guard that wraps it keeps that polarity (`true` = movable). The arms consume it at
+///    the COMPLEMENTARY polarity: `if arrival_can_move_a_nonmember_match(..) { return false; }`,
+///    i.e. relief requires a `false`. Reading the polarity backwards inverts a fail-closed
+///    guard into a fail-open one, which is why it is stated here rather than left to the call
+///    site.
 ///  * **No local wrapper survives.** An earlier revision of this lane carried a private
 ///    `filter_props_are_population_independent` allowlist here. It is DELETED, not wrapped:
 ///    a second predicate answering one question is a second authority that can drift from the
 ///    first, and the allowlist was strictly weaker — it covered two `FilterProp` variants and
 ///    refused every compound `TargetFilter`, where the canonical authority recurses through
-///    `And`/`Or`/`Not` and classifies every variant.
+///    `And`/`Or`/`Not` and classifies every variant. ⚠ **`arrival_can_move_a_nonmember_match`
+///    is not that wrapper returning.** The allowlist ANSWERED the population question locally
+///    from a hand-listed set; the guard answers that question nowhere — it calls the authority
+///    for it, and separately refuses the leaves whose verdict the authority reaches through
+///    MUTABLE RESOLUTION-LOCAL STATE, a different question from population dependence. Row
+///    `s4_s5_bare_resolution_local_anaphor_keeps_the_veto`'s matched control pins the
+///    difference concretely: a bare `SelfRef` filter still RELIEVES, which the allowlist
+///    refused for its shape.
 ///  * **Why the canonical authority is at least as fail-closed.** Its leaf classifier
 ///    `filter_prop_uses_object_population` is an EXHAUSTIVE, wildcard-free `match`, so a new
 ///    `FilterProp` is a COMPILE ERROR until someone classifies it. The deleted allowlist
@@ -4388,8 +4401,35 @@ fn counters_on_source_provably_excludes_class(
 ///    from the filter-shape one this delegation removed. Row
 ///    `s4_s5_compound_condition_keeps_the_veto` measures that surviving refusal.
 ///
-/// ⇒ the count is invariant on every input this arm relieves, rather than on every input
-/// today's corpus happens to contain.
+/// ⇒ the count is invariant on every input `arrival_can_move_a_nonmember_match` admits,
+/// including inputs today's corpus does not contain — the certification is over the guard's
+/// admitted domain, not over the shapes that happen to be printed. It rests on exactly two
+/// stated things, both checkable: every ADMITTED leaf resolves to a fixed object/player or to
+/// the stack / triggering event (see `node_reads_mutable_resolution_local_state`), and every
+/// `Typed` node's properties are classified by the canonical authority AT THAT NODE (see the
+/// `filter_contains` composition). If either statement is falsified, this sentence is too.
+///
+/// ⛔ **THAT IS DELIBERATELY NOT A CLAIM ABOUT EVERY POSSIBLE `TargetFilter`, AND AN EARLIER
+/// REVISION OF THIS LINE SAID IT WAS.** It read *"invariant on every input this arm relieves"*
+/// while the guard was a ROOT-ONLY call on the population authority, which admits (a) all three
+/// resolution-local anaphor ledgers and (b) any population-dependent property boxed inside
+/// `CanEnchant` / `Targets` / `TargetsOnly`. Both classes had been refused by the allowlist the
+/// delegation deleted, so both were introduced HERE, and both are now refused by the guard
+/// rather than disclaimed. What the certification does and does not extend to, stated so the
+/// next reader does not have to re-derive the boundary:
+///  * **NO LEDGER RESIDUAL SURVIVES.** The refused set is not the three anaphors the finding
+///    opened with — it is EVERY leaf in that arm list that resolves through mutable
+///    resolution-local state (eleven, enumerated and compiler-held in
+///    [`node_reads_mutable_resolution_local_state`]). Every leaf still admitted is admitted on
+///    a stated invariance reason, not on absence of evidence: it resolves either to a FIXED
+///    object/player or against the STACK / TRIGGERING EVENT, neither of which a battlefield
+///    class member's arrival writes. The burden runs that way round on purpose — refusing
+///    keeps the veto and costs nothing, so admission is what has to be earned.
+///  * **`filter.rs` itself is unchanged, and its own defect is NOT closed.** The guard removes
+///    these shapes from THIS arm's admitted domain; it does not repair
+///    `filter_prop_uses_object_population`'s untraversed `..` arms, nor the contradiction
+///    between the authority's operative clause and its arm-list comment, for any other
+///    consumer. That surface is FU-36's and nothing here closes it.
 ///
 /// **DELEGATION IS ZERO BEHAVIOURAL CHANGE ON EVERY REAL CARD, AND THAT IS A MEASUREMENT.**
 /// The canonical authority is strictly WIDER than the deleted allowlist (it admits compounds
@@ -4410,7 +4450,12 @@ fn counters_on_source_provably_excludes_class(
 /// **MEASURED (116 card faces matched the needle):**
 ///  * **30 `UnlessControlsCountMatching` productions in 8 distinct filters**;
 ///  * **11 `UnlessControlsOtherLeq` productions in 1 distinct filter**;
-///  * **0 productions on which the deleted allowlist and the canonical authority disagree.**
+///  * **0 productions on which the deleted allowlist and the canonical authority disagree**;
+///  * **0 productions on which the pre-guard ROOT-ONLY delegation and the composed guard
+///    [`arrival_can_move_a_nonmember_match`] disagree** — re-run when the guard changed, on
+///    BOTH the pinned and the live `AtomicCards.json`, with identical figures on both. Every
+///    corpus filter is a bare `Typed` with no nested `TargetFilter` and no ledger leaf, so the
+///    guard's added refusals are confined to hypotheticals exactly as the delegation's were.
 ///
 /// Every one of the 41 is a bare `TargetFilter::Typed` whose `type_filters` are intrinsic
 /// (`Land` / a basic land subtype) and whose `properties` are a subset of exactly
@@ -4427,7 +4472,9 @@ fn counters_on_source_provably_excludes_class(
 /// 25 productions in 7 filters over "111 cards".** It under-counted because its needle was
 /// `"unless you control"` alone, which misses the five-card opponent cycle above and with it
 /// the 8th filter — the reason the needle is now derived from the producers rather than from
-/// a phrasing. Re-run THIS census, with THIS needle, before changing either arm's guard.
+/// a phrasing. Re-run THIS census, with THIS needle, before changing either arm's guard OR
+/// [`arrival_can_move_a_nonmember_match`] — the guard is where the arm's admitted input domain
+/// is decided, so a change there is a change to what this census certifies.
 ///
 /// ⛔ **CONTROLLER AUTHORITY: `replacement::replacement_source_player`, NEVER the raw
 /// `source.controller` field.** Every production condition site derives the evaluator's
@@ -4461,12 +4508,13 @@ fn count_matching_condition_provably_excludes_class(
     let ReplacementCondition::UnlessControlsCountMatching { minimum: _, filter } = condition else {
         return false;
     };
-    // POPULATION-INDEPENDENCE GUARD — delegated at COMPLEMENTARY POLARITY to the canonical
-    // authority; see this function's doc for the adjudication of why that authority is the
-    // only one and why no local wrapper survives. NOTE the pin below still passes the
-    // ORIGINAL `filter`: the guard READS it and never rebinds or reshapes it, so the
-    // evaluator's argument identity is untouched by the guard.
-    if crate::game::filter::affected_filter_uses_object_population(filter) {
+    // POPULATION-MOVEMENT GUARD — the shared input-domain guard, consumed at COMPLEMENTARY
+    // POLARITY (relief requires `false`); see `arrival_can_move_a_nonmember_match` for why it
+    // composes `filter.rs`'s two authorities rather than being a third one, and this
+    // function's doc for the adjudication. NOTE the pin below still passes the ORIGINAL
+    // `filter`: the guard READS it and never rebinds or reshapes it, so the evaluator's
+    // argument identity is untouched by the guard.
+    if arrival_can_move_a_nonmember_match(filter) {
         return false;
     }
     // Fail closed on a member with no object in the scanned frame: an id the census cannot
@@ -4527,11 +4575,13 @@ fn other_leq_condition_provably_excludes_class(
     let ReplacementCondition::UnlessControlsOtherLeq { count: _, filter } = condition else {
         return false;
     };
-    // POPULATION-INDEPENDENCE GUARD — the same canonical authority S4 consults, at the same
-    // complementary polarity, applied to the ALREADY-WRAPPED filter so both arms hand the
-    // authority the identical `TargetFilter` shape the evaluator itself matches on.
+    // POPULATION-MOVEMENT GUARD — the same shared guard S4 consults, at the same complementary
+    // polarity, applied to the ALREADY-WRAPPED filter so both arms hand it the identical
+    // `TargetFilter` shape the evaluator itself matches on. The wrap is load-bearing here for
+    // a second reason: S5's condition carries a `TypedFilter`, so every anaphor it can express
+    // is nested inside a `FilterProp` and only the guard's shape walk reaches it.
     let wrapped = TargetFilter::Typed(filter.clone());
-    if crate::game::filter::affected_filter_uses_object_population(&wrapped) {
+    if arrival_can_move_a_nonmember_match(&wrapped) {
         return false;
     }
     let Some(member) = state.objects.get(&class_member) else {
@@ -4540,6 +4590,170 @@ fn other_leq_condition_provably_excludes_class(
     let ctx = crate::game::filter::FilterContext::from_source(state, source.id);
     !(member.zone == Zone::Battlefield
         && crate::game::filter::matches_target_filter(state, member.id, &wrapped, &ctx))
+}
+
+/// **THE INPUT-DOMAIN GUARD BOTH RELIEF ARMS CONSULT** — `true` means "a class member's
+/// ARRIVAL could change whether a PRE-EXISTING object matches this filter", which is exactly
+/// the implication S4/S5 need in order to read "no class member is ever counted" as
+/// invariance of the COUNT. Relief requires `false`.
+///
+/// ⛔ **THIS IS NOT A THIRD AUTHORITY. IT COMPOSES TWO EXISTING `filter.rs` ONES AND ADDS ONE
+/// REFUSAL STEP.**
+///  * [`crate::game::filter::filter_contains`] is `filter.rs`'s canonical authority on
+///    `TargetFilter`'s recursive SHAPE ("does this filter, or any filter nested anywhere
+///    inside it, satisfy `leaf`"). It is predicate-driven and exhaustive, so the walk is not
+///    restated here.
+///  * [`crate::game::filter::affected_filter_uses_object_population`] is the canonical
+///    authority on population DEPENDENCE. It is consulted unchanged, at the complementary
+///    polarity, and no part of its classification is duplicated here.
+///  * The only local content is [`node_reads_mutable_resolution_local_state`] — a REFUSAL BY
+///    ENUM IDENTITY, not a re-classification of population dependence. It names the leaves
+///    the population authority answers `false` for while they resolve through state the
+///    growth period itself writes.
+///
+/// ⛔ **THE POPULATION AUTHORITY CONTRADICTS ITSELF ON THESE LEAVES, AND THAT — NOT A
+/// DIFFERENCE OF SCOPE — IS WHY THE REFUSAL IS LOCAL.** Its operative clause — the doc
+/// comment on `affected_filter_uses_object_population` itself (`game/filter.rs:134-136` at
+/// this writing; `filter.rs` is FU-36's to edit, so grep the quoted sentence rather than the
+/// line) — defines the hazard as *"another object entering or leaving the battlefield can
+/// change whether a PRE-EXISTING object satisfies this filter"*, and
+/// `LastCreated` violates that clause DIRECTLY: minting a token ASSIGNS
+/// `state.last_created_token_ids` (`token.rs`'s create paths, `effects/mod.rs`'s zone-change
+/// publish, `reveal.rs` — assignment, never append), so a pre-existing object that was failing
+/// `Not { LastCreated }` starts passing it. The comment over that function's own leaf-`false`
+/// arm list nevertheless justifies the same leaves as reading *"a specific zone or ledger, not
+/// battlefield membership"* — the narrow reading, which is what admits them. So this guard is not
+/// compensating for an authority that is merely differently-scoped; it is FAIL-CLOSING over an
+/// authority whose classification contradicts its own operative clause. Repairing that
+/// contradiction belongs to `filter.rs` (FU-36); this arm consumes the file and must not edit
+/// it, so it narrows its own input domain instead. CR 608.2c is the rules shape the refused
+/// leaves lower ("…if that spell is countered **this way**…": a reference resolved within the
+/// resolution that produced it).
+///
+/// ⛔ **WHY THE POPULATION AUTHORITY IS APPLIED AT EVERY NODE AND NOT AT THE ROOT.** Its leaf
+/// classifier `filter_prop_uses_object_population` handles `CanEnchant` / `Targets` /
+/// `TargetsOnly` in a leaf-`..` arm, so it never reads the `TargetFilter` those props box —
+/// while its sibling walker in the same file (`filter_prop_characteristic_reads_at`) DOES
+/// recurse them. A root-only call therefore admits a population-dependent property hidden one
+/// level down. Running the authority as `filter_contains`'s leaf predicate removes that shape
+/// from THIS arm's admitted domain. It does NOT repair the walker — that surface belongs to
+/// `filter.rs` and is tracked as FU-36 — and nothing here should be read as closing it.
+///
+/// Rows: `s4_s5_bare_resolution_local_anaphor_keeps_the_veto` (the leaf classifier alone),
+/// `s4_s5_nested_resolution_local_anaphor_keeps_the_veto` (both disjuncts),
+/// `s4_s5_population_dependent_prop_behind_an_untraversed_filter_bearing_prop_keeps_the_veto`
+/// (the `filter_contains` wrapper alone), and
+/// `s4_s5_non_anaphor_resolution_local_ledger_leaf_keeps_the_veto` (the eight non-anaphor
+/// leaves). Each names the mutation that reddens it and the input on which the correct and
+/// mutant designs disagree.
+fn arrival_can_move_a_nonmember_match(filter: &crate::types::ability::TargetFilter) -> bool {
+    crate::game::filter::filter_contains(filter, &|node| {
+        node_reads_mutable_resolution_local_state(node)
+            || crate::game::filter::affected_filter_uses_object_population(node)
+    })
+}
+
+/// **THE LEAF CLASSIFIER THE GUARD ABOVE REFUSES ON** — `true` means "this node resolves
+/// through MUTABLE RESOLUTION-LOCAL STATE that the class-growth period itself writes", so
+/// relief must be refused.
+///
+/// ⛔ **THE BURDEN IS INVERTED HERE, DELIBERATELY.** Relief is granted only on PROVEN
+/// arrival-invariance; a leaf that is merely *not known* to move is REFUSED. That direction is
+/// free — refusing keeps the veto, i.e. no shortcut is offered — while admitting is what needs
+/// a proof. Read `false` as "this reference is provably fixed against a class member's
+/// arrival", never as "nobody has found a way to move it yet".
+///
+/// ⛔ **EXHAUSTIVE AND WILDCARD-FREE, FOR THE SAME REASON THE POPULATION AUTHORITY IS.** A
+/// `_ => false` would silently ADMIT every future `TargetFilter` variant, and silent admission
+/// is the fail-open direction. With the wildcard gone a new variant does not compile until
+/// someone decides which side of this match it belongs on. This shape was chosen after the
+/// refused set grew from three leaves to eleven on first contact with the arm list — an
+/// enumeration that grew once will drift again unless the compiler holds it.
+///
+/// **REFUSED — mutable resolution-local state.** Each of these resolves by membership in, or
+/// lookup through, a `GameState` field that a resolution ASSIGNS rather than accumulates, so
+/// the arrival of a class member can flip a PRE-EXISTING object's verdict with no member ever
+/// being counted (measured leaf-by-leaf against `filter::filter_inner_for_object`'s arms):
+/// `last_created_token_ids`, `last_revealed_ids`, `last_zone_changed_ids`,
+/// `tracked_object_sets` (both tracked-set leaves — and `TrackedSetId(0)` is a SENTINEL that
+/// `targeting::resolve_tracked_set_id` re-binds to the latest non-empty published set, so a
+/// publication moves the population read without touching the filter),
+/// `last_chosen_damage_source`, the cost-paid / chosen-card / chosen-name resolution slots, and
+/// the per-source exile ledgers. CR 608.2c is the rules shape they lower — "…if that spell is
+/// countered **this way**…", a reference resolved inside the resolution that produced it.
+///
+/// **ADMITTED — provably arrival-invariant.** Two classes, and nothing else is admitted:
+/// (1) references that resolve to a FIXED object or player — self / source / granting /
+/// specific / named / owner / controller / opponent / neighbor / scoped, and the parent-target
+/// and post-replacement families, which are bound before this walk runs; (2) references that
+/// resolve against the STACK or the TRIGGERING EVENT rather than battlefield membership — the
+/// stack-entry, triggering-*, and event-target leaves. A battlefield class member's arrival
+/// writes neither. The three structural variants (`And` / `Or` / `Not`) and `Typed` are
+/// admitted AT THIS NODE because their contents are judged by the caller's recursion and by
+/// the population authority, not because the subtree is trusted.
+fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::TargetFilter) -> bool {
+    use crate::types::ability::TargetFilter;
+
+    match node {
+        // ── REFUSED: mutable resolution-local ledgers and choice slots ──
+        TargetFilter::LastCreated
+        | TargetFilter::LastRevealed
+        | TargetFilter::LastZoneChanged
+        | TargetFilter::TrackedSet { .. }
+        | TargetFilter::TrackedSetFiltered { .. }
+        | TargetFilter::ChosenDamageSource { .. }
+        | TargetFilter::CostPaidObject
+        | TargetFilter::ChosenCard
+        | TargetFilter::HasChosenName
+        | TargetFilter::ExiledBySource
+        | TargetFilter::ExiledCardByIndex { .. } => true,
+        // ── ADMITTED (1): structural nodes, judged by the recursion, not here ──
+        TargetFilter::And { .. }
+        | TargetFilter::Or { .. }
+        | TargetFilter::Not { .. }
+        | TargetFilter::Typed(..)
+        // ── ADMITTED (2): fixed object / player references ──
+        | TargetFilter::None
+        | TargetFilter::Any
+        | TargetFilter::Player
+        | TargetFilter::Controller
+        | TargetFilter::SourceController
+        | TargetFilter::ControllerAndControlledPermanents { .. }
+        | TargetFilter::Opponent
+        | TargetFilter::SelfRef
+        | TargetFilter::GrantingObject
+        | TargetFilter::SourceOrPaired
+        | TargetFilter::SpecificObject { .. }
+        | TargetFilter::SpecificPlayer { .. }
+        | TargetFilter::PlayerWhoChoseLabel { .. }
+        | TargetFilter::Neighbor { .. }
+        | TargetFilter::ScopedPlayer
+        | TargetFilter::AttachedTo
+        | TargetFilter::SourceChosenPlayer
+        | TargetFilter::OriginalController
+        | TargetFilter::OriginalSource
+        | TargetFilter::ParentTarget
+        | TargetFilter::ParentTargetSlot { .. }
+        | TargetFilter::ParentTargetController
+        | TargetFilter::ParentTargetOwner
+        | TargetFilter::PostReplacementSourceController
+        | TargetFilter::PostReplacementDamageSource
+        | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
+        | TargetFilter::DefendingPlayer
+        | TargetFilter::Named { .. }
+        | TargetFilter::Owner
+        | TargetFilter::AllPlayers
+        // ── ADMITTED (3): stack / triggering-event references ──
+        | TargetFilter::StackAbility { .. }
+        | TargetFilter::StackSpell
+        | TargetFilter::TriggeringSpellController
+        | TargetFilter::TriggeringSpellOwner
+        | TargetFilter::TriggeringPlayer
+        | TargetFilter::TriggeringSource
+        | TargetFilter::TriggeringSourceController
+        | TargetFilter::EventTarget => false,
+    }
 }
 
 /// §5.3a firewall (BLOCKER-S1 + S5 + MAJOR-A): does ANY live off-stack fire-time
@@ -23892,6 +24106,568 @@ mod tests {
              fails BOTH conjuncts and is never counted; every leaf is population-independent, \
              so the count is invariant and relief must fire. Restoring the \
              `TargetFilter::Typed`-only destructure makes this FAIL"
+        );
+    }
+
+    /// ⛔ **RESOLUTION-LOCAL ANAPHOR LEDGERS, BARE — the canonical authority classifies all
+    /// three as population-INDEPENDENT, and for THIS consumer that is wrong.**
+    ///
+    /// `LastCreated` / `LastRevealed` / `LastZoneChanged` resolve by membership in
+    /// `state.last_created_token_ids` / `last_revealed_ids` / `last_zone_changed_ids`
+    /// (`filter.rs`'s `filter_inner`), and every producer ASSIGNS those ledgers rather than
+    /// appending (`token.rs:1023`, `effects/mod.rs:8785`, `reveal.rs:54`, …). So minting a
+    /// class member EVICTS the prior occupant, and a pre-existing object that was failing
+    /// `Not { LastCreated }` starts passing it — the certified-invariant count moves without
+    /// any class member ever being counted, which is precisely the fail-open the arm promises
+    /// cannot occur.
+    ///
+    /// ⚠ **S4 ONLY, STRUCTURALLY.** S5's condition carries a `TypedFilter`, not a
+    /// `TargetFilter`, so a BARE anaphor cannot be expressed there at all — S5's exposure is
+    /// the nested one, covered by `s4_s5_nested_resolution_local_anaphor_keeps_the_veto`.
+    ///
+    /// REVERT / MUTATION PROBE: make `node_reads_mutable_resolution_local_state` return
+    /// `false` for the three anaphor arms ⇒ **this row FAILS**. Disagreeing input: the three
+    /// bare anaphors below, which `affected_filter_uses_object_population` returns `false` for
+    /// (pinned as an assertion, so the premise is measured and not recalled).
+    /// Deleting the `filter_contains` wrapper instead does NOT red this row — the bare leaf is
+    /// still seen at the root — which is what makes this row and the nested one separable.
+    #[test]
+    fn s4_s5_bare_resolution_local_anaphor_keeps_the_veto() {
+        use crate::types::ability::{ReplacementCondition, TargetFilter};
+
+        let uses_pop = crate::game::filter::affected_filter_uses_object_population;
+        let anaphors = [
+            TargetFilter::LastCreated,
+            TargetFilter::LastRevealed,
+            TargetFilter::LastZoneChanged,
+        ];
+        for anaphor in &anaphors {
+            assert!(
+                !uses_pop(anaphor),
+                "premise pin: the canonical authority classifies {anaphor:?} \
+                 population-INDEPENDENT, which is exactly WHY this arm has to refuse it \
+                 locally. If this ever flips, `filter.rs` closed the hole and the local \
+                 disjunct became redundant rather than load-bearing"
+            );
+        }
+
+        for anaphor in &anaphors {
+            let (state, member, _) = block3_fixture(vec![(
+                900,
+                "Sunken Hollow",
+                with_condition(
+                    sunken_hollow_def(),
+                    ReplacementCondition::UnlessControlsCountMatching {
+                        minimum: 2,
+                        filter: anaphor.clone(),
+                    },
+                ),
+            )]);
+            assert!(
+                fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+                "anaphor guard (S4, bare {anaphor:?}): the Saproling is in no ledger, so the \
+                 arm's member-quantified test alone would relieve — but minting a member \
+                 REPLACES the ledger, so a non-member's verdict moves and the count is not \
+                 invariant. Relief must be refused"
+            );
+        }
+
+        // ── MATCHED CONTROL: a bare NON-anaphor leaf, same shape, still relieves ──────────
+        // `SelfRef` is the same kind of node (a non-`Typed` top-level leaf the authority
+        // classifies `false`), so this proves the guard refuses THE THREE LEDGERS and not
+        // "every filter that isn't a bare `Typed`" — which is what the DELETED allowlist did.
+        let (ok_state, ok_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: TargetFilter::SelfRef,
+                },
+            ),
+        )]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&ok_state, Some(&HashSet::from([ok_member]))),
+            "matched control: swap the anaphor leaf for `SelfRef` and the SAME shape relieves \
+             again, so the three vetoes above are attributable to the ledger leaf alone and \
+             the guard is proven not to be a blanket refusal of non-`Typed` filters"
+        );
+    }
+
+    /// ⛔ **THE SAME THREE LEDGERS, NESTED — and for S5 nesting is the ONLY reachable shape.**
+    ///
+    /// Two nesting shapes, chosen because they fail differently under a root-only guard:
+    ///  1. inside `And { .., Not { .. } }` — the population authority DOES recurse this shape,
+    ///     and still answers `false`, because its leaf classifier calls the anaphors
+    ///     independent;
+    ///  2. behind `FilterProp::Targets { filter }` — a leaf-`..` arm of
+    ///     `filter_prop_uses_object_population`, so the authority never even LOOKS at the
+    ///     nested filter. `filter::filter_contains` does, which is why the guard composes the
+    ///     two `filter.rs` authorities instead of calling the population one at the root.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `filter_contains` wrapper from
+    /// [`arrival_can_move_a_nonmember_match`] and apply the predicate at the ROOT only ⇒
+    /// **this row FAILS** while `s4_s5_bare_resolution_local_anaphor_keeps_the_veto` stays
+    /// GREEN. Disagreeing input: the nested filters below. Blanking the anaphor arms of
+    /// `node_reads_mutable_resolution_local_state` instead ALSO reds this row (both halves of
+    /// the guard are load-bearing here), which is why the bare row exists to separate them.
+    #[test]
+    fn s4_s5_nested_resolution_local_anaphor_keeps_the_veto() {
+        use crate::types::ability::{
+            ControllerRef, FilterProp, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        let basic_lands_you_control = || {
+            TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Land],
+                controller: Some(ControllerRef::You),
+                properties: vec![FilterProp::HasSupertype {
+                    value: Supertype::Basic,
+                }],
+            })
+        };
+        // Shape 1 — compound: the real Sunken Hollow census, minus the ledger's occupant.
+        let anded = |leaf: TargetFilter| TargetFilter::And {
+            filters: vec![
+                basic_lands_you_control(),
+                TargetFilter::Not {
+                    filter: Box::new(leaf),
+                },
+            ],
+        };
+        // Shape 2 — behind a filter-bearing prop the population authority does not traverse.
+        let behind_prop = |leaf: TargetFilter| TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: Some(ControllerRef::You),
+            properties: vec![
+                FilterProp::Another,
+                FilterProp::Targets {
+                    filter: Box::new(leaf),
+                },
+            ],
+        };
+
+        let uses_pop = crate::game::filter::affected_filter_uses_object_population;
+        assert!(
+            !uses_pop(&anded(TargetFilter::LastCreated)),
+            "premise pin (shape 1): the authority RECURSES `And`/`Not` and still answers \
+             `false` — the miss is in its leaf classification, not in its recursion"
+        );
+        assert!(
+            !uses_pop(&TargetFilter::Typed(behind_prop(
+                TargetFilter::LastZoneChanged
+            ))),
+            "premise pin (shape 2): `FilterProp::Targets` is a leaf-`..` arm of \
+             `filter_prop_uses_object_population`, so the authority never reads the nested \
+             filter at all — a ROOT-ONLY call cannot see this anaphor by construction"
+        );
+
+        // ── S4, shape 1 (compound) ────────────────────────────────────────────────────────
+        let (s4_state, s4_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: anded(TargetFilter::LastCreated),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s4_state, Some(&HashSet::from([s4_member]))),
+            "anaphor guard (S4, `Not {{ LastCreated }}` inside an `And`): minting a member \
+             REPLACES `last_created_token_ids`, so a basic land that was failing the `Not` \
+             starts passing it and the census count rises with no member counted"
+        );
+
+        // ── S4, shape 2 (behind `Targets`) ────────────────────────────────────────────────
+        let (s4p_state, s4p_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: TargetFilter::Typed(behind_prop(TargetFilter::LastRevealed)),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s4p_state, Some(&HashSet::from([s4p_member]))),
+            "anaphor guard (S4, `LastRevealed` behind `FilterProp::Targets`): only the \
+             `filter_contains` shape walk reaches this node. A root-only population call \
+             admits it and relief fires on a movable count"
+        );
+
+        // ── S5 — nesting is the ONLY shape it can express, so this is S5's whole exposure ──
+        let (s5_state, s5_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: behind_prop(TargetFilter::LastZoneChanged),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s5_state, Some(&HashSet::from([s5_member]))),
+            "anaphor guard (S5, `LastZoneChanged` behind `FilterProp::Targets`): S5's \
+             condition carries a `TypedFilter`, so every anaphor it can reach is nested by \
+             construction. Dropping S5's guard call makes THIS assertion fire while the S4 \
+             assertions above stay green"
+        );
+
+        // ── MATCHED CONTROLS: identical shapes with the ledger leaf swapped for `SelfRef` ──
+        let (c1_state, c1_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: anded(TargetFilter::SelfRef),
+                },
+            ),
+        )]);
+        let (c2_state, c2_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: behind_prop(TargetFilter::SelfRef),
+                },
+            ),
+        )]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&c1_state, Some(&HashSet::from([c1_member])))
+                && !fire_time_conditions_read_growing_class(
+                    &c2_state,
+                    Some(&HashSet::from([c2_member]))
+                ),
+            "matched controls: the SAME compound and the SAME `Targets`-nested shapes relieve \
+             once the leaf is a non-ledger reference, so neither veto above is attributable \
+             to the nesting shape — only to the ledger leaf inside it"
+        );
+    }
+
+    /// ⛔ **THE SECOND CLASS THE F1 DELEGATION NEWLY ADMITTED: a population-dependent property
+    /// hidden behind a filter-bearing prop the population authority does not traverse.**
+    ///
+    /// `filter_prop_uses_object_population` classifies `CanEnchant` / `Targets` /
+    /// `TargetsOnly` as leaf-`false` through a `..` arm — it never reads their boxed
+    /// `TargetFilter`. Its sibling walker in the same file DOES recurse them
+    /// (`filter_prop_characteristic_reads_at`), so this is a per-walker gap, not a property of
+    /// the filter language. The deleted allowlist refused these by refusing every unlisted
+    /// prop; the delegation admits them, so the gap is one this phase introduced.
+    ///
+    /// Guarding it here does NOT close the gap in `filter.rs` (that surface is FU-36's) — it
+    /// removes it from THIS arm's admitted input domain, which is all the arm's invariance
+    /// claim needs.
+    ///
+    /// REVERT / MUTATION PROBE: apply the guard predicate at the ROOT only (delete the
+    /// `filter_contains` wrapper) ⇒ **this row FAILS**. Disagreeing input: the filters below,
+    /// pinned with an assertion showing the authority answers `false` on the whole filter
+    /// while answering `true` on the very node nested inside it. Blanking the leaf
+    /// classifier's refused arms does NOT red this row — no ledger leaf appears in it.
+    #[test]
+    fn s4_s5_population_dependent_prop_behind_an_untraversed_filter_bearing_prop_keeps_the_veto() {
+        use crate::types::ability::{
+            ControllerRef, FilterProp, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        let inner = |props: Vec<FilterProp>| {
+            TargetFilter::Typed(TypedFilter {
+                type_filters: Vec::new(),
+                controller: None,
+                properties: props,
+            })
+        };
+        let prevalent = FilterProp::MostPrevalentCreatureTypeIn {
+            zone: Zone::Battlefield,
+            scope: ControllerRef::You,
+        };
+        let outer = |props: Vec<FilterProp>, nested: Vec<FilterProp>| TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: Some(ControllerRef::You),
+            properties: {
+                let mut all = props;
+                all.push(FilterProp::Targets {
+                    filter: Box::new(inner(nested)),
+                });
+                all
+            },
+        };
+
+        let uses_pop = crate::game::filter::affected_filter_uses_object_population;
+        let hostile_s4 = TargetFilter::Typed(outer(
+            vec![FilterProp::HasSupertype {
+                value: Supertype::Basic,
+            }],
+            vec![prevalent.clone()],
+        ));
+        assert!(
+            uses_pop(&inner(vec![prevalent.clone()])),
+            "premise pin, part 1: asked DIRECTLY, the authority calls this filter \
+             population-DEPENDENT — so the miss below is traversal, not classification"
+        );
+        assert!(
+            !uses_pop(&hostile_s4),
+            "premise pin, part 2: wrap that identical filter in `FilterProp::Targets` and the \
+             authority answers `false`, because `Targets` is one of its leaf-`..` arms. This \
+             is the shape a ROOT-ONLY delegation admits, and it is the whole point of the row"
+        );
+
+        // ── S4 ────────────────────────────────────────────────────────────────────────────
+        let (s4_state, s4_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: hostile_s4,
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s4_state, Some(&HashSet::from([s4_member]))),
+            "nesting guard (S4): minting Saprolings moves which creature type is most \
+             prevalent, so a non-member's match can flip while no member is counted. The \
+             authority cannot see the property through `Targets`; the `filter_contains` walk \
+             can, and that is what refuses relief"
+        );
+
+        // ── S5 ────────────────────────────────────────────────────────────────────────────
+        let (s5_state, s5_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: outer(vec![FilterProp::Another], vec![prevalent]),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s5_state, Some(&HashSet::from([s5_member]))),
+            "nesting guard (S5): same hazard through the other arm, which wraps its \
+             `TypedFilter` before consulting the guard so both arms hand the walk the \
+             identical `TargetFilter` shape"
+        );
+
+        // ── MATCHED CONTROLS: the same `Targets` nesting with an EMPTY inner property list ──
+        let (c4_state, c4_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: TargetFilter::Typed(outer(
+                        vec![FilterProp::HasSupertype {
+                            value: Supertype::Basic,
+                        }],
+                        Vec::new(),
+                    )),
+                },
+            ),
+        )]);
+        let (c5_state, c5_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: outer(vec![FilterProp::Another], Vec::new()),
+                },
+            ),
+        )]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&c4_state, Some(&HashSet::from([c4_member])))
+                && !fire_time_conditions_read_growing_class(
+                    &c5_state,
+                    Some(&HashSet::from([c5_member]))
+                ),
+            "matched controls: keep the `FilterProp::Targets` nesting and empty ONLY the \
+             nested property list — both arms relieve again. So the vetoes above are \
+             attributable to the nested population-dependent property and not to the presence \
+             of a filter-bearing prop"
+        );
+    }
+
+    /// ⛔ **THE NON-ANAPHOR LEDGER LEAVES — the refused set is eleven, not three, and this row
+    /// is what makes the other eight observable.**
+    ///
+    /// The finding that opened this thread named three anaphors. Censusing
+    /// `filter::filter_inner_for_object` arm-by-arm against
+    /// `affected_filter_uses_object_population`'s leaf-`false` list turned up eight more leaves
+    /// that resolve through mutable resolution-local state and are classified `false` just the
+    /// same. Three are exercised here:
+    ///  * `TrackedSetFiltered` — reads `state.tracked_object_sets`, and its `TrackedSetId(0)`
+    ///    is a SENTINEL that `targeting::resolve_tracked_set_id` re-binds to the latest
+    ///    non-empty published set, so a publication moves the population read without the
+    ///    filter changing at all;
+    ///  * `ExiledBySource` — reads the per-source exile ledger through
+    ///    `players::linked_exile_cards_for_source`;
+    ///  * `CostPaidObject` — the resolution-local cost-paid slot, reached here through
+    ///    `FilterProp::Targets` because S5's condition carries a `TypedFilter`.
+    ///
+    /// ⛔ **THE MATCHED CONTROL IS THE POINT OF THIS ROW.** `OriginalSource` is the tightest
+    /// available pair for `ExiledBySource`: both are bare non-`Typed` leaves, both consult
+    /// `GameState` through a helper rather than a field, and both are classified `false` by the
+    /// population authority. They differ on exactly one axis — one reads a ledger the period
+    /// writes, the other a fixed trigger-source identity. So a veto here cannot be "the guard
+    /// refuses anything that touches state".
+    ///
+    /// REVERT / MUTATION PROBE: make `node_reads_mutable_resolution_local_state` refuse only
+    /// the three anaphors (return `false` for the other eight arms) ⇒ **this row FAILS** while
+    /// all three anaphor/nesting rows stay GREEN. Disagreeing input: the `TrackedSetFiltered`,
+    /// `ExiledBySource` and `CostPaidObject` filters below.
+    #[test]
+    fn s4_s5_non_anaphor_resolution_local_ledger_leaf_keeps_the_veto() {
+        use crate::types::ability::{
+            ControllerRef, FilterProp, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+        use crate::types::identifiers::TrackedSetId;
+
+        let lands_you_control = || {
+            TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Land],
+                controller: Some(ControllerRef::You),
+                properties: Vec::new(),
+            })
+        };
+        let tracked = TargetFilter::TrackedSetFiltered {
+            id: TrackedSetId(0),
+            filter: Box::new(lands_you_control()),
+            caused_by: None,
+        };
+        let behind_prop = |leaf: TargetFilter| TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: Some(ControllerRef::You),
+            properties: vec![
+                FilterProp::Another,
+                FilterProp::Targets {
+                    filter: Box::new(leaf),
+                },
+            ],
+        };
+
+        // ── PREMISE PINS: the population authority admits every one of these ──────────────
+        let uses_pop = crate::game::filter::affected_filter_uses_object_population;
+        for f in [
+            tracked.clone(),
+            TargetFilter::ExiledBySource,
+            TargetFilter::CostPaidObject,
+            TargetFilter::Typed(behind_prop(TargetFilter::CostPaidObject)),
+            // the control, pinned alongside so the pair is measured and not assumed alike
+            TargetFilter::OriginalSource,
+        ] {
+            assert!(
+                !uses_pop(&f),
+                "premise pin: the canonical authority classifies {f:?} \
+                 population-INDEPENDENT — the ledger leaves and the fixed reference are \
+                 INDISTINGUISHABLE to it, which is why the local classifier exists"
+            );
+        }
+
+        // ── S4-A: a tracked-set leaf whose sentinel re-binds on any publication ───────────
+        let (a_state, a_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: tracked,
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&a_state, Some(&HashSet::from([a_member]))),
+            "ledger guard (S4, `TrackedSetFiltered` with the `TrackedSetId(0)` sentinel): the \
+             set the filter reads is whichever one was published last, so the period can move \
+             a non-member's verdict without touching the filter or counting a member"
+        );
+
+        // ── S4-B: the per-source exile ledger ────────────────────────────────────────────
+        let (b_state, b_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: TargetFilter::ExiledBySource,
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&b_state, Some(&HashSet::from([b_member]))),
+            "ledger guard (S4, `ExiledBySource`): resolves through the source's live exile \
+             links, which the growth period can extend"
+        );
+
+        // ── S5: nesting is S5's only reachable shape, so its ledger exposure is nested ────
+        let (c_state, c_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: behind_prop(TargetFilter::CostPaidObject),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&c_state, Some(&HashSet::from([c_member]))),
+            "ledger guard (S5, `CostPaidObject` behind `FilterProp::Targets`): only the \
+             `filter_contains` walk reaches this node, and only the local classifier refuses \
+             it. Dropping S5's guard call fires THIS assertion while the S4 ones stay green"
+        );
+
+        // ── MATCHED CONTROLS: a FIXED source reference in the identical positions ─────────
+        let (d_state, d_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: TargetFilter::OriginalSource,
+                },
+            ),
+        )]);
+        let (e_state, e_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: behind_prop(TargetFilter::OriginalSource),
+                },
+            ),
+        )]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&d_state, Some(&HashSet::from([d_member])))
+                && !fire_time_conditions_read_growing_class(
+                    &e_state,
+                    Some(&HashSet::from([e_member]))
+                ),
+            "matched controls: swap the ledger leaf for `OriginalSource` — a bare non-`Typed` \
+             leaf that also consults `GameState` through a helper — in BOTH positions and both \
+             arms relieve again. The vetoes above are attributable to the leaf being MUTABLE \
+             resolution-local state, not to it touching state at all"
         );
     }
 
