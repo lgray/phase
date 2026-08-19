@@ -4375,19 +4375,29 @@ fn counters_on_source_provably_excludes_class(
 ///    i.e. relief requires a `false`. Reading the polarity backwards inverts a fail-closed
 ///    guard into a fail-open one, which is why it is stated here rather than left to the call
 ///    site.
-///  * **No local wrapper survives.** An earlier revision of this lane carried a private
-///    `filter_props_are_population_independent` allowlist here. It is DELETED, not wrapped:
-///    a second predicate answering one question is a second authority that can drift from the
-///    first, and the allowlist was strictly weaker — it covered two `FilterProp` variants and
-///    refused every compound `TargetFilter`, where the canonical authority recurses through
-///    `And`/`Or`/`Not` and classifies every variant. ⚠ **`arrival_can_move_a_nonmember_match`
-///    is not that wrapper returning.** The allowlist ANSWERED the population question locally
-///    from a hand-listed set; the guard answers that question nowhere — it calls the authority
-///    for it, and separately refuses the leaves whose verdict the authority reaches through
-///    MUTABLE RESOLUTION-LOCAL STATE, a different question from population dependence. Row
-///    `s4_s5_bare_resolution_local_anaphor_keeps_the_veto`'s matched control pins the
-///    difference concretely: a bare `SelfRef` filter still RELIEVES, which the allowlist
-///    refused for its shape.
+///  * **A LOCAL ALLOWLIST IS BACK, AT TWO LAYERS THE AUTHORITY CANNOT BE ASKED ABOUT — and
+///    the distinction from the deleted one is the whole design.** An earlier revision carried
+///    a private `filter_props_are_population_independent` allowlist that ANSWERED the
+///    population question locally from a hand-listed set; that is a second authority which can
+///    drift from the first, and it was deleted for that reason. [`prop_is_arrival_invariant`]
+///    and [`player_filter_is_arrival_invariant`] do NOT answer the population question — they
+///    answer "is this node's read arrival-invariant", and they exist at the `FilterProp` and
+///    `PlayerFilter` layers, which `filter_contains` structurally CANNOT surface to any leaf
+///    predicate (it is parameterised by `&dyn Fn(&TargetFilter) -> bool`, so a dependence
+///    living ON a prop or player node is invisible to the canonical authority and to every
+///    other consumer of the walk). The population authority is still called, unchanged, at
+///    every `TargetFilter` node; the allowlists narrow this arm's admitted domain BELOW what
+///    that authority admits. Row `s4_s5_bare_resolution_local_anaphor_keeps_the_veto`'s
+///    matched control still pins the old difference: a bare `SelfRef` filter RELIEVES, which
+///    the deleted allowlist refused for its shape.
+///  * **The polarity is INVERTED relative to every earlier round, deliberately.** Rounds 1-3
+///    each closed this defect by naming the KNOWN-BAD nodes and each time the next layer down
+///    leaked (leaf `TargetFilter`s, then `FilterProp`, then `PlayerFilter`). The bad set is
+///    unbounded and grows with the enums; the good set is a handful of arms, each carrying a
+///    stated proof. So relief now requires every node at all three layers to be RECOGNISED,
+///    and anything unrecognised is refused. **Measured cost: ZERO** — re-running the census
+///    below over the pinned corpus gives 0 productions on which the pre-inversion guard and
+///    this one disagree, and 0 productions refused.
 ///  * **Why the canonical authority is at least as fail-closed.** Its leaf classifier
 ///    `filter_prop_uses_object_population` is an EXHAUSTIVE, wildcard-free `match`, so a new
 ///    `FilterProp` is a COMPILE ERROR until someone classifies it. The deleted allowlist
@@ -4401,13 +4411,47 @@ fn counters_on_source_provably_excludes_class(
 ///    from the filter-shape one this delegation removed. Row
 ///    `s4_s5_compound_condition_keeps_the_veto` measures that surviving refusal.
 ///
-/// ⇒ the count is invariant on every input `arrival_can_move_a_nonmember_match` admits,
-/// including inputs today's corpus does not contain — the certification is over the guard's
-/// admitted domain, not over the shapes that happen to be printed. It rests on exactly two
-/// stated things, both checkable: every ADMITTED leaf resolves to a fixed object/player or to
-/// the stack / triggering event (see `node_reads_mutable_resolution_local_state`), and every
-/// `Typed` node's properties are classified by the canonical authority AT THAT NODE (see the
-/// `filter_contains` composition). If either statement is falsified, this sentence is too.
+/// ⇒ **NO NODE OF AN ADMITTED FILTER READS ANYTHING A CLASS MEMBER'S ARRIVAL WRITES**, so
+/// the count is invariant on every input `arrival_can_move_a_nonmember_match` admits —
+/// including inputs today's corpus does not contain, because the certification is over the
+/// guard's admitted domain and not over the shapes that happen to be printed. That is an
+/// ALLOWLIST claim: a node not RECOGNISED by the three classifiers below is refused, so a new
+/// enum variant is a compile error rather than a silent admit. It rests on exactly four stated
+/// things, each checkable at one named seam, and if any of the four is falsified this sentence
+/// is too:
+///  1. every admitted `TargetFilter` node resolves to a fixed object/player or to the stack /
+///     triggering event — [`node_reads_mutable_resolution_local_state`], exhaustive and
+///     wildcard-free, refusal-polarity;
+///  2. every property on every admitted `Typed` node is on a proven-arrival-invariant list —
+///     [`prop_is_arrival_invariant`], exhaustive and wildcard-free;
+///  3. every `PlayerFilter` a `FilterProp::ControllerMatches` crosses to is likewise on one —
+///     [`player_filter_is_arrival_invariant`], exhaustive and wildcard-free;
+///  4. the canonical population authority is consulted at every node on top of 1-3.
+///
+/// ⛔ **SAME STATED RESIDUAL AS THE SIBLINGS, restated because THIS arm's filter reads exactly
+/// the field the residual is about.** `TypedFilter::type_filters` is a `card_types` predicate
+/// (`filter::type_filter_matches` reads `obj.card_types`), and `card_types` lies OUTSIDE the
+/// compared frame: `board_covers_modulo_fodder`'s STABLE partition compares the non-fodder
+/// remainder through `objects_content_eq` -> `object_content_eq`, whose 32 compared fields do
+/// not include `card_types` (nor `color` / `keywords`), and `impl PartialEq for GameState`
+/// compares `objects` by `.len()` alone. So what is ESTABLISHED is "invariance of the count
+/// across the arrival for objects agreeing with the compared frame on `card_types`", NOT
+/// "objects must so agree". That is the sibling's residual verbatim — see the fodder-cover
+/// arm's statement and its member-quantified restatement — STATED rather than accepted, and
+/// not a new one.
+///
+/// **MEASURED, because a plausible second formulation of it was nearly filed as a separate
+/// hazard.** The temporal shape — an arriving class member's own CONTINUOUS EFFECT rewriting
+/// a PRE-EXISTING object's `card_types`, `game::layers` writing `card_types.core_types` and
+/// `card_types.subtypes` — is the SAME residual, not a distinct facet. It lands on the
+/// identical omission at the identical seam: the rewritten object sits in the non-fodder
+/// remainder, compared by that same 32-field relation, so the frame cannot distinguish "two
+/// objects disagree on `card_types`" from "one object's `card_types` moved". And
+/// `object_content_eq`'s own doc already names this write path as the JUSTIFICATION for the
+/// omission — "layer-derived characteristics (firewall-scanned statics)" — i.e. the axis is
+/// delegated to the static firewall, not to the content relation. No allowlist over filter
+/// NODES can narrow it either: all eight corpus filters ARE type filters, so refusing type
+/// reads would veto the very class this arm exists to relieve.
 ///
 /// ⛔ **THAT IS DELIBERATELY NOT A CLAIM ABOUT EVERY POSSIBLE `TargetFilter`, AND AN EARLIER
 /// REVISION OF THIS LINE SAID IT WAS.** It read *"invariant on every input this arm relieves"*
@@ -4606,10 +4650,27 @@ fn other_leq_condition_provably_excludes_class(
 ///  * [`crate::game::filter::affected_filter_uses_object_population`] is the canonical
 ///    authority on population DEPENDENCE. It is consulted unchanged, at the complementary
 ///    polarity, and no part of its classification is duplicated here.
-///  * The only local content is [`node_reads_mutable_resolution_local_state`] — a REFUSAL BY
-///    ENUM IDENTITY, not a re-classification of population dependence. It names the leaves
-///    the population authority answers `false` for while they resolve through state the
-///    growth period itself writes.
+///  * The local content is THREE exhaustive, wildcard-free classifiers, none of which
+///    re-answers the population question. [`node_reads_mutable_resolution_local_state`] is a
+///    REFUSAL BY ENUM IDENTITY over `TargetFilter`: it names the leaves the population
+///    authority answers `false` for while they resolve through state the growth period itself
+///    writes. [`node_has_non_arrival_invariant_property`] carries the question from a
+///    `TargetFilter` node down onto its `FilterProp` list, and from there
+///    [`prop_is_arrival_invariant`] and [`player_filter_is_arrival_invariant`] are ALLOWLISTS
+///    over the `FilterProp` and `PlayerFilter` layers.
+///
+/// ⛔ **WHY LAYERS 2 AND 3 CANNOT BE EXPRESSED AS A LEAF PREDICATE, WHICH IS WHY THEY ARE
+/// LOCAL.** `filter_contains` is parameterised by `&dyn Fn(&TargetFilter) -> bool`. It DOES
+/// descend `Typed -> filter_prop_contains -> ControllerMatches -> player_filter_contains ->
+/// ControlsCount`, but the only node it ever hands the predicate at the bottom is the INNER
+/// `TargetFilter`. A dependence living ON the `FilterProp` or `PlayerFilter` node is invisible
+/// to every leaf predicate by construction — including the canonical authority's. Measured
+/// instance, and the reason round 4 exists:
+/// `Typed{ Land, [ControllerMatches{ ControlsCount{ Typed{Creature}, GE, 1 } }] }` was
+/// ADMITTED, while `effects::player_control_count_compares` resolves that `ControlsCount`
+/// against the LIVE `state.battlefield`. Row
+/// `s4_s5_player_axis_board_census_keeps_the_veto` pins it with the four attribution
+/// assertions that show which guard admits and which refuses.
 ///
 /// ⛔ **THE POPULATION AUTHORITY CONTRADICTS ITSELF ON THESE LEAVES, AND THAT — NOT A
 /// DIFFERENCE OF SCOPE — IS WHY THE REFUSAL IS LOCAL.** Its operative clause — the doc
@@ -4649,6 +4710,7 @@ fn other_leq_condition_provably_excludes_class(
 fn arrival_can_move_a_nonmember_match(filter: &crate::types::ability::TargetFilter) -> bool {
     crate::game::filter::filter_contains(filter, &|node| {
         node_reads_mutable_resolution_local_state(node)
+            || node_has_non_arrival_invariant_property(node)
             || crate::game::filter::affected_filter_uses_object_population(node)
     })
 }
@@ -4688,7 +4750,12 @@ fn arrival_can_move_a_nonmember_match(filter: &crate::types::ability::TargetFilt
 /// and post-replacement families, which are bound before this walk runs; (2) references that
 /// resolve against the STACK or the TRIGGERING EVENT rather than battlefield membership — the
 /// stack-entry, triggering-*, and event-target leaves. A battlefield class member's arrival
-/// writes neither. The three structural variants (`And` / `Or` / `Not`) and `Typed` are
+/// writes neither. ⚠ **`SourceOrPaired` LOOKS like class (1) and is NOT** — it reads
+/// `source.paired_with`, and CR 702.95a's second soulbond trigger is "Whenever another
+/// creature you control enters ... you may pair THAT creature with this creature", so an
+/// arriving class member writes exactly that field. It is refused, and it is the reason
+/// `s4_s5_non_anaphor_resolution_local_ledger_leaf_keeps_the_veto` uses `AttachedTo` for its
+/// matched control instead. The three structural variants (`And` / `Or` / `Not`) and `Typed` are
 /// admitted AT THIS NODE because their contents are judged by the caller's recursion and by
 /// the population authority, not because the subtree is trusted.
 fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::TargetFilter) -> bool {
@@ -4706,13 +4773,104 @@ fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::Targe
         | TargetFilter::ChosenCard
         | TargetFilter::HasChosenName
         | TargetFilter::ExiledBySource
-        | TargetFilter::ExiledCardByIndex { .. } => true,
+        | TargetFilter::ExiledCardByIndex { .. }
+        // CR 702.95a: soulbond's second triggered ability is "Whenever another creature you
+        // control enters ... you may pair THAT creature with this creature", so a class
+        // member's arrival can write `source.paired_with`. `filter_inner_for_object`'s
+        // `SourceOrPaired` arm reads exactly that field on the `trigger_source: None` path
+        // both relief arms take, so a pre-existing object can start matching mid-period.
+        // CR 702.95e is the same axis in the other direction (unpairing on a control change
+        // or a leave), and neither direction is counted by the census.
+        | TargetFilter::SourceOrPaired => true,
         // ── ADMITTED (1): structural nodes, judged by the recursion, not here ──
         TargetFilter::And { .. }
         | TargetFilter::Or { .. }
         | TargetFilter::Not { .. }
         | TargetFilter::Typed(..)
         // ── ADMITTED (2): fixed object / player references ──
+        | TargetFilter::None
+        | TargetFilter::Any
+        | TargetFilter::Player
+        | TargetFilter::Controller
+        | TargetFilter::SourceController
+        | TargetFilter::ControllerAndControlledPermanents { .. }
+        | TargetFilter::Opponent
+        | TargetFilter::SelfRef
+        | TargetFilter::GrantingObject
+        | TargetFilter::SpecificObject { .. }
+        | TargetFilter::SpecificPlayer { .. }
+        | TargetFilter::PlayerWhoChoseLabel { .. }
+        | TargetFilter::Neighbor { .. }
+        | TargetFilter::ScopedPlayer
+        | TargetFilter::AttachedTo
+        | TargetFilter::SourceChosenPlayer
+        | TargetFilter::OriginalController
+        | TargetFilter::OriginalSource
+        | TargetFilter::ParentTarget
+        | TargetFilter::ParentTargetSlot { .. }
+        | TargetFilter::ParentTargetController
+        | TargetFilter::ParentTargetOwner
+        | TargetFilter::PostReplacementSourceController
+        | TargetFilter::PostReplacementDamageSource
+        | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
+        | TargetFilter::DefendingPlayer
+        | TargetFilter::Named { .. }
+        | TargetFilter::Owner
+        | TargetFilter::AllPlayers
+        // ── ADMITTED (3): stack / triggering-event references ──
+        | TargetFilter::StackAbility { .. }
+        | TargetFilter::StackSpell
+        | TargetFilter::TriggeringSpellController
+        | TargetFilter::TriggeringSpellOwner
+        | TargetFilter::TriggeringPlayer
+        | TargetFilter::TriggeringSource
+        | TargetFilter::TriggeringSourceController
+        | TargetFilter::EventTarget => false,
+    }
+}
+
+/// **LAYER 2 ADAPTER — carries the guard's question from the `TargetFilter` layer down onto a
+/// node's `FilterProp` list.** `true` means "this node carries a property whose
+/// arrival-invariance is NOT proven", so relief must be refused.
+///
+/// ⛔ **WHY THIS EXISTS AT ALL — `filter_contains` CANNOT ASK THE QUESTION.** `filter.rs`'s
+/// shape walk is parameterised by a `&dyn Fn(&TargetFilter) -> bool`: the only nodes it ever
+/// hands the leaf predicate are `TargetFilter`s. It DOES descend
+/// `Typed -> filter_prop_contains -> ControllerMatches -> player_filter_contains ->
+/// ControlsCount -> recurse(filter)`, but what it passes at the bottom is the INNER
+/// `TargetFilter`, never the `FilterProp` or `PlayerFilter` node the path crossed. So a
+/// population dependence living ON one of those nodes is invisible to every leaf predicate,
+/// including this arm's. That is the measured hole this function closes:
+/// `Typed{ Land, [ControllerMatches{ ControlsCount{ Typed{Creature}, GE, 1 } }] }` — "a Land
+/// whose controller controls one or more creatures" — was ADMITTED, because
+/// `filter_prop_uses_object_population` classifies `ControllerMatches` leaf-`false` and the
+/// only node the leaf predicate ever saw was the population-independent `Typed{Creature}`
+/// inside. Meanwhile `game::effects`'s `player_control_count_compares` resolves
+/// `ControlsCount` against the LIVE `state.battlefield`, so an arriving class member takes
+/// the controller's creature count 0 -> 1 and a PRE-EXISTING Land starts matching.
+///
+/// ⛔ **EXHAUSTIVE AND WILDCARD-FREE OVER `TargetFilter`, LIKE ITS THREE SIBLINGS.** A
+/// `_ => false` would silently exempt a future variant that boxes a `TypedFilter` from the
+/// property layer entirely — a silent ADMIT, the fail-open direction. The duplication of the
+/// arm list against [`node_reads_mutable_resolution_local_state`] is deliberate: the two
+/// answer different questions (resolution-local mutability vs. property-layer invariance) and
+/// a future variant must be decided on BOTH axes, so they are two matches rather than one.
+fn node_has_non_arrival_invariant_property(node: &crate::types::ability::TargetFilter) -> bool {
+    use crate::types::ability::TargetFilter;
+
+    match node {
+        // The only node kind that carries a property list.
+        TargetFilter::Typed(typed) => typed
+            .properties
+            .iter()
+            .any(|prop| !prop_is_arrival_invariant(prop)),
+        // Every other node carries no `FilterProp`. Nested `TargetFilter`s inside these
+        // (`Not`/`And`/`Or`/`TrackedSetFiltered`/`ChosenDamageSource`) are visited by
+        // `filter_contains` itself and reach this function on their own.
+        TargetFilter::And { .. }
+        | TargetFilter::Or { .. }
+        | TargetFilter::Not { .. }
         | TargetFilter::None
         | TargetFilter::Any
         | TargetFilter::Player
@@ -4744,7 +4902,6 @@ fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::Targe
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
         | TargetFilter::AllPlayers
-        // ── ADMITTED (3): stack / triggering-event references ──
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
         | TargetFilter::TriggeringSpellController
@@ -4752,7 +4909,230 @@ fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::Targe
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
         | TargetFilter::TriggeringSourceController
-        | TargetFilter::EventTarget => false,
+        | TargetFilter::EventTarget
+        | TargetFilter::LastCreated
+        | TargetFilter::LastRevealed
+        | TargetFilter::LastZoneChanged
+        | TargetFilter::TrackedSet { .. }
+        | TargetFilter::TrackedSetFiltered { .. }
+        | TargetFilter::ChosenDamageSource { .. }
+        | TargetFilter::CostPaidObject
+        | TargetFilter::ChosenCard
+        | TargetFilter::HasChosenName
+        | TargetFilter::ExiledBySource
+        | TargetFilter::ExiledCardByIndex { .. } => false,
+    }
+}
+
+/// **LAYER 2 — THE `FilterProp` ALLOWLIST.** `true` means "a class member's ARRIVAL provably
+/// cannot change whether a PRE-EXISTING object satisfies this property".
+///
+/// ⛔ **THIS IS AN ALLOWLIST, AND THAT IS THE WHOLE POINT.** Three consecutive review rounds
+/// closed this defect one layer at a time by naming the KNOWN-BAD nodes, and each time the
+/// next layer down leaked. The bad set is unbounded and grows with the enum; the good set is
+/// small, and every member of it carries a stated proof below. **Anything not recognised is
+/// REFUSED**, so a leak can only ever cost a relief that was never measured to matter — never
+/// a false certification. Refusing keeps the veto and costs nothing; admitting is what has to
+/// be earned.
+///
+/// **MEASURED COST OF THE INVERSION: ZERO.** Every `UnlessControlsCountMatching` /
+/// `UnlessControlsOtherLeq` production in the pinned corpus is a bare `Typed` whose
+/// `properties` are a subset of `{Another, HasSupertype{Basic}}` or EMPTY (see
+/// [`count_matching_condition_provably_excludes_class`]'s census block for the needle,
+/// predicate and figures). Both of those are admitted below, so no real card changes verdict.
+///
+/// **ADMITTED, with the proof for each:**
+///  * `Another` — an identity comparison against the source object id. Fixed for the period.
+///  * `HasSupertype` — reads the candidate's own stored supertypes.
+///  * `Tapped` / `Untapped` — reads the candidate's own tap state. Arrival taps nothing else.
+///  * `Targets` / `TargetsOnly` — reads the candidate stack entry's OWN target list, which is
+///    fixed once the entry is on the stack (CR 601.2c). The boxed `TargetFilter` is a separate
+///    node that `filter_contains` visits and this guard judges on its own.
+///  * `ControllerMatches` — carries no verdict of its own; it crosses to the player axis
+///    (CR 109.4), so it delegates to [`player_filter_is_arrival_invariant`]. Admitting the
+///    CROSSING while refusing at the player layer is deliberate: it is what makes a
+///    re-admission of the player layer observable as a red row rather than a silent no-op.
+///  * `Not` / `AnyOf` — pure prop-layer combinators; recurse. `AnyOf` needs ALL disjuncts
+///    invariant, since any one of them can carry the verdict.
+///
+/// **REFUSED — the named blast radius, each an arriving object moving a PRE-EXISTING
+/// object's verdict:**
+///  * `Unpaired` — CR 702.95a: "Whenever another creature you control enters ... you may pair
+///    THAT creature with this creature". An arriving creature unpairs a pre-existing one.
+///  * `HasAttachment` / `HasAnyAttachmentOf` — CR 303.4f: an Aura entering by any means other
+///    than resolving chooses what it enchants AS IT ENTERS, so an arriving Aura gives a
+///    pre-existing permanent an attachment.
+///  * `AttackingAlone` / `BlockingAlone` — CR 506.5 defines "attacking alone" as "attacking
+///    but no other creatures are", and CR 506.3b contemplates effects putting a creature onto
+///    the battlefield attacking. An arriving attacker flips a pre-existing attacker's verdict
+///    from `true` to `false`.
+///
+/// Everything else is refused for want of a proof, not for a named hazard.
+fn prop_is_arrival_invariant(prop: &crate::types::ability::FilterProp) -> bool {
+    use crate::types::ability::FilterProp;
+
+    match prop {
+        // ── ADMITTED: the candidate's own stored state, or a fixed identity ──
+        FilterProp::Another
+        | FilterProp::HasSupertype { .. }
+        | FilterProp::Tapped
+        | FilterProp::Untapped
+        // CR 601.2c: a stack entry's chosen targets are fixed at announcement.
+        | FilterProp::Targets { .. }
+        | FilterProp::TargetsOnly { .. } => true,
+        // ── ADMITTED: crossings and combinators, judged one layer down ──
+        // CR 109.4: the object axis crossing into the player axis.
+        FilterProp::ControllerMatches { player } => player_filter_is_arrival_invariant(player),
+        FilterProp::Not { prop } => prop_is_arrival_invariant(prop),
+        FilterProp::AnyOf { props } => props.iter().all(prop_is_arrival_invariant),
+        // ── REFUSED: everything whose arrival-invariance is not proven above ──
+        FilterProp::MostPrevalentCreatureTypeIn { .. }
+        | FilterProp::NameMatchesAnyPermanent { .. }
+        | FilterProp::DifferentNameFrom { .. }
+        | FilterProp::DistinctFrom { .. }
+        | FilterProp::SharesQuality { .. }
+        | FilterProp::Counters { .. }
+        | FilterProp::Cmc { .. }
+        | FilterProp::PtComparison { .. }
+        | FilterProp::CanEnchant { .. }
+        | FilterProp::CouldBeTargetedByTriggeringSpell
+        // CR 303.4f: an arriving Aura attaches to a PRE-EXISTING permanent as it enters.
+        | FilterProp::HasAttachment { .. }
+        | FilterProp::HasAnyAttachmentOf { .. }
+        | FilterProp::ColorCount { .. }
+        | FilterProp::ManaSymbolCount { .. }
+        | FilterProp::ManaValueParity { .. }
+        | FilterProp::Token
+        | FilterProp::NonToken
+        | FilterProp::RepresentedByCard
+        | FilterProp::ControllerChoseLabel { .. }
+        | FilterProp::WasPlayed
+        | FilterProp::Attacking { .. }
+        | FilterProp::Blocking
+        | FilterProp::BlockingSource
+        | FilterProp::CombatRelation { .. }
+        | FilterProp::Unblocked
+        // CR 506.5 + CR 506.3b: an arriving attacker ends a pre-existing creature's
+        // "attacking alone".
+        | FilterProp::AttackingAlone
+        | FilterProp::BlockingAlone
+        | FilterProp::IsSaddled
+        | FilterProp::SaddledSource
+        | FilterProp::ConvokedSource
+        | FilterProp::ProtectorMatches { .. }
+        | FilterProp::HasHasteOrControlledSinceTurnBegan
+        | FilterProp::WithKeyword { .. }
+        | FilterProp::HasKeywordKind { .. }
+        | FilterProp::WithoutKeyword { .. }
+        | FilterProp::WithoutKeywordKind { .. }
+        | FilterProp::ManaCostIn { .. }
+        | FilterProp::InZone { .. }
+        | FilterProp::Owned { .. }
+        | FilterProp::Foretold
+        | FilterProp::HasAdventure
+        | FilterProp::EnchantedBy
+        | FilterProp::EquippedBy
+        | FilterProp::AttachedToSource
+        | FilterProp::AttachedToRecipient
+        // CR 702.95a: an arriving creature pairs with a PRE-EXISTING unpaired one.
+        | FilterProp::Unpaired
+        | FilterProp::OtherThanTriggerObject
+        | FilterProp::InTrackedSet { .. }
+        | FilterProp::HasColor { .. }
+        | FilterProp::PowerGTSource
+        | FilterProp::IsChosenCreatureType
+        | FilterProp::IsChosenColor
+        | FilterProp::IsChosenCardType
+        | FilterProp::MatchesLastChosenCardPredicate
+        | FilterProp::HasSingleTarget
+        | FilterProp::Modal
+        | FilterProp::NotColor { .. }
+        | FilterProp::NotSupertype { .. }
+        | FilterProp::Suspected
+        | FilterProp::Renowned
+        | FilterProp::Goaded
+        | FilterProp::ToughnessGTPower
+        | FilterProp::PowerExceedsBase
+        | FilterProp::Modified
+        | FilterProp::Historic
+        | FilterProp::NotHistoric
+        | FilterProp::InAnyZone { .. }
+        | FilterProp::WasDealtDamageThisTurn
+        | FilterProp::DealtDamageThisTurn
+        | FilterProp::EnteredThisTurn
+        | FilterProp::ControlledContinuouslySinceTurnBegan
+        | FilterProp::ZoneChangedThisTurn { .. }
+        | FilterProp::AttackedThisTurn { .. }
+        | FilterProp::BlockedThisTurn
+        | FilterProp::AttackedOrBlockedThisTurn
+        | FilterProp::CountersPutOnThisTurn { .. }
+        | FilterProp::FaceDown
+        | FilterProp::Transformed
+        | FilterProp::HasXInManaCost
+        | FilterProp::WasKicked
+        | FilterProp::HasXInActivationCost
+        | FilterProp::HasManaAbility
+        | FilterProp::HasNoAbilities
+        | FilterProp::Named { .. }
+        | FilterProp::SameName
+        | FilterProp::SameNameAsParentTarget
+        | FilterProp::SameNameAsExiledBySource
+        | FilterProp::IsCommander
+        | FilterProp::SharesCreatureTypeWithCommander
+        | FilterProp::Other { .. } => false,
+    }
+}
+
+/// **LAYER 3 — THE `PlayerFilter` ALLOWLIST**, reached only through
+/// `FilterProp::ControllerMatches` (CR 109.4). `true` means "a class member's ARRIVAL provably
+/// cannot change WHICH PLAYERS this filter designates".
+///
+/// **ADMITTED:** filters that name players by a FIXED role or identity — the source's
+/// controller, its opponents, the defending player, the whole table, the triggering player and
+/// its opponent relations, the parent target's controller/owner, and an already-chosen player.
+/// A battlefield arrival changes none of those seat assignments. `AllExcept` is a pure
+/// combinator over the same axis and recurses.
+///
+/// **REFUSED, and `ControlsCount` is the finding this layer exists for:**
+/// `game::effects`'s `player_control_count_compares` resolves it against the LIVE
+/// `state.battlefield`, so "a Land whose controller controls one or more creatures" starts
+/// matching a PRE-EXISTING Land the moment a class member arrives — with no member ever
+/// counted by the census. `TrackedSetPossessor` and `OwnersOfCardsExiledBySource` read the
+/// mutable tracked-set and per-source exile ledgers (the player-axis twins of the leaves
+/// [`node_reads_mutable_resolution_local_state`] refuses). The remaining refusals are
+/// event/attribute-derived designations with no arrival-invariance proof.
+fn player_filter_is_arrival_invariant(filter: &crate::types::ability::PlayerFilter) -> bool {
+    use crate::types::ability::PlayerFilter;
+
+    match filter {
+        // ── ADMITTED: fixed seat/role designations ──
+        PlayerFilter::Controller
+        | PlayerFilter::Opponent
+        | PlayerFilter::DefendingPlayer
+        | PlayerFilter::All
+        | PlayerFilter::TriggeringPlayer
+        | PlayerFilter::OpponentOtherThanTriggering
+        | PlayerFilter::OpponentOfTriggeringPlayer
+        | PlayerFilter::ParentObjectTargetController
+        | PlayerFilter::ParentObjectTargetOwner
+        | PlayerFilter::ChosenPlayer { .. } => true,
+        PlayerFilter::AllExcept { exclude } => player_filter_is_arrival_invariant(exclude),
+        // ── REFUSED: board-census and ledger-derived designations ──
+        PlayerFilter::ControlsCount { .. }
+        | PlayerFilter::TrackedSetPossessor { .. }
+        | PlayerFilter::OwnersOfCardsExiledBySource
+        | PlayerFilter::OpponentDealtDamage { .. }
+        | PlayerFilter::OpponentAttacked { .. }
+        | PlayerFilter::OpponentAttackingEnchantedPlayer
+        | PlayerFilter::OpponentOfTriggeringPlayerNotAttacked
+        | PlayerFilter::OpponentLostLife
+        | PlayerFilter::OpponentGainedLife
+        | PlayerFilter::HasLostTheGame
+        | PlayerFilter::HighestSpeed
+        | PlayerFilter::ZoneChangedThisWay
+        | PlayerFilter::PerformedActionThisWay { .. }
+        | PlayerFilter::VotedFor { .. }
+        | PlayerFilter::PlayerAttribute { .. } => false,
     }
 }
 
@@ -24520,12 +24900,34 @@ mod tests {
     ///  * `CostPaidObject` — the resolution-local cost-paid slot, reached here through
     ///    `FilterProp::Targets` because S5's condition carries a `TypedFilter`.
     ///
-    /// ⛔ **THE MATCHED CONTROL IS THE POINT OF THIS ROW.** `OriginalSource` is the tightest
-    /// available pair for `ExiledBySource`: both are bare non-`Typed` leaves, both consult
-    /// `GameState` through a helper rather than a field, and both are classified `false` by the
-    /// population authority. They differ on exactly one axis — one reads a ledger the period
-    /// writes, the other a fixed trigger-source identity. So a veto here cannot be "the guard
-    /// refuses anything that touches state".
+    /// ⛔ **THE MATCHED CONTROL IS THE POINT OF THIS ROW, AND `OriginalSource` COULD NOT PLAY
+    /// IT.** The control has to hold "touches `GameState`" FIXED and vary only "is that state
+    /// MUTABLE within the growth period", or a veto here is equally explained by "the guard
+    /// refuses anything that reads state at all". `OriginalSource` does not hold that axis
+    /// fixed. Both arms build their context with
+    /// `FilterContext::from_source{,_with_controller}` and BOTH ctors set
+    /// `trigger_source: None`; on that path `OriginalSource` lowers to
+    /// `object_matches_trigger_source`, whose body is
+    /// `trigger_source.map_or(object_id == source_id, ..)` — `state` is bound and never
+    /// dereferenced. The old pair therefore differed on TWO axes at once and could attribute
+    /// nothing.
+    ///
+    /// `AttachedTo` is the pair that does hold it fixed, and the row MEASURES the difference
+    /// rather than asserting it (the deref-axis pin below):
+    ///  * `ExiledBySource`, `trigger_source: None` →
+    ///    `players::linked_exile_cards_for_source(state, source_id)` — dereferences `state`,
+    ///    reads the per-source exile LEDGER;
+    ///  * `AttachedTo`, `trigger_source: None` → `state.objects.get(&source_id)
+    ///    .and_then(|source| source.attached_to)` — dereferences `state` just as hard, and
+    ///    reads a FIXED per-source attachment pointer (CR 301.5 / CR 303.4f) that no class
+    ///    member's arrival writes.
+    ///
+    /// Both are bare non-`Typed` leaves, so the property allowlist is not consulted for
+    /// either, and both are classified `false` by the population authority. Exactly ONE axis
+    /// varies: whether the datum is one the growth period writes. ⚠ `SourceOrPaired` — the
+    /// other leaf this row could have used — is NOT available as a control: CR 702.95a makes
+    /// an arriving creature pair with a pre-existing one, so it is now REFUSED by the leaf
+    /// classifier for exactly the reason this row is about.
     ///
     /// REVERT / MUTATION PROBE: make `node_reads_mutable_resolution_local_state` refuse only
     /// the three anaphors (return `false` for the other eight arms) ⇒ **this row FAILS** while
@@ -24569,7 +24971,7 @@ mod tests {
             TargetFilter::CostPaidObject,
             TargetFilter::Typed(behind_prop(TargetFilter::CostPaidObject)),
             // the control, pinned alongside so the pair is measured and not assumed alike
-            TargetFilter::OriginalSource,
+            TargetFilter::AttachedTo,
         ] {
             assert!(
                 !uses_pop(&f),
@@ -24635,6 +25037,59 @@ mod tests {
              it. Dropping S5's guard call fires THIS assertion while the S4 ones stay green"
         );
 
+        // ── DEREF-AXIS PIN: the control must CONTAIN the phenomenon it controls for ──────
+        // Measured, not asserted: under the S4/S5 context (`trigger_source: None`) the
+        // control's verdict MOVES when `state` moves, so a relieved verdict for it cannot be
+        // re-read as "the guard admits leaves that never touch state". The identical mutation
+        // leaves `OriginalSource` — the control this row USED to carry — completely unmoved,
+        // which is the measurement that retired it.
+        {
+            let (mut deref_state, deref_member, deref_hosts) =
+                block3_fixture(vec![(900, "Sunken Hollow", sunken_hollow_def())]);
+            let host = deref_hosts[0];
+            let ctx =
+                crate::game::filter::FilterContext::from_source_with_controller(host, PlayerId(0));
+            let attached = |st: &GameState| {
+                crate::game::filter::matches_target_filter(
+                    st,
+                    deref_member,
+                    &TargetFilter::AttachedTo,
+                    &ctx,
+                )
+            };
+            let original = |st: &GameState| {
+                crate::game::filter::matches_target_filter(
+                    st,
+                    deref_member,
+                    &TargetFilter::OriginalSource,
+                    &ctx,
+                )
+            };
+            assert!(
+                !attached(&deref_state) && !original(&deref_state),
+                "deref-axis pin, before: neither leaf matches the class member yet, so the \
+                 flip below is the write and not a pre-existing match"
+            );
+            deref_state
+                .objects
+                .get_mut(&host)
+                .expect("host present")
+                .attached_to = Some(crate::game::game_object::AttachTarget::Object(deref_member));
+            assert!(
+                attached(&deref_state),
+                "deref-axis pin: `AttachedTo` DEREFERENCES `state` on the \
+                 `trigger_source: None` path both relief arms take — writing the SOURCE's \
+                 `attached_to` field flipped its verdict with the filter untouched"
+            );
+            assert!(
+                !original(&deref_state),
+                "deref-axis pin (the F2 finding, measured): the SAME state write leaves \
+                 `OriginalSource` unmoved, because `object_matches_trigger_source` collapses \
+                 to `object_id == source_id` when `trigger_source` is `None`. It never \
+                 dereferences `state`, so it could not hold the 'touches state' axis fixed"
+            );
+        }
+
         // ── MATCHED CONTROLS: a FIXED source reference in the identical positions ─────────
         let (d_state, d_member, _) = block3_fixture(vec![(
             900,
@@ -24643,7 +25098,7 @@ mod tests {
                 sunken_hollow_def(),
                 ReplacementCondition::UnlessControlsCountMatching {
                     minimum: 2,
-                    filter: TargetFilter::OriginalSource,
+                    filter: TargetFilter::AttachedTo,
                 },
             ),
         )]);
@@ -24654,7 +25109,7 @@ mod tests {
                 blackcleave_cliffs_def(),
                 ReplacementCondition::UnlessControlsOtherLeq {
                     count: 2,
-                    filter: behind_prop(TargetFilter::OriginalSource),
+                    filter: behind_prop(TargetFilter::AttachedTo),
                 },
             ),
         )]);
@@ -24664,10 +25119,306 @@ mod tests {
                     &e_state,
                     Some(&HashSet::from([e_member]))
                 ),
-            "matched controls: swap the ledger leaf for `OriginalSource` — a bare non-`Typed` \
-             leaf that also consults `GameState` through a helper — in BOTH positions and both \
-             arms relieve again. The vetoes above are attributable to the leaf being MUTABLE \
-             resolution-local state, not to it touching state at all"
+            "matched controls: swap the ledger leaf for `AttachedTo` — a bare non-`Typed` \
+             leaf the deref-axis pin above MEASURED dereferencing `state` on this exact \
+             context path — in BOTH positions and both arms relieve again. The vetoes above \
+             are attributable to the leaf being MUTABLE resolution-local state, not to it \
+             touching state at all"
+        );
+    }
+
+    /// ⛔ **LAYER 3: A LIVE BOARD CENSUS ON THE PLAYER AXIS, BEHIND
+    /// `FilterProp::ControllerMatches`.** This is the shape review round 4 found still
+    /// admitted after round 3 closed the `TargetFilter` layer:
+    /// `Typed{ Land, [ControllerMatches{ ControlsCount{ Typed{Creature}, GE, 1 } }] }` —
+    /// "a Land whose controller controls one or more creatures".
+    ///
+    /// **WHY EVERY PRE-EXISTING GUARD ADMITTED IT, measured by the three pins below.**
+    /// `filter_prop_uses_object_population` classifies `ControllerMatches` leaf-`false`, so
+    /// the canonical population authority answers `false` for the whole filter.
+    /// `filter_contains` DOES descend `ControllerMatches -> player_filter_contains ->
+    /// ControlsCount`, but its `ControlsCount` arm is `recurse(filter)` — the only node it
+    /// ever hands the leaf predicate is the INNER `Typed{Creature}`, which is genuinely
+    /// population-independent. The dependence lives on the `ControlsCount` NODE, a
+    /// `PlayerFilter`, which no leaf predicate can ever see. And
+    /// `effects::player_control_count_compares` resolves that node against the LIVE
+    /// `state.battlefield`, so an arriving Saproling takes the controller's creature count
+    /// 0 -> 1 and a PRE-EXISTING Land starts matching with no member ever counted.
+    ///
+    /// REVERT / MUTATION PROBE: make [`player_filter_is_arrival_invariant`] return `true`
+    /// for `ControlsCount` (re-admit the player layer) => **this row FAILS** while
+    /// `s4_s5_relational_prop_keeps_the_veto` stays GREEN. Deleting the
+    /// [`node_has_non_arrival_invariant_property`] disjunct entirely reds BOTH.
+    #[test]
+    fn s4_s5_player_axis_board_census_keeps_the_veto() {
+        use crate::types::ability::{
+            Comparator, ControllerRef, FilterProp, PlayerFilter, PlayerRelation, QuantityExpr,
+            ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        let creatures = || {
+            TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Creature],
+                controller: None,
+                properties: Vec::new(),
+            })
+        };
+        let controls_a_creature = PlayerFilter::ControlsCount {
+            relation: PlayerRelation::Controller,
+            filter: creatures(),
+            comparator: Comparator::GE,
+            count: Box::new(QuantityExpr::Fixed { value: 1 }),
+        };
+        let land_whose_controller = |player: PlayerFilter| TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: Some(ControllerRef::You),
+            properties: vec![FilterProp::ControllerMatches {
+                player: Box::new(player),
+            }],
+        };
+        let hostile = TargetFilter::Typed(land_whose_controller(controls_a_creature.clone()));
+
+        // ── ATTRIBUTION PINS: which guard refuses, and which ones admit ──────────────────
+        let uses_pop = crate::game::filter::affected_filter_uses_object_population;
+        assert!(
+            !uses_pop(&hostile),
+            "pin 1: the canonical population authority ADMITS this filter — \
+             `filter_prop_uses_object_population` classifies `ControllerMatches` leaf-`false`, \
+             so the pre-existing delegation cannot be what refuses below"
+        );
+        assert!(
+            !uses_pop(&creatures()),
+            "pin 2: the only node `filter_contains` ever hands the leaf predicate is this \
+             INNER filter, and it is genuinely population-independent. That is the mechanism: \
+             the dependence is on the `ControlsCount` NODE, which the walk never surfaces"
+        );
+        assert!(
+            !node_reads_mutable_resolution_local_state(&hostile),
+            "pin 3: the round-3 `TargetFilter`-layer classifier also ADMITS it — no ledger \
+             leaf appears anywhere in the filter"
+        );
+        assert!(
+            node_has_non_arrival_invariant_property(&hostile),
+            "pin 4: so the refusal is attributable to the property/player allowlist and to \
+             nothing else in the composed guard"
+        );
+        assert!(
+            !player_filter_is_arrival_invariant(&controls_a_creature),
+            "pin 5: and within that allowlist it is layer 3 that says no"
+        );
+
+        // ── S4 ────────────────────────────────────────────────────────────────────────────
+        let (s4_state, s4_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: hostile,
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s4_state, Some(&HashSet::from([s4_member]))),
+            "player-axis guard (S4): `ControlsCount` is resolved against the live \
+             `state.battlefield`, so the arriving Saproling flips a PRE-EXISTING Land's match \
+             while the census counts no member. Relief here would certify a count that moves"
+        );
+
+        // ── S5 — the same prop through the arm that carries a bare `TypedFilter` ──────────
+        let (s5_state, s5_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: land_whose_controller(controls_a_creature),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s5_state, Some(&HashSet::from([s5_member]))),
+            "player-axis guard (S5): same hazard through the other arm, which wraps its \
+             `TypedFilter` before consulting the guard so both hand the walk the same shape"
+        );
+
+        // ── MATCHED CONTROLS: the SAME `ControllerMatches` crossing, ADMITTED player leaf ──
+        // Holds fixed: the prop, its position, the filter shape, both arms. Varies: only
+        // whether the `PlayerFilter` underneath is a live board census. So the vetoes above
+        // cannot be re-read as "the guard refuses `ControllerMatches`".
+        let (c1_state, c1_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: TargetFilter::Typed(land_whose_controller(PlayerFilter::Controller)),
+                },
+            ),
+        )]);
+        let (c2_state, c2_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: land_whose_controller(PlayerFilter::Controller),
+                },
+            ),
+        )]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&c1_state, Some(&HashSet::from([c1_member])))
+                && !fire_time_conditions_read_growing_class(
+                    &c2_state,
+                    Some(&HashSet::from([c2_member]))
+                ),
+            "matched controls: keep `FilterProp::ControllerMatches` in the identical position \
+             and swap ONLY the player leaf for `PlayerFilter::Controller` — a fixed seat \
+             designation — and both arms relieve again. The vetoes above are attributable to \
+             the live board census on the player axis, not to the crossing itself"
+        );
+    }
+
+    /// ⛔ **LAYER 2: RELATIONAL PROPERTIES AN ARRIVING OBJECT MOVES — F1's blast radius, not
+    /// just its headline example.** Each of these is classified population-INDEPENDENT by
+    /// `filter_prop_uses_object_population` and each is moved by a class member ARRIVING:
+    ///  * `Unpaired` — CR 702.95a: soulbond's second triggered ability is "Whenever another
+    ///    creature you control enters ... you may pair THAT creature with this creature", so
+    ///    an arriving creature un-`Unpaired`s a PRE-EXISTING one.
+    ///  * `HasAttachment { Aura }` — CR 303.4f: an Aura entering by any means other than
+    ///    resolving as an Aura spell chooses what it enchants AS IT ENTERS, so an arriving
+    ///    Aura gives a PRE-EXISTING permanent an attachment.
+    ///  * `AttackingAlone` — CR 506.5 defines it as "attacking but no other creatures are",
+    ///    and CR 506.3b contemplates effects putting a creature onto the battlefield
+    ///    attacking, which flips a PRE-EXISTING attacker from `true` to `false`.
+    ///
+    /// The allowlist refuses all three for want of a proof rather than by naming them, which
+    /// is the whole design: this row exists to make the refusal OBSERVABLE, not to enumerate
+    /// the hazard. A fourth relational prop nobody has thought of is refused identically.
+    ///
+    /// REVERT / MUTATION PROBE: move `Unpaired | HasAttachment { .. } | AttackingAlone` into
+    /// [`prop_is_arrival_invariant`]'s admitted arm => **this row FAILS** while
+    /// `s4_s5_player_axis_board_census_keeps_the_veto` stays GREEN.
+    #[test]
+    fn s4_s5_relational_prop_keeps_the_veto() {
+        use crate::types::ability::{
+            AttachmentKind, ControllerRef, FilterProp, ReplacementCondition, SourceExclusion,
+            TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        let with_prop = |prop: FilterProp| TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: Some(ControllerRef::You),
+            properties: vec![FilterProp::Another, prop],
+        };
+        let hostile_props = [
+            FilterProp::Unpaired,
+            FilterProp::HasAttachment {
+                kind: AttachmentKind::Aura,
+                controller: None,
+                exclude_source: SourceExclusion::Include,
+            },
+            FilterProp::AttackingAlone,
+        ];
+
+        // ── ATTRIBUTION PINS ─────────────────────────────────────────────────────────────
+        let uses_pop = crate::game::filter::affected_filter_uses_object_population;
+        for prop in &hostile_props {
+            let filter = TargetFilter::Typed(with_prop(prop.clone()));
+            assert!(
+                !uses_pop(&filter),
+                "pin: the canonical population authority ADMITS {prop:?} — it is one of its \
+                 leaf-`false` arms — so the refusal below is not inherited from it"
+            );
+            assert!(
+                !node_reads_mutable_resolution_local_state(&filter),
+                "pin: the round-3 `TargetFilter`-layer classifier also admits it; no ledger \
+                 leaf appears in this filter"
+            );
+            assert!(
+                node_has_non_arrival_invariant_property(&filter),
+                "pin: so the property allowlist is the sole refusing conjunct for {prop:?}"
+            );
+        }
+
+        // ── S4, one row per hostile prop ─────────────────────────────────────────────────
+        for prop in &hostile_props {
+            let (state, member, _) = block3_fixture(vec![(
+                900,
+                "Sunken Hollow",
+                with_condition(
+                    sunken_hollow_def(),
+                    ReplacementCondition::UnlessControlsCountMatching {
+                        minimum: 2,
+                        filter: TargetFilter::Typed(with_prop(prop.clone())),
+                    },
+                ),
+            )]);
+            assert!(
+                fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+                "relational-prop guard (S4, {prop:?}): an ARRIVING object moves this property \
+                 on a PRE-EXISTING object, so the certified-invariant count moves with no \
+                 class member counted"
+            );
+        }
+
+        // ── S5 — the same hazard through the `TypedFilter`-carrying arm ──────────────────
+        let (s5_state, s5_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: with_prop(FilterProp::Unpaired),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s5_state, Some(&HashSet::from([s5_member]))),
+            "relational-prop guard (S5): CR 702.95a through the other arm"
+        );
+
+        // ── MATCHED CONTROLS: a CANDIDATE-LOCAL property in the identical position ────────
+        // Holds fixed: the `Another` companion prop, the position, the type filter, the
+        // controller scope, both arms. Varies: only whether the property's verdict can be
+        // moved by another object arriving. `Tapped` reads the candidate's OWN tap state.
+        let (c1_state, c1_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: TargetFilter::Typed(with_prop(FilterProp::Tapped)),
+                },
+            ),
+        )]);
+        let (c2_state, c2_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: with_prop(FilterProp::Tapped),
+                },
+            ),
+        )]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&c1_state, Some(&HashSet::from([c1_member])))
+                && !fire_time_conditions_read_growing_class(
+                    &c2_state,
+                    Some(&HashSet::from([c2_member]))
+                ),
+            "matched controls: keep everything and swap ONLY the second property for \
+             `Tapped` — candidate-local, and on the allowlist — and both arms relieve again. \
+             The vetoes above are attributable to the property being RELATIONAL, not to the \
+             filter carrying a second property at all"
         );
     }
 
