@@ -4035,8 +4035,18 @@ fn pt_value_aggregate_provably_excludes_class(
 /// cost reduction applies to), `SpendManaAsAnyColor`, `PayLifeAsColoredMana { color }` (a
 /// life-for-coloured-mana payment substitution) and `StepEndUnspentMana { filter }` (which
 /// unspent MANA a step-end rule applies to) — are cost / mana-payment / mana-pool rules
-/// that READ or name a colour and set none. MEASURED over the `StaticMode` body in
-/// `types/statics.rs`: those four are every `ManaColor`-bearing member there. Their own CR
+/// that READ or name a colour and set none. MEASURED over the whole `StaticMode` body in
+/// `types/statics.rs` (`pub enum StaticMode {` through its closing brace): those four are
+/// every colour-MENTIONING member there, and exactly THREE of them are `ManaColor`-BEARING
+/// — `DefilerCostReduction { color }`, `PayLifeAsColoredMana { color }` and
+/// `StepEndUnspentMana { filter: Option<ManaColor> }`. `SpendManaAsAnyColor` carries only
+/// `spell_filter` and `activation_source_filter` (both `Option<TargetFilter>`) and names a
+/// colour in prose alone. The distinction is stated because a `grep 'ManaColor'` over that
+/// range returns FOUR hits and the fourth is a DOC line: a doc comment belongs to the item
+/// that FOLLOWS it (`PayLifeAsColoredMana`), so an "enclosing item = last variant opened at
+/// or before" reading mis-attributes it to `SpendManaAsAnyColor`. Read the variant BODIES.
+/// The load-bearing claim is unaffected and is separately measured: `SetColor` / `AddColor`
+/// occur ZERO times anywhere in that range. Their own CR
 /// citations are deliberately NOT repeated here — this is a type-shape claim, and a
 /// borrowed citation is a referent this arm has not verified.
 /// ⛔ Stated as four because the review finding that raised this named only two of them,
@@ -4287,6 +4297,218 @@ fn counters_on_source_provably_excludes_class(
     };
     crate::game::quantity::object_id_for_scope(state, ObjectScope::Source, ctx, &[])
         .is_some_and(|read_id| read_id != class_member)
+}
+
+/// Is every property in `props` provably independent of the board POPULATION — does each
+/// one's verdict on a given object stay fixed as OTHER objects arrive?
+///
+/// ⛔ **ALLOWLIST, NEVER A DENYLIST, AND THE DIRECTION IS THE WHOLE POINT.** `FilterProp` has
+/// ~99 variants and this arm makes no per-variant judgement about the ones it does not name:
+/// anything unlisted is REFUSED, so a new variant is population-DEPENDENT until someone proves
+/// otherwise and adds it here. `matches!` with no wildcard arm is what delivers that — an
+/// unmatched variant evaluates to `false` by construction. Do NOT "tidy" this into a
+/// `_ => true` fall-through or a denylist of known-bad variants; either inversion silently
+/// admits every future variant as safe, which is the exact failure this guard exists to
+/// prevent.
+///
+/// The two members, both trivially independent of who else is on the battlefield:
+///  * `FilterProp::Another` — SOURCE-relative ("any object that is NOT the trigger source");
+///    its verdict is an id comparison against the ability source, untouched by population.
+///  * `FilterProp::HasSupertype { .. }` — an INTRINSIC card characteristic (Basic / Legendary
+///    / Snow) read off the object itself.
+///
+/// The hazard this closes, named so it is re-testable: `FilterProp::MostPrevalentCreatureTypeIn`
+/// resolves through `most_prevalent_creature_types_in_zone(state, owner, zone)`, so a class
+/// member's ARRIVAL can flip whether a NON-member matches. `ability_scan::scan_filter_prop`
+/// classifies that variant as `scan_controller_ref(scope)` and does not flag the population
+/// axis, so the scanner does not cover it either — which is precisely why the relief arms
+/// cannot lean on the scanner here and carry this guard instead.
+fn filter_props_are_population_independent(props: &[crate::types::ability::FilterProp]) -> bool {
+    use crate::types::ability::FilterProp;
+
+    props
+        .iter()
+        .all(|p| matches!(p, FilterProp::Another | FilterProp::HasSupertype { .. }))
+}
+
+/// **S4** — CR 732.2a block-(3) relief on a replacement effect's
+/// `UnlessControlsCountMatching` condition (CR 614.1d): is the condition's value provably
+/// INVARIANT as the growing class grows by `class_member`?
+///
+/// The condition is vetoed at the scanner because `ability_scan::scan_replacement_condition`
+/// routes its `filter` through `scan_target_filter(.., FilterReadContext::LiveBoardCensus,
+/// ..)`, whose base sets `sibling: true` INDEPENDENT of the filter's shape and never relaxes
+/// it. No scanner change can help, so the relief is decided HERE — as a skip, BEFORE the scan
+/// verdict is consulted, the same position block (1a)'s skip occupies. That position is also
+/// why `ScanMode::Conservative` is irrelevant to this arm's soundness: the arm BYPASSES the
+/// mode's unconditional `Typed` forcing rather than depending on any mode behaviour, which is
+/// what makes S4/S5 safe at `Conservative` where an S1-shaped arm would not be.
+///
+/// ⛔ **SOLE-SOURCENESS IS DEFINITIONAL HERE, AND DELIBERATELY NOT PROBED.** The sibling arms
+/// in this cluster discharge it with a clone-and-blank-and-rescan (their conjunct (a)). That
+/// probe has no meaning here: the scanned node IS the matched node, so blanking it would
+/// re-scan nothing and pass vacuously — the exact shape a vacuous probe takes. What discharges
+/// it instead is the TOP-LEVEL-ONLY match below: `And` (or any other variant) falls to the
+/// `let ... else` and KEEPS the veto, while `scan_replacement_condition` recurses through
+/// compounds, so a read hidden inside one is still seen by the scanner. The `else` arm is
+/// fail-closed by MEASUREMENT, not assumption — probe P-5, row
+/// `s4_s5_compound_condition_keeps_the_veto`.
+///
+/// ⛔ **ARG-EQUIVALENCE PIN — mirror `game::replacement`'s own `UnlessControlsCountMatching`
+/// evaluator arm CONJUNCT-FOR-CONJUNCT.** Its census is
+/// `state.objects.values().filter(|o| o.zone == Zone::Battlefield && o.id != source_id
+/// && matches_target_filter(state, o.id, filter, &ctx)).count()`, with
+/// `ctx = FilterContext::from_source_with_controller(source_id, controller)`. Mirroring the
+/// ZONE GATE and the `o.id != source_id` EXCLUSION is part of the pin, not decoration: the
+/// claim is "no member is ever COUNTED", and a member that arm would skip anyway is not
+/// counted. `minimum` is deliberately unread — the claim is invariance of the COUNT, which
+/// makes the comparison invariant at every threshold.
+///
+/// ⛔ **WHY THIS ARM CARRIES A POPULATION-INDEPENDENCE GUARD, AND WHAT THE GUARD PROVES.**
+/// "No class member is counted" is invariance of the COUNT only if a class member's ARRIVAL
+/// cannot change whether a NON-member matches. A filter carrying a population-dependent
+/// property breaks that implication, and the scanner does not cover the case either
+/// (`ability_scan::scan_filter_prop` classifies `FilterProp::MostPrevalentCreatureTypeIn` as
+/// `scan_controller_ref(scope)`, discarding the population axis). Before this lane the
+/// variant vetoed unconditionally, so RELIEF IS WHAT CREATES THE FAIL-OPEN — it is not
+/// inherited from the scanner, and it is closed here rather than deferred.
+/// [`filter_props_are_population_independent`] is the single authority both arms consult; the
+/// filter must additionally be a bare `TargetFilter::Typed` for a property list to exist at
+/// all, and everything else is refused. ⇒ the count is invariant on every input this arm
+/// relieves, rather than on every input today's corpus happens to contain.
+///
+/// **The allowlist is COMPLETE FOR TODAY'S CORPUS, and that is a measurement, not a hope.**
+/// Census over the pinned `data/mtgjson/AtomicCards.json`, every card whose Oracle text
+/// contains "unless you control" (111 cards), parsed through `parser::parse_oracle_text`:
+/// **25 `UnlessControlsCountMatching` productions in 7 distinct filters, 11
+/// `UnlessControlsOtherLeq` productions in 1** — every one a bare `TargetFilter::Typed` whose
+/// `type_filters` are intrinsic (`Land` / a basic land subtype) and whose `properties` are a
+/// subset of exactly `{Another, HasSupertype{Basic}}`. No compound filter, no relative
+/// property, in either variant. ⇒ the guard is a FAIL-CLOSED NARROWING OF THE HYPOTHETICAL
+/// with **zero behavioural change on any real card**, which is why every pre-existing row
+/// stays green. The census discriminates rather than merely returning a convenient zero: it
+/// surfaced SEVEN distinct S4 filters, so a divergent production would have shown up.
+/// ⇒ THE STANDING OBLIGATION IS NOW THE INVERSE ONE, AND IT IS SMALL: whoever introduces a
+/// `FilterProp` that IS population-independent must ADD it to the allowlist, or these arms
+/// will silently stop relieving a card they could safely relieve (a performance cost, never a
+/// correctness one). Anything population-dependent is already refused by default and needs no
+/// action. Re-run the census above before widening the allowlist.
+///
+/// ⛔ **CONTROLLER AUTHORITY: `replacement::replacement_source_player`, NEVER the raw
+/// `source.controller` field.** Every production condition site derives the evaluator's
+/// `controller` argument that way (`object_replacement_candidate_applies` binds
+/// `replacement_source_player(obj)`; the granted-ETB path uses
+/// `.map(replacement_source_player).unwrap_or(state.active_player)`), and
+/// `GameObject::controller_or_owner` yields `self.owner` for a NON-EMBLEM Command-zone
+/// carrier (CR 109.4 + CR 108.4a; CR 109.4c is the emblem exception). Since
+/// `FilterContext.source_controller` is what resolves `ControllerRef::You` and the parser
+/// pre-sets `You` for this whole cluster, binding the raw field could census a DIFFERENT
+/// PLAYER than the evaluator — relief in the FORBIDDEN direction.
+/// **MEASURED SCOPE OF THAT HAZARD, so nobody re-derives it from the wrong premise:** this
+/// walk cannot currently reach the divergence. `functioning_board_replacement_defs` admits
+/// `Zone::Battlefield | Zone::Command`, but it is layered over
+/// `functioning_abilities::active_replacements`, which drops every object failing
+/// `object_functions` — and that predicate already returns `false` for
+/// `Zone::Command && !obj.is_emblem`. So every object reaching this arm satisfies
+/// `controller_or_owner() == controller`. The authority is taken anyway because it is free
+/// and because the equivalence must be PROVEN rather than asserted; it is NOT taken on the
+/// strength of a live divergence, and no row here claims one.
+fn count_matching_condition_provably_excludes_class(
+    condition: &crate::types::ability::ReplacementCondition,
+    state: &GameState,
+    class_member: ObjectId,
+    source: &GameObject,
+) -> bool {
+    use crate::types::ability::ReplacementCondition;
+
+    // Shape: TOP LEVEL ONLY, no `..` at any level, so a new field on the variant is a
+    // compile error here rather than a silently unscanned read.
+    let ReplacementCondition::UnlessControlsCountMatching { minimum: _, filter } = condition else {
+        return false;
+    };
+    // POPULATION-INDEPENDENCE GUARD. Reaching a `properties` list at all requires the filter
+    // to be a bare `TargetFilter::Typed`; a compound (`And` / `Or` / `Not`) or any other
+    // leaf has no single property list to allowlist, so it is REFUSED rather than guessed at.
+    // Measured cost of both narrowings: ZERO — see the corpus census in this function's own
+    // doc comment above. NOTE the pin below still passes the ORIGINAL `filter`, never
+    // `typed`: the destructure exists only to reach `properties`, and the evaluator's
+    // argument identity must not be disturbed by a guard.
+    let crate::types::ability::TargetFilter::Typed(typed) = filter else {
+        return false;
+    };
+    if !filter_props_are_population_independent(&typed.properties) {
+        return false;
+    }
+    // Fail closed on a member with no object in the scanned frame: an id the census cannot
+    // even look up proves nothing about what the census counts. (Its ABSENCE from
+    // `state.objects` would make the arm's `.values()` walk skip it trivially — that is the
+    // population vacuity the sibling arms' conjunct (c) refuses to bank, and it is refused
+    // here for the same reason.)
+    let Some(member) = state.objects.get(&class_member) else {
+        return false;
+    };
+    let ctx = crate::game::filter::FilterContext::from_source_with_controller(
+        source.id,
+        crate::game::replacement::replacement_source_player(source),
+    );
+    !(member.zone == Zone::Battlefield
+        && member.id != source.id
+        && crate::game::filter::matches_target_filter(state, member.id, filter, &ctx))
+}
+
+/// **S5** — the `UnlessControlsOtherLeq` sibling of
+/// [`count_matching_condition_provably_excludes_class`] (the tapland class: "This land enters
+/// tapped unless you control two or fewer other lands"). See that function's doc for the
+/// position argument, the `ScanMode::Conservative` argument, and why sole-sourceness is
+/// definitional rather than probed — all three carry over unchanged.
+///
+/// The VETO SOURCE differs and it does not change the conclusion: this variant is a BLANKET
+/// `=> Axes::CONSERVATIVE` arm in `scan_replacement_condition`, not a `LiveBoardCensus`
+/// injection. Because the relief is a skip decided before the scan verdict is consulted, the
+/// scanner's blanket verdict on the variant is simply not consulted.
+///
+/// ⛔ **THE ARG-EQUIVALENCE PIN IS THIS ARM'S, NOT S4'S, AND THE DIFFERENCES ARE THE ARM.**
+/// The evaluator's own census is
+/// `state.objects.values().filter(|o| o.zone == Zone::Battlefield
+/// && matches_target_filter(state, o.id, &TargetFilter::Typed(filter.clone()), &ctx)).count()`
+/// with `ctx = FilterContext::from_source(state, source_id)`. Three deliberate divergences
+/// from S4, each mirroring the evaluator:
+///  1. the `filter` is a `TypedFilter` and must be WRAPPED in `TargetFilter::Typed`;
+///  2. the context ctor is `from_source` (controller derived internally via
+///     `filter::source_controller_or_lki`), NOT `from_source_with_controller`;
+///  3. there is **NO `o.id != source_id` exclusion** — this arm counts the source itself if
+///     it matches. Adding S4's exclusion here would relieve a class whose member IS the
+///     source while the evaluator still counts it. Pinned by row
+///     `s5_arm_counts_the_source_itself`.
+///
+/// CR 614.1c ("As [this permanent] enters . . ." effects are replacement effects) and
+/// CR 614.1d ("[This permanent] enters . . ." continuous effects are replacement effects) are
+/// the two anchors for the tapland shape. The `CR 305.7` the evaluator's own comment carries
+/// is about SUBTYPE-SETTING on lands and does not bear on an "unless you control" gate; it is
+/// deliberately not repeated here.
+fn other_leq_condition_provably_excludes_class(
+    condition: &crate::types::ability::ReplacementCondition,
+    state: &GameState,
+    class_member: ObjectId,
+    source: &GameObject,
+) -> bool {
+    use crate::types::ability::{ReplacementCondition, TargetFilter};
+
+    let ReplacementCondition::UnlessControlsOtherLeq { count: _, filter } = condition else {
+        return false;
+    };
+    // POPULATION-INDEPENDENCE GUARD — the same single authority S4 consults. `filter` is
+    // already a bare `TypedFilter` here, so no unwrapping narrowing is needed.
+    if !filter_props_are_population_independent(&filter.properties) {
+        return false;
+    }
+    let Some(member) = state.objects.get(&class_member) else {
+        return false;
+    };
+    let wrapped = TargetFilter::Typed(filter.clone());
+    let ctx = crate::game::filter::FilterContext::from_source(state, source.id);
+    !(member.zone == Zone::Battlefield
+        && crate::game::filter::matches_target_filter(state, member.id, &wrapped, &ctx))
 }
 
 /// §5.3a firewall (BLOCKER-S1 + S5 + MAJOR-A): does ANY live off-stack fire-time
@@ -4604,12 +4826,51 @@ fn fire_time_conditions_read_growing_class_scoped(
     // BOTH stores. The zone argument for the object-attached half, and the argument for why
     // the floating half carries no zone gate at all, now live on the two halves of
     // [`loop_window_replacement_defs`] — that is where the deleted inline gate went.
-    for (_source, _idx, def) in loop_window_replacement_defs(state) {
-        if def
-            .condition
-            .as_ref()
-            .is_some_and(scan::replacement_condition_reads_sibling_mutable)
-        {
+    for (source, _idx, def) in loop_window_replacement_defs(state) {
+        // CR 732.2a relief (S4/S5), SCOPED TO THE `condition` SURFACE ONLY — never a
+        // `continue` over the whole def. A def whose condition is provably invariant may
+        // still carry a class-observing `execute`/`runtime_execute`, and relieving the def
+        // on one surface's verdict is the "relief-by-`continue`" defect pinned by
+        // `block3_condition_relief_does_not_carry_the_execute_surface`.
+        //
+        // `!members.is_empty()` is LOAD-BEARING, exactly as in block (2): an empty class
+        // must not make `.all()` vacuously true and relieve every surface. ORDERED AFTER
+        // the scan for the same cost reason block (2) states — `&&` over pure predicates is
+        // order-independent in value, so this is strictly a cost ordering.
+        let condition_disjoint = |condition: &crate::types::ability::ReplacementCondition| {
+            // FLOATING HALF ⇒ FAIL CLOSED. With no source object there is no `source_id`
+            // and no controller to build the evaluator's own arguments from, so no
+            // arg-equivalence pin can be constructed at THIS call. The residual is also
+            // vanishingly narrow on the merits: a floating def belongs to CR 611.2's
+            // "generated by the resolution of a spell or ability" store, a DIFFERENT
+            // mechanism from the CR 611.3 object-attached one, and cannot carry an S4/S5
+            // "as this enters" shape (CR 614.1c / CR 614.1d) — probe P-6 measured ZERO
+            // floating defs on all three dumps, re-confirmed here on
+            // `witherbloom_altar_sprout_swarm_4p.json.gz`.
+            // ⛔ THIS IS YAGNI + FAIL-CLOSED, **NOT** A CAPABILITY GAP. `game::replacement`'s
+            // floating branch already builds exactly the pair this arm would need and hands
+            // it straight to `evaluate_replacement_condition` as
+            // `(repl_def.source_controller.unwrap_or(state.active_player), ObjectId(0))`, so
+            // the pin is CONSTRUCTIBLE the day a floating def can carry this shape. The door
+            // is unopened, not welded shut — do not reword this as "impossible".
+            let Some(source) = source else {
+                return false;
+            };
+            class_members.is_some_and(|members| {
+                !members.is_empty()
+                    && members.iter().all(|&m| {
+                        count_matching_condition_provably_excludes_class(
+                            condition, state, m, source,
+                        ) || other_leq_condition_provably_excludes_class(
+                            condition, state, m, source,
+                        )
+                    })
+            })
+        };
+        if def.condition.as_ref().is_some_and(|condition| {
+            scan::replacement_condition_reads_sibling_mutable(condition)
+                && !condition_disjoint(condition)
+        }) {
             return true;
         }
         if def
@@ -22678,6 +22939,715 @@ mod tests {
              counting live creatures reads the growing class, so conjunct (d)'s counter \
              identity argument cannot carry the whole def. Deleting conjunct (a)'s \
              clone-and-rescan makes this FAIL"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────
+    // C3b-1 — S4 (`UnlessControlsCountMatching`) and S5 (`UnlessControlsOtherLeq`)
+    // relief at block (3)'s `def.condition` surface.
+    // ─────────────────────────────────────────────────────────────────────────────────
+
+    /// Parse a real tapland's VERBATIM Oracle text (MTGJSON `AtomicCards.json`) and hand
+    /// back its single replacement definition — the exact `ReplacementDefinition` block (3)
+    /// walks. Never a paraphrase: a reworded "enters tapped unless" line can take a
+    /// different parser branch and go green while the real card still vetoes.
+    fn tapland_replacement(
+        name: &str,
+        oracle: &str,
+        subtypes: &[&str],
+    ) -> crate::types::ability::ReplacementDefinition {
+        let subs: Vec<String> = subtypes.iter().map(|s| (*s).to_string()).collect();
+        let parsed =
+            crate::parser::parse_oracle_text(oracle, name, &[], &["Land".to_string()], &subs);
+        assert_eq!(
+            parsed.replacements.len(),
+            1,
+            "fixture pin: {name} parses to exactly ONE replacement definition; a parser \
+             change that splits or merges it re-points every C3b-1 row"
+        );
+        parsed.replacements[0].clone()
+    }
+
+    fn sunken_hollow_def() -> crate::types::ability::ReplacementDefinition {
+        tapland_replacement(
+            "Sunken Hollow",
+            "({T}: Add {U} or {B}.)\nThis land enters tapped unless you control two or more \
+             basic lands.",
+            &["Island", "Swamp"],
+        )
+    }
+
+    fn cinder_glade_def() -> crate::types::ability::ReplacementDefinition {
+        tapland_replacement(
+            "Cinder Glade",
+            "({T}: Add {R} or {G}.)\nThis land enters tapped unless you control two or more \
+             basic lands.",
+            &["Mountain", "Forest"],
+        )
+    }
+
+    fn blackcleave_cliffs_def() -> crate::types::ability::ReplacementDefinition {
+        tapland_replacement(
+            "Blackcleave Cliffs",
+            "This land enters tapped unless you control two or fewer other lands.\n{T}: Add \
+             {B} or {R}.",
+            &[],
+        )
+    }
+
+    fn copperline_gorge_def() -> crate::types::ability::ReplacementDefinition {
+        tapland_replacement(
+            "Copperline Gorge",
+            "This land enters tapped unless you control two or fewer other lands.\n{T}: Add \
+             {R} or {G}.",
+            &[],
+        )
+    }
+
+    /// Replace ONE field of a parsed tapland condition — the condition's `filter` — leaving
+    /// every other byte of the definition alone. Every C3b-1 negative is built this way, so
+    /// its divergence from the matched positive is attributable to `filter` and to nothing
+    /// else.
+    fn with_condition(
+        mut def: crate::types::ability::ReplacementDefinition,
+        condition: crate::types::ability::ReplacementCondition,
+    ) -> crate::types::ability::ReplacementDefinition {
+        assert!(
+            def.condition.is_some(),
+            "fixture pin: the base definition must already carry a condition, so the row \
+             varies its CONTENT rather than its presence"
+        );
+        def.condition = Some(condition);
+        def
+    }
+
+    /// Battlefield lands carrying `(id, name, def)`, plus the Saproling class member
+    /// (`ObjectId(800)`). Returns `(state, member, hosts)`.
+    ///
+    /// REACH-GUARDS, asserted before any row can claim an outcome:
+    ///  * every host's `condition` must itself carry the sibling veto S4/S5 relieve —
+    ///    without it block (3)'s first surface is silent and every row is vacuous;
+    ///  * no host's `execute` / `runtime_execute` may veto, so a `false` verdict is
+    ///    attributable to the CONDITION surface and not to the other two;
+    ///  * the floating store is empty, so `loop_window_replacement_defs`' board half is the
+    ///    only speaker;
+    ///  * with the definitions STRIPPED the whole predicate is `false` — the attributability
+    ///    control that makes every `true` below block (3)'s and no other block's.
+    fn block3_fixture(
+        defs: Vec<(u64, &str, crate::types::ability::ReplacementDefinition)>,
+    ) -> (GameState, ObjectId, Vec<ObjectId>) {
+        use std::sync::Arc;
+
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let mut hosts = Vec::new();
+        for (id, name, def) in defs {
+            assert!(
+                def.condition.as_ref().is_some_and(
+                    crate::game::ability_scan::replacement_condition_reads_sibling_mutable
+                ),
+                "reach-guard: {name}'s condition must carry the sibling veto S4/S5 relieve, \
+                 else every row below passes without reaching the arm"
+            );
+            assert!(
+                !def.execute.as_ref().is_some_and(|a| {
+                    crate::game::ability_scan::ability_definition_reads_sibling_mutable(a)
+                }),
+                "reach-guard: {name}'s `execute` body must be silent, so a relieved verdict \
+                 is attributable to the CONDITION surface alone"
+            );
+            assert!(
+                def.runtime_execute.is_none(),
+                "reach-guard: {name} carries no `runtime_execute`, block (3)'s third surface"
+            );
+            let oid = ObjectId(id);
+            let mut object = GameObject::new(
+                oid,
+                CardId(id),
+                PlayerId(0),
+                name.to_string(),
+                Zone::Battlefield,
+            );
+            object.card_types.core_types = vec![CoreType::Land];
+            object.base_replacement_definitions = Arc::new(vec![def.clone()]);
+            object.replacement_definitions = vec![def].into();
+            state.objects.insert(oid, object);
+            state.battlefield.push_back(oid);
+            hosts.push(oid);
+        }
+        assert_eq!(
+            live_floating_replacement_defs(&state).count(),
+            0,
+            "reach-guard: the floating half is EMPTY, so every verdict below is the board \
+             half's (P-6 measured zero floating defs on all three real dumps)"
+        );
+        assert_eq!(
+            loop_window_replacement_defs(&state)
+                .filter(|(_, _, d)| d.condition.is_some())
+                .count(),
+            hosts.len(),
+            "reach-guard: block (3) sees exactly the conditions this fixture installed"
+        );
+        {
+            let mut stripped = state.clone();
+            for &h in &hosts {
+                let obj = stripped.objects.get_mut(&h).unwrap();
+                obj.base_replacement_definitions = Arc::new(Vec::new());
+                obj.replacement_definitions = Vec::new().into();
+            }
+            assert!(
+                !fire_time_conditions_read_growing_class(&stripped, Some(&HashSet::from([member]))),
+                "reach-guard (ATTRIBUTABILITY): with the replacement definitions removed the \
+                 board is SILENT on every other block, so each `true` below is block (3)'s \
+                 and each `false` is block (3) declining"
+            );
+        }
+        (state, member, hosts)
+    }
+
+    /// **S4-P1 / S4-N1** — `count_matching_condition_provably_excludes_class` as block (3)'s
+    /// `condition` surface reaches it, on Sunken Hollow's and Cinder Glade's REAL parsed
+    /// conditions (both are literally in this lane's target dump, `ObjectId(215)` and
+    /// `ObjectId(320)`).
+    ///
+    /// REVERT / MUTATION PROBES, each named with the arm it flips:
+    /// * delete the `&& !condition_disjoint(condition)` conjunct at block (3) ⇒ **S4-P1 FAILS**.
+    /// * drop the `matches_target_filter` conjunct from S4's mirror (relieve on the variant's
+    ///   SHAPE alone — the "relieve on `valid_card == SelfRef` alone" failure mode) ⇒
+    ///   **S4-N1 FAILS**.
+    /// * delete `!members.is_empty()` ⇒ **M2-S4 FAILS** (everything relieved).
+    /// * weaken the missing-member `let ... else` to bank the census's `.values()` walk
+    ///   skipping an absent id ⇒ **the fail-closed row FAILS**.
+    #[test]
+    fn s4_arm_relieves_the_real_taplands_and_keeps_the_creature_veto() {
+        use crate::types::ability::{
+            ControllerRef, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        // ── S4-P1 — BOTH real cards live at once, both relieved ──────────────────────
+        let (state, member, hosts) = block3_fixture(vec![
+            (900, "Sunken Hollow", sunken_hollow_def()),
+            (901, "Cinder Glade", cinder_glade_def()),
+        ]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "S4-P1: CR 614.1d — 'unless you control two or more basic lands' censuses BASIC \
+             LANDS, and the growing class is a Saproling creature token, so no member is \
+             ever counted and the count is invariant across the loop's growth (CR 732.2a). \
+             Block (3) must SKIP the condition surface. Deleting the \
+             `&& !condition_disjoint(..)` conjunct restores the veto"
+        );
+
+        // ── S4-N1 — the SAME two definitions, `filter` the ONLY variable ─────────────
+        let creature_filter = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller: Some(ControllerRef::You),
+            properties: Vec::new(),
+        });
+        let n1_condition = ReplacementCondition::UnlessControlsCountMatching {
+            minimum: 2,
+            filter: creature_filter,
+        };
+        let (n1_state, n1_member, _) = block3_fixture(vec![
+            (
+                900,
+                "Sunken Hollow",
+                with_condition(sunken_hollow_def(), n1_condition.clone()),
+            ),
+            (
+                901,
+                "Cinder Glade",
+                with_condition(cinder_glade_def(), n1_condition),
+            ),
+        ]);
+        assert!(
+            fire_time_conditions_read_growing_class(&n1_state, Some(&HashSet::from([n1_member]))),
+            "S4-N1: byte-identical definitions with ONLY `condition.filter` changed \
+             Land+Basic -> Creature{{You}}. The Saproling token IS a creature P0 controls, so \
+             every minted member increments the census and the condition's value MOVES with \
+             the class — the veto must survive. Relieving on the variant's SHAPE alone \
+             (dropping the `matches_target_filter` conjunct) makes this FAIL"
+        );
+
+        // ── M2-S4 — an EMPTY class relieves NOTHING ──────────────────────────────────
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::new())),
+            "M2-S4: `!members.is_empty()` is LOAD-BEARING — an empty class must not make \
+             `.all()` vacuously true and relieve the surface. Deleting that guard makes this \
+             FAIL"
+        );
+
+        // ── fail-closed: a member with no object in the scanned frame ────────────────
+        let host_obj = state.objects[&hosts[0]].clone();
+        let condition = state.objects[&hosts[0]]
+            .replacement_definitions
+            .iter_all()
+            .next()
+            .and_then(|d| d.condition.clone())
+            .expect("fixture pin: the host carries the parsed condition");
+        assert!(
+            count_matching_condition_provably_excludes_class(&condition, &state, member, &host_obj),
+            "matched control: the LIVE Saproling IS relieved, so the row below is \
+             attributable to the member's absence and to nothing else"
+        );
+        assert!(
+            !count_matching_condition_provably_excludes_class(
+                &condition,
+                &state,
+                ObjectId(9_999),
+                &host_obj
+            ),
+            "fail-closed: an id with no object in the scanned frame proves nothing about \
+             what the census counts. Banking the evaluator's `.values()` walk skipping it \
+             makes this FAIL"
+        );
+    }
+
+    /// **S5-P1 / S5-N1** — `other_leq_condition_provably_excludes_class` as block (3)'s
+    /// `condition` surface reaches it, on Blackcleave Cliffs' and Copperline Gorge's REAL
+    /// parsed conditions (`ObjectId(183)` and `ObjectId(315)` in this lane's target dump).
+    ///
+    /// REVERT / MUTATION PROBES:
+    /// * make S5's arm return `false` (or delete the `|| other_leq_..` disjunct) ⇒
+    ///   **S5-P1 FAILS**.
+    /// * drop the `matches_target_filter` conjunct from S5's mirror ⇒ **S5-N1 FAILS**.
+    /// * delete `!members.is_empty()` ⇒ **M2-S5 FAILS**.
+    #[test]
+    fn s5_arm_relieves_the_real_taplands_and_keeps_the_creature_veto() {
+        use crate::types::ability::{
+            ControllerRef, FilterProp, ReplacementCondition, TypeFilter, TypedFilter,
+        };
+
+        // ── S5-P1 ────────────────────────────────────────────────────────────────────
+        let (state, member, _) = block3_fixture(vec![
+            (902, "Blackcleave Cliffs", blackcleave_cliffs_def()),
+            (903, "Copperline Gorge", copperline_gorge_def()),
+        ]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "S5-P1: CR 614.1c + CR 614.1d — 'unless you control two or fewer other lands' \
+             censuses OTHER LANDS, and the growing class is a Saproling creature token, so \
+             the count is invariant across the loop's growth (CR 732.2a) and block (3) must \
+             SKIP the condition surface. Deleting the `|| other_leq_..` disjunct restores \
+             the veto"
+        );
+
+        // ── S5-N1 — `filter` the ONLY variable ───────────────────────────────────────
+        let n1_condition = ReplacementCondition::UnlessControlsOtherLeq {
+            count: 2,
+            filter: TypedFilter {
+                type_filters: vec![TypeFilter::Creature],
+                controller: Some(ControllerRef::You),
+                properties: vec![FilterProp::Another],
+            },
+        };
+        let (n1_state, n1_member, _) = block3_fixture(vec![
+            (
+                902,
+                "Blackcleave Cliffs",
+                with_condition(blackcleave_cliffs_def(), n1_condition.clone()),
+            ),
+            (
+                903,
+                "Copperline Gorge",
+                with_condition(copperline_gorge_def(), n1_condition),
+            ),
+        ]);
+        assert!(
+            fire_time_conditions_read_growing_class(&n1_state, Some(&HashSet::from([n1_member]))),
+            "S5-N1: byte-identical definitions with ONLY `condition.filter` changed \
+             Land+Another -> Creature{{You}}+Another. Every minted Saproling is another \
+             creature P0 controls, so the census MOVES with the class and the veto must \
+             survive. Relieving on the variant's SHAPE alone makes this FAIL"
+        );
+
+        // ── M2-S5 ────────────────────────────────────────────────────────────────────
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::new())),
+            "M2-S5: `!members.is_empty()` is LOAD-BEARING — an empty class must not relieve \
+             the surface. Deleting that guard makes this FAIL"
+        );
+    }
+
+    /// **R8 axis 3 — S5 COUNTS THE SOURCE, S4 EXCLUDES IT.** The one difference between the
+    /// two evaluator arms that a shape-only reading would erase.
+    ///
+    /// The fixture is hostile by construction: the class member IS the definition's own
+    /// source, and the filter carries NO `FilterProp::Another`, so the evaluator's census
+    /// counts the source itself. `game::replacement`'s `UnlessControlsOtherLeq` arm has no
+    /// `o.id != source_id` exclusion, so relief here would be relief the evaluator does not
+    /// grant.
+    ///
+    /// REVERT / MUTATION PROBE: add S4's `member.id != source.id` conjunct to S5's mirror ⇒
+    /// **FAILS** (the source is excluded, the class looks disjoint, the veto is wrongly
+    /// lifted).
+    #[test]
+    fn s5_arm_counts_the_source_itself() {
+        use crate::types::ability::{ControllerRef, ReplacementCondition, TypeFilter, TypedFilter};
+
+        let bare_land_filter = TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: Some(ControllerRef::You),
+            properties: Vec::new(),
+        };
+        let def = with_condition(
+            blackcleave_cliffs_def(),
+            ReplacementCondition::UnlessControlsOtherLeq {
+                count: 2,
+                filter: bare_land_filter,
+            },
+        );
+        let (state, _member, hosts) = block3_fixture(vec![(902, "Blackcleave Cliffs", def)]);
+        let host = hosts[0];
+
+        // Positive control on the SAME board and the SAME definition: a class made of the
+        // Saproling token IS relieved, so the negative below is attributable to WHICH id the
+        // class holds and to nothing else.
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([ObjectId(800)]))),
+            "matched control: a non-land class member is never counted by a land census, so \
+             the surface is relieved"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([host]))),
+            "R8 axis 3: the class member IS the definition's own source, and \
+             `UnlessControlsOtherLeq`'s evaluator counts the source (no `o.id != source_id` \
+             exclusion, unlike `UnlessControlsCountMatching`). A land census over a class \
+             that contains the source is NOT invariant, so the veto must survive. Adding \
+             S4's `member.id != source.id` conjunct to S5's mirror makes this FAIL"
+        );
+    }
+
+    /// **Probe P-5** — S4/S5's top-level-only match is FAIL-CLOSED, not assumed.
+    ///
+    /// The cluster's sibling arms discharge sole-sourceness with a clone-and-blank-and-rescan.
+    /// That probe is vacuous here (the scanned node IS the matched node), so what discharges
+    /// it is the `let ... else` refusing every compound. This row measures both halves: the
+    /// scanner still reports the veto through an `And`, and both relief arms decline it.
+    ///
+    /// REVERT / MUTATION PROBE: replace either arm's `let ... else` with a recursive descent
+    /// into `And` ⇒ **the end-to-end assertion FAILS**.
+    #[test]
+    fn s4_s5_compound_condition_keeps_the_veto() {
+        use crate::types::ability::ReplacementCondition;
+
+        let s4 = sunken_hollow_def()
+            .condition
+            .expect("fixture pin: Sunken Hollow carries a condition");
+        let s5 = blackcleave_cliffs_def()
+            .condition
+            .expect("fixture pin: Blackcleave Cliffs carries a condition");
+        let scan = crate::game::ability_scan::replacement_condition_reads_sibling_mutable;
+
+        // The predicate can say `false` at all — without this the `true`s below prove nothing.
+        assert!(
+            !scan(&ReplacementCondition::UnlessYourTurn),
+            "positive control: a read-free condition scores FALSE, so the vetoes below are \
+             the scanner discriminating rather than a predicate stuck at `true`"
+        );
+        assert!(
+            scan(&s4) && scan(&s5),
+            "reach-guard: both bare variants veto"
+        );
+
+        let compound = |inner: &ReplacementCondition| ReplacementCondition::And {
+            conditions: vec![inner.clone(), ReplacementCondition::UnlessYourTurn],
+        };
+        assert!(
+            scan(&compound(&s4)) && scan(&compound(&s5)),
+            "P-5: `scan_replacement_condition` RECURSES through `And`, so a read hidden \
+             inside a compound is still seen — the relief arms may therefore decline every \
+             compound without creating a hole"
+        );
+
+        let (state, member, hosts) =
+            block3_fixture(vec![(900, "Sunken Hollow", sunken_hollow_def())]);
+        let host_obj = state.objects[&hosts[0]].clone();
+        for (label, inner) in [("S4", &s4), ("S5", &s5)] {
+            let and = compound(inner);
+            assert!(
+                !count_matching_condition_provably_excludes_class(&and, &state, member, &host_obj)
+                    && !other_leq_condition_provably_excludes_class(
+                        &and, &state, member, &host_obj
+                    ),
+                "P-5 ({label}): both arms match at TOP LEVEL ONLY, so an `And` falls to the \
+                 `let ... else` and KEEPS the veto"
+            );
+        }
+
+        // End to end: the same compound installed on a real card still vetoes at block (3).
+        let (and_state, and_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(sunken_hollow_def(), compound(&s4)),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&and_state, Some(&HashSet::from([and_member]))),
+            "P-5 end-to-end: the SAME relievable condition wrapped in `And` keeps the veto. \
+             Descending into `And` in either relief arm makes this FAIL"
+        );
+    }
+
+    /// **C3-N3 — no relief-by-`continue`.** The relief is scoped to block (3)'s `condition`
+    /// surface; a definition whose condition is provably invariant may still carry a
+    /// class-observing `execute`, and that surface must keep its own veto.
+    ///
+    /// REVERT / MUTATION PROBE: turn the condition relief into a `continue` over the whole
+    /// definition ⇒ **FAILS**.
+    #[test]
+    fn block3_condition_relief_does_not_carry_the_execute_surface() {
+        let observing = trigger_execute_from_oracle(
+            "When BBFU10 Bystander enters, draw a card for each creature you control.",
+        );
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_sibling_mutable(&observing),
+            "reach-guard: the grafted `execute` body must itself veto, else this row passes \
+             for the wrong reason"
+        );
+
+        let mut def = sunken_hollow_def();
+        def.execute = Some(Box::new(observing));
+
+        // The fixture's own `execute` reach-guard is inverted for this row, so build the
+        // state directly rather than through `block3_fixture`.
+        use std::sync::Arc;
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let oid = ObjectId(900);
+        let mut object = GameObject::new(
+            oid,
+            CardId(900),
+            PlayerId(0),
+            "Sunken Hollow".to_string(),
+            Zone::Battlefield,
+        );
+        object.card_types.core_types = vec![CoreType::Land];
+        object.base_replacement_definitions = Arc::new(vec![def.clone()]);
+        object.replacement_definitions = vec![def].into();
+        state.objects.insert(oid, object);
+        state.battlefield.push_back(oid);
+
+        // Matched control: the SAME board with the observing body removed IS relieved, so
+        // the veto below is attributable to `execute` and to nothing else.
+        let (relieved_state, relieved_member, _) =
+            block3_fixture(vec![(900, "Sunken Hollow", sunken_hollow_def())]);
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &relieved_state,
+                Some(&HashSet::from([relieved_member]))
+            ),
+            "matched control: without the observing `execute`, the definition is relieved"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "C3-N3: the condition is provably invariant but the `execute` body draws a card \
+             FOR EACH creature the controller controls, which scales with the growing class. \
+             Relief is per SURFACE, never per definition — turning it into a `continue` over \
+             the whole def makes this FAIL"
+        );
+    }
+
+    /// **C3-N4 — the floating half is FAIL-CLOSED.** A `pending_damage_replacements` entry
+    /// has no source object, so neither arg-equivalence pin is constructible; the definition
+    /// keeps its veto even when its condition would be relievable on a board carrier.
+    ///
+    /// REVERT / MUTATION PROBE: synthesize a source for the floating half (e.g. fall back to
+    /// any battlefield object, or to `state.active_player`'s first permanent) ⇒ **FAILS**.
+    #[test]
+    fn block3_floating_condition_keeps_the_veto() {
+        // The board half is relieved on this very condition — the matched control that makes
+        // the floating verdict attributable to the ABSENT SOURCE and to nothing else.
+        let (board_state, board_member, _) =
+            block3_fixture(vec![(900, "Sunken Hollow", sunken_hollow_def())]);
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &board_state,
+                Some(&HashSet::from([board_member]))
+            ),
+            "matched control: the SAME condition on a board carrier IS relieved"
+        );
+
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        assert_eq!(
+            live_floating_replacement_defs(&state).count(),
+            0,
+            "reach-guard: the floating store is empty BEFORE the graft, so the veto observed \
+             after it is attributable to THIS definition"
+        );
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "reach-guard: the pre-graft board is SILENT on every block"
+        );
+
+        state.pending_damage_replacements.push(sunken_hollow_def());
+        assert_eq!(
+            live_floating_replacement_defs(&state).count(),
+            1,
+            "reach-guard: exactly ONE floating definition after the graft"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "C3-N4: CR 611.2's floating store carries no source object, so there is no \
+             `source_id` and no controller to build the evaluator's own census arguments \
+             from — no arg-equivalence pin exists and the definition must keep its veto. \
+             Synthesizing a source for the floating half makes this FAIL"
+        );
+    }
+
+    /// **Population-independence guard** — a filter whose match on a NON-member can move when
+    /// a class member ARRIVES must keep its veto, on both arms.
+    ///
+    /// `FilterProp::MostPrevalentCreatureTypeIn` resolves through
+    /// `filter::most_prevalent_creature_types_in_zone(state, owner, zone)`, so minting
+    /// Saprolings can flip which creature types are "most prevalent" and therefore whether an
+    /// object the census would count still matches. "No class member is counted" is then not
+    /// invariance of the count, and relief would be unsound. `ability_scan::scan_filter_prop`
+    /// does NOT flag that variant's population axis, so the scanner cannot be leaned on.
+    ///
+    /// Each arm is paired with the SAME definition minus the third property, which IS relieved,
+    /// so every verdict below is attributable to `filter.properties` and to nothing else.
+    ///
+    /// REVERT / MUTATION PROBE: make `filter_props_are_population_independent` return `true`
+    /// unconditionally (or drop either arm's conjunct) ⇒ **both hostile arms FAIL**.
+    #[test]
+    fn s4_s5_population_dependent_filter_property_keeps_the_veto() {
+        use crate::types::ability::{
+            ControllerRef, FilterProp, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        // The guard itself: allowlisted in, everything else out. Pins the `matches!` shape so a
+        // `_ => true` fall-through or a denylist inversion reds here as well as end to end.
+        let prevalent = FilterProp::MostPrevalentCreatureTypeIn {
+            zone: Zone::Battlefield,
+            scope: ControllerRef::You,
+        };
+        assert!(
+            filter_props_are_population_independent(&[]),
+            "an empty property list reads nothing about the population"
+        );
+        assert!(
+            filter_props_are_population_independent(&[
+                FilterProp::Another,
+                FilterProp::HasSupertype {
+                    value: Supertype::Basic,
+                },
+            ]),
+            "positive control: BOTH allowlisted properties pass, so the negatives below are \
+             the allowlist discriminating rather than a predicate stuck at `false`"
+        );
+        assert!(
+            !filter_props_are_population_independent(std::slice::from_ref(&prevalent)),
+            "a population-dependent property is refused"
+        );
+        assert!(
+            !filter_props_are_population_independent(&[FilterProp::Another, prevalent.clone(),]),
+            "ONE unlisted property poisons the whole list — the guard is `all`, not `any`"
+        );
+        // ⛔ THE DIRECTION ROW. `FilterProp::Tapped` is neither allowlisted NOR the named
+        // population-dependent variant above, so it is the ONLY assertion in this test that
+        // distinguishes an ALLOWLIST from a DENYLIST: an allowlist refuses it for being
+        // UNLISTED, a denylist that enumerates known-bad variants admits it. MEASURED, not
+        // assumed — inverting the guard to `!matches!(p, MostPrevalentCreatureTypeIn { .. })`
+        // left every OTHER assertion in this test GREEN, so without this line the very
+        // anti-pattern the guard's doc forbids would have shipped untested.
+        assert!(
+            !filter_props_are_population_independent(&[FilterProp::Tapped]),
+            "ALLOWLIST DIRECTION: an unlisted property is refused because it is UNLISTED, not \
+             because it was enumerated as bad. Inverting the guard into a `_ => true` \
+             fall-through or a denylist of known-bad variants makes this FAIL — and it is the \
+             ONLY assertion here that catches that inversion"
+        );
+
+        // ── S4: the real Sunken Hollow filter plus a THIRD, population-dependent property ──
+        let s4_hostile = ReplacementCondition::UnlessControlsCountMatching {
+            minimum: 2,
+            filter: TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Land],
+                controller: Some(ControllerRef::You),
+                properties: vec![
+                    FilterProp::HasSupertype {
+                        value: Supertype::Basic,
+                    },
+                    prevalent.clone(),
+                ],
+            }),
+        };
+        let (s4_state, s4_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(sunken_hollow_def(), s4_hostile),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s4_state, Some(&HashSet::from([s4_member]))),
+            "S4 population guard: the Saproling token is not a basic land, so the arm's \
+             member-quantified test alone would relieve — but `MostPrevalentCreatureTypeIn` \
+             makes a NON-member's match depend on the population, so minting members can move \
+             the count without any member ever being counted. Relief must be refused. Making \
+             `filter_props_are_population_independent` return `true` makes this FAIL"
+        );
+
+        // ── S5: the real Blackcleave Cliffs filter plus the same third property ────────────
+        let s5_hostile = ReplacementCondition::UnlessControlsOtherLeq {
+            count: 2,
+            filter: TypedFilter {
+                type_filters: vec![TypeFilter::Land],
+                controller: Some(ControllerRef::You),
+                properties: vec![FilterProp::Another, prevalent],
+            },
+        };
+        let (s5_state, s5_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(blackcleave_cliffs_def(), s5_hostile),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s5_state, Some(&HashSet::from([s5_member]))),
+            "S5 population guard: same hazard through the other arm — both consult the one \
+             shared allowlist, so neither can drift from the other. Dropping S5's conjunct \
+             makes this FAIL"
+        );
+
+        // ── MATCHED CONTROLS: the identical definitions WITHOUT the third property ─────────
+        let (s4_ok, s4_ok_member, _) =
+            block3_fixture(vec![(900, "Sunken Hollow", sunken_hollow_def())]);
+        let (s5_ok, s5_ok_member, _) =
+            block3_fixture(vec![(902, "Blackcleave Cliffs", blackcleave_cliffs_def())]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&s4_ok, Some(&HashSet::from([s4_ok_member])))
+                && !fire_time_conditions_read_growing_class(
+                    &s5_ok,
+                    Some(&HashSet::from([s5_ok_member]))
+                ),
+            "matched controls: with `properties` back inside the allowlist BOTH arms relieve \
+             again, so the two vetoes above are attributable to the third property alone and \
+             the guard is proven not to be a blanket refusal"
+        );
+
+        // ── The unwrapping narrowing: a COMPOUND filter has no property list to allowlist ──
+        let compound = ReplacementCondition::UnlessControlsCountMatching {
+            minimum: 2,
+            filter: TargetFilter::And {
+                filters: vec![TargetFilter::Typed(TypedFilter::land())],
+            },
+        };
+        let (compound_state, compound_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(sunken_hollow_def(), compound),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(
+                &compound_state,
+                Some(&HashSet::from([compound_member]))
+            ),
+            "S4 is `TargetFilter::Typed`-only: a compound carries no single `properties` list \
+             to allowlist, so it is REFUSED rather than guessed at. Measured cost: zero — all \
+             25 corpus productions are bare `Typed`. Relaxing the `Typed` destructure to walk \
+             compounds makes this FAIL"
         );
     }
 }

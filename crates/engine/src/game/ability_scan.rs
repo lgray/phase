@@ -4401,6 +4401,30 @@ fn scan_replacement_condition(x: &ReplacementCondition, mode: ScanMode) -> Axes 
             sibling: false,
             projected: false,
         },
+        // ⛔ DO NOT "TIDY" THE `UnlessControlsSubtype` ARM BELOW, AND DO NOT RELY ON ITS VERDICT.
+        //
+        // (a) IT IS A KNOWN FAIL-OPEN (FU-18). It discards `subtypes` and declares "reads nothing",
+        //     while its evaluator (`game/replacement.rs`, `UnlessControlsSubtype` arm) runs a LIVE
+        //     BATTLEFIELD CENSUS: `state.objects.values().any(|o| o.zone == Zone::Battlefield
+        //     && o.controller == controller && o.id != source_id && subtypes.iter().any(..))`.
+        //     ALL FOUR members of the `UnlessControls*` cluster census the board; this is the only one
+        //     whose scan arm says otherwise (`UnlessControlsOtherLeq` => CONSERVATIVE;
+        //     `UnlessControlsMatching` / `UnlessControlsCountMatching` => `scan_target_filter(..,
+        //     LiveBoardCensus, ..)`). Repair is FU-18, deliberately NOT in the CR 732.2a relief lane:
+        //     repairing it ADDS a veto while that lane REMOVES vetoes, and one commit doing both is
+        //     unreadable — each masks the other's net effect.
+        //
+        // (b) THE CR 732.2a BLOCK-(3) RELIEF IS COMPLETE ON TODAY'S BOARDS *BECAUSE* OF (a).
+        //     Measured on `tests/fixtures/witherbloom_altar_sprout_swarm_4p.json.gz`: 5
+        //     condition-bearing block-(3) definitions, of which 4 veto (2 `UnlessControlsCountMatching`
+        //     + 2 `UnlessControlsOtherLeq`, relieved by `analysis/resource.rs`'s block-(3)
+        //     relief arms) and this one does not. NO relief arm matches
+        //     `UnlessControlsSubtype`. So repairing (a) makes it veto, block (3) refuses
+        //     again, and the loop-shortcut offer REGRESSES.
+        //     ⇒ WHOEVER REPAIRS THIS OWES THE MATCHING RELIEF ARM IN THE SAME CHANGE: an
+        //     `UnlessControlsSubtype`-shaped sibling of `analysis/resource.rs`'s
+        //     `UnlessControlsCountMatching` relief, pinned to THIS evaluator's own subtype
+        //     test, not to `matches_target_filter`.
         ReplacementCondition::UnlessControlsSubtype { subtypes: _ } => Axes::NONE,
         ReplacementCondition::UnlessControlsOtherLeq { .. } => Axes::CONSERVATIVE,
         ReplacementCondition::UnlessControlsMatching { filter } => {
