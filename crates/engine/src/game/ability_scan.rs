@@ -3316,6 +3316,25 @@ fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
         valid_source: _,
         zone_change_clauses: _,
 
+        // ---- read-free: the Room-half (door) STAMP — a matcher key of the class
+        //      above, at its most inert end. `RoomDoor` is a fieldless two-variant
+        //      discriminator (`game_object`), so unlike `valid_card` it cannot even
+        //      express a filter: no payload position reaches a `TargetFilter` or a
+        //      `QuantityExpr`, and it opens no traversal-closure hole. It is fixed
+        //      per definition, not board-tracked — the only writes are the
+        //      once-claimed stamps in `GameObject::install_room_door_text`, so no
+        //      sibling resolving first can move it. Both readers GATE which printed
+        //      text acts, never a resolution-time value: CR 709.5h (an unlock
+        //      ability triggers for ITS half) compares the stamp to the event's own
+        //      `door` tag, and CR 709.5 (a locked half has no rules text) drops a
+        //      stamped trigger while THAT object's own designation is absent. Both
+        //      verdicts are functions of a per-definition constant, the event's own
+        //      door tag, and the source's own designations — none varies with how
+        //      many members the growing class has, so a door gate can only NARROW
+        //      which triggers reach the firewall, never change the verdict for one
+        //      that does.
+        room_door: _,
+
         // ---- read-free: pure event SHAPE (CR 603.2). 173 `TriggerMode` variants,
         //      of which exactly 4 carry a payload (an ability tag, a planeswalk
         //      role, an ability-lifecycle point, and an `Unknown(String)`
@@ -3328,7 +3347,7 @@ fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
         // ---- read-free: zone / phase / flag / literal-threshold metadata. None
         //      reaches a `TargetFilter` or a `QuantityExpr` (measured by resolving
         //      each field's declared type and recursing its payload positions;
-        //      9 of the 36 fields reach one, and all 9 are handled above).
+        //      9 of the 37 fields reach one, and all 9 are handled above).
         origin: _,
         origin_zones: _,
         destination: _,
