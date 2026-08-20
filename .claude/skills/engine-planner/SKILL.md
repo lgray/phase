@@ -115,11 +115,12 @@ worktree's absolute path; never build in a checkout another process (e.g. Tilt) 
 activity behind any active implementation executor on a shared worktree — read-only discovery may run
 concurrently. Never put a scratch target dir on tmpfs. Keep one isolated target dir per worktree and
 *reuse* it across probes — deleting it between runs buys nothing and re-imposes the full dependency
-rebuild that talks planners out of probing in the first place. Because that isolation exists, lock
-contention is not a reason to withhold builds: if you catch yourself writing "do not run cargo" into a
-brief, name the isolated target dir instead. Capacity is the one thing isolation cannot fix — a fresh
-target dir costs disk rather than saving it — so a genuinely full or saturated box is worth naming, and
-worth probing once it clears.
+rebuild that talks planners out of probing in the first place. Because that isolation exists,
+target-directory lock contention is not a reason to withhold builds: if you catch yourself writing "do
+not run cargo" into a brief, name the isolated target dir instead. Shared `CARGO_HOME` registry/package-
+cache locks are a separate lock domain that target-dir isolation doesn't touch, and can still delay a
+build. Capacity is the one thing isolation cannot fix — a fresh target dir costs disk rather than saving
+it — so a genuinely full or saturated box is worth naming, and worth probing once it clears.
 
 ### Step 4: Answer architectural questions
 
