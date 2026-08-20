@@ -254,7 +254,7 @@ Return a structured report to the orchestrator. This structured report is your r
 ### Implementation/fix output
 
 1. **Diff summary** — files touched, grouped by subsystem, with a one-line purpose per file.
-2. **Worktree record** — `START_SHA`, `IMPLEMENTATION_WORKTREE`, clean-start and stable-HEAD/end-of-edit attestations. State explicitly that preparatory evidence is not completion evidence.
+2. **Worktree record** — `START_SHA`, `IMPLEMENTATION_WORKTREE`, clean-start and stable-HEAD/end-of-edit check results. State explicitly that preparatory evidence is not completion evidence.
 3. **PREPARATORY verification results** — which Tilt resources are green; any failures with `tilt logs` excerpts (own vs unrelated). State explicitly that this is not completion evidence.
 4. **Parser preparatory gate** — pass/fail with offending lines if any.
 5. **Discriminating-test gate** — the existing full production-path coverage map for every behavioral claim, including changed seam/function, production entry point, test name, revert-failing assertion, and sibling/negative cases. Explicitly list any unmapped seam as a stop-and-return item. Confirm no production-reachable arm is left covered only by a degenerate fixture. State if any test is shape-only and whether that is acceptable because semantics remain unsupported/red.
@@ -271,7 +271,7 @@ Return a structured report to the orchestrator. This structured report is your r
 1. **Identity** — `BASE_SHA`, `CANDIDATE_SHA`, and `IMPLEMENTATION_WORKTREE`.
 2. **Source-hash records** — both `engine-source-hash.sh` outputs bound to their SHAs and their equality/difference result.
 3. **Parser evidence** — whether the change moves parser output, and if so what the comparator showed.
-4. **No-edit/no-commit attestation** — confirm source diff and `HEAD` did not change during measurement.
+4. **No-edit/no-commit check** — confirm source diff and `HEAD` did not change during measurement.
 5. **Stop-and-return items, deviations, and risks** — especially any condition that makes measurement `CANNOT_ANSWER`.
 
 Do NOT commit. Do NOT push. The orchestrator decides what to stage and when.
