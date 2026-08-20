@@ -7910,4 +7910,112 @@ mod tests {
              discard publishes -- no CompletePlayerAction stamp"
         );
     }
+
+    /// **S6-P2b ⟨G⟩ — the post-replacement dispatch binds the REPLACEMENT SOURCE'S player,
+    /// not the active player.** This is the other half of the universe argument the block-(3)
+    /// `execute` firewall relief
+    /// (`analysis::resource::reveal_from_hand_execute_provably_excludes_class`) rests on: that
+    /// arm censuses `players[replacement_source_player(source)].hand`, and the census is only
+    /// the right pool if THIS dispatch binds the same authority. If the binding here were
+    /// `state.active_player`, the arm would census one player's hand while the effect read
+    /// another's, and the relief would be unsound on every board where the reveal land's
+    /// controller is not the active player.
+    ///
+    /// ⛔ The `-> source.controller` divergence is deliberately NOT registered as a mutation:
+    /// `controller_or_owner()` returns `controller` for every `Zone::Battlefield` source, and
+    /// the firewall walk yields only `[Battlefield, Command]` sources with non-emblem Command
+    /// dropped upstream — so no input this walk can produce distinguishes the two, and a row
+    /// claiming otherwise would be unfalsifiable.
+    ///
+    /// REVERT / MUTATION PROBE: change `apply_post_replacement_effect`'s `controller` binding
+    /// from `replacement_source_player(obj)` to `state.active_player` ⇒ **this row FAILS**
+    /// (the prompt goes to `PlayerId(0)` offering that player's card).
+    #[test]
+    fn post_replacement_execute_binds_the_replacement_source_player() {
+        use crate::types::ability::{TypeFilter, TypedFilter};
+
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+        let land_controller = PlayerId(1);
+
+        // ⟨G⟩ reach-guard: the two candidate authorities DISAGREE on this board. Without
+        // this the row passes identically under the mutation and measures nothing.
+        assert_ne!(
+            state.active_player, land_controller,
+            "⟨G⟩ reach-guard: `active_player` and the source's controller must differ, else \
+             both bindings agree and this row cannot discriminate"
+        );
+
+        let land = create_object(
+            &mut state,
+            CardId(900),
+            land_controller,
+            "Gilt-Leaf Palace".to_string(),
+            Zone::Battlefield,
+        );
+        assert_eq!(
+            crate::game::replacement::replacement_source_player(&state.objects[&land]),
+            land_controller,
+            "⟨G⟩ reach-guard: a battlefield source's replacement player IS its controller \
+             (CR 109.4), so the binding under test resolves to the value asserted below"
+        );
+
+        let make_elf = |state: &mut GameState, card: u64, owner: PlayerId| {
+            let id = create_object(
+                state,
+                CardId(card),
+                owner,
+                "Llanowar Elves".to_string(),
+                Zone::Hand,
+            );
+            let obj = state.objects.get_mut(&id).expect("just created");
+            obj.card_types.core_types = vec![CoreType::Creature];
+            obj.card_types.subtypes = vec!["Elf".to_string()];
+            id
+        };
+        // A matching card in EACH player's hand, so the verdict names WHICH hand was read
+        // rather than which hand happened to be non-empty.
+        let active_player_elf = make_elf(&mut state, 901, PlayerId(0));
+        let controller_elf = make_elf(&mut state, 902, land_controller);
+        assert_ne!(active_player_elf, controller_elf);
+
+        let elf_filter = TargetFilter::Typed(
+            TypedFilter::card().with_type(TypeFilter::Subtype("Elf".to_string())),
+        );
+        let effect_def = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::RevealFromHand {
+                filter: elf_filter,
+                on_decline: None,
+            },
+        );
+
+        let mut events = Vec::new();
+        let waiting = apply_post_replacement_effect(
+            &mut state,
+            &effect_def,
+            Some(land),
+            None,
+            None,
+            HashSet::new(),
+            &mut events,
+        );
+
+        match waiting {
+            Some(WaitingFor::RevealChoice {
+                ref player,
+                ref cards,
+                ..
+            }) => {
+                assert_eq!(
+                    (*player, cards.clone()),
+                    (land_controller, vec![controller_elf]),
+                    "S6-P2b: the dispatch binds the REPLACEMENT SOURCE's player, so the \
+                     prompt goes to the land's controller and offers THAT player's card. \
+                     Binding `state.active_player` instead makes this FAIL"
+                );
+            }
+            other => panic!("expected a RevealChoice prompt, got {:?}", other),
+        }
+    }
 }

@@ -4340,6 +4340,267 @@ fn counters_on_source_provably_excludes_class(
         .is_some_and(|read_id| read_id != class_member)
 }
 
+/// TOTAL by construction: every axis of `def` other than `kind` and `effect` is at
+/// `AbilityDefinition::new`'s value.
+///
+/// `ability_definition_axes` (`game/ability_scan.rs:4622`) destructures `AbilityDefinition`
+/// with no `..` and binds **20 of its 39 fields `_`** — so a scanner-only inertness test is
+/// blind to all 20, and `AbilityCost::EffectCost { effect }` (one of them) is routed to
+/// `scan_effect` at `ability_scan.rs:4810`, i.e. the codebase's own authority says that
+/// payload can read the board. Equality against the canonical constructor asks about every
+/// field instead of a hand-maintained list: `AbilityDefinition::new` (`types/ability.rs:21030`)
+/// is an exhaustive struct literal with no `..Default`, and `AbilityDefinition` derives
+/// `PartialEq`, so a NEW FIELD carrying a non-constructor value fails here without anyone
+/// remembering to extend anything — and a new field also breaks `new`'s literal at compile
+/// time. `#[derive(Clone, PartialEq, Eq)]` sits at `types/ability.rs:20390`, so this is DERIVED
+/// STRUCTURAL equality over all 39 fields — a strict superset of the 20 the scan binds `_`, a
+/// future field participates automatically, and the fail direction is REFUSAL.
+/// Pinned by S6-A0 (22 disagreeing inputs) and S6-A12.
+fn ability_definition_carries_only_its_effect(
+    def: &crate::types::ability::AbilityDefinition,
+) -> bool {
+    use crate::types::ability::AbilityDefinition;
+    *def == AbilityDefinition::new(def.kind, (*def.effect).clone())
+}
+
+/// The decline branch must clear the SAME authorities the outer definition clears: the
+/// board-census scanner, the totality check, and the arrival-invariance guard the reveal
+/// `filter` clears at (b-f). The scanner alone is not enough — it and the arrival authority
+/// DISAGREE on exactly the resolution-local ledger leaves this lane's growing class writes.
+///
+/// **WHERE THEY DISAGREE, quoted rather than paraphrased.** The population authority's own
+/// operative clause — the doc comment on
+/// [`crate::game::filter::affected_filter_uses_object_population`] — defines the hazard as
+/// *"another object entering or leaving the battlefield can change whether a PRE-EXISTING
+/// object satisfies this filter"*, and `LastCreated` violates that clause DIRECTLY: minting a
+/// token ASSIGNS `state.last_created_token_ids` (assignment, never append), so a pre-existing
+/// object that was failing `Not { LastCreated }` starts passing it. The scanner nevertheless
+/// classifies those leaves as read-free. CR 608.2c is the rules shape they lower — "…if that
+/// spell is countered **this way**…", a reference resolved inside the resolution that produced
+/// it. See [`arrival_can_move_a_nonmember_match`], which is where that fail-closing lives.
+///
+/// **WHY CHECK 2 IS AN EQUALITY AND NOT A FIELD ALLOWLIST.** `ability_definition_axes`
+/// (`game/ability_scan.rs:4622`) binds **20 of `AbilityDefinition`'s 39 fields `_`**, so a
+/// scanner-only inertness test on this branch is blind to all 20 — a hand-maintained allowlist
+/// would have to be extended by whoever adds field 40, and nobody would remember. Equality
+/// against the canonical constructor is TOTAL BY CONSTRUCTION instead; see
+/// [`ability_definition_carries_only_its_effect`].
+///
+/// **MEASURED CLASS EVIDENCE.** Predicate: a card-face entry in `data/card-data.json` (md5
+/// `39c353b4e0cc4395925a12ad30b590aa`) carrying a `replacements[]` element whose
+/// `execute.effect.type == "RevealFromHand"`; unit, one row per card face; **21 faces**. Over
+/// that corpus **21/21** `on_decline` effects are `SetTapState`, **21/21** of their targets are
+/// `SelfRef`, and **19/21** faces are relieved by this gate — the 2 misses are exactly the 2
+/// faces carrying a non-null `on_decline.condition`. ⚠ Those 2 misses are an **INTERIM**
+/// conservative approximation, not correct-by-design: `(b-d)` refuses a board-reading decline
+/// condition without ever asking whether that census intersects the growing class. The
+/// block-(1b) `execute_ledger_condition_provably_excludes_class` shape — which proves the
+/// condition's OWN census excludes the class — relieves them when it lands.
+///
+/// CHECK 3 IS A SINGLE-VARIANT ALLOWLIST, AND THAT IS A **SCOPE RULING, NOT A DESIGN
+/// JUDGMENT.** `arrival_can_move_a_nonmember_match` takes a `&TargetFilter`; there is no
+/// **filter-enumerating walk** over an `Effect` in this codebase (`filter_contains` is
+/// `TargetFilter`-rooted), and `game/filter.rs` is READ-ONLY for this phase, so building one
+/// here is out of scope by ruling rather than by preference. **FU-36** owns that walk (and the
+/// repair of `affected_filter_uses_object_population`'s contradiction on the ledger leaves);
+/// when it lands, check 3 becomes that call and this allowlist dissolves. Until then the
+/// allowlist can only UNDER-relieve — the residual is "the offer fails to appear", this
+/// subsystem's safe direction — never relieve wrongly. Do not widen it casually; extend it by
+/// doing FU-36's walk. Pinned by S6-A6, S6-A11, S6-A12.
+fn reveal_from_hand_decline_branch_is_arrival_invariant(
+    decl: &crate::types::ability::AbilityDefinition,
+) -> bool {
+    use crate::types::ability::Effect;
+    // 1. BOARD-CENSUS AUTHORITY. Refuses Fortified Beachhead / Temple of the Dragon Queen,
+    //    whose `on_decline.condition` is a live `ControllerControlsMatching` census — and,
+    //    measured over every distinct `SetTapState` target in `card-data.json` (156 distinct
+    //    filters over 2462 occurrences), the SOLE refuser for 87 of 156.
+    if crate::game::ability_scan::ability_definition_reads_sibling_mutable(decl) {
+        return false;
+    }
+    // 2. TOTALITY — the same authority (0) uses, at this level. NO field is exempt. Measured
+    //    non-redundant with check 1: a branch canonical except `optional: true` gives
+    //    `check1_refuses=false check2_admits=false check3_admits=true`, so check 2 is the sole
+    //    refuser (S6-A12).
+    if !ability_definition_carries_only_its_effect(decl) {
+        return false;
+    }
+    // 3. ARRIVAL-INVARIANCE on the branch effect's own filter — the axis check 1 cannot see.
+    //    No `..`: a new field on `SetTapState` is a compile error here. `scope` and `state`
+    //    are `_` because both are fieldless `Copy` enums (`EffectScope`, `TapStateChange`)
+    //    that cannot carry a filter, an `Effect` or an `AbilityDefinition`.
+    match decl.effect.as_ref() {
+        Effect::SetTapState {
+            target,
+            scope: _,
+            state: _,
+        } => !arrival_can_move_a_nonmember_match(target),
+        _ => false,
+    }
+}
+
+/// **S6** — CR 732.2a block-(3) relief on a replacement definition's `execute` BODY, for the
+/// reveal-land class (`Effect::RevealFromHand`, CR 701.20a). Answers "can this execute body
+/// observe the growing class?" with a UNIVERSE argument rather than a census-invariance one.
+///
+/// **CR ANCHORS, each stating what it licenses.**
+///  * **CR 701.20a** ("To reveal a card, show that card to all players for a brief time") —
+///    what `Effect::RevealFromHand` implements, i.e. what conjunct (b) matches on.
+///  * **CR 614.1c** ("Effects that read '[This permanent] enters with …,' 'As [this permanent]
+///    enters …' … are replacement effects") — why "As this land enters" is a
+///    `ReplacementDefinition` at all, i.e. why this arm sits at block (3).
+///  * **CR 614.1d** (continuous "[This permanent] enters …" effects are replacement effects) —
+///    the object-attached store the board half of `loop_window_replacement_defs` walks.
+///  * **CR 111.7** ("A token that's in a zone other than the battlefield ceases to exist") —
+///    the universe argument's floor: the growing class is battlefield-resident, so a TOKEN
+///    class member cannot simultaneously be a card in a hand.
+///  * **CR 109.4** + **CR 108.4a** (only stack/battlefield objects have a controller;
+///    otherwise use the owner) — what `replacement_source_player` implements at conjunct (d).
+///  * **CR 611.2** ("A continuous effect may be generated by the resolution of a spell or
+///    ability") — the FLOATING store, and why the call site's fail-closed residual is YAGNI
+///    rather than a capability gap; contrast **CR 611.3** (static-ability generated), the
+///    object-attached half this arm actually reaches.
+///  * **CR 732.2a** (the player with priority may suggest a shortcut) — the firewall's own
+///    question, i.e. what the relief is relief *from*.
+///
+/// ⛔ **THE UNIVERSE ARGUMENT — this arm's whole basis, and it is not a census.**
+/// `reveal_from_hand::resolve` draws its subjects from `players[controller].hand` and only
+/// THEN filters them (`game/effects/reveal_from_hand.rs:48-62`), while the growing class is
+/// battlefield objects. A class member absent from that hand can therefore never be in the
+/// eligible set, whatever the filter says — so relief here rests on the SUBJECT POOL, not on
+/// proving a count invariant. CR 111.7 is why a token member cannot be in both places at once.
+///
+/// ⛔ **WHY `(0)` IS A TOTALITY CHECK AND NOT A FIELD LIST.** `ability_definition_axes`
+/// (`game/ability_scan.rs:4622`) binds **20 of `AbilityDefinition`'s 39 fields `_`**, and it
+/// routes `AbilityCost::EffectCost { effect }` — one of those 20 — to `scan_effect`
+/// (`ability_scan.rs:4810`), i.e. the codebase's own authority says that payload CAN read the
+/// board. A scanner-only inertness test is blind to it. Equality against the canonical
+/// constructor asks about every axis at once; see
+/// [`ability_definition_carries_only_its_effect`]. Pinned by S6-A0, whose 22 inputs each
+/// differ from the canonical control on exactly one axis.
+///
+/// ⛔ **WHY THERE IS NO `(a)` — the clone-and-rescan the traced sibling arms carry. This is a
+/// CLOSED-FORM argument, not a sample count.** `(0)` admits `exec` iff
+/// `exec == AbilityDefinition::new(exec.kind, (*exec.effect).clone())`, and
+/// `AbilityDefinition::new` (`types/ability.rs:21030`) is an exhaustive struct literal whose
+/// every field but `kind` and `effect` is a payload-free constant. So on the `(0)`-ADMITTED
+/// set, `(a)`'s probe (clone the def, set `*effect = Effect::NoOp`, rescan) is LITERALLY
+/// `AbilityDefinition::new(kind, Effect::NoOp)` — one value per `AbilityKind` inhabitant, and
+/// nothing else. `AbilityKind` (`types/ability.rs:19984`) is a 5-variant fieldless `Copy`
+/// enum, and `ability_definition_axes` binds `kind` itself `_`. The probe domain is therefore
+/// exactly **5 values**, all 5 measured non-reading — an EXHAUSTIVE enumeration, not a sample.
+/// A conjunct that can never be the sole refuser cannot be driven RED, so keeping it would
+/// ship an unpinnable production line. Corroboration only, and cited as such: over a 46-input
+/// battery, `a_refusals_total=1` (the control, which `(0)` also refuses) and
+/// `A_REFUSALS_WHERE_0_ADMITS=0`. The three axes `(a)` genuinely saw (`sub_ability`,
+/// `else_ability`, `mode_abilities`) are re-homed onto `(0)` and each still reddens there.
+/// ⚠ This DIVERGES from [`pump_aggregate_provably_excludes_class`], which keeps the
+/// `(0)`+`(a)` pair; that divergence is deliberate and is disclosed here rather than hidden at
+/// the sibling. It is a NARROWING — the totality check refuses everything `(a)` refused, and
+/// 19 further axes the pair let through — with a MEASURED coverage cost of ZERO (all 21 corpus
+/// `execute` defs stay canonical under the full-field equality).
+///
+/// ⛔ **WHY `(b-f)` AND `(b-d)` EXIST.** Two corpus faces make plan-r4's specified S6 arm fail
+/// OPEN, and both are printed on the card: Fortified Beachhead ("…unless you revealed a
+/// Soldier card this way **or you control a Soldier**") and Temple of the Dragon Queen ("…**or
+/// you control a Dragon**"). That printed clause is the source of an `on_decline` board census
+/// the outer shape check cannot see. `(b-f)` carries the arrival question onto the reveal
+/// `filter`; `(b-d)` carries it onto the decline branch. MEASURED CEILING, stated rather than
+/// rounded: **19 of the 21** corpus faces are relieved and **2 fail closed** — those same two.
+/// Relieving them needs a conditional relief proving the `on_decline` condition's own census
+/// excludes the class, which is a different arm's shape and is filed as a follow-up.
+///
+/// ⛔ **WHY `(c)` IS BARE `contains_key` HERE, AND WHY THE SIBLING'S ARGUMENT DOES NOT
+/// TRANSFER.** [`pump_aggregate_provably_excludes_class`]'s `(c)` needed a
+/// `zone == Battlefield` narrowing because ITS `(d)` counted a battlefield-scoped population,
+/// so an id that merely EXISTED was trivially absent from that population and satisfied `(d)`
+/// having proved nothing. That vacuity argument does not transfer: this arm's `(d)` population
+/// is the CONTROLLER'S HAND, and "this battlefield token is not in that hand" IS the universe
+/// argument, not a vacuity. The zone form would additionally REFUSE a class member sitting in,
+/// say, a graveyard — a narrowing the universe argument does not need. `(c)` is a
+/// frame-presence guard only and binds nothing. Pinned by S6-A7, whose registered mutation is
+/// this conjunct's DELETION.
+///
+/// ⛔ **WHY `(d)` IS A `let-else` AND NOT `!…is_some_and(..)`.** The two differ only when the
+/// player lookup returns `None`, and there the negated form yields RELIEF: `None.is_some_and(_)`
+/// is `false`, and the leading `!` flips it to `true`. That is the fail-OPEN direction on the
+/// one input where nothing has been proved. The `let-else` returns `false` — keep the veto.
+/// Pinned by S6-A9, whose registered mutation is exactly the negated form.
+///
+/// ⛔ **CONTROLLER AUTHORITY: `replacement::replacement_source_player`, NEVER the raw
+/// `source.controller` field.** That is the binding `apply_post_replacement_effect` itself
+/// makes (`game/engine_replacement.rs:2450`), and `GameObject::controller_or_owner` yields
+/// `self.owner` for a NON-EMBLEM Command-zone carrier (CR 109.4 + CR 108.4a). **MEASURED SCOPE
+/// OF THAT HAZARD, so nobody re-derives it from the wrong premise:** this walk cannot currently
+/// reach the divergence — `object_functions` returns `false` for `Zone::Command && !is_emblem`
+/// and `functioning_board_replacement_defs` keeps only `[Battlefield, Command]`, so every
+/// object reaching this arm satisfies `controller_or_owner() == controller`. The authority is
+/// taken anyway because it is free and because the equivalence must be PROVEN rather than
+/// asserted; it is NOT taken on the strength of a live divergence, and NO ROW HERE CLAIMS ONE.
+///
+/// ⛔ **THE MECHANISM CLASS `(b)` CLOSES, with both predicates and both counts.** Predicate
+/// DIRECT: an `Effect` variant with ≥1 field whose DECLARED TYPE mentions `AbilityDefinition`
+/// (field lines only; doc comments and `#[…]` excluded) — **8 of 232 variants**
+/// (`Vote.per_choice_effect`, `SeparateIntoPiles.{chosen,unchosen}_pile_effect`,
+/// `RevealFromHand.on_decline`, `CreateDelayedTrigger.effect`, `FlipCoin.{win,lose}_effect`,
+/// `FlipCoins.{win,lose}_effect`, `FlipCoinUntilLose.win_effect`, `ChooseOneOf.branches`).
+/// Predicate TRANSITIVE: a variant with a `Box<Effect>` field, which can hold ANY variant
+/// including those 8 — **+2** (`CreateDrawReplacement.replacement_effect`,
+/// `CreatePlaneswalkReplacement.replacement_effect`). ⚠ A naive line-grep that includes doc
+/// comments and attributes returns **11** and is wrong: `RevealHand`, `RollDie` and
+/// `DraftFromSpellbook` have no such field. `(b)`'s `let-else` refuses all 9 non-
+/// `RevealFromHand` carriers, so the mechanism is closed BY CONSTRUCTION rather than by
+/// descent — this is a FORWARD GUARD for whoever extends `(b)`, not the repair of a live hole.
+/// Pinned by S6-A10 on 5 of them, 3 direct and BOTH transitive.
+fn reveal_from_hand_execute_provably_excludes_class(
+    exec: &crate::types::ability::AbilityDefinition,
+    state: &GameState,
+    class_member: ObjectId,
+    source: &GameObject,
+) -> bool {
+    use crate::types::ability::Effect;
+
+    // (0) TOTALITY. The scan is blind to 20 of this struct's 39 axes; rather than fail closed
+    //     on the one axis we happened to notice, require every axis but `kind` and `effect`
+    //     to be at its constructor value. Subsumes the sibling arms' activation-restriction
+    //     guard AND their clone-and-rescan `(a)` — measured: `(a)` refuses nothing this
+    //     admits. See this function's doc.
+    if !ability_definition_carries_only_its_effect(exec) {
+        return false;
+    }
+    // (b) SHAPE — single level, no `..`, `_ => false` via let-else, so a new field on the
+    //     variant is a compile error here and every sibling carrier keeps its blanket veto.
+    let Effect::RevealFromHand { filter, on_decline } = exec.effect.as_ref() else {
+        return false;
+    };
+    // (b-f) the reveal filter must be ARRIVAL-INVARIANT, not merely class-disjoint.
+    if arrival_can_move_a_nonmember_match(filter) {
+        return false;
+    }
+    // (b-d) the decline branch must clear the SAME authorities. `None` is an admitted decline
+    //       (a no-op branch reads nothing); a present branch must earn it.
+    if on_decline
+        .as_deref()
+        .is_some_and(|d| !reveal_from_hand_decline_branch_is_arrival_invariant(d))
+    {
+        return false;
+    }
+    // (c) an id with no object in the scanned frame proves nothing — fail closed. Bare
+    //     `contains_key` is correct HERE; see this function's doc for why the sibling arm's
+    //     `zone == Battlefield` narrowing does not transfer.
+    if !state.objects.contains_key(&class_member) {
+        return false;
+    }
+    // (d) THE UNIVERSE PIN. `reveal_from_hand::resolve` draws its subjects from
+    //     `players[controller].hand` and only then filters, so a member absent from that
+    //     hand can never be in the eligible set.
+    let controller = crate::game::replacement::replacement_source_player(source);
+    let Some(player) = state.players.iter().find(|p| p.id == controller) else {
+        return false; // fail closed: no player ⇒ no universe to reason about
+    };
+    !player.hand.iter().any(|&h| h == class_member)
+}
+
 /// **S4** — CR 732.2a block-(3) relief on a replacement effect's
 /// `UnlessControlsCountMatching` condition (CR 614.1d): is the condition's value provably
 /// INVARIANT as the growing class grows by `class_member`?
@@ -5689,11 +5950,29 @@ fn fire_time_conditions_read_growing_class_scoped(
         {
             return true;
         }
-        if def
-            .execute
-            .as_ref()
-            .is_some_and(|a| scan::ability_definition_reads_sibling_mutable(a))
-        {
+        // CR 732.2a relief (S6), SCOPED TO THE `execute` SURFACE ONLY — never a `continue`
+        // over the whole def, for the same reason the `condition` surface above is scoped
+        // (row `block3_execute_relief_does_not_carry_the_condition_surface`).
+        let execute_disjoint = |exec: &crate::types::ability::AbilityDefinition| {
+            // FLOATING HALF ⇒ FAIL CLOSED — the `.execute` twin of the `condition_disjoint`
+            // residual C3b-1 landed. CR 611.2's floating store has no source object, so
+            // `replacement_source_player` has no argument and the universe pin has no player
+            // to census. Same YAGNI + fail-closed posture as the sibling, and the same
+            // caveat: the door is unopened, not welded shut — do not reword this as
+            // "impossible".
+            let Some(source) = source else {
+                return false;
+            };
+            class_members.is_some_and(|members| {
+                !members.is_empty()
+                    && members.iter().all(|&m| {
+                        reveal_from_hand_execute_provably_excludes_class(exec, state, m, source)
+                    })
+            })
+        };
+        if def.execute.as_ref().is_some_and(|a| {
+            scan::ability_definition_reads_sibling_mutable(a) && !execute_disjoint(a)
+        }) {
             return true;
         }
     }
@@ -25868,6 +26147,1258 @@ mod tests {
              source's controller controls, so 'unless your opponents control eight or more \
              lands' COUNTS it (CR 109.5). The census moves with the class and the veto must \
              survive. Replacing the arm's final expression with `true` makes this FAIL"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────
+    // C3b-2 — S6 (`Effect::RevealFromHand`) relief at block (3)'s `def.execute` surface.
+    // ─────────────────────────────────────────────────────────────────────────────────
+
+    /// Parse a real reveal-land's VERBATIM Oracle text (MTGJSON-derived `card-data.json`,
+    /// md5 `39c353b4e0cc4395925a12ad30b590aa`) and hand back the replacement definition whose
+    /// `execute` body is the `Effect::RevealFromHand` block (3) walks. Never a paraphrase: a
+    /// reworded "you may reveal" line can take a different parser branch and go green while
+    /// the real card still vetoes. Mirrors [`tapland_replacement`]'s rule for C3b-1.
+    ///
+    /// The assertion is on the REVEAL definition, not on the replacement COUNT: Temple of the
+    /// Dragon Queen carries a second "As this land enters, choose a color" replacement, so a
+    /// count pin would be wrong for it while the reveal pin is right for all three.
+    fn reveal_land_replacement(
+        name: &str,
+        oracle: &str,
+        subtypes: &[&str],
+    ) -> crate::types::ability::ReplacementDefinition {
+        use crate::types::ability::Effect;
+        let subs: Vec<String> = subtypes.iter().map(|s| (*s).to_string()).collect();
+        let parsed =
+            crate::parser::parse_oracle_text(oracle, name, &[], &["Land".to_string()], &subs);
+        let reveals: Vec<_> = parsed
+            .replacements
+            .iter()
+            .filter(|r| {
+                r.execute
+                    .as_deref()
+                    .is_some_and(|e| matches!(*e.effect, Effect::RevealFromHand { .. }))
+            })
+            .cloned()
+            .collect();
+        assert_eq!(
+            reveals.len(),
+            1,
+            "fixture pin: {name} parses to exactly ONE replacement whose `execute` is \
+             `Effect::RevealFromHand`; a parser change that splits, merges or re-shapes it \
+             re-points every C3b-2 row"
+        );
+        reveals.into_iter().next().unwrap()
+    }
+
+    fn necroblossom_snarl_def() -> crate::types::ability::ReplacementDefinition {
+        reveal_land_replacement(
+            "Necroblossom Snarl",
+            "As this land enters, you may reveal a Swamp or Forest card from your hand. If \
+             you don't, this land enters tapped.\n{T}: Add {B} or {G}.",
+            &[],
+        )
+    }
+
+    fn fortified_beachhead_def() -> crate::types::ability::ReplacementDefinition {
+        reveal_land_replacement(
+            "Fortified Beachhead",
+            "As this land enters, you may reveal a Soldier card from your hand. This land \
+             enters tapped unless you revealed a Soldier card this way or you control a \
+             Soldier.\n{T}: Add {W} or {U}.\n{5}, {T}: Soldiers you control get +1/+1 until \
+             end of turn.",
+            &[],
+        )
+    }
+
+    fn temple_of_the_dragon_queen_def() -> crate::types::ability::ReplacementDefinition {
+        reveal_land_replacement(
+            "Temple of the Dragon Queen",
+            "As this land enters, you may reveal a Dragon card from your hand. This land \
+             enters tapped unless you revealed a Dragon card this way or you control a \
+             Dragon.\nAs this land enters, choose a color.\n{T}: Add one mana of the chosen \
+             color.",
+            &[],
+        )
+    }
+
+    /// Replace ONE field of a parsed reveal land — the `execute` body's reveal `filter` —
+    /// leaving every other byte alone, so a row's divergence from its matched positive is
+    /// attributable to `filter` and to nothing else.
+    fn with_reveal_filter(
+        mut def: crate::types::ability::ReplacementDefinition,
+        filter: crate::types::ability::TargetFilter,
+    ) -> crate::types::ability::ReplacementDefinition {
+        use crate::types::ability::Effect;
+        let exec = def
+            .execute
+            .as_deref_mut()
+            .expect("fixture pin: the base definition must already carry an `execute` body");
+        let Effect::RevealFromHand { filter: f, .. } = exec.effect.as_mut() else {
+            panic!("fixture pin: the base `execute` must already be `Effect::RevealFromHand`")
+        };
+        *f = filter;
+        def
+    }
+
+    /// Replace ONE field of a parsed reveal land — the decline branch's `SetTapState.target`.
+    /// Asserts the base already carries a `SetTapState` decline branch, so the row varies the
+    /// target's CONTENT rather than the branch's presence or shape.
+    fn with_decline_target(
+        mut def: crate::types::ability::ReplacementDefinition,
+        target: crate::types::ability::TargetFilter,
+    ) -> crate::types::ability::ReplacementDefinition {
+        use crate::types::ability::Effect;
+        let exec = def
+            .execute
+            .as_deref_mut()
+            .expect("fixture pin: the base definition must already carry an `execute` body");
+        let Effect::RevealFromHand { on_decline, .. } = exec.effect.as_mut() else {
+            panic!("fixture pin: the base `execute` must already be `Effect::RevealFromHand`")
+        };
+        let decl = on_decline
+            .as_deref_mut()
+            .expect("fixture pin: the base definition must already carry an `on_decline` branch");
+        let Effect::SetTapState { target: t, .. } = decl.effect.as_mut() else {
+            panic!("fixture pin: the base decline branch must already be `Effect::SetTapState`")
+        };
+        *t = target;
+        def
+    }
+
+    /// **S6-A0's 22-input driver.** Move exactly ONE axis of the `execute` definition off its
+    /// `AbilityDefinition::new` value.
+    ///
+    /// Both assertions are non-vacuity guards, and they run in this order deliberately: the
+    /// base must be CANONICAL before the mutation (so any refusal is the mutation's) and
+    /// NON-CANONICAL after it (so the mutation actually moved the axis — a no-op closure would
+    /// otherwise produce a row that passes while testing nothing).
+    fn with_execute_axis(
+        mut def: crate::types::ability::ReplacementDefinition,
+        axis: &str,
+        f: impl FnOnce(&mut crate::types::ability::AbilityDefinition),
+    ) -> crate::types::ability::ReplacementDefinition {
+        let exec = def
+            .execute
+            .as_deref_mut()
+            .expect("fixture pin: the base definition must already carry an `execute` body");
+        assert!(
+            ability_definition_carries_only_its_effect(exec),
+            "fixture pin ({axis}): the base `execute` must be CANONICAL before the mutation, \
+             so the refusal below is attributable to this axis and to nothing else"
+        );
+        f(exec);
+        assert!(
+            !ability_definition_carries_only_its_effect(exec),
+            "fixture pin ({axis}): the mutation must actually move the axis OFF its \
+             constructor value — a no-op closure would make this row vacuous"
+        );
+        def
+    }
+
+    /// A class-reading `AbilityDefinition`: its body draws a card FOR EACH creature the
+    /// controller controls, so it scales with the growing class. The hostile payload every
+    /// S6-A0 nested-ability axis and every S6-A10 carrier wraps.
+    fn s6_hostile_body() -> crate::types::ability::AbilityDefinition {
+        let hostile = trigger_execute_from_oracle(
+            "When BBFU10 Bystander enters, draw a card for each creature you control.",
+        );
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_sibling_mutable(&hostile),
+            "reach-guard: the hostile payload must itself be certified board-reading by the \
+             PUBLIC scan authority, else every row wrapping it passes for the wrong reason"
+        );
+        hostile
+    }
+
+    /// The arm-level board: one reveal land (`ObjectId(900)`, controlled by `PlayerId(0)`)
+    /// plus the Saproling class member. Returns `(state, member, source)`.
+    ///
+    /// ⟨G⟩ REACH-GUARD, asserted before any row can claim an outcome: the definition's
+    /// `execute` must raise `ability_definition_reads_sibling_mutable`. Without it block (3)'s
+    /// third surface never speaks and every row below — positive AND negative — is vacuous.
+    fn s6_arm_board(
+        def: &crate::types::ability::ReplacementDefinition,
+    ) -> (GameState, ObjectId, GameObject) {
+        use std::sync::Arc;
+        assert!(
+            def.execute.as_deref().is_some_and(|a| {
+                crate::game::ability_scan::ability_definition_reads_sibling_mutable(a)
+            }),
+            "⟨G⟩ reach-guard: the `execute` body must carry the sibling veto S6 relieves, \
+             else the arm is never consulted and every row below is vacuous"
+        );
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let oid = ObjectId(900);
+        let mut object = GameObject::new(
+            oid,
+            CardId(900),
+            PlayerId(0),
+            "C3b-2 reveal land".to_string(),
+            Zone::Battlefield,
+        );
+        object.card_types.core_types = vec![CoreType::Land];
+        object.base_replacement_definitions = Arc::new(vec![def.clone()]);
+        object.replacement_definitions = vec![def.clone()].into();
+        state.objects.insert(oid, object.clone());
+        state.battlefield.push_back(oid);
+        (state, member, object)
+    }
+
+    /// Call the arm exactly as block (3)'s `execute` surface reaches it.
+    fn s6_arm(
+        def: &crate::types::ability::ReplacementDefinition,
+        state: &GameState,
+        member: ObjectId,
+        source: &GameObject,
+    ) -> bool {
+        reveal_from_hand_execute_provably_excludes_class(
+            def.execute
+                .as_deref()
+                .expect("the fixture always carries an `execute` body"),
+            state,
+            member,
+            source,
+        )
+    }
+
+    /// The EXECUTE-surface mirror of [`block3_fixture`], with the reach-guards INVERTED:
+    /// here the `execute` body must speak and the `condition` must be silent, so a relieved
+    /// verdict is attributable to block (3)'s THIRD surface and not to its first.
+    fn r2_block3_execute_fixture(
+        defs: Vec<(u64, &str, crate::types::ability::ReplacementDefinition)>,
+    ) -> (GameState, ObjectId, Vec<ObjectId>) {
+        use std::sync::Arc;
+
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let mut hosts = Vec::new();
+        for (id, name, def) in defs {
+            assert!(
+                def.execute.as_deref().is_some_and(|a| {
+                    crate::game::ability_scan::ability_definition_reads_sibling_mutable(a)
+                }),
+                "⟨G⟩ reach-guard: {name}'s `execute` body must carry the sibling veto S6 \
+                 relieves, else every row below passes without reaching the arm"
+            );
+            assert!(
+                !def.condition.as_ref().is_some_and(
+                    crate::game::ability_scan::replacement_condition_reads_sibling_mutable
+                ),
+                "⟨G⟩ reach-guard: {name}'s `condition` must be SILENT, so a relieved verdict \
+                 is attributable to the EXECUTE surface alone"
+            );
+            assert!(
+                def.runtime_execute.is_none(),
+                "⟨G⟩ reach-guard: {name} carries no `runtime_execute`, block (3)'s second \
+                 surface — which keeps its conservative veto and is out of scope here"
+            );
+            let oid = ObjectId(id);
+            let mut object = GameObject::new(
+                oid,
+                CardId(id),
+                PlayerId(0),
+                name.to_string(),
+                Zone::Battlefield,
+            );
+            object.card_types.core_types = vec![CoreType::Land];
+            object.base_replacement_definitions = Arc::new(vec![def.clone()]);
+            object.replacement_definitions = vec![def].into();
+            state.objects.insert(oid, object);
+            state.battlefield.push_back(oid);
+            hosts.push(oid);
+        }
+        assert_eq!(
+            live_floating_replacement_defs(&state).count(),
+            0,
+            "⟨G⟩ reach-guard: the floating half is EMPTY, so every verdict below is the board \
+             half's"
+        );
+        {
+            let mut stripped = state.clone();
+            for &h in &hosts {
+                let obj = stripped.objects.get_mut(&h).unwrap();
+                obj.base_replacement_definitions = Arc::new(Vec::new());
+                obj.replacement_definitions = Vec::new().into();
+            }
+            assert!(
+                !fire_time_conditions_read_growing_class(&stripped, Some(&HashSet::from([member]))),
+                "⟨G⟩ reach-guard (ATTRIBUTABILITY): with the replacement definitions removed \
+                 the board is SILENT on every other block, so each `true` below is block \
+                 (3)'s and each `false` is block (3) declining"
+            );
+        }
+        (state, member, hosts)
+    }
+
+    /// **S6-A0 ⟨G⟩ (NEGATIVE — the totality check fails closed on ANY non-canonical axis).**
+    /// 22 inputs, each differing from the matched control on exactly ONE axis: the **19**
+    /// constructible axes `ability_definition_axes` binds `_` (so a scanner-only inertness
+    /// test is blind to every one of them), plus the **3** nested-ability axes the deleted
+    /// `(a)` conjunct used to cover.
+    ///
+    /// ATTRIBUTION, asserted per input: the mutated def still raises the sibling veto (so the
+    /// arm IS consulted), and `(0)` is what refuses it. The matched control in the same fn is
+    /// the UNMUTATED Snarl def, which is relieved — and since each mutant differs from it on
+    /// one `_`-bound axis that no conjunct after `(0)` reads, deleting `(0)` admits every one
+    /// of the 22. That is what makes this row's mutation red rather than green.
+    ///
+    /// REVERT / MUTATION PROBE: delete conjunct `(0)` ⇒ **this row FAILS** on all 22 inputs.
+    /// Disagreeing input: each mutant below; the canonical control agrees under both designs.
+    #[test]
+    fn s6_arm_fails_closed_on_any_noncanonical_execute_axis() {
+        use crate::types::ability::{
+            AbilityCost, AbilityDefinition, AbilityTag, ActivationManaPaymentRestriction,
+            ActivationRestriction, IterationKindBinding, OpponentMayScope, PlayerFilter,
+            SiblingCondition, SubAbilityLink, TargetChoiceTiming, TargetSelectionMode,
+        };
+
+        let hostile = s6_hostile_body();
+        let (state, member, source) = s6_arm_board(&necroblossom_snarl_def());
+
+        // Matched control (same fn): the canonical def IS relieved. Without it the 22
+        // refusals below could belong to some OTHER conjunct and deleting `(0)` would not
+        // move them.
+        assert!(
+            s6_arm(&necroblossom_snarl_def(), &state, member, &source),
+            "matched control: the UNMUTATED Snarl def is relieved, so every refusal below is \
+             attributable to the one axis that input moves"
+        );
+
+        // The 18 capture-free `_`-bound axes. `cost` is the 19th and is built below because
+        // it carries a hostile PAYLOAD rather than an inert marker.
+        // One `_`-bound axis moved off its constructor value. Aliased because the bare
+        // fn-pointer-in-tuple-in-array type trips `clippy::type_complexity`.
+        type AxisMutator = fn(&mut AbilityDefinition);
+        let inert: [(&str, AxisMutator); 18] = [
+            ("description", |d| d.description = Some("C3b-2 axis".into())),
+            ("target_prompt", |d| {
+                d.target_prompt = Some("C3b-2 axis".into())
+            }),
+            ("activation_restrictions", |d| {
+                d.activation_restrictions = vec![ActivationRestriction::AsSorcery];
+            }),
+            ("activation_mana_payment_restriction", |d| {
+                d.activation_mana_payment_restriction =
+                    Some(ActivationManaPaymentRestriction::OnlySourceChosenColor);
+            }),
+            ("activator_filter", |d| {
+                d.activator_filter = Some(PlayerFilter::Opponent);
+            }),
+            ("activation_zone", |d| d.activation_zone = Some(Zone::Hand)),
+            ("ability_tag", |d| d.ability_tag = Some(AbilityTag::Boast)),
+            ("optional_targeting", |d| d.optional_targeting = true),
+            ("optional", |d| d.optional = true),
+            ("optional_for", |d| {
+                d.optional_for = Some(OpponentMayScope::AnyOpponent);
+            }),
+            ("target_choice_timing", |d| {
+                d.target_choice_timing = TargetChoiceTiming::Resolution;
+            }),
+            ("min_x_value", |d| d.min_x_value = 1),
+            ("cant_be_copied", |d| d.cant_be_copied = true),
+            ("forward_result", |d| d.forward_result = true),
+            ("target_selection_mode", |d| {
+                d.target_selection_mode = TargetSelectionMode::Random;
+            }),
+            ("sub_link", |d| {
+                d.sub_link = SubAbilityLink::SequentialSibling
+            }),
+            ("iteration_kind_binding", |d| {
+                d.iteration_kind_binding = Some(IterationKindBinding::RebindToIteratedKind);
+            }),
+            ("sibling_condition", |d| {
+                d.sibling_condition = SiblingCondition::ReplicatedOrBranch;
+            }),
+        ];
+
+        let mut mutants: Vec<(&str, crate::types::ability::ReplacementDefinition)> = inert
+            .into_iter()
+            .map(|(axis, f)| (axis, with_execute_axis(necroblossom_snarl_def(), axis, f)))
+            .collect();
+
+        // The 19th `_`-bound axis. `AbilityCost::EffectCost { effect }` is routed to
+        // `scan_effect` by `scan_ability_cost` (`ability_scan.rs:4810`), i.e. the codebase's
+        // OWN authority says this payload can read the board — while `ability_definition_axes`
+        // binds `cost` `_`. That pair is why `(0)` is a totality check and not a field list.
+        mutants.push((
+            "cost=EffectCost(hostile)",
+            with_execute_axis(necroblossom_snarl_def(), "cost=EffectCost(hostile)", {
+                let effect = Box::new((*hostile.effect).clone());
+                move |d: &mut AbilityDefinition| d.cost = Some(AbilityCost::EffectCost { effect })
+            }),
+        ));
+
+        // The 3 axes the DELETED `(a)` conjunct genuinely saw, re-homed onto `(0)`.
+        for (axis, install) in [
+            ("sub_ability=hostile", 0u8),
+            ("else_ability=hostile", 1),
+            ("mode_abilities=hostile", 2),
+        ] {
+            let h = hostile.clone();
+            mutants.push((
+                axis,
+                with_execute_axis(
+                    necroblossom_snarl_def(),
+                    axis,
+                    move |d: &mut AbilityDefinition| match install {
+                        0 => d.sub_ability = Some(Box::new(h)),
+                        1 => d.else_ability = Some(Box::new(h)),
+                        _ => d.mode_abilities = vec![h],
+                    },
+                ),
+            ));
+        }
+
+        assert_eq!(
+            mutants.len(),
+            22,
+            "S6-A0 drives exactly 22 axes: 19 `_`-bound + the 3 the deleted `(a)` covered"
+        );
+
+        for (axis, mutant) in &mutants {
+            let exec = mutant.execute.as_deref().unwrap();
+            assert!(
+                crate::game::ability_scan::ability_definition_reads_sibling_mutable(exec),
+                "⟨G⟩ reach-guard ({axis}): the mutated def must still carry the sibling veto, \
+                 else the arm is never asked and the refusal below is vacuous"
+            );
+            assert!(
+                !ability_definition_carries_only_its_effect(exec),
+                "attribution ({axis}): conjunct `(0)` must be the refuser"
+            );
+            assert!(
+                !s6_arm(mutant, &state, member, &source),
+                "S6-A0 ({axis}): the firewall's scan binds 20 of this struct's 39 fields `_`, \
+                 so a non-constructor value on ANY of them is an unscanned payload and relief \
+                 must be refused. Deleting conjunct `(0)` makes this FAIL"
+            );
+        }
+    }
+
+    /// A bare `Typed` filter with the given properties, controlled by the source's controller.
+    fn s6_typed(
+        props: Vec<crate::types::ability::FilterProp>,
+    ) -> crate::types::ability::TargetFilter {
+        use crate::types::ability::{ControllerRef, TargetFilter, TypeFilter, TypedFilter};
+        TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: Some(ControllerRef::You),
+            properties: props,
+        })
+    }
+
+    /// **S6-A11 ⟨G⟩ (NEGATIVE — a BOARD-READING decline target keeps the veto).**
+    ///
+    /// The decline branch's `SetTapState.target` is replaced by a real `card-data.json` shape,
+    /// `Typed{type_filters:["Artifact"], properties:[]}` — a live board census the OUTER shape
+    /// check cannot see. Attribution asserted in-fn: checks 2 and 3 both ADMIT it, so `(b-d)`
+    /// check 1 is the SOLE refuser.
+    ///
+    /// REVERT / MUTATION PROBE: delete `(b-d)` check 1 (the board-census scanner) ⇒ **this row
+    /// FAILS**. Disagreeing input: the Artifact-target branch below; the unchanged `SelfRef`
+    /// branch in the matched control agrees under both designs.
+    #[test]
+    fn s6_arm_keeps_the_veto_on_a_board_reading_decline_target() {
+        use crate::types::ability::{Effect, TargetFilter, TypeFilter, TypedFilter};
+
+        let base = necroblossom_snarl_def();
+        let (state, member, source) = s6_arm_board(&base);
+        assert!(
+            s6_arm(&base, &state, member, &source),
+            "matched control: the same def with its unchanged `SelfRef` decline target IS \
+             relieved, so the veto below is attributable to the TARGET and to nothing else"
+        );
+
+        // `Typed{type_filters:["Artifact"], properties:[]}` — the real `card-data.json`
+        // decline-target shape. `TypedFilter::new` IS that shape (`..Default::default()`
+        // leaves `properties` empty), so this is the constructor rather than a rebuild.
+        let mutant = with_decline_target(
+            base,
+            TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
+        );
+
+        let decl = match mutant.execute.as_deref().unwrap().effect.as_ref() {
+            Effect::RevealFromHand { on_decline, .. } => on_decline.as_deref().unwrap(),
+            _ => unreachable!("the fixture pins the reveal shape"),
+        };
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_sibling_mutable(decl),
+            "attribution: `(b-d)` check 1 REFUSES this branch"
+        );
+        assert!(
+            ability_definition_carries_only_its_effect(decl),
+            "attribution: `(b-d)` check 2 ADMITS it — the branch is canonical apart from its \
+             effect, so check 1 is the sole refuser"
+        );
+        match decl.effect.as_ref() {
+            Effect::SetTapState { target, .. } => assert!(
+                !arrival_can_move_a_nonmember_match(target),
+                "attribution: `(b-d)` check 3 ADMITS it — a bare type filter is \
+                 arrival-invariant, so check 1 is the sole refuser"
+            ),
+            _ => unreachable!("the fixture pins the decline shape"),
+        }
+
+        assert!(
+            !s6_arm(&mutant, &state, member, &source),
+            "S6-A11: the decline branch censuses the BOARD, an axis neither the totality check \
+             nor the arrival guard can see. Deleting `(b-d)` check 1 makes this FAIL"
+        );
+    }
+
+    /// **S6-A12 ⟨G⟩ (NEGATIVE — a NON-CANONICAL decline axis keeps the veto).**
+    ///
+    /// The decline branch is canonical except `optional: true`. Attribution asserted in-fn:
+    /// check 1 is SILENT and check 3 ADMITS, so `(b-d)` check 2 is the SOLE refuser — the
+    /// measurement that proves check 2 is not redundant with check 1.
+    ///
+    /// REVERT / MUTATION PROBE: delete `(b-d)` check 2 (the totality check at branch level) ⇒
+    /// **this row FAILS**. Disagreeing input: the `optional: true` branch below.
+    #[test]
+    fn s6_arm_keeps_the_veto_on_a_noncanonical_decline_axis() {
+        use crate::types::ability::Effect;
+
+        let base = necroblossom_snarl_def();
+        let (state, member, source) = s6_arm_board(&base);
+        assert!(
+            s6_arm(&base, &state, member, &source),
+            "matched control: the same def with a fully canonical decline branch IS relieved"
+        );
+
+        let mut mutant = base.clone();
+        match mutant.execute.as_deref_mut().unwrap().effect.as_mut() {
+            Effect::RevealFromHand { on_decline, .. } => {
+                on_decline.as_deref_mut().unwrap().optional = true;
+            }
+            _ => unreachable!("the fixture pins the reveal shape"),
+        }
+
+        let decl = match mutant.execute.as_deref().unwrap().effect.as_ref() {
+            Effect::RevealFromHand { on_decline, .. } => on_decline.as_deref().unwrap(),
+            _ => unreachable!("the fixture pins the reveal shape"),
+        };
+        assert!(
+            !crate::game::ability_scan::ability_definition_reads_sibling_mutable(decl),
+            "attribution: `(b-d)` check 1 is SILENT on this branch — `optional` is one of the \
+             20 fields the scan binds `_`"
+        );
+        assert!(
+            !ability_definition_carries_only_its_effect(decl),
+            "attribution: `(b-d)` check 2 is the SOLE refuser"
+        );
+        match decl.effect.as_ref() {
+            Effect::SetTapState { target, .. } => assert!(
+                !arrival_can_move_a_nonmember_match(target),
+                "attribution: `(b-d)` check 3 ADMITS it — the target is still `SelfRef`"
+            ),
+            _ => unreachable!("the fixture pins the decline shape"),
+        }
+
+        assert!(
+            !s6_arm(&mutant, &state, member, &source),
+            "S6-A12: `optional` is one of the 20 axes the board-census scan binds `_`, so only \
+             the totality check can see it. Deleting `(b-d)` check 2 makes this FAIL"
+        );
+    }
+
+    /// **S6-A1 ⟨G⟩ (POSITIVE — relief fires on the dump's REAL Necroblossom Snarl).**
+    ///
+    /// Arm level only: the WBA dump is measured NOT decisive at firewall level for this arm
+    /// (`whole_firewall_with_arm == whole_firewall_without_arm`), so a dump-driven
+    /// firewall-level assertion could not fail. That is the same ruling
+    /// [`pump_aggregate_relieves_real_pyreswipe_hawk_on_wba_dump`] writes into its own doc.
+    ///
+    /// REVERT / MUTATION PROBE: replace the arm's final expression with `false` ⇒ **this row
+    /// FAILS**. Disagreeing input: the dump's real Snarl def against its real Saproling class.
+    #[test]
+    fn s6_arm_relieves_the_dumps_real_necroblossom_snarl() {
+        let state = wba_dump_state();
+        let snarl = state
+            .objects
+            .values()
+            .find(|o| o.name == "Necroblossom Snarl")
+            .cloned()
+            .expect("dump pin: the WBA dump carries a Necroblossom Snarl");
+        let def = snarl
+            .replacement_definitions
+            .iter_all()
+            .find(|d| {
+                d.execute.as_deref().is_some_and(|a| {
+                    matches!(
+                        *a.effect,
+                        crate::types::ability::Effect::RevealFromHand { .. }
+                    )
+                })
+            })
+            .cloned()
+            .expect("dump pin: the Snarl carries its reveal replacement");
+
+        let class: HashSet<ObjectId> = state
+            .objects
+            .values()
+            .filter(|o| o.is_token && o.card_types.subtypes.iter().any(|s| s == "Saproling"))
+            .map(|o| o.id)
+            .collect();
+        assert!(
+            !class.is_empty(),
+            "dump pin: the dump's Saproling fodder class is non-empty, else this row is vacuous"
+        );
+
+        assert!(
+            def.execute.as_deref().is_some_and(|a| {
+                crate::game::ability_scan::ability_definition_reads_sibling_mutable(a)
+            }),
+            "⟨G⟩ reach-guard: the dump def's `execute` carries the sibling veto S6 relieves"
+        );
+        for &m in &class {
+            assert!(
+                s6_arm(&def, &state, m, &snarl),
+                "S6-A1: the reveal draws its subjects from the CONTROLLER'S HAND while the \
+                 class is battlefield tokens (CR 111.7), so no member can ever be eligible. \
+                 Replacing the arm's final expression with `false` makes this FAIL"
+            );
+        }
+    }
+
+    /// **S6-A2 ⟨G⟩ (NEGATIVE — a class member IN THE CONTROLLER'S HAND keeps the veto).**
+    ///
+    /// The universe pin's whole point: a member that IS in the eligible pool proves nothing is
+    /// excluded. CR 111.7 forbids the token-in-two-zones board, so the member here is a
+    /// NONTOKEN card. Matched control in the same fn: the same board's battlefield member.
+    ///
+    /// REVERT / MUTATION PROBE: replace the arm's final expression with `true` ⇒ **this row
+    /// FAILS**. Disagreeing input: the in-hand member; the battlefield member agrees under
+    /// both designs.
+    #[test]
+    fn s6_arm_keeps_the_veto_when_a_member_is_in_the_controllers_hand() {
+        let def = necroblossom_snarl_def();
+        let (mut state, battlefield_member, source) = s6_arm_board(&def);
+
+        // A NONTOKEN Swamp card in the source controller's hand — a legal class member that
+        // the reveal's own universe DOES contain.
+        let in_hand = ObjectId(950);
+        let mut card = GameObject::new(
+            in_hand,
+            CardId(950),
+            PlayerId(0),
+            "Swamp".to_string(),
+            Zone::Hand,
+        );
+        card.card_types.core_types = vec![CoreType::Land];
+        card.card_types.subtypes = vec!["Swamp".to_string()];
+        state.objects.insert(in_hand, card);
+        let p0 = state
+            .players
+            .iter_mut()
+            .find(|p| p.id == PlayerId(0))
+            .expect("fixture pin: P0 exists");
+        p0.hand.push_back(in_hand);
+
+        assert!(
+            s6_arm(&def, &state, battlefield_member, &source),
+            "matched control: on the SAME board and the SAME definition, the BATTLEFIELD \
+             member IS relieved, so the veto below is attributable to WHICH ZONE the member \
+             sits in and to nothing else"
+        );
+        assert!(
+            !s6_arm(&def, &state, in_hand, &source),
+            "S6-A2: the class member is in the controller's hand, which is exactly the pool \
+             `reveal_from_hand::resolve` draws its subjects from — nothing is excluded and \
+             relief is unsound. Replacing the arm's final expression with `true` makes this \
+             FAIL"
+        );
+    }
+
+    /// **S6-A3 ⟨G⟩ (NEGATIVE — Fortified Beachhead's decline census keeps the veto).**
+    ///
+    /// Printed on the card: *"This land enters tapped unless you revealed a Soldier card this
+    /// way **or you control a Soldier**."* That last clause parses to an `on_decline`
+    /// condition that censuses the board live. It is the ONLY difference from the relieved
+    /// control: Snarl prints the bare *"If you don't, this land enters tapped."*
+    ///
+    /// ⛔ **THIS VETO IS INTERIM, AND IT IS A CONSERVATIVE APPROXIMATION — NOT A MEASURED
+    /// COUPLING TO THE GROWING CLASS.** `(b-d)` refuses any decline branch whose condition
+    /// reads the board, WITHOUT checking whether that census intersects the class this loop
+    /// grows. On this fixture it demonstrably does not: the census reads **Soldier**, and the
+    /// growing class is **Saproling** tokens. Nothing a Saproling arrival does can change
+    /// whether the controller controls a Soldier, so the veto here is the gate's coarseness
+    /// speaking, not a real observation of the class.
+    ///
+    /// ⚠ Do NOT read that as "this card can never veto soundly". *"Or you control a Soldier"*
+    /// WOULD couple to a class that grows Soldiers. The point is that the gate never asks —
+    /// which is why the repair is a per-board/per-class census rather than a tweak here.
+    ///
+    /// **The named later relief shape:** the block-(1b)
+    /// `execute_ledger_condition_provably_excludes_class` form, which proves the `on_decline`
+    /// condition's OWN census excludes the class. Until that lands the measured ceiling is
+    /// **19 of 21 corpus faces relieved, 2 fail closed** — these two, and they fail closed
+    /// only because they carry a non-null `on_decline.condition`.
+    ///
+    /// ⛔ ATTRIBUTION: this row pins the `(b-d)` gate as a DISJUNCTION, **not** check 1. Both
+    /// check 1 and check 2 refuse this branch (asserted in-fn), so no single-check deletion
+    /// moves it — which is exactly why S6-A11 and S6-A12 exist as separate isolating rows.
+    ///
+    /// REVERT / MUTATION PROBE: delete `(b-d)` as a whole ⇒ **this row FAILS**. Disagreeing
+    /// input: Beachhead's real parsed def; Snarl's, in the matched control, agrees under both
+    /// designs.
+    #[test]
+    fn s6_arm_keeps_the_veto_on_fortified_beachheads_decline_census() {
+        s6_assert_decline_census_keeps_the_veto("Fortified Beachhead", fortified_beachhead_def());
+    }
+
+    /// **S6-A4 ⟨G⟩ (NEGATIVE — Temple of the Dragon Queen's decline census keeps the veto).**
+    /// Co-equal evidence to S6-A3, with its own fixture and its own fn: printed *"…**or you
+    /// control a Dragon**"*. Same attribution, same registered mutation — and the same
+    /// **INTERIM** status: the census reads **Dragon** while the growing class is
+    /// **Saproling** tokens, so `(b-d)` refuses without the two ever intersecting. See S6-A3's
+    /// doc for the full statement, the block-(1b)
+    /// `execute_ledger_condition_provably_excludes_class` relief shape that replaces it, and
+    /// the measured 19/21 ceiling.
+    ///
+    /// REVERT / MUTATION PROBE: delete `(b-d)` as a whole ⇒ **this row FAILS**.
+    #[test]
+    fn s6_arm_keeps_the_veto_on_temple_of_the_dragon_queens_decline_census() {
+        s6_assert_decline_census_keeps_the_veto(
+            "Temple of the Dragon Queen",
+            temple_of_the_dragon_queen_def(),
+        );
+    }
+
+    /// Shared body for S6-A3 / S6-A4 — one claim direction, driven by two real cards. The
+    /// matched control is Snarl's real def on the same board shape, which differs from these
+    /// on `on_decline` alone.
+    fn s6_assert_decline_census_keeps_the_veto(
+        name: &str,
+        def: crate::types::ability::ReplacementDefinition,
+    ) {
+        use crate::types::ability::Effect;
+
+        let (state, member, source) = s6_arm_board(&def);
+        let control = necroblossom_snarl_def();
+        let (cstate, cmember, csource) = s6_arm_board(&control);
+        assert!(
+            s6_arm(&control, &cstate, cmember, &csource),
+            "matched control: Snarl's real def — identical in shape but with a
+             condition-free decline branch — IS relieved"
+        );
+
+        let decl = match def.execute.as_deref().unwrap().effect.as_ref() {
+            Effect::RevealFromHand { on_decline, .. } => on_decline.as_deref().unwrap(),
+            _ => unreachable!("the fixture pins the reveal shape"),
+        };
+        assert!(
+            decl.condition.is_some(),
+            "card pin ({name}): the printed \"or you control a …\" clause must parse to an \
+             `on_decline` CONDITION, else this row tests the wrong card"
+        );
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_sibling_mutable(decl),
+            "attribution ({name}): `(b-d)` check 1 refuses this branch"
+        );
+        assert!(
+            !ability_definition_carries_only_its_effect(decl),
+            "attribution ({name}): `(b-d)` check 2 ALSO refuses it — this row pins the gate as \
+             a DISJUNCTION, so no single-check deletion can redden it"
+        );
+
+        assert!(
+            !s6_arm(&def, &state, member, &source),
+            "S6-A3/A4 ({name}): the decline branch's condition is a live \
+             `ControllerControlsMatching` board census, and `(b-d)` refuses ANY such branch \
+             WITHOUT checking whether the census intersects the growing class — on this \
+             fixture it demonstrably does not (the census reads Soldier/Dragon; the class is \
+             Saproling tokens). INTERIM conservative approximation, not measured coupling; \
+             the block-(1b) `execute_ledger_condition_provably_excludes_class` shape is the \
+             relief. Deleting `(b-d)` makes this FAIL"
+        );
+    }
+
+    /// **S6-A5 ⟨G⟩ (NEGATIVE — an ARRIVAL-MUTABLE reveal filter keeps the veto).**
+    ///
+    /// `FilterProp::NameMatchesAnyPermanent` resolves against the LIVE battlefield, so minting
+    /// a class member can change whether a PRE-EXISTING hand card matches — the reveal filter
+    /// is then not arrival-invariant even though nothing about the hand changed. Matched
+    /// control in the same fn: the identical substitution with `properties: []`.
+    ///
+    /// REVERT / MUTATION PROBE: delete `(b-f)` ⇒ **this row FAILS**. Disagreeing input: the
+    /// `NameMatchesAnyPermanent` filter; the property-free twin agrees under both designs.
+    #[test]
+    fn s6_arm_keeps_the_veto_on_an_arrival_mutable_reveal_filter() {
+        use crate::types::ability::{ControllerRef, FilterProp};
+
+        let base = necroblossom_snarl_def();
+        let (state, member, source) = s6_arm_board(&base);
+
+        let inert = with_reveal_filter(base.clone(), s6_typed(Vec::new()));
+        assert!(
+            s6_arm(&inert, &state, member, &source),
+            "matched control: the SAME substitution with `properties: []` IS relieved, so the \
+             veto below is attributable to the property and to nothing else"
+        );
+
+        let moving = with_reveal_filter(
+            base,
+            s6_typed(vec![FilterProp::NameMatchesAnyPermanent {
+                controller: Some(ControllerRef::You),
+            }]),
+        );
+        assert!(
+            !s6_arm(&moving, &state, member, &source),
+            "S6-A5: `NameMatchesAnyPermanent` resolves against the live battlefield, so a \
+             class member's ARRIVAL can move whether a pre-existing hand card matches. \
+             Class-disjointness is not enough — the filter must be arrival-INVARIANT. \
+             Deleting `(b-f)` makes this FAIL"
+        );
+    }
+
+    /// **S6-A6 ⟨G⟩ (NEGATIVE — a RESOLUTION-LOCAL LEDGER LEAF in the decline branch keeps the
+    /// veto).**
+    ///
+    /// The axis `(b-d)` check 1 cannot see. The board-census scanner classifies these leaves
+    /// as read-free, while the population authority's own operative clause is violated by
+    /// them: minting a token ASSIGNS `state.last_created_token_ids`, so a pre-existing object
+    /// failing `Not { LastCreated }` starts passing. CR 608.2c is the rules shape they lower.
+    /// Matched control in the same fn: the unchanged `SelfRef` target.
+    ///
+    /// REVERT / MUTATION PROBE: delete `(b-d)` check 3 ⇒ **this row FAILS** on all three
+    /// leaves. Disagreeing input: each ledger leaf below; `SelfRef` agrees under both designs.
+    #[test]
+    fn s6_arm_keeps_the_veto_on_a_resolution_local_ledger_leaf_in_the_decline_branch() {
+        use crate::types::ability::{Effect, TargetFilter};
+
+        let base = necroblossom_snarl_def();
+        let (state, member, source) = s6_arm_board(&base);
+        assert!(
+            s6_arm(&base, &state, member, &source),
+            "matched control: the unchanged `SelfRef` decline target IS relieved, so each veto \
+             below is attributable to the leaf that row substitutes"
+        );
+
+        for (leaf, filter) in [
+            ("LastCreated", TargetFilter::LastCreated),
+            ("LastRevealed", TargetFilter::LastRevealed),
+            ("LastZoneChanged", TargetFilter::LastZoneChanged),
+        ] {
+            let mutant = with_decline_target(base.clone(), filter);
+            let decl = match mutant.execute.as_deref().unwrap().effect.as_ref() {
+                Effect::RevealFromHand { on_decline, .. } => on_decline.as_deref().unwrap(),
+                _ => unreachable!("the fixture pins the reveal shape"),
+            };
+            assert!(
+                !crate::game::ability_scan::ability_definition_reads_sibling_mutable(decl),
+                "attribution ({leaf}): `(b-d)` check 1 is SILENT — the scanner classifies this \
+                 ledger leaf as read-free, which is exactly the disagreement check 3 exists for"
+            );
+            assert!(
+                ability_definition_carries_only_its_effect(decl),
+                "attribution ({leaf}): `(b-d)` check 2 ADMITS it — the branch is canonical \
+                 apart from its effect, so check 3 is the SOLE refuser"
+            );
+            assert!(
+                !s6_arm(&mutant, &state, member, &source),
+                "S6-A6 ({leaf}): the growth period itself ASSIGNS this ledger, so a class \
+                 member's arrival can flip a pre-existing object's verdict with no member ever \
+                 being counted. Deleting `(b-d)` check 3 makes this FAIL"
+            );
+        }
+    }
+
+    /// **S6-A7 ⟨G⟩ (NEGATIVE — fails closed on a member ABSENT from the scanned frame).**
+    ///
+    /// An id with no object in the frame proves nothing about what the reveal's universe
+    /// contains, so relief must be refused rather than granted on absence. Matched control in
+    /// the same fn: the live member.
+    ///
+    /// REVERT / MUTATION PROBE: delete `(c)` ⇒ **this row FAILS**. Disagreeing input:
+    /// `ObjectId(4242)`, asserted absent below; the live member agrees under both designs.
+    #[test]
+    fn s6_arm_fails_closed_on_a_member_absent_from_the_frame() {
+        let def = necroblossom_snarl_def();
+        let (state, member, source) = s6_arm_board(&def);
+        assert!(
+            s6_arm(&def, &state, member, &source),
+            "matched control: the LIVE member IS relieved, so the veto below is attributable \
+             to the member's absence and to nothing else"
+        );
+
+        let absent = ObjectId(4242);
+        assert!(
+            !state.objects.contains_key(&absent),
+            "fixture pin: {absent:?} must be ABSENT from the frame, else this row is vacuous"
+        );
+        assert!(
+            !s6_arm(&def, &state, absent, &source),
+            "S6-A7: an id with no object in the scanned frame is trivially absent from the \
+             controller's hand, so `(d)` would relieve having proved nothing. `(c)` is what \
+             turns that into a refusal — deleting it makes this FAIL"
+        );
+    }
+
+    /// **S6-A9 ⟨G⟩ (NEGATIVE — fails closed when the controller has NO player entry).**
+    ///
+    /// The one input on which the `let-else` and the negated `!find(..).is_some_and(..)` form
+    /// disagree, and the negated form yields RELIEF there: `None.is_some_and(_)` is `false`
+    /// and the leading `!` flips it to `true`. Both values are computed and asserted in-fn, so
+    /// the divergence is measured rather than argued. Matched control: the present player.
+    ///
+    /// REVERT / MUTATION PROBE: rewrite `(d)` as `!state.players.iter().find(..)
+    /// .is_some_and(|p| p.hand.contains(&class_member))` ⇒ **this row FAILS**.
+    #[test]
+    fn s6_arm_fails_closed_when_the_controller_has_no_player_entry() {
+        let def = necroblossom_snarl_def();
+        let (state, member, source) = s6_arm_board(&def);
+        assert!(
+            s6_arm(&def, &state, member, &source),
+            "matched control: a source whose controller HAS a player entry IS relieved, so the \
+             veto below is attributable to the missing entry and to nothing else"
+        );
+
+        // `replacement_source_player` is `controller_or_owner()`, which returns `controller`
+        // for a battlefield object — so moving the field moves the authority's answer.
+        let mut orphan = source.clone();
+        orphan.controller = PlayerId(7);
+        orphan.owner = PlayerId(7);
+        let controller = crate::game::replacement::replacement_source_player(&orphan);
+        assert_eq!(
+            controller,
+            PlayerId(7),
+            "fixture pin: the CONTROLLER AUTHORITY must name the absent player, else this row \
+             exercises the wrong seam"
+        );
+        assert!(
+            !state.players.iter().any(|p| p.id == controller),
+            "fixture pin: {controller:?} must be absent from `state.players`"
+        );
+
+        // The registered mutation's literal expression, evaluated here: it RELIEVES.
+        let mutant_verdict = !state
+            .players
+            .iter()
+            .find(|p| p.id == controller)
+            .is_some_and(|p| p.hand.contains(&member));
+        assert!(
+            mutant_verdict,
+            "attribution: the negated form yields RELIEF on the missing player — that is the \
+             fail-OPEN direction this conjunct's shape exists to avoid"
+        );
+
+        assert!(
+            !s6_arm(&def, &state, member, &orphan),
+            "S6-A9: with no player entry there is no universe to reason about, so relief has \
+             no basis and the veto must stand. Rewriting `(d)` as the negated `is_some_and` \
+             form makes this FAIL"
+        );
+    }
+
+    /// **S6-A10 ⟨G⟩ (NEGATIVE — the SIBLING nested-ability carriers keep their blanket veto).**
+    ///
+    /// `(b)`'s `let-else` closes the whole nested-ability mechanism BY CONSTRUCTION. Predicate
+    /// DIRECT: an `Effect` variant with ≥1 field whose declared type mentions
+    /// `AbilityDefinition` — 8 of 232 variants. Predicate TRANSITIVE: a variant with a
+    /// `Box<Effect>` field, which can hold any of the 8 — +2. This row drives 5 of them: 3
+    /// direct and BOTH transitive. Attribution asserted per carrier: `(0)` ADMITS each (the
+    /// carrier lives in `effect`, which the totality check reproduces), so `(b)` is the
+    /// refuser.
+    ///
+    /// REVERT / MUTATION PROBE: make `(b)` admit any effect variant ⇒ **this row FAILS** on
+    /// all five carriers.
+    #[test]
+    fn s6_arm_refuses_the_sibling_nested_ability_carriers() {
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, DelayedTriggerCondition, Effect, PlayerFilter,
+            TargetFilter,
+        };
+
+        let hostile = s6_hostile_body();
+        let base = necroblossom_snarl_def();
+        let (state, member, source) = s6_arm_board(&base);
+        assert!(
+            s6_arm(&base, &state, member, &source),
+            "matched control: the `RevealFromHand` carrier IS relieved, so each refusal below \
+             is attributable to the VARIANT and to nothing else"
+        );
+
+        let reveal_effect = (*base.execute.as_deref().unwrap().effect).clone();
+        let carriers: Vec<(&str, Effect)> = vec![
+            (
+                "ChooseOneOf.branches (direct)",
+                Effect::ChooseOneOf {
+                    chooser: PlayerFilter::Controller,
+                    branches: vec![hostile.clone()],
+                },
+            ),
+            (
+                "FlipCoin.win_effect (direct)",
+                Effect::FlipCoin {
+                    win_effect: Some(Box::new(hostile.clone())),
+                    lose_effect: None,
+                    flipper: TargetFilter::Controller,
+                },
+            ),
+            (
+                "CreateDelayedTrigger.effect (direct)",
+                Effect::CreateDelayedTrigger {
+                    condition: DelayedTriggerCondition::AtNextPhase { phase: Phase::End },
+                    effect: Box::new(hostile.clone()),
+                    uses_tracked_set: false,
+                },
+            ),
+            (
+                "CreateDrawReplacement -> ChooseOneOf (transitive)",
+                Effect::CreateDrawReplacement {
+                    replacement_effect: Box::new(Effect::ChooseOneOf {
+                        chooser: PlayerFilter::Controller,
+                        branches: vec![hostile.clone()],
+                    }),
+                },
+            ),
+            (
+                "CreatePlaneswalkReplacement -> RevealFromHand (transitive)",
+                Effect::CreatePlaneswalkReplacement {
+                    replacement_effect: Box::new(reveal_effect),
+                },
+            ),
+        ];
+
+        for (label, effect) in carriers {
+            let mut carrier = base.clone();
+            let exec = carrier.execute.as_deref_mut().unwrap();
+            *exec = AbilityDefinition::new(AbilityKind::Spell, effect);
+
+            let exec = carrier.execute.as_deref().unwrap();
+            assert!(
+                ability_definition_carries_only_its_effect(exec),
+                "attribution ({label}): `(0)` ADMITS this carrier — it lives in `effect`, which \
+                 the totality check reproduces — so `(b)` is the refuser"
+            );
+            assert!(
+                !s6_arm(&carrier, &state, member, &source),
+                "S6-A10 ({label}): a nested-ability carrier can hold a class-reading body that \
+                 `(b)`'s single-level match never descends into, so every non-`RevealFromHand` \
+                 carrier keeps its blanket veto BY CONSTRUCTION. Making `(b)` admit any variant \
+                 makes this FAIL"
+            );
+        }
+    }
+
+    /// **S6-F1 ⟨G⟩ (POSITIVE — block (3)'s `execute` surface relief FIRES on the real reveal
+    /// land).** The end-to-end row: the arm reached through
+    /// `fire_time_conditions_read_growing_class`, not called directly.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `&& !execute_disjoint(a)` conjunct at block (3)'s
+    /// `execute` surface ⇒ **this row FAILS**. Disagreeing input: the fixture below, whose
+    /// reveal draws from the controller's HAND while the class is battlefield tokens.
+    #[test]
+    fn block3_execute_surface_relief_fires_on_the_real_reveal_land() {
+        let (state, member, _) =
+            r2_block3_execute_fixture(vec![(900, "Necroblossom Snarl", necroblossom_snarl_def())]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "S6-F1: `reveal_from_hand::resolve` draws its subjects from \
+             `players[controller].hand` and only then filters, while the class is battlefield \
+             Saproling tokens (CR 111.7) — no member can ever be eligible. Deleting the \
+             `&& !execute_disjoint(a)` conjunct makes this FAIL"
+        );
+    }
+
+    /// **S6-F2 ⟨G⟩ (NEGATIVE — an EMPTY class relieves NOTHING)**, on the same relievable board
+    /// as [`block3_execute_surface_relief_fires_on_the_real_reveal_land`], so the two rows
+    /// differ only in the class.
+    ///
+    /// REVERT / MUTATION PROBE: delete `!members.is_empty()` from `execute_disjoint` ⇒ **this
+    /// row FAILS** (`.all()` goes vacuously true and everything is relieved). Disagreeing
+    /// input: the EMPTY class; the non-empty control agrees under both designs.
+    #[test]
+    fn block3_execute_empty_class_relieves_nothing() {
+        let (state, member, _) =
+            r2_block3_execute_fixture(vec![(900, "Necroblossom Snarl", necroblossom_snarl_def())]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "matched control: the SAME board with a NON-empty class IS relieved, so the row \
+             below is attributable to the class being empty and to nothing else"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::new())),
+            "S6-F2: `!members.is_empty()` is LOAD-BEARING — an empty class must not make \
+             `.all()` vacuously true and relieve the surface. Deleting that guard makes this \
+             FAIL"
+        );
+    }
+
+    /// **C3-N5 ⟨G⟩ — the floating half of the `execute` surface is FAIL-CLOSED.** A
+    /// `pending_damage_replacements` entry has no source object (CR 611.2), so
+    /// `replacement_source_player` has no argument and the universe pin has no player to
+    /// census; the definition keeps its veto even though the SAME definition on a board
+    /// carrier is relieved.
+    ///
+    /// REVERT / MUTATION PROBE: replace `let Some(source) = source else { return false }` in
+    /// `execute_disjoint` with a synthesized source ⇒ **this row FAILS**.
+    #[test]
+    fn block3_floating_execute_keeps_the_veto() {
+        // The board half is relieved on this very definition — the matched control that makes
+        // the floating verdict attributable to the ABSENT SOURCE and to nothing else.
+        let (board_state, board_member, _) =
+            r2_block3_execute_fixture(vec![(900, "Necroblossom Snarl", necroblossom_snarl_def())]);
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &board_state,
+                Some(&HashSet::from([board_member]))
+            ),
+            "matched control: the SAME definition on a board carrier IS relieved"
+        );
+
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        assert_eq!(
+            live_floating_replacement_defs(&state).count(),
+            0,
+            "⟨G⟩ reach-guard: the floating store is empty BEFORE the graft, so the veto \
+             observed after it is attributable to THIS definition"
+        );
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "⟨G⟩ reach-guard: the pre-graft board is SILENT on every block"
+        );
+
+        state
+            .pending_damage_replacements
+            .push(necroblossom_snarl_def());
+        assert_eq!(
+            live_floating_replacement_defs(&state).count(),
+            1,
+            "⟨G⟩ reach-guard: exactly ONE floating definition after the graft"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "C3-N5: CR 611.2's floating store carries no source object, so \
+             `replacement_source_player` has no argument and the universe pin has no player to \
+             census — the definition must keep its veto. Synthesizing a source for the \
+             floating half makes this FAIL"
+        );
+    }
+
+    /// **C3-N6 ⟨G⟩ — no relief-by-`continue`.** The relief is scoped to block (3)'s `execute`
+    /// surface; a definition whose `execute` is provably disjoint may still carry a
+    /// still-vetoing `condition`, and THAT surface must keep its own veto. This is the exact
+    /// mirror of the landed
+    /// [`block3_condition_relief_does_not_carry_the_execute_surface`].
+    ///
+    /// ⚠ "Still-vetoing", NOT "class-observing": the grafted condition censuses **basic
+    /// lands** while the growing class is **Saproling** tokens, so the two do not intersect.
+    /// Its veto survives because both C3b-1 relief arms match at TOP LEVEL ONLY and decline
+    /// the `And` — a structural refusal, asserted directly by the reach-guard below. That is
+    /// all this row needs: the claim is about relief SCOPE, not about coupling.
+    ///
+    /// REVERT / MUTATION PROBE: turn the execute relief into a `continue` over the whole
+    /// definition ⇒ **this row FAILS**.
+    #[test]
+    fn block3_execute_relief_does_not_carry_the_condition_surface() {
+        use crate::types::ability::ReplacementCondition;
+        use std::sync::Arc;
+
+        // ONE definition carrying BOTH: a relievable `RevealFromHand` execute and a condition
+        // that keeps its OWN veto.
+        //
+        // ⛔ THE BARE SUNKEN HOLLOW CONDITION IS THE WRONG GRAFT HERE, and it is the graft
+        // this row's mirror uses for the opposite purpose: C3b-1's S4 arm PROVES that
+        // condition invariant, and [`block3_condition_relief_does_not_carry_the_execute_surface`]
+        // installs it as its RELIEVED surface. Grafted bare, BOTH surfaces of this definition
+        // are relieved, no veto survives, and the final assertion measures nothing about
+        // `continue`. The `And` wrap is the landed idiom from
+        // [`s4_s5_compound_condition_keeps_the_veto`]: `scan_replacement_condition` RECURSES
+        // through `And` so the read is still seen, while both relief arms match at TOP LEVEL
+        // ONLY and fall to their `let ... else` — a condition that vetoes and STAYS vetoing.
+        let observing_condition = ReplacementCondition::And {
+            conditions: vec![
+                sunken_hollow_def()
+                    .condition
+                    .expect("fixture pin: Sunken Hollow parses a condition"),
+                ReplacementCondition::UnlessYourTurn,
+            ],
+        };
+        let mut def = necroblossom_snarl_def();
+        def.condition = Some(observing_condition);
+
+        // In-fn reach-guards: BOTH surfaces speak, and the execute IS relievable.
+        assert!(
+            def.condition.as_ref().is_some_and(
+                crate::game::ability_scan::replacement_condition_reads_sibling_mutable
+            ),
+            "⟨G⟩ reach-guard: the grafted `condition` must itself veto, else this row passes \
+             for the wrong reason"
+        );
+        assert!(
+            def.execute.as_deref().is_some_and(|a| {
+                crate::game::ability_scan::ability_definition_reads_sibling_mutable(a)
+            }),
+            "⟨G⟩ reach-guard: the `execute` body must veto too, so both surfaces speak"
+        );
+
+        // The fixture's own `condition` reach-guard is inverted for this row, so build the
+        // state directly rather than through `r2_block3_execute_fixture`.
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let oid = ObjectId(900);
+        let mut object = GameObject::new(
+            oid,
+            CardId(900),
+            PlayerId(0),
+            "Necroblossom Snarl".to_string(),
+            Zone::Battlefield,
+        );
+        object.card_types.core_types = vec![CoreType::Land];
+        object.base_replacement_definitions = Arc::new(vec![def.clone()]);
+        object.replacement_definitions = vec![def.clone()].into();
+        state.objects.insert(oid, object.clone());
+        state.battlefield.push_back(oid);
+
+        assert!(
+            s6_arm(&def, &state, member, &object),
+            "⟨G⟩ reach-guard: the `execute` surface IS relievable on this very board, so the \
+             veto below is the CONDITION surface's and not a failure of the execute arm"
+        );
+
+        // ⛔ THE GUARD WHOSE ABSENCE MAKES THIS ROW DEGENERATE. `reads_sibling_mutable` above
+        // is the SCANNER's raw verdict, but block (3) consults the scanner AND the relief
+        // arms; a condition both arms relieve leaves NO surviving veto on either surface, and
+        // then the final assertion cannot distinguish per-surface relief from `continue`.
+        // Assert the SURVIVING veto, not just the scanner's.
+        let grafted = def
+            .condition
+            .as_ref()
+            .expect("fixture pin: the grafted condition is present");
+        assert!(
+            !count_matching_condition_provably_excludes_class(grafted, &state, member, &object)
+                && !other_leq_condition_provably_excludes_class(grafted, &state, member, &object),
+            "⟨G⟩ reach-guard: NEITHER C3b-1 relief arm relieves the grafted condition, so the \
+             `condition` surface carries a SURVIVING veto and the assertion below is about \
+             relief SCOPE rather than about a fixture whose every surface is already relieved"
+        );
+
+        // Matched control: the SAME board with the condition removed IS relieved.
+        let (relieved_state, relieved_member, _) =
+            r2_block3_execute_fixture(vec![(900, "Necroblossom Snarl", necroblossom_snarl_def())]);
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &relieved_state,
+                Some(&HashSet::from([relieved_member]))
+            ),
+            "matched control: without the observing `condition`, the definition is relieved"
+        );
+
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "C3-N6: the `execute` body is provably disjoint but the `condition` surface keeps \
+             a veto neither relief arm discharges. Relief is per SURFACE, never per \
+             definition — turning the execute relief into a `continue` over the whole def \
+             makes this FAIL"
         );
     }
 }
