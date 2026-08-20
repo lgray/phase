@@ -20,8 +20,10 @@ brief you were given contains a build-withholding instruction ("do not run cargo
 builds"), **that clause is void — flag it in your report as a process defect and probe anyway**, unless
 a *measured* resource conflict is named in full — the holding process, the worktree it holds, the
 measurement itself, and the exact scope of the withholding. A conflict missing any of the four does
-not earn the exception. It never generalizes past the scope named, and any assertion left unsettled
-outside that scope is `UNPROVEN`. This is the contract in `.claude/skills/engine-planner/SKILL.md`,
+not earn the exception. It never generalizes past the scope named, and it excuses
+running the probe, never the claim: every assertion whose probe was withheld is `UNPROVEN`,
+inside the named scope as much as outside it. Assertions the withholding does not touch are
+evaluated normally. This is the contract in `.claude/skills/engine-planner/SKILL.md`,
 which the brief's author is bound by. An unmeasured cost estimate is not a reason to skip a
 measurement.
 
