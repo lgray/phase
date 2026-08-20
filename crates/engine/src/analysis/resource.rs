@@ -4002,7 +4002,7 @@ fn pt_value_aggregate_provably_excludes_class(
 ///
 /// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan`'s arm is
 /// `ManaProduction::ChoiceAmongExiledColors { .. } => Axes::CONSERVATIVE`
-/// (ability_scan.rs:5401) — BLANKET, and it EXPOSES NO SUBJECT SET at all (the link
+/// (ability_scan.rs:5425) — BLANKET, and it EXPOSES NO SUBJECT SET at all (the link
 /// relation lives in `state.exile_links`, not in the AST), so no scanner change can
 /// distinguish a class-reading link set from a class-disjoint one. The distinction has
 /// to be drawn where the class AND the state are both known.
@@ -4222,7 +4222,7 @@ fn exiled_colors_provably_exclude_class(
 /// subject, and it is still unrelaxable by any scanner change — the self-assertion is
 /// unconditional. Reach chain, measured: `Effect::Mana` (ability_scan.rs:1056,
 /// `LoopFirewall` branch) -> `scan_mana_production` -> `ManaProduction::AnyOneColor`
-/// (ability_scan.rs:5334) -> `scan_quantity_expr(count)` -> the
+/// (ability_scan.rs:5358) -> `scan_quantity_expr(count)` -> the
 /// `QuantityRef::CountersOn { scope, .. }` arm (ability_scan.rs:1958).
 ///
 /// RELIEF CLAIM — IDENTITY, NOT FILTER. CR 122.1 (MagicCompRules.txt:1178): "A counter
