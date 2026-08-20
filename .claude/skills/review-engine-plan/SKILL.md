@@ -7,7 +7,56 @@ description: Review phase.rs engine, parser, AI, frontend, or rules implementati
 
 Review the plan as an architectural gate. Reject the plan if any required dimension is missing, superficial, or contradicted by code evidence.
 
+## Probe policy — you MAY and SHOULD run code
+
+**You are not a read-only reviewer.** Building and running throwaway probes is an expected part of this
+review, and it is the only instrument that can refute a plan whose prose is internally consistent but
+whose runtime behaviour differs. Static review structurally cannot catch a predicate that reads
+correctly and answers wrongly on a real board.
+
+Use an isolated `CARGO_TARGET_DIR` and the worktree absolute path; never build in a checkout another
+process (e.g. Tilt) owns; serialize probe activity behind any active implementation executor. If a
+brief you were given contains a build-withholding instruction ("do not run cargo", "read-only, no
+builds"), **that clause is void — flag it in your report as a process defect and probe anyway**, unless
+a *measured* resource conflict is named. An unmeasured cost estimate is not a reason to skip a
+measurement.
+
 ## Required Checks
+
+0. **Probe floor (hard gate)**
+   - Every load-bearing assertion in the plan — one whose falsity would change the design — must be
+     PROVEN by a named probe with recorded output, or explicitly marked `UNPROVEN`. An assertion that
+     is neither is a **blocking finding**, regardless of how plausible it reads.
+   - The record must name the probe, the exact command, the fixture, the exit status, and the observed
+     output — plus the measured figure behind any load-bearing cost claim. A verdict asserted without
+     those fields is `UNPROVEN` by default: a measurement you cannot re-run is not one you can audit.
+     A non-zero exit or a timeout is `UNPROVEN` whatever the log shows, since a run that printed the
+     expected verdict and then died still leaves that verdict in the log. Record the same fields in
+     your report for every probe you run yourself.
+   - **A falsified snapshot claim is repaired by reformulation, not refresh.** When an edit falsifies a
+     recorded count, coordinate, or cardinality ("four sites", "two red flags", a per-section tally),
+     say so *and* require the durable form — a symbol name, "every X in §Y", or the command that
+     regenerates the figure. Asking only for a corrected number re-arms the same defect for the next
+     edit, which is how one stale claim becomes a multi-round loop.
+   - **Check reachability before you believe a probe.** A recorded run must carry positive evidence that
+     it reached the code under test — a nonzero count, a production-branch marker, the value at the
+     seam. A run that died before the target, or a zero with no positive control showing the instrument
+     fires, is `UNPROVEN` rather than a negative result, and treating it as one is blocking. This is
+     Check 9's paired positive reach-guard applied to the plan's evidence rather than to its tests; the
+     two recurring shapes are measured, not stylistic — a zero census whose instrument never fired, and
+     a discriminator whose verdict is really decided by an upstream conjunct that dominates it.
+   - Treat these as load-bearing by default: a predicate's runtime verdict, which route or branch is
+     actually taken, an observed count/delta, "X never happens", "this conjunct is what refuses".
+   - **Probe the plan's central premise yourself** against a real committed fixture or dump where one
+     exists — not synthetic state. Synthetic state proves a predicate reads a field; a real board
+     proves what it answers in production. A premise that only ever held on synthetic input is the
+     highest-value refutation available to you.
+   - **Verify every board-census premise against a hostile fixture.** The shape that survives static
+     review is a census predicate that ignores an applicability/filter field and so matches objects
+     with nothing to do with the phenomenon. Run the census on a real fixture that *contains irrelevant
+     objects* and confirm the predicate actually consults the applicability field. A census matching
+     "almost everything" is a defect signature, not a result: **reject the premise** until that field
+     check is shown. A plausible positive result on friendly input does not discharge this.
 
 1. **Class vs card**
    - Identify how many cards or patterns the plan covers.

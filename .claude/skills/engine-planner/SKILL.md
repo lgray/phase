@@ -76,6 +76,67 @@ Find the existing feature most similar to what you're implementing. Trace it end
 
 Before proposing changes, read every file you plan to modify. Understand existing patterns, abstractions, and conventions in each.
 
+### Step 3.5: MEASURE, don't trace — prove load-bearing assertions with runnable code probes
+
+**Hard gate. Reading is discovery; the probe is proof.** Steps 2 and 3 tell you what the code *looks
+like*. Only a probe that compiles and runs tells you what it *does*. For a rules engine this intricate,
+plans built by tracing repeatedly encode plausible-but-wrong assertions that survive plan review and
+break at implementation — or worse, ship a predicate that is true for the wrong reason.
+
+**Every load-bearing assertion in the plan is either PROVEN by a probe or explicitly marked
+`UNPROVEN`.** A load-bearing assertion is one the design would change if it were false: a predicate's
+runtime verdict, a route/branch actually taken, an observed count or delta, "X never happens", "this
+conjunct is what refuses". No exceptions for assertions that seem obvious from the source — the classic
+failure is a predicate whose body reads correctly and whose runtime verdict is dominated by inputs the
+source does not mention.
+
+- A probe is a throwaway `#[test]` or scratch driver, **compiled and run to a successful exit in the
+  worktree**, teed to a log on disk and grepped for the observed result. Record, per assertion: probe
+  name, exact command, the fixture it ran against, the exit status, the observed output verbatim, and
+  — where a cost figure is itself load-bearing — the measured cost. An assertion carrying no such
+  record is `UNPROVEN` however confident the prose around it reads. **A non-zero exit or a timeout is
+  `UNPROVEN` whatever the log contains** — a run that printed the expected verdict and then died still
+  leaves that verdict in the log, and `grep` cannot tell it apart from a clean run. Reachability and
+  exit status bracket the run at both ends: one says the instrument fired, the other says it survived
+  to the end. Before finalizing, delete the probe file and keep the scratch
+  log out of the tracked tree; the record in the plan is the artifact that survives, not the log.
+- **Prefer probing against real committed fixtures/dumps over synthetic state.** A synthetic fixture
+  proves the predicate reads a field; a real board proves what the predicate answers in production.
+- **A probe proves nothing until it shows it reached the code under test.** Print a positive
+  reachability marker alongside the verdict — a nonzero count, a hit recorded on the production branch,
+  the value observed at the seam. A run that died before the target, or that measured zero with no
+  positive control demonstrating the instrument fires at all, is `UNPROVEN` — not a negative result.
+  This is the Verification Matrix's paired-positive-reach-guard rule (Step 4) applied one step earlier,
+  to evidence rather than tests, and the two shapes it catches are measured failure modes rather than
+  style: a census that reports zero because the instrument never fired, and a discriminator whose
+  verdict is really decided by an upstream conjunct that dominates it.
+- **Write the claim in the form that survives the next edit.** A probe yields a snapshot — a count, a
+  coordinate, a cardinality, a per-section tally. Transcribing it is correct provenance and fragile
+  text: the next edit falsifies it, review correctly flags it, and the repair mints a fresh snapshot
+  for the round after. Prefer the formulation that is invariant under further editing — a symbol name
+  over a line number, "every case in §Y" over "the four cases", "the red flags" over "two red flags";
+  where only the fragile form carries the information, pin it to the command that regenerates the
+  figure rather than to the figure. **A falsified snapshot claim is repaired by reformulating it, not
+  by refreshing it** — refreshing costs a round every time the artifact moves.
+- **Cost is not a reason to skip one.** An unmeasured cost estimate defers work as effectively as a
+  wrong result — if you gate a measurement decision on a cost figure, measure that figure or label it
+  unmeasured. Probing early is the token-*cheap* path: static-only plan loops converge asymptotically
+  on prose (measured: 36 rounds static vs 5 with probes on the same work), because reviewers with no
+  fresh evidence end up auditing the document.
+- **Probes need the cargo target lock and a stable tree.** Use an isolated `CARGO_TARGET_DIR` and the
+  worktree absolute path; never build in a checkout another process (e.g. Tilt) owns. Serialize probe
+  activity behind any active implementation executor on a shared worktree — read-only discovery may run
+  concurrently. Never put a scratch crate's target dir on tmpfs. Keep one isolated target dir per
+  worktree and *reuse* it across probes — deleting it between runs buys nothing and re-imposes the full
+  dependency rebuild that talks planners out of probing in the first place.
+
+**Never write a build-withholding instruction into a brief or plan** ("do not run cargo", "no build is
+authorised"). Weakening the probe floor is a gate violation, not a judgment call. The one exception is
+a *measured* resource conflict — a named process holding the target lock on a named worktree, with both
+the measurement and the scope of the withholding recorded in the brief; it never generalizes past that
+scope. Whatever the reason, an assertion a probe could not settle is marked `UNPROVEN` with the reason
+recorded — it is never silently promoted to fact.
+
 ### Step 4: Answer architectural questions
 
 The plan MUST include these sections with substantive, specific answers:
