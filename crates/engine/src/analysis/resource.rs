@@ -21,14 +21,19 @@
 //! [`ResourceVector`] is the typed catalogue of those monotone axes;
 //! [`loop_states_equal_modulo_resources`] is the projected comparison.
 //!
-//! # Citing `game/ability_scan.rs` from here: name the SYMBOL, never the line
+//! # Citing `game/ability_scan.rs` from here: name the SYMBOL, never the coordinate
 //!
-//! Every `ability_scan.rs:NNNN` pin this file carried went stale — twice inside one
-//! three-commit lane, once landing on a DIFFERENT `AbilityCost` arm that read as refuting
-//! the claim it was cited for. A match-arm PATTERN is a unique grep key inside its `fn`
-//! (measured: each pattern cited below occurs once in its enclosing function); a line
-//! number is a fact about an unrelated edit upstream in the file. Cite
-//! `` `scan_effect`'s `Effect::Mana` arm ``, not a coordinate.
+//! A line number is a fact about someone else's edit that nothing here rechecks; a match-arm
+//! PATTERN is a grep key the compiler keeps honest. Cite `` `scan_effect`'s `Effect::Mana`
+//! arm ``, not `ability_scan.rs:NNNN` — and cite the arm WITH its field list, because a bare
+//! `Type::Variant` key is not unique: `QuantityRef::CountersOn` substring-matches the
+//! `CountersOnObjects` arm and `ManaProduction::AnyOneColor` matches
+//! `AnyOneColorAmongPermanents` (measured over the six arms cited below: all six are unique
+//! inside their enclosing `fn` when grepped as cited, i.e. with fields).
+//!
+//! A COUNT is a coordinate too: "`f` returns X for N reasons" is a fact about `f`'s current
+//! body that nothing rechecks, and it rots the same silent way while reading as freshly
+//! verified. Name the function that IS the enumeration and let the reader grep it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -1865,8 +1870,7 @@ pub(crate) fn certified_period_touch<'a>(
 /// resolver — this entry off the stack, resolution scope bound.
 ///
 /// The ONE classifier answers the counterfactual; this module never
-/// re-implements the six independent reasons the classifier returns `MayPrompt`
-/// for. `None` ⇒ not a triggered ability, or the resolution scope cannot bind,
+/// re-implements the reasons the classifier returns `MayPrompt` for. `None` ⇒ not a triggered ability, or the resolution scope cannot bind,
 /// both of which are refusals rather than relief.
 fn optional_cleared_classification(
     frame: &GameState,
@@ -2123,14 +2127,25 @@ fn entry_target_choice_is_pinned(
 /// unpinned entry's (a pinned "may" says nothing about the CR 616.1 replacement surface
 /// for whichever event classes the residual names). `None` ⇒ no relief.
 ///
-/// ATTRIBUTION is the load-bearing part. `ability_resolution_choice_freedom` returns
-/// `MayPrompt` for SIX independent reasons (`game::resolution_prompt::chain_offers_choice`'s
-/// early-return chain, plus the sub/else effect join), and the offer publishes a `MayChoice`
-/// point for exactly ONE of them — `ability.optional`. So relief requires both published
-/// slots to be pinned AND the same ability, re-classified with `optional` cleared, to come
-/// back choice-free: an `unless_pay`, a resolution-time target chooser, a modal header, a
-/// controller-choice repeat, or a CR 701.34a proliferate sub-ability keeps returning
-/// `MayPrompt` and gets no relief, because no published pin specifies it.
+/// ATTRIBUTION is the load-bearing part. `ability_resolution_choice_freedom` reaches
+/// `MayPrompt` from two producers, both named here: ANY guard in
+/// `game::resolution_prompt::chain_offers_choice`, and `resolution_probe_verdict`'s
+/// `ResolutionProbe::Prompted` — which is reached only once `chain_offers_choice` has said
+/// no. The offer publishes a `MayChoice` point for exactly ONE guard inside the first:
+/// `ability.optional`, which is the single field `optional_cleared_classification` clears.
+/// `chain_offers_choice` IS the guard enumeration; no guard COUNT is restated here, for the
+/// reason the module doc gives.
+///
+/// So relief requires both published slots to be pinned AND the same ability, re-classified
+/// with `optional` cleared, to come back choice-free. Every other producer keeps returning
+/// `MayPrompt` and gets no relief, because no published pin specifies it — including the two
+/// that most invite the opposite reading: `optional_targeting` / `optional_for` SHARE a
+/// `return true` with `optional` yet are NOT what the pin publishes, and a CR 608.2d
+/// `repeat_for` "up to N" repeat COUNT prompts with no optional flag on the ability at all.
+/// An `unless_pay` (CR 118.12), a resolution-time `target_chooser`,
+/// `TargetChoiceTiming::Resolution`, a modal header, a `RepeatContinuation::ControllerChoice`
+/// repeat, and a CR 701.34a proliferate sub-ability are the same story.
+///
 /// It performs NO classification of its own and calls the mint not at all: both
 /// the published slots and the optional-cleared residual are read through the ONE
 /// door, which is what keeps the relief from being a second, drifting authority.
@@ -2204,10 +2219,9 @@ fn auto_may_answer_for(
 /// discharge exactly the `ability.optional` axis and both hand back the SAME
 /// optional-cleared residual for the caller to go on gating, because a specified `may`
 /// says nothing about the CR 616.1 replacement surface of the events it then proposes.
-/// The five OTHER reasons `ability_resolution_choice_freedom` returns `MayPrompt` — an
-/// `unless_pay`, a resolution-time target chooser, a modal header, a controller-choice
-/// repeat, a CR 701.34a proliferate sub-ability — keep returning `MayPrompt` as the
-/// residual and get no relief here, exactly as they get none from a pin.
+/// Every OTHER `MayPrompt` producer — enumerated by symbol on
+/// [`pinned_may_choice_relief`], not counted here — keeps returning `MayPrompt` as the
+/// residual and gets no relief here, exactly as it gets none from a pin.
 ///
 /// ONLY `Accept` IS RELIEVED, and the asymmetry is not caution — it is what the residual
 /// MEANS. `optional_cleared_classification` re-classifies the ability as if it RESOLVED
@@ -19084,8 +19098,9 @@ mod tests {
     /// R6 — **an optional trigger carrying an additional unpublishable axis still refuses,
     /// and the RELIEF is the layer that refuses it.**
     ///
-    /// `ability_resolution_choice_freedom` returns `MayPrompt` for six independent reasons and
-    /// the offer publishes a `MayChoice` point for exactly ONE of them (`ability.optional`).
+    /// `ability_resolution_choice_freedom` has many `MayPrompt` producers (enumerated by
+    /// symbol on `pinned_may_choice_relief`) and the offer publishes a `MayChoice` point for
+    /// exactly ONE of them (`ability.optional`).
     /// `pinned_may_choice_relief` therefore re-classifies the ability with `optional` cleared:
     /// an `unless_pay` (CR 118.12) keeps coming back `MayPrompt` and gets no relief, because
     /// no published pin specifies it.
