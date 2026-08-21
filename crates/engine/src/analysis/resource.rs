@@ -20,6 +20,15 @@
 //!
 //! [`ResourceVector`] is the typed catalogue of those monotone axes;
 //! [`loop_states_equal_modulo_resources`] is the projected comparison.
+//!
+//! # Citing `game/ability_scan.rs` from here: name the SYMBOL, never the line
+//!
+//! Every `ability_scan.rs:NNNN` pin this file carried went stale — twice inside one
+//! three-commit lane, once landing on a DIFFERENT `AbilityCost` arm that read as refuting
+//! the claim it was cited for. A match-arm PATTERN is a unique grep key inside its `fn`
+//! (measured: each pattern cited below occurs once in its enclosing function); a line
+//! number is a fact about an unrelated edit upstream in the file. Cite
+//! `` `scan_effect`'s `Effect::Mana` arm ``, not a coordinate.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -2115,13 +2124,13 @@ fn entry_target_choice_is_pinned(
 /// for whichever event classes the residual names). `None` ⇒ no relief.
 ///
 /// ATTRIBUTION is the load-bearing part. `ability_resolution_choice_freedom` returns
-/// `MayPrompt` for SIX independent reasons (`game/ability_scan.rs:6534-6560` plus the
-/// sub/else effect join), and the offer publishes a `MayChoice` point for exactly ONE of
-/// them — `ability.optional`. So relief requires both published slots to be pinned AND the
-/// same ability, re-classified with `optional` cleared, to come back choice-free: an
-/// `unless_pay`, a resolution-time target chooser, a modal header, a controller-choice
-/// repeat, or a CR 701.34a proliferate sub-ability keeps returning `MayPrompt` and gets no
-/// relief, because no published pin specifies it.
+/// `MayPrompt` for SIX independent reasons (`game::resolution_prompt::chain_offers_choice`'s
+/// early-return chain, plus the sub/else effect join), and the offer publishes a `MayChoice`
+/// point for exactly ONE of them — `ability.optional`. So relief requires both published
+/// slots to be pinned AND the same ability, re-classified with `optional` cleared, to come
+/// back choice-free: an `unless_pay`, a resolution-time target chooser, a modal header, a
+/// controller-choice repeat, or a CR 701.34a proliferate sub-ability keeps returning
+/// `MayPrompt` and gets no relief, because no published pin specifies it.
 /// It performs NO classification of its own and calls the mint not at all: both
 /// the published slots and the optional-cleared residual are read through the ONE
 /// door, which is what keeps the relief from being a second, drifting authority.
@@ -4002,7 +4011,7 @@ fn pt_value_aggregate_provably_excludes_class(
 ///
 /// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan`'s arm is
 /// `ManaProduction::ChoiceAmongExiledColors { .. } => Axes::CONSERVATIVE`
-/// (ability_scan.rs:5425) — BLANKET, and it EXPOSES NO SUBJECT SET at all (the link
+/// (`ability_scan::scan_mana_production`) — BLANKET, and it EXPOSES NO SUBJECT SET at all (the link
 /// relation lives in `state.exile_links`, not in the AST), so no scanner change can
 /// distinguish a class-reading link set from a class-disjoint one. The distinction has
 /// to be drawn where the class AND the state are both known.
@@ -4131,8 +4140,9 @@ fn pt_value_aggregate_provably_excludes_class(
 ///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`, and NO `..` on
 ///       `Effect::Mana`, so a new `Mana` field is a compile error here rather than a
 ///       silent unscanned read. `target: None` is part of that shape and is
-///       LOAD-BEARING, not a formality: the `LoopFirewall` arm at
-///       ability_scan.rs:1056 descends `target`'s `declared_filters()` through
+///       LOAD-BEARING, not a formality: the `LoopFirewall` branch of
+///       `ability_scan::scan_effect`'s `Effect::Mana` arm descends `target`'s
+///       `declared_filters()` through
 ///       `scan_target_filter(.., SnapshotOrEvent)`, so a `Some(role)` veto can be
 ///       raised BY THE TARGET's own class-reading filter — which conjunct (d)'s
 ///       link-set argument says nothing about. Binding `target: _` would relieve
@@ -4217,13 +4227,14 @@ fn exiled_colors_provably_exclude_class(
 /// loop.
 ///
 /// WHY AN ARM AND NOT A SCANNER RELAXATION: `QuantityRef::CountersOn { scope, .. }`
-/// self-asserts `sibling: true` (ability_scan.rs:1958-1964) BEFORE it consults
+/// self-asserts `sibling: true` in `ability_scan::scan_quantity_ref`'s
+/// `QuantityRef::CountersOn { scope, .. }` arm BEFORE that arm consults
 /// `scan_object_scope(scope)`. It is the one veto source in this lane that preserves a
 /// subject, and it is still unrelaxable by any scanner change — the self-assertion is
-/// unconditional. Reach chain, measured: `Effect::Mana` (ability_scan.rs:1056,
-/// `LoopFirewall` branch) -> `scan_mana_production` -> `ManaProduction::AnyOneColor`
-/// (ability_scan.rs:5358) -> `scan_quantity_expr(count)` -> the
-/// `QuantityRef::CountersOn { scope, .. }` arm (ability_scan.rs:1958).
+/// unconditional. Reach chain, measured: `scan_effect`'s `Effect::Mana` arm
+/// (`LoopFirewall` branch) -> `scan_mana_production` -> its `ManaProduction::AnyOneColor`
+/// arm -> `scan_quantity_expr(count)` -> `scan_quantity_ref`'s
+/// `QuantityRef::CountersOn { scope, .. }` arm.
 ///
 /// RELIEF CLAIM — IDENTITY, NOT FILTER. CR 122.1 (MagicCompRules.txt:1178): "A counter
 /// is a marker placed on an object or player that modifies its characteristics" —
@@ -4343,18 +4354,18 @@ fn counters_on_source_provably_excludes_class(
 /// TOTAL by construction: every axis of `def` other than `kind` and `effect` is at
 /// `AbilityDefinition::new`'s value.
 ///
-/// `ability_definition_axes` (`game/ability_scan.rs:4622`) destructures `AbilityDefinition`
-/// with no `..` and binds **20 of its 39 fields `_`** — so a scanner-only inertness test is
-/// blind to all 20, and `AbilityCost::EffectCost { effect }` (one of them) is routed to
-/// `scan_effect` at `ability_scan.rs:4810`, i.e. the codebase's own authority says that
-/// payload can read the board. Equality against the canonical constructor asks about every
-/// field instead of a hand-maintained list: `AbilityDefinition::new` (`types/ability.rs:21030`)
-/// is an exhaustive struct literal with no `..Default`, and `AbilityDefinition` derives
-/// `PartialEq`, so a NEW FIELD carrying a non-constructor value fails here without anyone
-/// remembering to extend anything — and a new field also breaks `new`'s literal at compile
-/// time. `#[derive(Clone, PartialEq, Eq)]` sits at `types/ability.rs:20390`, so this is DERIVED
-/// STRUCTURAL equality over all 39 fields — a strict superset of the 20 the scan binds `_`, a
-/// future field participates automatically, and the fail direction is REFUSAL.
+/// `ability_scan::ability_definition_axes` destructures `AbilityDefinition` with no `..` and binds
+/// **20 of its 39 fields `_`** — so a scanner-only inertness test is blind to all 20, and
+/// `AbilityCost::EffectCost { effect }` (one of them) is routed to `scan_effect` by
+/// `scan_ability_cost`'s `AbilityCost::EffectCost { effect } => scan_effect(..)` arm, i.e. the
+/// codebase's own authority says that payload can read the board. Equality against the canonical
+/// constructor asks about every field instead of a hand-maintained list: `AbilityDefinition::new`
+/// (`types/ability.rs:21030`) is an exhaustive struct literal with no `..Default`, and
+/// `AbilityDefinition` derives `PartialEq`, so a NEW FIELD carrying a non-constructor value fails
+/// here without anyone remembering to extend anything — and a new field also breaks `new`'s literal
+/// at compile time. `#[derive(Clone, PartialEq, Eq)]` sits at `types/ability.rs:20390`, so this is
+/// DERIVED STRUCTURAL equality over all 39 fields — a strict superset of the 20 the scan binds `_`,
+/// a future field participates automatically, and the fail direction is REFUSAL.
 /// Pinned by S6-A0 (22 disagreeing inputs) and S6-A12.
 fn ability_definition_carries_only_its_effect(
     def: &crate::types::ability::AbilityDefinition,
@@ -4379,11 +4390,12 @@ fn ability_definition_carries_only_its_effect(
 /// spell is countered **this way**…", a reference resolved inside the resolution that produced
 /// it. See [`arrival_can_move_a_nonmember_match`], which is where that fail-closing lives.
 ///
-/// **WHY CHECK 2 IS AN EQUALITY AND NOT A FIELD ALLOWLIST.** `ability_definition_axes`
-/// (`game/ability_scan.rs:4622`) binds **20 of `AbilityDefinition`'s 39 fields `_`**, so a
-/// scanner-only inertness test on this branch is blind to all 20 — a hand-maintained allowlist
-/// would have to be extended by whoever adds field 40, and nobody would remember. Equality
-/// against the canonical constructor is TOTAL BY CONSTRUCTION instead; see
+/// **WHY CHECK 2 IS AN EQUALITY AND NOT A FIELD ALLOWLIST.**
+/// `ability_scan::ability_definition_axes` binds **20 of `AbilityDefinition`'s 39 fields
+/// `_`**, so a scanner-only inertness test on this branch is blind to all 20 — a
+/// hand-maintained allowlist would have to be extended by whoever adds field 40, and nobody
+/// would remember. Equality against the canonical constructor is TOTAL BY CONSTRUCTION
+/// instead; see
 /// [`ability_definition_carries_only_its_effect`].
 ///
 /// **MEASURED CLASS EVIDENCE.** Predicate: a card-face entry in `data/card-data.json` (md5
@@ -4470,12 +4482,74 @@ fn reveal_from_hand_decline_branch_is_arrival_invariant(
 /// eligible set, whatever the filter says — so relief here rests on the SUBJECT POOL, not on
 /// proving a count invariant. CR 111.7 is why a token member cannot be in both places at once.
 ///
-/// ⛔ **WHY `(0)` IS A TOTALITY CHECK AND NOT A FIELD LIST.** `ability_definition_axes`
-/// (`game/ability_scan.rs:4622`) binds **20 of `AbilityDefinition`'s 39 fields `_`**, and it
-/// routes `AbilityCost::EffectCost { effect }` — one of those 20 — to `scan_effect`
-/// (`ability_scan.rs:4810`), i.e. the codebase's own authority says that payload CAN read the
-/// board. A scanner-only inertness test is blind to it. Equality against the canonical
-/// constructor asks about every axis at once; see
+/// ⛔ **WHY AN ARM AND NOT A SCANNER RELAXATION.** The blanket being relieved is
+/// `Effect::RevealFromHand { .. } => Axes::CONSERVATIVE` in `ability_scan::scan_effect`, whose
+/// immediate neighbour `Effect::RevealHand` DOES descend (`scan_target_filter` on `target` and
+/// on `card_filter`, `scan_quantity_expr` on `count`). That asymmetry is recorded, not
+/// repaired: `RevealHand` has a discrete target slot (`Effect::target_filter()` answers
+/// `Some`) and two filter leaves, while `RevealFromHand` answers `None` there. That `None`
+/// arm's own annotation says why: it "implicitly targets the controller's own hand" and has no
+/// discrete `target` field (CR 701.20a is the reveal keyword action itself, not the hand
+/// claim). `RevealFromHand`'s second payload field is an `Option<Box<AbilityDefinition>>`,
+/// which is what puts it among the 8 DIRECT nested-ability carriers enumerated below — the
+/// one carrier `(b)` matches instead of refusing. `scan_effect` does compute
+/// `effect_target_ctx(x, mode)` for it — which files it under "a bounded selection from a
+/// non-battlefield pool — an O(1) read that does NOT scale with the growing class", this arm's
+/// universe argument in the scanner's own words — and then DISCARDS the value, because the arm
+/// never calls `scan_target_filter`. Three reasons the descent is nonetheless not the fix,
+/// in order of decisiveness:
+///
+///  1. **THE RELIEF IS NOT A FUNCTION OF THE AST, AND A LANDED ROW MEASURES BOTH ANSWERS ON
+///     ONE.** [`s6_arm_keeps_the_veto_when_a_member_is_in_the_controllers_hand`] (S6-A2)
+///     evaluates the SAME `AbilityDefinition` against the SAME board twice: relief for the
+///     battlefield member, veto for the member sitting in the controller's hand.
+///     `scan_effect(&Effect, ScanMode) -> Axes` takes no `GameState` and no `ObjectId`, and
+///     `Axes` is three bools with nowhere to record "relative to WHICH member", so no scanner
+///     arm — descending or blanket — can return both. `(c)` and `(d)` are where that
+///     relativity lives, and `(c)` deliberately does NOT narrow to `Zone::Battlefield`, so the
+///     in-hand member is a REACHABLE input rather than a hypothetical one.
+///  2. **DESCENDING WOULD IMPORT THE FAIL-OPEN AUTHORITY.** MEASURED through the neighbour
+///     that already descends: a `RevealHand` whose `card_filter` is `TargetFilter::LastCreated`
+///     comes back `sibling: false` from `ability_definition_reads_sibling_mutable_for_loop`
+///     AND from the `Conservative` accessor, while `arrival_can_move_a_nonmember_match` on
+///     that same leaf is `true`. `scan_target_filter`'s `TargetFilter::LastCreated =>
+///     Axes::NONE` arm is the disagreement, and it is the one
+///     [`reveal_from_hand_decline_branch_is_arrival_invariant`]'s doc quotes: minting a token
+///     ASSIGNS `state.last_created_token_ids`, so a PRE-EXISTING object starts matching
+///     `Not { LastCreated }`. A relaxed `RevealFromHand` arm would relieve precisely the
+///     filters `(b-f)` and `(b-d)` refuse. Repairing that disagreement is FU-36's job, not
+///     this arm's.
+///  3. **BLAST RADIUS — the blanket is MODE-INVARIANT and sets all three axes.** MEASURED:
+///     `RevealFromHand` answers `true` under BOTH `LoopFirewall` and `Conservative`. At
+///     `Conservative`, `Axes::sibling` and `Axes::event` feed `game::triggers`'s CR 603.3b
+///     distinct-event auto-resolve gate, and `Axes::projected` feeds
+///     `ability_scan::ability_reads_projected_resource` — a DIFFERENT firewall. This lane's
+///     business is ONE axis in ONE mode; relaxing the arm would move trigger ordering in every
+///     game, `LoopDetectionMode::Off` included (#4603 byte-identity).
+///
+/// ⚠ **THE SPLIT IS NOT "ALL OF THIS IS CLASS-RELATIVE" — MEASURED.** This arm's cluster
+/// (this fn, [`reveal_from_hand_decline_branch_is_arrival_invariant`],
+/// [`ability_definition_carries_only_its_effect`], [`arrival_can_move_a_nonmember_match`] and
+/// its two node predicates) is 192 code lines, and all but `(c)`+`(d)` — about ten — are PURE
+/// FUNCTIONS OF THE DEFINITION. A scanner change could in principle host that AST-only
+/// majority. What it cannot host is the part that DECIDES: reason (1). Do not restate this as
+/// "the whole arm is class-relative" — that is the crude form of the argument and it is false
+/// on the line count. The AST-only majority is nevertheless not delegated to the scanner
+/// either, because of (2): expressed in scanner terms it would be unsound before it was
+/// useful.
+///
+/// ⚠ The SIBLING arms' stated reason does NOT transfer and is deliberately not reused here.
+/// [`exiled_colors_provably_exclude_class`] argues that `ChoiceAmongExiledColors` EXPOSES NO
+/// SUBJECT SET (the link relation lives in `state.exile_links`, outside the AST).
+/// `RevealFromHand`'s subject set — `filter` plus `on_decline` — is entirely IN the AST. What
+/// the scanner cannot see here is not the subject set but the UNIVERSE it is drawn from.
+///
+/// ⛔ **WHY `(0)` IS A TOTALITY CHECK AND NOT A FIELD LIST.**
+/// `ability_scan::ability_definition_axes` binds **20 of `AbilityDefinition`'s 39 fields
+/// `_`**, and `scan_ability_cost`'s `AbilityCost::EffectCost { effect } => scan_effect(..)`
+/// arm routes one of those 20 straight into `scan_effect`, i.e. the codebase's own authority
+/// says that payload CAN read the board. A scanner-only inertness test is blind to it.
+/// Equality against the canonical constructor asks about every axis at once; see
 /// [`ability_definition_carries_only_its_effect`]. Pinned by S6-A0, whose 22 inputs each
 /// differ from the canonical control on exactly one axis.
 ///
@@ -11007,9 +11081,9 @@ mod tests {
         }
     }
 
-    /// An optional (CR 603.5 "may") forced-unique drain — `MayPrompt` at
-    /// `ability_scan.rs:6534` for exactly ONE reason, the one the offer publishes a
-    /// `MayChoice` point for.
+    /// An optional (CR 603.5 "may") forced-unique drain — `MayPrompt` out of
+    /// `resolution_prompt::chain_offers_choice` for exactly ONE reason, the one the offer
+    /// publishes a `MayChoice` point for.
     fn optional_drain(id: u64) -> StackEntry {
         let mut ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
         ability.targets = vec![TargetRef::Player(PlayerId(1))];
@@ -23696,8 +23770,9 @@ mod tests {
     ///
     /// WHY THIS IS NOT COVERED BY THE S2-P1 ROW: conjunct (d) argues only about the
     /// LINK SET (CR 607.2a). The scanner's veto for this def can also be raised by the
-    /// target — `ability_scan.rs:1056`'s `LoopFirewall` branch descends
-    /// `target`'s `declared_filters()` through `scan_target_filter(.., SnapshotOrEvent)`.
+    /// target — the `LoopFirewall` branch of `ability_scan::scan_effect`'s `Effect::Mana`
+    /// arm descends `target`'s `declared_filters()` through
+    /// `scan_target_filter(.., SnapshotOrEvent)`.
     /// A shape pattern binding `target: _` grants relief over evidence that never
     /// examined the target. Conjunct (b) therefore requires `target: None`.
     ///
@@ -23769,8 +23844,8 @@ mod tests {
             !exiled_colors_provably_exclude_class(&targeted, &state, member, &host_obj),
             "S2-MED1: an ability whose MANA TARGET reads the growing class must KEEP its veto. \
              Conjunct (d) argues only about the CR 607.2a link set and says nothing about the \
-             target, whose own filter raises a veto at ability_scan.rs:1056. Binding \
-             `target: _` instead of `target: None` in conjunct (b) makes this FAIL"
+             target, whose own filter raises a veto in `scan_effect`'s `Effect::Mana` arm. \
+             Binding `target: _` instead of `target: None` in conjunct (b) makes this FAIL"
         );
         assert!(
             fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
@@ -23828,8 +23903,8 @@ mod tests {
             !counters_on_source_provably_excludes_class(&targeted, &state, member, &host_obj),
             "S3-MED1: conjunct (d) proves only that the COUNTER is read off an object that is \
              not a member (CR 122.1). It says nothing about the mana target, whose declared \
-             filter is scanned at ability_scan.rs:1056. Binding `target: _` instead of \
-             `target: None` in conjunct (b) makes this FAIL"
+             filter is scanned by `scan_effect`'s `Effect::Mana` arm. Binding `target: _` \
+             instead of `target: None` in conjunct (b) makes this FAIL"
         );
         assert!(
             fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
@@ -26522,8 +26597,8 @@ mod tests {
             .collect();
 
         // The 19th `_`-bound axis. `AbilityCost::EffectCost { effect }` is routed to
-        // `scan_effect` by `scan_ability_cost` (`ability_scan.rs:4810`), i.e. the codebase's
-        // OWN authority says this payload can read the board — while `ability_definition_axes`
+        // `scan_effect` by `scan_ability_cost`'s own arm, i.e. the codebase's OWN authority
+        // says this payload can read the board — while `ability_definition_axes`
         // binds `cost` `_`. That pair is why `(0)` is a totality check and not a field list.
         mutants.push((
             "cost=EffectCost(hostile)",
@@ -27289,38 +27364,57 @@ mod tests {
     /// mirror of the landed
     /// [`block3_condition_relief_does_not_carry_the_execute_surface`].
     ///
-    /// ⚠ "Still-vetoing", NOT "class-observing": the grafted condition censuses **basic
-    /// lands** while the growing class is **Saproling** tokens, so the two do not intersect.
-    /// Its veto survives because both C3b-1 relief arms match at TOP LEVEL ONLY and decline
-    /// the `And` — a structural refusal, asserted directly by the reach-guard below. That is
-    /// all this row needs: the claim is about relief SCOPE, not about coupling.
+    /// The grafted condition is CLASS-OBSERVING, which is what plan §8.2 registers: it
+    /// censuses creatures **you control**, and the growing class is a green Creature —
+    /// Saproling token controlled by the source's controller, so the member is IN the
+    /// counted population. `count_matching_condition_provably_excludes_class` therefore
+    /// refuses ON THE MERITS — at its final `matches_target_filter` expression, past both its
+    /// shape gate and its population guard, both asserted below. An earlier version grafted
+    /// `And { <Sunken Hollow basic-land census>, UnlessYourTurn }`, whose census the Saproling
+    /// class cannot move; that veto survived only through the C3b-1 arms' TOP-LEVEL-ONLY
+    /// match, which is already [`s4_s5_compound_condition_keeps_the_veto`]'s property with its
+    /// own registered mutation, and it would have gone spuriously red the day FU-36 widens the
+    /// `(b-f)`/`(b-d)` arrival conjuncts.
     ///
     /// REVERT / MUTATION PROBE: turn the execute relief into a `continue` over the whole
-    /// definition ⇒ **this row FAILS**.
+    /// definition ⇒ **this row FAILS** (and it is the only block-(3) row that does).
+    /// ⚠ PLACEMENT IS PART OF THE PROBE, and re-running it wrong yields a GREEN THAT LOOKS
+    /// LIKE EVIDENCE AND IS NOT. The `continue` must sit at the TOP of the
+    /// `loop_window_replacement_defs` loop, BEFORE the `condition` surface is consulted.
+    /// Written below that surface's `return true` — the natural place, right next to the
+    /// `execute` block it mutates — it is unreachable for this fixture: the condition veto has
+    /// already returned, so the def never reaches the mutated line at all. The row then PASSES
+    /// on the condition surface's veto, which is what it asserts anyway, and the pass is
+    /// attributable to the fixture rather than to relief being surface-scoped. MEASURED both
+    /// ways this round. Recognise the false green by its reach: if the mutated line cannot be
+    /// reached on this fixture, a green says nothing about the mutation.
     #[test]
     fn block3_execute_relief_does_not_carry_the_condition_surface() {
         use crate::types::ability::ReplacementCondition;
         use std::sync::Arc;
 
-        // ONE definition carrying BOTH: a relievable `RevealFromHand` execute and a condition
-        // that keeps its OWN veto.
+        // ONE definition carrying BOTH: a relievable `RevealFromHand` execute and a
+        // CLASS-OBSERVING condition that keeps its OWN veto on the merits.
         //
-        // ⛔ THE BARE SUNKEN HOLLOW CONDITION IS THE WRONG GRAFT HERE, and it is the graft
-        // this row's mirror uses for the opposite purpose: C3b-1's S4 arm PROVES that
-        // condition invariant, and [`block3_condition_relief_does_not_carry_the_execute_surface`]
-        // installs it as its RELIEVED surface. Grafted bare, BOTH surfaces of this definition
-        // are relieved, no veto survives, and the final assertion measures nothing about
-        // `continue`. The `And` wrap is the landed idiom from
-        // [`s4_s5_compound_condition_keeps_the_veto`]: `scan_replacement_condition` RECURSES
-        // through `And` so the read is still seen, while both relief arms match at TOP LEVEL
-        // ONLY and fall to their `let ... else` — a condition that vetoes and STAYS vetoing.
-        let observing_condition = ReplacementCondition::And {
-            conditions: vec![
-                sunken_hollow_def()
-                    .condition
-                    .expect("fixture pin: Sunken Hollow parses a condition"),
-                ReplacementCondition::UnlessYourTurn,
-            ],
+        // ⛔ SUNKEN HOLLOW'S CONDITION IS THE WRONG GRAFT HERE — grafted bare, C3b-1's S4 arm
+        // PROVES it invariant (that is exactly what this row's mirror,
+        // [`block3_condition_relief_does_not_carry_the_execute_surface`], installs it for), so
+        // no veto survives and the final assertion measures nothing about `continue`. A
+        // "you control two or more creatures" census is the graft the CLASS MOVES: the
+        // Saproling member is a Creature this source's controller controls, so S4 reaches its
+        // final expression and refuses there. CONSTRUCTED rather than parsed from a card
+        // because the corpus has none: all 30 `UnlessControlsCountMatching` occurrences in
+        // `replacements[]` (`data/card-data.json`, md5 `39c353b4e0cc4395925a12ad30b590aa`) are
+        // land-typed — 8 distinct filters, every one `Land` or a basic-land subtype — so no
+        // printed card carries a condition this class observes.
+        let observing_condition = ReplacementCondition::UnlessControlsCountMatching {
+            minimum: 2,
+            filter: crate::types::ability::TargetFilter::Typed(
+                crate::types::ability::TypedFilter {
+                    controller: Some(crate::types::ability::ControllerRef::You),
+                    ..crate::types::ability::TypedFilter::creature()
+                },
+            ),
         };
         let mut def = necroblossom_snarl_def();
         def.condition = Some(observing_condition);
@@ -27380,6 +27474,38 @@ mod tests {
             "⟨G⟩ reach-guard: NEITHER C3b-1 relief arm relieves the grafted condition, so the \
              `condition` surface carries a SURVIVING veto and the assertion below is about \
              relief SCOPE rather than about a fixture whose every surface is already relieved"
+        );
+
+        // ⟨G⟩ ON THE MERITS, not by shape. S4 refuses in three places — the top-level shape
+        // gate, the population-movement guard, and the final `matches_target_filter` — and
+        // only the last one means "the class moves this census". Pin the first two as PASSED
+        // and the member as COUNTED, so a future filter change that silently moves the
+        // refusal to an earlier gate re-reddens here instead of passing for the wrong reason.
+        let ReplacementCondition::UnlessControlsCountMatching {
+            filter: grafted_filter,
+            ..
+        } = grafted
+        else {
+            panic!("fixture pin: the graft is a top-level `UnlessControlsCountMatching`");
+        };
+        assert!(
+            !arrival_can_move_a_nonmember_match(grafted_filter),
+            "⟨G⟩ reach-guard: the graft must clear S4's population-movement guard, else the \
+             refusal below is the guard's and says nothing about the class"
+        );
+        assert!(
+            crate::game::filter::matches_target_filter(
+                &state,
+                member,
+                grafted_filter,
+                &crate::game::filter::FilterContext::from_source_with_controller(
+                    object.id,
+                    crate::game::replacement::replacement_source_player(&object),
+                ),
+            ),
+            "⟨G⟩ reach-guard: the class member must itself be COUNTED by the grafted census — \
+             that is what makes this condition class-observing (plan §8.2) rather than merely \
+             still-vetoing"
         );
 
         // Matched control: the SAME board with the condition removed IS relieved.
