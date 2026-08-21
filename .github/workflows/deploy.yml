@@ -840,12 +840,23 @@ jobs:
   # crate recompiles each time. The win here is parallelism, not incrementality;
   # warming the workspace compile would need sccache or similar.
   build-server-binary:
-    name: Build server binary
+    name: Build server binary (linux ${{ matrix.arch }})
     if: ${{ github.repository == 'phase-rs/phase' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Mirrors release.yml: amd64 native via musl-tools, arm64 cross via zig.
+          - arch: amd64
+            triple: x86_64-unknown-linux-musl
+            cargo_cmd: build
+          - arch: arm64
+            triple: aarch64-unknown-linux-musl
+            cargo_cmd: zigbuild
     steps:
       - uses: actions/checkout@v4
         with:
@@ -853,16 +864,22 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          cache-shared-key: rust-server
+          cache-shared-key: rust-server-${{ matrix.arch }}
 
-      - name: Install musl tools and target
+      - name: Install musl tools
+        if: matrix.cargo_cmd == 'build'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Install zig cross toolchain
+        if: matrix.cargo_cmd == 'zigbuild'
+        run: pip install cargo-zigbuild==0.23.0 ziglang==0.16.0
+
+      - name: Add musl target
         # The musl target must be added explicitly with `rustup target add`, not
         # via setup-rust-toolchain's `targets:` input: rust-toolchain.toml pins
         # the toolchain and its own `targets` list (wasm32 only), which overrides
         # the action input. Mirrors release.yml's Linux server build.
-        run: |
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
-          rustup target add x86_64-unknown-linux-musl
+        run: rustup target add ${{ matrix.triple }}
 
       - name: Build phase-server (static musl)
         # Static musl binary: no glibc dependency, so it runs on the slim debian
@@ -875,13 +892,13 @@ jobs:
           # unscoped workspace build unifies feed-scraper's native-tls reqwest
           # features into phase-server, dragging openssl-sys into the musl
           # cross-compile (which has no OpenSSL and fails).
-          cargo build -p phase-server --profile server-release --bin phase-server --target x86_64-unknown-linux-musl
-          cp target/x86_64-unknown-linux-musl/server-release/phase-server ./phase-server
+          cargo ${{ matrix.cargo_cmd }} -p phase-server --profile server-release --bin phase-server --target ${{ matrix.triple }}
+          cp target/${{ matrix.triple }}/server-release/phase-server ./phase-server
 
       - name: Upload server binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: server-binary
+          name: server-binary-${{ matrix.arch }}
           path: phase-server
           if-no-files-found: error
           retention-days: 1
@@ -911,16 +928,20 @@ jobs:
         with:
           ref: ${{ env.DEPLOY_SHA }}
 
-      - name: Download server binary artifact
+      - name: Download server binary artifacts
         uses: actions/download-artifact@v4
         with:
-          name: server-binary
-          path: .
+          pattern: server-binary-*
+          path: prebuilt
 
       - name: Verify build context
+        # The Dockerfile's prebuilt stage copies ./phase-server-<arch> per platform.
         run: |
-          test -s phase-server
-          chmod +x phase-server
+          for arch in amd64 arm64; do
+            test -s "prebuilt/server-binary-$arch/phase-server"
+            cp "prebuilt/server-binary-$arch/phase-server" "phase-server-$arch"
+            chmod +x "phase-server-$arch"
+          done
 
       - name: Compute image tags
         id: image
@@ -933,12 +954,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # QEMU only runs the runtime stage's apt-get for the arm64 leg; the
+      # binaries are prebuilt, so nothing heavy is emulated.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build and push preview image
-        # BINARY_STAGE=prebuilt makes Docker copy the prebuilt musl binary
+        # BINARY_STAGE=prebuilt makes Docker copy the prebuilt musl binaries
         # instead of compiling in-container — the build is just apt + COPY.
+        # One manifest list covers both platforms under the same tag/digest.
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
             BINARY_STAGE=prebuilt
