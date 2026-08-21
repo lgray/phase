@@ -8223,8 +8223,9 @@ mod tests {
     /// mana was spent to cast this spell, it deals 4 damage instead") now parses
     /// to the generic `QuantityCheck { ManaSpentToCast { .., OfColor } }` shape
     /// instead of the legacy `AbilityCondition::ManaColorSpent`. That moves it
-    /// from the `Axes::NONE` arm (`:2572`) onto the `Axes::CONSERVATIVE` arm
-    /// (`:2452`, reached via `QuantityCheck` → `scan_quantity_expr`), flipping
+    /// from the `AbilityCondition::ManaColorSpent { color: _, minimum: _ } => Axes::NONE`
+    /// arm (`scan_ability_condition`) onto the `Axes::CONSERVATIVE` arm (reached via
+    /// `QuantityCheck` → `scan_quantity_expr`), flipping
     /// ALL THREE scan axes false→true for the 11 affected cards.
     ///
     /// RULING — the flip is accepted, and is the intended direction:
