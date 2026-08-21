@@ -5637,7 +5637,7 @@ pub(crate) fn ability_definition_reads_sibling_mutable_for_loop(def: &AbilityDef
 /// `pub(crate)` for ONE reason: the `analysis::resource` block-(1b) relief arm
 /// `pump_aggregate_provably_excludes_class` must prove `Effect::Pump`'s target
 /// contributes no sibling read before it may relieve the blanket
-/// `Effect::Pump { .. } => Axes::CONSERVATIVE` veto (`:511`). Its two sibling arms
+/// `Effect::Pump { .. } => Axes::CONSERVATIVE` veto. Its two sibling arms
 /// state that as a `target: None` PATTERN; `Effect::Pump` cannot, because its
 /// `target` is a `TargetFilter` and not an `Option<_>`. Exposed as a BOOLEAN so
 /// [`Axes`], [`scan_target_filter`] and [`effect_target_ctx`] all stay private — the

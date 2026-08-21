@@ -28,8 +28,7 @@
 //! arm ``, not `ability_scan.rs:NNNN` — and cite the arm WITH its field list, because a bare
 //! `Type::Variant` key is not unique: `QuantityRef::CountersOn` substring-matches the
 //! `CountersOnObjects` arm and `ManaProduction::AnyOneColor` matches
-//! `AnyOneColorAmongPermanents` (measured over the six arms cited below: all six are unique
-//! inside their enclosing `fn` when grepped as cited, i.e. with fields).
+//! `AnyOneColorAmongPermanents`.
 //!
 //! A COUNT is a coordinate too: "`f` returns X for N reasons" is a fact about `f`'s current
 //! body that nothing rechecks, and it rots the same silent way while reading as freshly
@@ -2137,7 +2136,7 @@ fn entry_target_choice_is_pinned(
 /// reason the module doc gives.
 ///
 /// So relief requires both published slots to be pinned AND the same ability, re-classified
-/// with `optional` cleared, to come back choice-free. Every other producer keeps returning
+/// with `optional` cleared, to come back choice-free. Every other cause keeps returning
 /// `MayPrompt` and gets no relief, because no published pin specifies it — including the two
 /// that most invite the opposite reading: `optional_targeting` / `optional_for` SHARE a
 /// `return true` with `optional` yet are NOT what the pin publishes, and a CR 608.2d
@@ -4246,9 +4245,9 @@ fn exiled_colors_provably_exclude_class(
 /// `scan_object_scope(scope)`. It is the one veto source in this lane that preserves a
 /// subject, and it is still unrelaxable by any scanner change — the self-assertion is
 /// unconditional. Reach chain, measured: `scan_effect`'s `Effect::Mana` arm
-/// (`LoopFirewall` branch) -> `scan_mana_production` -> its `ManaProduction::AnyOneColor`
-/// arm -> `scan_quantity_expr(count)` -> `scan_quantity_ref`'s
-/// `QuantityRef::CountersOn { scope, .. }` arm.
+/// (`LoopFirewall` branch) -> `scan_mana_production` -> its
+/// `ManaProduction::AnyOneColor { count, .. }` arm -> `scan_quantity_expr(count)` ->
+/// `scan_quantity_ref`'s `QuantityRef::CountersOn { scope, .. }` arm.
 ///
 /// RELIEF CLAIM — IDENTITY, NOT FILTER. CR 122.1 (MagicCompRules.txt:1178): "A counter
 /// is a marker placed on an object or player that modifies its characteristics" —
@@ -12238,7 +12237,7 @@ mod tests {
     ///
     /// ⚠ SCOPE, since phase C's S1: this body reads NOTHING — it is
     /// `Pump{Fixed(0), Fixed(0)}`, and it classifies `Axes::CONSERVATIVE` only because
-    /// `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (`ability_scan::scan_effect`) discards the
+    /// `Effect::Pump { .. } => Axes::CONSERVATIVE` (`ability_scan::scan_effect`) discards the
     /// payload. That over-approximation is still the whole veto at every surface S1 does
     /// NOT narrow — block (2)'s `obj.abilities` scan, which is where every remaining caller
     /// puts it — so this helper is correct and unchanged there. It is NOT a valid stand-in
@@ -12868,7 +12867,7 @@ mod tests {
     ///
     /// FIXTURE CHANGE, phase C S1 — an ARGUMENT, not a re-baseline. The execute body was
     /// `sibling_reading_effect()` = `Pump{Fixed(0), Fixed(0)}`, which reads NOTHING; it
-    /// vetoed only through the blanket `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` arm
+    /// vetoed only through the blanket `Effect::Pump { .. } => Axes::CONSERVATIVE` arm
     /// (`ability_scan::scan_effect`). S1 makes block (1b) precise about exactly that payload, so a
     /// fixed pump is now correctly relieved there and case (b) would have asserted "a broad
     /// matcher still vetoes" against a def with no reason to veto — green, discriminating
@@ -15900,7 +15899,7 @@ mod tests {
         // S1's relief class is not "Hawk's aggregate"; it is "a pump whose BOTH halves are
         // provably invariant", and `PtValue::Fixed` is invariant by construction. A fixed
         // pump reads no game information at all, so vetoing it was pure scanner
-        // over-approximation (`Effect::Pump {{ .. }} => Axes::CONSERVATIVE` discards the
+        // over-approximation (`Effect::Pump { .. } => Axes::CONSERVATIVE` discards the
         // payload). This row exists because relieving it BROKE a landed fixture that used
         // `Pump{Fixed(0), Fixed(0)}` as a stand-in veto — the correct reading is that the
         // fixture leaned on the over-approximation, not that S1 is too wide.
@@ -16073,7 +16072,7 @@ mod tests {
     /// bound `target: _` and was MEASURED blind: all three relieved, although the scan
     /// separately reports the third as a sibling read. Conjunct (d) proves the P/T AGGREGATE
     /// is class-invariant and says nothing whatever about what the target reads, and the veto
-    /// S1 relieves is the BLANKET `Effect::Pump {{ .. }} => Axes::CONSERVATIVE`
+    /// S1 relieves is the BLANKET `Effect::Pump { .. } => Axes::CONSERVATIVE`
     /// (`ability_scan::scan_effect`) — which discards the target too, so nothing downstream re-checks
     /// it. See conjunct (b-t) on [`pump_aggregate_provably_excludes_class`].
     ///
@@ -16199,7 +16198,7 @@ mod tests {
                 "{label}: only `target` may differ from the card's own AST"
             );
             // `pump_firewall_fixture` re-asserts the pre-relief veto (blanket
-            // `Effect::Pump {{ .. }} => Axes::CONSERVATIVE`), so each arm is a live surface.
+            // `Effect::Pump { .. } => Axes::CONSERVATIVE`), so each arm is a live surface.
             let (state, member, source, _artifact) = pump_firewall_fixture(def.clone());
             let source_obj = state.objects[&source].clone();
             assert_eq!(
@@ -19098,9 +19097,9 @@ mod tests {
     /// R6 — **an optional trigger carrying an additional unpublishable axis still refuses,
     /// and the RELIEF is the layer that refuses it.**
     ///
-    /// `ability_resolution_choice_freedom` has many `MayPrompt` producers (enumerated by
-    /// symbol on `pinned_may_choice_relief`) and the offer publishes a `MayChoice` point for
-    /// exactly ONE of them (`ability.optional`).
+    /// `ability_resolution_choice_freedom` has many `MayPrompt` causes (its two producers are
+    /// enumerated by symbol on `pinned_may_choice_relief`) and the offer publishes a
+    /// `MayChoice` point for exactly ONE guard (`ability.optional`).
     /// `pinned_may_choice_relief` therefore re-classifies the ability with `optional` cleared:
     /// an `unless_pay` (CR 118.12) keeps coming back `MayPrompt` and gets no relief, because
     /// no published pin specifies it.
