@@ -1929,7 +1929,9 @@ fn optional_cleared_classification(
 /// and CR 117.1b guards, `cast_card_ids` by the projected firewall's CR 601.2f cost guard,
 /// `pinned` by [`loop_states_cover_modulo_growth_scoped`]'s CR 732.2a gates (3) and (6), and
 /// `identity_unstable` by the growing-class firewall's CR 400.7 host-stability conjunct
-/// ([`host_identity_is_stable`], read at block (3)).
+/// ([`host_identity_is_stable`], read at block (3)'s spent-self-entry relief AND at block (2)'s
+/// proposal-absence relief — TWO consumers of one proof, which is why the derivation lives in
+/// [`identity_unstable_ids`] and not at either call site).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LoopWindowScope<'a> {
     /// `Some(phase)` iff the caller proved both frames are equal on turn number AND
@@ -4872,6 +4874,108 @@ fn replacement_is_spent_self_entry(
     class_members.is_some_and(|m| !m.is_empty() && !m.contains(&source.id))
 }
 
+/// CR 732.2a / CR 732.2c — **the PROPOSAL-ABSENCE relief at block (2)**: is this activated
+/// ability one the shortcut proposal does NOT contain?
+///
+/// A shortcut is *"a sequence of game choices, for all players, that may be legally taken based
+/// on the current game state and the predictable results of the sequence of choices"*
+/// (CR 732.2a), and once the last player has accepted it *"the game advances to the last
+/// proposed ending point, with all game choices contained in the shortcut proposal having been
+/// taken"* (CR 732.2c). An activated ability that is absent from that sequence is therefore
+/// never activated inside the window, so it cannot act on the growing class — **whatever it
+/// reads**. That is why this relief is INAPPLICABILITY-shaped and reaches lands whose read is
+/// genuine on the merits, where no disjointness arm ever could.
+///
+/// CR 732.2b's *"or shorten it by naming a place where they will make a game choice that's
+/// different than what's been proposed"* is the rules' OWN mechanism for deviating, and it is a
+/// declaration a player makes — not something the engine may guess at scan time. Pre-emptively
+/// vetoing on an ability nobody proposed activating is the engine taking that declaration on
+/// itself.
+///
+/// ⛔ **CONTINGENT RELIEF, and the contingency is the proposal's content.** A loop whose
+/// sequence DOES name this `(ObjectId, ability_index)` pair restores the veto — rows
+/// `loop_driving_activation_is_not_relieved` and `loop_driving_mana_activation_is_not_relieved`
+/// are the intersection tests. Do not restate this arm as a general claim about observers.
+///
+/// ⛔ **THIS ARM IS DEPTH-ZERO AND MAKES NO CLAIM ABOUT ANYTHING NESTED INSIDE THE EFFECT.**
+/// It matches the same `&AbilityDefinition` block (2) raises its veto on, plus the
+/// `(obj.id, ability_index)` pair. A veto that lives further down the effect tree (a `Pump`
+/// leaf under a token's granted trigger, say) is untouched by this relief and must be answered
+/// where it lives, in `game::ability_scan`.
+fn activated_ability_is_not_a_loop_choice(
+    state: &GameState,
+    obj: &GameObject,
+    ability: &crate::types::ability::AbilityDefinition,
+    ability_index: usize,
+    identity_unstable: Option<&HashSet<ObjectId>>,
+) -> bool {
+    use crate::types::game_state::LoopAction;
+
+    // CR 117.1b ("A player may activate an activated ability any time they have priority")
+    // is a statement about ACTIVATED abilities only, and so is CR 732.2a's
+    // "sequence of game choices". A `Spell`/`BeginGame`/`Database`/`Mulligan`-kind def is not
+    // reached through activation at all, so "the proposal did not activate it" says nothing
+    // about it. Same conjunct and same authority as the sibling `relieved` arm at this block.
+    if ability.kind != crate::types::ability::AbilityKind::Activated {
+        return false;
+    }
+
+    // CR 605.3a: a mana ability may be activated "whenever they have priority, whenever they are
+    // casting a spell or activating an ability that requires a mana payment, or whenever a rule
+    // or effect asks for a mana payment, even if it's in the middle of casting or resolving a
+    // spell" — the last two clauses OUTSIDE the priority rule, i.e. in the middle of the loop's
+    // own cost payment.
+    //
+    // FAIL CLOSED, and this is a NAMED MISSING INSTRUMENT rather than a rules carve-out.
+    // MEASURED: all three sites that append a mana step to `last_loop_action_sequence`
+    // (`game::engine::record_mana_loop_action_step`'s callers) sit under a
+    // `(WaitingFor::Priority { .. }, ..)` reducer arm, so a mana ability tapped while PAYING A
+    // COST is recorded nowhere. Absence from the record therefore does NOT mean "never
+    // activated" for a mana ability, and the record-absence test below would be UNSOUND without
+    // this guard. Row `mana_ability_is_not_relieved_by_the_proposal_argument` is its discharge
+    // and names deleting this line as the failing revert.
+    //
+    // RETIREMENT CONDITION, written down so it does not calcify into folklore: sink the record
+    // write down to the two execution chokepoints
+    // (`game::mana_sources::activate_mana_source_option_with_output` and
+    // `game::casting_costs::auto_tap_mana_sources_inner`) and this guard has no case left. NOT
+    // done here, deliberately — no card this relief serves needs it, and building an instrument
+    // nothing consumes is the deferral trap running in reverse.
+    if crate::game::mana_abilities::is_mana_ability(ability) {
+        return false;
+    }
+
+    // CR 400.7: `LoopAction::Activate` binds `(ObjectId, usize)` with NO incarnation, and
+    // `ability_index` is a position into the LAYER-DERIVED `abilities` vec. On a host that
+    // re-entered the battlefield inside the window a granted or lost ability can shift that
+    // position, so a recorded index may no longer name the ability it activated — and the
+    // record-absence test below would then be reading a stale coordinate. Fail closed on an
+    // unstable host, through the SAME shared conjunct block (3)'s spent-self-entry relief uses,
+    // so the two consumers of the CR 400.7 proof cannot drift apart.
+    if !host_identity_is_stable(obj.id, identity_unstable) {
+        return false;
+    }
+
+    // EXHAUSTIVE over `LoopAction`, with no wildcard: a future driving variant must declare
+    // whether it can name an ability rather than silently defaulting to "it cannot", which is
+    // the relieving direction. `Recast` names a CARD being cast (CR 601.2a), never an
+    // activation, so it can never be this ability.
+    !state
+        .last_loop_action_sequence
+        .iter()
+        .any(|step| match &step.action {
+            LoopAction::Activate {
+                source_id,
+                ability_index: i,
+            } => *source_id == obj.id && *i == ability_index,
+            LoopAction::TapLandForMana { selection } => {
+                selection.source.object_id == obj.id
+                    && selection.ability_index == Some(ability_index)
+            }
+            LoopAction::Recast { .. } => false,
+        })
+}
+
 /// **S4** — CR 732.2a block-(3) relief on a replacement effect's
 /// `UnlessControlsCountMatching` condition (CR 614.1d): is the condition's value provably
 /// INVARIANT as the growing class grows by `class_member`?
@@ -5875,10 +5979,12 @@ fn fire_time_conditions_read_growing_class(
 
 /// Scoped sibling of [`fire_time_conditions_read_growing_class`] — see
 /// [`LoopWindowScope`]. Reads `scope.phase_invariant` (CR 510.2 / CR 506.1, blocks (1)
-/// and (5b)), `scope.sole_driver` (CR 117.1b, block (2)) and `scope.identity_unstable`
-/// (CR 400.7, block (3)'s spent-self-entry relief); every such guard sits inside an
-/// `if let Some(..)` / `is_some_and`, so [`LoopWindowScope::unproven`] still reaches none of
-/// them and the 2-arg wrapper stays identity (`scoped_wrappers_are_identity`).
+/// and (5b)), `scope.sole_driver` (CR 117.1b's foreign-controller relief AND CR 732.2a's
+/// proposal-absence relief, both at block (2)) and `scope.identity_unstable` (CR 400.7, block
+/// (3)'s spent-self-entry relief and block (2)'s proposal-absence relief); every such guard
+/// sits inside an `if let Some(..)` / `is_some_and`, so [`LoopWindowScope::unproven`] still
+/// reaches none of them and the 2-arg wrapper stays identity
+/// (`scoped_wrappers_are_identity`).
 fn fire_time_conditions_read_growing_class_scoped(
     state: &GameState,
     class_members: Option<&HashSet<ObjectId>>,
@@ -6034,35 +6140,39 @@ fn fire_time_conditions_read_growing_class_scoped(
         if obj.zone != Zone::Battlefield || obj.is_phased_out() {
             continue;
         }
-        if obj.abilities.iter().any(|ability| {
-            // CR 117.1b + CR 732.2c: no player but the sole driver receives priority
-            // inside the taken shortcut, so a FOREIGN-controlled activated ability
-            // cannot be activated during the window and cannot read the growing class.
-            // CR 605.3a bounds this: a mana ability is activatable outside the priority
-            // rule (while another player casts a spell or activates an ability), so it
-            // is NOT relieved and keeps vetoing.
-            // PER-ABILITY, never per-object: another surface on the same object (a
-            // trigger body, block (1)) must keep vetoing.
-            // Fail-closed on `sole_driver: None` (the caller proved nothing).
-            let relieved = scope.sole_driver.is_some_and(|driver| {
-                // CR 117.1b (MagicCompRules.txt:930) is a statement about ACTIVATED
-                // abilities only: "a player may activate an activated ability any time
-                // they have priority". A `Spell`/`BeginGame`/`Database`/`Mulligan`-kind
-                // def is not reached through the priority rule at all, so a priority-based
-                // rationale can say nothing about it and must not relieve it. Same
-                // authority `layers.rs` uses to decide "this def is activatable".
-                //
-                // Measured on `data/card-data.json` (name-keyed object, 35 516 keys,
-                // 22 634 `abilities[]` entries): 9 797 of them are NOT `Activated`
-                // (`{Spell 9768, BeginGame 27, Mulligan 2}`), so this conjunct is not a
-                // no-op. Narrowing to entries that syntactically carry one of the 17
-                // `sibling: true` `QuantityRef` tags in `ability_scan.rs`: 1 465
-                // entries, 769 of them non-`Activated`. That 1 465/769 pair is an
-                // ESTIMATE of the at-risk class, NOT a bound in either direction — the
-                // predicate over-counts (a tagged ref need not reach the scan's sibling
-                // axis) and under-counts (the scan also flags sibling reads from
-                // non-`QuantityRef` surfaces and from every `Axes::CONSERVATIVE` subtree).
-                ability.kind == crate::types::ability::AbilityKind::Activated
+        if obj
+            .abilities
+            .iter()
+            .enumerate()
+            .any(|(ability_index, ability)| {
+                // CR 117.1b + CR 732.2c: no player but the sole driver receives priority
+                // inside the taken shortcut, so a FOREIGN-controlled activated ability
+                // cannot be activated during the window and cannot read the growing class.
+                // CR 605.3a bounds this: a mana ability is activatable outside the priority
+                // rule (while another player casts a spell or activates an ability), so it
+                // is NOT relieved and keeps vetoing.
+                // PER-ABILITY, never per-object: another surface on the same object (a
+                // trigger body, block (1)) must keep vetoing.
+                // Fail-closed on `sole_driver: None` (the caller proved nothing).
+                let relieved = scope.sole_driver.is_some_and(|driver| {
+                    // CR 117.1b (MagicCompRules.txt:930) is a statement about ACTIVATED
+                    // abilities only: "a player may activate an activated ability any time
+                    // they have priority". A `Spell`/`BeginGame`/`Database`/`Mulligan`-kind
+                    // def is not reached through the priority rule at all, so a priority-based
+                    // rationale can say nothing about it and must not relieve it. Same
+                    // authority `layers.rs` uses to decide "this def is activatable".
+                    //
+                    // Measured on `data/card-data.json` (name-keyed object, 35 516 keys,
+                    // 22 634 `abilities[]` entries): 9 797 of them are NOT `Activated`
+                    // (`{Spell 9768, BeginGame 27, Mulligan 2}`), so this conjunct is not a
+                    // no-op. Narrowing to entries that syntactically carry one of the 17
+                    // `sibling: true` `QuantityRef` tags in `ability_scan.rs`: 1 465
+                    // entries, 769 of them non-`Activated`. That 1 465/769 pair is an
+                    // ESTIMATE of the at-risk class, NOT a bound in either direction — the
+                    // predicate over-counts (a tagged ref need not reach the scan's sibling
+                    // axis) and under-counts (the scan also flags sibling reads from
+                    // non-`QuantityRef` surfaces and from every `Axes::CONSERVATIVE` subtree).
+                    ability.kind == crate::types::ability::AbilityKind::Activated
                     && obj.controller != driver
                     && !crate::game::mana_abilities::is_mana_ability(ability)
                     // CR 602.2 (MagicCompRules.txt:2527): "Only an object's controller (or
@@ -6088,79 +6198,116 @@ fn fire_time_conditions_read_growing_class_scoped(
                     // inherited here. LATENT on today's pool, deliberately: 45 defs carry
                     // `activator_filter`, 0 of which are growing-class-read candidates.
                     && ability.activator_filter.is_none()
-            });
-            // PHASE C arms S2 + S3 — a SEPARATE named local, deliberately NOT a
-            // widening of `relieved`. The two are INDEPENDENT claims about different
-            // rules and must stay that way:
-            //   * `relieved` is a CR 117.1b PRIORITY-REACHABILITY claim ("a player may
-            //     activate an activated ability any time they have priority"), which
-            //     CR 605.3a (MagicCompRules.txt:2694) BOUNDS — a mana ability is
-            //     activatable "whenever they are casting a spell or activating an
-            //     ability that requires a mana payment", i.e. outside the priority
-            //     rule. Both Pit of Offerings and Glittering Stockpile ARE mana
-            //     abilities, so `relieved` is `false` for them by construction.
-            //   * `disjoint` is a CR 608.2h VALUE-INVARIANCE claim, which does not care
-            //     whether the ability is reachable at all.
-            // Widening `relieved` to carry S2/S3 would reopen the CR 605.3a hole for
-            // every foreign mana ability; adding an independent conjunct does not touch
-            // it. Do not merge these two locals.
-            //
-            // `!members.is_empty()` is LOAD-BEARING and mirrors the `std::iter::once`
-            // guard in `execute_ledger_condition_provably_excludes_class`: an empty set
-            // must not make `.all()` vacuously true and relieve every surface.
-            // PER-ABILITY, never per-object — this closure is inside
-            // `obj.abilities.iter().any(..)`, so a sibling ability on the SAME object
-            // that reads the class keeps vetoing on its own turn through the loop.
-            //
-            // ORDERED AFTER the scan, not before it (the one place this differs from the
-            // plan's sketch, and it mirrors block (1b)'s landed shape, where the scan
-            // likewise precedes its `class_members` consult). BLOCK (1b) IS PINNED BY
-            // SYMBOL, NEVER BY LINE: it is the `if let Some(exec) = def.execute` construct
-            // in the block-(1) trigger loop earlier in THIS function — the one whose
-            // condition is `scan::ability_definition_reads_sibling_mutable_for_loop(exec)
-            // && !class_members.is_some_and(..)`, with the
-            // `execute_ledger_condition_provably_excludes_class(..) ||
-            // pump_aggregate_provably_excludes_class(..)` disjunct as its consult.
-            // (1b) is the LAST gate in that loop, and it is NOT the loop itself and NOT
-            // block (1)'s ETB gate — the `members.iter().all(|&member|
-            // etb_observer_provably_excludes_class(..))` `continue`, which this comment
-            // named for a round until three independent reviews caught it.
-            // THE DISCRIMINATOR, stated so it can be re-measured rather than re-read: the
-            // ordering claim above is about a SCAN preceding a `class_members` consult, and
-            // `scan::` is called exactly TWICE in block (1) — `trigger_condition_reads_
-            // sibling_mutable` (the condition gate) and `ability_definition_reads_sibling_
-            // mutable_for_loop` (1b's own first conjunct). BOTH sit AFTER the ETB gate's
-            // consult, so NO scan precedes it and the claim is false of it. What does
-            // precede the ETB gate is `trigger_definition_functions_in_zone` and the
-            // `scope.phase_invariant` gate — two `continue`s, neither of them a scan. (Do
-            // not restate this as "nothing precedes the ETB gate": that is false, it was
-            // asserted during this very fix, and the grep
-            // `awk 'NR>=<block1 start>,NR<=<block1 end>' | grep 'scan::'` is what settles
-            // it.) A symbol pin goes stale as silently as a line pin when it names the
-            // wrong symbol. The `:4232-4240`
-            // coordinate this comment carried before that had already drifted twice in one
-            // round, and a stale pin does not go stale loudly — it silently cites whatever
-            // code moved into those lines. Both arms
-            // CLONE the def and re-run the whole scan once PER MEMBER for conjunct (a),
-            // so evaluating them for abilities that carry no veto at all would pay the
-            // arms' cost on every ability of every battlefield permanent to relieve a
-            // veto that was never raised. `&&` over three pure predicates is
-            // order-independent in value, so this is strictly a cost ordering.
-            let disjoint = || {
-                class_members.is_some_and(|members| {
-                    !members.is_empty()
-                        && members.iter().all(|&m| {
-                            exiled_colors_provably_exclude_class(ability, state, m, obj)
-                                || counters_on_source_provably_excludes_class(
-                                    ability, state, m, obj,
-                                )
-                        })
-                })
-            };
-            !relieved
-                && scan::ability_definition_reads_sibling_mutable_for_loop(ability)
-                && !disjoint()
-        }) {
+                });
+                // PHASE C arms S2 + S3 — a SEPARATE named local, deliberately NOT a
+                // widening of `relieved`. The two are INDEPENDENT claims about different
+                // rules and must stay that way:
+                //   * `relieved` is a CR 117.1b PRIORITY-REACHABILITY claim ("a player may
+                //     activate an activated ability any time they have priority"), which
+                //     CR 605.3a (MagicCompRules.txt:2694) BOUNDS — a mana ability is
+                //     activatable "whenever they are casting a spell or activating an
+                //     ability that requires a mana payment", i.e. outside the priority
+                //     rule. Both Pit of Offerings and Glittering Stockpile ARE mana
+                //     abilities, so `relieved` is `false` for them by construction.
+                //   * `disjoint` is a CR 608.2h VALUE-INVARIANCE claim, which does not care
+                //     whether the ability is reachable at all.
+                // Widening `relieved` to carry S2/S3 would reopen the CR 605.3a hole for
+                // every foreign mana ability; adding an independent conjunct does not touch
+                // it. Do not merge these two locals.
+                //
+                // `!members.is_empty()` is LOAD-BEARING and mirrors the `std::iter::once`
+                // guard in `execute_ledger_condition_provably_excludes_class`: an empty set
+                // must not make `.all()` vacuously true and relieve every surface.
+                // PER-ABILITY, never per-object — this closure is inside
+                // `obj.abilities.iter().any(..)`, so a sibling ability on the SAME object
+                // that reads the class keeps vetoing on its own turn through the loop.
+                //
+                // ORDERED AFTER the scan, not before it (the one place this differs from the
+                // plan's sketch, and it mirrors block (1b)'s landed shape, where the scan
+                // likewise precedes its `class_members` consult). BLOCK (1b) IS PINNED BY
+                // SYMBOL, NEVER BY LINE: it is the `if let Some(exec) = def.execute` construct
+                // in the block-(1) trigger loop earlier in THIS function — the one whose
+                // condition is `scan::ability_definition_reads_sibling_mutable_for_loop(exec)
+                // && !class_members.is_some_and(..)`, with the
+                // `execute_ledger_condition_provably_excludes_class(..) ||
+                // pump_aggregate_provably_excludes_class(..)` disjunct as its consult.
+                // (1b) is the LAST gate in that loop, and it is NOT the loop itself and NOT
+                // block (1)'s ETB gate — the `members.iter().all(|&member|
+                // etb_observer_provably_excludes_class(..))` `continue`, which this comment
+                // named for a round until three independent reviews caught it.
+                // THE DISCRIMINATOR, stated so it can be re-measured rather than re-read: the
+                // ordering claim above is about a SCAN preceding a `class_members` consult, and
+                // `scan::` is called exactly TWICE in block (1) — `trigger_condition_reads_
+                // sibling_mutable` (the condition gate) and `ability_definition_reads_sibling_
+                // mutable_for_loop` (1b's own first conjunct). BOTH sit AFTER the ETB gate's
+                // consult, so NO scan precedes it and the claim is false of it. What does
+                // precede the ETB gate is `trigger_definition_functions_in_zone` and the
+                // `scope.phase_invariant` gate — two `continue`s, neither of them a scan. (Do
+                // not restate this as "nothing precedes the ETB gate": that is false, it was
+                // asserted during this very fix, and the grep
+                // `awk 'NR>=<block1 start>,NR<=<block1 end>' | grep 'scan::'` is what settles
+                // it.) A symbol pin goes stale as silently as a line pin when it names the
+                // wrong symbol. The `:4232-4240`
+                // coordinate this comment carried before that had already drifted twice in one
+                // round, and a stale pin does not go stale loudly — it silently cites whatever
+                // code moved into those lines. Both arms
+                // CLONE the def and re-run the whole scan once PER MEMBER for conjunct (a),
+                // so evaluating them for abilities that carry no veto at all would pay the
+                // arms' cost on every ability of every battlefield permanent to relieve a
+                // veto that was never raised. `&&` over three pure predicates is
+                // order-independent in value, so this is strictly a cost ordering.
+                let disjoint = || {
+                    class_members.is_some_and(|members| {
+                        !members.is_empty()
+                            && members.iter().all(|&m| {
+                                exiled_colors_provably_exclude_class(ability, state, m, obj)
+                                    || counters_on_source_provably_excludes_class(
+                                        ability, state, m, obj,
+                                    )
+                            })
+                    })
+                };
+                // CR 732.2a + CR 732.2c — the PROPOSAL-ABSENCE relief. A SEPARATE named local,
+                // deliberately not a widening of `relieved` or of `disjoint`, for the same reason
+                // those two are separate: the three are independent claims under different rules and
+                // a reader who merges any two of them silently exports one's premises onto another.
+                //   * `relieved` is CR 117.1b PRIORITY-REACHABILITY ("a FOREIGN controller never gets
+                //     priority inside the window"), which CR 605.3a bounds.
+                //   * `disjoint` is CR 608.2h VALUE-INVARIANCE ("the read's value does not move").
+                //   * `not_proposed` is CR 732.2a INAPPLICABILITY ("the proposal never activates it,
+                //     so it is never evaluated at all") — which is why it reaches the OWN-controller
+                //     permanents `relieved` cannot, and reaches lands whose census is genuine on the
+                //     merits, which no disjointness argument could ever relieve.
+                //
+                // `scope.sole_driver` is `Some` exactly when BOTH cover frames carry a non-empty,
+                // single-controller loop period AND agree on its controller
+                // (`window_scope_from_cover_frames`, derived from
+                // `GameState::loop_period_controller`). That is the proof that
+                // `last_loop_action_sequence` on the SCANNED frame describes THIS window rather than
+                // some earlier one; without it the record is a stale artifact and absence from it
+                // proves nothing. `LoopWindowScope::unproven()` — the offline classifier — reaches
+                // none of this, so the 2-arg wrapper stays byte-identical
+                // (`scoped_wrappers_are_identity`, `offline_classifier_verdict_is_unchanged`).
+                //
+                // PER-ABILITY, never per-object: this closure is inside
+                // `obj.abilities.iter().enumerate().any(..)`, so a sibling ability on the SAME object
+                // that the proposal DOES name keeps vetoing on its own turn through the loop. The
+                // `ability_index` is that per-ability coordinate and is exactly what
+                // `LoopAction::Activate` binds.
+                let not_proposed = scope.sole_driver.is_some()
+                    && activated_ability_is_not_a_loop_choice(
+                        state,
+                        obj,
+                        ability,
+                        ability_index,
+                        scope.identity_unstable,
+                    );
+                !relieved
+                    && !not_proposed
+                    && scan::ability_definition_reads_sibling_mutable_for_loop(ability)
+                    && !disjoint()
+            })
+        {
             return true;
         }
     }
@@ -25170,6 +25317,839 @@ mod tests {
             "row 10: PAIRED — a host present in BOTH frames at an equal epoch is spent; a host \
              minted inside the window has no past entrance to be spent and keeps its veto \
              (CR 400.7)"
+        );
+    }
+    // ─────────────────────────────────────────────────────────────────────────────────
+    // CR 732.2a PROPOSAL-ABSENCE relief at block (2) — rows 15-24.
+    //
+    // Every row here is about `activated_ability_is_not_a_loop_choice` and its consumption
+    // site. `class_members` is deliberately `None` throughout: the `disjoint` closure is
+    // `is_some_and`, so `None` makes it `false` and leaves block (2)'s verdict a function of
+    // `relieved` / `not_proposed` / the scan alone. The host is controlled by the SOLE DRIVER,
+    // so the sibling CR 117.1b `relieved` arm (`obj.controller != driver`) is `false` by
+    // construction and cannot carry any verdict below.
+    // ─────────────────────────────────────────────────────────────────────────────────
+
+    const P2_HOST: ObjectId = ObjectId(960);
+    const P2_OTHER_HOST: ObjectId = ObjectId(961);
+    const P2_DRIVER: PlayerId = PlayerId(0);
+
+    /// A board carrying ONE battlefield permanent (`P2_HOST`, controlled by the sole driver)
+    /// with `abilities`, and nothing else that can speak. `last_loop_action_sequence` is set to
+    /// `sequence`.
+    fn p2_board(
+        abilities: Vec<crate::types::ability::AbilityDefinition>,
+        sequence: Vec<crate::types::game_state::LoopActionContext>,
+    ) -> GameState {
+        let mut state = GameState::new_two_player(7);
+        let host = inert_token(&mut state, P2_HOST.0, P2_DRIVER.0, "Proposal Bystander");
+        state.objects.get_mut(&host).unwrap().abilities = std::sync::Arc::new(abilities);
+        state.last_loop_action_sequence = sequence;
+        state
+    }
+
+    /// The `LoopWindowScope` a cover pair hands the firewall once it has proved BOTH the
+    /// CR 117.1b sole-driver period and the CR 400.7 identity set. Only those two axes are
+    /// populated: every row in this section is about them and must not borrow another proof's
+    /// relief.
+    fn p2_scope(identity_unstable: &HashSet<ObjectId>) -> LoopWindowScope<'_> {
+        LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: Some(P2_DRIVER),
+            pinned: None,
+            cast_card_ids: None,
+            period: None,
+            identity_unstable: Some(identity_unstable),
+        }
+    }
+
+    /// One recorded loop step whose action is `action`, controlled by the sole driver (so
+    /// `loop_period_controller` — and therefore `sole_driver` — is `Some(P2_DRIVER)` whenever a
+    /// row derives its scope from frames rather than writing it directly).
+    fn p2_step(
+        action: crate::types::game_state::LoopAction,
+    ) -> crate::types::game_state::LoopActionContext {
+        crate::types::game_state::LoopActionContext {
+            card_id: CardId(P2_HOST.0),
+            controller: P2_DRIVER,
+            action,
+            convoke: None,
+            pins: Vec::new(),
+        }
+    }
+
+    /// A `TapLandForMana` step naming `(object_id, ability_index)` — the semantic land-mana
+    /// selection shape `record_mana_loop_action_step` writes.
+    fn p2_tap_land_step(
+        object_id: ObjectId,
+        ability_index: Option<usize>,
+    ) -> crate::types::game_state::LoopActionContext {
+        use crate::types::mana::{ManaSourceOutput, ManaSourcePenalty, ManaSourceSelection};
+        p2_step(crate::types::game_state::LoopAction::TapLandForMana {
+            selection: ManaSourceSelection {
+                source: crate::types::identifiers::ObjectIncarnationRef::of(object_id, 0),
+                ability_index,
+                mana_type: ManaType::Green,
+                output: ManaSourceOutput::Concrete(ManaType::Green),
+                atomic_combination: None,
+                restrictions: Vec::new(),
+                penalty: ManaSourcePenalty::None,
+                taps_for_mana: Vec::new(),
+            },
+        })
+    }
+
+    /// An `Activated` ability whose body GENUINELY reads the growing class — the shape every
+    /// row here needs, because a def the scan does not flag raises no veto to relieve.
+    fn p2_class_reading_ability() -> crate::types::ability::AbilityDefinition {
+        use crate::types::ability::{AbilityDefinition, AbilityKind};
+        AbilityDefinition::new(AbilityKind::Activated, class_reading_pump_effect())
+    }
+
+    /// Block (2) on `state`, under a proof that the window is the sole driver's and that
+    /// `unstable` is the CR 400.7 identity-unstable set.
+    fn p2_scan(state: &GameState, unstable: &HashSet<ObjectId>) -> bool {
+        fire_time_conditions_read_growing_class_scoped(state, None, p2_scope(unstable))
+    }
+
+    /// The reach-guards every row below depends on, asserted on `state`'s `P2_HOST`: the scan
+    /// really sees the sibling axis (else a `false` verdict is vacuous), the CR 605.3a guard is
+    /// not what carries the verdict, block (1)/(3) are silent, and the host's controller is
+    /// exactly `expected_controller` — which is what decides whether the sibling CR 117.1b
+    /// `relieved` arm (`obj.controller != driver`) can fire at all.
+    ///
+    /// `expected_controller` is a PARAMETER rather than a hardcoded `P2_DRIVER` because row 37
+    /// scans the same definition under BOTH controllers and needs this guard on both halves.
+    /// One authority for the guard beats a near-copy (*parameterize, don't proliferate*);
+    /// rows 16-23 all pass `P2_DRIVER` and their guard is unchanged in meaning.
+    fn p2_reach_guards(state: &GameState, index: usize, expected_controller: PlayerId, why: &str) {
+        use crate::game::ability_scan as scan;
+        let obj = &state.objects[&P2_HOST];
+        assert!(
+            index < obj.abilities.len(),
+            "{why} reach-guard: ability index {index} exists on the host"
+        );
+        assert!(
+            scan::ability_definition_reads_sibling_mutable_for_loop(&obj.abilities[index]),
+            "{why} reach-guard: the scan must SEE the sibling axis on ability {index}, else \
+             every relief verdict below is vacuous"
+        );
+        assert_eq!(obj.zone, Zone::Battlefield);
+        assert!(!obj.is_phased_out());
+        assert!(
+            obj.trigger_definitions.is_empty() && obj.replacement_definitions.is_empty(),
+            "{why} reach-guard: blocks (1) and (3) must be silent, so the verdict is \
+             attributable to block (2)"
+        );
+        assert_eq!(
+            obj.controller, expected_controller,
+            "{why} reach-guard: the host's controller must be exactly the one the row means, \
+             because block (2)'s CR 117.1b `relieved` arm keys on `obj.controller != driver`. \
+             At `P2_DRIVER` that arm is false by construction and cannot carry the verdict; at \
+             any other player it is TRUE and is the arm under test (row 37)"
+        );
+    }
+
+    /// **Row 16 (NEGATIVE — an ability the sequence DOES name keeps vetoing).**
+    ///
+    /// This is the INTERSECTION test, and it is the reason §0's relief-kind label calls P2
+    /// CONTINGENT: the relief holds only because the proposal happens not to name this
+    /// ability. CR 732.2c advances the game "with all game choices contained in the shortcut
+    /// proposal having been taken" — so an ability the proposal DOES contain IS activated
+    /// inside the window and does act on the growing class.
+    ///
+    /// It cannot be driven on the lane's real dump: the Sprout Swarm loop's only recorded step
+    /// is a `Recast`, which names a card being cast and never an activation.
+    ///
+    /// REVERT / MUTATION PROBE: replace the `LoopAction::Activate { .. } => ..` arm's body with
+    /// `false` ⇒ the named ability is relieved ⇒ **FAILS**.
+    #[test]
+    fn loop_driving_activation_is_not_relieved() {
+        use crate::types::game_state::LoopAction;
+        let stable = HashSet::new();
+
+        let named = p2_board(
+            vec![p2_class_reading_ability()],
+            vec![p2_step(LoopAction::Activate {
+                source_id: P2_HOST,
+                ability_index: 0,
+            })],
+        );
+        p2_reach_guards(&named, 0, P2_DRIVER, "row 16");
+        assert!(
+            p2_scan(&named, &stable),
+            "row 16: CR 732.2a/c — the proposal's own sequence names `(host, 0)`, so this \
+             ability IS activated inside the proposed window and reads the growing class \
+             while it grows. The proposal-absence argument does not apply to it"
+        );
+
+        // PAIRED POSITIVE — the ONLY variable is which index the step names.
+        let other_index = p2_board(
+            vec![p2_class_reading_ability()],
+            vec![p2_step(LoopAction::Activate {
+                source_id: P2_HOST,
+                ability_index: 1,
+            })],
+        );
+        assert!(
+            !p2_scan(&other_index, &stable),
+            "row 16 paired positive: the SAME board whose recorded step names a different \
+             ability index is relieved — so the veto above is the `(source_id, ability_index)` \
+             match and not a blanket refusal"
+        );
+
+        // PAIRED POSITIVE — the ONLY variable is which OBJECT the step names.
+        let other_source = p2_board(
+            vec![p2_class_reading_ability()],
+            vec![p2_step(LoopAction::Activate {
+                source_id: P2_OTHER_HOST,
+                ability_index: 0,
+            })],
+        );
+        assert!(
+            !p2_scan(&other_source, &stable),
+            "row 16 paired positive: the SAME board whose recorded step names a different \
+             object is relieved — both halves of the pair are load-bearing"
+        );
+    }
+
+    /// **Row 17 (NEGATIVE — a mana-tap step the sequence names keeps vetoing).**
+    ///
+    /// `LoopAction::TapLandForMana` is the second way a proposal can name an activation, and it
+    /// carries its coordinate as `selection.source.object_id` + `selection.ability_index`
+    /// rather than as `LoopAction::Activate`'s pair. Both halves are asserted, because a match
+    /// on only one of them would relieve a DIFFERENT ability on the same host (or the same
+    /// index on a different host).
+    ///
+    /// The def at that index is deliberately NOT a mana ability: the CR 605.3a guard above
+    /// short-circuits before this record match, so a mana def would make the row vacuous —
+    /// it would pass with the whole `TapLandForMana` arm deleted.
+    ///
+    /// REVERT / MUTATION PROBE: replace the `LoopAction::TapLandForMana { .. } => ..` arm's
+    /// body with `false` ⇒ the named ability is relieved ⇒ **FAILS**.
+    #[test]
+    fn loop_driving_mana_activation_is_not_relieved() {
+        let stable = HashSet::new();
+
+        let named = p2_board(
+            vec![p2_class_reading_ability()],
+            vec![p2_tap_land_step(P2_HOST, Some(0))],
+        );
+        p2_reach_guards(&named, 0, P2_DRIVER, "row 17");
+        assert!(
+            !crate::game::mana_abilities::is_mana_ability(&named.objects[&P2_HOST].abilities[0]),
+            "row 17 reach-guard: the def at the named index is NOT a mana ability, so the \
+             CR 605.3a guard is not what produces this row's verdict — without this the row \
+             would pass with the whole `TapLandForMana` arm deleted"
+        );
+        assert!(
+            p2_scan(&named, &stable),
+            "row 17: CR 732.2a/c — a recorded mana step names `(host, Some(0))`, so the \
+             proposal DOES contain this activation and the absence argument does not apply"
+        );
+
+        // PAIRED POSITIVE — only `selection.ability_index` moves.
+        let other_index = p2_board(
+            vec![p2_class_reading_ability()],
+            vec![p2_tap_land_step(P2_HOST, Some(1))],
+        );
+        assert!(
+            !p2_scan(&other_index, &stable),
+            "row 17 paired positive: the same step naming a different ability index relieves, \
+             so the `selection.ability_index == Some(ability_index)` conjunct is load-bearing"
+        );
+
+        // PAIRED POSITIVE — only `selection.source.object_id` moves.
+        let other_source = p2_board(
+            vec![p2_class_reading_ability()],
+            vec![p2_tap_land_step(P2_OTHER_HOST, Some(0))],
+        );
+        assert!(
+            !p2_scan(&other_source, &stable),
+            "row 17 paired positive: the same step naming a different object relieves, so the \
+             `selection.source.object_id == obj.id` conjunct is load-bearing too"
+        );
+
+        // PAIRED POSITIVE — an `ability_index: None` selection names no ability at all.
+        let no_index = p2_board(
+            vec![p2_class_reading_ability()],
+            vec![p2_tap_land_step(P2_HOST, None)],
+        );
+        assert!(
+            !p2_scan(&no_index, &stable),
+            "row 17 paired positive: `ability_index: None` (the typed subtype-derived land \
+             fallback) names no printed ability index, so it cannot be this ability"
+        );
+    }
+
+    /// Chocobo Camp's REAL parsed `abilities[0]` — VERBATIM Oracle text from the pinned
+    /// `AtomicCards.json` export, never a paraphrase. It is a CR 605.1a mana ability
+    /// (`{T}: Add {G}`) whose `sub_ability` carries a `CreateDelayedTrigger` the scan flags,
+    /// which is exactly the shape row 18 needs: absence from the loop-action record must NOT
+    /// relieve it, because a mana ability tapped while PAYING A COST is recorded nowhere.
+    fn chocobo_camp_mana_ability() -> crate::types::ability::AbilityDefinition {
+        let parsed = crate::parser::parse_oracle_text(
+            "This land enters tapped unless you control a legendary creature.\n\
+             {T}: Add {G}. When you next cast a Bird creature spell this turn, it enters with \
+             an additional +1/+1 counter on it.\n\
+             {2}{G}{G}, {T}: Create a 2/2 green Bird creature token with \"Whenever a land you \
+             control enters, this token gets +1/+0 until end of turn.\"",
+            "Chocobo Camp",
+            &[],
+            &["Land".to_string()],
+            &[],
+        );
+        assert_eq!(
+            parsed.abilities.len(),
+            2,
+            "fixture pin: Chocobo Camp parses to exactly TWO activated abilities (MEASURED \
+             against the card-data export, 35 798 keys); a parser change that splits or merges \
+             them re-points this row"
+        );
+        parsed.abilities[0].clone()
+    }
+
+    /// **Row 18 (NEGATIVE — a mana ability is NOT relieved by the proposal argument).**
+    ///
+    /// CR 605.3a: a mana ability may be activated "whenever they have priority, whenever they
+    /// are casting a spell or activating an ability that requires a mana payment, or whenever a
+    /// rule or effect asks for a mana payment, even if it's in the middle of casting or
+    /// resolving a spell". The last two clauses sit OUTSIDE the priority rule, and MEASURED:
+    /// all three sites that append a mana step to `last_loop_action_sequence` sit under a
+    /// `(WaitingFor::Priority { .. }, ..)` reducer arm — so a mana ability tapped while paying
+    /// the loop's own cost is recorded NOWHERE. Absence from the record therefore does not mean
+    /// "never activated" for a mana ability, and the record-absence test would be UNSOUND
+    /// without the guard.
+    ///
+    /// The subject is the real Chocobo Camp `abilities[0]`, whose `sub_ability` is what the
+    /// scan flags. The paired positive is that same def with ONLY the root effect swapped for
+    /// a non-mana one, so the variable is mana-ness and nothing else.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `if is_mana_ability(ability) { return false }` guard
+    /// from `activated_ability_is_not_a_loop_choice` ⇒ the subject is relieved ⇒ **FAILS**.
+    #[test]
+    fn mana_ability_is_not_relieved_by_the_proposal_argument() {
+        use crate::types::ability::Effect;
+        let stable = HashSet::new();
+
+        let mana_def = chocobo_camp_mana_ability();
+        let subject = p2_board(vec![mana_def.clone()], Vec::new());
+        p2_reach_guards(&subject, 0, P2_DRIVER, "row 18");
+        assert!(
+            crate::game::mana_abilities::is_mana_ability(&subject.objects[&P2_HOST].abilities[0]),
+            "row 18 reach-guard: the subject really IS a CR 605.1a mana ability, else the guard \
+             under test is never consulted"
+        );
+        assert!(
+            subject.last_loop_action_sequence.is_empty(),
+            "row 18 reach-guard: the def is ABSENT from the record, so the record match below \
+             would relieve it but for the CR 605.3a guard"
+        );
+        assert!(
+            p2_scan(&subject, &stable),
+            "row 18: CR 605.3a — a mana ability is activatable outside the priority rule, in \
+             the middle of the loop's own cost payment, and the loop-action record does not \
+             capture that. Absence from the record is therefore not proof of non-activation, \
+             and the relief must fail CLOSED here"
+        );
+
+        // PAIRED POSITIVE REACH-GUARD — the byte-identical def with ONLY the root effect
+        // swapped for a non-mana one IS relieved, so the row is not satisfiable by a blanket
+        // refusal and the sub-ability's own read is demonstrably still seen by the scan.
+        let mut non_mana_def = mana_def;
+        non_mana_def.effect = Box::new(Effect::Investigate);
+        let control = p2_board(vec![non_mana_def], Vec::new());
+        p2_reach_guards(&control, 0, P2_DRIVER, "row 18 control");
+        assert!(
+            !crate::game::mana_abilities::is_mana_ability(&control.objects[&P2_HOST].abilities[0]),
+            "row 18 control reach-guard: swapping the root effect really does clear mana-ness"
+        );
+        assert!(
+            !p2_scan(&control, &stable),
+            "row 18 paired positive: with mana-ness as the ONLY variable the same def, still \
+             absent from the record and still flagged by the scan, IS relieved — so the veto \
+             above is attributable to CR 605.3a and to nothing else"
+        );
+    }
+
+    /// **Row 20 (NEGATIVE — non-`Activated` kinds are not relieved).**
+    ///
+    /// CR 117.1b ("a player may activate an activated ability any time they have priority") and
+    /// CR 732.2a's "sequence of game choices" are both statements about ACTIVATED abilities. A
+    /// `Spell`-kind def is not reached through activation at all, so "the proposal did not
+    /// activate it" says nothing about it and cannot relieve it.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `ability.kind != AbilityKind::Activated` conjunct
+    /// from `activated_ability_is_not_a_loop_choice` ⇒ the `Spell`-kind subject is relieved ⇒
+    /// **FAILS**.
+    #[test]
+    fn non_activated_ability_kinds_are_not_relieved() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind};
+        let stable = HashSet::new();
+
+        // ONE builder ⇒ subject and control are identical except `kind`.
+        let build = |kind: AbilityKind| {
+            p2_board(
+                vec![AbilityDefinition::new(kind, class_reading_pump_effect())],
+                Vec::new(),
+            )
+        };
+
+        let subject = build(AbilityKind::Spell);
+        p2_reach_guards(&subject, 0, P2_DRIVER, "row 20");
+        assert_eq!(
+            subject.objects[&P2_HOST].abilities[0].kind,
+            AbilityKind::Spell
+        );
+        assert!(
+            p2_scan(&subject, &stable),
+            "row 20: CR 117.1b — a `Spell`-kind def is not reached through activation, so a \
+             proposal that never activated it proves nothing about it"
+        );
+
+        let control = build(AbilityKind::Activated);
+        assert!(
+            !p2_scan(&control, &stable),
+            "row 20 paired positive: the identical def at kind=Activated IS relieved, so the \
+             veto above is attributable to `kind` and not to some other surface"
+        );
+    }
+
+    /// A `(prior, current)` cover pair whose loop period is `sequence` on BOTH frames, carrying
+    /// the class-reading host. `window_scope_from_cover_frames` derives `sole_driver` from
+    /// these frames exactly as production does, so row 21 exercises the real derivation rather
+    /// than a hand-written scope.
+    fn p2_frames(
+        sequence: Vec<crate::types::game_state::LoopActionContext>,
+    ) -> (GameState, GameState) {
+        let prior = p2_board(vec![p2_class_reading_ability()], sequence);
+        let current = prior.clone();
+        (prior, current)
+    }
+
+    /// **Row 21 (NEGATIVE — an empty loop-action sequence does not relieve).**
+    ///
+    /// `scope.sole_driver` is `Some` exactly when BOTH cover frames carry a non-empty,
+    /// single-controller loop period and agree on its controller — it is the proof that
+    /// `last_loop_action_sequence` describes THIS window. An empty sequence proves nothing:
+    /// "the record does not name this ability" and "there is no record" are the same shell
+    /// output, and only the first licenses CR 732.2a's absence argument. Fail closed.
+    ///
+    /// The scope is DERIVED through `window_scope_from_cover_frames`, not written by hand, so
+    /// the row covers the production derivation and not just the consumption site.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `scope.sole_driver.is_some() &&` gate at block (2)'s
+    /// `not_proposed` local ⇒ the empty-sequence board is relieved ⇒ **FAILS**.
+    #[test]
+    fn empty_loop_action_sequence_does_not_relieve() {
+        use crate::types::game_state::LoopAction;
+
+        // SUBJECT: no period at all on either frame.
+        let (prior, current) = p2_frames(Vec::new());
+        let unstable = identity_unstable_ids(&prior, &current);
+        let scope = window_scope_from_cover_frames(&prior, &current, None, None, Some(&unstable));
+        p2_reach_guards(&current, 0, P2_DRIVER, "row 21");
+        assert_eq!(
+            scope.sole_driver, None,
+            "row 21 reach-guard: an empty sequence yields NO sole-driver proof, which is the \
+             fact under test"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class_scoped(&current, None, scope),
+            "row 21: CR 732.2a — with no recorded period there is no proposal whose contents \
+             could be argued about, so absence from the record licenses nothing and the veto \
+             must stand"
+        );
+
+        // PAIRED POSITIVE: a one-step period naming a DIFFERENT ability. The sequence is the
+        // only variable, and it is what mints `sole_driver`.
+        let (prior2, current2) = p2_frames(vec![p2_step(LoopAction::Activate {
+            source_id: P2_HOST,
+            ability_index: 1,
+        })]);
+        let unstable2 = identity_unstable_ids(&prior2, &current2);
+        let scope2 =
+            window_scope_from_cover_frames(&prior2, &current2, None, None, Some(&unstable2));
+        assert_eq!(
+            scope2.sole_driver,
+            Some(P2_DRIVER),
+            "row 21 paired positive reach-guard: a non-empty single-controller period on both \
+             frames DOES mint the proof"
+        );
+        assert!(
+            !fire_time_conditions_read_growing_class_scoped(&current2, None, scope2),
+            "row 21 paired positive: with a real period recorded, and this ability absent from \
+             it, the relief fires — so the subject's veto is the missing proof and not a \
+             blanket refusal"
+        );
+    }
+
+    /// **Row 22 (POSITIVE — `activator_filter` deliberately does NOT block this relief).**
+    ///
+    /// CR 602.2's "unless the object specifically says otherwise" is what makes
+    /// `activator_filter` load-bearing for the SIBLING CR 117.1b arm: with `All` or `Opponent`
+    /// the sole driver may activate a FOREIGN permanent's ability, so `obj.controller != driver`
+    /// stops implying unreachability there. This arm's argument is different in kind — it is
+    /// about what the proposal CONTAINS, not about who could have activated it — so widening
+    /// who *may* activate the ability changes nothing: the proposal still does not name it.
+    /// The row exists so the widening is on the record as deliberate rather than forgotten.
+    ///
+    /// REVERT / MUTATION PROBE: ADD `&& ability.activator_filter.is_none()` to
+    /// `activated_ability_is_not_a_loop_choice` ⇒ the subject stops being relieved ⇒ **FAILS**.
+    #[test]
+    fn activator_filter_does_not_block_the_proposal_argument() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind, PlayerFilter};
+        use crate::types::game_state::LoopAction;
+        let stable = HashSet::new();
+
+        let build =
+            |activator_filter: Option<PlayerFilter>,
+             sequence: Vec<crate::types::game_state::LoopActionContext>| {
+                let mut def =
+                    AbilityDefinition::new(AbilityKind::Activated, class_reading_pump_effect());
+                def.activator_filter = activator_filter;
+                p2_board(vec![def], sequence)
+            };
+
+        let subject = build(Some(PlayerFilter::All), Vec::new());
+        p2_reach_guards(&subject, 0, P2_DRIVER, "row 22");
+        assert!(
+            subject.objects[&P2_HOST].abilities[0]
+                .activator_filter
+                .is_some(),
+            "row 22 reach-guard: the subject really carries the CR 602.2 widening field"
+        );
+        assert!(
+            !p2_scan(&subject, &stable),
+            "row 22: CR 732.2a — the proposal-absence argument is about what the sequence \
+             CONTAINS, not about who may activate the ability, so a widened activator set does \
+             not touch it. Adding an `activator_filter.is_none()` conjunct reds this row"
+        );
+
+        // REACH-GUARD, and it is what stops this positive row from being vacuous: the SAME
+        // widened def IS vetoed once the proposal names it, so the board is demonstrably
+        // capable of vetoing and the `false` above is the relief rather than a silent board.
+        let named = build(
+            Some(PlayerFilter::All),
+            vec![p2_step(LoopAction::Activate {
+                source_id: P2_HOST,
+                ability_index: 0,
+            })],
+        );
+        assert!(
+            p2_scan(&named, &stable),
+            "row 22 reach-guard: the identical widened def that the proposal DOES name keeps \
+             vetoing, so this board is not one that offers unconditionally"
+        );
+
+        // The unwidened twin, for the record that `activator_filter` is not the variable.
+        let unwidened = build(None, Vec::new());
+        assert!(
+            !p2_scan(&unwidened, &stable),
+            "row 22: the unwidened twin is relieved too — `activator_filter` moves no verdict \
+             through this arm in either direction"
+        );
+    }
+
+    /// **Row 23 — the offline classifier's verdict is unchanged.**
+    ///
+    /// [`LoopWindowScope::unproven`] carries `None` on every axis, and BOTH of this relief's
+    /// authorities read through a `None`-fail-closed accessor: `scope.sole_driver.is_some()`
+    /// and [`host_identity_is_stable`]. Each is asserted SEPARATELY below, because a row that
+    /// only scanned `unproven()` would stay green with either gate deleted — the other would
+    /// still be carrying it, and the row would silently stop discriminating.
+    ///
+    /// REVERT / MUTATION PROBE (the `sole_driver` gate): delete `scope.sole_driver.is_some() &&`
+    /// from block (2)'s `not_proposed` local ⇒ the identity-only scope relieves ⇒ **FAILS**.
+    /// REVERT / MUTATION PROBE (the CR 400.7 conjunct): delete the `host_identity_is_stable`
+    /// early return from `activated_ability_is_not_a_loop_choice` ⇒ the driver-only scope
+    /// relieves ⇒ **FAILS**.
+    #[test]
+    fn offline_classifier_verdict_is_unchanged() {
+        let stable = HashSet::new();
+        let state = p2_board(vec![p2_class_reading_ability()], Vec::new());
+        p2_reach_guards(&state, 0, P2_DRIVER, "row 23");
+
+        assert!(
+            fire_time_conditions_read_growing_class(&state, None),
+            "row 23: the 2-arg wrapper — the offline classifier's own entry point — still \
+             vetoes this board"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class_scoped(
+                &state,
+                None,
+                LoopWindowScope::unproven()
+            ),
+            "row 23: the scoped call at `unproven()` agrees with the 2-arg wrapper, i.e. the \
+             wrapper is still IDENTITY after this partition"
+        );
+
+        // AXIS 1 ALONE — a CR 400.7 identity proof with NO sole-driver proof must not relieve.
+        let identity_only = LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned: None,
+            cast_card_ids: None,
+            period: None,
+            identity_unstable: Some(&stable),
+        };
+        assert!(
+            fire_time_conditions_read_growing_class_scoped(&state, None, identity_only),
+            "row 23: without the CR 117.1b sole-driver proof, `last_loop_action_sequence` is \
+             not known to describe THIS window, so its emptiness proves nothing. Deleting the \
+             `scope.sole_driver.is_some()` gate reds this assertion"
+        );
+
+        // AXIS 2 ALONE — a sole-driver proof with NO CR 400.7 identity proof must not relieve.
+        let driver_only = LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: Some(P2_DRIVER),
+            pinned: None,
+            cast_card_ids: None,
+            period: None,
+            identity_unstable: None,
+        };
+        assert!(
+            fire_time_conditions_read_growing_class_scoped(&state, None, driver_only),
+            "row 23: without the CR 400.7 identity proof the recorded `ability_index` may name \
+             a different ability than the one it activated, so the relief must fail closed. \
+             Deleting the `host_identity_is_stable` conjunct reds this assertion"
+        );
+
+        // BOTH AXES — the relief fires, so the three refusals above are the missing proofs and
+        // not a board that never offers.
+        assert!(
+            !p2_scan(&state, &stable),
+            "row 23 paired positive: with BOTH proofs supplied the same board is relieved — \
+             every refusal above is attributable to a missing proof"
+        );
+    }
+
+    /// **Row 24 (NEGATIVE — a re-entered host does not get the proposal relief either).**
+    ///
+    /// CR 400.7: `LoopAction::Activate` binds `(ObjectId, usize)` with no incarnation, and
+    /// `ability_index` is a position into the LAYER-DERIVED `abilities` vec. On a host that
+    /// re-entered the battlefield inside the window a granted or lost ability can shift that
+    /// position, so a recorded index may no longer name the ability it activated — and the
+    /// record-absence test would then be reading a stale coordinate.
+    ///
+    /// MULTI-AUTHORITY FIXTURE: two hosts, the SAME ability definition, the SAME window, the
+    /// SAME (empty of them) record — one blinked through `game::zones::move_to_zone`, one not.
+    /// BOTH verdicts are asserted, so a global kill switch fails this row too.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `if !host_identity_is_stable(obj.id, ..)` early
+    /// return from `activated_ability_is_not_a_loop_choice` ⇒ the blinked host is relieved ⇒
+    /// **FAILS**.
+    #[test]
+    fn unactivated_ability_relief_does_not_survive_a_reentered_host() {
+        let mut prior = GameState::new_two_player(7);
+        let stable_host = inert_token(&mut prior, P2_HOST.0, P2_DRIVER.0, "Stable Bystander");
+        let blinked_host = inert_token(
+            &mut prior,
+            P2_OTHER_HOST.0,
+            P2_DRIVER.0,
+            "Blinked Bystander",
+        );
+        for id in [stable_host, blinked_host] {
+            prior.objects.get_mut(&id).unwrap().abilities =
+                std::sync::Arc::new(vec![p2_class_reading_ability()]);
+        }
+        let mut current = prior.clone();
+        // BLINK through the production zone mover, twice, so the CR 400.7 epoch bump is the
+        // engine's own rather than a hand-set field. The abilities are re-seeded afterwards
+        // because a real zone round trip re-derives them.
+        {
+            let mut events = Vec::new();
+            crate::game::zones::move_to_zone(
+                &mut current,
+                blinked_host,
+                Zone::Graveyard,
+                &mut events,
+            );
+            crate::game::zones::move_to_zone(
+                &mut current,
+                blinked_host,
+                Zone::Battlefield,
+                &mut events,
+            );
+            current.objects.get_mut(&blinked_host).unwrap().abilities =
+                std::sync::Arc::new(vec![p2_class_reading_ability()]);
+        }
+        let unstable = identity_unstable_ids(&prior, &current);
+        assert_eq!(
+            (
+                unstable.contains(&blinked_host),
+                unstable.contains(&stable_host)
+            ),
+            (true, false),
+            "row 24 reach-guard: the derivation names the blinked host and NOT the stable one, \
+             else the row proves nothing about either"
+        );
+        assert_eq!(
+            current.objects[&blinked_host].zone,
+            Zone::Battlefield,
+            "row 24 reach-guard: the blink is a ROUND TRIP, so block (2) still reaches the host"
+        );
+
+        // PREDICATE LEVEL — both verdicts, on ONE definition.
+        let def = p2_class_reading_ability();
+        assert_eq!(
+            (
+                activated_ability_is_not_a_loop_choice(
+                    &current,
+                    &current.objects[&stable_host],
+                    &def,
+                    0,
+                    Some(&unstable),
+                ),
+                activated_ability_is_not_a_loop_choice(
+                    &current,
+                    &current.objects[&blinked_host],
+                    &def,
+                    0,
+                    Some(&unstable),
+                ),
+            ),
+            (true, false),
+            "row 24: SAME definition, SAME window, SAME empty record — the stable host's \
+             ability is provably absent from the proposal, the re-entered one's recorded \
+             coordinate may no longer name it (CR 400.7). Both verdicts are asserted, so \
+             neither a global relief nor a global refusal passes"
+        );
+
+        // BOARD LEVEL — block (2) is an `any` over battlefield permanents, so one un-relieved
+        // re-entered host keeps the whole board vetoing.
+        assert!(
+            p2_scan(&current, &unstable),
+            "row 24: one re-entered host is enough to keep block (2) vetoing"
+        );
+
+        // PAIRED POSITIVE — the same board with the blinked host's abilities stripped is
+        // relieved, so the veto above is the blink's and nobody else's.
+        let mut stable_only = current.clone();
+        stable_only
+            .objects
+            .get_mut(&blinked_host)
+            .unwrap()
+            .abilities = std::sync::Arc::new(Vec::new());
+        assert!(
+            !p2_scan(&stable_only, &unstable),
+            "row 24 paired positive: with only the STABLE host speaking the same board is \
+             relieved — the veto above is attributable to the re-entry"
+        );
+    }
+
+    /// **Row 37 (PAIRED — the CR 117.1b relief still keys on the OBSERVER'S CONTROLLER, on a
+    /// fixture the CR 732.2a proposal-absence relief provably cannot subsume).**
+    ///
+    /// This row is the REPLACEMENT for the controller-axis guard the shipped integration row
+    /// `loop_shortcut.rs :: driver_own_unproposed_activated_ability_is_relieved` (X1-2) used to
+    /// carry. Under this partition X1-2's foreign half is OVER-DETERMINED — a foreign
+    /// class-reading activated ability is relieved by BOTH block (2)'s CR 117.1b `relieved` arm
+    /// AND its CR 732.2a `not_proposed` arm — so that half no longer isolates the controller
+    /// comparison, and the same is true of X1-1's opponents' utility lands. Here the proposal
+    /// NAMES the ability on both halves, which pins `not_proposed` to `false` BY CONSTRUCTION
+    /// and leaves `obj.controller != driver` as the only conjunct that can move a verdict.
+    ///
+    /// TWO INDEPENDENT SINGLE-HOST BOARDS, deliberately NOT one board carrying two hosts — do
+    /// not "simplify" this back, because the one-board version does not discriminate:
+    /// * `LoopAction::Activate` binds a single `source_id`, so one recorded step names one
+    ///   host; the un-named host's `not_proposed` would be `true` and this row's own
+    ///   reach-guard would be false on that half by construction.
+    /// * block (2) is not an `any` over the board — it `return true`s on the FIRST vetoing
+    ///   permanent — so on a shared board the driver's-own veto masks the foreign half in ONE
+    ///   direction and the foreign veto masks the driver's-own half in the other. The
+    ///   board-level verdict is `true` either way and the inversion could never flip both.
+    ///
+    /// Naming an OPPONENT's ability in the record is CR 732.2a-coherent: a shortcut proposal is
+    /// "a sequence of game choices, FOR ALL PLAYERS", and
+    /// `activated_ability_is_not_a_loop_choice` reads the record and the ability, never the
+    /// controller, so it answers `false` on the foreign half exactly as on the driver's.
+    ///
+    /// UNIT-LEVEL DELIBERATELY — nobody should "upgrade" this to an integration row. On the
+    /// boards this lane drives there is no fixture in which `not_proposed` is `false` for a
+    /// class-reading activated bystander: the recorded sequence is a single `Recast` and names
+    /// no ability (row 16). Injecting an `Activate` step does not produce one either, because
+    /// `drive_loop_sequence_iteration` REPLAYS every recorded step through `apply_action(..,
+    /// GameAction::ActivateAbility { .. })` with `.map_err(|_| RecastAbort)?`, so an injected
+    /// activation the harness cannot pay for aborts the drive before any offer is reached. The
+    /// controller axis is constructible only where the record can be written directly.
+    ///
+    /// REVERT / MUTATION PROBE: invert block (2)'s `obj.controller != driver` comparison to
+    /// `obj.controller == driver` ⇒ **BOTH verdicts SWAP** and the single paired `assert_eq!`
+    /// below prints `(false, true)` against `(true, false)` ⇒ **FAILS**. (A
+    /// restore is not verified until the artifact was REBUILT from it — a same-mtime restore
+    /// lets cargo skip the rebuild and silently re-run the mutated binary.)
+    #[test]
+    fn foreign_relief_still_keys_on_the_controller_for_a_proposed_ability() {
+        use crate::types::game_state::LoopAction;
+        const P2_FOREIGN: PlayerId = PlayerId(1);
+        let stable = HashSet::new();
+
+        // ONE definition, ONE record shape, TWO boards. Each board's own one-step record names
+        // ITS OWN host, so the only field that differs between them is `obj.controller` —
+        // which is what makes "differ ONLY in `controller`" structural rather than a promise.
+        let build = |controller: PlayerId| {
+            let mut state = p2_board(
+                vec![p2_class_reading_ability()],
+                vec![p2_step(LoopAction::Activate {
+                    source_id: P2_HOST,
+                    ability_index: 0,
+                })],
+            );
+            state.objects.get_mut(&P2_HOST).unwrap().controller = controller;
+            state
+        };
+        let own = build(P2_DRIVER);
+        let foreign = build(P2_FOREIGN);
+        p2_reach_guards(&own, 0, P2_DRIVER, "row 37 driver's-own half");
+        p2_reach_guards(&foreign, 0, P2_FOREIGN, "row 37 foreign half");
+
+        // THE REACH-GUARD THAT MAKES THIS THE REPLACEMENT AND NOT A DUPLICATE, and it is the
+        // whole point of the row: the proposal-absence predicate is `false` on BOTH halves, so
+        // `not_proposed` cannot carry either verdict below. This is exactly the property
+        // X1-2's fixture LOST when this partition landed.
+        assert_eq!(
+            (
+                activated_ability_is_not_a_loop_choice(
+                    &own,
+                    &own.objects[&P2_HOST],
+                    &own.objects[&P2_HOST].abilities[0],
+                    0,
+                    Some(&stable),
+                ),
+                activated_ability_is_not_a_loop_choice(
+                    &foreign,
+                    &foreign.objects[&P2_HOST],
+                    &foreign.objects[&P2_HOST].abilities[0],
+                    0,
+                    Some(&stable),
+                ),
+            ),
+            (false, false),
+            "row 37 reach-guard: the proposal NAMES this ability on both halves, so CR 732.2a \
+             inapplicability is false on both and `not_proposed` is provably not what carries \
+             either verdict. Without this the row is X1-2 again, one level down"
+        );
+
+        // BOTH verdicts in ONE `assert_eq!` on the exact pair, deliberately — this is the
+        // shape rows 9/11/24 already use for a multi-authority fixture, and it is what makes
+        // the row's own probe legible in a SINGLE driven run: two separate `assert!`s can only
+        // ever show the FIRST one failing, whereas this prints `(false, true)` against
+        // `(true, false)` and displays both verdicts swapping. It also fails a global kill
+        // switch in either direction, which a `contains`-style or single-sided check does not.
+        assert_eq!(
+            (p2_scan(&own, &stable), p2_scan(&foreign, &stable)),
+            (true, false),
+            "row 37: ONE definition, ONE record shape naming it, controller the only variable. \
+             DRIVER'S OWN (expect veto): CR 117.1b — the driver holds priority inside its own \
+             window and the proposal DOES contain this activation, so `obj.controller != \
+             driver` is false, `relieved` is false, and the veto stands. FOREIGN (expect \
+             relief): CR 117.1b + CR 732.2c — no player but the sole driver receives priority \
+             inside the taken shortcut, so the IDENTICAL definition under an opponent is \
+             relieved even though the proposal names it. Inverting `obj.controller != driver` \
+             swaps BOTH verdicts and reds this row"
         );
     }
 

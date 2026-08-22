@@ -30,7 +30,7 @@
 use std::sync::Arc;
 
 use engine::game::zones::create_object;
-use engine::types::ability::{ReplacementDefinition, TargetFilter, TypedFilter};
+use engine::types::ability::{AbilityKind, ReplacementDefinition, TargetFilter, TypedFilter};
 use engine::types::card_type::CoreType;
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
@@ -244,6 +244,292 @@ fn spent_self_entry_relief_offers_on_three_real_entry_census_lands() {
              make it apply again inside the window. The veto is correct here, and this arm is \
              also ARM A's reach-guard: block (3) demonstrably sees this definition, so ARM A's \
              offer is the self-entry scope and not a blind walk"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// CR 732.2a PROPOSAL-ABSENCE acceptance — rows 15 and 19.
+//
+// **What this half adds to the file's posture.** The relief above is about a replacement
+// effect that cannot APPLY inside the window. This one is about an activated ability the
+// proposed sequence never ACTIVATES. CR 732.2a defines a shortcut as "a sequence of game
+// choices, for all players", and CR 732.2c advances the game "with all game choices contained
+// in the shortcut proposal having been taken" — so an activated ability absent from that
+// sequence is never activated inside the window and cannot act on the growing class, HOWEVER
+// LOUDLY IT WOULD READ THE BOARD IF IT EVER RAN. That is why this relief reaches Abandoned Air
+// Temple, whose "+1/+1 counter on each creature you control" read is genuine on the merits and
+// which no disjointness argument could ever relieve.
+//
+// **CONTINGENT relief, stated at the file level so nobody re-reads it as structural.** A loop
+// whose proposal DID name one of these abilities restores the veto. The unit rows
+// `loop_driving_activation_is_not_relieved` and `loop_driving_mana_activation_is_not_relieved`
+// are the intersection tests, and they cannot be driven here: the Sprout Swarm loop's only
+// recorded step is a `Recast`, which names a card being cast and never an activation.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// The three census lands row 15 drives, each with its VERBATIM Oracle text from the pinned
+/// card-data export. Each carries TWO activated abilities: a mana ability (`{T}: Add ..`, which
+/// CR 605.3a keeps OUT of this relief) and a second, non-mana ability whose body reads the
+/// board. They are deliberately three DIFFERENT reads — a counter sweep over every creature
+/// you control, a token mint with a board-scaled cost reduction, and a targeted keyword grant —
+/// so the row is about the class of card and not about one effect shape.
+const PROPOSAL_LANDS: [(&str, &str, &[&str]); 3] = [
+    (
+        "Abandoned Air Temple",
+        "This land enters tapped unless you control a basic land.\n{T}: Add {W}.\n\
+         {3}{W}, {T}: Put a +1/+1 counter on each creature you control.",
+        &[],
+    ),
+    (
+        "The Lonely Mountain",
+        "({T}: Add {R}.)\nThis land enters tapped unless you control an Equipment.\n\
+         {4}{R}, {T}: Create a 2/2 red Dwarf creature token. This ability costs {1} less to \
+         activate for each Equipment you control. Activate only as a sorcery.",
+        &["Mountain"],
+    ),
+    (
+        "Fire Nation Palace",
+        "This land enters tapped unless you control a basic land.\n{T}: Add {R}.\n\
+         {1}{R}, {T}: Target creature you control gains firebending 4 until end of turn. \
+         (Whenever it attacks, add {R}{R}{R}{R}. This mana lasts until end of combat.)",
+        &[],
+    ),
+];
+
+/// Chocobo Camp's VERBATIM Oracle text, from the same export. Row 19's subject.
+const CHOCOBO_CAMP: (&str, &str, &[&str]) = (
+    "Chocobo Camp",
+    "This land enters tapped unless you control a legendary creature.\n\
+     {T}: Add {G}. When you next cast a Bird creature spell this turn, it enters with an \
+     additional +1/+1 counter on it.\n\
+     {2}{G}{G}, {T}: Create a 2/2 green Bird creature token with \"Whenever a land you control \
+     enters, this token gets +1/+0 until end of turn.\"",
+    &[],
+);
+
+/// Put ONE land on P0's battlefield carrying its REAL parsed abilities AND its real entry
+/// replacement, and nothing else. Both replacement stores are written for the same reason
+/// [`graft_census_land`] writes both: `game/layers.rs` re-seeds the live store from the base
+/// store on every pass.
+///
+/// The abilities are the point of this helper — [`graft_census_land`] deliberately installs a
+/// definition and NO abilities, because row 14's attributability control needs block (3) to be
+/// the only speaker on the board. Here block (2) is the subject, so the abilities must be real.
+fn graft_full_land(state: &mut GameState, card: (&str, &str, &[&str])) -> ObjectId {
+    let (name, oracle, subtypes) = card;
+    let subs: Vec<String> = subtypes.iter().map(|s| (*s).to_string()).collect();
+    let parsed = engine::parser::parse_oracle_text(oracle, name, &[], &["Land".to_string()], &subs);
+    assert_eq!(
+        parsed.replacements.len(),
+        1,
+        "fixture pin: {name} parses to exactly ONE replacement definition (the CR 614.1d entry \
+         condition block (3) relieves); a parser change that splits or merges it re-points every \
+         arm of this row"
+    );
+    assert_eq!(
+        nonmana_ability_index(&parsed.abilities).len(),
+        1,
+        "fixture pin: {name} parses to exactly ONE NON-mana activated ability — the surface this \
+         partition's relief acts on. Pinned by PREDICATE, not by index: an intrinsic basic-land \
+         mana ability is added by the DATABASE LOADER and not by the parser, so a card's parsed \
+         ability count is not its exported one (MEASURED: The Lonely Mountain exports 2 and \
+         parses to 1)"
+    );
+    assert!(
+        parsed.triggers.is_empty() && parsed.statics.is_empty(),
+        "fixture pin: {name} carries NO triggers and NO static abilities, so blocks (1), (4) \
+         and (5) are silent and every verdict below is block (2)'s or block (3)'s"
+    );
+
+    let card_id = CardId(state.next_object_id);
+    let host = create_object(state, card_id, P0, name.to_string(), Zone::Battlefield);
+    let obj = state
+        .objects
+        .get_mut(&host)
+        .expect("the just-created land is in `objects`");
+    obj.card_types.core_types = vec![CoreType::Land];
+    obj.abilities = Arc::new(parsed.abilities.clone());
+    obj.base_replacement_definitions = Arc::new(parsed.replacements.clone());
+    obj.replacement_definitions = parsed.replacements.into();
+    host
+}
+
+/// The indices of the parsed abilities that are NOT CR 605.1a mana abilities — i.e. the ones
+/// this partition's relief can act on at all, since CR 605.3a holds mana abilities out of it.
+///
+/// A PREDICATE rather than a positional pin, because a land's parsed ability list is not its
+/// exported one: intrinsic basic-land-type mana abilities are attached by the database loader,
+/// so The Lonely Mountain exports two abilities and parses to one, while Chocobo Camp exports
+/// and parses two.
+fn nonmana_ability_index(abilities: &[engine::types::ability::AbilityDefinition]) -> Vec<usize> {
+    abilities
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| !engine::game::mana_abilities::is_mana_ability(a))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Rewrite the grafted land's sole NON-mana ability from `Activated` to `Spell` kind —
+/// CR 117.1b's other side. A `Spell`-kind def is not reached through activation at all, so "the
+/// proposal never activated it" says nothing about it and the relief must refuse.
+///
+/// This is row 15's live discriminating mutation AND its reach-guard: it changes ONE enum field
+/// on ONE ability, so an offer that survives every other arm but dies here is attributable to
+/// the proposal-absence relief and to nothing else on the board.
+fn spellify_the_nonmana_ability(state: &mut GameState, host: ObjectId) {
+    let obj = state.objects.get_mut(&host).expect("the land is live");
+    let abilities = Arc::make_mut(&mut obj.abilities);
+    let targets = nonmana_ability_index(abilities);
+    assert_eq!(
+        targets.len(),
+        1,
+        "reach-guard: exactly one non-mana ability to rewrite"
+    );
+    assert_eq!(
+        abilities[targets[0]].kind,
+        AbilityKind::Activated,
+        "reach-guard: the non-mana ability really is the ACTIVATED one this relief acts on"
+    );
+    abilities[targets[0]].kind = AbilityKind::Spell;
+}
+
+/// **Row 15 — three REAL census lands whose activated ability the proposed sequence never
+/// activates stop vetoing the CR 732.2a offer; and each returns to REFUSING the moment that
+/// ability stops being an activated one.**
+///
+/// This is the end-to-end discharge of the proposal-absence relief. Abandoned Air Temple is the
+/// one of these whose read is genuine on the merits — "put a +1/+1 counter on each creature you
+/// control" really does census the growing Saproling class — which is exactly why no
+/// disjointness arm reaches it and why this relief has to be inapplicability-shaped.
+///
+/// STRUCTURE, so no arm can pass for the wrong reason:
+///  * BASELINE (positive control): the untouched dump OFFERS. Without it, a green arm below
+///    cannot be told apart from a harness that offers on everything.
+///  * ARM A (the claim): dump + the real land ⇒ OFFERS.
+///  * ARM B (the live discriminating mutation): the SAME board with the second ability's `kind`
+///    rewritten `Activated` → `Spell` ⇒ REFUSES, pinned positively at `Priority{P0}`. One enum
+///    field is the only variable between A and B, so A's offer is attributable to CR 732.2a's
+///    proposal-absence argument — and B is the reach-guard proving block (2) genuinely SEES
+///    this ability.
+///
+/// REVERT / MUTATION PROBE: delete the `&& !not_proposed` conjunct at block (2) in
+/// `analysis::resource::fire_time_conditions_read_growing_class_scoped` ⇒ all three ARM A
+/// assertions return to REFUSES ⇒ **FAILS**.
+#[test]
+fn unactivated_ability_relief_offers_on_three_real_census_lands() {
+    assert!(
+        drive_and_report(load_realistic_dump(), "baseline"),
+        "BASELINE positive control: the untouched combo board OFFERS the CR 732.2a shortcut. \
+         If this fails, every arm below is vacuous and the finding is about the harness, not \
+         the firewall"
+    );
+
+    for card in PROPOSAL_LANDS {
+        let name = card.0;
+
+        // ── ARM A: the real card, alone on the board ──
+        let mut with_land = load_realistic_dump();
+        graft_full_land(&mut with_land, card);
+        assert!(
+            drive_and_report(with_land, name),
+            "ARM A ({name}): CR 732.2a + CR 732.2c — the proposed sequence contains no \
+             activation of this land's ability, so it is never activated inside the window and \
+             cannot act on the growing class, whatever it would read if it ran. CR 732.2b \
+             already gives every other player the mechanism for deviating; a pre-emptive veto \
+             here is the engine guessing at a declaration the rules assign to a player. \
+             Deleting block (2)'s `&& !not_proposed` conjunct restores the veto"
+        );
+
+        // ── ARM B: one enum field changed — the ability is no longer an activated one ──
+        let mut spellified = load_realistic_dump();
+        let host = graft_full_land(&mut spellified, card);
+        spellify_the_nonmana_ability(&mut spellified, host);
+        assert!(
+            !drive_and_report(spellified, name),
+            "ARM B ({name}): CR 117.1b scopes the activation rule — and with it CR 732.2a's \
+             'sequence of game choices' — to ACTIVATED abilities. A `Spell`-kind def is not \
+             reached through activation at all, so the proposal's silence about it proves \
+             nothing and the veto is correct. This arm is also ARM A's reach-guard: block (2) \
+             demonstrably sees this ability, so ARM A's offer is the relief and not a blind scan"
+        );
+    }
+}
+
+/// **Row 19 (NEGATIVE — Chocobo Camp still REFUSES at this partition's tip).**
+///
+/// The census here is **18 of 19, not 19 of 19**, and this row is what stops anyone claiming
+/// otherwise without turning a test red. Chocobo Camp vetoes at block (2) on BOTH of its
+/// activated ability indices, untapped and tapped, and neither veto is a proposal-absence
+/// question:
+///  * `abilities[0]` (`{T}: Add {G}. When you next cast a Bird creature spell this turn, …`) is
+///    a CR 605.1a mana ability, and CR 605.3a keeps mana abilities out of this relief entirely
+///    — they are activatable outside the priority rule, in the middle of the loop's own cost
+///    payment, where the loop-action record does not capture them.
+///  * `abilities[1]` (`{2}{G}{G}, {T}: Create a 2/2 green Bird … token with "Whenever a land
+///    you control enters, this token gets +1/+0 …"`) IS relieved by this partition's argument —
+///    but block (2) is an `any` over `obj.abilities`, so one un-relieved surface keeps the
+///    whole permanent vetoing.
+///
+/// Both vetoes are answered by narrowing the AST scanner's two remaining blanket arms, which is
+/// a different partition's work and a STRUCTURAL rather than a contingent relief.
+///
+/// PAIRED POSITIVE, in the same test: the same dump carrying Abandoned Air Temple instead DOES
+/// offer. Without it this negative would be satisfiable by a harness that never offers at all.
+///
+/// This row is a NEGATIVE and has no "delete X ⇒ red" revert: it goes red when someone makes
+/// this card offer at this commit, which is precisely the claim it exists to police.
+#[test]
+fn chocobo_camp_still_refuses_after_the_proposal_relief() {
+    assert!(
+        drive_and_report(load_realistic_dump(), "row 19 baseline"),
+        "row 19 BASELINE positive control: the untouched combo board OFFERS, so a REFUSES \
+         below is the card's and not the harness's"
+    );
+    assert!(
+        {
+            let mut with_temple = load_realistic_dump();
+            graft_full_land(&mut with_temple, PROPOSAL_LANDS[0]);
+            drive_and_report(with_temple, "row 19 paired positive")
+        },
+        "row 19 PAIRED POSITIVE: Abandoned Air Temple — a land this partition DOES take — \
+         offers on the same board, so the refusals below say 'this partition does not reach \
+         Chocobo Camp' rather than 'this partition does nothing'"
+    );
+
+    for tapped in [false, true] {
+        let mut board = load_realistic_dump();
+        let host = graft_full_land(&mut board, CHOCOBO_CAMP);
+        {
+            let obj = board.objects.get_mut(&host).expect("Chocobo Camp is live");
+            obj.tapped = tapped;
+            // Reach-guards: BOTH surfaces are pinned, because the row's whole claim is that
+            // one of them is relieved by this partition and the other is not — a board where
+            // neither was reached would refuse for a reason this row does not name.
+            assert_eq!(
+                obj.abilities.len(),
+                2,
+                "row 19 reach-guard: Chocobo Camp parses to TWO activated abilities (MEASURED \
+                 against the card-data export, 35 798 keys), and block (2) is an `any` over \
+                 them"
+            );
+            assert_eq!(
+                nonmana_ability_index(&obj.abilities),
+                vec![1],
+                "row 19 reach-guard: exactly ONE of the two is a CR 605.1a mana ability — \
+                 `abilities[0]`, which CR 605.3a holds OUT of the proposal-absence relief — \
+                 while `abilities[1]` IS reached by it. The refusal below is `abilities[0]`'s \
+                 and the token ability's nested read, not a board that was never scanned"
+            );
+        }
+        assert!(
+            !drive_and_report(board, "row 19"),
+            "row 19 (tapped = {tapped}): the census at this partition's tip is 18 of 19. \
+             Chocobo Camp's mana ability is held out by CR 605.3a and its token ability's veto \
+             lives four path segments below `effect`, where no proposal-absence argument \
+             reaches. If this row goes red, someone has claimed the nineteenth card here — \
+             re-measure before believing it"
         );
     }
 }

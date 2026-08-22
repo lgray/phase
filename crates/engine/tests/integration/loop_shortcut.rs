@@ -5743,15 +5743,48 @@ const AGGREGATE_MANA_ORACLE: &str = "Flying, trample\n{T}: Add {G} for each crea
 /// unclassifiable by phase, so X2 cannot relieve it either.
 const AGGREGATE_TWO_SURFACE_ORACLE: &str = "Flying, trample\n{2}: Draw a card for each creature you control.\nWhenever this creature attacks, draw a card for each creature you control.";
 
-/// X1-2 — CR 117.1b's relief is keyed on the OBSERVER'S CONTROLLER, and the matched
-/// pair moves exactly that one variable. The DRIVER'S OWN class-reading activated
-/// ability keeps vetoing (the driver holds priority inside its own shortcut and can
-/// activate it); the identical ability under an OPPONENT is relieved.
+/// X1-2 (MIGRATED — the row's verdict moved; its recorded reasoning is carried forward
+/// rather than deleted). CR 732.2a / CR 732.2c: the DRIVER'S OWN class-reading activated
+/// ability, which the accepted shortcut proposal does NOT contain, is RELIEVED.
 ///
-/// REVERT-PROBE: invert the `obj.controller != driver` comparison ⇒ the two halves swap
-/// ⇒ BOTH assertions FAIL.
+/// **THE RETIRED CLAIM, QUOTED VERBATIM SO A LATER READER CAN SEE WHAT MOVED.** This row
+/// used to assert the opposite, on this ground: *"The DRIVER'S OWN class-reading activated
+/// ability keeps vetoing (the driver holds priority inside its own shortcut and can
+/// activate it)."* **That sentence is still TRUE and it is not what this row now contests.**
+/// CR 117.1b is a statement about PERMISSION — *"a player may activate an activated ability
+/// any time they have priority"* — and a permission that is never exercised changes nothing
+/// about the state at the proposed ending point. CR 732.2a makes a shortcut "a sequence of
+/// game choices, FOR ALL PLAYERS", and CR 732.2c advances the game "with all game choices
+/// contained in the shortcut proposal having been taken". An activation the proposal does
+/// not contain is not among the choices taken, so it never occurs inside the window.
+///
+/// **This is TIGHTER for the driver's own permanent than CR 117.1b's relief is for an
+/// opponent's, not looser.** CR 732.2b gives the deviation mechanism to *"each other
+/// player, in turn order starting after the player who suggested the shortcut"* — the
+/// proposer is not among them. The foreign relief rests on an opponent never receiving
+/// priority inside the taken shortcut; this one rests on the driver having proposed not to
+/// activate, with no shortening mechanism available to take that back. So this is NOT a
+/// CR 117.1b relief and must not be read as one.
+///
+/// **M-4 — THE PAIRED POSITIVE IS NOW OVER-DETERMINED, stated rather than left silent.**
+/// The foreign half below is byte-identical to what it always was and still passes, but
+/// under the proposal-absence relief it is carried by BOTH block (2)'s CR 117.1b
+/// `relieved` arm AND its `not_proposed` arm, so **it no longer isolates the
+/// `obj.controller != driver` comparison.** The driven guard on that axis now lives at
+/// `analysis/resource.rs :: foreign_relief_still_keys_on_the_controller_for_a_proposed_ability`
+/// (row 37), which pins `not_proposed` to `false` on both halves by naming the ability in
+/// the record — the only level at which that fixture is constructible.
+///
+/// REVERT-PROBE (RE-DERIVED — the recorded one is dead). The retired probe was *"invert the
+/// `obj.controller != driver` comparison ⇒ the two halves swap ⇒ BOTH assertions FAIL"*;
+/// MEASURED under this partition, that inversion moves NEITHER half, because both are
+/// carried by `not_proposed`. The probe that discriminates is: **delete the
+/// `&& !not_proposed` conjunct at block (2)** ⇒ the driver's-own half returns to REFUSES ⇒
+/// **FAILS**, while the foreign half stays green (which is what keeps the two halves
+/// non-redundant). A restore is not verified until the artifact was REBUILT from it — a
+/// same-mtime restore lets cargo skip the rebuild and silently re-run the mutated binary.
 #[test]
-fn driver_own_activated_ability_still_vetoes() {
+fn driver_own_unproposed_activated_ability_is_relieved() {
     use engine::types::ability::AbilityKind;
     use engine::types::zones::Zone;
 
@@ -5769,14 +5802,18 @@ fn driver_own_activated_ability_still_vetoes() {
         foreign_runner.state().waiting_for
     );
 
-    // SUBJECT: byte-identical board, ability under the DRIVER.
+    // SUBJECT: byte-identical board, ability under the DRIVER. This is the half whose
+    // verdict this partition inverts.
     let (own_runner, bystander) =
         object_growth_with_bystander_at(Phase::PreCombatMain, P0, AGGREGATE_ACTIVATED_ORACLE);
 
-    // (3) reach-guards — the veto must come from the ONE named ACTIVATED-ability surface.
-    // `kind == Activated` is what item A makes load-bearing on the very relief this row
-    // exercises, and `trigger_definitions.is_empty()` keeps block (1) silent so the verdict
-    // is attributable to block (2).
+    // (3) reach-guards — the RELIEF must be attributable to the ONE named ACTIVATED-ability
+    // surface (before the migration these guarded a veto; the same guards now guard the
+    // offer, and they are what M-6 below moves exactly one variable against).
+    // `kind == Activated` is load-bearing on the very relief this row exercises — the
+    // predicate short-circuits on any other kind (CR 117.1b) — and
+    // `trigger_definitions.is_empty()` keeps block (1) silent so the verdict is
+    // attributable to block (2).
     let obj = &own_runner.state().objects[&bystander];
     assert_eq!(
         obj.zone,
@@ -5803,14 +5840,53 @@ fn driver_own_activated_ability_still_vetoes() {
         obj.trigger_definitions.len()
     );
 
+    // M-1 — the MIGRATED verdict, pinned POSITIVELY at `LoopShortcut { proposer: P0 }` and
+    // never merely `!Priority`: a negative match would also be satisfied by any other
+    // waiting state the pipeline could wander into.
     assert!(
-        !matches!(
-            own_runner.state().waiting_for,
-            WaitingFor::LoopShortcut { .. }
-        ),
-        "X1-2: the DRIVER's own class-reading activated ability must keep vetoing — the \
-         driver does hold priority inside its own window; got {:?}",
+        matches!(own_runner.state().waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
+        "X1-2 (MIGRATED, CR 732.2a + CR 732.2c): the accepted proposal does not CONTAIN this \
+         activation, so it is never taken inside the window and cannot read the growing \
+         class — the driver's own unproposed class-reading activated ability must NOT \
+         suppress the offer. CR 117.1b's permission ('the driver does hold priority inside \
+         its own shortcut') is not a prediction, and CR 732.2b gives the proposer no \
+         mechanism to deviate from its own accepted proposal; got {:?}",
         own_runner.state().waiting_for
+    );
+
+    // M-6 — ANTI-VACUITY ARM. After M-1 both halves above are POSITIVES, and a firewall
+    // that offered on everything would pass them. This arm is the same driver-controlled
+    // object carrying a SECOND, non-activated surface (a trigger body with the same
+    // `ObjectCount` aggregate), which block (1) scans and which this partition does not
+    // touch — the relief is PER-ABILITY, so the board must keep REFUSING. Pinned
+    // POSITIVELY at `Priority { player: P0 }`.
+    let (two_surface, two_surface_bystander) =
+        object_growth_with_bystander_at(Phase::PreCombatMain, P0, AGGREGATE_TWO_SURFACE_ORACLE);
+    let two_obj = &two_surface.state().objects[&two_surface_bystander];
+    assert_eq!(
+        two_obj.trigger_definitions.len(),
+        1,
+        "M-6 reach-guard: the second surface really is a trigger definition, else this arm \
+         is the subject half again under a different name"
+    );
+    assert_eq!(
+        two_obj.abilities.len(),
+        1,
+        "M-6 reach-guard: the FIRST surface is still exactly the one relieved activated \
+         ability; got {:?}",
+        two_obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        two_obj.controller, P0,
+        "M-6 reach-guard: same controller as the subject half, so the only variable against \
+         it is the added surface"
+    );
+    assert!(
+        matches!(two_surface.state().waiting_for, WaitingFor::Priority { player } if player == P0),
+        "M-6 anti-vacuity: this relief is PER-ABILITY and block (1) is untouched, so the \
+         SAME driver-controlled object with one extra class-reading TRIGGER surface must \
+         keep refusing. If this offers, the two positives above are vacuous; got {:?}",
+        two_surface.state().waiting_for
     );
 }
 
@@ -7877,8 +7953,31 @@ const X1_FODDER: ObjectId = ObjectId(421);
 /// `fire_time_conditions_read_growing_class_scoped`). The offer-level assertion below is
 /// what carries this row's claim; the BASE figure is provenance, not proof.
 ///
-/// REVERT-PROBE: delete the `obj.controller != driver` conjunct in block (2) ⇒ the
-/// opponents' utility-land abilities veto again ⇒ the offer disappears ⇒ FAILS.
+/// ⛔ THIS ROW'S RELIEF IS OVER-DETERMINED, AND NO SINGLE-CONJUNCT DELETION CAN REDDEN IT.
+/// Its subject is the OPPONENTS' utility lands, and block (2) relieves them on two
+/// independent grounds: the CR 117.1b `relieved` arm (`obj.controller != driver`) AND,
+/// separately, the CR 732.2a `not_proposed` arm (the accepted proposal names no activation
+/// at all on this dump — the recorded sequence is a single `Recast`). Deleting a conjunct
+/// from an `&&` chain WIDENS relief rather than moving it, so removing either arm alone
+/// hands the subject to the other. This is not a choice of the wrong conjunct; it is the
+/// shape of an over-determined relief. MEASURED, all three mutations driven on this module:
+/// deleting `obj.controller != driver` moves ZERO rows; deleting `&& !not_proposed` alone
+/// restores block (2) to pre-relief behaviour, where this row is green anyway (116 passed /
+/// 0 failed, this row `ok`).
+///
+/// REVERT-PROBE (RE-DERIVED — the recorded single-conjunct probe was dead). **Invert
+/// `obj.controller != driver` to `==` AND delete the `&& !not_proposed` conjunct at block
+/// (2), TOGETHER** ⇒ both relief arms are gone at once ⇒ the opponents' utility-land
+/// abilities veto again ⇒ the offer disappears ⇒ **FAILS** (MEASURED: 112 passed / 4
+/// failed; the four are this row, X1-2, HF-X1-a and NW-1').
+///
+/// ⛔ BINARY PROVENANCE IS PART OF THIS PROBE, not an optional extra. It is TWO edits and
+/// TWO restores per cycle, and a restore whose mtime lands at or below the built artifact
+/// (`cp -a`, `rsync -a`, a same-blob checkout) makes cargo SKIP the rebuild, so the run
+/// re-executes the MUTATED binary — a false RED on restore, and a false GREEN when it is
+/// the mutation cargo skips. State the binary's provenance (a positive `Compiling
+/// phase-engine` line in the run's own output, or two arms whose verdicts differ), never
+/// the test result alone.
 #[test]
 fn witherbloom_lumaret_4p_offers_with_opponent_utility_lands() {
     use engine::types::ability::AbilityKind;
