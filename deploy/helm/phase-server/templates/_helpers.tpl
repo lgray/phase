@@ -214,7 +214,7 @@ containers:
             ;;
         esac
         export PHASE_REPLICA_ORDINAL="$ordinal"
-        export PUBLIC_URL="{{ printf "%s://%s" (.Values.scaleOut.scheme | default "https") (index $split 0) }}${ordinal}{{ index $split 1 }}"
+        export PUBLIC_URL="${PHASE_ORDINAL_URL_PREFIX}${ordinal}${PHASE_ORDINAL_URL_SUFFIX}"
         echo "phase-server ordinal ${ordinal}, advertising ${PUBLIC_URL}"
         exec phase-server "$@"
       - --
@@ -252,6 +252,15 @@ containers:
         valueFrom:
           fieldRef:
             fieldPath: metadata.name
+      {{- /* The two halves of the ordinal URL arrive as env values, not spliced
+           into the shell above: a value carrying a quote or `$(...)` would
+           otherwise land inside a double-quoted string and be parsed as shell.
+           Env values are plain YAML, so the shell never parses them. */}}
+      {{- $split := splitList "{ordinal}" (include "phase-server.ordinalHostTemplate" .) }}
+      - name: PHASE_ORDINAL_URL_PREFIX
+        value: {{ printf "%s://%s" (.Values.scaleOut.scheme | default "https") (index $split 0) | quote }}
+      - name: PHASE_ORDINAL_URL_SUFFIX
+        value: {{ index $split 1 | quote }}
       {{- else }}
       - name: PUBLIC_URL
         value: {{ include "phase-server.publicUrl" . | quote }}
