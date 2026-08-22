@@ -18,6 +18,15 @@ spec:
       ports:
         - port: http
           protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.metrics.scrapeNamespaceLabels | nindent 14 }}
+      ports:
+        - port: metrics
+          protocol: TCP
+    {{- end }}
   egress:
     - to:
         - namespaceSelector:
