@@ -19,7 +19,11 @@ server:
   # match, one origin). Origin-less clients (desktop app, curl) still connect.
   allowedOrigin: ""
   # Advertised in ServerHello so hosts can share "CODE@host" join strings.
-  # Defaults to https://<ingress.host>.
+  # Must be an absolute URL with a host, e.g. https://play.example.com — the
+  # server validates it at startup (validate_public_url) and advertises nothing
+  # if it does not parse, so a bare host or scheme-only value silently costs
+  # clients their join URL. Defaults to https://<ingress.host> when the ingress
+  # is enabled; required otherwise.
   publicUrl: ""
   # Sets PHASE_DATA_MANIFEST_URL. Only needed if the image was built without
   # PHASE_CHANNEL (e.g. upstream :preview images); release builds derive it.
