@@ -4,8 +4,8 @@
      this rule and nowhere else, so the HPA would sit in FailedGetExternalMetric
      forever. Annotation scraping does not cover it either — that discovers the
      raw gauges, not the recording rule. Fail at render instead. */}}
-{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
-{{- fail "autoscaling.enabled with autoscaling.prometheusRule.enabled needs the prometheus-operator CRDs (monitoring.coreos.com/v1), which this cluster does not have: the HPA reads phase:wanted_replicas, this rule is its only producer, and an HPA without it stays in FailedGetExternalMetric. Install the operator, or set autoscaling.prometheusRule.enabled=false and supply the recording rule yourself (see deploy/helm/phase-server/examples/prometheus-adapter-values.yaml)." }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") }}
+{{- fail "autoscaling.enabled with autoscaling.prometheusRule.enabled needs the PrometheusRule CRD (monitoring.coreos.com/v1/PrometheusRule), which this cluster does not have — checking the resource rather than the API group, because a partial operator install can register PodMonitor without it: the HPA reads phase:wanted_replicas, this rule is its only producer, and an HPA without it stays in FailedGetExternalMetric. Install the operator, or set autoscaling.prometheusRule.enabled=false and supply the recording rule yourself (see deploy/helm/phase-server/examples/prometheus-adapter-values.yaml)." }}
 {{- end }}
 {{- $fullname := include "phase-server.fullname" . }}
 {{- $sel := printf "namespace=%q" .Release.Namespace }}
