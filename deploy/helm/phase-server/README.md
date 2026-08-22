@@ -176,15 +176,50 @@ volume:
 ```bash
 PV=$(kubectl -n phase get pvc <release>-data -o jsonpath='{.spec.volumeName}')
 kubectl patch pv "$PV" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
-kubectl -n phase delete pvc <release>-data          # PV survives; it is Retain now
-kubectl patch pv "$PV" -p '{"spec":{"claimRef":null}}'
-# then create a PVC named data-<release>-0 with the same storageClass/size,
-# bound to "$PV" via spec.volumeName, before running `helm upgrade`.
+kubectl -n phase scale deploy/<release> --replicas=0        # release the volume
+kubectl patch pv "$PV" --type=json -p='[{"op":"remove","path":"/spec/claimRef"}]'
+
+# Create the claim FIRST, pointing at the PV, then let the bind happen. Setting
+# the PV's claimRef to a claim that does not exist yet moves it to `Released`,
+# and a Released PV will not bind to anything.
+kubectl -n phase apply -f - <<YAML
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: data-<release>-0, namespace: phase}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: <same as before>
+  volumeName: $PV
+  resources: {requests: {storage: <same as before>}}
+YAML
 ```
+
+The old `<release>-data` claim is left behind in `Lost` — keep it until ordinal 0
+is up on the adopted data, then delete it.
 
 The chart marks the old claim `helm.sh/resource-policy: keep`, so the upgrade
 itself will not delete it — but a `Delete` reclaim policy on the PV still will
-once the claim goes, which is why the `Retain` patch comes first.
+once the claim goes, which is why the `Retain` patch comes first. Helm reads that
+annotation from the **live** object, so a release installed before chart 0.2.0
+needs it applied by hand first:
+
+```bash
+kubectl -n phase annotate pvc <release>-data helm.sh/resource-policy=keep --overwrite
+```
+
+**The TLS secret changes owner.** On the Ingress path cert-manager's ingress-shim
+creates a Certificate named after the *secret*; this chart creates one named after
+the *release*, and both want the same secret. cert-manager will not overwrite a
+secret whose `cert-manager.io/certificate-name` annotation names a different
+Certificate — it reports `IncorrectCertificate` and then does nothing: no
+CertificateRequest, no Events. The ordinal hosts stay on the old single-SAN
+certificate and an edge proxy answers 526 while the entry host keeps working, which
+looks like a DNS problem and is not. Hand the secret over once:
+
+```bash
+kubectl -n phase annotate secret <release>-tls \
+  cert-manager.io/certificate-name=<release> --overwrite
+```
 
 ## Autoscaling
 
