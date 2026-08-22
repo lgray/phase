@@ -13385,14 +13385,22 @@ mod tests {
             toughness: PtValue::Fixed(2),
             target: TargetFilter::SelfRef,
         };
-        // Loxodon Lifechanter's body: "+X/+X … where X is your life total".
+        // Loxodon Lifechanter's shipped `abilities[0]` body, verbatim: "+X/+X … where X
+        // is your life total" is `Ref(LifeTotal{Controller})` on BOTH halves with a
+        // `SelfRef` target (verified first-party against `client/public/card-data.json`
+        // and MTGJSON). BOTH halves, not `toughness: Fixed(0)`: the `Fixed(0)` stand-in
+        // that shipped here once made the assert message below FALSE about a real card,
+        // and no corpus `Pump` carries that mixed shape. The verdict is identical either
+        // way (`Axes::or` over two projected halves), so the doubled ref costs nothing and
+        // keeps the fixture a card instead of a sketch.
+        let life_total = PtValue::Quantity(QuantityExpr::Ref {
+            qty: QuantityRef::LifeTotal {
+                player: PlayerScope::Controller,
+            },
+        });
         let projected = || Effect::Pump {
-            power: PtValue::Quantity(QuantityExpr::Ref {
-                qty: QuantityRef::LifeTotal {
-                    player: PlayerScope::Controller,
-                },
-            }),
-            toughness: PtValue::Fixed(0),
+            power: life_total.clone(),
+            toughness: life_total.clone(),
             target: TargetFilter::SelfRef,
         };
 
@@ -13453,8 +13461,9 @@ mod tests {
                  predictable. This block consults a `.sibling` reader and \
                  `QuantityRef::LifeTotal` is classified projected-ONLY, so the verdict has \
                  to come from the `Effect::Pump` arm escalating a projected payload to the \
-                 blanket it returned before the descent. Loxodon Lifechanter ships this \
-                 body"
+                 blanket it returned before the descent. This payload is Loxodon \
+                 Lifechanter's shipped `abilities[0]` body verbatim — the ref on BOTH \
+                 halves, `SelfRef` target"
             );
 
             // ── THE RELIEF: a read-free payload must NOT ── its paired positive is above
@@ -13469,6 +13478,128 @@ mod tests {
                  so a surface that was never walked would have failed it"
             );
         }
+    }
+
+    /// **Block (1b) on the `Some(&class_members)` ARGUMENT SHAPE** — the escalated veto is
+    /// not bypassable by the relief disjunct that only this shape unlocks.
+    ///
+    /// WHY THIS ROW EXISTS. [`pump_payload_decides_the_veto_at_blocks_one_b_and_two`] drives
+    /// the production predicate with `class_members: None`, and `None` short-circuits block
+    /// (1b)'s relief disjunct outright — `class_members.is_some_and(..)` is `false`, so
+    /// `execute_ledger_condition_provably_excludes_class(..) ||
+    /// pump_aggregate_provably_excludes_class(..)` is never evaluated at all. Production
+    /// uses both shapes, and the `Some` one is the shape that can RELIEVE. So before this
+    /// row no shipped assertion covered a projected payload on the argument shape where a
+    /// relief predicate gets to answer. The verdict is correct today — conjunct (d)
+    /// ([`pt_value_aggregate_provably_excludes_class`]) admits only `PtValue::Fixed` and an
+    /// `Aggregate`-shaped `PtValue::Quantity` and ends `_ => return false` — so this is a
+    /// MISSING ASSERTION, not a bug. It is worth a row because it is precisely the arm
+    /// where a later widening of conjunct (d) would reopen the projected hole with a green
+    /// suite: the `None` rows cannot see that widening, because they never reach it.
+    ///
+    /// THE TWO ARMS DIFFER IN THE `PtValue` HALVES AND IN NOTHING ELSE. Both are the REAL
+    /// Pyreswipe Hawk `execute` body from this lane's dump, both installed by the SAME
+    /// [`pump_firewall_fixture`], both consulted with the SAME `Some(&{member})`. Arm A is
+    /// the card's own aggregate payload and is RELIEVED; arm B swaps in the projected read
+    /// Loxodon Lifechanter / Golden Sidekick / Hurska Sweet-Tooth ship (all three carry the
+    /// ref on BOTH halves) and must VETO.
+    ///
+    /// NON-VACUITY, and arm A is the load-bearing half rather than decoration. A lone
+    /// "the projected payload vetoes" is indistinguishable from "the relief arm is
+    /// unreachable on this fixture" — the whole failure mode a `Some` row exists to rule
+    /// out. Arm A shows the relief arm FIRES here and that the fixture state is otherwise
+    /// relief-clean, so arm B's `true` is attributable to the payload, and (since arm A
+    /// clears conjuncts (0), (a), (b), (b-t) and (c) on the same def and the same member)
+    /// specifically to conjunct (d) refusing a non-`Aggregate` quantity. That attribution
+    /// is pinned directly, per-disjunct, so a `true` from any other surviving veto cannot
+    /// be mistaken for it.
+    ///
+    /// Block (2) is deliberately NOT re-driven on this shape: its `disjoint()` disjuncts are
+    /// [`exiled_colors_provably_exclude_class`] and
+    /// [`counters_on_source_provably_excludes_class`], neither of which inspects a `Pump`
+    /// payload, so `Some` unlocks no pump relief there that the sibling row's `None` arm did
+    /// not already cover.
+    ///
+    /// CR 608.2h + CR 732.2a for arm B, the same authorities the sibling row carries: a pump
+    /// scaled by a life total "requires information from the game", whose answer is
+    /// "determined only once, when the effect is applied", so each iteration re-determines it
+    /// against a different life total and the sequence stops being predictable.
+    ///
+    /// REVERT-PROBE: delete `if acc.projected { Axes::CONSERVATIVE }` from the
+    /// `LoopFirewall` half of `ability_scan::scan_effect`'s `Effect::Pump` arm ⇒ arm B's
+    /// payload stops reading the sibling axis ⇒ **FAILS** (at `pump_firewall_fixture`'s own
+    /// reach-guard, which fires before the consult — that is the same defect surfacing one
+    /// frame earlier, not a different one).
+    #[test]
+    fn projected_pump_still_vetoes_at_block_one_b_on_the_some_class_members_arm() {
+        use crate::types::ability::{PlayerScope, PtValue, QuantityExpr, QuantityRef};
+
+        let dump = wba_dump_state();
+        let hawk = wba_hawk(&dump);
+        let execs = hawk_trigger_execs(&dump, &hawk);
+        let hawk_pump = execs
+            .first()
+            .expect("fixture: Hawk's first trigger carries the attack-pump execute body")
+            .clone();
+
+        // ── ARM A — REACH GUARD: the relief disjunct DOES fire on this exact fixture ──
+        let (relieved_state, relieved_member, _src, _artifact) =
+            pump_firewall_fixture(hawk_pump.clone());
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &relieved_state,
+                Some(&HashSet::from([relieved_member]))
+            ),
+            "REACH GUARD (CR 608.2h): Hawk's own aggregate counts only artifacts, so it is \
+             provably class-disjoint and block (1b) SKIPS the def on the `Some` shape. This \
+             arm is what makes arm B's veto attributable: it shows the relief disjunct is \
+             reachable and satisfiable on this fixture, this member and this argument shape, \
+             so a veto below cannot be the relief arm silently never running"
+        );
+
+        // ── ARM B — the same def with ONLY the two `PtValue` halves swapped ──────────
+        let life_total = PtValue::Quantity(QuantityExpr::Ref {
+            qty: QuantityRef::LifeTotal {
+                player: PlayerScope::Controller,
+            },
+        });
+        let projected = hawk_pump_with_pt(&hawk_pump, life_total.clone(), life_total);
+        let (state, member, source, _artifact) = pump_firewall_fixture(projected.clone());
+        let source_obj = state.objects[&source].clone();
+
+        // Per-disjunct attribution: BOTH sibling disjuncts must refuse, or the production
+        // `true` below could be read as coming from the wrong one.
+        assert!(
+            !pump_aggregate_provably_excludes_class(&projected, &state, member, &source_obj),
+            "conjunct (d): arm A clears conjuncts (0), (a), (b), (b-t) and (c) on this very \
+             def and member — only the P/T halves changed — so the refusal here is \
+             `pt_value_aggregate_provably_excludes_class`'s `_ => return false` declining a \
+             `QuantityRef::LifeTotal`. Widening that fall-through to accept unexamined \
+             quantity shapes is what this row exists to redden"
+        );
+        assert!(
+            !execute_ledger_condition_provably_excludes_class(
+                &projected,
+                &state,
+                member,
+                &source_obj
+            ),
+            "the OTHER sibling disjunct also refuses, so the veto is not being bought by one \
+             predicate while the other silently relieves — the two are disjuncts of ONE \
+             consult and either alone would relieve the def"
+        );
+
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "CR 608.2h + CR 732.2a: this pump is scaled by a life total, so it \"requires \
+             information from the game\" whose answer is \"determined only once, when the \
+             effect is applied\"; each loop iteration re-determines it against a DIFFERENT \
+             life total and the sequence stops being predictable. Block (1b) consults a \
+             `.sibling` reader and `QuantityRef::LifeTotal` is classified projected-ONLY, so \
+             the veto has to come from the `Effect::Pump` arm's `if acc.projected` \
+             escalation — and, unlike the `None` rows, it has to survive a relief disjunct \
+             that arm A just proved is live on this fixture"
+        );
     }
 
     /// FIREWALL block(1) matched pair (CR 603.6a): the ETB-observer gate skips ONLY a
@@ -16327,9 +16458,11 @@ mod tests {
             "reach-guard: this body must read the sibling axis — that veto is the whole \
              subject of S1, and without it the consult's first conjunct is false and no row \
              proves anything. Since `scan_effect`'s `Effect::Pump` arm descends under \
-             `ScanMode::LoopFirewall`, the read has to come from the PAYLOAD: every caller \
-             passes an aggregate-bearing `power`, and `scan_quantity_ref` sets `sibling` for \
-             `QuantityRef::Aggregate` unconditionally. A read-free pump can no longer reach \
+             `ScanMode::LoopFirewall`, the read has to come from the PAYLOAD, by one of \
+             exactly two routes: an aggregate-bearing `power` sets `sibling` directly \
+             (`scan_quantity_ref` sets it for `QuantityRef::Aggregate` unconditionally), and \
+             a PROJECTED-reading payload arrives through that arm's `if acc.projected` \
+             escalation to `Axes::CONSERVATIVE`. A read-free pump can no longer reach \
              this fixture, which is why the two-`PtValue::Fixed` arm (vi) moved to \
              `ability_scan::tests::scan_effect_pump_descends_under_loop_firewall`"
         );

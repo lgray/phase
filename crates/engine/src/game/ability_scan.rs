@@ -611,8 +611,27 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
                 // `Axes::NONE`" guard: `scan_target_filter`'s `TargetFilter::Typed` arm
                 // sets `event: true` UNCONDITIONALLY (byte-preserved), so an
                 // all-or-nothing guard would veto every `Typed`-targeted pump and destroy
-                // the relief this arm exists for. MEASURED, not reasoned: it reddens
-                // `pump_with_board_reading_target_still_vetoes`'s arm B.
+                // the relief this arm exists for. PROVENANCE, stated exactly: that
+                // rejection is DERIVED, not measured. It was reached by tracing
+                // `pump_with_board_reading_target_still_vetoes`'s arm B against the `Typed`
+                // arm's unconditional `event: true`; the all-or-nothing variant was drafted
+                // but never built and run, so nothing here rests on an observed red. The
+                // mechanism is the durable part and is checkable from source alone: arm B
+                // is a bare `Typed{Creature}` target on a read-free pump, so its `acc` can
+                // never be `Axes::NONE` and an all-or-nothing guard reddens it.
+                //
+                // SCOPE OF THIS REPAIR, disclosed because the repair is arm-local and the
+                // defect is not: the consumer-blindness closed here is a property of the
+                // CONSUMER (blocks (1b)/(2) consult a `.sibling`-only reader), so every
+                // OTHER descending arm can still hand those two blocks a
+                // `{sibling: false, projected: true}` verdict they cannot read --
+                // `Effect::Token` and `Effect::Mana` end their `LoopFirewall` leg in a bare
+                // `acc`, and mode-invariant arms such as `Effect::GainLife` never carried a
+                // blanket at all -- a PRE-EXISTING residual this arm neither creates nor
+                // widens, left open deliberately because the general repair is ONE
+                // consumer-side guard rather than this escalation copied per arm, and a
+                // consumer-side guard only ADDS vetoes and is therefore census-affecting:
+                // a plan round, not a fix round.
                 if acc.projected {
                     Axes::CONSERVATIVE
                 } else {
@@ -7201,9 +7220,18 @@ mod tests {
     /// blanket used to supply, and the projected-resource firewall does not scan either
     /// surface, so nothing downstream re-raises it.
     ///
-    /// The shape is corpus-reachable, not hypothetical: Loxodon Lifechanter's
-    /// "{5}{W}: This creature gets +X/+X until end of turn, where X is your life total"
-    /// is exactly this `Pump`, on a battlefield-resident `abilities[0]` (block (2)).
+    /// The fixture is not a shape sketch. It is Loxodon Lifechanter's shipped
+    /// `abilities[0]` body — "{5}{W}: This creature gets +X/+X until end of turn, where X
+    /// is your life total" — whose export carries `Ref(LifeTotal{Controller})` on BOTH
+    /// `PtValue` halves with a `SelfRef` target, on a battlefield-resident ability
+    /// (block (2)). Verified first-party against `client/public/card-data.json` AND
+    /// MTGJSON's Oracle text, in both directions: the card's `+X/+X` is two refs, and no
+    /// corpus `Pump` carries `power: Ref(LifeTotal{Controller})` beside a
+    /// `toughness: Fixed(0)`. A `Fixed(0)` toughness shipped here once while the comments
+    /// still named the card, which made a shipped assert message FALSE about a real card —
+    /// do not "simplify" the second half back out. (The same doubled shape is what the
+    /// block-(1b) carriers ship too: Golden Sidekick and Hurska Sweet-Tooth both carry
+    /// `Ref(LifeGainedThisTurn{Controller})` on both halves.)
     ///
     /// CR 608.2h is operative here for the same reason it is on the aggregate half: an
     /// effect scaled by a life total "requires information from the game", whose answer is
@@ -7246,8 +7274,8 @@ mod tests {
         );
 
         let projected_pump = Effect::Pump {
-            power: projected_half,
-            toughness: PtValue::Fixed(0),
+            power: projected_half.clone(),
+            toughness: projected_half,
             target: TargetFilter::SelfRef,
         };
         let axes = scan_effect(&projected_pump, ScanMode::LoopFirewall);
@@ -7260,8 +7288,9 @@ mod tests {
              sequence's results stop being predictable. The arm therefore returns the \
              byte-identical blanket it returned BEFORE the descent — a restoration of base \
              behaviour for this shape, not a new verdict — because that is the only verdict \
-             blocks (1b) and (2) can see. Loxodon Lifechanter is the shipped card with this \
-             body"
+             blocks (1b) and (2) can see. This payload is Loxodon Lifechanter's shipped \
+             `abilities[0]` body verbatim: `Ref(LifeTotal{{Controller}})` on BOTH halves, \
+             `SelfRef` target"
         );
 
         // ── CONTROL 1: the relief this arm exists for is untouched ──────────────────
@@ -7286,8 +7315,8 @@ mod tests {
              `projected` alone, never on \"reads anything\". `scan_target_filter`'s \
              `TargetFilter::Typed` arm sets `event: true` unconditionally, so an \
              all-or-nothing guard would swallow this into the blanket AND veto every \
-             `Typed`-targeted pump — MEASURED: it reddens \
-             `pump_with_board_reading_target_still_vetoes`'s arm B"
+             `Typed`-targeted pump — DERIVED from that unconditional `true`, never run: it \
+             reddens `pump_with_board_reading_target_still_vetoes`'s arm B"
         );
     }
 
