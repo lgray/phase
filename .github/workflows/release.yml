@@ -98,19 +98,8 @@ jobs:
         with:
           tool: wasm-bindgen-cli@0.2.121
 
-      - name: Cache binaryen
-        id: binaryen-cache
-        uses: actions/cache@v4
-        with:
-          path: binaryen-version_123
-          key: binaryen-123-x86_64-linux
-
-      - name: Install binaryen
-        if: steps.binaryen-cache.outputs.cache-hit != 'true'
-        run: curl -L https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz | tar xz
-
-      - name: Add binaryen to PATH
-        run: echo "$PWD/binaryen-version_123/bin" >> $GITHUB_PATH
+      - name: Set up Binaryen
+        uses: ./.github/actions/binaryen
 
       - uses: pnpm/action-setup@v4
         with:
@@ -775,21 +764,9 @@ jobs:
           # lobby-worker/broker-wasm/Cargo.toml (schema versions must be exact).
           tool: wasm-bindgen-cli@0.2.121
 
-      - name: Cache binaryen
-        id: binaryen-cache
+      - name: Set up Binaryen
         if: steps.lobby-worker.outputs.exists == 'true'
-        uses: actions/cache@v4
-        with:
-          path: binaryen-version_123
-          key: binaryen-123-x86_64-linux
-
-      - name: Install binaryen
-        if: steps.lobby-worker.outputs.exists == 'true' && steps.binaryen-cache.outputs.cache-hit != 'true'
-        run: curl -L https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz | tar xz
-
-      - name: Add binaryen to PATH
-        if: steps.lobby-worker.outputs.exists == 'true'
-        run: echo "$PWD/binaryen-version_123/bin" >> "$GITHUB_PATH"
+        uses: ./.github/actions/binaryen
 
       - name: Deploy lobby Worker to Cloudflare
         if: steps.lobby-worker.outputs.exists == 'true'

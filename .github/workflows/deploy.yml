@@ -22,6 +22,49 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/phase-server
 
 jobs:
+  # ── Deploy provenance gate ─────────────────────────────────────────────────
+  # Single authority for "is this trigger allowed to deploy?". Every deploy job
+  # `needs` this one, so the answer lives in exactly one expression and cannot
+  # drift between paths — which is how `deploy-lobby-preview` ended up with the
+  # Cloudflare token and no guard at all.
+  #
+  # The hole this closes: `workflow_run` fires in THIS repo for CI runs of fork
+  # pull requests too, and the `branches: [main]` filter above matches the
+  # TRIGGERING run's head branch — which a fork controls and can simply name
+  # `main`. A conclusion check alone therefore admits fork-authored code as
+  # DEPLOY_SHA, and the deploy jobs check that SHA out while holding
+  # CLOUDFLARE_API_TOKEN, the minisign key, and `packages: write` on GHCR.
+  # `head_repository.full_name` is the field that a fork cannot forge.
+  #
+  # Field names per the workflow run object schema:
+  # https://docs.github.com/en/rest/actions/workflow-runs
+  deploy-gate:
+    name: Verify deploy provenance
+    if: >-
+      ${{ github.repository == 'phase-rs/phase' && (
+        github.event_name == 'workflow_dispatch' || (
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_repository.full_name == github.repository &&
+          github.event.workflow_run.head_branch == 'main'
+        )
+      ) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record the commit being deployed
+        # Through `env`, never `${{ }}` inside the script: head_branch and
+        # head_repository are attacker-chosen strings on the very event this
+        # job exists to screen, and direct interpolation would run them.
+        env:
+          EVENT: ${{ github.event_name }}
+          SOURCE_REPO: ${{ github.event.workflow_run.head_repository.full_name || github.repository }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+        run: |
+          echo "event=${EVENT}"
+          echo "source=${SOURCE_REPO}"
+          echo "branch=${SOURCE_BRANCH}"
+          echo "deploy_sha=${DEPLOY_SHA}"
+
   # ── Preview inputs ─────────────────────────────────────────────────────────
   # Generates the immutable card-data/draft-pool pair and derives the engine
   # fingerprint shared by the preview server and frontend. The publication work
@@ -29,7 +72,7 @@ jobs:
   # these inputs are ready rather than waiting on ancillary data generation.
   preview-inputs:
     name: Prepare preview inputs
-    if: ${{ github.repository == 'phase-rs/phase' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
+    needs: [deploy-gate]
     runs-on: ubuntu-latest
     # Sized for the MTGJSON-publish day, not the steady state. When MTGJSON
     # ships a new version the key rolls, and the first run to see it pays the
@@ -294,8 +337,7 @@ jobs:
   # pointing at data that has not reached R2.
   card-data:
     name: Publish card data & R2
-    needs: [preview-inputs]
-    if: ${{ github.repository == 'phase-rs/phase' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
+    needs: [deploy-gate, preview-inputs]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -519,7 +561,7 @@ jobs:
   # parallel. The output feeds the frontend build via artifact.
   build-wasm:
     name: Build WASM
-    if: ${{ github.repository == 'phase-rs/phase' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
+    needs: [deploy-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -542,19 +584,8 @@ jobs:
         with:
           tool: wasm-bindgen-cli@0.2.121
 
-      - name: Cache binaryen
-        id: binaryen-cache
-        uses: actions/cache@v4
-        with:
-          path: binaryen-version_123
-          key: binaryen-123-x86_64-linux
-
-      - name: Install binaryen
-        if: steps.binaryen-cache.outputs.cache-hit != 'true'
-        run: curl -L https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz | tar xz
-
-      - name: Add binaryen to PATH
-        run: echo "$PWD/binaryen-version_123/bin" >> $GITHUB_PATH
+      - name: Set up Binaryen
+        uses: ./.github/actions/binaryen
 
       # build-wasm.sh's assert_wasm_stack guard parses the shipped wasm's memory
       # section with node; declare the dependency explicitly (release.yml already
@@ -580,8 +611,7 @@ jobs:
   # fingerprint whose signed server artifact is missing from the manifest.
   preview-server:
     name: Publish Preview Server
-    needs: [preview-inputs]
-    if: ${{ github.repository == 'phase-rs/phase' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
+    needs: [deploy-gate, preview-inputs]
     uses: ./.github/workflows/preview-server.yml
     with:
       fingerprint: ${{ needs.preview-inputs.outputs.engine_fingerprint }}
@@ -605,6 +635,7 @@ jobs:
   # pair aligned by construction. Production's `phase-lobby` is untouched here.
   deploy-lobby-preview:
     name: Deploy Preview Lobby Worker (Cloudflare)
+    needs: [deploy-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -627,19 +658,8 @@ jobs:
           # lobby-worker/broker-wasm/Cargo.toml (schema versions must be exact).
           tool: wasm-bindgen-cli@0.2.121
 
-      - name: Cache binaryen
-        id: binaryen-cache
-        uses: actions/cache@v4
-        with:
-          path: binaryen-version_123
-          key: binaryen-123-x86_64-linux
-
-      - name: Install binaryen
-        if: steps.binaryen-cache.outputs.cache-hit != 'true'
-        run: curl -L https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz | tar xz
-
-      - name: Add binaryen to PATH
-        run: echo "$PWD/binaryen-version_123/bin" >> "$GITHUB_PATH"
+      - name: Set up Binaryen
+        uses: ./.github/actions/binaryen
 
       - name: Deploy preview lobby Worker
         uses: cloudflare/wrangler-action@v4
@@ -841,7 +861,7 @@ jobs:
   # warming the workspace compile would need sccache or similar.
   build-server-binary:
     name: Build server binary (linux ${{ matrix.arch }})
-    if: ${{ github.repository == 'phase-rs/phase' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
+    needs: [deploy-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
