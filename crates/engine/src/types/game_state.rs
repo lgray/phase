@@ -4226,10 +4226,7 @@ pub struct PendingDiscardFanOut {
     /// CR 607.2a: carried across the pause so the terminal publication makes the
     /// same linked-exile decision the un-paused postlude would.
     ///
-    /// ORDERING NOTE for the driver's hand-off (`resolve_chain_body`), recorded
-    /// here rather than at the call site so the CR 603.5 prompt-census pin in
-    /// `engine.rs` — which pins a line coordinate in `effects/mod.rs` BELOW that
-    /// call site — does not have to be re-derived for a comment. The hand-off is
+    /// ORDERING NOTE for the driver's hand-off (`resolve_chain_body`). The hand-off is
     /// placed AFTER `mark_exile_choice_tracks_by_source` so the batch pause route
     /// keeps the exact side-effect the ordinary per-seat leg route already had;
     /// placing it before would make the two pause routes for one clause diverge.
