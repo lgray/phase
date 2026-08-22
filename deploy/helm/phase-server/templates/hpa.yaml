@@ -2,6 +2,12 @@
 {{- if not .Values.scaleOut.enabled }}
 {{- fail "autoscaling.enabled requires scaleOut.enabled: the plain Deployment is pinned to one replica because a second process on the same games.db is destructive." }}
 {{- end }}
+{{- if lt (int .Values.autoscaling.minReplicas) 1 }}
+{{- fail (printf "autoscaling.minReplicas must be at least 1; got %v. An HPA cannot scale a workload it is allowed to take to zero replicas." .Values.autoscaling.minReplicas) }}
+{{- end }}
+{{- if gt (int .Values.autoscaling.minReplicas) (int .Values.scaleOut.replicaMax) }}
+{{- fail (printf "autoscaling.minReplicas (%v) exceeds scaleOut.replicaMax (%v), which becomes the HPA's maxReplicas: the API server rejects an HPA whose minReplicas is above its maxReplicas, so the release installs and the autoscaler never appears." .Values.autoscaling.minReplicas .Values.scaleOut.replicaMax) }}
+{{- end }}
 {{- if not .Values.metrics.enabled }}
 {{- fail "autoscaling.enabled requires metrics.enabled: the recording rule reads phase_games_active and friends, so without the metrics port the HPA reports FailedGetExternalMetric forever and never scales." }}
 {{- end }}

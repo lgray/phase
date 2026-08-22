@@ -228,10 +228,14 @@ kubectl -n phase annotate secret <release>-tls \
 
 ## Autoscaling
 
-The HPA renders whether or not prometheus-operator is installed, but the
-`PrometheusRule` does not — so on a cluster without the CRDs the external
-metric never exists and the HPA sits at `FailedGetExternalMetric`. Install the
-operator (and prometheus-adapter) before turning autoscaling on.
+Turning autoscaling on without the prometheus-operator CRDs is a render-time
+error, not a silent one. The HPA's only source of `phase:wanted_replicas` is the
+`PrometheusRule`, which needs `monitoring.coreos.com/v1`; installing the HPA
+without it would leave it at `FailedGetExternalMetric` forever, so the chart
+refuses to render that combination. Install the operator (and prometheus-adapter)
+before turning autoscaling on — or, if you produce the recording rule yourself,
+set `autoscaling.prometheusRule.enabled=false` and supply it externally (see
+`examples/prometheus-adapter-values.yaml`); that path needs no operator at all.
 
 `autoscaling.enabled` (which requires `scaleOut.enabled`) adds a
 `PrometheusRule` and an HPA. The **policy lives in the recording rule**, not in
