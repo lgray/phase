@@ -117,3 +117,47 @@ jobs:
           grep -q 'replicas: 1' /tmp/default.yaml
           grep -q 'volumeClaimTemplates' /tmp/scaleout-render.yaml
           if grep -q 'kind: Deployment' /tmp/scaleout-render.yaml; then echo "unexpected 'kind: Deployment' in /tmp/scaleout-render.yaml"; exit 1; fi
+
+      # `scaleOut.scheme` names the URL each ordinal advertises, and the client
+      # turns that string into the "CODE@host" share link a friend dials. Every
+      # IngressRoute the chart renders terminates TLS, so `http` is refused
+      # while the chart owns the edge — and stays legal when it does not.
+      - name: helm template (scale-out, advertised scheme)
+        run: |
+          if helm template phase-server deploy/helm/phase-server \
+               --namespace phase -f /tmp/scaleout.yaml \
+               --set scaleOut.scheme=http \
+               --api-versions monitoring.coreos.com/v1 \
+               --api-versions monitoring.coreos.com/v1/PrometheusRule \
+               --api-versions monitoring.coreos.com/v1/PodMonitor \
+               --api-versions monitoring.coreos.com/v1/ServiceMonitor \
+               > /tmp/scheme-http.yaml 2>/tmp/scheme-http.err; then
+            echo "expected http to be refused while the chart renders TLS routes"; exit 1
+          fi
+          grep -q 'scaleOut.scheme' /tmp/scheme-http.err
+
+          # Control: the guard has to fire on the contradiction, not on the
+          # knob. Without this the case above would pass on a chart that
+          # rejected every scheme.
+          helm template phase-server deploy/helm/phase-server \
+            --namespace phase -f /tmp/scaleout.yaml \
+            --set scaleOut.scheme=https \
+            --api-versions monitoring.coreos.com/v1 \
+            --api-versions monitoring.coreos.com/v1/PrometheusRule \
+            --api-versions monitoring.coreos.com/v1/PodMonitor \
+            --api-versions monitoring.coreos.com/v1/ServiceMonitor > /tmp/scheme-https.yaml
+          # One entry route plus one per ordinal, at scaleOut.replicaMax 3 above.
+          routes=$(grep -c 'kind: IngressRoute' /tmp/scheme-https.yaml)
+          test "$routes" -eq 4
+
+          # No chart-managed route means the operator owns the edge, so the
+          # advertised scheme is theirs to choose.
+          helm template phase-server deploy/helm/phase-server \
+            --namespace phase -f /tmp/scaleout.yaml \
+            --set scaleOut.scheme=http --set ingress.enabled=false \
+            --api-versions monitoring.coreos.com/v1 \
+            --api-versions monitoring.coreos.com/v1/PrometheusRule \
+            --api-versions monitoring.coreos.com/v1/PodMonitor \
+            --api-versions monitoring.coreos.com/v1/ServiceMonitor > /tmp/scheme-noingress.yaml
+          if grep -q 'kind: IngressRoute' /tmp/scheme-noingress.yaml; then echo "unexpected 'kind: IngressRoute' in /tmp/scheme-noingress.yaml"; exit 1; fi
+          grep -q 'value: "http://phase-"' /tmp/scheme-noingress.yaml
