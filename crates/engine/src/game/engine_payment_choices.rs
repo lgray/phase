@@ -889,9 +889,10 @@ pub(super) fn handle_unless_payment(
                     // `remaining` once `add_player_counter_with_replacement`
                     // overwrites `state.waiting_for` with the ReplacementChoice
                     // prompt below — so the choice's resolution can settle
-                    // this exact Ward payment (via `finish_unless_payment`,
-                    // resumed by `resume_counter_addition_unless_payment`)
-                    // instead of leaving it orphaned at bare Priority.
+                    // this exact Ward payment (via
+                    // `resume_counter_addition_unless_payment`, which settles
+                    // it through `finish_successful_unless_payment`) instead of
+                    // leaving it orphaned at bare Priority.
                     PaymentOutcome::Paused { .. } => {
                         state.pending_cost_move_resume =
                             Some(PendingCostMoveResume::CounterAdditionUnlessPayment {
@@ -1484,15 +1485,17 @@ pub(super) fn handle_unless_payment(
     )
 }
 
-/// CR 118.12 + CR 118.12a: The shared paid/failed epilogue for every
+/// CR 118.12 + CR 118.12a: The DECLINED-or-FAILED epilogue for every
 /// unless-cost shape — poll re-emit for "unless any player pays", resolve the
 /// guarded ability's chain when the cost is unpaid/failed, and settle
-/// priority/continuations either way. Extracted from `handle_unless_payment`'s
-/// own tail so a cost shape that pauses on a nested replacement choice mid-payment
+/// priority/continuations. Its body is gated on `!pay || payment_failed`, and
+/// its sole caller (`handle_unless_payment`) reaches it only under that same
+/// condition: a payment that succeeds returns ahead of this call through
+/// `finish_successful_unless_payment`. That paid epilogue is also where a cost
+/// shape that pauses on a nested replacement choice mid-payment
 /// (`AbilityCost::GetPlayerCounters`, via
-/// `PendingCostMoveResume::CounterAdditionUnlessPayment`) can resume through
-/// EXACTLY this same logic once the choice resolves, instead of duplicating it
-/// and risking drift between the immediate and deferred paths.
+/// `PendingCostMoveResume::CounterAdditionUnlessPayment`) settles once the
+/// choice resolves.
 #[allow(clippy::too_many_arguments)]
 fn finish_unless_payment(
     state: &mut GameState,

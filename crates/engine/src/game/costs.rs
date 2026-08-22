@@ -1343,7 +1343,10 @@ fn pay_ability_cost_inner(
                     // needs that distinction only for continuation; payment must
                     // reject the prevented case before executing it.
                     //
-                    // Only a MANDATORY can't-effect can reach this refusal.
+                    // The gate is `replacement::mandatory_prevention_applies`
+                    // (CR 614.6): a candidate definition on the governing event
+                    // whose `quantity_modification` is `Prevent` and whose mode
+                    // is not optional. Only that pair can reach this refusal.
                     // CR 614.17c ("if an event can't happen, it can only be
                     // replaced by a self-replacement effect … other replacement
                     // and/or prevention effects can't modify or replace it") is
@@ -1498,10 +1501,14 @@ fn pay_ability_cost_inner(
         // bypassed for free.
         //
         // CR 614.17b is the rule ("if an event can't happen, a player can't
-        // choose to pay a cost that includes that event"), and CR 614.17c is why
-        // only a MANDATORY can't-effect can reach it: an impossible event "can
-        // only be replaced by a self-replacement effect … other replacement
-        // and/or prevention effects can't modify or replace it", so
+        // choose to pay a cost that includes that event"). The gate that reaches
+        // it is `replacement::mandatory_prevention_applies` (CR 614.6): a
+        // candidate definition on the governing event whose
+        // `quantity_modification` is `Prevent` and whose mode is not optional —
+        // not a semantic can't-effect test. CR 614.17c is why the CR 616.1
+        // ordering step never intervenes: an impossible event "can only be
+        // replaced by a self-replacement effect … other replacement and/or
+        // prevention effects can't modify or replace it", so
         // `replacement::pipeline_loop` short-circuits it ahead of any CR 616.1
         // prompt. A CR 616.1 ordering choice instead returns `NeedsChoice`
         // below, parks, and is settled as PAID by
