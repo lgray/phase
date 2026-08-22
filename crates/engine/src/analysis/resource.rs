@@ -1565,7 +1565,10 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
             .map(|f| &f.normalized)
             .collect();
         if !window.windows(2).all(|w| {
-            window_scope_from_cover_frames(w[0], w[1], None, None)
+            // `identity_unstable: None` — a CR 104.4b ring SIGNATURE is a resource-delta
+            // fact about a period, not a window proof about any object's CR 400.7 identity,
+            // and only `.phase_invariant` is read off the result here.
+            window_scope_from_cover_frames(w[0], w[1], None, None, None)
                 .phase_invariant
                 .is_some()
         }) {
@@ -1924,7 +1927,9 @@ fn optional_cleared_classification(
 /// sits inside an `if let Some(..)` / `is_some_and`. EVERY field is now read:
 /// `phase_invariant` and `sole_driver` by the growing-class firewall's CR 510.2 / CR 506.1
 /// and CR 117.1b guards, `cast_card_ids` by the projected firewall's CR 601.2f cost guard,
-/// and `pinned` by [`loop_states_cover_modulo_growth_scoped`]'s CR 732.2a gates (3) and (6).
+/// `pinned` by [`loop_states_cover_modulo_growth_scoped`]'s CR 732.2a gates (3) and (6), and
+/// `identity_unstable` by the growing-class firewall's CR 400.7 host-stability conjunct
+/// ([`host_identity_is_stable`], read at block (3)).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LoopWindowScope<'a> {
     /// `Some(phase)` iff the caller proved both frames are equal on turn number AND
@@ -1952,6 +1957,16 @@ pub(crate) struct LoopWindowScope<'a> {
     /// of `T`. `None` means NO PROOF: nothing is exempt and nothing is
     /// enumerable, i.e. the pre-change width.
     period: Option<&'a PeriodTouch<'a>>,
+    /// CR 400.7: `Some(ids)` iff the caller DERIVED, from its own two cover frames, the ids
+    /// whose RULES identity is not stable across this window — see [`identity_unstable_ids`].
+    /// `None` means NO PROOF, and every consumer reads it through
+    /// [`host_identity_is_stable`], which answers `false` on `None`: the absence of a
+    /// stability proof is not a proof of stability. That is what keeps
+    /// [`LoopWindowScope::unproven`] — and with it the offline classifier — byte-identical.
+    ///
+    /// A REFERENCE, for the same reason `period` is one: this struct derives `Copy` and a
+    /// `HashSet` does not, so an owned field would be E0204 against that derive.
+    identity_unstable: Option<&'a HashSet<ObjectId>>,
 }
 
 /// CR 732.2a: the per-iteration choice slots ONE offer published, carried together with the
@@ -1987,6 +2002,13 @@ impl LoopWindowScope<'static> {
             // behaviour. `Option<&PeriodTouch>` is const-constructible as
             // `None`, so this stays a `const fn` on `LoopWindowScope<'static>`.
             period: None,
+            // CR 400.7: DELIBERATE, and row `scoped_wrappers_are_identity` is its
+            // discharge. `None` is what makes `host_identity_is_stable` answer `false`
+            // here, so the spent-self-entry relief at block (3) can never fire on the
+            // offline classifier's path and the 2-arg wrappers stay byte-identical.
+            // Populating this with `Some(&EMPTY)` would relieve every stable host on a
+            // path that proved nothing about identity — relief in the forbidden direction.
+            identity_unstable: None,
         }
     }
 }
@@ -2012,6 +2034,13 @@ impl LoopWindowScope<'static> {
 /// was driven by someone else — the RELIEVING direction. An empty sequence proves
 /// nothing, so it yields `None`, not "nobody drove this".
 ///
+/// `identity_unstable` (CR 400.7): NOT derived here, and that is deliberate. The two frames
+/// this function receives are the caller's already-PROJECTED frames, and
+/// [`identity_unstable_ids`] must be computed from the same pair the caller then hands the
+/// firewall — so the set is derived at the call site and threaded in, exactly as `pinned` and
+/// `period` are. A caller that has not derived it passes `None` and gets byte-identical
+/// pre-change behaviour, because [`host_identity_is_stable`] is `false` on `None`.
+///
 /// Fail-closed in every branch: a frame pair that proves nothing gets the
 /// [`LoopWindowScope::unproven`] values and therefore byte-identical behaviour.
 fn window_scope_from_cover_frames<'a>(
@@ -2019,6 +2048,7 @@ fn window_scope_from_cover_frames<'a>(
     pb: &GameState,
     pinned: Option<PinnedChoices<'a>>,
     period: Option<&'a PeriodTouch<'a>>,
+    identity_unstable: Option<&'a HashSet<ObjectId>>,
 ) -> LoopWindowScope<'a> {
     // (p1) same turn, (p2) same step-granular phase, (p3) no pending extra phase in
     // either frame (CR 500.8).
@@ -2049,6 +2079,10 @@ fn window_scope_from_cover_frames<'a>(
         // assemble a scope itself — which is exactly what the private fields
         // exist to prevent.
         period,
+        // From the parameter, same reason as `period`: the SINGLE scope authority carries
+        // the CR 400.7 identity proof too, so the two firewall callers cannot end up
+        // deriving it two different ways.
+        identity_unstable,
     }
 }
 
@@ -2342,15 +2376,20 @@ pub(crate) fn stack_choices_are_all_specified<'a>(
     touch: Option<&PeriodTouch<'a>>,
     verdicts: &mut PeriodVerdicts<'a>,
 ) -> bool {
-    // Only `pinned` and `period` are read below; the other three proofs belong to the cover
-    // axes and this predicate makes no claim about them. Written out in full so a future SIXTH
-    // field is a compile error that forces a decision rather than a silent default.
+    // Only `pinned` and `period` are read below; the other four proofs belong to the cover
+    // axes and this predicate makes no claim about them. Written out in full so a future
+    // SEVENTH field is a compile error that forces a decision rather than a silent default.
     let scope = LoopWindowScope {
         phase_invariant: None,
         sole_driver: None,
         pinned: Some(PinnedChoices { proposer, slots }),
         cast_card_ids: None,
         period: touch,
+        // CR 732.2a's stack-slot specification says nothing about OBJECT IDENTITY (CR 400.7):
+        // this predicate asks whether each entry's choices were published, never whether the
+        // objects carrying them are the same objects throughout. It proves nothing about the
+        // identity axis and must not claim to.
+        identity_unstable: None,
     };
     // CR 732.2a: the described sequence is EVERY choice the shortcut makes, not the subset
     // that happens to sit on the stack at the offer beat. The mint's own domain is
@@ -2496,6 +2535,12 @@ pub(crate) fn loop_states_cover_modulo_growth_pinned<'a>(
         current,
         Some(PinnedChoices { proposer, slots }),
         Some(touch),
+        // `identity_unstable: None` — this entry certifies a cover modulo STACK growth, and
+        // its two frames are the caller's RAW pair rather than the projected pair
+        // [`identity_unstable_ids`] is specified over. Deriving the set here would be a
+        // second authority answering the CR 400.7 question on different inputs, which is the
+        // drift this scope type exists to prevent. `None` ⇒ fail closed, i.e. unchanged.
+        None,
     );
     loop_states_cover_modulo_growth_scoped(prior, current, scope, verdicts)
 }
@@ -2639,10 +2684,10 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
     // `verdicts.proposer()` is `None` for the proposer-less 2-arg entry, where this stays
     // byte-identical to the unscoped read.
     let cast_ids = window_cast_card_ids(current, verdicts.proposer());
-    // All four fields written explicitly — no functional-update base, so there is no
+    // All six fields written explicitly — no functional-update base, so there is no
     // `LoopWindowScope<'static>` -> `LoopWindowScope<'_>` variance question to reason
-    // about, and a future FIFTH field is a compile error that forces a decision rather
-    // than a silent default. The other three stay at their `unproven()` values: 2b's
+    // about, and a future SEVENTH field is a compile error that forces a decision rather
+    // than a silent default. The other five stay at their `unproven()` values: 2b's
     // axis is `projected`, and the sibling proofs belong to the sibling covers.
     let projected_scope = LoopWindowScope {
         phase_invariant: None,
@@ -2652,6 +2697,11 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
         // DELIBERATE, same rationale as the `pinned: None` above: the projected firewall is
         // a different axis and must not inherit the caller's period proof.
         period: None,
+        // DELIBERATE: the PROJECTED-resource firewall (CR 106.1 / CR 119 / CR 122.1 axes)
+        // consults no CR 400.7 identity axis at all — it reads player- and object-level
+        // resource counters, not replacement applicability — so this proof has no consumer
+        // on that path and must not be carried as though it did.
+        identity_unstable: None,
     };
     if fire_time_conditions_read_projected_resource_scoped(current, projected_scope) {
         return false;
@@ -2858,10 +2908,13 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
     // The `cfg(test)` unit call sites of `loop_states_cover_modulo_object_growth` in this
     // file's own `mod tests` are what exercise this line at all; `cargo combo-verify`
     // remains worth running as corroboration, but it is NOT evidence about this seam.
+    // CR 400.7: bound before the call so NLL keeps the borrow live across it
+    // (`LoopWindowScope::identity_unstable` is `Option<&'a HashSet<ObjectId>>`).
+    let identity_unstable = identity_unstable_ids(&pa, &pb);
     if fire_time_conditions_read_growing_class_scoped(
         &cf,
         None,
-        window_scope_from_cover_frames(&pa, &pb, None, None),
+        window_scope_from_cover_frames(&pa, &pb, None, None, Some(&identity_unstable)),
     ) {
         return false;
     }
@@ -3065,10 +3118,13 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
         .copied()
         .filter(|id| cf.objects.contains_key(id))
         .collect();
+    // CR 400.7: bound before the call so NLL keeps the borrow live across it, same reason
+    // as `cast_ids` in `loop_states_cover_modulo_growth_scoped`.
+    let identity_unstable = identity_unstable_ids(&pa, &pb);
     if fire_time_conditions_read_growing_class_scoped(
         &cf,
         Some(&class_members),
-        window_scope_from_cover_frames(&pa, &pb, None, None),
+        window_scope_from_cover_frames(&pa, &pb, None, None, Some(&identity_unstable)),
     ) {
         return false;
     }
@@ -4688,6 +4744,134 @@ fn reveal_from_hand_execute_provably_excludes_class(
     !player.hand.iter().any(|&h| h == class_member)
 }
 
+/// CR 400.7: the object ids whose RULES identity is not stable across this window — either
+/// the incarnation epoch advanced ([`GameObject::bump_incarnation`], the single bump
+/// primitive: every real zone move, plus the merge/relatch sites that call it directly), or
+/// the object is ABSENT from `prior`, i.e. it ARRIVED inside the window.
+///
+/// A DEPARTED id — in `prior`, absent from `current` — is deliberately NOT in the set, and
+/// walking `current.objects` is what makes that structural rather than a filter a later reader
+/// could "tidy" away. Both consumers only ever ask about a host already resolved on the
+/// battlefield of the SCANNED frame, so a departed id is unreachable by construction. Row
+/// `identity_unstable_ids_names_reentered_and_arrived_objects` asserts the EXACT set on a pair
+/// carrying a departed object, so an over-broad implementation fails there rather than passing
+/// silently — a `contains` assertion would not see it.
+///
+/// ⛔ **THIS IS NOT AVAILABLE FROM THE COVER, AND THAT IS THE WHOLE REASON IT EXISTS.**
+/// [`object_content_eq`] — the sole authority for the cover's stable partition — is keyed by
+/// `ObjectId` (STORAGE identity) and deliberately omits `timestamp` / `incarnation` /
+/// `transformation_count`, because the same comparator serves CR 104.4b's constant-depth loop
+/// detector and must ignore the epoch. MEASURED: a permanent blinked through
+/// `game::zones::move_to_zone` keeps its id, is `object_content_eq` to its pre-blink self, and
+/// a steady-state blink pair passes EVERY gate of [`loop_states_cover_modulo_fodder_growth`].
+/// **Do not "simplify" this by tightening `object_content_eq` instead** — both narrower
+/// candidates were measured and rejected: tightening it rejects every buyback loop and changes
+/// the draw comparator.
+///
+/// CR 613.7d (an object receives a timestamp when it enters a zone) is the sibling fact and is
+/// deliberately NOT the test used here: a timestamp also moves when an Aura or Equipment
+/// becomes attached (CR 613.7e), which is not a zone change and does not make a new object.
+/// `incarnation` moves for exactly the CR 400.7 event this predicate is about.
+fn identity_unstable_ids(prior: &GameState, current: &GameState) -> HashSet<ObjectId> {
+    current
+        .objects
+        .iter()
+        .filter(|&(id, obj)| {
+            prior
+                .objects
+                .get(id)
+                .is_none_or(|before| before.incarnation != obj.incarnation)
+        })
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+/// CR 400.7: is this host the SAME object throughout the proposed window?
+///
+/// FAIL-CLOSED ON `None`, and that is the contract rather than an implementation detail: no
+/// proof is not a proof of stability. [`LoopWindowScope::unproven`] — the offline classifier's
+/// scope — carries `None`, which is what keeps that path byte-identical to pre-change
+/// behaviour (`scoped_wrappers_are_identity`).
+fn host_identity_is_stable(host: ObjectId, identity_unstable: Option<&HashSet<ObjectId>>) -> bool {
+    identity_unstable.is_some_and(|unstable| !unstable.contains(&host))
+}
+
+/// CR 614.1d + CR 614.12 + CR 400.7 + CR 732.2a — **the INAPPLICABILITY relief at block (3)**:
+/// is this definition SPENT for the proposed window, its only subject an entrance of its own
+/// source that is already in the past?
+///
+/// ⛔ **THIS RELIEF IS DEF-SCOPED AND ITS CALLER USES `continue`; THE TWO SIBLING ARMS ARE
+/// SURFACE-SCOPED AND MUST NOT BE CHANGED TO MATCH.** The siblings
+/// ([`count_matching_condition_provably_excludes_class`] /
+/// [`other_leq_condition_provably_excludes_class`]) prove *condition-value invariance*, which
+/// says nothing about the `execute` surface — relieving a whole def on that is exactly the
+/// defect pinned by `block3_condition_relief_does_not_carry_the_execute_surface`. This arm
+/// proves *inapplicability*, and a definition that cannot apply at all runs NONE of its
+/// surfaces. Row `spent_self_entry_relief_carries_the_execute_surface` pins the difference, so
+/// narrowing the `continue` into a surface-scoped guard turns a row red rather than passing.
+///
+/// ⛔ **THE TWO SIBLING ARMS DELIBERATELY DO NOT GET THE CR 400.7 IDENTITY CONJUNCT.** They are
+/// value-invariance claims: a blinked host still evaluates its condition, to the same value, so
+/// the batched collapse still agrees with the replay. Only the inapplicability claim is
+/// falsified by a re-entry, which is why the conjunct lives here and nowhere else.
+///
+/// ⛔ **THIS RELIEF DELIBERATELY DOES NOT CONSULT [`arrival_can_move_a_nonmember_match`].** That
+/// guard carries "no member is counted" to "the count is unchanged". This arm never claims the
+/// condition has an invariant value; it claims the condition is never evaluated. Consulting the
+/// guard would import a premise this argument does not use, and would cost Argoth, Sanctum of
+/// Nature and Taiga Stadium — the two measured cards the guard refuses — for nothing.
+fn replacement_is_spent_self_entry(
+    source: Option<&GameObject>,
+    def: &crate::types::ability::ReplacementDefinition,
+    class_members: Option<&HashSet<ObjectId>>,
+    identity_unstable: Option<&HashSet<ObjectId>>,
+) -> bool {
+    use crate::types::ability::TargetFilter;
+
+    // FLOATING HALF ⇒ FAIL CLOSED. CR 611.2's floating store has no host, so `SelfRef` has no
+    // referent and "its own source's entrance" names nothing. Same posture as the two sibling
+    // arms' floating guards, and the same caveat: the door is unopened, not welded shut.
+    let Some(source) = source else {
+        return false;
+    };
+
+    // The SELF-ENTRY signature. CR 614.1d distinguishes "[This permanent] enters . . ." from
+    // "[Objects] enter [the battlefield] . . ."; CR 614.12 makes the first apply "only [to]
+    // that permanent" ("It won't affect itself" is its Orb of Dreams example, read the other
+    // way round). `ReplacementEvent::Moved` ALONE, and that narrowness is measured rather than
+    // assumed: over 35,798 card faces and 2,775 replacement definitions, all 2,137 carrying
+    // `SelfRef` + `Battlefield` are `Moved` and ZERO are `ChangeZone`, so the narrow and the
+    // wide predicate are extensionally identical on any board built from real cards. Add the
+    // variant the day one exists — do not widen it speculatively.
+    if !matches!(def.valid_card, Some(TargetFilter::SelfRef)) {
+        return false;
+    }
+    if def.event != ReplacementEvent::Moved {
+        return false;
+    }
+    if def.destination_zone != Some(Zone::Battlefield) {
+        return false;
+    }
+
+    // The entrance is in the PAST — in the CR 400.7 sense, not the storage sense. A host that
+    // blinked inside the window makes its own entry replacement LIVE again, once per cycle,
+    // against a board grown by k members; the cover does NOT catch that, because
+    // `object_content_eq` ignores the incarnation epoch on purpose (see
+    // [`identity_unstable_ids`]).
+    if source.zone != Zone::Battlefield {
+        return false;
+    }
+    if !host_identity_is_stable(source.id, identity_unstable) {
+        return false;
+    }
+
+    // If the loop mints copies of this very permanent, each copy's OWN entry replacement is
+    // live, and each copy is scanned on its own turn through the walk. `!is_empty()` mirrors
+    // every other guard in this block: an empty class must not make the relief vacuously true.
+    // `None` ⇒ no proven class ⇒ fail closed.
+    class_members.is_some_and(|m| !m.is_empty() && !m.contains(&source.id))
+}
+
 /// **S4** — CR 732.2a block-(3) relief on a replacement effect's
 /// `UnlessControlsCountMatching` condition (CR 614.1d): is the condition's value provably
 /// INVARIANT as the growing class grows by `class_member`?
@@ -5691,8 +5875,9 @@ fn fire_time_conditions_read_growing_class(
 
 /// Scoped sibling of [`fire_time_conditions_read_growing_class`] — see
 /// [`LoopWindowScope`]. Reads `scope.phase_invariant` (CR 510.2 / CR 506.1, blocks (1)
-/// and (5b)) and `scope.sole_driver` (CR 117.1b, block (2)); every such guard sits
-/// inside an `if let Some(..)`, so [`LoopWindowScope::unproven`] still reaches none of
+/// and (5b)), `scope.sole_driver` (CR 117.1b, block (2)) and `scope.identity_unstable`
+/// (CR 400.7, block (3)'s spent-self-entry relief); every such guard sits inside an
+/// `if let Some(..)` / `is_some_and`, so [`LoopWindowScope::unproven`] still reaches none of
 /// them and the 2-arg wrapper stays identity (`scoped_wrappers_are_identity`).
 fn fire_time_conditions_read_growing_class_scoped(
     state: &GameState,
@@ -5984,6 +6169,15 @@ fn fire_time_conditions_read_growing_class_scoped(
     // the floating half carries no zone gate at all, now live on the two halves of
     // [`loop_window_replacement_defs`] — that is where the deleted inline gate went.
     for (source, _idx, def) in loop_window_replacement_defs(state) {
+        // CR 614.1d + CR 614.12 + CR 400.7 relief — INAPPLICABILITY, and therefore the ONE
+        // relief in this block that is DEF-scoped rather than surface-scoped. A definition
+        // whose only subject is its own already-past entrance cannot apply inside the window
+        // at all, so none of its three surfaces runs and there is nothing left to scan. The
+        // two arms below are value-invariance claims and stay surface-scoped; see
+        // [`replacement_is_spent_self_entry`] for why the two kinds must not be merged.
+        if replacement_is_spent_self_entry(source, def, class_members, scope.identity_unstable) {
+            continue;
+        }
         // CR 732.2a relief (S4/S5), SCOPED TO THE `condition` SURFACE ONLY — never a
         // `continue` over the whole def. A def whose condition is provably invariant may
         // still carry a class-observing `execute`/`runtime_execute`, and relieving the def
@@ -11091,6 +11285,7 @@ mod tests {
             }),
             cast_card_ids: None,
             period: None,
+            identity_unstable: None,
         }
     }
 
@@ -12997,6 +13192,7 @@ mod tests {
             pinned: None,
             cast_card_ids: None,
             period: None,
+            identity_unstable: None,
         };
 
         let (subject, observer) = build(AbilityKind::Spell);
@@ -13073,6 +13269,7 @@ mod tests {
             pinned: None,
             cast_card_ids: None,
             period: None,
+            identity_unstable: None,
         };
 
         let (subject, observer) = build(Some(PlayerFilter::All));
@@ -13886,6 +14083,13 @@ mod tests {
     /// probe too: the phase-gated observer board below is precisely the population a
     /// populated `phase_invariant` changes the answer on, so a non-`None` `unproven()`
     /// breaks the identity here rather than silently.
+    ///
+    /// SIXTH POPULATION (CR 400.7): a board carrying a spent-self-entry replacement definition,
+    /// scanned WITH a class. `identity_unstable` is read through `is_some_and`, so a populated
+    /// `unproven()` cannot break the identity ASSERTION — both sides call `unproven()` — but it
+    /// WOULD flip that population's answer from `true` to `false`. The answer VECTOR is
+    /// therefore the live probe on this axis, which is why the row asserts vectors rather than
+    /// pairwise equality alone.
     #[test]
     fn scoped_wrappers_are_identity() {
         use crate::types::ability::TriggerCondition;
@@ -13926,13 +14130,21 @@ mod tests {
             );
             plain
         };
-        let growing = |state: &GameState| {
-            let plain = fire_time_conditions_read_growing_class(state, None);
+        // (6) a board carrying a RELIEVABLE spent-self-entry definition, scanned WITH a class.
+        // This is the population a populated `unproven().identity_unstable` changes the answer
+        // on (CR 400.7 / CR 614.12), and it is why the closure below takes the class argument
+        // instead of hardcoding `None`: at `class_members: None` the relief fails closed no
+        // matter what the scope carries, so a `None`-only closure could not see the drift.
+        let (spent_self_entry, spent_self_entry_members, _) =
+            spent_self_entry_board(barad_dur_def());
+
+        let growing = |state: &GameState, class_members: Option<&HashSet<ObjectId>>| {
+            let plain = fire_time_conditions_read_growing_class(state, class_members);
             assert_eq!(
                 plain,
                 fire_time_conditions_read_growing_class_scoped(
                     state,
-                    None,
+                    class_members,
                     LoopWindowScope::unproven()
                 ),
                 "fire_time_conditions_read_growing_class must be its _scoped sibling at unproven()"
@@ -13963,12 +14175,18 @@ mod tests {
         );
         assert_eq!(
             [
-                growing(&benign),
-                growing(&sibling_observer),
-                growing(&projected_observer)
+                growing(&benign, None),
+                growing(&sibling_observer, None),
+                growing(&projected_observer, None),
+                growing(&spent_self_entry, Some(&spent_self_entry_members)),
             ],
-            [false, true, false],
-            "the growing-class firewall vetoes on the sibling observer only"
+            [false, true, false, true],
+            "the growing-class firewall vetoes on the sibling observer only — and, in the \
+             fourth arm, on the spent-self-entry board too, because the 2-arg wrapper carries \
+             NO CR 400.7 proof. That fourth arm is this row's live probe on the new axis: make \
+             `unproven()` populate `identity_unstable` and the definition is relieved, flipping \
+             this arm to `false` while the identity assertion above stays green (both sides \
+             read the same `unproven()`), so the VECTOR is what catches it"
         );
         assert_eq!(
             [
@@ -15032,6 +15250,7 @@ mod tests {
                 pinned: None,
                 cast_card_ids: Some(&never_cast),
                 period: None,
+                identity_unstable: None,
             };
             assert!(
                 !fire_time_conditions_read_projected_resource_scoped(&state, scope),
@@ -15055,6 +15274,7 @@ mod tests {
             pinned: None,
             cast_card_ids: Some(&never_cast),
             period: None,
+            identity_unstable: None,
         };
         assert!(
             fire_time_conditions_read_projected_resource_scoped(&not_modify_cost, scope),
@@ -15091,6 +15311,7 @@ mod tests {
             pinned: None,
             cast_card_ids: Some(&recast),
             period: None,
+            identity_unstable: None,
         };
         assert!(
             fire_time_conditions_read_projected_resource_scoped(&state, scope),
@@ -15107,6 +15328,7 @@ mod tests {
             pinned: None,
             cast_card_ids: Some(&other),
             period: None,
+            identity_unstable: None,
         };
         assert!(
             !fire_time_conditions_read_projected_resource_scoped(&state, relieved_scope),
@@ -15443,6 +15665,7 @@ mod tests {
             pinned: None,
             cast_card_ids: Some(&cast),
             period: None,
+            identity_unstable: None,
         };
         assert!(
             !fire_time_conditions_read_projected_resource_scoped(&state, scope),
@@ -15462,6 +15685,7 @@ mod tests {
             pinned: None,
             cast_card_ids: Some(&recast),
             period: None,
+            identity_unstable: None,
         };
         assert!(
             fire_time_conditions_read_projected_resource_scoped(&state, recast_scope),
@@ -17754,7 +17978,7 @@ mod tests {
         // ── `sole_driver` — CR 117.1 ──
         let (pa, pb) = (base(), base());
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb, None, None).sole_driver,
+            window_scope_from_cover_frames(&pa, &pb, None, None, None).sole_driver,
             Some(PlayerId(0)),
             "PAIRED POSITIVE: a homogeneous single-driver window proves CR 117.1's premise"
         );
@@ -17764,7 +17988,7 @@ mod tests {
         let mut pb_other = base();
         pb_other.last_loop_action_sequence = vec![ctx(1)];
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_other, None, None).sole_driver,
+            window_scope_from_cover_frames(&pa, &pb_other, None, None, None).sole_driver,
             None,
             "(s2) a two-controller window proves nothing about who holds priority"
         );
@@ -17773,7 +17997,7 @@ mod tests {
         let mut pa_mixed = base();
         pa_mixed.last_loop_action_sequence = vec![ctx(0), ctx(1)];
         assert_eq!(
-            window_scope_from_cover_frames(&pa_mixed, &pb, None, None).sole_driver,
+            window_scope_from_cover_frames(&pa_mixed, &pb, None, None, None).sole_driver,
             None,
             "(s2) an interleaved sequence is fail-closed"
         );
@@ -17782,14 +18006,14 @@ mod tests {
         let mut pb_empty = base();
         pb_empty.last_loop_action_sequence.clear();
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_empty, None, None).sole_driver,
+            window_scope_from_cover_frames(&pa, &pb_empty, None, None, None).sole_driver,
             None,
             "(s1) an empty driving sequence is NO PROOF, so it cannot relieve anything"
         );
 
         // ── `phase_invariant` — CR 500.1 / CR 506.1 / CR 500.8 ──
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb, None, None).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb, None, None, None).phase_invariant,
             Some(Phase::PreCombatMain),
             "PAIRED POSITIVE: agreeing frames with no extra phase prove the window's phase"
         );
@@ -17806,7 +18030,7 @@ mod tests {
                 attacker_restriction_source: None,
             });
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_extra, None, None).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb_extra, None, None, None).phase_invariant,
             None,
             "(p3) CR 500.8: a pending extra phase breaks `equal phase ⇒ never left it`"
         );
@@ -17815,7 +18039,7 @@ mod tests {
         let mut pb_turn = base();
         pb_turn.turn_number = 14;
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_turn, None, None).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb_turn, None, None, None).phase_invariant,
             None,
             "(p1) frames from different turns bound nothing about one window's phase"
         );
@@ -17824,7 +18048,7 @@ mod tests {
         let mut pb_phase = base();
         pb_phase.phase = Phase::PostCombatMain;
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_phase, None, None).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb_phase, None, None, None).phase_invariant,
             None,
             "(p2) a window that crosses a phase boundary is not phase-invariant"
         );
@@ -19077,6 +19301,7 @@ mod tests {
             pinned: Some(PinnedChoices { proposer, slots }),
             cast_card_ids: None,
             period: None,
+            identity_unstable: None,
         }
     }
 
@@ -19091,6 +19316,7 @@ mod tests {
             }),
             cast_card_ids: None,
             period: None,
+            identity_unstable: None,
         }
     }
 
@@ -23468,6 +23694,7 @@ mod tests {
             pinned: None,
             cast_card_ids: None,
             period: None,
+            identity_unstable: None,
         };
         {
             let obj = &state.objects[&host];
@@ -24295,6 +24522,655 @@ mod tests {
             );
         }
         (state, member, hosts)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────
+    // P1 — the SPENT SELF-ENTRY relief at block (3) (CR 614.1d / CR 614.12 / CR 400.7),
+    // rows 1-12.
+    //
+    // EVERY row here drives `fire_time_conditions_read_growing_class_scoped` with a scope
+    // carrying the CR 400.7 identity proof, and pairs it with the 2-arg wrapper — which
+    // carries `LoopWindowScope::unproven()`, i.e. NO proof — as the reach-guard showing the
+    // same board still VETOES without it. That pairing is what makes each `false` below
+    // attributable to the `continue` rather than to a silent board.
+    //
+    // THE CONDITION IS DELIBERATELY `UnlessControlsMatching`, not the taplands the S4/S5 rows
+    // use: no per-condition relief arm matches that variant (S4 matches
+    // `UnlessControlsCountMatching`, S5 `UnlessControlsOtherLeq`), so a `false` here cannot be
+    // a sibling arm's verdict wearing this section's name.
+    // ─────────────────────────────────────────────────────────────────────────────────
+
+    /// Barad-dûr's REAL parsed replacement definition — VERBATIM Oracle text from the pinned
+    /// `AtomicCards.json` export, never a paraphrase (a reworded "enters tapped unless" line
+    /// can take a different parser branch and go green while the real card still vetoes).
+    /// One of the three cards row 14 drives end to end.
+    fn barad_dur_def() -> crate::types::ability::ReplacementDefinition {
+        tapland_replacement(
+            "Barad-dûr",
+            "Barad-dûr enters tapped unless you control a legendary creature.\n{T}: Add {B}.\n\
+             {X}{X}{B}, {T}: Amass Orcs X. Activate only if a creature died this turn.",
+            &[],
+        )
+    }
+
+    /// The `LoopWindowScope` a cover pair that DERIVED [`identity_unstable_ids`] hands the
+    /// firewall. Only `identity_unstable` is populated: every row in this section is about
+    /// that axis and must not borrow another proof's relief.
+    fn p1_scope(identity_unstable: &HashSet<ObjectId>) -> LoopWindowScope<'_> {
+        LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned: None,
+            cast_card_ids: None,
+            period: None,
+            identity_unstable: Some(identity_unstable),
+        }
+    }
+
+    /// Block (3) under a populated CR 400.7 proof.
+    fn scan_with_identity_proof(
+        state: &GameState,
+        members: &HashSet<ObjectId>,
+        identity_unstable: &HashSet<ObjectId>,
+    ) -> bool {
+        fire_time_conditions_read_growing_class_scoped(
+            state,
+            Some(members),
+            p1_scope(identity_unstable),
+        )
+    }
+
+    /// One Barad-dûr-shaped host at `ObjectId(900)` carrying `def`, plus the Saproling class
+    /// member. Returns `(state, members, host)`; the CR 400.7 proof is supplied per row.
+    fn spent_self_entry_board(
+        def: crate::types::ability::ReplacementDefinition,
+    ) -> (GameState, HashSet<ObjectId>, ObjectId) {
+        let (state, member, hosts) = block3_fixture(vec![(900, "Barad-dûr", def)]);
+        (state, HashSet::from([member]), hosts[0])
+    }
+
+    /// **Row 1 (POSITIVE — the relief fires).** A definition whose only subject is its own
+    /// already-past entrance is SPENT for the proposed window, so block (3) skips it — even
+    /// though its condition runs a live battlefield census that no relief arm can prove
+    /// invariant.
+    ///
+    /// CR 614.1d templates "[This permanent] enters . . ." distinctly from "[Objects] enter
+    /// . . ."; CR 614.12 makes the first apply only to that permanent. The host is already on
+    /// the battlefield and (CR 400.7) is the same object throughout the window, so the event
+    /// this definition watches cannot recur inside the window and NONE of its surfaces runs.
+    ///
+    /// HOSTILE FIXTURE, in the same row: a definition whose condition genuinely DOES read the
+    /// growing class must still be relieved, because this relief is INAPPLICABILITY and not
+    /// disjointness. A reader who "hardens" the arm by adding a disjointness conjunct reds this.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `continue` at the head of block (3)'s walk ⇒ the
+    /// firewall returns `true` ⇒ **FAILS**.
+    #[test]
+    fn spent_self_entry_relieves_a_board_censusing_entry_condition() {
+        let (state, members, _host) = spent_self_entry_board(barad_dur_def());
+        let stable = HashSet::new();
+
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&members)),
+            "reach-guard: with NO CR 400.7 proof the SAME board vetoes — `UnlessControlsMatching` \
+             is a `LiveBoardCensus` at the scanner and no per-condition arm matches it, so every \
+             `false` below is attributable to the identity proof and to nothing else"
+        );
+        assert!(
+            !scan_with_identity_proof(&state, &members, &stable),
+            "row 1: CR 614.1d + CR 614.12 + CR 400.7 — the definition's only subject is its own \
+             entrance, which is already in the past for a stable host, so it cannot apply inside \
+             the proposed window and block (3) must SKIP it"
+        );
+
+        // HOSTILE: the condition censuses CREATURES, which the growing Saproling class
+        // satisfies — so no disjointness argument reaches it, and only inapplicability does.
+        let reads_the_class = with_condition(
+            barad_dur_def(),
+            crate::types::ability::ReplacementCondition::UnlessControlsMatching {
+                filter: crate::types::ability::TargetFilter::Typed(
+                    crate::types::ability::TypedFilter::creature(),
+                ),
+            },
+        );
+        let (hostile, hostile_members, _) = spent_self_entry_board(reads_the_class);
+        assert!(
+            fire_time_conditions_read_growing_class(&hostile, Some(&hostile_members)),
+            "reach-guard: the class-reading condition vetoes without the proof too"
+        );
+        assert!(
+            !scan_with_identity_proof(&hostile, &hostile_members, &stable),
+            "row 1 (hostile): the relief is INAPPLICABILITY, not disjointness. A definition \
+             that can never apply runs no census at all, so a condition that WOULD count class \
+             members is still relieved. Adding a disjointness conjunct to \
+             `replacement_is_spent_self_entry` makes this FAIL"
+        );
+    }
+
+    /// **Row 2 (NEGATIVE — a non-`SelfRef` `valid_card` keeps the veto).** CR 614.1d's other
+    /// half — "[Objects] enter [the battlefield] . . ." — watches a general subset of
+    /// permanents that the loop's own arrivals join, so its subject is emphatically NOT in the
+    /// past. `Typed{Land}` is the real card shape ("lands you control enter tapped").
+    ///
+    /// REVERT / MUTATION PROBE: delete the `matches!(def.valid_card, Some(SelfRef))` conjunct
+    /// ⇒ **FAILS**.
+    #[test]
+    fn spent_self_entry_does_not_relieve_a_typed_valid_card() {
+        let stable = HashSet::new();
+        let mut def = barad_dur_def();
+        def.valid_card = Some(crate::types::ability::TargetFilter::Typed(
+            crate::types::ability::TypedFilter::land(),
+        ));
+        let (state, members, _) = spent_self_entry_board(def);
+        assert!(
+            scan_with_identity_proof(&state, &members, &stable),
+            "row 2: CR 614.1d — an '[Objects] enter' definition watches a POPULATION the \
+             loop's arrivals join, so its subject is not in the past and it keeps its veto"
+        );
+
+        // PAIRED POSITIVE: the byte-identical definition with only `valid_card` swapped back.
+        let (relieved, relieved_members, _) = spent_self_entry_board(barad_dur_def());
+        assert!(
+            !scan_with_identity_proof(&relieved, &relieved_members, &stable),
+            "row 2 paired positive: `valid_card` is the ONLY variable — with `SelfRef` restored \
+             the same board is relieved, so the veto above is not a blanket refusal"
+        );
+    }
+
+    /// **Row 3 (NEGATIVE — a non-entry event keeps the veto).** The relief's whole argument is
+    /// about an ENTRANCE (CR 614.1c/d). A `DamageDone` definition with `valid_card: SelfRef`
+    /// watches an event that recurs freely inside the window, so nothing about it is spent.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `def.event != Moved` conjunct ⇒ **FAILS**.
+    #[test]
+    fn spent_self_entry_does_not_relieve_a_non_entry_event() {
+        let stable = HashSet::new();
+        let mut def = barad_dur_def();
+        def.event = ReplacementEvent::DamageDone;
+        let (state, members, _) = spent_self_entry_board(def);
+        assert!(
+            scan_with_identity_proof(&state, &members, &stable),
+            "row 3: CR 614.1c/d scope this relief to an ENTRANCE. A self-referential \
+             `DamageDone` definition watches an event that can happen repeatedly inside the \
+             window, so it is not spent and keeps its veto"
+        );
+
+        // PAIRED POSITIVE: the same fixture with `event: Moved` restored.
+        let (relieved, relieved_members, _) = spent_self_entry_board(barad_dur_def());
+        assert!(
+            !scan_with_identity_proof(&relieved, &relieved_members, &stable),
+            "row 3 paired positive: `event` is the ONLY variable"
+        );
+    }
+
+    /// **Row 4 (NEGATIVE — a non-battlefield destination keeps the veto).** CR 614.12 is about
+    /// how a permanent enters the BATTLEFIELD. A `Moved` + `SelfRef` definition whose
+    /// `destination_zone` is the graveyard watches its host DYING, which a loop may do to it
+    /// once per cycle — the opposite of spent.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `destination_zone` conjunct ⇒ **FAILS**.
+    #[test]
+    fn spent_self_entry_does_not_relieve_a_graveyard_destination() {
+        let stable = HashSet::new();
+        let mut def = barad_dur_def();
+        def.destination_zone = Some(Zone::Graveyard);
+        let (state, members, _) = spent_self_entry_board(def);
+        assert!(
+            scan_with_identity_proof(&state, &members, &stable),
+            "row 4: CR 614.12 is the BATTLEFIELD-entry rule. A self-referential `Moved` \
+             definition aimed at the graveyard watches a departure the window can repeat, so \
+             it keeps its veto"
+        );
+
+        // PAIRED POSITIVE: the same fixture with `Battlefield` restored.
+        let (relieved, relieved_members, _) = spent_self_entry_board(barad_dur_def());
+        assert!(
+            !scan_with_identity_proof(&relieved, &relieved_members, &stable),
+            "row 4 paired positive: `destination_zone` is the ONLY variable"
+        );
+    }
+
+    /// **Row 5 (NEGATIVE — a host that IS a class member keeps the veto).** If the loop mints
+    /// copies of this very permanent, each copy's OWN entry replacement is live once per cycle
+    /// (CR 614.12: it applies to that permanent), so the definition is not spent for the window
+    /// at all.
+    ///
+    /// REVERT / MUTATION PROBE: delete `!m.contains(&source.id)` ⇒ **FAILS**.
+    #[test]
+    fn spent_self_entry_does_not_relieve_when_the_source_is_a_class_member() {
+        let stable = HashSet::new();
+        let (state, members, host) = spent_self_entry_board(barad_dur_def());
+
+        let mut members_with_host = members.clone();
+        members_with_host.insert(host);
+        assert!(
+            scan_with_identity_proof(&state, &members_with_host, &stable),
+            "row 5: the growing class contains the HOST, so the loop mints copies of this very \
+             permanent and each copy's own entry replacement is live (CR 614.12). The \
+             definition is not spent and must keep its veto"
+        );
+
+        // PAIRED POSITIVE: the identical board with the host OUT of the class.
+        assert!(
+            !scan_with_identity_proof(&state, &members, &stable),
+            "row 5 paired positive: class MEMBERSHIP is the only variable — the same board with \
+             the host outside the class is relieved"
+        );
+    }
+
+    /// **Row 6 (NEGATIVE — an empty class set does not relieve).** `!m.is_empty()` mirrors
+    /// every other guard in this block: an empty class is NO PROVEN CLASS, and relieving on it
+    /// would relieve every definition on every board.
+    ///
+    /// REVERT / MUTATION PROBE: delete `!m.is_empty()` ⇒ **FAILS**.
+    #[test]
+    fn spent_self_entry_empty_class_member_set_does_not_relieve() {
+        let stable = HashSet::new();
+        let (state, members, _) = spent_self_entry_board(barad_dur_def());
+
+        let empty: HashSet<ObjectId> = HashSet::new();
+        assert!(
+            scan_with_identity_proof(&state, &empty, &stable),
+            "row 6: an EMPTY class set proves nothing about what the window grows, so the \
+             relief must fail closed rather than relieve vacuously"
+        );
+
+        // PAIRED POSITIVE: the same board with one member.
+        assert!(
+            !scan_with_identity_proof(&state, &members, &stable),
+            "row 6 paired positive: class-set EMPTINESS is the only variable"
+        );
+    }
+
+    /// **Row 7 (NEGATIVE — the floating half is fail-closed).** CR 611.2's floating store has
+    /// no host, so `valid_card: SelfRef` has no referent and "its own source's entrance" names
+    /// nothing. Same posture as the two sibling arms' floating guards.
+    ///
+    /// REVERT / MUTATION PROBE: synthesize a source for the floating half (fall back to any
+    /// battlefield object) ⇒ **FAILS**.
+    #[test]
+    fn spent_self_entry_floating_def_does_not_relieve() {
+        let stable = HashSet::new();
+
+        // PAIRED POSITIVE, taken FIRST: the identical definition on a board carrier IS
+        // relieved, so the floating verdict below is attributable to the ABSENT SOURCE.
+        let (board_state, board_members, _) = spent_self_entry_board(barad_dur_def());
+        assert!(
+            !scan_with_identity_proof(&board_state, &board_members, &stable),
+            "row 7 paired positive: the SAME definition hosted on a battlefield permanent is \
+             relieved — the only variable below is the presence of a host"
+        );
+
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let members = HashSet::from([member]);
+        assert_eq!(
+            live_floating_replacement_defs(&state).count(),
+            0,
+            "reach-guard: the floating store is EMPTY before the graft"
+        );
+        assert!(
+            !scan_with_identity_proof(&state, &members, &stable),
+            "reach-guard: the pre-graft board is SILENT on every block"
+        );
+
+        state.pending_damage_replacements.push(barad_dur_def());
+        assert_eq!(
+            live_floating_replacement_defs(&state).count(),
+            1,
+            "reach-guard: exactly ONE floating definition after the graft"
+        );
+        assert!(
+            scan_with_identity_proof(&state, &members, &stable),
+            "row 7: CR 611.2's floating store carries no source object, so `SelfRef` has no \
+             referent, the host's CR 400.7 identity cannot be checked, and the definition must \
+             keep its veto. Synthesizing a source for the floating half makes this FAIL"
+        );
+    }
+
+    /// **Row 8 — the relief is DEF-scoped and legitimately carries the `execute` surface.**
+    ///
+    /// This is the ONE relief in block (3) that may use a bare `continue`, and the row exists
+    /// so a later reader does not "fix" it into a surface-scoped guard to match its two
+    /// siblings. Those siblings prove condition-value INVARIANCE, which says nothing about
+    /// `execute` (`block3_condition_relief_does_not_carry_the_execute_surface` pins that). This
+    /// arm proves INAPPLICABILITY: a definition that cannot apply runs none of its surfaces.
+    ///
+    /// REVERT / MUTATION PROBE: narrow the `continue` into a `condition`-surface guard ⇒ the
+    /// grafted `execute` body vetoes again ⇒ **FAILS**.
+    #[test]
+    fn spent_self_entry_relief_carries_the_execute_surface() {
+        use std::sync::Arc;
+
+        let observing = trigger_execute_from_oracle(
+            "When BBFU10 Bystander enters, draw a card for each creature you control.",
+        );
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_sibling_mutable(&observing),
+            "reach-guard: the grafted `execute` body must itself veto, else this row passes for \
+             the wrong reason"
+        );
+
+        let mut def = barad_dur_def();
+        def.execute = Some(Box::new(observing));
+
+        // `block3_fixture` reach-guards an `execute`-silent definition, so this row builds its
+        // board directly — the same construction the sibling `execute` row uses.
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let members = HashSet::from([member]);
+        let oid = ObjectId(900);
+        let mut object = GameObject::new(
+            oid,
+            CardId(900),
+            PlayerId(0),
+            "Barad-dûr".to_string(),
+            Zone::Battlefield,
+        );
+        object.card_types.core_types = vec![CoreType::Land];
+        object.base_replacement_definitions = Arc::new(vec![def.clone()]);
+        object.replacement_definitions = vec![def].into();
+        state.objects.insert(oid, object);
+        state.battlefield.push_back(oid);
+
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&members)),
+            "reach-guard: without the CR 400.7 proof this board vetoes on BOTH surfaces"
+        );
+        let stable = HashSet::new();
+        assert!(
+            !scan_with_identity_proof(&state, &members, &stable),
+            "row 8: a definition that cannot apply inside the window runs NONE of its surfaces \
+             — condition, `execute` and `runtime_execute` alike — so the relief is DEF-scoped. \
+             Narrowing the `continue` into a surface-scoped guard makes this FAIL"
+        );
+    }
+
+    /// The four CR 400.7 populations, as ONE `(prior, current)` frame pair over a board that
+    /// also carries two Barad-dûr-shaped block-(3) hosts:
+    ///  * `stable` — the host at `ObjectId(900)`, untouched;
+    ///  * `blinked` — the host at `ObjectId(901)`, driven battlefield → graveyard → battlefield
+    ///    through `game::zones::move_to_zone`, the SINGLE production zone mover (so the
+    ///    incarnation bump is the engine's own, not a hand-set field);
+    ///  * `arrived` — a permanent minted INSIDE the window (absent from `prior`);
+    ///  * `departed` — a token present in `prior` and gone from `current.objects` entirely
+    ///    (CR 704.5d cease-to-exist is what produces that shape in production).
+    ///
+    /// Returns `(prior, current, member)` with the ids fixed by the constants below.
+    const P1_STABLE_HOST: ObjectId = ObjectId(900);
+    const P1_BLINKED_HOST: ObjectId = ObjectId(901);
+    const P1_ARRIVED: ObjectId = ObjectId(902);
+    const P1_DEPARTED: ObjectId = ObjectId(903);
+
+    fn identity_frames() -> (GameState, GameState, HashSet<ObjectId>) {
+        use std::sync::Arc;
+
+        let (mut prior, member, _) = block3_fixture(vec![
+            (P1_STABLE_HOST.0, "Barad-dûr", barad_dur_def()),
+            (P1_BLINKED_HOST.0, "Barad-dûr", barad_dur_def()),
+        ]);
+        // The DEPARTED object exists in `prior` only.
+        {
+            let mut token = GameObject::new(
+                P1_DEPARTED,
+                CardId(903),
+                PlayerId(0),
+                "Departing Saproling".to_string(),
+                Zone::Battlefield,
+            );
+            token.card_types.core_types = vec![CoreType::Creature];
+            token.is_token = true;
+            prior.objects.insert(P1_DEPARTED, token);
+            prior.battlefield.push_back(P1_DEPARTED);
+        }
+
+        let mut current = prior.clone();
+        // DEPART: CR 704.5d — a token that left the battlefield ceases to exist, so it is gone
+        // from `objects`, not merely re-zoned.
+        current.objects.remove(&P1_DEPARTED);
+        current.battlefield.retain(|id| *id != P1_DEPARTED);
+        // ARRIVE: minted inside the window.
+        {
+            let mut arrival = GameObject::new(
+                P1_ARRIVED,
+                CardId(902),
+                PlayerId(0),
+                "Arrived Saproling".to_string(),
+                Zone::Battlefield,
+            );
+            arrival.card_types.core_types = vec![CoreType::Creature];
+            arrival.is_token = true;
+            current.objects.insert(P1_ARRIVED, arrival);
+            current.battlefield.push_back(P1_ARRIVED);
+        }
+        // BLINK: through the production zone mover, twice, so the CR 400.7 epoch bump is the
+        // engine's own. The definition is re-seeded afterwards because `game/layers.rs` rebuilds
+        // the live store from `base_replacement_definitions` on every pass.
+        {
+            let mut events = Vec::new();
+            crate::game::zones::move_to_zone(
+                &mut current,
+                P1_BLINKED_HOST,
+                Zone::Graveyard,
+                &mut events,
+            );
+            crate::game::zones::move_to_zone(
+                &mut current,
+                P1_BLINKED_HOST,
+                Zone::Battlefield,
+                &mut events,
+            );
+            let def = barad_dur_def();
+            let obj = current
+                .objects
+                .get_mut(&P1_BLINKED_HOST)
+                .expect("the blinked host keeps its storage id across a real zone round trip");
+            obj.card_types.core_types = vec![CoreType::Land];
+            obj.base_replacement_definitions = Arc::new(vec![def.clone()]);
+            obj.replacement_definitions = vec![def].into();
+        }
+        assert_eq!(
+            current
+                .objects
+                .get(&P1_BLINKED_HOST)
+                .map(|o| o.zone)
+                .zip(prior.objects.get(&P1_BLINKED_HOST).map(|o| o.zone)),
+            Some((Zone::Battlefield, Zone::Battlefield)),
+            "reach-guard: the blink is a ROUND TRIP — both frames show the host on the \
+             battlefield, so `object_content_eq`'s storage-identity view of it is unchanged and \
+             only the CR 400.7 epoch differs"
+        );
+        (prior, current, HashSet::from([member]))
+    }
+
+    /// **Row 11 — the derivation names the re-entered and the arrived ids, and NOTHING else.**
+    ///
+    /// The EXACT set is asserted, never `contains`: an over-broad implementation (one that also
+    /// named the departed id, or every id in the frame) passes a `contains` assertion and fails
+    /// this one.
+    ///
+    /// REVERT / MUTATION PROBE: make `identity_unstable_ids` return `HashSet::new()` ⇒ **FAILS**
+    /// here, and rows 9 and 10 red with it — this row is what says WHICH derivation broke.
+    #[test]
+    fn identity_unstable_ids_names_reentered_and_arrived_objects() {
+        let (prior, current, _) = identity_frames();
+
+        assert_ne!(
+            prior.objects[&P1_BLINKED_HOST].incarnation,
+            current.objects[&P1_BLINKED_HOST].incarnation,
+            "reach-guard: the real zone round trip DID advance the CR 400.7 epoch — without \
+             this the row would prove nothing about blinking"
+        );
+        assert_eq!(
+            prior.objects[&P1_STABLE_HOST].incarnation,
+            current.objects[&P1_STABLE_HOST].incarnation,
+            "reach-guard: the untouched host's epoch did NOT move"
+        );
+        assert!(
+            prior.objects.contains_key(&P1_DEPARTED) && !current.objects.contains_key(&P1_DEPARTED),
+            "reach-guard: the departed id really is in `prior` and gone from `current`"
+        );
+
+        assert_eq!(
+            identity_unstable_ids(&prior, &current),
+            HashSet::from([P1_BLINKED_HOST, P1_ARRIVED]),
+            "row 11: CR 400.7 — an object whose incarnation epoch advanced is a NEW object, and \
+             one absent from `prior` ARRIVED inside the window. A DEPARTED id is deliberately \
+             absent from the set: both consumers only ask about a host already resolved on the \
+             scanned frame's battlefield, so a departed id is unreachable by construction"
+        );
+    }
+
+    /// **Row 12 — the id set resolves against the frame the firewall actually scans.**
+    ///
+    /// `identity_unstable_ids` is derived from the PROJECTED cover frames while the firewall
+    /// scans the FLUSHED current, so if either `flush_clone` or `project_out_resources` ever
+    /// zeroed or renormalized `incarnation`, the derived set would go empty and EVERY relief
+    /// would silently fire — a fail-OPEN. This row is what keeps that true.
+    ///
+    /// REVERT / MUTATION PROBE: make either projection reset `incarnation` ⇒ **FAILS**.
+    #[test]
+    fn cover_frame_projection_preserves_incarnation() {
+        let (_, current, _) = identity_frames();
+
+        let raw = current.objects[&P1_BLINKED_HOST].incarnation;
+        assert!(
+            raw > 0,
+            "reach-guard: the blinked host carries a NON-ZERO epoch, so a projection that \
+             zeroed the field would be visible below"
+        );
+        let flushed = flush_clone(&current);
+        let projected = project_out_resources(&flushed);
+        assert_eq!(
+            (
+                flushed.objects[&P1_BLINKED_HOST].incarnation,
+                projected.objects[&P1_BLINKED_HOST].incarnation,
+            ),
+            (raw, raw),
+            "row 12: CR 400.7 — neither `flush_layers` nor the resource projection may touch the \
+             incarnation epoch. If one did, `identity_unstable_ids` would name nobody and every \
+             spent-self-entry relief would fire unchecked"
+        );
+    }
+
+    /// **Row 9 — a re-entered host is NOT relieved, PER HOST.**
+    ///
+    /// The multi-authority fixture: TWO hosts carrying the SAME definition in the SAME window,
+    /// one blinked through the production zone mover and one not. BOTH verdicts are asserted,
+    /// so a global kill switch in either direction fails the row.
+    ///
+    /// CR 400.7 is the whole basis: a host that re-entered inside the window makes its own
+    /// entry replacement LIVE again, once per cycle, against a board grown by |G| members —
+    /// and the cover cannot see it, because `object_content_eq` deliberately ignores the epoch.
+    ///
+    /// REVERT / MUTATION PROBE: delete the `host_identity_is_stable` conjunct ⇒ the blinked host
+    /// is relieved ⇒ **FAILS**.
+    #[test]
+    fn spent_self_entry_relieves_the_stable_host_and_not_the_blinked_one() {
+        let (prior, current, members) = identity_frames();
+        let unstable = identity_unstable_ids(&prior, &current);
+
+        // Per-host verdicts — the two authorities, asserted separately.
+        let stable_obj = current.objects[&P1_STABLE_HOST].clone();
+        let blinked_obj = current.objects[&P1_BLINKED_HOST].clone();
+        let def = barad_dur_def();
+        assert_eq!(
+            (
+                replacement_is_spent_self_entry(
+                    Some(&stable_obj),
+                    &def,
+                    Some(&members),
+                    Some(&unstable)
+                ),
+                replacement_is_spent_self_entry(
+                    Some(&blinked_obj),
+                    &def,
+                    Some(&members),
+                    Some(&unstable)
+                ),
+            ),
+            (true, false),
+            "row 9: SAME definition, SAME window, two hosts — the stable one is spent, the \
+             re-entered one is not (CR 400.7). Both verdicts are asserted, so neither a global \
+             relief nor a global refusal passes"
+        );
+
+        // Board level: the mixed board still VETOES, because the blinked host speaks.
+        assert!(
+            scan_with_identity_proof(&current, &members, &unstable),
+            "row 9: block (3) is an ANY over the walk, so one un-relieved re-entered host keeps \
+             the whole board vetoing"
+        );
+
+        // PAIRED POSITIVE: the same board with the blinked host's definitions stripped is
+        // relieved, so the veto above is the blinked host's and nobody else's.
+        let mut stable_only = current.clone();
+        {
+            let obj = stable_only.objects.get_mut(&P1_BLINKED_HOST).unwrap();
+            obj.base_replacement_definitions = std::sync::Arc::new(Vec::new());
+            obj.replacement_definitions = Vec::new().into();
+        }
+        assert!(
+            !scan_with_identity_proof(&stable_only, &members, &unstable),
+            "row 9 paired positive: with only the STABLE host's definition installed the same \
+             board is relieved — the veto above is attributable to the blink"
+        );
+    }
+
+    /// **Row 10 — a host absent from the prior frame is NOT relieved.**
+    ///
+    /// An object minted INSIDE the window has no past entrance at all, so "its entrance is
+    /// already spent" is false of it for exactly the reason CR 400.7 gives: it is a new object
+    /// on this frame. `identity_unstable_ids` names it because it is absent from `prior`, not
+    /// because its epoch moved.
+    ///
+    /// REVERT / MUTATION PROBE: make `identity_unstable_ids` skip ids missing from one frame
+    /// (i.e. intersect the two frames instead of walking `current`) ⇒ **FAILS**.
+    #[test]
+    fn spent_self_entry_does_not_relieve_a_host_absent_from_the_prior_frame() {
+        use std::sync::Arc;
+
+        let (prior, mut current, members) = identity_frames();
+        // Turn the ARRIVED object into a block-(3) host carrying the same definition.
+        {
+            let def = barad_dur_def();
+            let obj = current.objects.get_mut(&P1_ARRIVED).unwrap();
+            obj.card_types.core_types = vec![CoreType::Land];
+            obj.is_token = false;
+            obj.base_replacement_definitions = Arc::new(vec![def.clone()]);
+            obj.replacement_definitions = vec![def].into();
+        }
+        let unstable = identity_unstable_ids(&prior, &current);
+        assert!(
+            unstable.contains(&P1_ARRIVED),
+            "reach-guard: the arrival is named by the derivation, else the row proves nothing"
+        );
+
+        let arrived_obj = current.objects[&P1_ARRIVED].clone();
+        let stable_obj = current.objects[&P1_STABLE_HOST].clone();
+        let def = barad_dur_def();
+        assert_eq!(
+            (
+                replacement_is_spent_self_entry(
+                    Some(&stable_obj),
+                    &def,
+                    Some(&members),
+                    Some(&unstable)
+                ),
+                replacement_is_spent_self_entry(
+                    Some(&arrived_obj),
+                    &def,
+                    Some(&members),
+                    Some(&unstable)
+                ),
+            ),
+            (true, false),
+            "row 10: PAIRED — a host present in BOTH frames at an equal epoch is spent; a host \
+             minted inside the window has no past entrance to be spent and keeps its veto \
+             (CR 400.7)"
+        );
     }
 
     /// **S4-P1 (POSITIVE — relief fires)** — `count_matching_condition_provably_excludes_class`
