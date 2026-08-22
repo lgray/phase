@@ -1478,10 +1478,10 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
       // v2 → v3: same rule, re-applied because the official set now spans a
       // broker PER RELEASE CHANNEL. Without this bump a returning preview
       // browser keeps its persisted production address, and detectServerUrl
-      // honours any stored address whose /health answers — production's does —
-      // so it would silently stay pinned to a lobby its build cannot handshake
-      // with. Re-running the same migration repoints it at this channel's
-      // broker; a user-typed non-official address is still preserved.
+      // honours any valid stored address, so it would silently stay pinned to a
+      // lobby its build cannot handshake with. Re-running the same migration
+      // repoints it at this channel's broker; a user-typed non-official address
+      // is still preserved.
       migrate: migratePersistedMultiplayerState,
       partialize: (state) => ({
         playerId: state.playerId,
