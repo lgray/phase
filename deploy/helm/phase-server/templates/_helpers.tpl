@@ -347,3 +347,25 @@ tolerations:
   {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end -}}
+
+{{/*
+Whether each monitor will actually render: the value asks for it AND the cluster
+can hold the kind.
+
+Single authority on purpose. `prometheusrule.yaml` fails the render unless a
+scrape target exists, and testing only the value there let a cluster with the
+PrometheusRule CRD but neither monitor CRD render the rule and the HPA with
+nothing scraping the raw gauges. Empty string is false, so callers can use
+`if (include ...)`.
+*/}}
+{{- define "phase-server.podMonitorRenders" -}}
+{{- if and .Values.metrics.enabled .Values.metrics.podMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PodMonitor") -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "phase-server.serviceMonitorRenders" -}}
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") -}}
+true
+{{- end -}}
+{{- end -}}

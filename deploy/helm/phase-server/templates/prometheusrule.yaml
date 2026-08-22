@@ -23,8 +23,12 @@
 {{- if or (le (float64 $target) 0.0) (gt (float64 $target) 1.0) }}
 {{- fail (printf "autoscaling.targetUtilization must be greater than 0 and at most 1; got %v. At 0 or below the divisor collapses to clamp_min(...,1), so demand becomes the raw game count and the rule asks for replicaMax immediately." $target) }}
 {{- end }}
-{{- if not (or .Values.metrics.podMonitor.enabled .Values.metrics.serviceMonitor.enabled) }}
-{{- fail "autoscaling.enabled needs metrics.podMonitor.enabled or metrics.serviceMonitor.enabled: the occupied-ordinal rule joins on (namespace, pod), and only operator discovery labels targets with `pod`. Annotation scraping names it `kubernetes_pod_name`, so the join silently matches nothing and the scale-in floor disappears." }}
+{{- /* Asks whether a monitor will RENDER, not whether one was requested: the
+     emitters also need their own CRD, so a cluster carrying the PrometheusRule
+     CRD but neither monitor CRD would otherwise render this rule and the HPA
+     with nothing scraping the gauges they read. */}}
+{{- if not (or (include "phase-server.podMonitorRenders" .) (include "phase-server.serviceMonitorRenders" .)) }}
+{{- fail "autoscaling.enabled needs a monitor that will actually render: metrics.podMonitor.enabled or metrics.serviceMonitor.enabled, AND the matching CRD (monitoring.coreos.com/v1/PodMonitor or .../ServiceMonitor) present on the cluster. Without one nothing scrapes phase_games_active and friends, so this rule produces no phase:wanted_replicas and the HPA stays in FailedGetExternalMetric. Annotation scraping does not substitute: the occupied-ordinal rule joins on (namespace, pod), and only operator discovery labels targets with `pod` — annotations name it `kubernetes_pod_name`, so the join silently matches nothing and the scale-in floor disappears." }}
 {{- end }}
 {{- /* The scaling POLICY lives here rather than in the HPA.
 

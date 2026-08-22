@@ -9,8 +9,8 @@
      renders the missing kind anyway — failing at apply on something the chart
      could have known was unavailable. */}}
 {{- $fullname := include "phase-server.fullname" . }}
-{{- $podMonitor := and .Values.metrics.podMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PodMonitor") }}
-{{- $serviceMonitor := and .Values.metrics.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") }}
+{{- $podMonitor := include "phase-server.podMonitorRenders" . }}
+{{- $serviceMonitor := include "phase-server.serviceMonitorRenders" . }}
 {{- if $podMonitor }}
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
