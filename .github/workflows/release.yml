@@ -593,7 +593,11 @@ jobs:
 
       - name: Install zig cross toolchain
         if: matrix.cargo_cmd == 'zigbuild'
-        run: pip install cargo-zigbuild==0.23.0 ziglang==0.16.0
+        # --break-system-packages: ubuntu-latest is 24.04, whose default
+        # Python is PEP 668 externally-managed since GitHub reverted its
+        # pip workaround (actions/runner-images#10897, 2025-05-09). Same
+        # flag the Dockerfile already passes for this identical install.
+        run: pip install --break-system-packages cargo-zigbuild==0.23.0 ziglang==0.16.0
 
       - name: Add musl target
         # Must be `rustup target add`, not setup-rust-toolchain's `targets:`

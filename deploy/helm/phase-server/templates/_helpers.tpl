@@ -36,8 +36,20 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{/* PUBLIC_URL is what the server advertises to clients, so it is never
+     guessed. Deriving it from ingress.host is only sound when that host is
+     actually serving: with the ingress off it yields the values.yaml
+     placeholder, and with an empty host it yields "https://", which the server
+     warns on and discards (crates/phase-server/src/main.rs). Both are silent
+     misconfigurations, so fail rendering instead. */}}
 {{- define "phase-server.publicUrl" -}}
-{{- default (printf "https://%s" .Values.ingress.host) .Values.server.publicUrl -}}
+{{- if .Values.server.publicUrl -}}
+{{- .Values.server.publicUrl -}}
+{{- else if and .Values.ingress.enabled .Values.ingress.host -}}
+{{- printf "https://%s" .Values.ingress.host -}}
+{{- else -}}
+{{- fail "server.publicUrl is required here: it is the URL the server advertises to clients, and there is no ingress.host to derive it from (ingress.enabled is false, or ingress.host is empty). Set server.publicUrl, or enable the ingress with a real host." -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "phase-server.tlsSecretName" -}}
