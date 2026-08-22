@@ -532,12 +532,14 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
         //     rules fact, and no CR is cited for it. What CR 732.2a then supplies is why
         //     that matters: nothing later in the sequence becomes conditional on how far
         //     the loop has run.
-        //   * VETO (a `PtValue` carrying a board aggregate). Here CR 608.2h is genuinely
-        //     operative, not decorative: an effect requiring "information from the game
-        //     (such as the number of creatures on the battlefield)" has its answer
-        //     "determined only once, when the effect is applied" -- so each loop iteration
-        //     re-determines it against a LARGER board, which is exactly what makes the
-        //     sequence's results unpredictable under CR 732.2a.
+        //   * VETO (a `PtValue` carrying a board aggregate, or -- see the `if
+        //     acc.projected` escalation at the end of the `LoopFirewall` leg -- a PROJECTED
+        //     player resource such as a life total). Here CR 608.2h is genuinely operative,
+        //     not decorative: an effect requiring "information from the game (such as the
+        //     number of creatures on the battlefield)" has its answer "determined only
+        //     once, when the effect is applied" -- so each loop iteration re-determines it
+        //     against a LARGER board, or against a DIFFERENT life total, which is exactly
+        //     what makes the sequence's results unpredictable under CR 732.2a.
         //
         // CR 208.1: power and toughness are the two values this arm classifies, and either
         // can carry the read -- `Effect::Pump` holds them independently. Exhaustive
@@ -560,7 +562,62 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
                 // today via `effect_target_reads_sibling_mutable_for_loop`. Nothing about
                 // the classification changes here; this arm starts reading it too.
                 acc = acc.or(scan_target_filter(target, target_ctx, mode));
-                acc
+                // THE RELIEF IS NARROWED TO WHAT THE CONSUMER CAN SEE. `projected` is an
+                // axis two of this mode's three consult sites cannot read: blocks (1b) and
+                // (2) of `analysis::resource`'s
+                // `fire_time_conditions_read_growing_class_scoped` consult
+                // [`ability_definition_reads_sibling_mutable_for_loop`], a `.sibling`
+                // reader, while block (4) deliberately ORs `.projected` in. So the PRECISE
+                // `{sibling: false, projected: true}` verdict `scan_pt_value` ->
+                // `scan_quantity_ref` produces for a life-total-scaled pump (Loxodon
+                // Lifechanter, "This creature gets +X/+X until end of turn, where X is your
+                // life total") would silently DROP a veto at (1b)/(2) that the pre-descent
+                // blanket used to supply.
+                //
+                // Why the growing-class walk carries that axis at all is block (4)'s own
+                // recorded reason, and it holds identically on these two surfaces: the
+                // projected-resource firewall
+                // (`fire_time_conditions_read_projected_resource_scoped`) scans trigger
+                // CONDITIONS, replacement conditions and bodies, static conditions and
+                // transient effects -- never `obj.abilities`, never a trigger `execute`
+                // body, which are exactly blocks (2) and (1b)'s surfaces. Nothing
+                // downstream re-checks them, so this walk is the sole guard there too.
+                //
+                // That absence is a CALL-GRAPH fact, not a textual one, because absence of
+                // a token is not absence of a behaviour: of the five `ability_scan` entry
+                // points that firewall invokes, FOUR take a `TriggerCondition` /
+                // `StaticCondition` / `ReplacementCondition` / `Duration` and none of their
+                // bodies reaches `scan_effect`, `ability_definition_axes` or
+                // `scan_trigger_definition` at all, so no execute body is reachable from
+                // them BY TYPE; the fifth, `ability_reads_projected_resource`, is the one
+                // `AbilityDefinition` walker and is applied ONLY to a replacement's
+                // `runtime_execute`; and that firewall's own
+                // `replacement_body_may_read_projected` fails closed on
+                // `def.execute.is_some()` without descending at all.
+                //
+                // CR 608.2h is operative here and not decorative: a pump scaled by a
+                // player's life total "requires information from the game", whose answer is
+                // "determined only once, when the effect is applied", so each loop
+                // iteration re-determines it against a DIFFERENT life total -- which is
+                // what makes the sequence's results unpredictable under CR 732.2a. The
+                // engine fact about WHICH firewall can see the read is deliberately cited
+                // to NO rule: the Comprehensive Rules describe neither this scanner's axes
+                // nor which of its consumers reads them.
+                //
+                // The escalation returns the byte-identical blanket this arm returned
+                // before the descent, so for a projected-reading pump this is a RESTORATION
+                // of base behaviour, not a new verdict. It is deliberately NOT widened to
+                // `event`, and NOT expressed as an all-or-nothing "relieve only
+                // `Axes::NONE`" guard: `scan_target_filter`'s `TargetFilter::Typed` arm
+                // sets `event: true` UNCONDITIONALLY (byte-preserved), so an
+                // all-or-nothing guard would veto every `Typed`-targeted pump and destroy
+                // the relief this arm exists for. MEASURED, not reasoned: it reddens
+                // `pump_with_board_reading_target_still_vetoes`'s arm B.
+                if acc.projected {
+                    Axes::CONSERVATIVE
+                } else {
+                    acc
+                }
             }
         },
         Effect::PairWith { target } => {
@@ -7130,6 +7187,110 @@ mod tests {
         );
     }
 
+    /// **Row 25p** — a `Pump` whose magnitude reads a PROJECTED player resource keeps its
+    /// veto, and keeps it in a form the consuming firewall can actually see.
+    ///
+    /// WHY THIS ROW EXISTS, stated because the descent shipped without it. `scan_pt_value`
+    /// -> `scan_quantity_expr` -> `scan_quantity_ref` classifies `QuantityRef::LifeTotal`
+    /// as `{event: false, sibling: false, projected: true}` — PRECISELY, and precision is
+    /// the hazard: blocks (1b) and (2) of `analysis::resource`'s
+    /// `fire_time_conditions_read_growing_class_scoped` consult
+    /// [`ability_definition_reads_sibling_mutable_for_loop`], which reads `.sibling` and
+    /// nothing else. Without the arm's `if acc.projected` escalation, a precise
+    /// projected-only verdict relieves at both of those blocks a veto the pre-descent
+    /// blanket used to supply, and the projected-resource firewall does not scan either
+    /// surface, so nothing downstream re-raises it.
+    ///
+    /// The shape is corpus-reachable, not hypothetical: Loxodon Lifechanter's
+    /// "{5}{W}: This creature gets +X/+X until end of turn, where X is your life total"
+    /// is exactly this `Pump`, on a battlefield-resident `abilities[0]` (block (2)).
+    ///
+    /// CR 608.2h is operative here for the same reason it is on the aggregate half: an
+    /// effect scaled by a life total "requires information from the game", whose answer is
+    /// "determined only once, when the effect is applied", so each loop iteration
+    /// re-determines it against a DIFFERENT life total — which is what makes the
+    /// sequence's results unpredictable under CR 732.2a.
+    ///
+    /// AXIS ISOLATION, asserted first: the payload really is projected-ONLY. If it ever
+    /// carried `sibling` too, the escalation below would be untested and this row would go
+    /// green while proving nothing about it.
+    ///
+    /// TWO PAIRED CONTROLS, both required, because the escalation must be narrow in BOTH
+    /// directions: the read-free pump must still be relieved (it is not an all-or-nothing
+    /// veto), and Pyreswipe Hawk's aggregate pump must still report its PRECISE
+    /// `(true, true, false)` triple rather than being swallowed into the blanket (the
+    /// escalation keys on `projected` alone, never on "reads anything" — `scan_target_filter`'s
+    /// `TargetFilter::Typed` arm sets `event: true` unconditionally, so an all-or-nothing
+    /// guard would veto every `Typed`-targeted pump).
+    ///
+    /// REVERT-PROBE: delete the `if acc.projected { Axes::CONSERVATIVE }` escalation from
+    /// the `LoopFirewall` half of the `Effect::Pump` arm ⇒ the projected pump reports
+    /// `(false, false, true)` ⇒ **FAILS**.
+    #[test]
+    fn projected_reading_pump_escalates_to_the_blanket_the_consumer_can_see() {
+        let projected_half = PtValue::Quantity(QuantityExpr::Ref {
+            qty: QuantityRef::LifeTotal {
+                player: PlayerScope::Controller,
+            },
+        });
+
+        // ── AXIS ISOLATION: the payload is projected-ONLY, which is the whole hazard ──
+        let half = scan_pt_value(&projected_half, ScanMode::LoopFirewall);
+        assert_eq!(
+            (half.event, half.sibling, half.projected),
+            (false, false, true),
+            "AXIS ISOLATION: `QuantityRef::LifeTotal` is classified projected-ONLY. It is \
+             the `sibling: false` half that makes this dangerous — blocks (1b) and (2) read \
+             `.sibling` and would see nothing at all. If this triple ever changes, the \
+             escalation below stops being the thing under test"
+        );
+
+        let projected_pump = Effect::Pump {
+            power: projected_half,
+            toughness: PtValue::Fixed(0),
+            target: TargetFilter::SelfRef,
+        };
+        let axes = scan_effect(&projected_pump, ScanMode::LoopFirewall);
+        assert_eq!(
+            (axes.event, axes.sibling, axes.projected),
+            (true, true, true),
+            "CR 608.2h + CR 732.2a: a pump scaled by a life total requires \"information \
+             from the game\", \"determined only once, when the effect is applied\", so each \
+             loop iteration re-determines it against a different life total and the \
+             sequence's results stop being predictable. The arm therefore returns the \
+             byte-identical blanket it returned BEFORE the descent — a restoration of base \
+             behaviour for this shape, not a new verdict — because that is the only verdict \
+             blocks (1b) and (2) can see. Loxodon Lifechanter is the shipped card with this \
+             body"
+        );
+
+        // ── CONTROL 1: the relief this arm exists for is untouched ──────────────────
+        let inert = scan_effect(
+            &read_free_pump(TargetFilter::SelfRef),
+            ScanMode::LoopFirewall,
+        );
+        assert_eq!(
+            (inert.event, inert.sibling, inert.projected),
+            (false, false, false),
+            "the escalation keys on `projected`, so a read-free pump is still relieved. If \
+             this flips, the narrowing became an all-or-nothing veto and P3's whole \
+             deliverable (Chocobo Camp's Bird token) is gone with it"
+        );
+
+        // ── CONTROL 2: precision on the SIBLING axis survives the escalation ────────
+        let hawk = scan_effect(&hawk_attack_pump(), ScanMode::LoopFirewall);
+        assert_eq!(
+            (hawk.event, hawk.sibling, hawk.projected),
+            (true, true, false),
+            "the aggregate pump's PRECISE triple must survive: the escalation keys on \
+             `projected` alone, never on \"reads anything\". `scan_target_filter`'s \
+             `TargetFilter::Typed` arm sets `event: true` unconditionally, so an \
+             all-or-nothing guard would swallow this into the blanket AND veto every \
+             `Typed`-targeted pump — MEASURED: it reddens \
+             `pump_with_board_reading_target_still_vetoes`'s arm B"
+        );
+    }
+
     /// **Row 26** — `ScanMode::Conservative` is byte-identical for BOTH shapes.
     ///
     /// This is the row that keeps the CR 603.3b trigger-ordering gate and every
@@ -7162,6 +7323,16 @@ mod tests {
     /// already uses, at the scanner level: three defs differing ONLY in `target`. The P/T
     /// halves are read-free on all three, so the target leg is the SOLE possible source of
     /// a sibling read and each verdict is attributable to `target` alone.
+    ///
+    /// DO NOT "RESTORE" THE HAWK-BASED FIXTURE THIS ROW WAS SPECIFIED WITH — it is
+    /// IMPOSSIBLE, not merely different. Three byte-identical Pyreswipe Hawk defs
+    /// differing only in `target`, which is what the written specification asks for,
+    /// cannot report `false` on ANY arm: Hawk's `power` is a `QuantityRef::Aggregate`, and
+    /// `scan_quantity_ref` sets `sibling: true` for that variant BEFORE it walks the
+    /// filter, so all three arms report `true` and the row loses its entire discriminating
+    /// half. The read-free `PtValue::Fixed` halves below are not a convenience: they are
+    /// what makes `target` the sole possible source of the verdict, which is what the row
+    /// was for.
     ///
     /// ALL THREE verdicts are asserted, so a relief in either direction fails: a descent
     /// that dropped the target leg reddens arm C, and one that vetoed on any target at all

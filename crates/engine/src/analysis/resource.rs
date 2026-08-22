@@ -13321,6 +13321,156 @@ mod tests {
         );
     }
 
+    /// **Blocks (1b) AND (2), at the PRODUCTION ENTRY** — a pump's PAYLOAD decides the
+    /// veto on the two surfaces the descent was actually written for, in both directions.
+    ///
+    /// WHY THIS ROW EXISTS, and why it drives the production predicate rather than the
+    /// scanner. Two gaps met here, and each is the other's paired guard:
+    ///
+    /// * THE RELIEF HALF had no production-entry row at all. The scanner-level rows in
+    ///   `game::ability_scan` assert `scan_effect(..)`; the only row that drove
+    ///   `fire_time_conditions_read_growing_class` with a READ-FREE pump was at block (4).
+    ///   Blocks (1b) and (2) — the two surfaces the descent's whole argument is about —
+    ///   had their relief verdict established only by COMPOSITION (a scanner verdict
+    ///   `&&` unchanged block code), never by a row that would go red if the composition
+    ///   broke.
+    /// * THE VETO HALF is the axis the consumer cannot see. Both blocks consult
+    ///   [`crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop`],
+    ///   a `.sibling` reader. `scan_quantity_ref` classifies `QuantityRef::LifeTotal` as
+    ///   projected-ONLY, so before the `Effect::Pump` arm's `if acc.projected` escalation
+    ///   a life-total-scaled pump was relieved HERE while the pre-descent blanket had
+    ///   vetoed it — and the projected-resource firewall
+    ///   (`fire_time_conditions_read_projected_resource_scoped`) scans trigger CONDITIONS,
+    ///   replacements, static conditions and transient effects, never `obj.abilities` and
+    ///   never a trigger `execute` body, so nothing downstream re-raised it.
+    ///
+    /// Both shapes are corpus-reachable rather than hypothetical. Loxodon Lifechanter
+    /// carries the projected pump on a battlefield-resident `abilities[0]` ("{5}{W}: This
+    /// creature gets +X/+X until end of turn, where X is your life total") — block (2);
+    /// Golden Sidekick carries it directly in a trigger `execute`, and Hurska Sweet-Tooth
+    /// one `sub_ability` deeper inside one (`ability_definition_axes` binds and scans
+    /// `sub_ability`, so it lands on the same surface) — both block (1b).
+    ///
+    /// CR 732.2a is the operative rule for BOTH halves: a proposal rests on "the
+    /// predictable results of the sequence of choices" and "can't include conditional
+    /// actions". CR 608.2h is operative for the VETO half only — an effect scaled by a
+    /// life total "requires information from the game", "determined only once, when the
+    /// effect is applied", so each iteration re-determines it against a different life
+    /// total. The RELIEF half is cited to NO rule on purpose: that a `PtValue::Fixed` pump
+    /// requires no information is an AST property, and the Comprehensive Rules say nothing
+    /// about an effect that reads nothing.
+    ///
+    /// NON-VACUITY: every negative here is paired with a positive on the SAME surface,
+    /// built by the SAME installer and differing ONLY in the pump's payload. A surface
+    /// that was never reached would report `false` on both arms and fail the veto arm, so
+    /// no relief assertion in this row can pass by not being walked.
+    ///
+    /// TWO REVERT-PROBES, both of which must be listed because the halves fail to
+    /// different mutations:
+    /// * delete `if acc.projected { Axes::CONSERVATIVE }` from the `LoopFirewall` half of
+    ///   `ability_scan::scan_effect`'s `Effect::Pump` arm ⇒ the projected arms stop
+    ///   vetoing ⇒ **FAILS**.
+    /// * restore `Effect::Pump { .. } => Axes::CONSERVATIVE` (drop the descent) ⇒ the
+    ///   read-free arms veto ⇒ **FAILS**.
+    #[test]
+    fn pump_payload_decides_the_veto_at_blocks_one_b_and_two() {
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, Effect, PlayerScope, PtValue, QuantityExpr,
+            QuantityRef, TargetFilter,
+        };
+        use std::sync::Arc;
+
+        let read_free = || Effect::Pump {
+            power: PtValue::Fixed(2),
+            toughness: PtValue::Fixed(2),
+            target: TargetFilter::SelfRef,
+        };
+        // Loxodon Lifechanter's body: "+X/+X … where X is your life total".
+        let projected = || Effect::Pump {
+            power: PtValue::Quantity(QuantityExpr::Ref {
+                qty: QuantityRef::LifeTotal {
+                    player: PlayerScope::Controller,
+                },
+            }),
+            toughness: PtValue::Fixed(0),
+            target: TargetFilter::SelfRef,
+        };
+
+        // BLOCK (1b): the pump is a trigger's `execute` body.
+        let on_trigger_execute = |effect: Effect| {
+            let mut state = GameState::new_two_player(7);
+            state.phase = Phase::PreCombatMain;
+            let src = inert_token(&mut state, 840, 0, "Block1b Pump Host");
+            let def = TriggerDefinition::new(TriggerMode::Attacks)
+                .execute(AbilityDefinition::new(AbilityKind::Spell, effect));
+            assert!(
+                crate::game::triggers::trigger_definition_functions_in_zone(
+                    &def,
+                    Zone::Battlefield
+                ),
+                "reach-guard: block (1b) zone-gates every def it walks, so a def that does \
+                 not function on the battlefield is `continue`d before the consult and \
+                 every arm below would pass without reaching it"
+            );
+            state
+                .objects
+                .get_mut(&src)
+                .unwrap()
+                .trigger_definitions
+                .push(def);
+            state
+        };
+
+        // BLOCK (2): the pump is an `obj.abilities` entry on a battlefield permanent.
+        let on_obj_abilities = |effect: Effect| {
+            let mut state = GameState::new_two_player(7);
+            state.phase = Phase::PreCombatMain;
+            let host = inert_token(&mut state, 841, 0, "Block2 Pump Host");
+            let obj = state.objects.get_mut(&host).unwrap();
+            assert_eq!(
+                obj.zone,
+                Zone::Battlefield,
+                "reach-guard: block (2) walks battlefield permanents only"
+            );
+            obj.abilities = Arc::new(vec![AbilityDefinition::new(AbilityKind::Activated, effect)]);
+            state
+        };
+
+        for (block, install) in [
+            (
+                "block (1b) — trigger `execute` body",
+                &on_trigger_execute as &dyn Fn(Effect) -> GameState,
+            ),
+            ("block (2) — `obj.abilities` entry", &on_obj_abilities),
+        ] {
+            // ── THE VETO: a projected-reading payload must still stop the offer ──────
+            assert!(
+                fire_time_conditions_read_growing_class(&install(projected()), None),
+                "{block}: CR 608.2h + CR 732.2a — this pump is scaled by a life total, so \
+                 it \"requires information from the game\" whose answer is \"determined \
+                 only once, when the effect is applied\"; each loop iteration re-determines \
+                 it against a DIFFERENT life total and the sequence stops being \
+                 predictable. This block consults a `.sibling` reader and \
+                 `QuantityRef::LifeTotal` is classified projected-ONLY, so the verdict has \
+                 to come from the `Effect::Pump` arm escalating a projected payload to the \
+                 blanket it returned before the descent. Loxodon Lifechanter ships this \
+                 body"
+            );
+
+            // ── THE RELIEF: a read-free payload must NOT ── its paired positive is above
+            assert!(
+                !fire_time_conditions_read_growing_class(&install(read_free()), None),
+                "{block}: CR 732.2a — the proposal rests on the PREDICTABLE results of the \
+                 sequence. A `Pump{{Fixed(2), Fixed(2), SelfRef}}` reads no game \
+                 information at all (an AST property, deliberately cited to no rule), so \
+                 nothing about it becomes conditional on how far the loop has run and this \
+                 block must not veto. The veto arm above is this arm's reach-guard: it is \
+                 the SAME surface and the SAME installer, differing only in the payload, \
+                 so a surface that was never walked would have failed it"
+            );
+        }
+    }
+
     /// FIREWALL block(1) matched pair (CR 603.6a): the ETB-observer gate skips ONLY a
     /// PROVABLY-disjoint observer, and only when a fodder-class representative is supplied.
     ///
@@ -13334,9 +13484,12 @@ mod tests {
     /// FIXTURE CHANGE, phase C S1 — an ARGUMENT, not a re-baseline. The execute body was
     /// a `Pump{Fixed(0), Fixed(0), SelfRef}`, which reads NOTHING; it vetoed only through
     /// what was then a blanket `Effect::Pump { .. } => Axes::CONSERVATIVE` arm in
-    /// `ability_scan::scan_effect`. (That blanket is gone under `ScanMode::LoopFirewall`:
-    /// the arm now descends into both `PtValue` halves and the target, so the same body
-    /// reads nothing THERE too, and the helper that used to mint it has been deleted.
+    /// `ability_scan::scan_effect`. (That blanket no longer reaches THIS body under
+    /// `ScanMode::LoopFirewall` — the arm descends into both `PtValue` halves and the
+    /// target, so the same body reads nothing THERE too, and the helper that used to mint
+    /// it has been deleted. The blanket is not gone from that mode outright: the arm still
+    /// returns it for a payload that reads a PROJECTED player resource, which this one
+    /// does not.
     /// Under `ScanMode::Conservative` the blanket is unchanged.) S1 makes block (1b)
     /// precise about exactly that payload, so a
     /// fixed pump is now correctly relieved there and case (b) would have asserted "a broad
