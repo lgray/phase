@@ -145,6 +145,9 @@ traefik.ingress.kubernetes.io/router.tls.options: {{ include "phase-server.crdRe
 {{- $tmpl := .Values.scaleOut.ordinalHostTemplate -}}
 {{- if not $tmpl -}}
 {{- $host := required "ingress.host is required for scaleOut: it is the entry hostname the ordinal hostnames are derived from." .Values.ingress.host -}}
+{{- if not (contains "." $host) -}}
+{{- fail (printf "ingress.host %q has a single label, so no ordinal hostname can be derived from it (the result would be %q, which nothing resolves and no certificate covers). Give ingress.host a domain, or set scaleOut.ordinalHostTemplate explicitly." $host (printf "%s-0." $host)) -}}
+{{- end -}}
 {{- $parts := splitn "." 2 $host -}}
 {{- $tmpl = printf "%s-{ordinal}.%s" $parts._0 $parts._1 -}}
 {{- end -}}

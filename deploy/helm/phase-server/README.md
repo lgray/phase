@@ -176,7 +176,12 @@ volume:
 ```bash
 PV=$(kubectl -n phase get pvc <release>-data -o jsonpath='{.spec.volumeName}')
 kubectl patch pv "$PV" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
-kubectl -n phase scale deploy/<release> --replicas=0        # release the volume
+kubectl -n phase scale deploy/<release> --replicas=0
+# `scale` returns immediately. Wait for the pod to be GONE before touching the
+# volume: rebinding it while the old process still has games.db open is exactly
+# the two-writers case the per-ordinal claims exist to prevent.
+kubectl -n phase wait --for=delete pod -l app.kubernetes.io/name=phase-server --timeout=120s
+
 kubectl patch pv "$PV" --type=json -p='[{"op":"remove","path":"/spec/claimRef"}]'
 
 # Create the claim FIRST, pointing at the PV, then let the bind happen. Setting
