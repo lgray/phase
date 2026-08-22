@@ -2,6 +2,14 @@
 {{- $fullname := include "phase-server.fullname" . }}
 {{- $host := required "ingress.host is required when ingress.enabled is true (it is the entry hostname the router matches and the certificate is issued for)." .Values.ingress.host }}
 {{- $mw := include "phase-server.middlewareRefs" . }}
+{{- /* Every route below terminates TLS unconditionally, so an advertised
+     `http://` ordinal URL names an address this chart does not serve. `http`
+     stays legal with ingress.enabled=false, where the chart renders no route
+     and the operator owns the edge. */}}
+{{- $scheme := .Values.scaleOut.scheme | default "https" }}
+{{- if ne $scheme "https" }}
+{{- fail (printf "scaleOut.scheme is %q, but every IngressRoute this chart renders terminates TLS, so each ordinal would advertise a URL the chart's own route does not serve. Leave it https, or set ingress.enabled=false and route to the ordinal Services yourself." $scheme) }}
+{{- end }}
 {{- if .Values.traefik.middlewares.extra }}
 {{- fail "traefik.middlewares.extra uses Traefik's annotation syntax (\"<ns>-<name>@kubernetescrd\"), which the IngressRoute CRD provider rejects — Traefik would drop the whole route. With scaleOut.enabled, list extra middlewares under scaleOut.extraMiddlewareRefs as {name, namespace} instead." }}
 {{- end }}

@@ -179,7 +179,9 @@ scaleOut:
   # a wildcard edge certificate covers one label, so a second-level name gets a
   # certificate that does not match it.
   ordinalHostTemplate: ""
-  # Scheme for the advertised PUBLIC_URL of each ordinal.
+  # Scheme for the advertised PUBLIC_URL of each ordinal. Must stay https while
+  # ingress.enabled is true: the IngressRoutes this chart renders all terminate
+  # TLS, so http would advertise an address the chart's own route does not serve.
   scheme: https
   # OrderedReady serialises first boot, and each pod downloads ~100 MiB of card
   # data before it is Ready, so N pods would take N x that.
