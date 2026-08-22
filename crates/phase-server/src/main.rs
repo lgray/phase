@@ -2292,19 +2292,35 @@ async fn ws_handler(
             .record_reject(metrics::RejectReason::OriginNotAllowed);
         return (http::StatusCode::FORBIDDEN, "WebSocket Origin not allowed").into_response();
     }
-    let current = app_state.player_count.load(Ordering::Relaxed);
-    if current >= app_state.context.limits.max_connections {
-        warn!(
-            online_count = current,
-            limit = app_state.context.limits.max_connections,
-            "connection limit reached, rejecting"
-        );
+    // Reserved in the same atomic operation that tests it. A load, then a check,
+    // then an increment further down admits every handshake that raced into the
+    // gap, so a cap of N can be overshot by however many arrive together.
+    //
+    // `Relaxed` throughout, as everywhere else on this counter: the read-modify
+    // -write is atomic whatever the ordering, and no other state is published
+    // through it — the value is only ever compared against the cap.
+    let reserved =
         app_state
-            .context
-            .metrics
-            .record_reject(metrics::RejectReason::ConnectionLimit);
-        return (http::StatusCode::SERVICE_UNAVAILABLE, "Server full").into_response();
-    }
+            .player_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |online| {
+                (online < app_state.context.limits.max_connections).then_some(online + 1)
+            });
+    let online_count = match reserved {
+        Ok(previous) => previous + 1,
+        Err(current) => {
+            warn!(
+                online_count = current,
+                limit = app_state.context.limits.max_connections,
+                "connection limit reached, rejecting"
+            );
+            app_state
+                .context
+                .metrics
+                .record_reject(metrics::RejectReason::ConnectionLimit);
+            return (http::StatusCode::SERVICE_UNAVAILABLE, "Server full").into_response();
+        }
+    };
+    let slot = ConnectionSlot::new(app_state.player_count.clone());
 
     ws.max_message_size(MAX_WS_MESSAGE_BYTES)
         .on_upgrade(move |socket| {
@@ -2324,9 +2340,45 @@ async fn ws_handler(
                 app_state.mode,
                 app_state.context,
                 app_state.public_url,
+                online_count,
+                slot,
             )
         })
         .into_response()
+}
+
+/// A connection slot reserved before the WebSocket upgrade.
+///
+/// `ws_handler` reserves atomically so racing handshakes cannot overshoot the
+/// cap, but the upgrade may never reach `handle_socket` — axum drops the
+/// callback when the handshake fails — and a reservation leaked that way would
+/// wedge the server one slot below capacity forever. Dropping the guard
+/// releases it. `handle_socket` disarms it and owns the release from then on,
+/// because that path also has to broadcast the new count, which `Drop` cannot.
+struct ConnectionSlot {
+    player_count: SharedPlayerCount,
+    armed: bool,
+}
+
+impl ConnectionSlot {
+    fn new(player_count: SharedPlayerCount) -> Self {
+        Self {
+            player_count,
+            armed: true,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        if self.armed {
+            self.player_count.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2346,10 +2398,15 @@ async fn handle_socket(
     mode: Mode,
     context: ServerContext,
     public_url: Option<String>,
+    online_count: u32,
+    slot: ConnectionSlot,
 ) {
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMessage>();
 
-    let count = player_count.fetch_add(1, Ordering::Relaxed) + 1;
+    // The slot was reserved before the upgrade; from here the two `fetch_sub`
+    // paths below own the release, so the guard must not also fire.
+    slot.disarm();
+    let count = online_count;
     info!(online_count = count, "client connected");
     broadcast_player_count(&lobby_subscribers, count).await;
 
@@ -2944,6 +3001,7 @@ struct MultiplayerSessionRequest {
     public: bool,
     password: Option<String>,
     host_tx: mpsc::UnboundedSender<ServerMessage>,
+    context: ServerContext,
 }
 
 /// Phases 1–2 of the `CreateGameWithSettings` full multiplayer path.
@@ -2981,11 +3039,25 @@ async fn create_and_connect_multiplayer_session(
         public,
         password,
         host_tx,
+        context,
     } = req;
 
     // Phase 1 ── state lock; released at end of block.
     let (game_code, player_token, initial_player_count, full_key) = {
         let mut mgr = state.lock().await;
+        // Sole capacity check for the multiplayer path, under the lock that
+        // inserts — see the `CreateGame` arm for why it cannot move ahead of
+        // deck resolution.
+        if mgr.sessions.len() >= context.limits.max_games {
+            warn!(
+                limit = context.limits.max_games,
+                "max games reached, rejecting CreateGameWithSettings"
+            );
+            context
+                .metrics
+                .record_reject(metrics::RejectReason::GameLimit);
+            return Err("Server is at game capacity, please try again later".to_string());
+        }
         let (game_code, player_token) = mgr.create_game_n_players(
             resolved,
             display_name.clone(),
@@ -4843,25 +4915,6 @@ async fn handle_client_message(
                 }
                 return;
             }
-            {
-                let mgr = state.lock().await;
-                if mgr.sessions.len() >= context.limits.max_games {
-                    warn!(
-                        limit = context.limits.max_games,
-                        "max games reached, rejecting CreateGame"
-                    );
-                    context
-                        .metrics
-                        .record_reject(metrics::RejectReason::GameLimit);
-                    let msg = ServerMessage::error(
-                        "Server is at game capacity, please try again later".to_string(),
-                    );
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        let _ = socket.send(Message::text(json)).await;
-                    }
-                    return;
-                }
-            }
             let resolved = match resolve_deck(db, &deck) {
                 Ok(entries) => entries,
                 Err(e) => {
@@ -4875,6 +4928,27 @@ async fn handle_client_message(
             };
 
             let mut mgr = state.lock().await;
+            // The only capacity check on this path, and deliberately so: it
+            // holds `mgr` through the insert below. Checking before
+            // `resolve_deck` instead would release the lock in between and let
+            // every create that raced into that window past a stale count.
+            if mgr.sessions.len() >= context.limits.max_games {
+                drop(mgr);
+                warn!(
+                    limit = context.limits.max_games,
+                    "max games reached, rejecting CreateGame"
+                );
+                context
+                    .metrics
+                    .record_reject(metrics::RejectReason::GameLimit);
+                let msg = ServerMessage::error(
+                    "Server is at game capacity, please try again later".to_string(),
+                );
+                if let Ok(json) = serde_json::to_string(&msg) {
+                    let _ = socket.send(Message::text(json)).await;
+                }
+                return;
+            }
             let (game_code, player_token) = mgr.create_game(resolved);
             let full_key = match game_db.create_full_session_key(&game_code) {
                 Ok(key) => key,
@@ -5467,25 +5541,6 @@ async fn handle_client_message(
                 }
             };
 
-            {
-                let mgr = state.lock().await;
-                if mgr.sessions.len() >= context.limits.max_games {
-                    warn!(
-                        limit = context.limits.max_games,
-                        "max games reached, rejecting CreateGameWithSettings"
-                    );
-                    context
-                        .metrics
-                        .record_reject(metrics::RejectReason::GameLimit);
-                    let msg = ServerMessage::error(
-                        "Server is at game capacity, please try again later".to_string(),
-                    );
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        let _ = socket.send(Message::text(json)).await;
-                    }
-                    return;
-                }
-            }
             let resolved = match resolve_deck(db, &deck) {
                 Ok(entries) => entries,
                 Err(e) => {
@@ -5601,6 +5656,22 @@ async fn handle_client_message(
                 // --- AI game path: create, start, and run initial AI actions ---
                 let (game_code, player_token, full_key, game_started_msg) = {
                     let mut mgr = state.lock().await;
+                    // Sole capacity check for the AI path, under the lock that
+                    // inserts — see the `CreateGame` arm for why it cannot move
+                    // ahead of deck resolution.
+                    if mgr.sessions.len() >= context.limits.max_games {
+                        warn!(
+                            limit = context.limits.max_games,
+                            "max games reached, rejecting CreateGameWithSettings"
+                        );
+                        context
+                            .metrics
+                            .record_reject(metrics::RejectReason::GameLimit);
+                        let _ = tx.send(ServerMessage::error(
+                            "Server is at game capacity, please try again later".to_string(),
+                        ));
+                        return;
+                    }
                     let (game_code, player_token) = match mgr.create_game_with_ai(
                         resolved,
                         display_name.clone(),
@@ -5724,6 +5795,7 @@ async fn handle_client_message(
                             public,
                             password: password.clone(), // original still needed for Phase 3
                             host_tx: tx.clone(),
+                            context: context.clone(),
                         },
                     )
                     .await
@@ -10349,6 +10421,7 @@ mod issue_4548_deadlock_tests {
                 public: false,
                 password: None,
                 host_tx: tx,
+                context: ServerContext::default(),
             },
         )
         .await
@@ -10774,16 +10847,17 @@ mod metrics_tests {
     use futures_util::SinkExt;
     use futures_util::StreamExt;
     use lobby_broker::Broker;
+    use phase_ai::config::AiDifficulty;
     use server_core::draft_session::DraftSessionManager;
-    use server_core::protocol::{ClientMessage, DeckData, ServerMessage};
+    use server_core::protocol::{AiSeatRequest, ClientMessage, DeckData, ServerMessage};
     use server_core::session::SessionManager;
     use tokio::sync::{mpsc, Mutex};
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
     use super::metrics::{self, RejectReason};
     use super::{
-        build_commit, draft_pools, persistence, AppState, Limits, ServerContext, ServerMode,
-        LOBBY_PROTOCOL_VERSION, PROTOCOL_VERSION,
+        build_commit, draft_pools, persistence, AppState, ConnectionSlot, Limits, ServerContext,
+        ServerMode, SharedPlayerCount, LOBBY_PROTOCOL_VERSION, PROTOCOL_VERSION,
     };
 
     fn app_state(temp_dir: &tempfile::TempDir, context: ServerContext) -> AppState {
@@ -11068,9 +11142,12 @@ mod metrics_tests {
         }
     }
 
-    /// Connect, handshake, and send one `CreateGameWithSettings`; returns the
-    /// first message that is not the handshake echo or a slot broadcast.
-    async fn create_game(addr: &str, display_name: &str) -> ServerMessage {
+    type TestSocket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    /// Connect and complete the handshake, leaving the socket ready to create.
+    async fn connect_and_hello(addr: &str) -> TestSocket {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
             .await
             .expect("connect");
@@ -11091,35 +11168,262 @@ mod metrics_tests {
             ))
             .await
             .expect("send hello");
+        socket
+    }
 
-        let create = ClientMessage::CreateGameWithSettings {
-            deck: DeckData::default(),
+    /// Send one create request; returns the first message that is not a slot or
+    /// count broadcast.
+    async fn send_create(socket: &mut TestSocket, request: ClientMessage) -> ServerMessage {
+        socket
+            .send(WsMessage::Text(
+                serde_json::to_string(&request).expect("create json").into(),
+            ))
+            .await
+            .expect("send create");
+
+        loop {
+            match recv(socket).await {
+                ServerMessage::PlayerSlotsUpdate { .. } | ServerMessage::PlayerCount { .. } => {}
+                other => return other,
+            }
+        }
+    }
+
+    fn settings_request(
+        display_name: &str,
+        deck: DeckData,
+        ai_seats: Vec<AiSeatRequest>,
+    ) -> ClientMessage {
+        ClientMessage::CreateGameWithSettings {
+            deck,
             display_name: display_name.to_string(),
             public: true,
             password: None,
             timer_seconds: None,
             player_count: 2,
             match_config: Default::default(),
-            ai_seats: Vec::new(),
+            ai_seats,
             format_config: None,
             room_name: None,
             host_peer_id: None,
             draft_metadata: None,
             start_when_full: true,
             ranked: false,
-        };
-        socket
-            .send(WsMessage::Text(
-                serde_json::to_string(&create).expect("create json").into(),
-            ))
-            .await
-            .expect("send create");
+        }
+    }
 
-        loop {
-            match recv(&mut socket).await {
-                ServerMessage::PlayerSlotsUpdate { .. } | ServerMessage::PlayerCount { .. } => {}
-                other => return other,
+    async fn create_game(addr: &str, display_name: &str) -> ServerMessage {
+        let mut socket = connect_and_hello(addr).await;
+        send_create(
+            &mut socket,
+            settings_request(display_name, DeckData::default(), Vec::new()),
+        )
+        .await
+    }
+
+    /// Connects every client and gets it through the handshake first, then
+    /// releases them all into one simultaneous create.
+    ///
+    /// The barrier is what makes the caller discriminating: creates that arrive
+    /// spread out are serialized by the sessions lock, so a path that checks
+    /// capacity, releases the lock, and inserts later would look correct by
+    /// luck. Releasing them together puts every racer inside that window.
+    async fn race_creates(addr: &str, requests: Vec<ClientMessage>) -> Vec<ServerMessage> {
+        let barrier = Arc::new(tokio::sync::Barrier::new(requests.len()));
+        let mut racers = Vec::new();
+        for request in requests {
+            let mut socket = connect_and_hello(addr).await;
+            let barrier = barrier.clone();
+            racers.push(tokio::spawn(async move {
+                barrier.wait().await;
+                send_create(&mut socket, request).await
+            }));
+        }
+
+        let mut replies = Vec::new();
+        for racer in racers {
+            replies.push(racer.await.expect("create task"));
+        }
+        replies
+    }
+
+    fn tally(replies: &[ServerMessage], path: &str) -> (u64, u64) {
+        let mut created = 0;
+        let mut refused = 0;
+        for reply in replies {
+            match reply {
+                ServerMessage::GameCreated { .. } | ServerMessage::GameStarted { .. } => {
+                    created += 1
+                }
+                ServerMessage::Error { message, .. } if message.contains("game capacity") => {
+                    refused += 1
+                }
+                other => panic!("{path}: unexpected reply {other:?}"),
             }
         }
+        (created, refused)
+    }
+
+    /// The cap has to be enforced by the same atomic step that takes the slot.
+    /// Loading `player_count`, comparing it, and incrementing after the upgrade
+    /// admits every handshake that raced into the gap, so a cap of one is
+    /// overshot by however many arrive together.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_upgrades_cannot_exceed_the_connection_cap() {
+        const RACERS: u64 = 8;
+        let temp = tempfile::tempdir().expect("temp dir");
+        let context = ServerContext {
+            limits: Limits {
+                max_connections: 1,
+                ..Limits::default()
+            },
+            ..ServerContext::default()
+        };
+        let counters = context.metrics.clone();
+        let state = app_state(&temp, context);
+        let player_count = state.player_count.clone();
+        let (addr, server) = spawn(state).await;
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(RACERS as usize));
+        let mut racers = Vec::new();
+        for _ in 0..RACERS {
+            let addr = addr.clone();
+            let barrier = barrier.clone();
+            racers.push(tokio::spawn(async move {
+                barrier.wait().await;
+                tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await
+            }));
+        }
+
+        let outcome = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut admitted = Vec::new();
+            let mut refused = 0u64;
+            for racer in racers {
+                match racer.await.expect("connect task") {
+                    Ok((socket, response)) => {
+                        assert_eq!(response.status().as_u16(), 101);
+                        // Held open: a socket that closed would give its slot
+                        // back and hide an over-admission from the count below.
+                        admitted.push(socket);
+                    }
+                    Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                        assert_eq!(response.status().as_u16(), 503);
+                        refused += 1;
+                    }
+                    Err(other) => panic!("expected an HTTP 503, got {other:?}"),
+                }
+            }
+            (admitted.len() as u64, refused)
+        })
+        .await;
+        server.abort();
+
+        let (admitted, refused) = outcome.expect("connection race timed out");
+        assert_eq!(admitted, 1, "more than one racer took the single slot");
+        assert_eq!(refused, RACERS - 1);
+        assert_eq!(
+            player_count.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "reservations outnumber the cap"
+        );
+        assert_eq!(
+            counters.reject_count(RejectReason::ConnectionLimit),
+            RACERS - 1
+        );
+    }
+
+    /// Every full-mode creation path must check capacity under the same lock
+    /// acquisition that inserts the session. All three are driven here over the
+    /// real websocket route, because each reaches a different insert:
+    /// `create_game`, `create_game_with_ai`, and `create_game_n_players`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_creates_cannot_exceed_the_game_cap() {
+        const RACERS: u64 = 8;
+        for path in [
+            "create_game",
+            "create_game_n_players",
+            "create_game_with_ai",
+        ] {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let context = ServerContext {
+                limits: Limits {
+                    max_games: 1,
+                    ..Limits::default()
+                },
+                ..ServerContext::default()
+            };
+            let counters = context.metrics.clone();
+            let state = app_state(&temp, context);
+            let sessions = state.sessions.clone();
+            let (addr, server) = spawn(state).await;
+
+            let deck = DeckData::default();
+            let requests = (0..RACERS)
+                .map(|racer| match path {
+                    "create_game" => ClientMessage::CreateGame { deck: deck.clone() },
+                    "create_game_with_ai" => settings_request(
+                        &format!("racer{racer}"),
+                        deck.clone(),
+                        vec![AiSeatRequest {
+                            seat_index: 1,
+                            difficulty: AiDifficulty::Medium,
+                            deck_name: None,
+                            deck: None,
+                        }],
+                    ),
+                    _ => settings_request(&format!("racer{racer}"), deck.clone(), Vec::new()),
+                })
+                .collect();
+
+            let outcome =
+                tokio::time::timeout(Duration::from_secs(30), race_creates(&addr, requests)).await;
+            server.abort();
+            let replies = outcome.unwrap_or_else(|_| panic!("{path}: create race timed out"));
+
+            let (created, refused) = tally(&replies, path);
+            assert_eq!(
+                created, 1,
+                "{path}: more than one create took the last slot"
+            );
+            assert_eq!(refused, RACERS - 1, "{path}");
+            let survivor = {
+                let mgr = sessions.lock().await;
+                assert_eq!(mgr.sessions.len(), 1, "{path}: sessions past the cap");
+                mgr.sessions
+                    .values()
+                    .next()
+                    .expect("one session")
+                    .ai_seats
+                    .len()
+            };
+            // Which insert actually ran: only `create_game_with_ai` seats an AI.
+            // Without this the AI case would silently exercise the multiplayer
+            // path if seat validation ever rejected the request.
+            assert_eq!(
+                survivor,
+                usize::from(path == "create_game_with_ai"),
+                "{path}: wrong creation path ran"
+            );
+            assert_eq!(
+                counters.reject_count(RejectReason::GameLimit),
+                RACERS - 1,
+                "{path}"
+            );
+        }
+    }
+
+    /// A reservation whose upgrade never reaches `handle_socket` has to be
+    /// given back, or the server sits one slot below capacity for good.
+    /// Disarming is what hands that release to `handle_socket` instead.
+    #[test]
+    fn a_dropped_connection_slot_releases_its_reservation() {
+        let counter: SharedPlayerCount = Arc::new(AtomicU32::new(1));
+
+        drop(ConnectionSlot::new(counter.clone()));
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        counter.store(1, std::sync::atomic::Ordering::Relaxed);
+        ConnectionSlot::new(counter.clone()).disarm();
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }
