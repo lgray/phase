@@ -93,3 +93,245 @@ requestHeaderName: CF-Connecting-IP
 traefik.ingress.kubernetes.io/router.tls.options: {{ include "phase-server.crdRef" (dict "ctx" . "suffix" "cf-origin-pull") | quote }}
 {{- end }}
 {{- end -}}
+
+{{/* Pod annotations: the operator's own, plus the prometheus.io/* trio when
+     metrics.annotations is set (for scrapers that discover by annotation
+     rather than by PodMonitor/ServiceMonitor). */}}
+{{- define "phase-server.podAnnotations" -}}
+{{- $annotations := default (dict) .Values.podAnnotations -}}
+{{- if and .Values.metrics.enabled .Values.metrics.annotations -}}
+{{- $annotations = merge (dict
+      "prometheus.io/scrape" "true"
+      "prometheus.io/port" (printf "%v" .Values.metrics.port)
+      "prometheus.io/path" .Values.metrics.path) $annotations -}}
+{{- end -}}
+{{- with $annotations }}
+{{- toYaml . }}
+{{- end }}
+{{- end -}}
+
+{{/* Middleware references for an IngressRoute.
+
+     NOT interchangeable with `phase-server.commonMiddlewares`: that helper emits
+     Traefik's *annotation* syntax (`<ns>-<name>@kubernetescrd`), which the CRD
+     provider rejects — `@` is not legal in `routes[].middlewares[].name`, and a
+     namespace-qualified reference additionally needs `allowCrossNamespace` on
+     the Traefik install. A bad reference does not fail loudly: Traefik drops the
+     whole route, so the host simply stops answering.
+
+     Same namespace as the IngressRoute, so `namespace:` is left off. */}}
+{{- define "phase-server.middlewareRefs" -}}
+{{- $fullname := include "phase-server.fullname" . -}}
+{{- if .Values.traefik.middlewares.enabled }}
+- name: {{ $fullname }}-ratelimit
+- name: {{ $fullname }}-inflight
+- name: {{ $fullname }}-headers
+{{- end }}
+{{- range .Values.scaleOut.extraMiddlewareRefs }}
+- name: {{ .name }}
+  {{- with .namespace }}
+  namespace: {{ . }}
+  {{- end }}
+{{- end }}
+{{- end -}}
+
+{{/* The resolved per-ordinal hostname template, containing {ordinal} once.
+
+     The default keeps ordinals at the SAME DNS level as the entry host
+     (`phase-1.example.com`, not `1.phase.example.com`). A wildcard edge
+     certificate covers exactly one label, so a proxied second-level name would
+     be served a certificate that does not match it. */}}
+{{- define "phase-server.ordinalHostTemplate" -}}
+{{- $tmpl := .Values.scaleOut.ordinalHostTemplate -}}
+{{- if not $tmpl -}}
+{{- $host := required "ingress.host is required for scaleOut: it is the entry hostname the ordinal hostnames are derived from." .Values.ingress.host -}}
+{{- $parts := splitn "." 2 $host -}}
+{{- $tmpl = printf "%s-{ordinal}.%s" $parts._0 $parts._1 -}}
+{{- end -}}
+{{- if ne (len (splitList "{ordinal}" $tmpl)) 2 -}}
+{{- fail (printf "scaleOut.ordinalHostTemplate must contain the literal {ordinal} placeholder exactly once; got %q" $tmpl) -}}
+{{- end -}}
+{{- $tmpl -}}
+{{- end -}}
+
+{{/* Hostname for one ordinal: dict "ctx" $ "ordinal" <n> */}}
+{{- define "phase-server.ordinalHost" -}}
+{{- $split := splitList "{ordinal}" (include "phase-server.ordinalHostTemplate" .ctx) -}}
+{{- printf "%s%v%s" (index $split 0) .ordinal (index $split 1) -}}
+{{- end -}}
+
+{{/* Every hostname this release answers on: entry host plus one per ordinal. */}}
+{{- define "phase-server.allHosts" -}}
+{{- $ctx := . -}}
+{{- $hosts := list (required "ingress.host is required for scaleOut." .Values.ingress.host) -}}
+{{- range $i := until (int .Values.scaleOut.replicaMax) -}}
+{{- $hosts = append $hosts (include "phase-server.ordinalHost" (dict "ctx" $ctx "ordinal" $i)) -}}
+{{- end -}}
+{{- toYaml $hosts -}}
+{{- end -}}
+
+{{/* The pod spec, shared by the Deployment (scaleOut off) and the StatefulSet
+     (scaleOut on) so the two cannot drift. The differences are real and few:
+     the StatefulSet derives PUBLIC_URL and PHASE_REPLICA_ORDINAL from its pod
+     ordinal at start-up, and takes its data volume from volumeClaimTemplates
+     instead of a single shared claim. */}}
+{{- define "phase-server.podSpec" -}}
+{{- $scaleOut := .Values.scaleOut.enabled -}}
+serviceAccountName: default
+automountServiceAccountToken: false
+terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+securityContext:
+  {{- toYaml .Values.podSecurityContext | nindent 2 }}
+{{- with .Values.dnsConfig }}
+dnsConfig:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+containers:
+  - name: phase-server
+    image: {{ include "phase-server.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    # Bypass the image's root entrypoint (mkdir/chown + gosu); the pod
+    # securityContext already runs us as the `phase` uid with fsGroup.
+    {{- if $scaleOut }}
+    # Each ordinal advertises its OWN hostname: a game's share string is
+    # CODE@<public_url host>, which is what lets a friend joining by code reach
+    # the pod that actually holds the game. `--` is $0 so the chart's flags in
+    # `args` arrive as "$@".
+    {{- $split := splitList "{ordinal}" (include "phase-server.ordinalHostTemplate" .) }}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        ordinal="${POD_NAME##*-}"
+        case "$ordinal" in
+          ''|*[!0-9]*)
+            echo "cannot derive a StatefulSet ordinal from POD_NAME=$POD_NAME" >&2
+            exit 1
+            ;;
+        esac
+        export PHASE_REPLICA_ORDINAL="$ordinal"
+        export PUBLIC_URL="{{ printf "%s://%s" (.Values.scaleOut.scheme | default "https") (index $split 0) }}${ordinal}{{ index $split 1 }}"
+        echo "phase-server ordinal ${ordinal}, advertising ${PUBLIC_URL}"
+        exec phase-server "$@"
+      - --
+    {{- else }}
+    command: ["phase-server"]
+    {{- end }}
+    {{- /* Emitted even when empty, matching the pre-scaleOut template byte for
+         byte. Under the scaleOut shell wrapper an absent list is still correct:
+         `$@` expands to nothing and the exec runs with no extra flags. */}}
+    args:
+      {{- if .Values.server.allowedOrigin }}
+      - --allowed-origin
+      - {{ .Values.server.allowedOrigin | quote }}
+      {{- end }}
+      {{- if .Values.server.noDataDownload }}
+      - --no-data-download
+      {{- end }}
+    securityContext:
+      {{- toYaml .Values.securityContext | nindent 6 }}
+    env:
+      - name: PORT
+        value: {{ .Values.service.port | quote }}
+      - name: PHASE_DATA_DIR
+        value: /var/lib/phase-server
+      - name: PHASE_LOBBY_ONLY
+        value: {{ .Values.server.lobbyOnly | quote }}
+      - name: PHASE_CORS_ORIGIN
+        value: {{ .Values.server.corsOrigin | quote }}
+      - name: PHASE_LOG_JSON
+        value: {{ .Values.server.logJson | quote }}
+      - name: RUST_LOG
+        value: {{ .Values.server.rustLog | quote }}
+      {{- if $scaleOut }}
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+      {{- else }}
+      - name: PUBLIC_URL
+        value: {{ include "phase-server.publicUrl" . | quote }}
+      {{- end }}
+      {{- if .Values.metrics.enabled }}
+      {{- if eq (int .Values.metrics.port) (int .Values.service.port) }}
+      {{- fail "metrics.port must differ from service.port: they are two listeners in one pod, and the loser gets \"address in use\"." }}
+      {{- end }}
+      - name: PHASE_METRICS_PORT
+        value: {{ .Values.metrics.port | quote }}
+      {{- end }}
+      {{- with .Values.server.maxConnections }}
+      - name: PHASE_MAX_CONNECTIONS
+        value: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.server.maxGames }}
+      - name: PHASE_MAX_GAMES
+        value: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.server.dataManifestUrl }}
+      - name: PHASE_DATA_MANIFEST_URL
+        value: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.server.adminTokenSecret }}
+      - name: PHASE_ADMIN_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: {{ . }}
+            key: {{ $.Values.server.adminTokenSecretKey }}
+      {{- end }}
+      {{- with .Values.server.extraEnv }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+    ports:
+      - name: http
+        containerPort: {{ .Values.service.port }}
+        protocol: TCP
+      {{- if .Values.metrics.enabled }}
+      - name: metrics
+        containerPort: {{ .Values.metrics.port }}
+        protocol: TCP
+      {{- end }}
+    startupProbe:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+      failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: 10
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: 30
+    resources:
+      {{- toYaml .Values.resources | nindent 6 }}
+    volumeMounts:
+      - name: data
+        mountPath: /var/lib/phase-server
+{{- if not $scaleOut }}
+volumes:
+  - name: data
+    {{- if .Values.persistence.enabled }}
+    persistentVolumeClaim:
+      claimName: {{ default (printf "%s-data" (include "phase-server.fullname" .)) .Values.persistence.existingClaim }}
+    {{- else }}
+    emptyDir: {}
+    {{- end }}
+{{- end }}
+{{- with .Values.nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}

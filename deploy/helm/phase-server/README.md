@@ -35,6 +35,41 @@ Measured against `crates/phase-server` v0.59.0:
   that bounds PVC growth. Size `persistence.size` with that in mind.
 - SIGTERM triggers a session flush; open WebSockets are not closed by the server,
   so the pod is killed after `terminationGracePeriodSeconds`.
+- `PUBLIC_URL` is what the server advertises in `ServerHello`, and it is what a
+  host's client turns into a `CODE@host` share string. It must be an absolute
+  URL with a host (`https://play.example.com`); the server validates it at
+  startup and advertises *nothing* if it does not parse, which costs players
+  their join links without failing the pod. `server.publicUrl` sets it
+  explicitly; otherwise it is derived from `ingress.host`, and rendering fails
+  when neither is available rather than guessing a URL.
+
+## Metrics
+
+`metrics.enabled` starts a second listener (`PHASE_METRICS_PORT`) serving
+Prometheus text at `/metrics`. It is a separate container port on purpose: the
+gauges describe capacity and occupancy, and nothing routes them through the
+Ingress.
+
+| Metric | |
+|---|---|
+| `phase_connections` / `phase_connections_capacity` | open sockets against the cap that returns 503 |
+| `phase_games_active` / `phase_games_capacity` | sessions against the cap that refuses `CreateGame` |
+| `phase_games_with_connected_humans` | sessions with at least one live player *or spectator* socket |
+| `phase_drafts_active` / `phase_drafts_with_connected_humans` | the same pair for server-hosted drafts |
+| `phase_replica_ordinal` | this replica's ordinal, when one was set |
+| `phase_admission_rejects_total{reason}` | refusals by `connection_limit`, `game_limit`, `origin_not_allowed` |
+| `phase_build_info{version,commit,mode}` | build identity, always `1` |
+
+The occupancy gauges count *live sockets*, not map entries — a player who
+disconnected leaves their entry behind, and the reconnect grace keeps the
+session alive, so "sessions" and "sessions someone is on" are different numbers.
+
+Discovery is a `PodMonitor` (per-pod, so each replica reports its own
+occupancy), rendered only when `monitoring.coreos.com/v1` is present so the
+chart still installs on a cluster with no prometheus-operator. Set
+`metrics.annotations=true` for the `prometheus.io/*` fallback. With
+`networkPolicy.enabled`, `metrics.scrapeNamespaceLabels` must name the
+scraper's namespace or the target is simply down while the pod stays healthy.
 
 ## Behind Cloudflare
 
@@ -52,6 +87,117 @@ the host in this chart.
 
 Cloudflare closes idle WebSockets after ~100 s; the client's 5 s application
 ping keeps game connections alive.
+
+## Scaling out
+
+`scaleOut.enabled` replaces the single Deployment with a StatefulSet: one pod,
+one PVC and one hostname per ordinal.
+
+**Why not `replicas: N` on the Deployment.** Every process owns its own SQLite
+`games.db`, and two processes on one database is destructive rather than merely
+racy: the second restores every live game at boot, arms a 120 s reconnect grace
+it never had, and its reaper then retires the rows the first process is still
+playing — after which the owning process has its snapshots rejected and cannot
+write results. `volumeClaimTemplates` is what makes that impossible.
+
+**How a player reaches the right pod.** Each ordinal advertises its own
+hostname as `PUBLIC_URL`, so a game created on ordinal 1 produces the share
+string `CODE@phase-1.example.com`, and a friend joining by code dials that host
+and lands on the pod holding the game. The entry host (`ingress.host`) balances
+new arrivals across ready pods with a sticky cookie.
+
+**The sticky cookie is load-bearing, and it is a third-party cookie.** A host's
+own game socket is re-opened against the stored entry address after the game
+starts, not against the pod it was already talking to, so without the cookie
+that socket can land on the wrong pod. Traefik sets it on the 101 response with
+`sameSite: none; secure`, which Chrome and Firefox honour and Safari (and
+anything blocking third-party cookies) does not — those browsers get a
+`(N-1)/N` chance of losing the host's own reconnect. Verify on a two-replica
+canary before trusting it:
+
+```bash
+curl -i -N -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  https://phase.example.com/ws | grep -i set-cookie
+```
+
+The upstream fix is a client change — derived sockets dialling the
+`public_url` from their own `ServerHello` instead of the global server address —
+which removes the cookie dependency entirely. Until that lands, treat scale-out
+as requiring third-party cookies.
+
+**DNS and certificates.** Ordinal hostnames must sit at the *same* DNS level as
+the entry host (`phase-0.example.com`, not `0.phase.example.com`). Behind a CDN
+this is not cosmetic: a wildcard edge certificate covers exactly one label, so a
+proxied second-level name is served a certificate that does not match it.
+`scaleOut.tls` issues one cert-manager `Certificate` covering the entry host and
+every ordinal host — IngressRoute is not an Ingress, so cert-manager's
+ingress-shim cannot derive it from an annotation. You still need a DNS record
+per ordinal (or a wildcard) pointing at the same ingress.
+
+**Middlewares.** `traefik.middlewares.extra` is the Ingress *annotation* syntax
+(`<ns>-<name>@kubernetescrd`), which the IngressRoute CRD provider rejects — and
+a bad reference makes Traefik drop the whole route rather than fail loudly. With
+`scaleOut.enabled` the chart refuses to render if `extra` is set; list extras
+under `scaleOut.extraMiddlewareRefs` as `{name, namespace}` instead.
+
+### Migrating an existing single-pod release
+
+The Deployment's claim is `<release>-data`; the StatefulSet wants
+`data-<release>-0`. **Before upgrading**, either accept a fresh ordinal 0 (it
+re-downloads card data and starts with no saved games) or adopt the existing
+volume:
+
+```bash
+PV=$(kubectl -n phase get pvc <release>-data -o jsonpath='{.spec.volumeName}')
+kubectl patch pv "$PV" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+kubectl -n phase delete pvc <release>-data          # PV survives; it is Retain now
+kubectl patch pv "$PV" -p '{"spec":{"claimRef":null}}'
+# then create a PVC named data-<release>-0 with the same storageClass/size,
+# bound to "$PV" via spec.volumeName, before running `helm upgrade`.
+```
+
+The chart marks the old claim `helm.sh/resource-policy: keep`, so the upgrade
+itself will not delete it — but a `Delete` reclaim policy on the PV still will
+once the claim goes, which is why the `Retain` patch comes first.
+
+## Autoscaling
+
+`autoscaling.enabled` (which requires `scaleOut.enabled`) adds a
+`PrometheusRule` and an HPA. The **policy lives in the recording rule**, not in
+the HPA, because the binding constraint cannot be written as a utilisation
+target: a StatefulSet always removes its *highest* ordinal, so scaling in is
+only safe when that particular ordinal has nobody on it. The rule takes the
+maximum of three terms —
+
+| term | meaning |
+|---|---|
+| `source="games"` | games packed to `targetUtilization` of a replica's capacity |
+| `source="connections"` | the same against the socket cap, which binds first for multiplayer tables |
+| `source="occupied_floor"` | highest ordinal still holding a human, plus one |
+
+— clamps it to `[minReplicas, scaleOut.replicaMax]`, and records it as
+`phase:wanted_replicas`. The HPA then reads that through prometheus-adapter as
+an **External** metric with `target.type: AverageValue, averageValue: "1"`.
+`AverageValue` is required: the `Value` path multiplies by the current replica
+count, so a metric that already *is* the desired count would compound.
+
+Requires prometheus-operator (for the `PrometheusRule` and `PodMonitor`) and
+prometheus-adapter — see
+[`examples/prometheus-adapter-values.yaml`](examples/prometheus-adapter-values.yaml).
+Only one phase-server release per namespace: the rule aggregates by namespace.
+
+Two things worth knowing before reading the graph:
+
+- The HPA acts only outside its ~10% tolerance band, so treat
+  `phase:wanted_replicas` as authoritative for real moves, not for exact
+  equality at every instant.
+- "Occupied" means *a socket task is alive*. The server sends no keepalive and
+  applies no read timeout, so a half-open TCP connection keeps its ordinal
+  pinned until the proxy tears it down. Scale-in is deliberately conservative
+  here: a pod that is killed preserves its games on its PVC for 24 h and
+  restores them if the ordinal returns, whereas a pod held drained loses
+  disconnected players' games to the 120 s reaper.
 
 ## Building the image
 

@@ -37,6 +37,11 @@ server:
   # `kubectl port-forward svc/<release> 9374`.
   adminTokenSecret: ""
   adminTokenSecretKey: token
+  # Per-process admission caps (PHASE_MAX_CONNECTIONS / PHASE_MAX_GAMES). Empty
+  # keeps the server's own defaults (200 / 100). Lower them when running many
+  # small replicas so one process cannot absorb the whole fleet's traffic.
+  maxConnections: ""
+  maxGames: ""
   extraEnv: []
 
 # PHASE_DATA_DIR: card-data.json (~100 MiB, downloaded on first boot),
@@ -146,6 +151,123 @@ cloudflare:
     enabled: false
     # https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem
     caPem: ""
+
+# Horizontal scale-out: one StatefulSet, with a PVC and a hostname per ordinal.
+#
+# Why a StatefulSet and not `replicas: N`: every process owns its own games.db,
+# and two processes on one database is destructive — the second restores every
+# live game at boot, arms a reconnect grace it never had, and its reaper then
+# retires the rows the first process is still playing. `volumeClaimTemplates` is
+# what makes that impossible.
+#
+# Routing: the entry host balances across ready pods with a sticky cookie, and
+# each ordinal additionally answers on its own hostname. A game's share string
+# is CODE@<the minting pod's host>, so joining by code reaches the right pod.
+# See README "Scaling out" before enabling this.
+scaleOut:
+  enabled: false
+  # Services, IngressRoutes and certificate SANs are templated for ordinals
+  # 0..replicaMax-1 up front, so a new replica is routable the moment it is
+  # Ready. Raising this is a chart upgrade; an autoscaler only moves within it.
+  replicaMax: 3
+  # Starting replica count. Ignored when autoscaling.enabled — Helm would
+  # otherwise rewrite spec.replicas on every upgrade and undo the autoscaler.
+  replicas: 1
+  # Per-ordinal hostname; must contain {ordinal} exactly once. Empty derives
+  # `<first-label>-{ordinal}.<rest>` from ingress.host (phase.example.com ->
+  # phase-0.example.com). Keep ordinals at the SAME DNS level as the entry host:
+  # a wildcard edge certificate covers one label, so a second-level name gets a
+  # certificate that does not match it.
+  ordinalHostTemplate: ""
+  # Scheme for the advertised PUBLIC_URL of each ordinal.
+  scheme: https
+  # OrderedReady serialises first boot, and each pod downloads ~100 MiB of card
+  # data before it is Ready, so N pods would take N x that.
+  podManagementPolicy: Parallel
+  # Keep every ordinal's games.db when the set shrinks or the release is
+  # removed: a dead ordinal's PVC is what lets its games come back.
+  persistentVolumeClaimRetentionPolicy:
+    whenScaled: Retain
+    whenDeleted: Retain
+  sticky:
+    # Pins a browser to the pod that minted its game, which is what keeps the
+    # host's own derived sockets on that pod. It is a third-party cookie on a
+    # 101 response — see the README caveat before relying on it.
+    enabled: true
+    name: phase_server_pod
+    sameSite: none
+    secure: true
+    httpOnly: true
+    maxAge: 86400
+  # Extra Middlewares for the IngressRoutes, as {name, namespace} objects.
+  # traefik.middlewares.extra is the *annotation* syntax
+  # ("<ns>-<name>@kubernetescrd"), which the CRD provider rejects, so scaleOut
+  # takes its extras here instead.
+  extraMiddlewareRefs: []
+  tls:
+    # A cert-manager Certificate covering the entry host and every ordinal host,
+    # using ingress.tls.clusterIssuer / issuer.
+    enabled: true
+    secretName: ""      # defaults to <release>-tls, shared with the Ingress path
+    # Issue one wildcard SAN (e.g. "*.example.com") instead of one SAN per
+    # ordinal. Only helps if your edge/DNS actually wants a wildcard.
+    wildcardDnsName: ""
+
+# Demand-driven replica count for scaleOut, as a Prometheus recording rule plus
+# an HPA that follows it. The POLICY lives in the rule, not in the HPA: a
+# StatefulSet always removes its highest ordinal, so shrinking is only safe when
+# that ordinal has nobody on it, and that condition cannot be expressed as a
+# utilisation target. Needs prometheus-operator (for the PrometheusRule) and
+# prometheus-adapter (to expose the result as an external metric) — see
+# examples/prometheus-adapter-values.yaml.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  # Pack games to this fraction of a replica's phase_games_capacity before
+  # asking for another one.
+  targetUtilization: 0.7
+  # Name the recording rule writes, and the external metric the HPA reads.
+  # They differ because prometheus-adapter renames on the way through.
+  recordName: "phase:wanted_replicas"
+  metricName: phase_wanted_replicas
+  # Rule group evaluation interval.
+  interval: 15s
+  prometheusRule:
+    enabled: true
+    labels: {}       # e.g. a Prometheus `release` selector
+  behavior:
+    scaleDown:
+      # Long by default: scaling in is only ever gated on the top ordinal being
+      # empty, and a flap would kill a pod that just took a game.
+      stabilizationWindowSeconds: 600
+    scaleUp:
+      stabilizationWindowSeconds: 60
+
+# Prometheus metrics on a second container port (PHASE_METRICS_PORT). These
+# gauges describe capacity and occupancy — operator information — so the port is
+# never routed through the Ingress; scrape it in-cluster.
+metrics:
+  enabled: false
+  port: 9464
+  path: /metrics
+  interval: 30s
+  # PodMonitor/ServiceMonitor are only rendered when the prometheus-operator
+  # CRDs are installed; without them the chart falls back to nothing, so set
+  # metrics.annotations for annotation-based scrapers.
+  podMonitor:
+    enabled: true
+    labels: {}         # extra labels, e.g. a Prometheus `release` selector
+  serviceMonitor:
+    enabled: false
+    labels: {}
+  # prometheus.io/{scrape,port,path} pod annotations, for scrapers that discover
+  # by annotation rather than by CRD.
+  annotations: false
+  # Namespace of the scraper. Only meaningful when networkPolicy.enabled: the
+  # policy denies everything else, so a wrong value here means "up 0" with a
+  # healthy pod.
+  scrapeNamespaceLabels:
+    kubernetes.io/metadata.name: monitoring
 
 networkPolicy:
   enabled: true
