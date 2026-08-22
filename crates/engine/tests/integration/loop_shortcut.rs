@@ -7961,9 +7961,17 @@ const X1_FODDER: ObjectId = ObjectId(421);
 /// from an `&&` chain WIDENS relief rather than moving it, so removing either arm alone
 /// hands the subject to the other. This is not a choice of the wrong conjunct; it is the
 /// shape of an over-determined relief. MEASURED, all three mutations driven on this module:
-/// deleting `obj.controller != driver` moves ZERO rows; deleting `&& !not_proposed` alone
-/// restores block (2) to pre-relief behaviour, where this row is green anyway (116 passed /
-/// 0 failed, this row `ok`).
+/// deleting `obj.controller != driver` moves ZERO rows (116 passed / 0 failed); deleting
+/// `&& !not_proposed` alone restores block (2) to pre-relief behaviour, where THIS row is
+/// green anyway (`ok`) — but the MODULE is NOT clean under it, because that same deletion IS
+/// the re-derived revert-probe of the migrated X1-2
+/// (`driver_own_unproposed_activated_ability_is_relieved`), which it reddens: 115 passed /
+/// 1 failed, the single failure being X1-2. The `116 passed / 0 failed` this record carried
+/// here until now was measured on the PRE-MIGRATION tree, where X1-2 asserted the opposite —
+/// so re-driving that deletion HERE is expected to leave the module red, and a red module is
+/// not evidence that this probe is broken. Both figures re-measured on this tree with
+/// `cargo test -p phase-engine --test integration loop_shortcut`, counting the 116 rows of
+/// module `loop_shortcut::` (that substring filter also matches 42 sibling-module rows).
 ///
 /// REVERT-PROBE (RE-DERIVED — the recorded single-conjunct probe was dead). **Invert
 /// `obj.controller != driver` to `==` AND delete the `&& !not_proposed` conjunct at block
