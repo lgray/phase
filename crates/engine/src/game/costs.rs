@@ -1318,10 +1318,14 @@ fn pay_ability_cost_inner(
         AbilityCost::ExileMaterials { .. } => {}
         // Waterbend cost was already paid via ManaPayment before reaching pay_ability_cost.
         AbilityCost::Waterbend { .. } => {}
-        // CR 118.3: An effect performed as a cost. Resolve the effect on the
-        // source before the ability's own effect fires. The shared support
-        // predicate admits only deterministic source-counter and fixed-mana
-        // forms, so this never opens a player-choice prompt mid-payment.
+        // CR 118.1: An effect performed as a cost — "a cost is an action or
+        // payment necessary to take another action … to pay a cost, a player
+        // carries out the instructions specified". (NOT CR 118.3, which is the
+        // resources rule and says nothing about an effect-as-cost.) Resolve the
+        // effect on the source before the ability's own effect fires. The shared
+        // support predicate admits only deterministic source-counter and
+        // fixed-mana forms, so this never opens a player-choice prompt
+        // mid-payment.
         AbilityCost::EffectCost { effect } => {
             use crate::types::ability::Effect;
             match effect.as_ref() {
@@ -1331,11 +1335,35 @@ fn pay_ability_cost_inner(
                     target: TargetFilter::SelfRef,
                 } => {
                     let count = resolve_cost_quantity(state, count, player, source_id, scope);
-                    // CR 118.3: A prevented counter placement pays none of this
-                    // cost. The shared add primitive reports both a delivered
-                    // and prevented event as complete because effect resolution
+                    // CR 614.17b: "If an event can't happen, a player can't
+                    // choose to pay a cost that includes that event" — a
+                    // prevented counter placement pays none of this cost. The
+                    // shared add primitive reports both a delivered and
+                    // prevented event as complete because effect resolution
                     // needs that distinction only for continuation; payment must
                     // reject the prevented case before executing it.
+                    //
+                    // Only a MANDATORY can't-effect can reach this refusal.
+                    // CR 614.17c ("if an event can't happen, it can only be
+                    // replaced by a self-replacement effect … other replacement
+                    // and/or prevention effects can't modify or replace it") is
+                    // implemented by `replacement::pipeline_loop`'s
+                    // short-circuit, which fires ahead of any CR 616.1 ordering
+                    // prompt. An ordering choice instead returns
+                    // `CounterAdditionPreview::ChoiceRequired`, falls through,
+                    // parks, and is settled as PAID by
+                    // `engine_payment_choices::resume_counter_addition_unless_payment`
+                    // (CR 118.12). The two legs partition the space; they do not
+                    // disagree.
+                    //
+                    // Known deviation, recorded not fixed: CR 614.17b's subject
+                    // is the CHOICE ("a player can't choose to pay"), while this
+                    // engine enforces it at the payment event — `PayUnlessCost
+                    // { pay: true }` stays legal and fails here. The
+                    // rules-correct seam is the CR 119.8 analogue
+                    // (`static_abilities::player_cant_pay_life_as_cost` /
+                    // `PayLifeCostResult::Prohibited`): refuse the choice, not
+                    // the settle. Same observable, wrong seam.
                     let prevented = state.objects.get(&source_id).is_some_and(|object| {
                         matches!(
                             super::effects::counters::preview_counter_addition(
@@ -1468,6 +1496,18 @@ fn pay_ability_cost_inner(
         // resolved), a cost that silently gives zero counters must not be
         // mistaken for having actually been paid, or Ward's deterrent is
         // bypassed for free.
+        //
+        // CR 614.17b is the rule ("if an event can't happen, a player can't
+        // choose to pay a cost that includes that event"), and CR 614.17c is why
+        // only a MANDATORY can't-effect can reach it: an impossible event "can
+        // only be replaced by a self-replacement effect … other replacement
+        // and/or prevention effects can't modify or replace it", so
+        // `replacement::pipeline_loop` short-circuits it ahead of any CR 616.1
+        // prompt. A CR 616.1 ordering choice instead returns `NeedsChoice`
+        // below, parks, and is settled as PAID by
+        // `engine_payment_choices::resume_counter_addition_unless_payment`
+        // (CR 118.12). Same partition as the `EffectCost`/`PutCounter` arm
+        // above, whose header records the CR 614.17b seam deviation once.
         AbilityCost::GetPlayerCounters {
             counter_kind,
             count,

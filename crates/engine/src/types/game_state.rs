@@ -6773,8 +6773,13 @@ pub enum PendingCostMoveResume {
     /// CR 118.12 + CR 122.1 + CR 616.1: A counter-addition unless-cost paused
     /// on a replacement choice. Covers Ward's player-counter payment and the
     /// source-counter `EffectCost` used by cumulative upkeep. Retains the full
-    /// `WaitingFor::UnlessPayment` payload so Applied completes payment and a
-    /// prevented placement fails it instead of orphaning the pending ability.
+    /// `WaitingFor::UnlessPayment` payload so the parked payment is settled
+    /// instead of orphaning the pending ability. CR 118.12: BOTH replacement
+    /// outcomes complete the payment — the "if they don't" clause checks whether
+    /// the player chose to pay, "regardless of what events actually occurred",
+    /// and this record's mere existence IS that choice (it is constructed only
+    /// on the `pay = true` path). The mapping is argued at its consumer,
+    /// `engine_payment_choices::resume_counter_addition_unless_payment`.
     #[serde(alias = "GetPlayerCountersUnlessPayment")]
     CounterAdditionUnlessPayment {
         #[serde(deserialize_with = "crate::types::ability::deserialize_ability_cost_compat")]

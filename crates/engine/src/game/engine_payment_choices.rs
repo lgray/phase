@@ -2065,69 +2065,95 @@ pub(super) fn resume_ward_sacrifice_payment(
     }
 }
 
-/// CR 118.12 + CR 122.1 + CR 614.1 + CR 616.1: Resume a counter-addition
-/// unless-payment after its `AddCounter` replacement choice settled. The typed
-/// `CostMoveDrainBoundary` the replacement pipeline resolved to IS the payment
-/// verdict, matched exhaustively here rather than collapsed to a flag at the
-/// dispatcher: `ReplacementDelivered` = the counters were actually added = paid;
-/// `ReplacementPrevented` = a replacement completely replaced the placement
-/// (CR 614.1) = failed. That `Prevented → Failed` arm is the engine's established
-/// internal contract, not a CR derivation: it mirrors the
-/// `PlayerCounterAdditionOutcome` Applied/Prevented ↔ Paid/Failed match in
-/// `costs::pay_ability_cost_for_resolution`, which is the immediate (unpaused)
-/// leg of this same payment — the two legs must agree. Recorded, not settled:
-/// CR 118.11 ("the actions performed when paying a cost may be modified by
-/// effects … the cost has still been paid") points the other way for the
-/// prevented arm, and reconciling it is a behavior change across both legs, not
-/// a resume-site fix.
-/// `PriorityBoundary` is unreachable: `drain_pending_cost_move_resume` admits only
+/// CR 118.12a + CR 702.21a + CR 702.24a: Resume a counter-addition unless-payment
+/// after the CR 616.1 replacement choice that paused it mid-cost settled. Two cost
+/// authorities park here, and a reader who thinks this is Ward-only will mis-scope
+/// the next change: `AbilityCost::GetPlayerCounters` (Ward's player-counter
+/// payment, CR 702.21a) and the source-counter / fixed-mana `AbilityCost::
+/// EffectCost` used by cumulative upkeep (CR 702.24a). Both are CR 118.12a
+/// "[do something] unless [a player does something else]" grammar.
+///
+/// CR 118.12: BOTH replacement outcomes settle the payment PAID. The "if they
+/// do / don't" clause "checks whether the player chose to pay an optional cost or
+/// started to pay a mandatory cost, **regardless of what events actually
+/// occurred**", and that choice was latched at `PayUnlessCost { pay: true }`
+/// before the replacement pipeline was ever consulted — indeed the parked record
+/// this function consumes is constructed ONLY on the `pay = true` path, so its
+/// mere existence IS the record of the choice. CR 118.11 corroborates: "the
+/// actions performed when paying a cost may be modified by effects … the cost has
+/// still been paid." CR 118.12 is stated first deliberately: it is the leg that
+/// closes the "but nothing was actually performed" objection which CR 118.11
+/// alone leaves open.
+///
+/// CR 614.17c is why the prevented arm here is always a genuine CR 614.1
+/// replacement and never a can't-effect: an event that can't happen "can only be
+/// replaced by a self-replacement effect (see rule 614.15). Other replacement
+/// and/or prevention effects can't modify or replace it." `replacement::
+/// pipeline_loop` implements that literally — a MANDATORY prohibition
+/// (`mandatory_prevention_applies`, which ends `&& !replacement_mode_is_optional`)
+/// short-circuits to `Prevented` at the top of every loop iteration, ahead of any
+/// CR 616.1 prompt, so it never parks and never reaches this root. Scope it
+/// honestly: that short-circuit is gated on `is_counter_placement_event`, i.e. it
+/// covers the COUNTER sub-shape only (`AddCounter` and `MoveCounter{Add}`). The
+/// two legs therefore agree rather than conflict — `costs.rs` sees only
+/// can't-effects (CR 614.17b ⇒ unpaid) and this root sees only replacements
+/// (CR 118.12 ⇒ paid).
+///
+/// The mana sub-shape of `EffectCost` needs its own, structural reason and is NOT
+/// covered by CR 614.17c: `Effect::Mana { produced: Fixed }` cannot park at all,
+/// because `costs.rs`'s arm calls
+/// `mana_payment::produce_mana_with_attributes_from_source_quality`, which returns
+/// mana units rather than a `PaymentOutcome` and swallows `NeedsChoice` in its
+/// `_ =>` fallback.
+///
+/// The exhaustive `match` on `CostMoveDrainBoundary` is kept as an ELIGIBILITY
+/// ASSERTION, not a verdict producer. It holds `PriorityBoundary` at
+/// `unreachable!` — `drain_pending_cost_move_resume` admits only
 /// `DelveManaPayment`/`ManaAbilityPayment` at that boundary and dispatches both
-/// ahead of this root. Interpreting the boundary here rather than at the call site
-/// is deliberate — the sibling `resume_random_discard_unless_payment` maps the very
-/// same boundaries differently (it ignores them, per CR 118.12), so each root must
-/// own its own mapping.
-/// Delegates to the same `finish_unless_payment` tail every other unless-cost shape
-/// uses, so the guarded ability is settled exactly once, either way, instead of the
-/// game resetting to bare priority with its fate undetermined.
+/// ahead of this root — and it turns any future widening of the boundary enum or
+/// of that eligibility table into a compile error at the one site whose rules
+/// reasoning would have to be re-derived.
+///
+/// Interpreting the boundary here rather than at the dispatcher is deliberate: the
+/// sibling `resume_random_discard_unless_payment` maps the very same boundaries
+/// differently (it ignores them, per CR 118.12), and copying one root's mapping
+/// into the other is exactly what shipped the Balduvian Horde bug. Each root owns
+/// its own mapping.
+///
+/// This settles through `finish_successful_unless_payment`, NOT
+/// `finish_unless_payment`. The latter is the DECLINE tail: its work is gated on
+/// `!pay || payment_failed`, so a paid resume routed through it kept only the
+/// `set_active_priority` guard and `resume_pending_continuation_if_priority` while
+/// skipping `EffectResolved`, the `IfAPlayerDoes` alternative-outcome sub and the
+/// `SequentialSibling` chain — and, because this root discarded the `ActionResult`
+/// it returned while `action_result` had already `std::mem::take`n the buffer, it
+/// silently discarded the whole reducer step's events as well.
 pub(super) fn resume_counter_addition_unless_payment(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
     boundary: CostMoveDrainBoundary,
 ) -> Result<WaitingFor, EngineError> {
     let Some(PendingCostMoveResume::CounterAdditionUnlessPayment {
-        cost,
         pending_effect,
         trigger_event,
-        effect_description,
-        remaining,
+        ..
     }) = state.pending_cost_move_resume.take()
     else {
         unreachable!("counter-addition unless-payment resume requires its typed continuation")
     };
-    // CR 614.1: `ReplacementPrevented` is the completely-replaced placement (the
-    // header argues its mapping and `PriorityBoundary`'s unreachability). Taking
-    // the boundary by type means a future widening of that eligibility table fails
-    // loudly here instead of silently defaulting to an unpaid cost.
-    let payment_failed = match boundary {
-        CostMoveDrainBoundary::ReplacementDelivered { .. } => false,
-        CostMoveDrainBoundary::ReplacementPrevented { .. } => true,
+    // CR 118.12: whichever way the replacement settled, the payer already chose
+    // to pay. The boundary is no longer a verdict — it is an ELIGIBILITY
+    // ASSERTION. See the header for why a can't-effect never arrives here, and
+    // why a future widening of the boundary enum or of the eligibility table must
+    // fail to compile at this site rather than silently pick a verdict.
+    match boundary {
+        CostMoveDrainBoundary::ReplacementDelivered { .. }
+        | CostMoveDrainBoundary::ReplacementPrevented { .. } => {}
         CostMoveDrainBoundary::PriorityBoundary => {
             unreachable!("counter-addition unless-payment is not eligible at the priority boundary")
         }
-    };
-    finish_unless_payment(
-        state,
-        true,
-        payment_failed,
-        cost,
-        pending_effect,
-        trigger_event,
-        effect_description,
-        remaining,
-        None,
-        events,
-    )?;
-    Ok(state.waiting_for.clone())
+    }
+    finish_successful_unless_payment(state, &pending_effect, &trigger_event, events)
 }
 
 /// CR 701.9b + CR 118.12 + CR 616.1: Resume a RANDOM unless-discard after the
