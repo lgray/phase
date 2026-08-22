@@ -7960,18 +7960,29 @@ const X1_FODDER: ObjectId = ObjectId(421);
 /// at all on this dump — the recorded sequence is a single `Recast`). Deleting a conjunct
 /// from an `&&` chain WIDENS relief rather than moving it, so removing either arm alone
 /// hands the subject to the other. This is not a choice of the wrong conjunct; it is the
-/// shape of an over-determined relief. MEASURED, all three mutations driven on this module:
-/// deleting `obj.controller != driver` moves ZERO rows (116 passed / 0 failed); deleting
-/// `&& !not_proposed` alone restores block (2) to pre-relief behaviour, where THIS row is
-/// green anyway (`ok`) — but the MODULE is NOT clean under it, because that same deletion IS
-/// the re-derived revert-probe of the migrated X1-2
+/// shape of an over-determined relief. MEASURED, all three mutations driven on this tree:
+/// deleting `obj.controller != driver` moves ZERO rows IN THIS MODULE (116 passed / 0 failed)
+/// but is NOT inert — the SAME deletion reddens the LIB row `analysis/resource.rs ::
+/// foreign_relief_still_keys_on_the_controller_for_a_proposed_ability` (row 37), the driven
+/// guard this partition added on exactly this conjunct (X1-2's M-4 note names it), printing
+/// `left: (false, false)` against `right: (true, false)`. The module stays green only because
+/// it holds no row asserting a VETO on a DRIVER'S-OWN host: its two block-(2) veto rows
+/// (`foreign_mana_ability_still_vetoes`, `foreign_object_second_surface_still_vetoes_after_x1`)
+/// are both FOREIGN-host rows, and its one driver's-own block-(2) row (X1-2) asserts RELIEF.
+/// Deleting `&& !not_proposed` alone restores block (2) to pre-relief behaviour, where THIS
+/// row is green anyway (`ok`) — but the MODULE is NOT clean under it, because that same
+/// deletion IS the re-derived revert-probe of the migrated X1-2
 /// (`driver_own_unproposed_activated_ability_is_relieved`), which it reddens: 115 passed /
 /// 1 failed, the single failure being X1-2. The `116 passed / 0 failed` this record carried
 /// here until now was measured on the PRE-MIGRATION tree, where X1-2 asserted the opposite —
 /// so re-driving that deletion HERE is expected to leave the module red, and a red module is
-/// not evidence that this probe is broken. Both figures re-measured on this tree with
-/// `cargo test -p phase-engine --test integration loop_shortcut`, counting the 116 rows of
-/// module `loop_shortcut::` (that substring filter also matches 42 sibling-module rows).
+/// not evidence that this probe is broken. The MODULE figures were re-measured on this tree
+/// with `cargo test -p phase-engine --test integration loop_shortcut`, counting the 116 rows of
+/// module `loop_shortcut::` (that substring filter also matches 42 sibling-module rows); row 37
+/// with `cargo test -p phase-engine --lib
+/// foreign_relief_still_keys_on_the_controller_for_a_proposed_ability`. Name BOTH invocations,
+/// never one: an integration-only run cannot see the lib guards, and a lib-only run cannot see
+/// the live offer path this row drives.
 ///
 /// REVERT-PROBE (RE-DERIVED — the recorded single-conjunct probe was dead). **Invert
 /// `obj.controller != driver` to `==` AND delete the `&& !not_proposed` conjunct at block
