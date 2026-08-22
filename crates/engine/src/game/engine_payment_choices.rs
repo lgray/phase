@@ -23,7 +23,7 @@ use super::costs::{self, PaymentOutcome};
 use super::effects;
 use super::engine::{
     handle_tap_land_for_mana, handle_untap_land_for_mana, resume_pending_continuation_if_priority,
-    EngineError,
+    CostMoveDrainBoundary, EngineError,
 };
 use super::engine_priority;
 use super::mana_abilities;
@@ -890,7 +890,7 @@ pub(super) fn handle_unless_payment(
                     // overwrites `state.waiting_for` with the ReplacementChoice
                     // prompt below — so the choice's resolution can settle
                     // this exact Ward payment (via `finish_unless_payment`,
-                    // resumed by `resume_get_player_counters_unless_payment`)
+                    // resumed by `resume_counter_addition_unless_payment`)
                     // instead of leaving it orphaned at bare Priority.
                     PaymentOutcome::Paused { .. } => {
                         state.pending_cost_move_resume =
@@ -2065,20 +2065,34 @@ pub(super) fn resume_ward_sacrifice_payment(
     }
 }
 
-/// CR 118.12 + CR 122.1 + CR 616.1: Resume a counter-addition unless-payment
-/// after its `AddCounter` replacement choice settled. `payment_succeeded` comes
-/// from the exact boundary the replacement pipeline resolved to
-/// (`CostMoveDrainBoundary::ReplacementDelivered` = the counters were actually
-/// added = paid; `ReplacementPrevented` = a replacement fully suppressed the
-/// placement = failed — mirroring `PlayerCounterAdditionOutcome`'s established
-/// Applied/Prevented ↔ Paid/Failed mapping for the immediate-payment case).
-/// Delegates to the same `finish_unless_payment` tail every other unless-cost
-/// shape uses, so the Ward-guarded ability is settled exactly once, either way,
-/// instead of the game resetting to bare priority with its fate undetermined.
+/// CR 118.12 + CR 122.1 + CR 614.1 + CR 616.1: Resume a counter-addition
+/// unless-payment after its `AddCounter` replacement choice settled. The typed
+/// `CostMoveDrainBoundary` the replacement pipeline resolved to IS the payment
+/// verdict, matched exhaustively here rather than collapsed to a flag at the
+/// dispatcher: `ReplacementDelivered` = the counters were actually added = paid;
+/// `ReplacementPrevented` = a replacement completely replaced the placement
+/// (CR 614.1) = failed. That `Prevented → Failed` arm is the engine's established
+/// internal contract, not a CR derivation: it mirrors the
+/// `PlayerCounterAdditionOutcome` Applied/Prevented ↔ Paid/Failed match in
+/// `costs::pay_ability_cost_for_resolution`, which is the immediate (unpaused)
+/// leg of this same payment — the two legs must agree. Recorded, not settled:
+/// CR 118.11 ("the actions performed when paying a cost may be modified by
+/// effects … the cost has still been paid") points the other way for the
+/// prevented arm, and reconciling it is a behavior change across both legs, not
+/// a resume-site fix.
+/// `PriorityBoundary` is unreachable: `drain_pending_cost_move_resume` admits only
+/// `DelveManaPayment`/`ManaAbilityPayment` at that boundary and dispatches both
+/// ahead of this root. Interpreting the boundary here rather than at the call site
+/// is deliberate — the sibling `resume_random_discard_unless_payment` maps the very
+/// same boundaries differently (it ignores them, per CR 118.12), so each root must
+/// own its own mapping.
+/// Delegates to the same `finish_unless_payment` tail every other unless-cost shape
+/// uses, so the guarded ability is settled exactly once, either way, instead of the
+/// game resetting to bare priority with its fate undetermined.
 pub(super) fn resume_counter_addition_unless_payment(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
-    payment_succeeded: bool,
+    boundary: CostMoveDrainBoundary,
 ) -> Result<WaitingFor, EngineError> {
     let Some(PendingCostMoveResume::CounterAdditionUnlessPayment {
         cost,
@@ -2090,10 +2104,21 @@ pub(super) fn resume_counter_addition_unless_payment(
     else {
         unreachable!("counter-addition unless-payment resume requires its typed continuation")
     };
+    // CR 614.1: `ReplacementPrevented` is the completely-replaced placement (the
+    // header argues its mapping and `PriorityBoundary`'s unreachability). Taking
+    // the boundary by type means a future widening of that eligibility table fails
+    // loudly here instead of silently defaulting to an unpaid cost.
+    let payment_failed = match boundary {
+        CostMoveDrainBoundary::ReplacementDelivered { .. } => false,
+        CostMoveDrainBoundary::ReplacementPrevented { .. } => true,
+        CostMoveDrainBoundary::PriorityBoundary => {
+            unreachable!("counter-addition unless-payment is not eligible at the priority boundary")
+        }
+    };
     finish_unless_payment(
         state,
         true,
-        !payment_succeeded,
+        payment_failed,
         cost,
         pending_effect,
         trigger_event,
