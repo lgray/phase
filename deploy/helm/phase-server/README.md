@@ -71,6 +71,30 @@ chart still installs on a cluster with no prometheus-operator. Set
 `networkPolicy.enabled`, `metrics.scrapeNamespaceLabels` must name the
 scraper's namespace or the target is simply down while the pod stays healthy.
 
+### With kube-prometheus-stack
+
+That chart defaults every selector to "only objects carrying my own release
+label":
+
+```yaml
+prometheus:
+  prometheusSpec:
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+```
+
+Left at the default, Prometheus ignores this chart's `PodMonitor` and
+`PrometheusRule` — silently. Nothing errors; `phase:wanted_replicas` simply
+never exists, the HPA reports the metric as unavailable, and the deployment
+looks healthy throughout. Either set the two keys above, or add the release
+label the operator expects via `metrics.podMonitor.labels` and
+`autoscaling.prometheusRule.labels`.
+
+Also give Prometheus a `retentionSize`, not just a `retention`. With node-local
+storage (k3s `local-path`, hostPath) the volume is the node's root filesystem,
+and a retention window sized for a quiet week fills the disk during a busy one —
+which evicts pods, this chart's included.
+
 ## Behind Cloudflare
 
 Traefik typically sees a SNAT'd node IP (Service `externalTrafficPolicy: Cluster`),
@@ -138,8 +162,9 @@ per ordinal (or a wildcard) pointing at the same ingress.
 **Middlewares.** `traefik.middlewares.extra` is the Ingress *annotation* syntax
 (`<ns>-<name>@kubernetescrd`), which the IngressRoute CRD provider rejects — and
 a bad reference makes Traefik drop the whole route rather than fail loudly. With
-`scaleOut.enabled` the chart refuses to render if `extra` is set; list extras
-under `scaleOut.extraMiddlewareRefs` as `{name, namespace}` instead.
+`scaleOut.enabled` the chart refuses to render if `extra` is set — whatever
+`traefik.middlewares.enabled` says, because the value is dropped either way —
+so list extras under `scaleOut.extraMiddlewareRefs` as `{name, namespace}`.
 
 ### Migrating an existing single-pod release
 
@@ -162,6 +187,11 @@ itself will not delete it — but a `Delete` reclaim policy on the PV still will
 once the claim goes, which is why the `Retain` patch comes first.
 
 ## Autoscaling
+
+The HPA renders whether or not prometheus-operator is installed, but the
+`PrometheusRule` does not — so on a cluster without the CRDs the external
+metric never exists and the HPA sits at `FailedGetExternalMetric`. Install the
+operator (and prometheus-adapter) before turning autoscaling on.
 
 `autoscaling.enabled` (which requires `scaleOut.enabled`) adds a
 `PrometheusRule` and an HPA. The **policy lives in the recording rule**, not in

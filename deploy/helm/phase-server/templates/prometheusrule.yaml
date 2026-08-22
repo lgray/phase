@@ -1,0 +1,96 @@
+{{- if and .Values.autoscaling.enabled .Values.autoscaling.prometheusRule.enabled }}
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1" }}
+{{- $fullname := include "phase-server.fullname" . }}
+{{- $sel := printf "namespace=%q" .Release.Namespace }}
+{{- $target := .Values.autoscaling.targetUtilization }}
+{{- if not (or .Values.metrics.podMonitor.enabled .Values.metrics.serviceMonitor.enabled) }}
+{{- fail "autoscaling.enabled needs metrics.podMonitor.enabled or metrics.serviceMonitor.enabled: the occupied-ordinal rule joins on (namespace, pod), and only operator discovery labels targets with `pod`. Annotation scraping names it `kubernetes_pod_name`, so the join silently matches nothing and the scale-in floor disappears." }}
+{{- end }}
+{{- /* The scaling POLICY lives here rather than in the HPA.
+
+     An HPA can only express "keep this ratio". The binding constraint for a
+     StatefulSet is different in kind: scale-in always removes the HIGHEST
+     ordinal, so shrinking is safe only when that particular ordinal has nobody
+     on it — a fact about one replica, not an aggregate. Encoding it as a
+     recording rule makes the HPA a follower of a number that already accounts
+     for it (see hpa.yaml, which targets an AverageValue of 1).
+
+     Three demand terms are recorded under one metric name with a `source`
+     label, then aggregated: PromQL has no element-wise max of two vectors, and
+     `max by (namespace)` over the shared name is how you get one. Rules inside
+     a group evaluate in order, so the last rule sees the three above it.
+
+     One release per namespace: the terms aggregate by namespace, so two
+     phase-server releases sharing one would be summed into a single answer. */}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "phase-server.labels" . | nindent 4 }}
+    {{- with .Values.autoscaling.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ $fullname }}.autoscaling
+      interval: {{ .Values.autoscaling.interval }}
+      rules:
+        # How many replicas the current game load needs, at the target packing
+        # fraction. clamp_min guards a divide-by-zero while no pod is reporting.
+        - record: phase:replica_demand
+          expr: |
+            ceil(
+              sum by (namespace) (phase_games_active{ {{- $sel -}} })
+              / clamp_min({{ $target }} * max by (namespace) (phase_games_capacity{ {{- $sel -}} }), 1)
+            )
+          labels:
+            source: games
+
+        # The same question against the socket cap, which binds first for
+        # multiplayer tables: 100 two-player games is already 200 sockets.
+        - record: phase:replica_demand
+          expr: |
+            ceil(
+              sum by (namespace) (phase_connections{ {{- $sel -}} })
+              / clamp_min({{ $target }} * max by (namespace) (phase_connections_capacity{ {{- $sel -}} }), 1)
+            )
+          labels:
+            source: connections
+
+        # The floor that makes scale-in safe: the highest ordinal still holding
+        # a human, plus one. `> bool 0` turns occupancy into 1/0, so the product
+        # is either that pod's ordinal or zero; with nobody anywhere the max is
+        # 0 and the floor is 1. Spectators and drafts count — both pin a pod.
+        #
+        # The `+` is a strict-label vector match, so a pod appearing on only one
+        # side drops out and understates the floor. Safe here only because both
+        # gauges come from the same /metrics exposition and are always emitted
+        # together; that stops being true if either becomes conditional.
+        - record: phase:replica_demand
+          expr: |
+            max by (namespace) (
+              phase_replica_ordinal{ {{- $sel -}} }
+              * on (namespace, pod) group_left ()
+                (
+                  (
+                    phase_games_with_connected_humans{ {{- $sel -}} }
+                    + phase_drafts_with_connected_humans{ {{- $sel -}} }
+                  ) > bool 0
+                )
+            ) + 1
+          labels:
+            source: occupied_floor
+
+        # The answer the HPA reads. One series per namespace.
+        - record: {{ .Values.autoscaling.recordName }}
+          expr: |
+            clamp(
+              max by (namespace) (phase:replica_demand{ {{- $sel -}} }),
+              {{ .Values.autoscaling.minReplicas }},
+              {{ .Values.scaleOut.replicaMax }}
+            )
+          labels:
+            service: {{ $fullname }}
+{{- end }}
+{{- end }}
