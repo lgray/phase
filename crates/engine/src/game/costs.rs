@@ -1324,8 +1324,10 @@ fn pay_ability_cost_inner(
         // resources rule and says nothing about an effect-as-cost.) Resolve the
         // effect on the source before the ability's own effect fires. The shared
         // support predicate admits only deterministic source-counter and
-        // fixed-mana forms, so this never opens a player-choice prompt
-        // mid-payment.
+        // fixed-mana forms, so the effect shape itself asks the payer nothing.
+        // A replacement on the resulting event can still require a player
+        // choice, which parks the payment as `Paused` in the `PutCounter` arm
+        // below.
         AbilityCost::EffectCost { effect } => {
             use crate::types::ability::Effect;
             match effect.as_ref() {
@@ -1344,7 +1346,8 @@ fn pay_ability_cost_inner(
                     // reject the prevented case before executing it.
                     //
                     // The gate is `replacement::mandatory_prevention_applies`
-                    // (CR 614.6): a candidate definition on the governing event
+                    // (CR 614.17: "some effects state that something can't
+                    // happen"): a candidate definition on the governing event
                     // whose `quantity_modification` is `Prevent` and whose mode
                     // is not optional. Only that pair can reach this refusal.
                     // CR 614.17c ("if an event can't happen, it can only be
@@ -1502,10 +1505,11 @@ fn pay_ability_cost_inner(
         //
         // CR 614.17b is the rule ("if an event can't happen, a player can't
         // choose to pay a cost that includes that event"). The gate that reaches
-        // it is `replacement::mandatory_prevention_applies` (CR 614.6): a
-        // candidate definition on the governing event whose
-        // `quantity_modification` is `Prevent` and whose mode is not optional —
-        // not a semantic can't-effect test. CR 614.17c is why the CR 616.1
+        // it is `replacement::mandatory_prevention_applies` (CR 614.17:
+        // "some effects state that something can't happen"): a candidate
+        // definition on the governing event whose `quantity_modification`
+        // is `Prevent` and whose mode is not optional — not a semantic
+        // can't-effect test. CR 614.17c is why the CR 616.1
         // ordering step never intervenes: an impossible event "can only be
         // replaced by a self-replacement effect … other replacement and/or
         // prevention effects can't modify or replace it", so
