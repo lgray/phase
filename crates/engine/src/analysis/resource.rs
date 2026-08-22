@@ -3735,10 +3735,14 @@ fn execute_ledger_condition_provably_excludes_class(
 /// excludes `class_member`? Returns `true` iff so — then the pump's value is invariant
 /// across the loop's growth and this def does not observe the loop.
 ///
-/// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan`'s arm is
-/// `Effect::Pump { .. } => Axes::CONSERVATIVE` (`ability_scan::scan_effect`) — BLANKET, payload
-/// discarded. No scanner change can distinguish a class-reading aggregate from a
-/// class-disjoint one, so the distinction has to be drawn where the class is known.
+/// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan::scan_effect`'s `Effect::Pump`
+/// arm now DESCENDS under `ScanMode::LoopFirewall` into both `PtValue` halves and the
+/// target, so a read-free pump no longer reaches this consult at all. That descent is as
+/// far as a scanner can go: `scan_quantity_ref` gives `QuantityRef::Aggregate` a
+/// `sibling: true` BEFORE it walks the filter, because no scanner change can distinguish a
+/// class-reading aggregate from a class-disjoint one without knowing the class. So the
+/// distinction still has to be drawn where the class IS known — the descent removed this
+/// arm's trivially-invariant traffic, not its reason to exist.
 ///
 /// SOUNDNESS rests on the SAME ordered pair of invariants as its sibling — see that
 /// function's doc and the GAP-1 comment at this arm's call site:
@@ -3852,10 +3856,15 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       `Effect::Pump`, so a new `Pump` field is a compile error here rather than a silent
 ///       unscanned read. (b-t) then requires the bound `target` to contribute NO sibling
 ///       read, for the SAME reason the two sibling arms pattern-match `target: None` (see
-///       [`exiled_colors_provably_exclude_class`]'s (b)): the relieved veto is the BLANKET
-///       `Effect::Pump { .. } => Axes::CONSERVATIVE` (`ability_scan::scan_effect`), which discards
-///       the whole payload — target included — so a board-reading target's veto would be
-///       relieved on evidence that never examined it. `Effect::Pump` cannot state that as a
+///       [`exiled_colors_provably_exclude_class`]'s (b)): conjunct (d) proves only that the
+///       P/T AGGREGATE cannot count the class, and says nothing whatever about the target.
+///       A def reaching this arm did so because its aggregate half set `sibling` — which
+///       `scan_quantity_ref` does unconditionally for `QuantityRef::Aggregate` — so the
+///       target has NOT been separately cleared, and relieving without (b-t) would relieve
+///       a board-reading target on evidence that never examined it. This survives
+///       `scan_effect`'s `Effect::Pump` descent verbatim: that descent's own target leg
+///       evaluates the SAME expression, but it is `.or()`-ed with the aggregate, so it
+///       cannot un-set a `sibling` the aggregate already set. `Effect::Pump` cannot state that as a
 ///       pattern (its `target` is a `TargetFilter`, NOT an `Option<_>`), so it is a
 ///       PREDICATE through the scanner's own authority:
 ///       `ability_scan::effect_target_reads_sibling_mutable_for_loop`, which derives the
@@ -3924,8 +3933,13 @@ fn execute_ledger_condition_provably_excludes_class(
 /// `effect_target_reads_sibling_mutable_for_loop`, this change's wrapper — answered
 /// `false / false / true` across them. Name it, because the WHOLE-DEF scan
 /// `ability_definition_reads_sibling_mutable_for_loop` cannot tell the three apart: the
-/// blanket `Effect::Pump { .. } => Axes::CONSERVATIVE` (`ability_scan::scan_effect`) makes it `true`
-/// on all three — indeed block (1b) only reaches this arm once it IS true. Corpus
+/// aggregate the three defs SHARE makes it `true` on all three regardless of target
+/// (`scan_quantity_ref` sets `sibling` for `QuantityRef::Aggregate` before walking the
+/// filter) — indeed block (1b) only reaches this arm once it IS true. At the time of that
+/// measurement the whole-def `true` came instead from a blanket
+/// `Effect::Pump { .. } => Axes::CONSERVATIVE` arm; `scan_effect` now descends under
+/// `ScanMode::LoopFirewall`, which changes the SOURCE of that `true` and not the fact,
+/// so (b-t) is exactly as load-bearing as when it was added. Corpus
 /// reachability was ZERO at that measurement, so this was latent rather than live — and the
 /// zero is a fragile corpus intersection, not a structural guarantee, which is why the arm is
 /// narrowed rather than left to the corpus. r4 is BYTE-FROZEN; the divergence lives at the arm
@@ -12574,27 +12588,6 @@ mod tests {
         loop_states_cover_modulo_object_growth(prior, current)
     }
 
-    /// A CONSERVATIVE (sibling-reading) effect: `Effect::Pump` classifies
-    /// `Axes::CONSERVATIVE` regardless of its fields (ability_scan.rs).
-    ///
-    /// ⚠ SCOPE, since phase C's S1: this body reads NOTHING — it is
-    /// `Pump{Fixed(0), Fixed(0)}`, and it classifies `Axes::CONSERVATIVE` only because
-    /// `Effect::Pump { .. } => Axes::CONSERVATIVE` (`ability_scan::scan_effect`) discards the
-    /// payload. That over-approximation is still the whole veto at every surface S1 does
-    /// NOT narrow — block (2)'s `obj.abilities` scan, which is where every remaining caller
-    /// puts it — so this helper is correct and unchanged there. It is NOT a valid stand-in
-    /// veto at the block-(1b) `def.execute` surface any more: `pump_aggregate_provably_
-    /// excludes_class` is precise about exactly this payload and correctly relieves a fixed
-    /// pump. Use [`class_reading_pump_effect`] for a block-(1b) fixture.
-    fn sibling_reading_effect() -> crate::types::ability::Effect {
-        use crate::types::ability::{Effect, PtValue, TargetFilter};
-        Effect::Pump {
-            power: PtValue::Fixed(0),
-            toughness: PtValue::Fixed(0),
-            target: TargetFilter::SelfRef,
-        }
-    }
-
     /// A pump that GENUINELY reads the growing class: its power aggregates mana value over
     /// `Typed{Creature}`, so a creature-token fodder member is inside the id population
     /// `pump_aggregate_provably_excludes_class` consults, and the def keeps its veto for a
@@ -12796,7 +12789,7 @@ mod tests {
         );
         // Discriminating control: a CONSERVATIVE sibling body vetoes the SAME growth.
         let (mut prior, mut current) = og_cover_base();
-        let pump = AbilityDefinition::new(AbilityKind::Activated, sibling_reading_effect());
+        let pump = AbilityDefinition::new(AbilityKind::Activated, class_reading_pump_effect());
         for st in [&mut prior, &mut current] {
             let obs = inert_token(st, 600, 0, "Alarm");
             st.objects.get_mut(&obs).unwrap().abilities = Arc::new(vec![pump.clone()]);
@@ -13052,7 +13045,7 @@ mod tests {
         use std::sync::Arc;
         let mut prior = GameState::new_two_player(7);
         let observer = inert_token(&mut prior, 600, 0, "Observer");
-        let def = AbilityDefinition::new(AbilityKind::Activated, sibling_reading_effect());
+        let def = AbilityDefinition::new(AbilityKind::Activated, class_reading_pump_effect());
         prior.objects.get_mut(&observer).unwrap().abilities = Arc::new(vec![def]);
         inert_token(&mut prior, 700, 0, "Saproling");
         let mut current = prior.clone();
@@ -13197,6 +13190,137 @@ mod tests {
         );
     }
 
+    /// **P3 block-(4) surface row** — a `GrantTrigger` modification whose granted trigger's
+    /// execute body is a read-free `Effect::Pump` no longer vetoes block (4)'s
+    /// condition-gated-statics walk; an aggregate-bearing one still does.
+    ///
+    /// WHY THIS ROW EXISTS, stated because nothing else covered it. Block (4) consults
+    /// `scan::continuous_modification_reads_sibling_mutable(m)
+    /// || scan::continuous_modification_reads_projected_resource(m)`, and
+    /// `ContinuousModification::GrantTrigger` routes BOTH through
+    /// `scan_trigger_definition` → `ability_definition_axes` → `scan_effect`'s
+    /// `Effect::Pump` arm. Narrowing that arm therefore moves a SECOND production decision
+    /// site besides block (1b)'s `pump_aggregate_provably_excludes_class` consult — and
+    /// `GrantTrigger` appeared ZERO times in this file before this row, so the block-(4)
+    /// walk had never been exercised with the one modification shape the narrowing can
+    /// move. A green suite proved nothing about this surface either way.
+    ///
+    /// The shape is corpus-reachable rather than hypothetical: Chocobo Camp's Bird token
+    /// carries exactly this modification ("Whenever a land you control enters, this token
+    /// gets +1/+0 until end of turn"), so once that token is on the battlefield block (4)
+    /// walks its `static_definitions` and reaches this arm.
+    ///
+    /// CR 732.1b defines the loop the shortcut bounds; CR 732.2a is the OPERATIVE rule
+    /// for both halves of this row. 732.2a is what a firewall deciding whether to offer
+    /// must answer to: a proposed sequence rests on "the predictable results of the
+    /// sequence of choices" and "can't include conditional actions, where the outcome of a
+    /// game event determines the next action a player takes."
+    ///
+    /// The two halves rest on different authorities and are labelled separately:
+    /// * RELIEF. That a `Pump` with two `PtValue::Fixed` halves on a `SelfRef` target
+    ///   reads nothing is an AST property — `PtValue::Fixed` is a literal — and is
+    ///   deliberately cited to NO rule, because the Comprehensive Rules say nothing about
+    ///   an effect that requires no information. CR 732.2a is what makes it decisive.
+    /// * VETO (the paired positive). CR 608.2h is operative there: an effect requiring
+    ///   "information from the game (such as the number of creatures on the battlefield)"
+    ///   has its answer "determined only once, when the effect is applied", so each loop
+    ///   iteration re-determines it against a larger board — which is what makes the
+    ///   sequence's results unpredictable under 732.2a.
+    ///
+    /// The modification stays LIVE either way; it is its PAYLOAD that is inert, which is
+    /// the distinction the descent draws.
+    ///
+    /// AXIS ISOLATION: the relieved half is asserted false on BOTH readers, so the row
+    /// records that the descent moves the projected axis here too and not only the sibling
+    /// one — the `||` means either axis alone would keep the veto.
+    ///
+    /// PAIRED POSITIVE REACH-GUARD: the byte-identical modification whose granted execute
+    /// carries [`class_reading_pump_effect`] still vetoes, so the row is not satisfiable by
+    /// a firewall that stopped walking `GrantTrigger` at all, nor by one that stopped
+    /// vetoing on statics.
+    ///
+    /// REVERT-PROBE: restore `Effect::Pump { .. } => Axes::CONSERVATIVE` in
+    /// `ability_scan::scan_effect` ⇒ the relieved half vetoes again ⇒ **FAILS**.
+    #[test]
+    fn read_free_pump_under_a_granted_trigger_no_longer_vetoes_block_four() {
+        use crate::game::ability_scan::{
+            continuous_modification_reads_projected_resource,
+            continuous_modification_reads_sibling_mutable,
+        };
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, ContinuousModification, Effect, PtValue, TargetFilter,
+            TypeFilter,
+        };
+
+        let granting_modification = |effect: Effect| ContinuousModification::GrantTrigger {
+            trigger: Box::new(
+                TriggerDefinition::new(TriggerMode::ChangesZone)
+                    .destination(Zone::Battlefield)
+                    .valid_card(TargetFilter::Typed(TypedFilter {
+                        type_filters: vec![TypeFilter::Land],
+                        controller: Some(ControllerRef::You),
+                        properties: vec![],
+                    }))
+                    .execute(AbilityDefinition::new(AbilityKind::Spell, effect)),
+            ),
+        };
+        let on_board = |m: ContinuousModification| {
+            let mut state = GameState::new_two_player(7);
+            let src = inert_token(&mut state, 830, 0, "Granted Trigger Host");
+            state
+                .objects
+                .get_mut(&src)
+                .unwrap()
+                .static_definitions
+                .push(StaticDefinition::continuous().modifications(vec![m]));
+            state
+        };
+
+        // ── THE RELIEF: Chocobo's Bird-token shape, read-free on both axes ────────────
+        let inert = granting_modification(Effect::Pump {
+            power: PtValue::Fixed(1),
+            toughness: PtValue::Fixed(0),
+            target: TargetFilter::SelfRef,
+        });
+        assert!(
+            !continuous_modification_reads_sibling_mutable(&inert),
+            "AXIS ISOLATION: a `Pump{{Fixed(1), Fixed(0), SelfRef}}` under a granted trigger \
+             names no board aggregate"
+        );
+        assert!(
+            !continuous_modification_reads_projected_resource(&inert),
+            "AXIS ISOLATION: it names no projected player resource either — block (4)'s \
+             disjunction means either axis alone would keep the veto"
+        );
+        assert!(
+            !fire_time_conditions_read_growing_class(&on_board(inert), None),
+            "CR 732.2a: the proposal rests on the PREDICTABLE results of the sequence and \
+             may not include conditional actions. A granted trigger whose whole execute \
+             body is a literal pump on a self-reference reads no game information — an AST \
+             property, not a rules one, so no CR is cited for it — hence nothing about it \
+             becomes conditional on how far the loop has run and block (4) must not veto \
+             the offer on it"
+        );
+
+        // ── PAIRED POSITIVE REACH-GUARD: the same modification, class-reading body ────
+        let reading = granting_modification(class_reading_pump_effect());
+        assert!(
+            continuous_modification_reads_sibling_mutable(&reading),
+            "reach-guard: the control's granted execute aggregates over `Typed{{Creature}}`, \
+             so it genuinely counts the growing class — if this were false the veto below \
+             would have no source and the relief above would prove nothing"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&on_board(reading), None),
+            "SOUNDNESS — CR 608.2h, operative here: this execute aggregates over a live \
+             battlefield population, so its answer is \"determined only once, when the \
+             effect is applied\" and each loop iteration re-determines it against a larger \
+             board, making the sequence unpredictable under CR 732.2a. Block (4) still \
+             walks `GrantTrigger` and still vetoes on a granted trigger that reads the \
+             class: the descent narrowed the PAYLOAD test, not the walk"
+        );
+    }
+
     /// FIREWALL block(1) matched pair (CR 603.6a): the ETB-observer gate skips ONLY a
     /// PROVABLY-disjoint observer, and only when a fodder-class representative is supplied.
     ///
@@ -13208,9 +13332,13 @@ mod tests {
     /// `false` flips (b) `true → false`.
     ///
     /// FIXTURE CHANGE, phase C S1 — an ARGUMENT, not a re-baseline. The execute body was
-    /// `sibling_reading_effect()` = `Pump{Fixed(0), Fixed(0)}`, which reads NOTHING; it
-    /// vetoed only through the blanket `Effect::Pump { .. } => Axes::CONSERVATIVE` arm
-    /// (`ability_scan::scan_effect`). S1 makes block (1b) precise about exactly that payload, so a
+    /// a `Pump{Fixed(0), Fixed(0), SelfRef}`, which reads NOTHING; it vetoed only through
+    /// what was then a blanket `Effect::Pump { .. } => Axes::CONSERVATIVE` arm in
+    /// `ability_scan::scan_effect`. (That blanket is gone under `ScanMode::LoopFirewall`:
+    /// the arm now descends into both `PtValue` halves and the target, so the same body
+    /// reads nothing THERE too, and the helper that used to mint it has been deleted.
+    /// Under `ScanMode::Conservative` the blanket is unchanged.) S1 makes block (1b)
+    /// precise about exactly that payload, so a
     /// fixed pump is now correctly relieved there and case (b) would have asserted "a broad
     /// matcher still vetoes" against a def with no reason to veto — green, discriminating
     /// nothing. The body is therefore replaced by [`class_reading_pump_effect`], which
@@ -13294,7 +13422,7 @@ mod tests {
         use std::sync::Arc;
         let mut prior = GameState::new_two_player(7);
         let observer = inert_token(&mut prior, 600, 0, "Observer");
-        let def = AbilityDefinition::new(AbilityKind::Spell, sibling_reading_effect());
+        let def = AbilityDefinition::new(AbilityKind::Spell, class_reading_pump_effect());
         prior.objects.get_mut(&observer).unwrap().abilities = Arc::new(vec![def]);
         inert_token(&mut prior, 700, 0, "Saproling");
         let mut current = prior.clone();
@@ -13328,7 +13456,7 @@ mod tests {
         let build = |kind: AbilityKind| {
             let mut state = GameState::new_two_player(7);
             let observer = inert_token(&mut state, 950, 1, "Foreign Observer");
-            let def = AbilityDefinition::new(kind, sibling_reading_effect());
+            let def = AbilityDefinition::new(kind, class_reading_pump_effect());
             state.objects.get_mut(&observer).unwrap().abilities = Arc::new(vec![def]);
             (state, observer)
         };
@@ -13405,7 +13533,8 @@ mod tests {
         let build = |activator_filter: Option<PlayerFilter>| {
             let mut state = GameState::new_two_player(7);
             let observer = inert_token(&mut state, 951, 1, "Foreign Widened Observer");
-            let mut def = AbilityDefinition::new(AbilityKind::Activated, sibling_reading_effect());
+            let mut def =
+                AbilityDefinition::new(AbilityKind::Activated, class_reading_pump_effect());
             def.activator_filter = activator_filter; // `pub` field on `AbilityDefinition`
             state.objects.get_mut(&observer).unwrap().abilities = Arc::new(vec![def]);
             (state, observer)
@@ -16042,9 +16171,14 @@ mod tests {
             .expect("fixture: the def carries the execute body just installed");
         assert!(
             crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(exec),
-            "reach-guard: `Effect::Pump {{ .. }} => Axes::CONSERVATIVE` (`ability_scan::scan_effect`) \
-             must make this body read the sibling axis — that veto is the whole subject of S1, \
-             and without it the consult's first conjunct is false and no row proves anything"
+            "reach-guard: this body must read the sibling axis — that veto is the whole \
+             subject of S1, and without it the consult's first conjunct is false and no row \
+             proves anything. Since `scan_effect`'s `Effect::Pump` arm descends under \
+             `ScanMode::LoopFirewall`, the read has to come from the PAYLOAD: every caller \
+             passes an aggregate-bearing `power`, and `scan_quantity_ref` sets `sibling` for \
+             `QuantityRef::Aggregate` unconditionally. A read-free pump can no longer reach \
+             this fixture, which is why the two-`PtValue::Fixed` arm (vi) moved to \
+             `ability_scan::tests::scan_effect_pump_descends_under_loop_firewall`"
         );
         state
             .objects
@@ -16266,27 +16400,16 @@ mod tests {
              so the def observes the loop. Checking only `power` makes this FAIL"
         );
 
-        // ── (vi) DELIBERATE WIDENING, pinned so it is not "fixed" back ────────────────
-        // S1's relief class is not "Hawk's aggregate"; it is "a pump whose BOTH halves are
-        // provably invariant", and `PtValue::Fixed` is invariant by construction. A fixed
-        // pump reads no game information at all, so vetoing it was pure scanner
-        // over-approximation (`Effect::Pump { .. } => Axes::CONSERVATIVE` discards the
-        // payload). This row exists because relieving it BROKE a landed fixture that used
-        // `Pump{Fixed(0), Fixed(0)}` as a stand-in veto — the correct reading is that the
-        // fixture leaned on the over-approximation, not that S1 is too wide.
-        let fixed = hawk_pump_with_pt(&hawk_pump, PtValue::Fixed(2), PtValue::Fixed(2));
-        let (fixed_state, fixed_member, ..) = pump_firewall_fixture(fixed);
-        assert!(
-            !fire_time_conditions_read_growing_class(
-                &fixed_state,
-                Some(&HashSet::from([fixed_member]))
-            ),
-            "a `Pump` with two `PtValue::Fixed` halves reads NOTHING, so per CR 608.2h its \
-             value is trivially invariant across the loop's growth and block (1b) must skip \
-             it. If this row goes red because someone narrowed S1 to require an aggregate, \
-             the narrowing is keeping a veto that is provably unnecessary — re-argue it, do \
-             not delete this row"
-        );
+        // ── (vi) MIGRATED OUT, to `ability_scan::tests::scan_effect_pump_descends_under_
+        // loop_firewall` (row 25). Arm (vi) asserted that a `Pump` with two
+        // `PtValue::Fixed` halves must be skipped by block (1b), and it drove that through
+        // `pump_firewall_fixture`, whose reach guard requires the def to READ the sibling
+        // axis. Now that `scan_effect`'s `Effect::Pump` arm descends under
+        // `ScanMode::LoopFirewall`, a read-free pump no longer reads that axis, so the
+        // fixture's guard — which is correct, and which the other eight callers need —
+        // can no longer be reached with this argument. The claim did not weaken and was
+        // not dropped: it moved to the scanner arm that now owns it, carrying its
+        // CR 608.2h rationale verbatim.
 
         // ══ CONJUNCT-PER-ROW BLOCK (M1) ═══════════════════════════════════════════════
         // Ported from `ledger_exclusion_is_precise_and_fail_closed`, which carries one row
@@ -16442,10 +16565,11 @@ mod tests {
     /// execute body EXCEPT for `Effect::Pump.target`. This row exists because the landed arm
     /// bound `target: _` and was MEASURED blind: all three relieved, although the scan
     /// separately reports the third as a sibling read. Conjunct (d) proves the P/T AGGREGATE
-    /// is class-invariant and says nothing whatever about what the target reads, and the veto
-    /// S1 relieves is the BLANKET `Effect::Pump { .. } => Axes::CONSERVATIVE`
-    /// (`ability_scan::scan_effect`) — which discards the target too, so nothing downstream re-checks
-    /// it. See conjunct (b-t) on [`pump_aggregate_provably_excludes_class`].
+    /// is class-invariant and says nothing whatever about what the target reads, so nothing
+    /// downstream re-checks it: the veto S1 relieves is carried by the aggregate `power` these
+    /// three defs SHARE, and `scan_effect`'s `Effect::Pump` target leg is `.or()`-ed with that
+    /// aggregate rather than able to override it. See conjunct (b-t) on
+    /// [`pump_aggregate_provably_excludes_class`].
     ///
     /// WHY IT IS NOT VACUOUS, stated as the fixture property that would break it: the three
     /// defs share ONE aggregate (asserted below), so every conjunct except (b-t) answers
@@ -16568,8 +16692,8 @@ mod tests {
                 hawk_pump,
                 "{label}: only `target` may differ from the card's own AST"
             );
-            // `pump_firewall_fixture` re-asserts the pre-relief veto (blanket
-            // `Effect::Pump { .. } => Axes::CONSERVATIVE`), so each arm is a live surface.
+            // `pump_firewall_fixture` re-asserts the pre-relief veto (carried by the
+            // aggregate `power` all three defs share), so each arm is a live surface.
             let (state, member, source, _artifact) = pump_firewall_fixture(def.clone());
             let source_obj = state.objects[&source].clone();
             assert_eq!(
@@ -16578,8 +16702,8 @@ mod tests {
                 "{label} (arm level): conjunct (d) proves the AGGREGATE cannot count the \
                  growing class on all three defs; only the target differs. A target that \
                  reads a live board population is itself a CR 732.2a sibling read, and the \
-                 blanket `Pump` veto S1 relieves covered it, so relieving it here would be \
-                 relief on evidence that never examined the target"
+                 aggregate veto S1 relieves says nothing about it, so relieving it here \
+                 would be relief on evidence that never examined the target"
             );
             assert_eq!(
                 !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
@@ -16628,9 +16752,10 @@ mod tests {
         // ── REACH-GUARD: def[0] is a LIVE block-(1b) veto without S1 ──────────────────
         assert!(
             crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&execs[0]),
-            "reach-guard: the attack pump must be a live veto surface (blanket \
-             `Effect::Pump {{ .. }} => Axes::CONSERVATIVE`); if it were not, S1 would be relieving \
-             a def that never vetoed and this row would prove nothing"
+            "reach-guard: the attack pump must be a live veto surface (its `power` is an \
+             aggregate, and `scan_quantity_ref` sets `sibling` for `QuantityRef::Aggregate` \
+             unconditionally); if it were not, S1 would be relieving a def that never vetoed \
+             and this row would prove nothing"
         );
         // ── NON-VACUITY: the aggregate genuinely counts on this board ─────────────────
         const P3_ARTIFACT: ObjectId = ObjectId(285); // Sicarian Infiltrator

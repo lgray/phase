@@ -144,23 +144,23 @@ impl Axes {
     }
 }
 
-/// Which consumer is asking, and thus how the two mode-divergent arms
-/// (`Effect::Token`, `Effect::Mana`) classify.
+/// Which consumer is asking, and thus how the three mode-divergent arms
+/// (`Effect::Token`, `Effect::Mana`, `Effect::Pump`) classify.
 ///
 /// `Conservative` is the pre-existing shared answer that the CR 603.3b
 /// trigger-ordering gate (`game::triggers`) and every non-firewall caller
 /// require, and it keeps the `LoopDetectionMode::Off` game byte-identical (#4603).
 /// `LoopFirewall` is used ONLY by the CR 732.2a object-growth firewall
-/// (`analysis::resource`), which needs the two token/mana blankets to DESCEND
+/// (`analysis::resource`), which needs the token/mana/pump blankets to DESCEND
 /// rather than fail closed. Every other arm is mode-invariant, so `Off` cannot
 /// observe `LoopFirewall` — the divergent arms are reachable only through the
 /// firewall's `*_for_loop` entry points, themselves reachable only under
 /// `loop_detection.samples()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScanMode {
-    /// Fail-closed on `Token`/`Mana` (the shared CR 603.3b + default answer).
+    /// Fail-closed on `Token`/`Mana`/`Pump` (the shared CR 603.3b + default answer).
     Conservative,
-    /// Descend `Token`/`Mana` bodies (CR 732.2a firewall only).
+    /// Descend `Token`/`Mana`/`Pump` bodies (CR 732.2a firewall only).
     LoopFirewall,
 }
 
@@ -517,7 +517,52 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             acc = acc.or(scan_target_filter(target, target_ctx, mode));
             acc
         }
-        Effect::Pump { .. } => Axes::CONSERVATIVE,
+        // CR 732.2a is the OPERATIVE rule for this whole arm. The same mode split
+        // `Effect::Token` and `Effect::Mana` already ship. Under `Conservative` this stays
+        // the byte-identical blanket the CR 603.3b trigger-ordering gate and every
+        // non-firewall consumer already see. Under `LoopFirewall` it DESCENDS, because
+        // CR 732.2a admits a proposal only on "the predictable results of the sequence of
+        // choices" and bars "conditional actions, where the outcome of a game event
+        // determines the next action a player takes".
+        //
+        // The two halves the descent separates rest on different authorities, so they are
+        // labelled separately rather than sharing one citation:
+        //   * RELIEF (both `PtValue`s literal, target read-free). The premise "this pump
+        //     reads nothing" is an AST property -- `PtValue::Fixed` is a literal -- NOT a
+        //     rules fact, and no CR is cited for it. What CR 732.2a then supplies is why
+        //     that matters: nothing later in the sequence becomes conditional on how far
+        //     the loop has run.
+        //   * VETO (a `PtValue` carrying a board aggregate). Here CR 608.2h is genuinely
+        //     operative, not decorative: an effect requiring "information from the game
+        //     (such as the number of creatures on the battlefield)" has its answer
+        //     "determined only once, when the effect is applied" -- so each loop iteration
+        //     re-determines it against a LARGER board, which is exactly what makes the
+        //     sequence's results unpredictable under CR 732.2a.
+        //
+        // CR 208.1: power and toughness are the two values this arm classifies, and either
+        // can carry the read -- `Effect::Pump` holds them independently. Exhaustive
+        // 3-field destructure, NO `..`: a new field fails to compile until classified.
+        Effect::Pump {
+            power,
+            toughness,
+            target,
+        } => match mode {
+            ScanMode::Conservative => Axes::CONSERVATIVE,
+            ScanMode::LoopFirewall => {
+                let mut acc = Axes::NONE;
+                acc = acc.or(scan_pt_value(power, mode));
+                acc = acc.or(scan_pt_value(toughness, mode));
+                // `target_ctx` is `effect_target_ctx(x, mode)`, computed once at the head
+                // of this function. It ALREADY classifies `Effect::Pump` into the bounded
+                // `SnapshotOrEvent` group -- a classification `scan_effect` itself has
+                // never consulted, because this arm discarded the payload before reaching
+                // it. It is not dead: the block-(1b) S1 arm's conjunct (b-t) reads it
+                // today via `effect_target_reads_sibling_mutable_for_loop`. Nothing about
+                // the classification changes here; this arm starts reading it too.
+                acc = acc.or(scan_target_filter(target, target_ctx, mode));
+                acc
+            }
+        },
         Effect::PairWith { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target, target_ctx, mode));
@@ -3065,8 +3110,8 @@ fn scan_target_filter(x: &TargetFilter, ctx: FilterReadContext, mode: ScanMode) 
         // P3 (`sibling: mode == Conservative`) relaxation of this arm would silently
         // turn every delegating aggregate into a false certificate.
         TargetFilter::Typed(tf) => {
-            // CR 732.2a: the 3rd mode-divergent arm (with `Effect::Token`,
-            // `Effect::Mana`). `event` stays unconditionally true (byte-preserved).
+            // CR 732.2a: a mode-divergent arm (with `Effect::Token`, `Effect::Mana`
+            // and `Effect::Pump`). `event` stays unconditionally true (byte-preserved).
             // Under `Conservative` `sibling` stays true (byte-identical over-veto);
             // under `LoopFirewall` it is precise — `props.sibling` is true only if a
             // property/controller genuinely reads the board (fail-closed), false for
@@ -5636,8 +5681,12 @@ pub(crate) fn ability_definition_reads_sibling_mutable_for_loop(def: &AbilityDef
 ///
 /// `pub(crate)` for ONE reason: the `analysis::resource` block-(1b) relief arm
 /// `pump_aggregate_provably_excludes_class` must prove `Effect::Pump`'s target
-/// contributes no sibling read before it may relieve the blanket
-/// `Effect::Pump { .. } => Axes::CONSERVATIVE` veto. Its two sibling arms
+/// contributes no sibling read before it may relieve that def's veto. That veto is
+/// carried by the aggregate `PtValue` half, which [`scan_quantity_ref`] marks
+/// `sibling` before it walks the filter — so proving the AGGREGATE class-disjoint
+/// leaves the target uncleared. (`scan_effect`'s `Effect::Pump` arm evaluates the
+/// same target expression under `ScanMode::LoopFirewall`, but `.or()`-ed with the
+/// aggregate, so it cannot substitute for this check.) Its two sibling arms
 /// state that as a `target: None` PATTERN; `Effect::Pump` cannot, because its
 /// `target` is a `TargetFilter` and not an `Option<_>`. Exposed as a BOOLEAN so
 /// [`Axes`], [`scan_target_filter`] and [`effect_target_ctx`] all stay private — the
@@ -6952,6 +7001,309 @@ mod tests {
             *count = object_count();
         }
         assert!(scan_effect(&dyn_tok, ScanMode::LoopFirewall).sibling);
+    }
+
+    // ---- P3 rows 25-28: the `Effect::Pump` blanket becomes a mode-split descent ----
+
+    /// Pyreswipe Hawk's REAL attack pump, parsed from the card's VERBATIM Oracle text
+    /// (MTGJSON `AtomicCards.json`) — never a paraphrase and never a hand-built `Pump`,
+    /// either of which can take a different parser branch than the card the relief exists
+    /// for. Its `power` is a `QuantityRef::Aggregate` over `Typed{Artifact, You}`, which
+    /// `scan_quantity_ref` marks `sibling` before it even walks the filter — so this is the
+    /// PAIRED POSITIVE that stops a blanket relief from satisfying row 25.
+    ///
+    /// Pinned by TRIGGER MODE, not by index: the card parses two triggers and an index pin
+    /// would silently re-point if the parser reorders them.
+    fn hawk_attack_pump() -> Effect {
+        let parsed = crate::parser::parse_oracle_text(
+            "Flying, haste\n\
+             Whenever this creature attacks, it gets +X/+0 until end of turn, where X is \
+             the greatest mana value among artifacts you control.\n\
+             Whenever you expend 6, gain control of up to one target artifact for as long \
+             as you control this creature. (You expend 6 as you spend your sixth total mana \
+             to cast spells during a turn.)",
+            "Pyreswipe Hawk",
+            &[],
+            &["Creature".to_string()],
+            &["Elemental".to_string(), "Bird".to_string()],
+        );
+        let attacks = parsed
+            .triggers
+            .iter()
+            .find(|t| t.mode == TriggerMode::Attacks)
+            .expect(
+                "fixture pin: Pyreswipe Hawk's Oracle text must parse to an `Attacks` \
+                 trigger — the attack pump is the whole subject of these rows",
+            );
+        let effect = attacks
+            .execute
+            .as_deref()
+            .expect("fixture pin: the `Attacks` trigger carries an execute body")
+            .effect
+            .as_ref()
+            .clone();
+        // VACUITY GUARD: if the parser ever stops producing the aggregate, every row below
+        // would still be green while proving nothing about a board-reading pump.
+        assert!(
+            matches!(
+                &effect,
+                Effect::Pump {
+                    power: PtValue::Quantity(QuantityExpr::Ref {
+                        qty: QuantityRef::Aggregate { .. }
+                    }),
+                    ..
+                }
+            ),
+            "fixture pin: the attack pump's `power` must be a `QuantityRef::Aggregate` \
+             (\"the greatest mana value among artifacts you control\"), else the paired \
+             positive below reads nothing and row 25 is satisfiable by a blanket relief"
+        );
+        effect
+    }
+
+    /// A `Pump` with two `PtValue::Fixed` halves and a read-free target — the shape row 25
+    /// relieves. Migrated in from arm (vi) of `analysis::resource`'s
+    /// `pump_aggregate_gate_is_precise_and_fail_closed`, which could no longer construct it
+    /// once `pump_firewall_fixture`'s reach guard stopped being reachable with a read-free
+    /// def.
+    fn read_free_pump(target: TargetFilter) -> Effect {
+        Effect::Pump {
+            power: PtValue::Fixed(2),
+            toughness: PtValue::Fixed(2),
+            target,
+        }
+    }
+
+    /// **Row 25** — a trivially-invariant `Pump` stops reading the sibling axis under
+    /// `ScanMode::LoopFirewall`, and an aggregate-bearing one does NOT.
+    ///
+    /// CR 608.2h, carried verbatim from the arm (vi) row this replaces: *a `Pump` with two
+    /// `PtValue::Fixed` halves reads NOTHING, so per CR 608.2h its value is trivially
+    /// invariant across the loop's growth and block (1b) must skip it. If this row goes red
+    /// because someone narrowed the descent to require an aggregate, the narrowing is
+    /// keeping a veto that is provably unnecessary — re-argue it, do not delete this row.*
+    ///
+    /// Both arms assert the EXACT axis triple, so neither a blanket relief nor a blanket
+    /// veto satisfies this row.
+    ///
+    /// REVERT-PROBE: restore `Effect::Pump { .. } => Axes::CONSERVATIVE` (drop the
+    /// `match mode` split) ⇒ the read-free arm reports `(true, true, true)` ⇒ **FAILS**.
+    #[test]
+    fn scan_effect_pump_descends_under_loop_firewall() {
+        let inert = read_free_pump(TargetFilter::SelfRef);
+        let axes = scan_effect(&inert, ScanMode::LoopFirewall);
+        assert_eq!(
+            (axes.event, axes.sibling, axes.projected),
+            (false, false, false),
+            "CR 732.2a: a `Pump` with two `PtValue::Fixed` halves and a `SelfRef` target \
+             reads NOTHING — an AST property, since `PtValue::Fixed` is a literal, and \
+             deliberately NOT cited to a rule, because the Comprehensive Rules have nothing \
+             to say about an effect that requires no information. What CR 732.2a supplies \
+             is why that matters: no later choice in the proposed sequence becomes \
+             conditional on how far the loop has run, so the results stay predictable and \
+             the firewall must not veto. If this row goes red because someone narrowed the \
+             descent to require an aggregate, the narrowing is keeping a veto that is \
+             provably unnecessary — re-argue it, do not delete this row"
+        );
+
+        // PAIRED POSITIVE, on the same shape: the real card body must KEEP its veto.
+        let hawk = hawk_attack_pump();
+        let hawk_axes = scan_effect(&hawk, ScanMode::LoopFirewall);
+        assert_eq!(
+            (hawk_axes.event, hawk_axes.sibling, hawk_axes.projected),
+            (true, true, false),
+            "SOUNDNESS — CR 608.2h, operative here and not decorative: this pump requires \
+             \"information from the game (such as the number of creatures on the \
+             battlefield)\", whose answer is \"determined only once, when the effect is \
+             applied\". Pyreswipe Hawk's attack pump aggregates mana value over a LIVE \
+             battlefield population, so EACH loop iteration re-determines it against a \
+             larger board — which is precisely what makes the sequence's results \
+             unpredictable under CR 732.2a. It must still read the sibling axis. A descent that relieved this too would be a blanket relief \
+             wearing the descent's clothes. `event` is `true` for a reason this arm does \
+             NOT own and must not be \"fixed\": `QuantityRef::Aggregate` walks its filter \
+             under `FilterReadContext::LiveBoardCensus`, and `scan_target_filter`'s \
+             `TargetFilter::Typed` arm sets `event: true` unconditionally (byte-preserved). \
+             The blanket used to mask that; the descent exposes it unchanged. `projected` \
+             is the axis the descent actually moves here (`true` under the blanket, `false` \
+             now), so this triple discriminates the descent from the blanket on the \
+             POSITIVE arm as well as on the negative one"
+        );
+    }
+
+    /// **Row 26** — `ScanMode::Conservative` is byte-identical for BOTH shapes.
+    ///
+    /// This is the row that keeps the CR 603.3b trigger-ordering gate and every
+    /// non-firewall consumer unmoved, and it is why `LoopDetectionMode::Off` games stay
+    /// byte-identical.
+    ///
+    /// REVERT-PROBE: delete the `ScanMode::Conservative => Axes::CONSERVATIVE` arm (let the
+    /// descent run in both modes) ⇒ the read-free case reports `(false, false, false)` ⇒
+    /// **FAILS**.
+    #[test]
+    fn scan_effect_pump_stays_conservative_in_conservative_mode() {
+        for (label, effect) in [
+            ("read-free", read_free_pump(TargetFilter::SelfRef)),
+            ("aggregate-bearing", hawk_attack_pump()),
+        ] {
+            let axes = scan_effect(&effect, ScanMode::Conservative);
+            assert_eq!(
+                (axes.event, axes.sibling, axes.projected),
+                (true, true, true),
+                "{label}: CR 603.3b — under `Conservative` the `Effect::Pump` arm must stay \
+                 the byte-identical fail-closed blanket every non-firewall consumer already \
+                 sees. Only the CR 732.2a firewall may observe the descent"
+            );
+        }
+    }
+
+    /// **Row 27** — a `Pump` whose TARGET reads the board still vetoes.
+    ///
+    /// The three-way family the shipped `analysis::resource::pump_target_axis_is_not_blind`
+    /// already uses, at the scanner level: three defs differing ONLY in `target`. The P/T
+    /// halves are read-free on all three, so the target leg is the SOLE possible source of
+    /// a sibling read and each verdict is attributable to `target` alone.
+    ///
+    /// ALL THREE verdicts are asserted, so a relief in either direction fails: a descent
+    /// that dropped the target leg reddens arm C, and one that vetoed on any target at all
+    /// reddens arms A and B.
+    ///
+    /// CR 732.2a: a target naming a live board population is itself a sibling read. Note
+    /// the coincidence and do not "simplify" it away — this leg evaluates the same
+    /// expression as `analysis::resource`'s block-(1b) conjunct (b-t)
+    /// ([`effect_target_reads_sibling_mutable_for_loop`]). Conjunct (b-t) stays load-bearing
+    /// because a def can trip the scan on its POWER aggregate and still need its target
+    /// proven inert before the S1 arm may relieve, and this leg is `.or()`-ed with that
+    /// aggregate rather than able to override it.
+    ///
+    /// REVERT-PROBE: delete `acc = acc.or(scan_target_filter(target, target_ctx, mode));`
+    /// from the `LoopFirewall` half of the `Effect::Pump` arm ⇒ arm C reports `false` ⇒
+    /// **FAILS**.
+    #[test]
+    fn pump_with_board_reading_target_still_vetoes() {
+        let bare_typed = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![crate::types::ability::TypeFilter::Creature],
+            ..Default::default()
+        });
+        let board_reading = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![crate::types::ability::TypeFilter::Creature],
+            properties: vec![FilterProp::DifferentNameFrom {
+                filter: Box::new(TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![crate::types::ability::TypeFilter::Creature],
+                    controller: Some(ControllerRef::You),
+                    properties: vec![],
+                })),
+            }],
+            ..Default::default()
+        });
+        for (label, target, expected) in [
+            ("A `SelfRef`", TargetFilter::SelfRef, false),
+            ("B bare `Typed{Creature}`", bare_typed, false),
+            (
+                "C board-reading `Typed{Creature, DifferentNameFrom}`",
+                board_reading,
+                true,
+            ),
+        ] {
+            let axes = scan_effect(&read_free_pump(target), ScanMode::LoopFirewall);
+            assert_eq!(
+                axes.sibling, expected,
+                "{label}: the P/T halves are `PtValue::Fixed` on all three, so this verdict \
+                 is the TARGET leg's and nothing else. CR 732.2a: a target naming a live \
+                 board population reads the growing class; a self-reference and a bare \
+                 type predicate do not"
+            );
+        }
+    }
+
+    /// **Row 28** — Chocobo Camp's `abilities[1]` stops reading the sibling axis.
+    ///
+    /// The real card, from its VERBATIM Oracle text (MTGJSON `AtomicCards.json`). Its
+    /// `Effect::Pump` sits FOUR path segments below `effect` —
+    /// `abilities[1].effect.static_abilities[0].modifications[0].trigger.execute.effect` —
+    /// reached by `scan_effect`'s existing `Effect::Token` descent →
+    /// `scan_continuous_modification` → `scan_trigger_definition` → `ability_definition_axes`
+    /// → `scan_effect` again. The repair applies at whatever depth the recursion reaches the
+    /// arm, which is why it reaches this one.
+    ///
+    /// REACH GUARD that makes the row non-vacuous: `abilities[0]` must STILL read the
+    /// sibling axis at this commit (its `sub_ability` carries a `CreateDelayedTrigger` this
+    /// change does not touch). A global kill switch that relieved everything would fail here.
+    ///
+    /// REVERT-PROBE: restore `Effect::Pump { .. } => Axes::CONSERVATIVE` ⇒ `abilities[1]`
+    /// reads the sibling axis again ⇒ **FAILS**.
+    #[test]
+    fn chocobo_camp_idx1_no_longer_reads_the_sibling_axis() {
+        let parsed = crate::parser::parse_oracle_text(
+            "This land enters tapped unless you control a legendary creature.\n\
+             {T}: Add {G}. When you next cast a Bird creature spell this turn, it enters with \
+             an additional +1/+1 counter on it.\n\
+             {2}{G}{G}, {T}: Create a 2/2 green Bird creature token with \"Whenever a land you \
+             control enters, this token gets +1/+0 until end of turn.\"",
+            "Chocobo Camp",
+            &[],
+            &["Land".to_string()],
+            &[],
+        );
+        assert_eq!(
+            parsed.abilities.len(),
+            2,
+            "fixture pin: Chocobo Camp parses to exactly TWO activated abilities; a parser \
+             change that splits or merges them re-points this row"
+        );
+
+        // VACUITY GUARD: the token body must really carry the granted trigger whose execute
+        // is the `Effect::Pump` under test. Without this, a parse change that dropped the
+        // static ability entirely would turn `abilities[1]` read-free for the WRONG reason
+        // and this row would go green while proving nothing about the descent.
+        let Effect::Token {
+            static_abilities, ..
+        } = parsed.abilities[1].effect.as_ref()
+        else {
+            panic!("fixture pin: `abilities[1]` must be the token-creating activated ability");
+        };
+        let granted = static_abilities
+            .iter()
+            .flat_map(|sd| sd.modifications.iter())
+            .find_map(|m| match m {
+                ContinuousModification::GrantTrigger { trigger } => Some(trigger),
+                _ => None,
+            })
+            .expect(
+                "fixture pin: the token grants a trigger (\"Whenever a land you control enters\")",
+            );
+        assert!(
+            matches!(
+                granted
+                    .execute
+                    .as_deref()
+                    .expect("fixture pin: the granted trigger carries an execute body")
+                    .effect
+                    .as_ref(),
+                Effect::Pump { .. }
+            ),
+            "fixture pin: the granted trigger's execute body is the `Effect::Pump` this row \
+             is about — the descent has to reach it four segments below `effect`"
+        );
+
+        // REACH GUARD: `abilities[0]` still vetoes at this commit.
+        assert!(
+            ability_definition_axes(&parsed.abilities[0], ScanMode::LoopFirewall).sibling,
+            "reach guard: `abilities[0]`'s `sub_ability` carries a `CreateDelayedTrigger`, \
+             which this change does not touch, so it must STILL read the sibling axis. If \
+             this flips, the relief below is a global kill switch rather than a payload \
+             descent and proves nothing"
+        );
+
+        // THE CLAIM.
+        assert!(
+            !ability_definition_axes(&parsed.abilities[1], ScanMode::LoopFirewall).sibling,
+            "CR 732.2a: the granted trigger's body is a `Pump{{Fixed(1), Fixed(0), \
+             SelfRef}}`. That it requires no information from the game is an AST property \
+             (both `PtValue`s are literals), not a rules one, so no CR is cited for it. \
+             CR 732.2a is what makes it decisive: the proposed sequence's results stay \
+             predictable and no action in it is conditional, so the object-growth firewall \
+             must not veto the shortcut offer on it"
+        );
     }
 
     /// P2-1: a fixed anthem modification reads nothing (control for P2-2).
