@@ -64,14 +64,25 @@ jobs:
             enabled: true
           EOF
           helm lint deploy/helm/phase-server -f /tmp/scaleout.yaml
+          # Every kind the chart gates on, not just the group: the templates
+          # test `APIVersions.Has` per resource, and a real cluster's discovery
+          # populates both forms. Passing only the group renders no monitors at
+          # all, which the assertions below would let pass silently.
+          # `serviceMonitor` is off by default, so it is enabled here to cover
+          # the second gate.
           helm template phase-server deploy/helm/phase-server \
             --namespace phase -f /tmp/scaleout.yaml \
+            --set metrics.serviceMonitor.enabled=true \
             --api-versions monitoring.coreos.com/v1 \
-            --api-versions monitoring.coreos.com/v1/PrometheusRule > /tmp/scaleout-render.yaml
+            --api-versions monitoring.coreos.com/v1/PrometheusRule \
+            --api-versions monitoring.coreos.com/v1/PodMonitor \
+            --api-versions monitoring.coreos.com/v1/ServiceMonitor > /tmp/scaleout-render.yaml
           test -s /tmp/scaleout-render.yaml
           grep -q 'kind: StatefulSet' /tmp/scaleout-render.yaml
           grep -q 'kind: HorizontalPodAutoscaler' /tmp/scaleout-render.yaml
           grep -q 'kind: PrometheusRule' /tmp/scaleout-render.yaml
+          grep -q 'kind: PodMonitor' /tmp/scaleout-render.yaml
+          grep -q 'kind: ServiceMonitor' /tmp/scaleout-render.yaml
 
       # With no prometheus-operator CRDs the operator path must FAIL rather than
       # render: hpa.yaml would otherwise install an HPA whose only producer of
