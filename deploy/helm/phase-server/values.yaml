@@ -208,7 +208,8 @@ scaleOut:
     # A cert-manager Certificate covering the entry host and every ordinal host,
     # using ingress.tls.clusterIssuer / issuer.
     enabled: true
-    secretName: ""      # defaults to <release>-tls, shared with the Ingress path
+    # No secretName here: `ingress.tls.secretName` is the single authority and
+    # this path reuses it, so a second knob could only disagree with it.
     # Issue one wildcard SAN (e.g. "*.example.com") instead of one SAN per
     # ordinal. Only helps if your edge/DNS actually wants a wildcard.
     wildcardDnsName: ""

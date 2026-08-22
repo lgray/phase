@@ -1,11 +1,17 @@
 {{- if .Values.metrics.enabled }}
-{{- /* Gated on the CRD rather than on a value: installing a PodMonitor without
+{{- /* Gated on the CRD rather than on a value: installing a monitor without
      prometheus-operator makes `helm install` fail on an unknown kind, and the
      operator is usually somebody else's release. `metrics.annotations` is the
-     fallback discovery path when these CRDs are absent. */}}
-{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1" }}
+     fallback discovery path when these CRDs are absent.
+
+     Each kind is tested by resource, not by API group. A partial operator
+     install can register one and not the other, and a group-level test then
+     renders the missing kind anyway — failing at apply on something the chart
+     could have known was unavailable. */}}
 {{- $fullname := include "phase-server.fullname" . }}
-{{- if .Values.metrics.podMonitor.enabled }}
+{{- $podMonitor := and .Values.metrics.podMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PodMonitor") }}
+{{- $serviceMonitor := and .Values.metrics.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") }}
+{{- if $podMonitor }}
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
@@ -27,8 +33,8 @@ spec:
       path: {{ .Values.metrics.path }}
       interval: {{ .Values.metrics.interval }}
 {{- end }}
-{{- if .Values.metrics.serviceMonitor.enabled }}
-{{- if .Values.metrics.podMonitor.enabled }}
+{{- if $serviceMonitor }}
+{{- if $podMonitor }}
 ---
 {{- end }}
 apiVersion: monitoring.coreos.com/v1
@@ -48,6 +54,5 @@ spec:
     - port: metrics
       path: {{ .Values.metrics.path }}
       interval: {{ .Values.metrics.interval }}
-{{- end }}
 {{- end }}
 {{- end }}
