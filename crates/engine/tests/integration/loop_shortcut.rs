@@ -7965,10 +7965,7 @@ const X1_FODDER: ObjectId = ObjectId(421);
 /// but is NOT inert — the SAME deletion reddens the LIB row `analysis/resource.rs ::
 /// foreign_relief_still_keys_on_the_controller_for_a_proposed_ability` (row 37), the driven
 /// guard this partition added on exactly this conjunct (X1-2's M-4 note names it), printing
-/// `left: (false, false)` against `right: (true, false)`. The module stays green only because
-/// it holds no row asserting a VETO on a DRIVER'S-OWN host: its two block-(2) veto rows
-/// (`foreign_mana_ability_still_vetoes`, `foreign_object_second_surface_still_vetoes_after_x1`)
-/// are both FOREIGN-host rows, and its one driver's-own block-(2) row (X1-2) asserts RELIEF.
+/// `left: (false, false)` against `right: (true, false)`.
 /// Deleting `&& !not_proposed` alone restores block (2) to pre-relief behaviour, where THIS
 /// row is green anyway (`ok`) — but the MODULE is NOT clean under it, because that same
 /// deletion IS the re-derived revert-probe of the migrated X1-2
