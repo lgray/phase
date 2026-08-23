@@ -601,8 +601,10 @@ fn cumulative_upkeep_negative_counter_cost_quantity_places_no_counters() {
 ///
 /// Revert probe: reading the resolved quantity as `resolved.unsigned_abs()`
 /// makes the choice-time predicate preview a TWO-counter placement, Solemnity
-/// forbids it, the prompt is suppressed, and Aboroth is sacrificed — failing the
-/// prompt, legality, and `Zone::Battlefield` assertions.
+/// forbids it, the prompt is suppressed, and Aboroth is sacrificed. The row
+/// aborts at the age-counter guard, which goes red because CR 122.2 cleared
+/// that counter with the sacrifice rather than because the tick ran; the three
+/// discriminators below it are unreachable in that direction.
 #[test]
 fn cumulative_upkeep_negative_counter_cost_quantity_stays_choosable_under_solemnity() {
     let mut scenario = GameScenario::new();
