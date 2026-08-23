@@ -13684,6 +13684,9 @@ mod tests {
     /// are `PtValue::Fixed` with a `Typed{Creature}` target, so the descent reads nothing
     /// there and the whole verdict rides on the sibling surface.
     ///
+    /// Axis isolation for these shapes: `game::ability_scan`'s
+    /// `projected_only_leaves_carry_no_sibling_axis` (`Axes` is private there).
+    ///
     /// CR 608.2h: a per-turn journal read is "information from the game", "determined only
     /// once, when the effect is applied", so each loop iteration re-determines it against a
     /// different journal — which is what makes the sequence unpredictable under CR 732.2a.
@@ -13767,6 +13770,9 @@ mod tests {
     /// CR 608.2h: conjunct (a) blanks ONE field and rescans; a residual `true` means another
     /// field still reads information the loop re-determines, and the relief argument for the
     /// blanked field cannot carry the def.
+    ///
+    /// Axis isolation for these shapes: `game::ability_scan`'s
+    /// `projected_only_leaves_carry_no_sibling_axis` (`Axes` is private there).
     ///
     /// REVERT-PROBE: repoint the four conjunct-(a) sites to a `.sibling`-only reader ⇒ both
     /// predicates relieve their fixtures ⇒ **FAILS**.
@@ -13861,6 +13867,9 @@ mod tests {
     /// `projected` WITHOUT `sibling` so the row's mutation moves them: a `PtComparison`
     /// whose value is `Ref(LifeTotal{Controller})` (through `scan_quantity_expr`) and a
     /// `ControllerMatches{OpponentLostLife}` (through `scan_player_filter`).
+    ///
+    /// Axis isolation for these shapes: `game::ability_scan`'s
+    /// `projected_only_leaves_carry_no_sibling_axis` (`Axes` is private there).
     ///
     /// CR 608.2h + CR 732.2a: a target selected by a value the loop's own progress moves is
     /// re-determined every iteration, so the sequence's results stop being predictable.
@@ -13958,6 +13967,9 @@ mod tests {
     /// discriminates — it blanks `effect`, and the projected `sub_ability.condition` survives
     /// the blank.
     ///
+    /// Axis isolation for these shapes: `game::ability_scan`'s
+    /// `projected_only_leaves_carry_no_sibling_axis` (`Axes` is private there).
+    ///
     /// CR 608.2h: the aggregate's answer is determined once when the effect is applied, which
     /// is why conjunct (d) can prove it invariant over a disjoint class — and why the journal
     /// read beside it, which no disjunct examines, still makes the sequence unpredictable
@@ -14027,6 +14039,9 @@ mod tests {
     /// Three shipped bodies: Gadrak, the Crown-Scourge's `Ref(ZoneChangeCountThisTurn)` token
     /// count and Aetherflux Reservoir's `Ref(SpellsCastThisTurn)` at block (1b), and Children
     /// of Korlis's `Ref(LifeLostThisTurn)` at block (2).
+    ///
+    /// Axis isolation for these shapes: `game::ability_scan`'s
+    /// `projected_only_leaves_carry_no_sibling_axis` (`Axes` is private there).
     ///
     /// CR 608.2h: each is a per-turn journal the loop's own progress appends to, so its
     /// answer is re-determined every iteration and CR 732.2a's predictability requirement
@@ -25259,11 +25274,14 @@ mod tests {
     ///   `exiled_colors_provably_exclude_class` ⇒ **FAILS** on `S2-MED2(0)`.
     /// * delete conjunct (a) (the clone + `*probe.effect = Effect::NoOp` + rescan) ⇒
     ///   **FAILS** on `S2-MED2(a)`.
+    /// * narrow conjunct (a)'s reader to `.sibling` ⇒ **FAILS** on `S2-MED2(a-projected)`.
+    ///   `S2-MED2(a)`'s own `ObjectCount` residual is `{sibling: true, projected: false}`
+    ///   and survives that narrowing, which is why the projected arm is a separate half.
     #[test]
     fn s2_arm_keeps_its_veto_for_a_restriction_or_a_class_reading_sibling_field() {
         use crate::types::ability::{
-            AbilityDefinition, ActivationRestriction, Effect, ManaProduction, QuantityExpr,
-            QuantityRef, TargetFilter, TypeFilter, TypedFilter,
+            AbilityCondition, AbilityDefinition, ActivationRestriction, Effect, ManaProduction,
+            QuantityExpr, QuantityRef, TargetFilter, TypeFilter, TypedFilter,
         };
 
         let base = pit_exiled_color_ability();
@@ -25347,6 +25365,35 @@ mod tests {
              cannot carry the whole def. Deleting conjunct (a)'s clone-and-rescan makes this \
              FAIL"
         );
+
+        // ── (a) the same field carrying a PROJECTED-ONLY read ───────────────────────
+        // The `ObjectCount` residual above is `{sibling: true, projected: false}`, so a
+        // `.sibling`-only conjunct (a) sees it too and cannot attribute this arm's
+        // repoint. `NthResolutionThisTurn` is projected-ONLY — pinned as a shape by
+        // `ability_scan`'s `projected_only_leaves_carry_no_sibling_axis` — so only the
+        // both-axes reader sees the rider below.
+        let mut projected_rider = base.clone();
+        *projected_rider.effect = Effect::NoOp;
+        projected_rider.condition = Some(AbilityCondition::NthResolutionThisTurn { n: 2 });
+        projected_rider.sub_ability = None;
+        let mut with_projected = base.clone();
+        with_projected.sub_ability = Some(Box::new(projected_rider));
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&{
+                let mut probe = with_projected.clone();
+                *probe.effect = Effect::NoOp;
+                probe
+            }),
+            "reach-guard for (a)/projected: with the effect blanked the rescan must still \
+             answer TRUE, and the rider's only read is the projected-ONLY shape, so that \
+             TRUE is carried by the `projected` axis alone"
+        );
+        assert!(
+            !exiled_colors_provably_exclude_class(&with_projected, &state, member, &host_obj),
+            "S2-MED2(a-projected): CR 732.2a — conjunct (a) reads `sibling` ∨ `projected`, so a \
+             per-turn journal read beside the relievable effect keeps the veto. \
+             Narrowing conjunct (a) to `.sibling` makes this FAIL"
+        );
     }
 
     /// **MED-2 pin, arm S3** — mirror of the S2 MED-2 row for
@@ -25357,11 +25404,12 @@ mod tests {
     /// REVERT / MUTATION PROBES:
     /// * delete conjunct (0) ⇒ **FAILS** on `S3-MED2(0)`.
     /// * delete conjunct (a) ⇒ **FAILS** on `S3-MED2(a)`.
+    /// * narrow conjunct (a)'s reader to `.sibling` ⇒ **FAILS** on `S3-MED2(a-projected)`.
     #[test]
     fn s3_arm_keeps_its_veto_for_a_restriction_or_a_class_reading_else_ability() {
         use crate::types::ability::{
-            AbilityDefinition, ActivationRestriction, Effect, ManaProduction, QuantityExpr,
-            QuantityRef, TargetFilter, TypeFilter, TypedFilter,
+            AbilityCondition, AbilityDefinition, ActivationRestriction, Effect, ManaProduction,
+            QuantityExpr, QuantityRef, TargetFilter, TypeFilter, TypedFilter,
         };
 
         let base = stockpile_counter_mana_ability();
@@ -25438,6 +25486,33 @@ mod tests {
              counting live creatures reads the growing class, so conjunct (d)'s counter \
              identity argument cannot carry the whole def. Deleting conjunct (a)'s \
              clone-and-rescan makes this FAIL"
+        );
+
+        // ── (a) the same field carrying a PROJECTED-ONLY read ───────────────────────
+        // Mirror of the S2 row's projected arm, and for the same reason: the
+        // `ObjectCount` residual above is `{sibling: true, projected: false}` and so
+        // cannot attribute this arm's repoint to a `.sibling`-only reader.
+        let mut projected_rider = base.clone();
+        *projected_rider.effect = Effect::NoOp;
+        projected_rider.condition = Some(AbilityCondition::NthResolutionThisTurn { n: 2 });
+        projected_rider.else_ability = None;
+        let mut with_projected = base.clone();
+        with_projected.else_ability = Some(Box::new(projected_rider));
+        assert!(
+            crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&{
+                let mut probe = with_projected.clone();
+                *probe.effect = Effect::NoOp;
+                probe
+            }),
+            "reach-guard for (a)/projected: with the effect blanked the rescan must still \
+             answer TRUE, and the rider's only read is the projected-ONLY shape, so that \
+             TRUE is carried by the `projected` axis alone"
+        );
+        assert!(
+            !counters_on_source_provably_excludes_class(&with_projected, &state, member, &host_obj),
+            "S3-MED2(a-projected): CR 732.2a — conjunct (a) reads `sibling` ∨ `projected`, so a \
+             per-turn journal read beside the relievable effect keeps the veto. \
+             Narrowing conjunct (a) to `.sibling` makes this FAIL"
         );
     }
 

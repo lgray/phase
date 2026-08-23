@@ -137,12 +137,12 @@ impl Axes {
 
     /// CR 732.2a: a shortcut proposal is legal only on outcomes the loop's own progress cannot
     /// move.
-    /// CR 603.3b: `sibling` is the board half — a growing class moves a board aggregate.
+    /// `sibling` is the board half — a growing class moves a board aggregate.
     /// CR 106.1 / CR 119 / CR 122.1: `projected` is the player half — the monotone resources and
     /// per-turn journals `analysis::resource::project_out_resources` neutralizes, so the loop cover
     /// cannot see a read of one.
     /// A `LoopFirewall` consult must ask both. `Conservative` consumers keep single-axis
-    /// projections; that is the ordering question, not this one.
+    /// projections; that is the CR 603.3b ordering question, not this one.
     fn reads_growing_class(self) -> bool {
         self.sibling || self.projected
     }
@@ -5720,13 +5720,8 @@ fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> A
 /// def, granted-ability bodies) — the CR 732.2a object-growth firewall's DESCENDING
 /// body scan (§P0-e row 2).
 ///
-/// Both axes: this reader's consumers are the growing-class surfaces
-/// `fire_time_conditions_read_projected_resource_scoped` does not reach. That pass
-/// scans a trigger `condition`, a replacement `condition`/`runtime_execute`, a static
-/// `condition` and a granted-keyword trigger `condition` — never `obj.abilities`,
-/// never `def.execute`.
-/// CR 603.3b: `Conservative` consumers ask the ordering question and keep `.sibling`
-/// alone.
+/// Both axes, and what `Conservative` consumers ask instead: see
+/// [`Axes::reads_growing_class`].
 pub(crate) fn ability_definition_reads_growing_class_for_loop(def: &AbilityDefinition) -> bool {
     ability_definition_axes(def, ScanMode::LoopFirewall).reads_growing_class()
 }
@@ -5739,13 +5734,8 @@ pub(crate) fn ability_definition_reads_growing_class_for_loop(def: &AbilityDefin
 /// (`SnapshotOrEvent` -> `LiveBoardCensus`) moves this answer with it instead of
 /// desynchronising a caller that pinned the context.
 ///
-/// Both axes: this reader's consumers are the growing-class surfaces
-/// `fire_time_conditions_read_projected_resource_scoped` does not reach. That pass
-/// scans a trigger `condition`, a replacement `condition`/`runtime_execute`, a static
-/// `condition` and a granted-keyword trigger `condition` — never `obj.abilities`,
-/// never `def.execute`.
-/// CR 603.3b: `Conservative` consumers ask the ordering question and keep `.sibling`
-/// alone.
+/// Both axes, and what `Conservative` consumers ask instead: see
+/// [`Axes::reads_growing_class`].
 ///
 /// `pub(crate)` for ONE reason: the `analysis::resource` block-(1b) relief arm
 /// `pump_aggregate_provably_excludes_class` must prove `Effect::Pump`'s target
@@ -7330,6 +7320,88 @@ mod tests {
         );
     }
 
+    /// AXIS ISOLATION for the projected-only SHAPES `analysis::resource`'s
+    /// projected-surface rows rest on. Those rows read the `sibling` ∨ `projected`
+    /// disjunction and cannot say which axis carried it, and every SINGLE-axis
+    /// projection this module exports is `ScanMode::Conservative` — so the property is
+    /// pinned here, where [`Axes`] is reachable. It belongs to the SHAPE, not to any
+    /// one fixture. (`QuantityRef::LifeTotal` is pinned by
+    /// [`projected_reading_pump_reports_its_axes_precisely_and_the_consumer_sees_them`].)
+    ///
+    /// REVERT-PROBE: give any one of these arms `sibling: true` ⇒ **FAILS** on that
+    /// arm's label.
+    #[test]
+    fn projected_only_leaves_carry_no_sibling_axis() {
+        use crate::types::ability::TypeFilter;
+
+        let target = TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller: None,
+            properties: vec![FilterProp::ControllerMatches {
+                player: Box::new(PlayerFilter::OpponentLostLife),
+            }],
+        };
+        // Under `LoopFirewall` the `TargetFilter::Typed` arm takes its `sibling` verbatim
+        // from `typed_filter_axes`, so this IS that arm's verdict for this shape.
+        let by_target = typed_filter_axes(&target, ScanMode::LoopFirewall);
+        let by_condition = scan_ability_condition(
+            &AbilityCondition::NthResolutionThisTurn { n: 2 },
+            ScanMode::LoopFirewall,
+        );
+        let refs = [
+            (
+                "LifeGainedThisTurn",
+                QuantityRef::LifeGainedThisTurn {
+                    player: PlayerScope::Controller,
+                },
+            ),
+            (
+                "LifeLostThisTurn",
+                QuantityRef::LifeLostThisTurn {
+                    player: PlayerScope::Controller,
+                },
+            ),
+            (
+                "SpellsCastThisTurn",
+                QuantityRef::SpellsCastThisTurn {
+                    scope: CountScope::Controller,
+                    filter: None,
+                },
+            ),
+            (
+                "ZoneChangeCountThisTurn",
+                QuantityRef::ZoneChangeCountThisTurn {
+                    from: Some(Zone::Battlefield),
+                    to: Some(Zone::Graveyard),
+                    filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+                },
+            ),
+        ];
+        for (label, axes) in [
+            ("ControllerMatches{OpponentLostLife}", by_target),
+            ("NthResolutionThisTurn", by_condition),
+        ]
+        .into_iter()
+        .chain(
+            refs.iter()
+                .map(|(l, q)| (*l, scan_quantity_ref(q, ScanMode::LoopFirewall))),
+        ) {
+            // The `event` axis is not part of the claim: `scan_target_filter`'s `Typed`
+            // arm sets it unconditionally, so a filter-bearing shape carries it either
+            // way. The growing class is `sibling` ∨ `projected` (CR 732.2a) and that
+            // pair is what these rows rest on.
+            assert_eq!(
+                (axes.sibling, axes.projected),
+                (false, true),
+                "AXIS ISOLATION ({label}): CR 732.2a — this shape is classified \
+                 projected-ONLY, and the `sibling: false` half is exactly what makes it a \
+                 hazard a `.sibling`-only consult could not see. If it ever gains \
+                 `sibling`, `analysis::resource`'s projected-surface rows stop testing the \
+                 axis they name"
+            );
+        }
+    }
+
     /// **Row 26** — `ScanMode::Conservative` is byte-identical for BOTH shapes.
     ///
     /// This is the row that keeps the CR 603.3b trigger-ordering gate and every
@@ -8909,12 +8981,14 @@ mod tests {
     /// VACUITY TRAP, named explicitly: assertion (1) is `ScanMode::Conservative`,
     /// where the `TargetFilter::Typed` arm already forces `sibling: true`. It
     /// passes with AND without Step 0c and is therefore NOT the discriminator.
-    /// Assertion (2) — `ScanMode::LoopFirewall`, the mode the two production
+    /// Assertion (2) is `ScanMode::LoopFirewall`, the mode the two production
     /// callers in `analysis::resource::fire_time_conditions_read_growing_class`
-    /// use — asks `Axes::reads_growing_class`, so it holds on either axis.
+    /// use, and asks the `sibling` axis ALONE. `Axes::reads_growing_class` cannot
+    /// discriminate here: this arm's `projected: true` predates Step 0c, so the
+    /// disjunction is green with AND without it.
     ///
-    /// REVERT-PROBE: set the arm's `sibling` and `projected` back to `false` →
-    /// (2), (3) and (4) FAIL while (1) still passes.
+    /// REVERT-PROBE: zero this arm's `sibling` alone, leaving `projected: true` →
+    /// (2) and (3) FAIL while (1) and (4) still pass.
     #[test]
     fn bbfu10_ledger_ref_is_sibling_mutable_in_both_scan_modes() {
         let ledger = ability_def_with_amount(QuantityRef::BattlefieldEntriesThisTurn {
@@ -8934,25 +9008,29 @@ mod tests {
             ability_definition_reads_sibling_mutable(&ledger),
             "(1) Conservative axis-2 (CR 603.3b consumer) — passes with or without Step 0c",
         );
-        // (2) THE DISCRIMINATOR — LoopFirewall, the CR 732.2a firewall's mode.
+        // (2) THE DISCRIMINATOR — the SIBLING half of the growing class, under
+        // LoopFirewall, the CR 732.2a firewall's mode.
         assert!(
-            ability_definition_reads_growing_class_for_loop(&ledger),
-            "(2) CR 732.2a: the ledger read must stay in the growing class under \
-             LoopFirewall — this is the exact predicate `analysis::resource` calls at \
-             the two `..._for_loop` scan sites",
+            ability_definition_axes(&ledger, ScanMode::LoopFirewall).sibling,
+            "(2) CR 732.2a: the ledger read must carry the SIBLING axis under \
+             LoopFirewall, the mode the two `..._for_loop` scan sites in \
+             `analysis::resource` use. Those sites read `sibling ∨ projected`, and \
+             this arm's `projected` predates Step 0c, so only the sibling half \
+             distinguishes a board-aggregate read from a plain per-turn journal",
         );
-        // (3) parity guard — the look-back and live siblings must agree on both axes.
+        // (3) parity guard — the look-back and live siblings must agree on the
+        // sibling axis in BOTH scan modes.
         assert_eq!(
             (
                 ability_definition_reads_sibling_mutable(&ledger),
-                ability_definition_reads_growing_class_for_loop(&ledger),
+                ability_definition_axes(&ledger, ScanMode::LoopFirewall).sibling,
             ),
             (
                 ability_definition_reads_sibling_mutable(&live),
-                ability_definition_reads_growing_class_for_loop(&live),
+                ability_definition_axes(&live, ScanMode::LoopFirewall).sibling,
             ),
             "(3) parity: `BattlefieldEntriesThisTurn` and `EnteredThisTurn` are the \
-             same board-aggregate class on the sibling axis",
+             same board-aggregate class on the sibling axis, in both scan modes",
         );
         // (4) the projected axis is untouched by Step 0c.
         assert!(
@@ -8975,7 +9053,7 @@ mod tests {
     /// on the Conservative trigger-`condition` path that already forces
     /// `sibling: true` (the Gargoyle Flock trap: `true → true`, non-discriminating).
     ///
-    /// REVERT-PROBE: set the ledger arm's `sibling` and `projected` back to `false`
+    /// REVERT-PROBE: zero the ledger arm's `sibling` alone, leaving `projected: true`
     /// → (2) FAILS.
     #[test]
     fn bbfu10_shipped_ledger_observer_flips_for_loop_axis() {
@@ -9005,11 +9083,14 @@ mod tests {
              not some other board aggregate",
         );
 
-        // (2) THE DISCRIMINATOR — literally the callee at the block-(1) scan site.
+        // (2) THE DISCRIMINATOR — the SIBLING half of what the block-(1) scan site
+        // calls. That site reads `sibling ∨ projected`, which is green on the
+        // `projected` half alone and so cannot be this row's instrument.
         assert!(
-            ability_definition_reads_growing_class_for_loop(execute),
+            ability_definition_axes(execute, ScanMode::LoopFirewall).sibling,
             "(2) CR 732.2a: a shipped ledger observer must veto an object-growth \
-             certificate",
+             certificate on the SIBLING axis — its `projected` half predates Step 0c \
+             and cannot tell this body from one that never reads the board",
         );
 
         // (4) negative sibling — a plain draw trigger body does NOT veto.
