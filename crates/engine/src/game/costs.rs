@@ -3546,4 +3546,69 @@ mod tests {
             "a OneOf whose every option is impossible must not be payable"
         );
     }
+
+    /// CR 614.17b: "If an event can't happen, a player can't choose to pay a
+    /// cost that includes that event" — at `PaymentScope::Activation`.
+    ///
+    /// Wall of Roots' mana ability costs `EffectCost { PutCounter { SelfRef } }`;
+    /// Solemnity's second sentence is a CR 614.17 can't-effect on exactly that
+    /// placement. Activation never consults
+    /// `resolution_cost_includes_impossible_event` and
+    /// `is_payable_for_activation` admits every `EffectCost` unconditionally, so
+    /// the refusal inside the payment arm is the only answer available here.
+    ///
+    /// Revert probe: rewriting that arm's `let prevented =
+    /// self_counter_placement_is_prohibited(…)` as `let prevented = false` makes
+    /// the payer answer `Paid` on a board where the counter is prevented, failing
+    /// (ii) and (iii).
+    #[test]
+    fn activation_self_counter_cost_under_solemnity_is_refused() {
+        let mut scenario = GameScenario::new();
+        let wall = scenario.add_creature(P0, "Wall of Roots", 0, 5).id();
+        let cost = AbilityCost::EffectCost {
+            effect: Box::new(Effect::PutCounter {
+                counter_type: CounterType::PowerToughness {
+                    power: 0,
+                    toughness: -1,
+                },
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::SelfRef,
+            }),
+        };
+
+        // (i) Reach guard: the same cost on the same board is payable before the
+        // prohibition exists, so (ii) and (iii) cannot pass upstream of the arm.
+        assert!(
+            can_pay_activation(&scenario.state, wall, &cost),
+            "an unprohibited self-counter activation cost must be payable"
+        );
+
+        scenario.add_enchantment_from_oracle(
+            P0,
+            "Solemnity",
+            "Players can't get counters.\n\
+             Counters can't be put on artifacts, creatures, enchantments, or lands.",
+        );
+
+        // (ii) The ability is no longer activatable.
+        assert!(
+            !can_pay_activation(&scenario.state, wall, &cost),
+            "a prevented counter placement must make the activation cost unpayable"
+        );
+
+        // (iii) CR 601.2h: the payer refuses rather than reporting a cost whose
+        // event the replacement swallowed.
+        let refused = pay_ability_cost_for_activation(
+            &mut scenario.state,
+            P0,
+            wall,
+            &cost,
+            Some(0),
+            &mut Vec::new(),
+        );
+        assert!(
+            matches!(refused, Err(EngineError::ActionNotAllowed(_))),
+            "a prevented counter-placement cost must refuse activation, got {refused:?}"
+        );
+    }
 }
