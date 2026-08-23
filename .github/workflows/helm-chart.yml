@@ -117,6 +117,10 @@ jobs:
       # claim. Two processes on one games.db is destructive.
       - name: assert the storage invariants
         run: |
+          # The kind, not just the count: `replicas: 1` alone would still pass
+          # if the default path became a single-replica StatefulSet, which is
+          # the shape this invariant exists to keep it out of.
+          grep -q 'kind: Deployment' /tmp/default.yaml
           grep -q 'replicas: 1' /tmp/default.yaml
           grep -q 'volumeClaimTemplates' /tmp/scaleout-render.yaml
           if grep -q 'kind: Deployment' /tmp/scaleout-render.yaml; then echo "unexpected 'kind: Deployment' in /tmp/scaleout-render.yaml"; exit 1; fi
