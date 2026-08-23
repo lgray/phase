@@ -93,7 +93,10 @@ jobs:
                --namespace phase -f /tmp/scaleout.yaml > /tmp/no-crd.yaml 2>/tmp/no-crd.err; then
             echo "expected the render to fail without monitoring.coreos.com/v1"; exit 1
           fi
-          grep -q 'prometheus-operator CRDs' /tmp/no-crd.err
+          # Match the capability the guard names, not its prose: the message
+          # has already been reworded once, and this assertion silently stopped
+          # matching it.
+          grep -q 'monitoring.coreos.com/v1/PrometheusRule' /tmp/no-crd.err
 
       # The escape hatch stays open: with prometheusRule.enabled=false the operator
       # is not required at all, because the recording rule is supplied externally
