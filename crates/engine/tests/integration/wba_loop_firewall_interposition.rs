@@ -30,7 +30,9 @@
 use std::sync::Arc;
 
 use engine::game::zones::create_object;
-use engine::types::ability::{AbilityKind, ReplacementDefinition, TargetFilter, TypedFilter};
+use engine::types::ability::{
+    AbilityKind, Effect, ReplacementDefinition, TargetFilter, TypedFilter,
+};
 use engine::types::card_type::CoreType;
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
@@ -297,7 +299,7 @@ const PROPOSAL_LANDS: [(&str, &str, &[&str]); 3] = [
     ),
 ];
 
-/// Chocobo Camp's VERBATIM Oracle text, from the same export. Row 19's subject.
+/// Chocobo Camp's VERBATIM Oracle text, from the same export.
 const CHOCOBO_CAMP: (&str, &str, &[&str]) = (
     "Chocobo Camp",
     "This land enters tapped unless you control a legendary creature.\n\
@@ -395,6 +397,36 @@ fn spellify_the_nonmana_ability(state: &mut GameState, host: ObjectId) {
     abilities[targets[0]].kind = AbilityKind::Spell;
 }
 
+/// Flip `uses_tracked_set` on the CR 603.7 delayed triggered ability the grafted land's MANA
+/// ability creates. `true` resolves that payload against the parent ability's tracked object
+/// set, a referent the definition cannot see, so the firewall must fail closed and refuse.
+///
+/// One bool on one node is the only variable it changes, so an offer that survives it would
+/// mean block (2) never read this node at all.
+fn track_the_delayed_payload(state: &mut GameState, host: ObjectId) {
+    let obj = state.objects.get_mut(&host).expect("the land is live");
+    let abilities = Arc::make_mut(&mut obj.abilities);
+    assert!(
+        !nonmana_ability_index(abilities).contains(&0),
+        "reach-guard: `abilities[0]` really is the CR 605.1a mana ability that carries the \
+         delayed trigger"
+    );
+    let sub = abilities[0]
+        .sub_ability
+        .as_mut()
+        .expect("reach-guard: the mana ability carries the delayed-trigger sub-ability");
+    let Effect::CreateDelayedTrigger {
+        uses_tracked_set, ..
+    } = sub.effect.as_mut()
+    else {
+        panic!(
+            "reach-guard: that sub-ability's effect is the `Effect::CreateDelayedTrigger` \
+             this row is about"
+        );
+    };
+    *uses_tracked_set = true;
+}
+
 /// **Row 15 — three REAL census lands whose activated ability the proposed sequence never
 /// activates stop vetoing the CR 732.2a offer; and each returns to REFUSING the moment that
 /// ability stops being an activated one.**
@@ -457,45 +489,44 @@ fn unactivated_ability_relief_offers_on_three_real_census_lands() {
     }
 }
 
-/// **Row 19 (NEGATIVE — Chocobo Camp still REFUSES at this partition's tip).**
+/// **Chocobo Camp OFFERS the CR 732.2a shortcut, untapped and tapped.**
 ///
-/// The census here is **18 of 19, not 19 of 19**, and this row is what stops anyone claiming
-/// otherwise without turning a test red. Chocobo Camp vetoes at block (2) on BOTH of its
-/// activated ability indices, untapped and tapped, and neither veto is a proposal-absence
-/// question:
-///  * `abilities[0]` (`{T}: Add {G}. When you next cast a Bird creature spell this turn, …`) is
-///    a CR 605.1a mana ability, and CR 605.3a keeps mana abilities out of this relief entirely
-///    — they are activatable outside the priority rule, in the middle of the loop's own cost
-///    payment, where the loop-action record does not capture them.
-///  * `abilities[1]` (`{2}{G}{G}, {T}: Create a 2/2 green Bird … token with "Whenever a land
-///    you control enters, this token gets +1/+0 …"`) IS relieved by this partition's argument —
-///    but block (2) is an `any` over `obj.abilities`, so one un-relieved surface keeps the
-///    whole permanent vetoing.
+/// The board is the realistic combo dump with Chocobo Camp grafted onto it as the only
+/// grafted proposal land — `graft_full_land` ADDS an object and clears nothing, so the loop
+/// the shortcut is proposed for is the dump's own.
 ///
-/// Both vetoes are answered by narrowing the AST scanner's two remaining blanket arms, which is
-/// a different partition's work and a STRUCTURAL rather than a contingent relief.
+/// Block (2) is an `any` over `obj.abilities`, so both surfaces have to clear:
+///  * `abilities[0]` (`{T}: Add {G}. When you next cast a Bird creature spell this turn, …`)
+///    is a CR 605.1a mana ability that CR 605.3a holds out of the proposal-absence relief, so
+///    its veto can only be lifted by classifying the delayed trigger's own payload.
+///  * `abilities[1]` (the token ability) is relieved by the proposal-absence argument.
 ///
-/// PAIRED POSITIVE, in the same test: the same dump carrying Abandoned Air Temple instead DOES
-/// offer. Without it this negative would be satisfiable by a harness that never offers at all.
+/// STRUCTURE, so no arm can pass for the wrong reason:
+///  * BASELINE (positive control): the untouched dump OFFERS, so an OFFER below is the
+///    card's and not the harness's.
+///  * PAIRED POSITIVE: a land that already offers on the same board still offers, so the
+///    question below is about this card rather than about the board.
+///  * REACH-GUARDS: two activated abilities, exactly one a mana ability; and ARM B flips
+///    `uses_tracked_set` on `abilities[0]`'s delayed payload ⇒ REFUSES, so block (2) reads it.
 ///
-/// This row is a NEGATIVE and has no "delete X ⇒ red" revert: it goes red when someone makes
-/// this card offer at this commit, which is precisely the claim it exists to police.
+/// REVERT / MUTATION PROBE: restore `Effect::CreateDelayedTrigger { .. } => Axes::CONSERVATIVE`
+/// in `game::ability_scan`'s `scan_effect` ⇒ the OFFER assertion below **FAILS** while the
+/// BASELINE control above still passes, so that red is this card's and not the harness's.
 #[test]
-fn chocobo_camp_still_refuses_after_the_proposal_relief() {
+fn chocobo_camp_offers_untapped_and_tapped() {
     assert!(
-        drive_and_report(load_realistic_dump(), "row 19 baseline"),
-        "row 19 BASELINE positive control: the untouched combo board OFFERS, so a REFUSES \
-         below is the card's and not the harness's"
+        drive_and_report(load_realistic_dump(), "bare dump"),
+        "BASELINE positive control: the untouched combo board OFFERS, so an OFFER below is \
+         the card's and not the harness's"
     );
     assert!(
         {
             let mut with_temple = load_realistic_dump();
             graft_full_land(&mut with_temple, PROPOSAL_LANDS[0]);
-            drive_and_report(with_temple, "row 19 paired positive")
+            drive_and_report(with_temple, "air temple control")
         },
-        "row 19 PAIRED POSITIVE: Abandoned Air Temple — a land this partition DOES take — \
-         offers on the same board, so the refusals below say 'this partition does not reach \
-         Chocobo Camp' rather than 'this partition does nothing'"
+        "PAIRED POSITIVE: Abandoned Air Temple offers on the same board, so the verdict below \
+         is about this card and not about the board"
     );
 
     for tapped in [false, true] {
@@ -504,32 +535,38 @@ fn chocobo_camp_still_refuses_after_the_proposal_relief() {
         {
             let obj = board.objects.get_mut(&host).expect("Chocobo Camp is live");
             obj.tapped = tapped;
-            // Reach-guards: BOTH surfaces are pinned, because the row's whole claim is that
-            // one of them is relieved by this partition and the other is not — a board where
-            // neither was reached would refuse for a reason this row does not name.
             assert_eq!(
                 obj.abilities.len(),
                 2,
-                "row 19 reach-guard: Chocobo Camp parses to TWO activated abilities (MEASURED \
-                 against the card-data export, 35 798 keys), and block (2) is an `any` over \
-                 them"
+                "reach-guard: Chocobo Camp parses to TWO activated abilities, and block (2) \
+                 is an `any` over them — so a green verdict means both cleared"
             );
             assert_eq!(
                 nonmana_ability_index(&obj.abilities),
                 vec![1],
-                "row 19 reach-guard: exactly ONE of the two is a CR 605.1a mana ability — \
+                "reach-guard: exactly ONE of the two is a CR 605.1a mana ability — \
                  `abilities[0]`, which CR 605.3a holds OUT of the proposal-absence relief — \
-                 while `abilities[1]` IS reached by it. The refusal below is `abilities[0]`'s \
-                 and the token ability's nested read, not a board that was never scanned"
+                 while `abilities[1]` IS reached by it, so both surfaces are reached"
             );
         }
         assert!(
-            !drive_and_report(board, "row 19"),
-            "row 19 (tapped = {tapped}): the census at this partition's tip is 18 of 19. \
-             Chocobo Camp's mana ability is held out by CR 605.3a and its token ability's veto \
-             lives four path segments below `effect`, where no proposal-absence argument \
-             reaches. If this row goes red, someone has claimed the nineteenth card here — \
-             re-measure before believing it"
+            drive_and_report(board, "chocobo camp"),
+            "(tapped = {tapped}): CR 732.2a — with the delayed trigger's payload classified \
+             instead of vetoed on its shape, the mana ability's surface reads nothing that \
+             the loop's own growth can move, so the shortcut offer is legal on this board"
         );
     }
+
+    // ── ARM B: the SAME board, one bool changed on the node this row is about ──
+    let mut tracked = load_realistic_dump();
+    let host = graft_full_land(&mut tracked, CHOCOBO_CAMP);
+    track_the_delayed_payload(&mut tracked, host);
+    assert!(
+        !drive_and_report(tracked, "tracked-set chocobo camp"),
+        "ARM B: with `uses_tracked_set` set on `abilities[0]`'s delayed payload the firewall \
+         fails CLOSED — CR 603.7's delayed ability would resolve against a tracked set this \
+         definition cannot see — so this arm is the reach-guard for the arms above: block \
+         (2) demonstrably reads that node, and their offers are its classification and not \
+         a blind scan"
+    );
 }

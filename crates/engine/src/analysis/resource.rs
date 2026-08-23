@@ -26605,11 +26605,16 @@ mod tests {
     }
 
     /// Chocobo Camp's REAL parsed `abilities[0]` — VERBATIM Oracle text from the pinned
-    /// `AtomicCards.json` export, never a paraphrase. It is a CR 605.1a mana ability
-    /// (`{T}: Add {G}`) whose `sub_ability` carries a `CreateDelayedTrigger` the scan flags,
-    /// which is exactly the shape row 18 needs: absence from the loop-action record must NOT
-    /// relieve it, because a mana ability tapped while PAYING A COST is recorded nowhere.
+    /// `AtomicCards.json` export, never a paraphrase — returned with ONE substitution: the
+    /// delayed body carried by its `sub_ability`'s `CreateDelayedTrigger` is replaced by
+    /// [`p2_class_reading_ability`]. The printed delayed body reads nothing once the
+    /// object-growth firewall descends into that node, and this row needs a subject the scan
+    /// flags. Mana-ness (CR 605.1a, `{T}: Add {G}`) and record-absence survive the
+    /// substitution untouched, which is what this row needs: absence from the loop-action
+    /// record must NOT relieve it, because a mana ability tapped while PAYING A COST is
+    /// recorded nowhere.
     fn chocobo_camp_mana_ability() -> crate::types::ability::AbilityDefinition {
+        use crate::types::ability::Effect;
         let parsed = crate::parser::parse_oracle_text(
             "This land enters tapped unless you control a legendary creature.\n\
              {T}: Add {G}. When you next cast a Bird creature spell this turn, it enters with \
@@ -26628,7 +26633,16 @@ mod tests {
              against the card-data export, 35 798 keys); a parser change that splits or merges \
              them re-points this row"
         );
-        parsed.abilities[0].clone()
+        let mut def = parsed.abilities[0].clone();
+        let sub = def
+            .sub_ability
+            .as_deref_mut()
+            .expect("fixture pin: `abilities[0]` carries the delayed-trigger sub-ability");
+        let Effect::CreateDelayedTrigger { effect, .. } = sub.effect.as_mut() else {
+            panic!("fixture pin: that sub-ability's effect is the `CreateDelayedTrigger`");
+        };
+        **effect = p2_class_reading_ability();
+        def
     }
 
     /// **Row 18 (NEGATIVE — a mana ability is NOT relieved by the proposal argument).**
@@ -26643,9 +26657,11 @@ mod tests {
     /// "never activated" for a mana ability, and the record-absence test would be UNSOUND
     /// without the guard.
     ///
-    /// The subject is the real Chocobo Camp `abilities[0]`, whose `sub_ability` is what the
-    /// scan flags. The paired positive is that same def with ONLY the root effect swapped for
-    /// a non-mana one, so the variable is mana-ness and nothing else.
+    /// The subject is the real Chocobo Camp `abilities[0]` with its delayed body substituted
+    /// (see [`chocobo_camp_mana_ability`]), so what the scan flags is the substituted body
+    /// under the `sub_ability`'s delayed trigger. The paired positive is that same def with
+    /// ONLY the root effect swapped for a non-mana one, so the variable is mana-ness and
+    /// nothing else.
     ///
     /// REVERT / MUTATION PROBE: delete the `if is_mana_ability(ability) { return false }` guard
     /// from `activated_ability_is_not_a_loop_choice` ⇒ the subject is relieved ⇒ **FAILS**.
@@ -26677,7 +26693,8 @@ mod tests {
 
         // PAIRED POSITIVE REACH-GUARD — the byte-identical def with ONLY the root effect
         // swapped for a non-mana one IS relieved, so the row is not satisfiable by a blanket
-        // refusal and the sub-ability's own read is demonstrably still seen by the scan.
+        // refusal and the substituted delayed body's read is demonstrably still seen by the
+        // scan.
         let mut non_mana_def = mana_def;
         non_mana_def.effect = Box::new(Effect::Investigate);
         let control = p2_board(vec![non_mana_def], Vec::new());

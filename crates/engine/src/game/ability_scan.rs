@@ -46,14 +46,14 @@
 //! untraversed payload is silently skipped with no compile error, so the traversal
 //! set is part of the trusted base. It is closed under payload reachability across
 //! `Effect`, `QuantityRef`, `QuantityExpr`, `AbilityCondition`, `TargetFilter`,
-//! `ObjectScope`, `TriggerCondition`, `Duration` (its `ForAsLongAs` `StaticCondition`),
-//! `StaticCondition`, `PlayerFilter`, `ReplacementCondition`, the target-count and
-//! target-set specs (`MultiTargetSpec`, `TargetSelectionConstraint`), the loop and
-//! modal headers (`RepeatContinuation`, `ModalChoice`), and the player scope
-//! selectors (`PlayerScope`, `ControllerRef`, `CountScope`). The `ResolvedAbility`
-//! and `ModalChoice` fields are destructured without `..`, so a new field must be
-//! classified before it compiles. Any type outside this set that can reach a read
-//! is in the conservative set above.
+//! `ObjectScope`, `TriggerCondition`, `TriggerDefinition`, `DelayedTriggerCondition`,
+//! `Duration` (its `ForAsLongAs` `StaticCondition`), `StaticCondition`, `PlayerFilter`,
+//! `ReplacementCondition`, the target-count and target-set specs (`MultiTargetSpec`,
+//! `TargetSelectionConstraint`), the loop and modal headers (`RepeatContinuation`,
+//! `ModalChoice`), and the player scope selectors (`PlayerScope`, `ControllerRef`,
+//! `CountScope`). The `ResolvedAbility` and `ModalChoice` fields are destructured
+//! without `..`, so a new field must be classified before it compiles. Any type outside
+//! this set that can reach a read is in the conservative set above.
 //!
 //! # Resolution-time choice classifier — LIVES IN `game::resolution_prompt`
 //!
@@ -92,9 +92,7 @@
 //! for the conflict model and its CR 603.3b commutation argument.
 
 use crate::types::ability::{
-    AbilityCondition, AbilityCost, AbilityDefinition, CardTypeSetSource, ContinuousModification,
-    ControllerRef, CountScope, Duration, EachDamageRecipient, Effect, EffectScope, FilterProp,
-    ForEachCategoryAction, GuessSubject, KeeperConstraint, ManaProduction, ModalChoice,
+    AbilityCondition, AbilityCost, AbilityDefinition, CardTypeSetSource, ContinuousModification, ControllerRef, CountScope, DelayedTriggerCondition, Duration, EachDamageRecipient, Effect, EffectScope, FilterProp, ForEachCategoryAction, GuessSubject, KeeperConstraint, ManaProduction, ModalChoice,
     MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, PtValue, QuantityExpr, QuantityRef,
     RepeatContinuation, ReplacementCondition, ResolvedAbility, StaticCondition, TargetFilter,
     TrackedAnaphorSource, TriggerCondition, TriggerConstraint, TriggerDefinition, TypedFilter,
@@ -141,8 +139,9 @@ impl Axes {
     /// CR 106.1 / CR 119 / CR 122.1: `projected` is the player half — the monotone resources and
     /// per-turn journals `analysis::resource::project_out_resources` neutralizes, so the loop cover
     /// cannot see a read of one.
-    /// A `LoopFirewall` consult must ask both. `Conservative` consumers keep single-axis
-    /// projections; that is the CR 603.3b ordering question, not this one.
+    /// A `LoopFirewall` consult must ask both. The CR 603.3b trigger-ordering gate
+    /// (`game::triggers`) asks a different question and consults `.event` and `.sibling`
+    /// as separate single-axis projections, never this disjunction.
     fn reads_growing_class(self) -> bool {
         self.sibling || self.projected
     }
@@ -156,23 +155,25 @@ impl Axes {
     }
 }
 
-/// Which consumer is asking, and thus how the three mode-divergent arms
-/// (`Effect::Token`, `Effect::Mana`, `Effect::Pump`) classify.
+/// Which consumer is asking, and thus how a MODE-DIVERGENT arm classifies.
+/// An arm is mode-divergent exactly when its body branches on this enum;
+/// that set grows, so it is not enumerated here — `match mode` is its own
+/// index.
 ///
 /// `Conservative` is the pre-existing shared answer that the CR 603.3b
 /// trigger-ordering gate (`game::triggers`) and every non-firewall caller
-/// require, and it keeps the `LoopDetectionMode::Off` game byte-identical (#4603).
-/// `LoopFirewall` is used ONLY by the CR 732.2a object-growth firewall
-/// (`analysis::resource`), which needs the token/mana/pump blankets to DESCEND
-/// rather than fail closed. Every other arm is mode-invariant, so `Off` cannot
-/// observe `LoopFirewall` — the divergent arms are reachable only through the
-/// firewall's `*_for_loop` entry points, themselves reachable only under
-/// `loop_detection.samples()`.
+/// require, and it keeps the `LoopDetectionMode::Off` game byte-identical
+/// (#4603). `LoopFirewall` is used ONLY by the CR 732.2a object-growth
+/// firewall (`analysis::resource`), which needs a mode-divergent arm to
+/// DESCEND rather than fail closed. `Off` cannot observe `LoopFirewall`:
+/// this value is constructed nowhere outside this module, inside the
+/// `pub(crate)` entry points whose only production consumer is that
+/// firewall, itself reachable only under `loop_detection.samples()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScanMode {
-    /// Fail-closed on `Token`/`Mana`/`Pump` (the shared CR 603.3b + default answer).
+    /// Fail-closed on every mode-divergent arm (the shared CR 603.3b + default answer).
     Conservative,
-    /// Descend `Token`/`Mana`/`Pump` bodies (CR 732.2a firewall only).
+    /// Descend a mode-divergent arm's payload (CR 732.2a firewall only).
     LoopFirewall,
 }
 
@@ -1362,7 +1363,36 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             acc
         }
         Effect::SetClassLevel { level: _ } => Axes::NONE,
-        Effect::CreateDelayedTrigger { .. } => Axes::CONSERVATIVE,
+        // CR 732.2a is the OPERATIVE rule for this arm, and the mode split is the same one
+        // the sibling descending arms already ship: under `Conservative` this stays the
+        // byte-identical blanket the CR 603.3b ordering gate and every non-firewall consumer
+        // already see. The tracked-set guard fails CLOSED — `true` resolves the payload
+        // against the PARENT ability's tracked object set, a referent this definition cannot
+        // see. CR 608.2h is operative on the body leg: a delayed body scaled by a board
+        // aggregate "requires information from the game", determined once per application, so
+        // each loop iteration re-determines it against a larger board. That body's `cost` is
+        // never PAID: a delayed triggered ability is CREATED by an effect (CR 603.7) and is
+        // not activated (CR 603.2a), so the CR 602.1a activation cost it holds has no payer,
+        // as for the granted carrier's `execute` body. `projected` is NOT
+        // re-raised here — the def-level entry point asks `Axes::reads_growing_class` and the
+        // single-axis modification entry points are disjoined by their caller — so a
+        // `projected`-only verdict is precise here and a veto there.
+        Effect::CreateDelayedTrigger {
+            condition,
+            effect,
+            uses_tracked_set,
+        } => match mode {
+            ScanMode::Conservative => Axes::CONSERVATIVE,
+            ScanMode::LoopFirewall => {
+                if *uses_tracked_set {
+                    Axes::CONSERVATIVE
+                } else {
+                    let mut acc = scan_delayed_trigger_condition(condition, mode);
+                    acc = acc.or(ability_definition_axes(effect, mode));
+                    acc
+                }
+            }
+        },
         Effect::AddTargetReplacement { .. } => Axes::CONSERVATIVE,
         Effect::AddRestriction { .. } => Axes::CONSERVATIVE,
         Effect::ReduceNextSpellCost {
@@ -3160,8 +3190,8 @@ fn scan_target_filter(x: &TargetFilter, ctx: FilterReadContext, mode: ScanMode) 
         // P3 (`sibling: mode == Conservative`) relaxation of this arm would silently
         // turn every delegating aggregate into a false certificate.
         TargetFilter::Typed(tf) => {
-            // CR 732.2a: a mode-divergent arm (with `Effect::Token`, `Effect::Mana`
-            // and `Effect::Pump`). `event` stays unconditionally true (byte-preserved).
+            // CR 732.2a: a mode-divergent arm. `event` stays unconditionally true
+            // (byte-preserved).
             // Under `Conservative` `sibling` stays true (byte-identical over-veto);
             // under `LoopFirewall` it is precise — `props.sibling` is true only if a
             // property/controller genuinely reads the board (fail-closed), false for
@@ -3368,22 +3398,29 @@ fn scan_object_scope(x: &ObjectScope) -> Axes {
     }
 }
 
-/// CR 604.1 + CR 732.2a: the read-axis surface of a GRANTED `TriggerDefinition`
-/// (`ContinuousModification::GrantTrigger`) — the trigger-side twin of
-/// [`ability_definition_axes`].
+/// CR 732.2a: the read-axis surface of a `TriggerDefinition`, wherever the walk meets one —
+/// the trigger-side twin of [`ability_definition_axes`], and this file's single authority for
+/// one, so a payload site delegates here rather than re-deriving a matcher discipline. Its
+/// carriers: a trigger GRANTED by a static ability (CR 604.1, via
+/// `ContinuousModification::GrantTrigger`), and the firing condition of a DELAYED triggered
+/// ability created by an effect (CR 603.7, via `scan_delayed_trigger_condition`).
 ///
-/// Block (1) of the object-growth firewall already scans an INSTALLED trigger's
-/// `condition` + `execute` on the same layer-flushed frame (`analysis::resource`
-/// blocks (1b)/(5b)), so the blanket `Axes::CONSERVATIVE` this replaces was a
-/// redundant SECOND veto on content already read. Descending is what lets the
-/// firewall NOT over-veto a granted trigger whose body reads nothing (Bello, Bard
-/// of the Brambles' "Whenever this creature deals combat damage to a player, draw
-/// a card") — the same reason the sibling `GrantAbility` arm descends.
+/// FOR THE GRANTED CARRIER, block (1) of the object-growth firewall already scans an INSTALLED
+/// trigger's `condition` + `execute` on the same layer-flushed frame (`analysis::resource`
+/// blocks (1b)/(5b)), so the blanket `Axes::CONSERVATIVE` this replaces was a redundant SECOND
+/// veto on content already read; a DELAYED trigger is attached to no object, is never reached
+/// by that scan, and the descent there is a FIRST read. Descending is what lets the firewall
+/// NOT over-veto a granted trigger whose body reads nothing (Bello, Bard of the Brambles'
+/// "Whenever this creature deals combat damage to a player, draw a card") — the same reason the
+/// sibling `GrantAbility` arm descends.
 ///
 /// **EXHAUSTIVE destructure with NO `..` rest pattern**, the discipline
 /// [`ability_definition_axes`] and [`resolved_ability_axes`] use: a FUTURE
 /// `TriggerDefinition` field fails to compile here until it is classified as
 /// scanned or read-free. Every `_` binding below carries its justification.
+///
+/// BLOCK EXEMPTION — implemented catalogue: the carrier list above and the destructure
+/// discipline every `_` binding below instantiates.
 fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
     let TriggerDefinition {
         // ---- read-bearing: scanned into `acc` below ----
@@ -3405,6 +3442,9 @@ fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
         //      trigger; they are not resolution-time reads, and matcher-observation
         //      is handled by the firewall's class-scoped relief (block (1a)), never
         //      by a read axis.
+        //      That relief — `game::triggers`'s `etb_observer_provably_excludes_class` — is
+        //      ASSERTED, not measured; carriers here: `ContinuousModification::GrantTrigger`
+        //      and `scan_delayed_trigger_condition`, the second widening what reaches here.
         valid_card: _,
         valid_target: _,
         valid_subject_player: _,
@@ -3933,6 +3973,70 @@ fn scan_trigger_condition(x: &TriggerCondition, mode: ScanMode) -> Axes {
         TriggerCondition::Not { condition } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_trigger_condition(condition, mode));
+            acc
+        }
+    }
+}
+
+/// CR 603.7 + CR 732.2a: does a delayed trigger's FIRING CONDITION read a mutable
+/// board aggregate?
+///
+/// A member of this file's condition-scanner family ([`scan_ability_condition`],
+/// [`scan_trigger_condition`], [`scan_static_condition`],
+/// [`scan_replacement_condition`]) — this was the condition type that had none, which
+/// is why its carrier was a blanket. Each arm delegates to the authority that owns its
+/// payload type. EXHAUSTIVE, NO `_` wildcard and NO `..` field rest, so a NEW
+/// `DelayedTriggerCondition` variant or field is a compile error rather than a silent
+/// read-free classification.
+fn scan_delayed_trigger_condition(c: &DelayedTriggerCondition, mode: ScanMode) -> Axes {
+    match c {
+        // A phase coordinate. No payload position reaches a `TargetFilter` or a
+        // `QuantityExpr`, so there is nothing to walk.
+        DelayedTriggerCondition::AtNextPhase { phase: _ } => Axes::NONE,
+        // The same coordinate plus a `PlayerId` and a `TurnGate` turn-floor — a named
+        // player and a turn number. Neither reaches a filter or a quantity.
+        DelayedTriggerCondition::AtNextPhaseForPlayer {
+            phase: _,
+            player: _,
+            gate: _,
+        } => Axes::NONE,
+        // CR 603.7c: a delayed triggered ability that refers to a particular object.
+        // `object_id` is already resolved, so there is no filter to walk and no
+        // population whose size a growing class could move.
+        DelayedTriggerCondition::WhenLeavesPlay { object_id: _ } => Axes::NONE,
+        // Fails CLOSED. The payload is a bare `TargetFilter` with NO owning authority
+        // to delegate to — the arms below have one, and `effect_target_ctx` is not it,
+        // because it classifies EFFECT targets and a delayed-trigger matcher is not
+        // one. Replicating a matcher discipline inline would mint a second, unowned
+        // copy of it. `FilterReadContext`'s ADD-1 rule makes census the safe direction
+        // for a contested new call site: over-veto, never a false offer.
+        DelayedTriggerCondition::WhenDies { filter }
+        | DelayedTriggerCondition::WhenLeavesPlayFiltered { filter }
+        | DelayedTriggerCondition::WhenEntersBattlefield { filter }
+        | DelayedTriggerCondition::WhenDiesOrExiled { filter } => {
+            scan_target_filter(filter, FilterReadContext::LiveBoardCensus, mode)
+        }
+        // CR 603.2: the payload is a whole trigger EVENT MATCHER, and this file's
+        // single authority for a `TriggerDefinition` is [`scan_trigger_definition`] —
+        // never `scan_target_filter`, which would apply a filter discipline to a
+        // many-field structure. `expiry` is the CR 603.7b stated-duration axis, not a
+        // read.
+        DelayedTriggerCondition::WheneverEvent { trigger, expiry: _ } => {
+            scan_trigger_definition(trigger, mode)
+        }
+        // CR 603.2: TWO matchers of equal authority, and `or_trigger` is the drop
+        // point — a `{ trigger, .. }` destructure compiles, passes every
+        // variant-coverage test, and silently classifies only the first. `lifetime` is
+        // the CR 603.7b stated-duration axis, not a read.
+        DelayedTriggerCondition::WhenNextEvent {
+            trigger,
+            or_trigger,
+            lifetime: _,
+        } => {
+            let mut acc = scan_trigger_definition(trigger, mode);
+            if let Some(t) = or_trigger {
+                acc = acc.or(scan_trigger_definition(t, mode));
+            }
             acc
         }
     }
@@ -6823,8 +6927,9 @@ mod tests {
     use super::*;
     use crate::types::ability::{
         AbilityKind, AggregateFunction, CastManaObjectScope, CastManaSpentMetric, Comparator,
-        CostDerivation, DamageKindFilter, DestinationConstraint, ManaContribution,
-        OriginConstraint, ReplacementDefinition, StaticDefinition, ZoneChangeClause,
+        CostDerivation, DamageKindFilter, DelayedTriggerLifetime, DestinationConstraint,
+        ManaContribution, OriginConstraint, ReplacementDefinition, StaticDefinition, TurnGate,
+        WheneverEventExpiry, ZoneChangeClause,
     };
     use crate::types::counter::CounterType;
     use crate::types::identifiers::ObjectId;
@@ -7322,8 +7427,9 @@ mod tests {
 
     /// AXIS ISOLATION for the projected-only SHAPES `analysis::resource`'s
     /// projected-surface rows rest on. Those rows read the `sibling` ∨ `projected`
-    /// disjunction and cannot say which axis carried it, and every SINGLE-axis
-    /// projection this module exports is `ScanMode::Conservative` — so the property is
+    /// disjunction and cannot say which axis carried it, and the exported SINGLE-axis
+    /// projections over these leaf types all scan in `ScanMode::Conservative` while the
+    /// claim here is about the `LoopFirewall` verdict — so the property is
     /// pinned here, where [`Axes`] is reachable. It belongs to the SHAPE, not to any
     /// one fixture. (`QuantityRef::LifeTotal` is pinned by
     /// [`projected_reading_pump_reports_its_axes_precisely_and_the_consumer_sees_them`].)
@@ -7507,9 +7613,10 @@ mod tests {
     /// → `scan_effect` again. The repair applies at whatever depth the recursion reaches the
     /// arm, which is why it reaches this one.
     ///
-    /// REACH GUARD that makes the row non-vacuous: `abilities[0]` must STILL read the
-    /// sibling axis at this commit (its `sub_ability` carries a `CreateDelayedTrigger` this
-    /// change does not touch). A global kill switch that relieved everything would fail here.
+    /// REACH GUARD that makes the row non-vacuous, on the SAME descent path rather than on
+    /// a neighbouring ability: `abilities[1]` with the granted trigger's pump `power`
+    /// swapped for an `ObjectCount`-scaled quantity must STILL read the growing class. A
+    /// global kill switch that relieved everything would fail here.
     ///
     /// REVERT-PROBE: restore `Effect::Pump { .. } => Axes::CONSERVATIVE` ⇒ `abilities[1]`
     /// reads the sibling axis again ⇒ **FAILS**.
@@ -7567,13 +7674,37 @@ mod tests {
              is about — the descent has to reach it four segments below `effect`"
         );
 
-        // REACH GUARD: `abilities[0]` still vetoes at this commit.
+        // REACH GUARD, on the same descent path: give the granted trigger's pump an
+        // `ObjectCount`-scaled `power` and the identical walk must still veto.
+        let mut reading = parsed.abilities[1].clone();
+        let Effect::Token {
+            static_abilities, ..
+        } = reading.effect.as_mut()
+        else {
+            panic!("fixture pin: `abilities[1]` must be the token-creating activated ability");
+        };
+        let reading_trigger = static_abilities
+            .iter_mut()
+            .flat_map(|sd| sd.modifications.iter_mut())
+            .find_map(|m| match m {
+                ContinuousModification::GrantTrigger { trigger } => Some(trigger),
+                _ => None,
+            })
+            .expect("fixture pin: the token grants a trigger");
+        let reading_exec = reading_trigger
+            .execute
+            .as_deref_mut()
+            .expect("fixture pin: the granted trigger carries an execute body");
+        let Effect::Pump { power, .. } = reading_exec.effect.as_mut() else {
+            panic!("fixture pin: the granted trigger's execute body is an `Effect::Pump`");
+        };
+        *power = PtValue::Quantity(object_count());
         assert!(
-            ability_definition_axes(&parsed.abilities[0], ScanMode::LoopFirewall).sibling,
-            "reach guard: `abilities[0]`'s `sub_ability` carries a `CreateDelayedTrigger`, \
-             which this change does not touch, so it must STILL read the sibling axis. If \
-             this flips, the relief below is a global kill switch rather than a payload \
-             descent and proves nothing"
+            ability_definition_axes(&reading, ScanMode::LoopFirewall).sibling,
+            "reach guard: with the granted trigger's pump scaled by a board `ObjectCount`, \
+             the SAME four-segment descent must still read the sibling axis. If this flips, \
+             the relief below is a global kill switch rather than a payload descent and \
+             proves nothing"
         );
 
         // THE CLAIM.
@@ -9006,7 +9137,7 @@ mod tests {
         // (1) Conservative — vacuity trap, true either way.
         assert!(
             ability_definition_reads_sibling_mutable(&ledger),
-            "(1) Conservative axis-2 (CR 603.3b consumer) — passes with or without Step 0c",
+            "(1) Conservative axis-2 — passes with or without Step 0c",
         );
         // (2) THE DISCRIMINATOR — the SIBLING half of the growing class, under
         // LoopFirewall, the CR 732.2a firewall's mode.
@@ -9475,6 +9606,480 @@ mod tests {
             !sibling_of(&grant_trigger(empty)),
             "control: the empty-vec form is the DEGENERATE population — it must not \
              be what row p5 is measuring"
+        );
+    }
+
+    // ── The `Effect::CreateDelayedTrigger` mode-split descent ────────────────
+
+    /// A `TriggerDefinition` whose `execute` body reads the growing class, composed from
+    /// the fixtures above: Bello's shape with a pump whose TARGET self-asserts `sibling`.
+    /// Used wherever a delegating arm needs a payload the arm-deletion mutation can reach.
+    fn class_reading_trigger() -> TriggerDefinition {
+        TriggerDefinition {
+            execute: Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                read_free_pump(census_asserting_filter()),
+            ))),
+            ..bello_granted_trigger()
+        }
+    }
+
+    /// A delayed body that reads nothing: two `PtValue::Fixed` halves and a `SelfRef`
+    /// target. Every row that uses it asserts its inertness rather than assuming it.
+    fn inert_delayed_body() -> AbilityDefinition {
+        AbilityDefinition::new(AbilityKind::Spell, read_free_pump(TargetFilter::SelfRef))
+    }
+
+    fn delayed_node(condition: DelayedTriggerCondition, body: AbilityDefinition) -> Effect {
+        Effect::CreateDelayedTrigger {
+            condition,
+            effect: Box::new(body),
+            uses_tracked_set: false,
+        }
+    }
+
+    /// Chocobo Camp's REAL parsed `abilities[0]` sub-ability effect — the
+    /// `Effect::CreateDelayedTrigger` this arm classifies — from the card's VERBATIM
+    /// Oracle text, never a paraphrase.
+    fn chocobo_delayed_node() -> Effect {
+        let parsed = crate::parser::parse_oracle_text(
+            "This land enters tapped unless you control a legendary creature.\n\
+             {T}: Add {G}. When you next cast a Bird creature spell this turn, it enters with \
+             an additional +1/+1 counter on it.\n\
+             {2}{G}{G}, {T}: Create a 2/2 green Bird creature token with \"Whenever a land you \
+             control enters, this token gets +1/+0 until end of turn.\"",
+            "Chocobo Camp",
+            &[],
+            &["Land".to_string()],
+            &[],
+        );
+        let sub = parsed.abilities[0]
+            .sub_ability
+            .as_deref()
+            .expect("fixture pin: `abilities[0]` carries the delayed-trigger sub-ability");
+        let node = sub.effect.as_ref().clone();
+        assert!(
+            matches!(node, Effect::CreateDelayedTrigger { .. }),
+            "fixture pin: that sub-ability's effect is the `Effect::CreateDelayedTrigger` \
+             this arm classifies"
+        );
+        node
+    }
+
+    /// The expected triple per variant, as an EXHAUSTIVE `match` with no `_`: a new
+    /// `DelayedTriggerCondition` variant is `E0004` in this test as well as in the scanner,
+    /// so the table cannot silently stop covering the enum.
+    fn expected_delayed_axes(c: &DelayedTriggerCondition) -> (bool, bool, bool) {
+        match c {
+            DelayedTriggerCondition::AtNextPhase { .. }
+            | DelayedTriggerCondition::AtNextPhaseForPlayer { .. }
+            | DelayedTriggerCondition::WhenLeavesPlay { .. } => (false, false, false),
+            DelayedTriggerCondition::WhenDies { .. }
+            | DelayedTriggerCondition::WhenLeavesPlayFiltered { .. }
+            | DelayedTriggerCondition::WhenEntersBattlefield { .. }
+            | DelayedTriggerCondition::WhenDiesOrExiled { .. }
+            | DelayedTriggerCondition::WheneverEvent { .. }
+            | DelayedTriggerCondition::WhenNextEvent { .. } => (true, true, false),
+        }
+    }
+
+    /// Every `DelayedTriggerCondition` variant is classified, and the classification
+    /// DISCRIMINATES: one case per variant, each asserting the exact `Axes` triple.
+    ///
+    /// Every DELEGATING arm's case carries a payload that scans non-inert, so deleting that
+    /// arm's delegation is a real mutation there rather than the identity, and each such case
+    /// asserts its own payload's non-degeneracy inline.
+    ///
+    /// REVERT-PROBE: replace any single arm's body with `Axes::NONE` ⇒ that case FAILS for
+    /// every arm whose expected triple is not `Axes::NONE`; replace ALL arms with
+    /// `Axes::CONSERVATIVE` ⇒ the inert cases FAIL. Neither a constant-inert nor a
+    /// constant-conservative implementation satisfies this row.
+    #[test]
+    fn delayed_trigger_condition_scanner_classifies_every_variant() {
+        use crate::types::phase::Phase;
+
+        let filter = census_asserting_filter();
+        nondegenerate!(&filter);
+        let payload = class_reading_trigger();
+        let payload_axes = scan_trigger_definition(&payload, ScanMode::LoopFirewall);
+        assert!(
+            payload_axes.sibling,
+            "payload DEGENERATE: the trigger fixture the delegating cases carry must scan \
+             non-inert through the very function those arms call, or deleting the delegation \
+             would be invisible here"
+        );
+
+        let cases = [
+            (
+                "AtNextPhase",
+                DelayedTriggerCondition::AtNextPhase { phase: Phase::End },
+            ),
+            (
+                "AtNextPhaseForPlayer",
+                DelayedTriggerCondition::AtNextPhaseForPlayer {
+                    phase: Phase::Upkeep,
+                    player: PlayerId(0),
+                    gate: TurnGate::AfterCreationTurn,
+                },
+            ),
+            (
+                "WhenLeavesPlay",
+                DelayedTriggerCondition::WhenLeavesPlay {
+                    object_id: ObjectId(7),
+                },
+            ),
+            (
+                "WhenDies",
+                DelayedTriggerCondition::WhenDies {
+                    filter: filter.clone(),
+                },
+            ),
+            (
+                "WhenLeavesPlayFiltered",
+                DelayedTriggerCondition::WhenLeavesPlayFiltered {
+                    filter: filter.clone(),
+                },
+            ),
+            (
+                "WhenEntersBattlefield",
+                DelayedTriggerCondition::WhenEntersBattlefield {
+                    filter: filter.clone(),
+                },
+            ),
+            (
+                "WhenDiesOrExiled",
+                DelayedTriggerCondition::WhenDiesOrExiled {
+                    filter: filter.clone(),
+                },
+            ),
+            (
+                "WheneverEvent",
+                DelayedTriggerCondition::WheneverEvent {
+                    trigger: Box::new(payload.clone()),
+                    expiry: WheneverEventExpiry::EndOfTurn,
+                },
+            ),
+            (
+                "WhenNextEvent",
+                DelayedTriggerCondition::WhenNextEvent {
+                    trigger: Box::new(payload.clone()),
+                    or_trigger: None,
+                    lifetime: DelayedTriggerLifetime::ThisTurn,
+                },
+            ),
+        ];
+
+        for (label, condition) in &cases {
+            let axes = scan_delayed_trigger_condition(condition, ScanMode::LoopFirewall);
+            assert_eq!(
+                (axes.event, axes.sibling, axes.projected),
+                expected_delayed_axes(condition),
+                "{label}: CR 732.2a — this variant's exact read-axis triple. A constant \
+                 implementation in either direction fails some case in this table"
+            );
+        }
+    }
+
+    /// `WhenNextEvent`'s `or_trigger` is SCANNED, not dropped, and the condition leg is
+    /// wired into `scan_effect`'s arm.
+    ///
+    /// The primary `trigger` is inert and the read lives entirely in `or_trigger`, so a
+    /// `{ trigger, .. }` destructure — which compiles and passes every variant-coverage
+    /// test — reddens exactly here. The delayed body's inertness is asserted in the row,
+    /// so the veto is the condition leg's.
+    ///
+    /// REVERT-PROBE: delete the `if let Some(t) = or_trigger` leg ⇒ **FAILS**; replace the
+    /// arm body with `ability_definition_axes(effect, mode)` alone (drop the condition leg)
+    /// ⇒ **FAILS**.
+    #[test]
+    fn when_next_event_scans_the_or_trigger() {
+        let body = inert_delayed_body();
+        let body_axes = ability_definition_axes(&body, ScanMode::LoopFirewall);
+        assert_eq!(
+            (body_axes.event, body_axes.sibling, body_axes.projected),
+            (false, false, false),
+            "reach guard: the delayed body must read nothing, or the veto below could be \
+             the body leg's rather than the condition leg's"
+        );
+
+        let alt = class_reading_trigger();
+        assert!(
+            scan_trigger_definition(&alt, ScanMode::LoopFirewall).sibling,
+            "population is DEGENERATE: the alternate matcher must itself read the growing \
+             class, or a dropped `or_trigger` leg would be invisible here"
+        );
+
+        let node = delayed_node(
+            DelayedTriggerCondition::WhenNextEvent {
+                trigger: Box::new(bello_granted_trigger()),
+                or_trigger: Some(Box::new(alt)),
+                lifetime: DelayedTriggerLifetime::ThisTurn,
+            },
+            body.clone(),
+        );
+        assert!(
+            scan_effect(&node, ScanMode::LoopFirewall).sibling,
+            "CR 732.2a: \"when you next [event] OR [event]\" carries TWO matchers of equal \
+             authority. Classifying only the first lets a board-reading alternate matcher \
+             through the object-growth firewall"
+        );
+
+        // PAIRED POSITIVE: the same inert primary matcher with no alternate relieves, so
+        // this row is not a blanket veto on `WhenNextEvent`.
+        let relieved = delayed_node(
+            DelayedTriggerCondition::WhenNextEvent {
+                trigger: Box::new(bello_granted_trigger()),
+                or_trigger: None,
+                lifetime: DelayedTriggerLifetime::ThisTurn,
+            },
+            body,
+        );
+        let axes = scan_effect(&relieved, ScanMode::LoopFirewall);
+        assert_eq!(
+            (axes.event, axes.sibling, axes.projected),
+            (false, false, false),
+            "paired positive: with the alternate matcher gone the identical shape is \
+             relieved, so the veto above is the `or_trigger` leg's"
+        );
+    }
+
+    /// A filter-carrying delayed condition fails CLOSED on all four variants, and the
+    /// `sibling` half comes from the census CONTEXT rather than from the filter's own shape.
+    ///
+    /// The second fixture is a SINGLE-OBJECT reference (`TargetFilter::ParentTarget`), which
+    /// scans `(true, false, false)` on its own — it yields the same triple here only because
+    /// the arm passes `LiveBoardCensus`, which is what makes the attribution visible.
+    ///
+    /// REVERT-PROBE: swap `FilterReadContext::LiveBoardCensus` for `SnapshotOrEvent` in the
+    /// four-variant arm ⇒ **FAILS**; replace the arm body with
+    /// `ability_definition_axes(effect, mode)` alone (drop the condition leg) ⇒ **FAILS**.
+    #[test]
+    fn filter_carrying_delayed_conditions_fail_closed() {
+        use crate::types::phase::Phase;
+
+        let body = inert_delayed_body();
+        let body_axes = ability_definition_axes(&body, ScanMode::LoopFirewall);
+        assert_eq!(
+            (body_axes.event, body_axes.sibling, body_axes.projected),
+            (false, false, false),
+            "reach guard: the delayed body must read nothing, so each triple below is the \
+             condition's"
+        );
+
+        let bare = TargetFilter::Typed(TypedFilter::creature());
+        let single_object = TargetFilter::ParentTarget;
+        for (label, filter) in [("bare Typed", &bare), ("ParentTarget", &single_object)] {
+            let built: [(&str, DelayedTriggerCondition); 4] = [
+                (
+                    "WhenDies",
+                    DelayedTriggerCondition::WhenDies {
+                        filter: filter.clone(),
+                    },
+                ),
+                (
+                    "WhenLeavesPlayFiltered",
+                    DelayedTriggerCondition::WhenLeavesPlayFiltered {
+                        filter: filter.clone(),
+                    },
+                ),
+                (
+                    "WhenEntersBattlefield",
+                    DelayedTriggerCondition::WhenEntersBattlefield {
+                        filter: filter.clone(),
+                    },
+                ),
+                (
+                    "WhenDiesOrExiled",
+                    DelayedTriggerCondition::WhenDiesOrExiled {
+                        filter: filter.clone(),
+                    },
+                ),
+            ];
+            for (variant, condition) in built {
+                let axes = scan_effect(
+                    &delayed_node(condition, body.clone()),
+                    ScanMode::LoopFirewall,
+                );
+                assert_eq!(
+                    (axes.event, axes.sibling, axes.projected),
+                    (true, true, false),
+                    "{variant} / {label}: the matcher filter has no owning authority to \
+                     delegate to, so it is read under `LiveBoardCensus` and the `sibling` \
+                     half is the census's own — precise, not a blanket, since `projected` \
+                     stays false"
+                );
+            }
+        }
+
+        // PAIRED POSITIVE: a payload-free coordinate on the same shape relieves, so the arm
+        // is not a blanket veto on every delayed condition.
+        let axes = scan_effect(
+            &delayed_node(
+                DelayedTriggerCondition::AtNextPhase { phase: Phase::End },
+                body,
+            ),
+            ScanMode::LoopFirewall,
+        );
+        assert_eq!(
+            (axes.event, axes.sibling, axes.projected),
+            (false, false, false),
+            "paired positive: a phase coordinate reaches no filter, so the identical node \
+             shape is relieved"
+        );
+    }
+
+    /// `uses_tracked_set: true` fails CLOSED.
+    ///
+    /// The flag resolves the delayed body against the PARENT ability's tracked object set —
+    /// a board-dependent referent this definition cannot see — so nothing here can classify
+    /// it. One field differs between the two halves of this row.
+    ///
+    /// REVERT-PROBE: delete the `if *uses_tracked_set` guard ⇒ the flipped node is relieved
+    /// ⇒ **FAILS**.
+    #[test]
+    fn create_delayed_trigger_with_tracked_set_fails_closed() {
+        let mut flipped = chocobo_delayed_node();
+        let Effect::CreateDelayedTrigger {
+            uses_tracked_set, ..
+        } = &mut flipped
+        else {
+            panic!("fixture pin: the parsed sub-ability effect is a `CreateDelayedTrigger`");
+        };
+        *uses_tracked_set = true;
+
+        let axes = scan_effect(&flipped, ScanMode::LoopFirewall);
+        assert_eq!(
+            (axes.event, axes.sibling, axes.projected),
+            (true, true, true),
+            "CR 732.2a: the tracked object set belongs to the PARENT ability's resolution, \
+             so this definition carries no way to classify what the body will resolve \
+             against. The unclassifiable read surface fails closed"
+        );
+
+        // PAIRED POSITIVE: the same printed definition without the flag is relieved, so the
+        // veto above is the flag's and not the payload's.
+        let printed = scan_effect(&chocobo_delayed_node(), ScanMode::LoopFirewall);
+        assert_eq!(
+            (printed.event, printed.sibling, printed.projected),
+            (false, false, false),
+            "paired positive: one field apart, the printed definition is relieved"
+        );
+    }
+
+    /// `ScanMode::Conservative` is byte-identical for this arm too.
+    ///
+    /// REVERT-PROBE: the naive revert does NOT compile — deleting the
+    /// `ScanMode::Conservative` arm is `E0004`. The discriminating mutation is making the
+    /// `Conservative` arm run the `LoopFirewall` descent ⇒ **FAILS**.
+    #[test]
+    fn scan_effect_create_delayed_trigger_stays_conservative() {
+        let filter_bearing = delayed_node(
+            DelayedTriggerCondition::WhenDies {
+                filter: TargetFilter::Typed(TypedFilter::creature()),
+            },
+            inert_delayed_body(),
+        );
+        for (label, node) in [
+            ("printed card", chocobo_delayed_node()),
+            ("filter-bearing", filter_bearing),
+        ] {
+            let axes = scan_effect(&node, ScanMode::Conservative);
+            assert_eq!(
+                (axes.event, axes.sibling, axes.projected),
+                (true, true, true),
+                "{label}: CR 603.3b — under `Conservative` this arm must stay the \
+                 byte-identical fail-closed blanket every non-firewall consumer already \
+                 sees. Only the CR 732.2a firewall may observe the descent"
+            );
+        }
+
+        // PAIRED POSITIVE: the same printed definition under `LoopFirewall` descends, so the
+        // row above is byte-identity and not an assertion that nothing ever descends.
+        let firewall = scan_effect(&chocobo_delayed_node(), ScanMode::LoopFirewall);
+        assert_eq!(
+            (firewall.event, firewall.sibling, firewall.projected),
+            (false, false, false),
+            "paired positive: the identical node descends under `LoopFirewall`"
+        );
+    }
+
+    /// The arm is reached through the SECOND carrier — a granted trigger whose `execute`
+    /// carries the delayed node — and a PROJECTED-ONLY verdict survives to the entry point
+    /// that can see it.
+    ///
+    /// The two continuous-modification entry points read ONE axis each and the disjunction
+    /// is their caller's, so a `{sibling: false, projected: true}` verdict is invisible to
+    /// one of them by construction. The condition is the inert `AtNextPhase`, which makes
+    /// the whole verdict the body leg's.
+    ///
+    /// REVERT-PROBE: restore `Effect::CreateDelayedTrigger { .. } => Axes::CONSERVATIVE` ⇒
+    /// the `sibling == false` assertion **FAILS**, because the blanket sets all three axes;
+    /// delete `acc = acc.or(ability_definition_axes(effect, mode))` (drop the body leg) ⇒
+    /// the `projected == true` assertion **FAILS**.
+    #[test]
+    fn grant_trigger_carrying_a_delayed_body_is_descended_per_axis() {
+        use crate::types::phase::Phase;
+
+        let projected_half = PtValue::Quantity(QuantityExpr::Ref {
+            qty: QuantityRef::LifeTotal {
+                player: PlayerScope::Controller,
+            },
+        });
+        let projected_body = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Pump {
+                power: projected_half.clone(),
+                toughness: projected_half,
+                target: TargetFilter::SelfRef,
+            },
+        );
+
+        // AXIS ISOLATION, as a reach-guard: if the body stops being projected-ONLY the split
+        // this row is about stops being under test.
+        let body_axes = ability_definition_axes(&projected_body, ScanMode::LoopFirewall);
+        assert_eq!(
+            (body_axes.event, body_axes.sibling, body_axes.projected),
+            (false, false, true),
+            "AXIS ISOLATION: the delayed body must be projected-ONLY. The `sibling: false` \
+             half is what makes it invisible to a `.sibling`-only consult"
+        );
+
+        let carrier = |body: AbilityDefinition| {
+            grant_trigger(TriggerDefinition {
+                execute: Some(Box::new(AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    delayed_node(
+                        DelayedTriggerCondition::AtNextPhase { phase: Phase::End },
+                        body,
+                    ),
+                ))),
+                ..bello_granted_trigger()
+            })
+        };
+
+        let m = carrier(projected_body);
+        assert!(
+            !continuous_modification_reads_sibling_mutable(&m),
+            "CR 732.2a: the delayed body reads a projected player resource and no board \
+             aggregate, so the `.sibling` entry point must report the relief this descent \
+             delivers on the granted-trigger carrier"
+        );
+        assert!(
+            continuous_modification_reads_projected_resource(&m),
+            "CR 608.2h + CR 732.2a: the veto is still reachable, through the OTHER \
+             single-axis entry point. Without this half, the assertion above would be \
+             satisfied by an arm that classified everything inert"
+        );
+
+        // NON-DEGENERACY CONTROL: the same carrier with a read-free delayed body must relieve
+        // BOTH entry points, so the `projected` verdict above is the body's and not the
+        // carrier's or the trigger's.
+        let inert = carrier(inert_delayed_body());
+        assert!(
+            !continuous_modification_reads_sibling_mutable(&inert)
+                && !continuous_modification_reads_projected_resource(&inert),
+            "control: with a read-free delayed body the identical carrier reads neither \
+             axis, so the `projected` reading above is attributable to the body"
         );
     }
 

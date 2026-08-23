@@ -4196,20 +4196,20 @@ pub enum DelayedTriggerCondition {
     WhenLeavesPlay {
         object_id: super::identifiers::ObjectId,
     },
-    /// CR 603.7c: "when [object] dies" — fires on zone change to graveyard.
+    /// CR 603.7: "when [object] dies" — fires on zone change to graveyard.
     /// Filter-based variant resolved at trigger check time (unlike WhenLeavesPlay
     /// which uses a specific object_id).
     WhenDies { filter: TargetFilter },
-    /// CR 603.7c: "when [object] leaves the battlefield" — filter-based variant
+    /// CR 603.7: "when [object] leaves the battlefield" — filter-based variant
     /// that fires on any zone change from battlefield.
     WhenLeavesPlayFiltered { filter: TargetFilter },
-    /// CR 603.7c: "when [object] enters the battlefield" — fires on zone change
+    /// CR 603.7: "when [object] enters the battlefield" — fires on zone change
     /// to battlefield.
     WhenEntersBattlefield { filter: TargetFilter },
     /// "when [object] dies or is exiled" — fires on zone change to graveyard OR exile.
     /// Filter-based variant resolved at trigger check time.
     WhenDiesOrExiled { filter: TargetFilter },
-    /// CR 603.7c: "Whenever [event] this turn" — fires each time the event occurs
+    /// CR 603.7b: "Whenever [event] this turn" — fires each time the event occurs
     /// until end of turn. Reuses existing trigger matching infrastructure via embedded
     /// TriggerDefinition. The embedded trigger's `execute` field should be `None` —
     /// the actual effect lives in `DelayedTrigger.ability`.
