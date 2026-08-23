@@ -317,7 +317,7 @@ fn serpent_society_ward_solemnity_makes_the_payment_unchoosable_and_counters_the
             .objects
             .get(&serpent_society)
             .is_some_and(|obj| obj.zone == engine::types::zones::Zone::Battlefield),
-        "a prevented player-counter payment must be treated as a FAILED cost, countering the targeting spell exactly like a declined payment — Serpent Society must survive"
+        "CR 614.17b: a payment whose own event can't happen is never chosen, so an unpaid Ward counters the targeting spell and Serpent Society survives"
     );
     assert!(
         !runner.state().stack.iter().any(|entry| entry.id == destroy),

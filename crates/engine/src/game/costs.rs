@@ -2020,6 +2020,24 @@ fn self_counter_placement_is_prohibited(
 /// CR 118.5 + CR 702.24a: how many counters a resolution-time counter cost
 /// places, from its resolved `QuantityExpr`.
 ///
+/// CR 107.1b: "If a calculation that would determine the result of an effect
+/// yields a negative number, zero is used instead, unless that effect doubles,
+/// triples, or sets to a specific value a player's life total or the power
+/// and/or toughness of a creature or creature card." A counter count is in
+/// none of those exception classes, so a negative resolved quantity places
+/// ZERO counters — never its magnitude, which would turn a cost that performs
+/// no event into one that places counters the rules never asked for.
+///
+/// The resolver really can hand this function a negative value: `fold_compose`
+/// evaluates `QuantityExpr::Offset` as an unfloored `inner + offset` and
+/// `QuantityExpr::Multiply` with a signed factor, so any cost quantity whose
+/// dynamic inner falls below its offset arrives here negative. `ClampMin` is
+/// the *expression-level* opt-in to the same rule; a cost consumer cannot
+/// assume its quantity was built with one.
+///
+/// `.max(0)` is the clamp every other resolved-quantity consumer in this file
+/// uses (`Discard`, `PayLife`, `PayEnergy`, the dynamic generic mana cost).
+///
 /// Single authority on purpose. The choice-time predicate
 /// (`resolution_cost_includes_impossible_event`) and the payment path
 /// (`pay_ability_cost_inner`) must preview the SAME count: if they disagree, a
@@ -2027,7 +2045,7 @@ fn self_counter_placement_is_prohibited(
 /// `Applied { count: 0 }`, the pay branch is offered, and the payment then
 /// refuses it — the exact offered-then-rejected defect CR 614.17b forbids.
 fn counter_cost_count(resolved: i32) -> u32 {
-    resolved.unsigned_abs()
+    u32::try_from(resolved.max(0)).unwrap_or(0)
 }
 
 /// CR 614.17b: "If an event can't happen, a player can't choose to pay a cost
@@ -2079,9 +2097,14 @@ pub(crate) fn resolution_cost_includes_impossible_event(
                 ..
             } => false,
             // `supports_effect_cost_payment` refuses every other effect-cost shape upstream.
-            // CR 614.17b: widening that predicate to admit a further counter-placing shape owes a
-            // matching arm here in the same change, or the new shape answers "no impossible event"
-            // and silently loses this refusal.
+            // CR 614.17b: this arm swallows ANY widening of that predicate, not just a further
+            // counter-placing one, so admitting any new effect-cost shape owes a matching arm
+            // here in the same change — otherwise the new shape answers "no impossible event"
+            // and silently loses this refusal. An `EffectCost { LoseLife }` shape is the nearest
+            // example: CR 119.8 ("a cost that involves having that player pay life can't be
+            // paid") is the direct analogue, and nothing else catches it, because
+            // `can_pay_resolution` reaches that refusal only through `can_pay_life_cost` from its
+            // `AbilityCost::PayLife` arm, which an effect-cost never matches.
             _ => false,
         },
         // Prohibition is the De Morgan dual of payability: `can_pay_resolution` answers
