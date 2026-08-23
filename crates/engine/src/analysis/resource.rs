@@ -3647,8 +3647,8 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
 ///       Measured cost: ZERO — no trigger `execute` in the card pool carries any
 ///       (positive control: 3195 on `abilities`).
 ///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, set
-///       `condition = None`, and re-run `ability_definition_reads_sibling_mutable_for_loop`.
-///       Only if THAT is `false` is `condition` the def's only sibling read — so no effect
+///       `condition = None`, and re-run `ability_definition_reads_growing_class_for_loop`.
+///       Only if THAT is `false` is `condition` the def's only growing-class read — so no effect
 ///       body, cost, sub-ability or other field hides a second read this predicate never
 ///       looked at.
 ///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`. No recursion, therefore
@@ -3682,7 +3682,7 @@ fn execute_ledger_condition_provably_excludes_class(
     // (a) sole-source by single-field clone-and-rescan.
     let mut probe = exec.clone();
     probe.condition = None;
-    if crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&probe) {
+    if crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&probe) {
         return false;
     }
     // (b) shape — single level, `_ => false` via let-else.
@@ -3845,8 +3845,8 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       `ActivationRestriction::RequiresCondition` on the same def.
 ///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the EFFECT
 ///       with `Effect::NoOp` (`Effect::NoOp => Axes::NONE` in `ability_scan::scan_effect`) and re-run
-///       `ability_definition_reads_sibling_mutable_for_loop`. Only if THAT is `false` is the
-///       effect the def's only sibling read — `ability_definition_axes` destructures with
+///       `ability_definition_reads_growing_class_for_loop`. Only if THAT is `false` is the
+///       effect the def's only growing-class read — `ability_definition_axes` destructures with
 ///       NO `..`, so the rescan covers `sub_ability`,
 ///       `else_ability`, `duration`, `condition`, `multi_target`, `target_constraints`,
 ///       `modal`, `mode_abilities`, `repeat_for`, `announced_x`, `player_scope`,
@@ -3854,7 +3854,7 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       `cost_reduction` and `optional_player` without this arm enumerating any of them.
 ///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`, and NO `..` on
 ///       `Effect::Pump`, so a new `Pump` field is a compile error here rather than a silent
-///       unscanned read. (b-t) then requires the bound `target` to contribute NO sibling
+///       unscanned read. (b-t) then requires the bound `target` to contribute NO growing-class
 ///       read, for the SAME reason the two sibling arms pattern-match `target: None` (see
 ///       [`exiled_colors_provably_exclude_class`]'s (b)): conjunct (d) proves only that the
 ///       P/T AGGREGATE cannot count the class, and says nothing whatever about the target.
@@ -3867,7 +3867,7 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       cannot un-set a `sibling` the aggregate already set. `Effect::Pump` cannot state that as a
 ///       pattern (its `target` is a `TargetFilter`, NOT an `Option<_>`), so it is a
 ///       PREDICATE through the scanner's own authority:
-///       `ability_scan::effect_target_reads_sibling_mutable_for_loop`, which derives the
+///       `ability_scan::effect_target_reads_growing_class_for_loop`, which derives the
 ///       `FilterReadContext` from THIS effect via `effect_target_ctx` rather than pinning
 ///       one. Measured: `Effect::Pump` sits in the `SnapshotOrEvent` group
 ///       (the `SnapshotOrEvent` group in `ability_scan`'s effect-group table, reached via
@@ -3930,9 +3930,9 @@ fn execute_ledger_condition_provably_excludes_class(
 /// anticipate the target axis; (b-t) is not in it. It was added because the landed arm was
 /// measured target-BLIND: three byte-identical Pyreswipe Hawk defs differing ONLY in `target`
 /// (`SelfRef` / bare `Typed{Creature}` / board-reading) all relieved, while the TARGET scan —
-/// `effect_target_reads_sibling_mutable_for_loop`, this change's wrapper — answered
+/// `effect_target_reads_growing_class_for_loop`, this change's wrapper — answered
 /// `false / false / true` across them. Name it, because the WHOLE-DEF scan
-/// `ability_definition_reads_sibling_mutable_for_loop` cannot tell the three apart: the
+/// `ability_definition_reads_growing_class_for_loop` cannot tell the three apart: the
 /// aggregate the three defs SHARE makes it `true` on all three regardless of target
 /// (`scan_quantity_ref` sets `sibling` for `QuantityRef::Aggregate` before walking the
 /// filter) — indeed block (1b) only reaches this arm once it IS true. At the time of that
@@ -3961,7 +3961,7 @@ fn pump_aggregate_provably_excludes_class(
     // (a) sole-source by single-field clone-and-rescan.
     let mut probe = exec.clone();
     *probe.effect = Effect::NoOp;
-    if crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&probe) {
+    if crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&probe) {
         return false;
     }
     // (b) shape — single level, `_ => false` via let-else, no `..`.
@@ -3973,11 +3973,11 @@ fn pump_aggregate_provably_excludes_class(
     else {
         return false;
     };
-    // (b-t) the TARGET must itself contribute no sibling read — conjunct (d) is about the
+    // (b-t) the TARGET must itself contribute no growing-class read — conjunct (d) is about the
     // P/T AGGREGATE and says nothing about what the target reads. Asked through the
     // scanner's own authority (which derives the census context from THIS effect), never a
     // pinned `FilterReadContext`. See this function's doc.
-    if crate::game::ability_scan::effect_target_reads_sibling_mutable_for_loop(
+    if crate::game::ability_scan::effect_target_reads_growing_class_for_loop(
         exec.effect.as_ref(),
         target,
     ) {
@@ -4217,8 +4217,8 @@ fn pt_value_aggregate_provably_excludes_class(
 ///       class-matching restriction on the same def.
 ///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the
 ///       EFFECT with `Effect::NoOp` (`Effect::NoOp => Axes::NONE` in `ability_scan::scan_effect`)
-///       and re-run `ability_definition_reads_sibling_mutable_for_loop`. Only if THAT
-///       is `false` is the effect the def's only sibling read —
+///       and re-run `ability_definition_reads_growing_class_for_loop`. Only if THAT
+///       is `false` is the effect the def's only growing-class read —
 ///       `ability_definition_axes` destructures with NO `..`, so the rescan covers
 ///       `sub_ability`, `condition`, `cost_reduction`, `unless_pay` and the rest
 ///       without this arm enumerating any of them.
@@ -4277,7 +4277,7 @@ fn exiled_colors_provably_exclude_class(
     // (a) sole-source by single-field clone-and-rescan.
     let mut probe = ability.clone();
     *probe.effect = Effect::NoOp;
-    if crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&probe) {
+    if crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&probe) {
         return false;
     }
     // (b) shape — single level, `_ => false` via let-else, no `..`.
@@ -4385,7 +4385,7 @@ fn counters_on_source_provably_excludes_class(
     // (a) sole-source by single-field clone-and-rescan.
     let mut probe = ability.clone();
     *probe.effect = Effect::NoOp;
-    if crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&probe) {
+    if crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&probe) {
         return false;
     }
     // (b) shape — bounded, NON-RECURSIVE, `_ => false` via let-else, no `..` at any
@@ -4595,7 +4595,7 @@ fn reveal_from_hand_decline_branch_is_arrival_invariant(
 ///     in-hand member is a REACHABLE input rather than a hypothetical one.
 ///  2. **DESCENDING WOULD IMPORT THE FAIL-OPEN AUTHORITY.** MEASURED through the neighbour
 ///     that already descends: a `RevealHand` whose `card_filter` is `TargetFilter::LastCreated`
-///     comes back `sibling: false` from `ability_definition_reads_sibling_mutable_for_loop`
+///     comes back `false` from `ability_definition_reads_growing_class_for_loop`
 ///     AND from the `Conservative` accessor, while `arrival_can_move_a_nonmember_match` on
 ///     that same leaf is `true`. `scan_target_filter`'s `TargetFilter::LastCreated =>
 ///     Axes::NONE` arm is the disagreement, and it is the one
@@ -5971,7 +5971,7 @@ fn controller_ref_is_arrival_invariant(controller: &crate::types::ability::Contr
 }
 
 /// §5.3a firewall (BLOCKER-S1 + S5 + MAJOR-A): does ANY live off-stack fire-time
-/// observer read the growing class (the axis-2 `sibling` read)? Scans, on the
+/// observer read the growing class (`sibling` ∨ `projected`)? Scans, on the
 /// FLUSHED current: (1) trigger conditions AND `execute` bodies; (2) [S5] EVERY
 /// ability def on a functioning battlefield permanent regardless of `kind`; (3)
 /// replacement conditions AND bodies; (4) condition-gated statics — condition plus
@@ -6124,7 +6124,7 @@ fn fire_time_conditions_read_growing_class_scoped(
                 // not make `.all()` vacuously true) — see block (1)'s ETB gate above for the
                 // full rationale, and the `..._empty_class_member_set_does_not_relieve` rows,
                 // which now carry one fixture per surface.
-                if scan::ability_definition_reads_sibling_mutable_for_loop(exec)
+                if scan::ability_definition_reads_growing_class_for_loop(exec)
                     && !class_members.is_some_and(|members| {
                         !members.is_empty()
                             && members.iter().all(|&m| {
@@ -6241,7 +6241,7 @@ fn fire_time_conditions_read_growing_class_scoped(
                 // likewise precedes its `class_members` consult). BLOCK (1b) IS PINNED BY
                 // SYMBOL, NEVER BY LINE: it is the `if let Some(exec) = def.execute` construct
                 // in the block-(1) trigger loop earlier in THIS function — the one whose
-                // condition is `scan::ability_definition_reads_sibling_mutable_for_loop(exec)
+                // condition is `scan::ability_definition_reads_growing_class_for_loop(exec)
                 // && !class_members.is_some_and(..)`, with the
                 // `execute_ledger_condition_provably_excludes_class(..) ||
                 // pump_aggregate_provably_excludes_class(..)` disjunct as its consult.
@@ -6252,8 +6252,8 @@ fn fire_time_conditions_read_growing_class_scoped(
                 // THE DISCRIMINATOR, stated so it can be re-measured rather than re-read: the
                 // ordering claim above is about a SCAN preceding a `class_members` consult, and
                 // `scan::` is called exactly TWICE in block (1) — `trigger_condition_reads_
-                // sibling_mutable` (the condition gate) and `ability_definition_reads_sibling_
-                // mutable_for_loop` (1b's own first conjunct). BOTH sit AFTER the ETB gate's
+                // sibling_mutable` (the condition gate) and
+                // `ability_definition_reads_growing_class_for_loop`. BOTH sit AFTER the ETB gate's
                 // consult, so NO scan precedes it and the claim is false of it. What does
                 // precede the ETB gate is `trigger_definition_functions_in_zone` and the
                 // `scope.phase_invariant` gate — two `continue`s, neither of them a scan. (Do
@@ -6318,7 +6318,7 @@ fn fire_time_conditions_read_growing_class_scoped(
                     );
                 !relieved
                     && !not_proposed
-                    && scan::ability_definition_reads_sibling_mutable_for_loop(ability)
+                    && scan::ability_definition_reads_growing_class_for_loop(ability)
                     && !disjoint()
             })
         {
@@ -13334,15 +13334,12 @@ mod tests {
     ///   had their relief verdict established only by COMPOSITION (a scanner verdict
     ///   `&&` unchanged block code), never by a row that would go red if the composition
     ///   broke.
-    /// * THE VETO HALF is the axis the consumer cannot see. Both blocks consult
-    ///   [`crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop`],
-    ///   a `.sibling` reader. `scan_quantity_ref` classifies `QuantityRef::LifeTotal` as
-    ///   projected-ONLY, so before the `Effect::Pump` arm's `if acc.projected` escalation
-    ///   a life-total-scaled pump was relieved HERE while the pre-descent blanket had
-    ///   vetoed it — and the projected-resource firewall
-    ///   (`fire_time_conditions_read_projected_resource_scoped`) scans trigger CONDITIONS,
-    ///   replacements, static conditions and transient effects, never `obj.abilities` and
-    ///   never a trigger `execute` body, so nothing downstream re-raised it.
+    /// * THE VETO HALF is the axis a `.sibling`-only consult could not see: both blocks
+    ///   consult
+    ///   [`crate::game::ability_scan::ability_definition_reads_growing_class_for_loop`],
+    ///   whose `projected` half is what keeps a life-total-scaled pump — `LifeTotal` is
+    ///   classified projected-ONLY — vetoing on the two surfaces
+    ///   `fire_time_conditions_read_projected_resource_scoped` never scans.
     ///
     /// Both shapes are corpus-reachable rather than hypothetical. Loxodon Lifechanter
     /// carries the projected pump on a battlefield-resident `abilities[0]` ("{5}{W}: This
@@ -13367,9 +13364,8 @@ mod tests {
     ///
     /// TWO REVERT-PROBES, both of which must be listed because the halves fail to
     /// different mutations:
-    /// * delete `if acc.projected { Axes::CONSERVATIVE }` from the `LoopFirewall` half of
-    ///   `ability_scan::scan_effect`'s `Effect::Pump` arm ⇒ the projected arms stop
-    ///   vetoing ⇒ **FAILS**.
+    /// * narrow `ability_definition_reads_growing_class_for_loop` to `.sibling` ⇒ the
+    ///   projected arms stop vetoing ⇒ **FAILS**.
     /// * restore `Effect::Pump { .. } => Axes::CONSERVATIVE` (drop the descent) ⇒ the
     ///   read-free arms veto ⇒ **FAILS**.
     #[test]
@@ -13458,10 +13454,10 @@ mod tests {
                  it \"requires information from the game\" whose answer is \"determined \
                  only once, when the effect is applied\"; each loop iteration re-determines \
                  it against a DIFFERENT life total and the sequence stops being \
-                 predictable. This block consults a `.sibling` reader and \
-                 `QuantityRef::LifeTotal` is classified projected-ONLY, so the verdict has \
-                 to come from the `Effect::Pump` arm escalating a projected payload to the \
-                 blanket it returned before the descent. This payload is Loxodon \
+                 predictable. This block consults \
+                 `ability_definition_reads_growing_class_for_loop` and \
+                 `QuantityRef::LifeTotal` is classified projected-ONLY, so the verdict \
+                 comes from the consult's `projected` half. This payload is Loxodon \
                  Lifechanter's shipped `abilities[0]` body verbatim — the ref on BOTH \
                  halves, `SelfRef` target"
             );
@@ -13480,7 +13476,7 @@ mod tests {
         }
     }
 
-    /// **Block (1b) on the `Some(&class_members)` ARGUMENT SHAPE** — the escalated veto is
+    /// **Block (1b) on the `Some(&class_members)` ARGUMENT SHAPE** — the projected veto is
     /// not bypassable by the relief disjunct that only this shape unlocks.
     ///
     /// WHY THIS ROW EXISTS. [`pump_payload_decides_the_veto_at_blocks_one_b_and_two`] drives
@@ -13494,15 +13490,16 @@ mod tests {
     /// ([`pt_value_aggregate_provably_excludes_class`]) admits only `PtValue::Fixed` and an
     /// `Aggregate`-shaped `PtValue::Quantity` and ends `_ => return false` — so this is a
     /// MISSING ASSERTION, not a bug. It is worth a row because it is precisely the arm
-    /// where a later widening of conjunct (d) would reopen the projected hole with a green
-    /// suite: the `None` rows cannot see that widening, because they never reach it.
+    /// where a later widening of conjunct (d) would reopen the projected hole: a widening
+    /// that admits a non-`Aggregate` quantity shape leaves (xi) green — (xi)'s negative is a
+    /// `PtValue::Variable`, a different shape — and reddens only this row.
     ///
     /// THE TWO ARMS DIFFER IN THE `PtValue` HALVES AND IN NOTHING ELSE. Both are the REAL
     /// Pyreswipe Hawk `execute` body from this lane's dump, both installed by the SAME
     /// [`pump_firewall_fixture`], both consulted with the SAME `Some(&{member})`. Arm A is
-    /// the card's own aggregate payload and is RELIEVED; arm B swaps in the projected read
-    /// Loxodon Lifechanter / Golden Sidekick / Hurska Sweet-Tooth ship (all three carry the
-    /// ref on BOTH halves) and must VETO.
+    /// the card's own aggregate payload and is RELIEVED; arm B swaps in a projected-only ref on
+    /// both halves — `Ref(LifeTotal{Controller})` as Loxodon Lifechanter ships it, `Ref(Life
+    /// GainedThisTurn{Controller})` as Golden Sidekick and Hurska Sweet-Tooth do — and must VETO.
     ///
     /// NON-VACUITY, and arm A is the load-bearing half rather than decoration. A lone
     /// "the projected payload vetoes" is indistinguishable from "the relief arm is
@@ -13525,11 +13522,10 @@ mod tests {
     /// "determined only once, when the effect is applied", so each iteration re-determines it
     /// against a different life total and the sequence stops being predictable.
     ///
-    /// REVERT-PROBE: delete `if acc.projected { Axes::CONSERVATIVE }` from the
-    /// `LoopFirewall` half of `ability_scan::scan_effect`'s `Effect::Pump` arm ⇒ arm B's
-    /// payload stops reading the sibling axis ⇒ **FAILS** (at `pump_firewall_fixture`'s own
-    /// reach-guard, which fires before the consult — that is the same defect surfacing one
-    /// frame earlier, not a different one).
+    /// REVERT-PROBE: narrow `ability_definition_reads_growing_class_for_loop` to
+    /// `.sibling` ⇒ arm B's projected payload is invisible to the consult ⇒ **FAILS** (at
+    /// `pump_firewall_fixture`'s own reach-guard, which fires before the consult — the same
+    /// defect surfacing one frame earlier, not a different one).
     #[test]
     fn projected_pump_still_vetoes_at_block_one_b_on_the_some_class_members_arm() {
         use crate::types::ability::{PlayerScope, PtValue, QuantityExpr, QuantityRef};
@@ -13594,11 +13590,554 @@ mod tests {
             "CR 608.2h + CR 732.2a: this pump is scaled by a life total, so it \"requires \
              information from the game\" whose answer is \"determined only once, when the \
              effect is applied\"; each loop iteration re-determines it against a DIFFERENT \
-             life total and the sequence stops being predictable. Block (1b) consults a \
-             `.sibling` reader and `QuantityRef::LifeTotal` is classified projected-ONLY, so \
-             the veto has to come from the `Effect::Pump` arm's `if acc.projected` \
-             escalation — and, unlike the `None` rows, it has to survive a relief disjunct \
-             that arm A just proved is live on this fixture"
+             life total and the sequence stops being predictable. Block (1b) consults \
+             `ability_definition_reads_growing_class_for_loop` and `QuantityRef::LifeTotal` \
+             is classified projected-ONLY, so the veto comes from the consult's `projected` \
+             half — and, unlike the `None` rows, it has to survive a relief disjunct that \
+             arm A just proved is live on this fixture"
+        );
+    }
+
+    /// Parse `oracle` and hand back the activated ability at `index` — the exact
+    /// `AbilityDefinition` block (2) consults.
+    fn ability_from_oracle(oracle: &str) -> crate::types::ability::AbilityDefinition {
+        let parsed = crate::parser::parse_oracle_text(
+            oracle,
+            "P3 Block2 Host",
+            &[],
+            &["Creature".to_string()],
+            &[],
+        );
+        parsed
+            .abilities
+            .first()
+            .cloned()
+            .expect("the constructed oracle must parse an activated ability")
+    }
+
+    /// The block-(1b) surface with a live class member and NO growing-class reach-guard, so
+    /// one row can drive a vetoing def and its relieved twin through the same installer.
+    /// Returns `(state, member)`.
+    fn projected_block_one_b_state(
+        exec: crate::types::ability::AbilityDefinition,
+    ) -> (GameState, ObjectId) {
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let host = inert_token(&mut state, 860, 0, "P3 Block1b Host");
+        let def = TriggerDefinition::new(TriggerMode::Attacks).execute(exec);
+        assert!(
+            crate::game::triggers::trigger_definition_functions_in_zone(&def, Zone::Battlefield),
+            "reach-guard: block (1b) zone-gates every def it walks, so a def that does not \
+             function on the battlefield is `continue`d before the consult"
+        );
+        state
+            .objects
+            .get_mut(&host)
+            .unwrap()
+            .trigger_definitions
+            .push(def);
+        (state, member)
+    }
+
+    /// The block-(2) surface with a live class member and NO growing-class reach-guard, for
+    /// the same reason. Returns `(state, member)`.
+    fn projected_block_two_state(
+        ability: crate::types::ability::AbilityDefinition,
+    ) -> (GameState, ObjectId) {
+        use std::sync::Arc;
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let host = inert_token(&mut state, 861, 0, "P3 Block2 Host");
+        let obj = state.objects.get_mut(&host).unwrap();
+        assert_eq!(
+            obj.zone,
+            Zone::Battlefield,
+            "reach-guard: block (2) walks battlefield permanents only"
+        );
+        obj.abilities = Arc::new(vec![ability]);
+        (state, member)
+    }
+
+    /// Drive one def through block (1b) on BOTH `class_members` shapes. `None` short-circuits
+    /// the relief disjunct outright; `Some` is the shape that can relieve, so a verdict
+    /// proven on one is not proven on the other.
+    fn veto_on_both_class_member_shapes(
+        exec: crate::types::ability::AbilityDefinition,
+    ) -> (bool, bool) {
+        let (state, member) = projected_block_one_b_state(exec);
+        (
+            fire_time_conditions_read_growing_class(&state, None),
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+        )
+    }
+
+    /// **Block (1b), BOTH `class_members` shapes** — a def whose `Effect::Pump` leg the
+    /// descent RELIEVES still vetoes when a sibling surface of the SAME def reads a
+    /// projected resource.
+    ///
+    /// Two shipped ASTs that reach different probes: Harvestrite Host carries the read on
+    /// `execute.sub_ability.condition` (`NthResolutionThisTurn{n: 2}`), Poisoner's
+    /// Apprentice on the def's OWN `condition`
+    /// (`QuantityCheck{Ref(LifeGainedThisTurn{Controller}), GE, Fixed(1)}`). Both pump legs
+    /// are `PtValue::Fixed` with a `Typed{Creature}` target, so the descent reads nothing
+    /// there and the whole verdict rides on the sibling surface.
+    ///
+    /// CR 608.2h: a per-turn journal read is "information from the game", "determined only
+    /// once, when the effect is applied", so each loop iteration re-determines it against a
+    /// different journal — which is what makes the sequence unpredictable under CR 732.2a.
+    ///
+    /// REVERT-PROBE: narrow `ability_definition_reads_growing_class_for_loop` to `.sibling`
+    /// ⇒ the four vetoing arms report `false` ⇒ **FAILS**.
+    #[test]
+    fn projected_sibling_surface_vetoes_though_the_pump_leg_is_relieved() {
+        use crate::types::ability::{Effect, PtValue};
+
+        let harvestrite = trigger_execute_from_oracle(
+            "Whenever this creature or another Rabbit you control enters, target creature you \
+             control gets +1/+0 until end of turn. Then draw a card if this is the second time \
+             this ability has resolved this turn.",
+        );
+        let poisoner = trigger_execute_from_oracle(
+            "When this creature enters, target creature an opponent controls gets -4/-4 until \
+             end of turn if you gained life this turn.",
+        );
+
+        for (name, exec) in [("harvestrite", &harvestrite), ("poisoner", &poisoner)] {
+            let Effect::Pump {
+                power, toughness, ..
+            } = exec.effect.as_ref()
+            else {
+                panic!("fixture pin: {name}'s execute body must be an `Effect::Pump`");
+            };
+            assert!(
+                matches!(power, PtValue::Fixed(_)) && matches!(toughness, PtValue::Fixed(_)),
+                "fixture pin: {name}'s pump halves must both be `PtValue::Fixed`, else the veto \
+                 could come from the payload rather than from the sibling surface"
+            );
+        }
+        assert!(
+            harvestrite
+                .sub_ability
+                .as_deref()
+                .is_some_and(|s| s.condition.is_some()),
+            "fixture pin: Harvestrite's projected read lives on `sub_ability.condition`"
+        );
+        assert!(
+            poisoner.condition.is_some(),
+            "fixture pin: Poisoner's projected read lives on the def's own `condition`"
+        );
+
+        let mut harvestrite_relieved = harvestrite.clone();
+        harvestrite_relieved.sub_ability = None;
+        let mut poisoner_relieved = poisoner.clone();
+        poisoner_relieved.condition = None;
+
+        for (name, vetoing, relieved) in [
+            ("harvestrite", &harvestrite, &harvestrite_relieved),
+            ("poisoner", &poisoner, &poisoner_relieved),
+        ] {
+            let (none_shape, some_shape) = veto_on_both_class_member_shapes(vetoing.clone());
+            assert!(
+                none_shape && some_shape,
+                "{name}: CR 608.2h + CR 732.2a — the projected sibling surface is a read the \
+                 loop's own progress moves, so block (1b) must veto on both `class_members` \
+                 shapes"
+            );
+            let (none_rel, some_rel) = veto_on_both_class_member_shapes(relieved.clone());
+            assert!(
+                !none_rel && !some_rel,
+                "{name} relieving twin: the byte-identical def with the projected surface \
+                 dropped reads nothing, so it must be relieved on both shapes — the vetoing \
+                 arm above is this arm's reach-guard, and a blanket veto fails here"
+            );
+        }
+    }
+
+    /// **Conjunct (a) of the relief predicates** — the residual probe asks the same question
+    /// the consult asks, so a def with a projected read on an unblanked surface is refused.
+    ///
+    /// The two disjuncts are asserted SEPARATELY, by calling each predicate directly: a
+    /// `false` inferred from the composite walk cannot say which disjunct refused, and one
+    /// fixture cannot serve both — `execute_ledger_condition_provably_excludes_class` refuses
+    /// a `condition: None` def at conjunct (b)'s let-else before (a) is reached, so the
+    /// ledger arm needs a ledger-shaped `condition` of its own.
+    ///
+    /// CR 608.2h: conjunct (a) blanks ONE field and rescans; a residual `true` means another
+    /// field still reads information the loop re-determines, and the relief argument for the
+    /// blanked field cannot carry the def.
+    ///
+    /// REVERT-PROBE: repoint the four conjunct-(a) sites to a `.sibling`-only reader ⇒ both
+    /// predicates relieve their fixtures ⇒ **FAILS**.
+    #[test]
+    fn residual_probe_refuses_a_def_with_a_projected_read_elsewhere() {
+        use crate::types::ability::{AbilityCondition, Effect};
+
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let source = ledger_observer_source(&mut state);
+        let artifact = inert_token(&mut state, 802, 0, "Aggregate Bauble");
+        state
+            .objects
+            .get_mut(&artifact)
+            .unwrap()
+            .card_types
+            .core_types = vec![CoreType::Artifact];
+        let source_obj = state.objects[&source].clone();
+
+        // ── THE PUMP DISJUNCT: Harvestrite Host's shipped `triggers[0].execute` ──────
+        let harvestrite = trigger_execute_from_oracle(
+            "Whenever this creature or another Rabbit you control enters, target creature you \
+             control gets +1/+0 until end of turn. Then draw a card if this is the second time \
+             this ability has resolved this turn.",
+        );
+        assert!(
+            matches!(harvestrite.effect.as_ref(), Effect::Pump { .. }),
+            "fixture pin: the pump disjunct's fixture must reach that arm's `Effect::Pump` \
+             shape gate"
+        );
+        assert!(
+            !pump_aggregate_provably_excludes_class(&harvestrite, &state, member, &source_obj),
+            "PUMP_DISJUNCT: conjunct (a) blanks `effect` and rescans, and the projected \
+             `sub_ability.condition` survives the blank — the effect is NOT this def's only \
+             growing-class read, so the relief must be refused"
+        );
+
+        // ── THE LEDGER DISJUNCT: conjunct (b)'s shape plus a projected rider ─────────
+        let mut ledger = trigger_execute_from_oracle(
+            "Whenever this creature deals damage to a player, draw a card if you had two or more \
+             artifacts enter the battlefield under your control this turn.",
+        );
+        assert!(
+            matches!(
+                ledger.condition,
+                Some(AbilityCondition::QuantityCheck { .. })
+            ),
+            "fixture pin: the ledger disjunct needs conjunct (b)'s `QuantityCheck` shape, else \
+             the arm refuses at (b)'s let-else and conjunct (a) is never reached"
+        );
+        let ledger_relieved = ledger.clone();
+        let mut projected_rider = ledger.clone();
+        *projected_rider.effect = Effect::NoOp;
+        projected_rider.condition = Some(AbilityCondition::NthResolutionThisTurn { n: 2 });
+        projected_rider.sub_ability = None;
+        ledger.sub_ability = Some(Box::new(projected_rider));
+
+        assert!(
+            execute_ledger_condition_provably_excludes_class(
+                &ledger_relieved,
+                &state,
+                member,
+                &source_obj
+            ),
+            "LEDGER_DISJUNCT relieving twin, asserted first: the same def WITHOUT the projected \
+             rider IS relieved, so the refusal below is attributable to that surface and not to \
+             a fixture that could never be relieved"
+        );
+        assert!(
+            !execute_ledger_condition_provably_excludes_class(&ledger, &state, member, &source_obj),
+            "LEDGER_DISJUNCT: the ledger `condition` is not this def's only growing-class read \
+             — the projected `sub_ability.condition` survives conjunct (a)'s blank, so the \
+             entry-matcher argument cannot carry the whole def"
+        );
+
+        // ── THE EMPTY-SET ARM: `!members.is_empty()` is load-bearing ─────────────────
+        let (empty_state, _) = projected_block_one_b_state(ledger.clone());
+        assert!(
+            fire_time_conditions_read_growing_class(&empty_state, Some(&HashSet::new())),
+            "an empty member set must not make block (1b)'s `.all(..)` vacuously true — a def \
+             relieved against no members at all is relieved on no evidence"
+        );
+    }
+
+    /// **Conjunct (b-t)** — a pump whose TARGET carries a projected-only read is not
+    /// relieved, though its P/T aggregate is class-disjoint.
+    ///
+    /// Conjunct (d) proves only that the aggregate cannot count the class and says nothing
+    /// about the target, so without (b-t) the relief would rest on evidence that never
+    /// examined it. Two hostile targets reaching the axis by different routes, both
+    /// `projected` WITHOUT `sibling` so the row's mutation moves them: a `PtComparison`
+    /// whose value is `Ref(LifeTotal{Controller})` (through `scan_quantity_expr`) and a
+    /// `ControllerMatches{OpponentLostLife}` (through `scan_player_filter`).
+    ///
+    /// CR 608.2h + CR 732.2a: a target selected by a value the loop's own progress moves is
+    /// re-determined every iteration, so the sequence's results stop being predictable.
+    ///
+    /// REVERT-PROBE: revert `effect_target_reads_growing_class_for_loop`'s body to `.sibling`
+    /// ⇒ both hostile arms relieve ⇒ **FAILS**.
+    #[test]
+    fn pump_target_projected_read_is_not_relieved() {
+        use crate::types::ability::{
+            Comparator, ControllerRef, Effect, FilterProp, PlayerFilter, PlayerScope, PtStat,
+            PtValueScope, QuantityExpr, QuantityRef, TypeFilter, TypedFilter,
+        };
+
+        let dump = wba_dump_state();
+        let hawk = wba_hawk(&dump);
+        let hawk_pump = hawk_trigger_execs(&dump, &hawk)
+            .first()
+            .expect("fixture: Hawk's first trigger carries the attack-pump execute body")
+            .clone();
+        let (state, member, source, artifact) = pump_firewall_fixture(hawk_pump.clone());
+        let source_obj = state.objects[&source].clone();
+        assert!(
+            state.objects.contains_key(&artifact),
+            "non-vacuity: the `Typed{{Artifact, You}}` aggregate must have a live population, \
+             else conjunct (d) relieves against an empty id set"
+        );
+
+        let creature_with = |props: Vec<FilterProp>| {
+            TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Creature],
+                controller: Some(ControllerRef::You),
+                properties: props,
+            })
+        };
+
+        // ── RELIEVING TWIN, asserted FIRST so the negatives below have a reach-guard ──
+        assert!(
+            pump_aggregate_provably_excludes_class(
+                &hawk_pump_with_target(&hawk_pump, creature_with(vec![])),
+                &state,
+                member,
+                &source_obj
+            ),
+            "(b-t) relieving twin: a bare `Typed{{Creature}}` target reads nothing, so the \
+             class-disjoint aggregate still relieves — that relaxation is what the descent \
+             exists for, and without it every arm below passes for the wrong reason"
+        );
+
+        let life_total_target = creature_with(vec![FilterProp::PtComparison {
+            stat: PtStat::Power,
+            scope: PtValueScope::Current,
+            comparator: Comparator::GE,
+            value: QuantityExpr::Ref {
+                qty: QuantityRef::LifeTotal {
+                    player: PlayerScope::Controller,
+                },
+            },
+        }]);
+        let lost_life_target = creature_with(vec![FilterProp::ControllerMatches {
+            player: Box::new(PlayerFilter::OpponentLostLife),
+        }]);
+
+        for (label, target) in [
+            ("PtComparison{Ref(LifeTotal)}", life_total_target),
+            ("ControllerMatches{OpponentLostLife}", lost_life_target),
+        ] {
+            let def = hawk_pump_with_target(&hawk_pump, target);
+            let Effect::Pump { target: bound, .. } = def.effect.as_ref() else {
+                panic!("fixture: the Hawk execute body must be an `Effect::Pump`");
+            };
+            assert!(
+                crate::game::ability_scan::effect_target_reads_growing_class_for_loop(
+                    def.effect.as_ref(),
+                    bound
+                ),
+                "{label} reach-guard: the target must itself read the growing class, else \
+                 conjunct (b-t) is not what refuses below"
+            );
+            assert!(
+                !pump_aggregate_provably_excludes_class(&def, &state, member, &source_obj),
+                "{label}: CR 732.2a — conjunct (d) proves the P/T AGGREGATE cannot count the \
+                 class and says nothing about the target, so a target that reads the growing \
+                 class keeps the veto"
+            );
+        }
+    }
+
+    /// **Multi-authority** — a def carrying BOTH a class-disjoint `Aggregate` pump payload
+    /// (which conjunct (d) can prove invariant) AND a projected `sub_ability.condition`
+    /// (which no disjunct can) still vetoes at block (1b).
+    ///
+    /// The consult does not discriminate here and is not claimed to: `scan_quantity_ref`
+    /// sets `sibling: true` for `QuantityRef::Aggregate` before it walks the filter, so this
+    /// def answers `true` at the consult under either reader. Conjunct (a) is what
+    /// discriminates — it blanks `effect`, and the projected `sub_ability.condition` survives
+    /// the blank.
+    ///
+    /// CR 608.2h: the aggregate's answer is determined once when the effect is applied, which
+    /// is why conjunct (d) can prove it invariant over a disjoint class — and why the journal
+    /// read beside it, which no disjunct examines, still makes the sequence unpredictable
+    /// under CR 732.2a.
+    ///
+    /// REVERT-PROBE: repoint the four conjunct-(a) sites to a `.sibling`-only reader ⇒ the
+    /// def is relieved and the veto is lost ⇒ **FAILS**.
+    #[test]
+    fn two_relief_authorities_one_projected_surface_still_vetoes() {
+        use crate::types::ability::{AbilityCondition, Effect};
+
+        let dump = wba_dump_state();
+        let hawk = wba_hawk(&dump);
+        let hawk_pump = hawk_trigger_execs(&dump, &hawk)
+            .first()
+            .expect("fixture: Hawk's first trigger carries the attack-pump execute body")
+            .clone();
+
+        let mut rider = hawk_pump.clone();
+        *rider.effect = Effect::NoOp;
+        rider.condition = Some(AbilityCondition::NthResolutionThisTurn { n: 2 });
+        rider.sub_ability = None;
+        let mut multi = hawk_pump.clone();
+        multi.sub_ability = Some(Box::new(rider));
+
+        let (state, member, source, artifact) = pump_firewall_fixture(multi.clone());
+        let source_obj = state.objects[&source].clone();
+        assert!(
+            state.objects.contains_key(&artifact),
+            "non-vacuity: the `Typed{{Artifact, You}}` aggregate must have a live population"
+        );
+        assert!(
+            pump_aggregate_provably_excludes_class(&hawk_pump, &state, member, &source_obj),
+            "reach-guard: the SAME def without the rider IS relieved on this fixture, so \
+             conjunct (d) genuinely proves this aggregate class-invariant and the refusal \
+             below is attributable to the projected surface"
+        );
+        assert!(
+            !pump_aggregate_provably_excludes_class(&multi, &state, member, &source_obj),
+            "attribution: conjunct (a) is the refuser — the aggregate is provable and the \
+             `sub_ability.condition` is what survives the effect blank"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "CR 608.2h + CR 732.2a: one relief authority answers for the payload and none \
+             answers for the `sub_ability.condition`, so the def keeps its veto at the \
+             production entry"
+        );
+
+        let (rel_state, rel_member, ..) = pump_firewall_fixture(hawk_pump);
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &rel_state,
+                Some(&HashSet::from([rel_member]))
+            ),
+            "relieving twin: the SAME def with the SAME class-disjoint aggregate and no rider \
+             IS relieved at the production entry, so the veto above is attributable to the \
+             projected surface and not to an unrelievable fixture"
+        );
+    }
+
+    /// **Blocks (1b) and (2), on arms this change does not touch** — a projected read carried
+    /// by `Effect::Token` or `Effect::GainLife` vetoes at the consult, not at the arm.
+    ///
+    /// Both arms end their `LoopFirewall` leg in a bare `acc` and are unchanged here, so a
+    /// veto on these bodies is the consult reading the `projected` axis and nothing else.
+    /// Three shipped bodies: Gadrak, the Crown-Scourge's `Ref(ZoneChangeCountThisTurn)` token
+    /// count and Aetherflux Reservoir's `Ref(SpellsCastThisTurn)` at block (1b), and Children
+    /// of Korlis's `Ref(LifeLostThisTurn)` at block (2).
+    ///
+    /// CR 608.2h: each is a per-turn journal the loop's own progress appends to, so its
+    /// answer is re-determined every iteration and CR 732.2a's predictability requirement
+    /// fails.
+    ///
+    /// REVERT-PROBE: narrow `ability_definition_reads_growing_class_for_loop` to `.sibling`
+    /// ⇒ the three vetoing arms report `false` ⇒ **FAILS**.
+    #[test]
+    fn token_and_gainlife_projected_reads_veto_at_blocks_one_b_and_two() {
+        use crate::types::ability::{Effect, QuantityExpr};
+
+        let gadrak = trigger_execute_from_oracle(
+            "At the beginning of your end step, create a Treasure token for each nontoken \
+             creature that died this turn.",
+        );
+        let aetherflux = trigger_execute_from_oracle(
+            "Whenever you cast a spell, you gain 1 life for each spell you've cast this turn.",
+        );
+        let korlis = ability_from_oracle(
+            "Sacrifice this creature: You gain life equal to the life you've lost this turn.",
+        );
+        let inert_token_body = trigger_execute_from_oracle(
+            "At the beginning of your end step, create a 1/1 white Soldier creature token.",
+        );
+        let inert_gain = ability_from_oracle("Sacrifice this creature: You gain 3 life.");
+
+        assert!(
+            matches!(
+                gadrak.effect.as_ref(),
+                Effect::Token {
+                    count: QuantityExpr::Ref { .. },
+                    ..
+                }
+            ),
+            "fixture pin: Gadrak's token count must be a dynamic `QuantityRef`"
+        );
+        assert!(
+            matches!(
+                inert_token_body.effect.as_ref(),
+                Effect::Token {
+                    count: QuantityExpr::Fixed { .. },
+                    ..
+                }
+            ),
+            "fixture pin: the block-(1b) relieving twin must be the SAME variant with a literal \
+             count, so the row discriminates on the payload and not on the variant"
+        );
+        assert!(
+            matches!(
+                aetherflux.effect.as_ref(),
+                Effect::GainLife {
+                    amount: QuantityExpr::Ref { .. },
+                    ..
+                }
+            ) && matches!(
+                korlis.effect.as_ref(),
+                Effect::GainLife {
+                    amount: QuantityExpr::Ref { .. },
+                    ..
+                }
+            ),
+            "fixture pin: both `GainLife` bodies must carry a dynamic amount"
+        );
+        assert!(
+            matches!(
+                inert_gain.effect.as_ref(),
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { .. },
+                    ..
+                }
+            ),
+            "fixture pin: the block-(2) relieving twin must be the SAME variant with a literal \
+             amount"
+        );
+
+        for (label, vetoing) in [
+            ("gadrak (Token)", &gadrak),
+            ("aetherflux (GainLife)", &aetherflux),
+        ] {
+            let (none_shape, some_shape) = veto_on_both_class_member_shapes(vetoing.clone());
+            assert!(
+                none_shape && some_shape,
+                "{label} at block (1b): CR 608.2h + CR 732.2a — a per-turn journal read is \
+                 re-determined on every loop iteration, so the def keeps its veto on both \
+                 `class_members` shapes"
+            );
+        }
+        let (inert_none, inert_some) = veto_on_both_class_member_shapes(inert_token_body);
+        assert!(
+            !inert_none && !inert_some,
+            "block (1b) relieving twin: a literal-count `Effect::Token` reads nothing, so it is \
+             relieved on the same installer and both shapes"
+        );
+
+        let (korlis_state, korlis_member) = projected_block_two_state(korlis);
+        assert!(
+            fire_time_conditions_read_growing_class(
+                &korlis_state,
+                Some(&HashSet::from([korlis_member]))
+            ),
+            "children of korlis at block (2): CR 608.2h + CR 732.2a — the life lost this turn is \
+             a journal the loop appends to, so the ability keeps its veto"
+        );
+        let (inert_state, inert_member) = projected_block_two_state(inert_gain);
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &inert_state,
+                Some(&HashSet::from([inert_member]))
+            ),
+            "block (2) relieving twin: a fixed-amount `GainLife` reads nothing, so it is \
+             relieved on the same installer and the same shape"
         );
     }
 
@@ -13618,9 +14157,7 @@ mod tests {
     /// `ability_scan::scan_effect`. (That blanket no longer reaches THIS body under
     /// `ScanMode::LoopFirewall` — the arm descends into both `PtValue` halves and the
     /// target, so the same body reads nothing THERE too, and the helper that used to mint
-    /// it has been deleted. The blanket is not gone from that mode outright: the arm still
-    /// returns it for a payload that reads a PROJECTED player resource, which this one
-    /// does not.
+    /// it has been deleted.
     /// Under `ScanMode::Conservative` the blanket is unchanged.) S1 makes block (1b)
     /// precise about exactly that payload, so a
     /// fixed pump is now correctly relieved there and case (b) would have asserted "a broad
@@ -13761,8 +14298,8 @@ mod tests {
             assert_eq!(obj.abilities.len(), 1);
             assert_eq!(obj.abilities[0].kind, AbilityKind::Spell);
             assert!(
-                scan::ability_definition_reads_sibling_mutable_for_loop(&obj.abilities[0]),
-                "reach-guard: the scan must SEE the sibling axis, else the row proves nothing \
+                scan::ability_definition_reads_growing_class_for_loop(&obj.abilities[0]),
+                "reach-guard: the scan must SEE the growing class, else the row proves nothing \
                  (subsumes the `Effect::Unimplemented => Axes::NONE` vacuity)"
             );
             assert!(
@@ -13842,8 +14379,8 @@ mod tests {
                 "reach-guard: the subject must actually carry the widening field"
             );
             assert!(
-                scan::ability_definition_reads_sibling_mutable_for_loop(&obj.abilities[0]),
-                "reach-guard: the scan must SEE the sibling axis, else the row proves nothing"
+                scan::ability_definition_reads_growing_class_for_loop(&obj.abilities[0]),
+                "reach-guard: the scan must SEE the growing class, else the row proves nothing"
             );
             assert!(
                 !crate::game::mana_abilities::is_mana_ability(&obj.abilities[0]),
@@ -16454,15 +16991,16 @@ mod tests {
             .as_deref()
             .expect("fixture: the def carries the execute body just installed");
         assert!(
-            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(exec),
-            "reach-guard: this body must read the sibling axis — that veto is the whole \
+            crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(exec),
+            "reach-guard: this body must read the growing class — that veto is the whole \
              subject of S1, and without it the consult's first conjunct is false and no row \
              proves anything. Since `scan_effect`'s `Effect::Pump` arm descends under \
              `ScanMode::LoopFirewall`, the read has to come from the PAYLOAD, by one of \
              exactly two routes: an aggregate-bearing `power` sets `sibling` directly \
              (`scan_quantity_ref` sets it for `QuantityRef::Aggregate` unconditionally), and \
-             a PROJECTED-reading payload arrives through that arm's `if acc.projected` \
-             escalation to `Axes::CONSERVATIVE`. A read-free pump can no longer reach \
+             a PROJECTED-reading payload is seen because this guard asks \
+             `ability_definition_reads_growing_class_for_loop`, whose `projected` half the \
+             arm reports precisely. A read-free pump can no longer reach \
              this fixture, which is why the two-`PtValue::Fixed` arm (vi) moved to \
              `ability_scan::tests::scan_effect_pump_descends_under_loop_firewall`"
         );
@@ -16689,9 +17227,9 @@ mod tests {
         // ── (vi) MIGRATED OUT, to `ability_scan::tests::scan_effect_pump_descends_under_
         // loop_firewall` (row 25). Arm (vi) asserted that a `Pump` with two
         // `PtValue::Fixed` halves must be skipped by block (1b), and it drove that through
-        // `pump_firewall_fixture`, whose reach guard requires the def to READ the sibling
-        // axis. Now that `scan_effect`'s `Effect::Pump` arm descends under
-        // `ScanMode::LoopFirewall`, a read-free pump no longer reads that axis, so the
+        // `pump_firewall_fixture`, whose reach guard requires the def to READ the growing
+        // class. Now that `scan_effect`'s `Effect::Pump` arm descends under
+        // `ScanMode::LoopFirewall`, a read-free pump no longer reads it, so the
         // fixture's guard — which is correct, and which the other eight callers need —
         // can no longer be reached with this argument. The claim did not weaken and was
         // not dropped: it moved to the scanner arm that now owns it, carrying its
@@ -17037,7 +17575,7 @@ mod tests {
 
         // ── REACH-GUARD: def[0] is a LIVE block-(1b) veto without S1 ──────────────────
         assert!(
-            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&execs[0]),
+            crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&execs[0]),
             "reach-guard: the attack pump must be a live veto surface (its `power` is an \
              aggregate, and `scan_quantity_ref` sets `sibling` for `QuantityRef::Aggregate` \
              unconditionally); if it were not, S1 would be relieving a def that never vetoed \
@@ -17083,9 +17621,7 @@ mod tests {
 
         // ── The other half of 'Hawk is cleared at block (1b)': def[1] never vetoed ────
         assert!(
-            !crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(
-                &execs[1]
-            ),
+            !crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&execs[1]),
             "R1 / plan U-1: Hawk's `GainControl` expend trigger does \
              NOT read the sibling axis, so S1 alone clears this card at block (1b) and the \
              dropped S1' arm stays unnecessary. If this flips, C1 no longer clears Hawk"
@@ -17428,10 +17964,10 @@ mod tests {
 
         // ── REACH-GUARDS, all before any outcome assertion ──
         assert!(
-            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(
+            crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(
                 &exec_artifact
             ),
-            "reach-guard: the execute body must read the sibling axis, else the ledger \
+            "reach-guard: the execute body must read the growing class, else the ledger \
              gate's first conjunct is false and this row proves nothing"
         );
         assert!(
@@ -17595,10 +18131,10 @@ mod tests {
              intervening-if veto never fires and arm 1 proves nothing"
         );
         assert!(
-            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(
+            crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(
                 &exec_artifact
             ),
-            "reach-guard: fixture 2's execute body must read the sibling axis, else the ledger \
+            "reach-guard: fixture 2's execute body must read the growing class, else the ledger \
              gate's first conjunct is false and arm 2 proves nothing"
         );
         // (2) MATCHED CONTROLS — with a NON-EMPTY proven class each gate RELIEVES, so the
@@ -17617,7 +18153,7 @@ mod tests {
         );
         // FIXTURE 3 (S1, U-8): the REAL Pyreswipe Hawk attack pump on the block-(1b)
         // fixture. `pump_firewall_fixture` carries its own reach-guards (zone-of-function
-        // and "this body really does read the sibling axis").
+        // and "this body really does read the growing class").
         let dump = wba_dump_state();
         let hawk = wba_hawk(&dump);
         let hawk_pump = hawk_trigger_execs(&dump, &hawk)
@@ -23890,7 +24426,7 @@ mod tests {
     ///
     /// REACH-GUARDS on the fixture itself, before any row can assert an outcome: block (2)
     /// walks only functioning battlefield permanents and consults per ABILITY, so a host
-    /// that is off-battlefield, phased out, or whose ability carries no sibling veto would
+    /// that is off-battlefield, phased out, or whose ability carries no growing-class veto would
     /// let every row below pass without reaching the arm at all.
     fn block2_fixture(
         abilities: Vec<crate::types::ability::AbilityDefinition>,
@@ -23915,9 +24451,9 @@ mod tests {
         );
         assert!(
             abilities.iter().any(|a| {
-                crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(a)
+                crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(a)
             }),
-            "reach-guard: at least one ability must carry the sibling veto S2/S3 relieve — \
+            "reach-guard: at least one ability must carry the growing-class veto S2/S3 relieve — \
              without it block (2)'s final conjunct is false and no row proves anything \
              (this subsumes the `Effect::Unimplemented => Axes::NONE` vacuity)"
         );
@@ -24144,8 +24680,8 @@ mod tests {
 
         // ── REACH-GUARDS, before any outcome ─────────────────────────────────────────
         assert!(
-            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&base),
-            "reach-guard: Pit's ability must carry the sibling veto S2 relieves, or block (2)'s \
+            crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&base),
+            "reach-guard: Pit's ability must carry the growing-class veto S2 relieves, or block (2)'s \
              final conjunct is false and the cover below holds for an unrelated reason"
         );
         assert_eq!(
@@ -24359,7 +24895,7 @@ mod tests {
         // ── (iv) MULTI-AUTHORITY: relief is PER-ABILITY, never per-object ─────────────
         // MEASURED DIVERGENCE from the plan's S3-N1 wording: Stockpile's own FIRST
         // ability (`Mana{Fixed{Red}}` + a `PutCounter` sub-ability) scores
-        // `ability_definition_reads_sibling_mutable_for_loop == false`, so it does not
+        // `ability_definition_reads_growing_class_for_loop == false`, so it does not
         // veto at all and cannot serve as a "still vetoes" sibling. The per-ability
         // claim is therefore pinned with a sibling that DOES veto and is NOT relievable —
         // the `scope: Target` AST above — on the same object as the relievable one.
@@ -24373,7 +24909,7 @@ mod tests {
                 "reach-guard: both authorities are on ONE object"
             );
             assert!(
-                crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(
+                crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(
                     &abilities[1]
                 ),
                 "reach-guard: the non-relievable sibling must itself carry the veto, else \
@@ -24755,7 +25291,7 @@ mod tests {
                 condition: Some(class_reading_condition()),
             });
         assert!(
-            !crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&{
+            !crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&{
                 let mut probe = restricted.clone();
                 *probe.effect = Effect::NoOp;
                 probe
@@ -24795,7 +25331,7 @@ mod tests {
             },
         )));
         assert!(
-            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&{
+            crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&{
                 let mut probe = with_sibling.clone();
                 *probe.effect = Effect::NoOp;
                 probe
@@ -24806,7 +25342,7 @@ mod tests {
         );
         assert!(
             !exiled_colors_provably_exclude_class(&with_sibling, &state, member, &host_obj),
-            "S2-MED2(a): the effect is NOT the def's only sibling read — a `sub_ability` \
+            "S2-MED2(a): the effect is NOT the def's only growing-class read — a `sub_ability` \
              counting live creatures reads the growing class too, so the link-set argument \
              cannot carry the whole def. Deleting conjunct (a)'s clone-and-rescan makes this \
              FAIL"
@@ -24847,7 +25383,7 @@ mod tests {
                 condition: Some(class_census.clone()),
             });
         assert!(
-            !crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&{
+            !crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&{
                 let mut probe = restricted.clone();
                 *probe.effect = Effect::NoOp;
                 probe
@@ -24888,7 +25424,7 @@ mod tests {
             },
         )));
         assert!(
-            crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&{
+            crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&{
                 let mut probe = with_condition.clone();
                 *probe.effect = Effect::NoOp;
                 probe
@@ -24898,7 +25434,7 @@ mod tests {
         );
         assert!(
             !counters_on_source_provably_excludes_class(&with_condition, &state, member, &host_obj),
-            "S3-MED2(a): the effect is NOT the def's only sibling read — an `else_ability` \
+            "S3-MED2(a): the effect is NOT the def's only growing-class read — an `else_ability` \
              counting live creatures reads the growing class, so conjunct (d)'s counter \
              identity argument cannot carry the whole def. Deleting conjunct (a)'s \
              clone-and-rescan makes this FAIL"
@@ -25824,7 +26360,7 @@ mod tests {
     }
 
     /// The reach-guards every row below depends on, asserted on `state`'s `P2_HOST`: the scan
-    /// really sees the sibling axis (else a `false` verdict is vacuous), the CR 605.3a guard is
+    /// really sees the growing class (else a `false` verdict is vacuous), the CR 605.3a guard is
     /// not what carries the verdict, block (1)/(3) are silent, and the host's controller is
     /// exactly `expected_controller` — which is what decides whether the sibling CR 117.1b
     /// `relieved` arm (`obj.controller != driver`) can fire at all.
@@ -25841,8 +26377,8 @@ mod tests {
             "{why} reach-guard: ability index {index} exists on the host"
         );
         assert!(
-            scan::ability_definition_reads_sibling_mutable_for_loop(&obj.abilities[index]),
-            "{why} reach-guard: the scan must SEE the sibling axis on ability {index}, else \
+            scan::ability_definition_reads_growing_class_for_loop(&obj.abilities[index]),
+            "{why} reach-guard: the scan must SEE the growing class on ability {index}, else \
              every relief verdict below is vacuous"
         );
         assert_eq!(obj.zone, Zone::Battlefield);

@@ -135,6 +135,18 @@ impl Axes {
         projected: true,
     };
 
+    /// CR 732.2a: a shortcut proposal is legal only on outcomes the loop's own progress cannot
+    /// move.
+    /// CR 603.3b: `sibling` is the board half — a growing class moves a board aggregate.
+    /// CR 106.1 / CR 119 / CR 122.1: `projected` is the player half — the monotone resources and
+    /// per-turn journals `analysis::resource::project_out_resources` neutralizes, so the loop cover
+    /// cannot see a read of one.
+    /// A `LoopFirewall` consult must ask both. `Conservative` consumers keep single-axis
+    /// projections; that is the ordering question, not this one.
+    fn reads_growing_class(self) -> bool {
+        self.sibling || self.projected
+    }
+
     fn or(self, other: Axes) -> Axes {
         Axes {
             event: self.event || other.event,
@@ -532,9 +544,9 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
         //     rules fact, and no CR is cited for it. What CR 732.2a then supplies is why
         //     that matters: nothing later in the sequence becomes conditional on how far
         //     the loop has run.
-        //   * VETO (a `PtValue` carrying a board aggregate, or -- see the `if
-        //     acc.projected` escalation at the end of the `LoopFirewall` leg -- a PROJECTED
-        //     player resource such as a life total). Here CR 608.2h is genuinely operative,
+        //   * VETO (a `PtValue` carrying a board aggregate, or -- caught at the consumer,
+        //     through `Axes::reads_growing_class`, not here -- a PROJECTED player resource
+        //     such as a life total). Here CR 608.2h is genuinely operative,
         //     not decorative: an effect requiring "information from the game (such as the
         //     number of creatures on the battlefield)" has its answer "determined only
         //     once, when the effect is applied" -- so each loop iteration re-determines it
@@ -559,20 +571,16 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
                 // `SnapshotOrEvent` group -- a classification `scan_effect` itself has
                 // never consulted, because this arm discarded the payload before reaching
                 // it. It is not dead: the block-(1b) S1 arm's conjunct (b-t) reads it
-                // today via `effect_target_reads_sibling_mutable_for_loop`. Nothing about
+                // today via `effect_target_reads_growing_class_for_loop`. Nothing about
                 // the classification changes here; this arm starts reading it too.
                 acc = acc.or(scan_target_filter(target, target_ctx, mode));
-                // THE RELIEF IS NARROWED TO WHAT THE CONSUMER CAN SEE. `projected` is an
-                // axis two of this mode's three consult sites cannot read: blocks (1b) and
-                // (2) of `analysis::resource`'s
-                // `fire_time_conditions_read_growing_class_scoped` consult
-                // [`ability_definition_reads_sibling_mutable_for_loop`], a `.sibling`
-                // reader, while block (4) deliberately ORs `.projected` in. So the PRECISE
-                // `{sibling: false, projected: true}` verdict `scan_pt_value` ->
-                // `scan_quantity_ref` produces for a life-total-scaled pump (Loxodon
-                // Lifechanter, "This creature gets +X/+X until end of turn, where X is your
-                // life total") would silently DROP a veto at (1b)/(2) that the pre-descent
-                // blanket used to supply.
+                // The `projected` axis is not re-raised here. Every
+                // `ScanMode::LoopFirewall` consult reads both axes through
+                // `Axes::reads_growing_class`, so `{sibling: false, projected: true}` is a
+                // precise verdict here and a veto at the consumer. Re-adding an
+                // `if acc.projected { Axes::CONSERVATIVE }` escalation would change no
+                // consult's verdict and would make this arm report a sibling read the def
+                // does not have.
                 //
                 // Why the growing-class walk carries that axis at all is block (4)'s own
                 // recorded reason, and it holds identically on these two surfaces: the
@@ -603,40 +611,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
                 // engine fact about WHICH firewall can see the read is deliberately cited
                 // to NO rule: the Comprehensive Rules describe neither this scanner's axes
                 // nor which of its consumers reads them.
-                //
-                // The escalation returns the byte-identical blanket this arm returned
-                // before the descent, so for a projected-reading pump this is a RESTORATION
-                // of base behaviour, not a new verdict. It is deliberately NOT widened to
-                // `event`, and NOT expressed as an all-or-nothing "relieve only
-                // `Axes::NONE`" guard: `scan_target_filter`'s `TargetFilter::Typed` arm
-                // sets `event: true` UNCONDITIONALLY (byte-preserved), so an
-                // all-or-nothing guard would veto every `Typed`-targeted pump and destroy
-                // the relief this arm exists for. PROVENANCE, stated exactly: that
-                // rejection is DERIVED, not measured. It was reached by tracing
-                // `pump_with_board_reading_target_still_vetoes`'s arm B against the `Typed`
-                // arm's unconditional `event: true`; the all-or-nothing variant was drafted
-                // but never built and run, so nothing here rests on an observed red. The
-                // mechanism is the durable part and is checkable from source alone: arm B
-                // is a bare `Typed{Creature}` target on a read-free pump, so its `acc` can
-                // never be `Axes::NONE` and an all-or-nothing guard reddens it.
-                //
-                // SCOPE OF THIS REPAIR, disclosed because the repair is arm-local and the
-                // defect is not: the consumer-blindness closed here is a property of the
-                // CONSUMER (blocks (1b)/(2) consult a `.sibling`-only reader), so every
-                // OTHER descending arm can still hand those two blocks a
-                // `{sibling: false, projected: true}` verdict they cannot read --
-                // `Effect::Token` and `Effect::Mana` end their `LoopFirewall` leg in a bare
-                // `acc`, and mode-invariant arms such as `Effect::GainLife` never carried a
-                // blanket at all -- a PRE-EXISTING residual this arm neither creates nor
-                // widens, left open deliberately because the general repair is ONE
-                // consumer-side guard rather than this escalation copied per arm, and a
-                // consumer-side guard only ADDS vetoes and is therefore census-affecting:
-                // a plan round, not a fix round.
-                if acc.projected {
-                    Axes::CONSERVATIVE
-                } else {
-                    acc
-                }
+                acc
             }
         },
         Effect::PairWith { target } => {
@@ -2509,11 +2484,10 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
             // `scan_target_filter`, a board-AGGREGATE caller MUST self-assert
             // `sibling: true` and must NOT delegate its board-read signal to the
             // `Typed` arm, whose `LoopFirewall` relaxation otherwise erases the
-            // signal at the two `ability_definition_reads_sibling_mutable_for_loop`
-            // scans inside `fire_time_conditions_read_growing_class` —
-            // analysis/resource.rs:1699 (trigger `execute` bodies) and :1722
-            // (battlefield ability bodies) — neither of which has a `projected` twin
-            // in `fire_time_conditions_read_projected_resource`.
+            // signal at the two `ability_definition_reads_growing_class_for_loop`
+            // scans inside `fire_time_conditions_read_growing_class` — the trigger
+            // `execute` bodies and the battlefield ability bodies — neither of which
+            // has a `projected` twin in `fire_time_conditions_read_projected_resource`.
             //
             // The CR 603.3b APNAP ordering gate (game/triggers.rs, the
             // `c2_order_independent` term) is the OTHER consumer of this arm and is
@@ -5741,24 +5715,42 @@ fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> A
     }
 }
 
-/// LoopFirewall-mode axis-2 (`sibling`) on a def-level `AbilityDefinition` (trigger
-/// `execute` bodies, every functioning `obj.abilities` def, granted-ability bodies)
-/// — the CR 732.2a object-growth firewall's DESCENDING body scan (§P0-e row 2).
-pub(crate) fn ability_definition_reads_sibling_mutable_for_loop(def: &AbilityDefinition) -> bool {
-    ability_definition_axes(def, ScanMode::LoopFirewall).sibling
+/// LoopFirewall-mode growing class (`sibling` ∨ `projected`) on a def-level
+/// `AbilityDefinition` (trigger `execute` bodies, every functioning `obj.abilities`
+/// def, granted-ability bodies) — the CR 732.2a object-growth firewall's DESCENDING
+/// body scan (§P0-e row 2).
+///
+/// Both axes: this reader's consumers are the growing-class surfaces
+/// `fire_time_conditions_read_projected_resource_scoped` does not reach. That pass
+/// scans a trigger `condition`, a replacement `condition`/`runtime_execute`, a static
+/// `condition` and a granted-keyword trigger `condition` — never `obj.abilities`,
+/// never `def.execute`.
+/// CR 603.3b: `Conservative` consumers ask the ordering question and keep `.sibling`
+/// alone.
+pub(crate) fn ability_definition_reads_growing_class_for_loop(def: &AbilityDefinition) -> bool {
+    ability_definition_axes(def, ScanMode::LoopFirewall).reads_growing_class()
 }
 
-/// CR 732.2a axis-2 (`sibling`) on ONE effect-TARGET filter, under that effect's OWN
-/// census discipline. `target` MUST be a target-filter field of `effect`: the
-/// `FilterReadContext` is derived from `effect` by [`effect_target_ctx`] — the same
-/// derivation `scan_effect` makes for its own [`scan_target_filter`] calls — so a
-/// future re-grouping of that effect (`SnapshotOrEvent` -> `LiveBoardCensus`) moves
-/// this answer with it instead of desynchronising a caller that pinned the context.
+/// CR 732.2a growing class (`sibling` ∨ `projected`) on ONE effect-TARGET filter,
+/// under that effect's OWN census discipline. `target` MUST be a target-filter field
+/// of `effect`: the `FilterReadContext` is derived from `effect` by
+/// [`effect_target_ctx`] — the same derivation `scan_effect` makes for its own
+/// [`scan_target_filter`] calls — so a future re-grouping of that effect
+/// (`SnapshotOrEvent` -> `LiveBoardCensus`) moves this answer with it instead of
+/// desynchronising a caller that pinned the context.
+///
+/// Both axes: this reader's consumers are the growing-class surfaces
+/// `fire_time_conditions_read_projected_resource_scoped` does not reach. That pass
+/// scans a trigger `condition`, a replacement `condition`/`runtime_execute`, a static
+/// `condition` and a granted-keyword trigger `condition` — never `obj.abilities`,
+/// never `def.execute`.
+/// CR 603.3b: `Conservative` consumers ask the ordering question and keep `.sibling`
+/// alone.
 ///
 /// `pub(crate)` for ONE reason: the `analysis::resource` block-(1b) relief arm
 /// `pump_aggregate_provably_excludes_class` must prove `Effect::Pump`'s target
-/// contributes no sibling read before it may relieve that def's veto. That veto is
-/// carried by the aggregate `PtValue` half, which [`scan_quantity_ref`] marks
+/// contributes no growing-class read before it may relieve that def's veto. That veto
+/// is carried by the aggregate `PtValue` half, which [`scan_quantity_ref`] marks
 /// `sibling` before it walks the filter — so proving the AGGREGATE class-disjoint
 /// leaves the target uncleared. (`scan_effect`'s `Effect::Pump` arm evaluates the
 /// same target expression under `ScanMode::LoopFirewall`, but `.or()`-ed with the
@@ -5767,7 +5759,7 @@ pub(crate) fn ability_definition_reads_sibling_mutable_for_loop(def: &AbilityDef
 /// `target` is a `TargetFilter` and not an `Option<_>`. Exposed as a BOOLEAN so
 /// [`Axes`], [`scan_target_filter`] and [`effect_target_ctx`] all stay private — the
 /// arm gets the verdict, never the walker.
-pub(crate) fn effect_target_reads_sibling_mutable_for_loop(
+pub(crate) fn effect_target_reads_growing_class_for_loop(
     effect: &Effect,
     target: &TargetFilter,
 ) -> bool {
@@ -5780,7 +5772,7 @@ pub(crate) fn effect_target_reads_sibling_mutable_for_loop(
     // clone of the field.
     debug_assert!(
         effect.target_filter() == Some(target),
-        "`effect_target_reads_sibling_mutable_for_loop` derives its `FilterReadContext` from \
+        "`effect_target_reads_growing_class_for_loop` derives its `FilterReadContext` from \
          `effect`, so `target` must BE that effect's target filter — otherwise the verdict is \
          computed under a census discipline belonging to a different effect"
     );
@@ -5789,19 +5781,20 @@ pub(crate) fn effect_target_reads_sibling_mutable_for_loop(
         effect_target_ctx(effect, ScanMode::LoopFirewall),
         ScanMode::LoopFirewall,
     )
-    .sibling
+    .reads_growing_class()
 }
 
 /// CR 613.1 + CR 732.2a: does a live continuous modification READ a mutable board
-/// aggregate (axis-2 `sibling`)? Consumed by the `analysis::resource` `:1539`
-/// modification firewall descent.
+/// aggregate (axis-2 `sibling`)? Consumed by
+/// `analysis::resource::fire_time_conditions_read_growing_class_scoped`'s live
+/// continuous-modification descent.
 pub(crate) fn continuous_modification_reads_sibling_mutable(m: &ContinuousModification) -> bool {
     scan_continuous_modification(m, ScanMode::LoopFirewall).sibling
 }
 
 /// CR 106.1 / CR 119 / CR 122.1 + CR 732.2a: does a live continuous modification
 /// READ a projected player resource (axis-3 `projected`)? Load-bearing (M9): the
-/// projected-resource firewall has NO modification scan, so this `:1539` descent is
+/// projected-resource firewall has NO modification scan, so that descent is
 /// the sole guard against a projected-reading modification (a
 /// `SetDynamicPower{Ref(LifeTotal)}` anthem).
 pub(crate) fn continuous_modification_reads_projected_resource(m: &ContinuousModification) -> bool {
@@ -7211,14 +7204,10 @@ mod tests {
     ///
     /// WHY THIS ROW EXISTS, stated because the descent shipped without it. `scan_pt_value`
     /// -> `scan_quantity_expr` -> `scan_quantity_ref` classifies `QuantityRef::LifeTotal`
-    /// as `{event: false, sibling: false, projected: true}` — PRECISELY, and precision is
-    /// the hazard: blocks (1b) and (2) of `analysis::resource`'s
+    /// as `{event: false, sibling: false, projected: true}` — PRECISELY, and that precision
+    /// is a veto only because blocks (1b) and (2) of `analysis::resource`'s
     /// `fire_time_conditions_read_growing_class_scoped` consult
-    /// [`ability_definition_reads_sibling_mutable_for_loop`], which reads `.sibling` and
-    /// nothing else. Without the arm's `if acc.projected` escalation, a precise
-    /// projected-only verdict relieves at both of those blocks a veto the pre-descent
-    /// blanket used to supply, and the projected-resource firewall does not scan either
-    /// surface, so nothing downstream re-raises it.
+    /// [`ability_definition_reads_growing_class_for_loop`], whose `projected` half sees it.
     ///
     /// The fixture is not a shape sketch. It is Loxodon Lifechanter's shipped
     /// `abilities[0]` body — "{5}{W}: This creature gets +X/+X until end of turn, where X
@@ -7240,22 +7229,24 @@ mod tests {
     /// sequence's results unpredictable under CR 732.2a.
     ///
     /// AXIS ISOLATION, asserted first: the payload really is projected-ONLY. If it ever
-    /// carried `sibling` too, the escalation below would be untested and this row would go
-    /// green while proving nothing about it.
+    /// carried `sibling` too, the consult's `projected` half would be untested and this row
+    /// would go green while proving nothing about it.
     ///
-    /// TWO PAIRED CONTROLS, both required, because the escalation must be narrow in BOTH
+    /// TWO PAIRED CONTROLS, both required, because the descent must be narrow in BOTH
     /// directions: the read-free pump must still be relieved (it is not an all-or-nothing
     /// veto), and Pyreswipe Hawk's aggregate pump must still report its PRECISE
-    /// `(true, true, false)` triple rather than being swallowed into the blanket (the
-    /// escalation keys on `projected` alone, never on "reads anything" — `scan_target_filter`'s
-    /// `TargetFilter::Typed` arm sets `event: true` unconditionally, so an all-or-nothing
-    /// guard would veto every `Typed`-targeted pump).
+    /// `(true, true, false)` triple (this arm classifies the payload, never "reads anything"
+    /// — `scan_target_filter`'s `TargetFilter::Typed` arm sets `event: true`
+    /// unconditionally, so an all-or-nothing guard would veto every `Typed`-targeted
+    /// pump).
     ///
-    /// REVERT-PROBE: delete the `if acc.projected { Axes::CONSERVATIVE }` escalation from
+    /// REVERT-PROBE: restore the `if acc.projected { Axes::CONSERVATIVE }` escalation in
     /// the `LoopFirewall` half of the `Effect::Pump` arm ⇒ the projected pump reports
-    /// `(false, false, true)` ⇒ **FAILS**.
+    /// `(true, true, true)` ⇒ **FAILS**; narrow
+    /// [`ability_definition_reads_growing_class_for_loop`] to `.sibling` ⇒ the consumer half
+    /// goes `false` ⇒ **FAILS**.
     #[test]
-    fn projected_reading_pump_escalates_to_the_blanket_the_consumer_can_see() {
+    fn projected_reading_pump_reports_its_axes_precisely_and_the_consumer_sees_them() {
         let projected_half = PtValue::Quantity(QuantityExpr::Ref {
             qty: QuantityRef::LifeTotal {
                 player: PlayerScope::Controller,
@@ -7268,9 +7259,9 @@ mod tests {
             (half.event, half.sibling, half.projected),
             (false, false, true),
             "AXIS ISOLATION: `QuantityRef::LifeTotal` is classified projected-ONLY. It is \
-             the `sibling: false` half that makes this dangerous — blocks (1b) and (2) read \
-             `.sibling` and would see nothing at all. If this triple ever changes, the \
-             escalation below stops being the thing under test"
+             the `sibling: false` half that makes this dangerous — a `.sibling`-only consult \
+             could not see it. If this triple ever changes, the consult's `projected` half \
+             stops being the thing under test"
         );
 
         let projected_pump = Effect::Pump {
@@ -7281,16 +7272,27 @@ mod tests {
         let axes = scan_effect(&projected_pump, ScanMode::LoopFirewall);
         assert_eq!(
             (axes.event, axes.sibling, axes.projected),
-            (true, true, true),
+            (false, false, true),
             "CR 608.2h + CR 732.2a: a pump scaled by a life total requires \"information \
              from the game\", \"determined only once, when the effect is applied\", so each \
              loop iteration re-determines it against a different life total and the \
-             sequence's results stop being predictable. The arm therefore returns the \
-             byte-identical blanket it returned BEFORE the descent — a restoration of base \
-             behaviour for this shape, not a new verdict — because that is the only verdict \
-             blocks (1b) and (2) can see. This payload is Loxodon Lifechanter's shipped \
+             sequence's results stop being predictable. The arm therefore reports the \
+             payload's axes precisely, and `Axes::reads_growing_class` is what makes that \
+             verdict a veto at blocks (1b) and (2). This payload is Loxodon Lifechanter's shipped \
              `abilities[0]` body verbatim: `Ref(LifeTotal{{Controller}})` on BOTH halves, \
              `SelfRef` target"
+        );
+
+        // ── THE CONSUMER: the precise verdict is what the firewall consult reads ─────
+        use crate::types::ability::{AbilityDefinition, AbilityKind};
+        assert!(
+            ability_definition_reads_growing_class_for_loop(&AbilityDefinition::new(
+                AbilityKind::Activated,
+                projected_pump.clone(),
+            )),
+            "the consult must see the `projected` half: `analysis::resource`'s blocks (1b) \
+             and (2) ask this predicate and nothing else, so a `.sibling`-only reader would \
+             relieve a life-total-scaled pump the pre-descent blanket vetoed"
         );
 
         // ── CONTROL 1: the relief this arm exists for is untouched ──────────────────
@@ -7298,21 +7300,29 @@ mod tests {
             &read_free_pump(TargetFilter::SelfRef),
             ScanMode::LoopFirewall,
         );
+        assert!(
+            !ability_definition_reads_growing_class_for_loop(&AbilityDefinition::new(
+                AbilityKind::Activated,
+                read_free_pump(TargetFilter::SelfRef),
+            )),
+            "paired negative at the consumer: the read-free pump reads neither axis, so the \
+             consult relieves it and the widening cannot have become a blanket"
+        );
         assert_eq!(
             (inert.event, inert.sibling, inert.projected),
             (false, false, false),
-            "the escalation keys on `projected`, so a read-free pump is still relieved. If \
+            "the arm relieves on the payload, so a read-free pump is still relieved. If \
              this flips, the narrowing became an all-or-nothing veto and P3's whole \
              deliverable (Chocobo Camp's Bird token) is gone with it"
         );
 
-        // ── CONTROL 2: precision on the SIBLING axis survives the escalation ────────
+        // ── CONTROL 2: precision on the SIBLING axis survives the descent ──────────
         let hawk = scan_effect(&hawk_attack_pump(), ScanMode::LoopFirewall);
         assert_eq!(
             (hawk.event, hawk.sibling, hawk.projected),
             (true, true, false),
-            "the aggregate pump's PRECISE triple must survive: the escalation keys on \
-             `projected` alone, never on \"reads anything\". `scan_target_filter`'s \
+            "the aggregate pump's PRECISE triple must survive: this arm classifies the \
+             payload, never \"reads anything\". `scan_target_filter`'s \
              `TargetFilter::Typed` arm sets `event: true` unconditionally, so an \
              all-or-nothing guard would swallow this into the blanket AND veto every \
              `Typed`-targeted pump — DERIVED from that unconditional `true`, never run: it \
@@ -7370,7 +7380,7 @@ mod tests {
     /// CR 732.2a: a target naming a live board population is itself a sibling read. Note
     /// the coincidence and do not "simplify" it away — this leg evaluates the same
     /// expression as `analysis::resource`'s block-(1b) conjunct (b-t)
-    /// ([`effect_target_reads_sibling_mutable_for_loop`]). Conjunct (b-t) stays load-bearing
+    /// ([`effect_target_reads_growing_class_for_loop`]). Conjunct (b-t) stays load-bearing
     /// because a def can trip the scan on its POWER aggregate and still need its target
     /// proven inert before the S1 arm may relieve, and this leg is `.or()`-ed with that
     /// aggregate rather than able to override it.
@@ -8901,10 +8911,10 @@ mod tests {
     /// passes with AND without Step 0c and is therefore NOT the discriminator.
     /// Assertion (2) — `ScanMode::LoopFirewall`, the mode the two production
     /// callers in `analysis::resource::fire_time_conditions_read_growing_class`
-    /// use — is the one Step 0c actually moves.
+    /// use — asks `Axes::reads_growing_class`, so it holds on either axis.
     ///
-    /// REVERT-PROBE: set the arm's `sibling` back to `false` → (2) and (3) FAIL
-    /// while (1) still passes.
+    /// REVERT-PROBE: set the arm's `sibling` and `projected` back to `false` →
+    /// (2), (3) and (4) FAIL while (1) still passes.
     #[test]
     fn bbfu10_ledger_ref_is_sibling_mutable_in_both_scan_modes() {
         let ledger = ability_def_with_amount(QuantityRef::BattlefieldEntriesThisTurn {
@@ -8926,20 +8936,20 @@ mod tests {
         );
         // (2) THE DISCRIMINATOR — LoopFirewall, the CR 732.2a firewall's mode.
         assert!(
-            ability_definition_reads_sibling_mutable_for_loop(&ledger),
-            "(2) CR 732.2a: the ledger read must stay axis-2 under LoopFirewall — \
-             this is the exact predicate analysis/resource.rs calls at the two \
-             `..._for_loop` scan sites",
+            ability_definition_reads_growing_class_for_loop(&ledger),
+            "(2) CR 732.2a: the ledger read must stay in the growing class under \
+             LoopFirewall — this is the exact predicate `analysis::resource` calls at \
+             the two `..._for_loop` scan sites",
         );
         // (3) parity guard — the look-back and live siblings must agree on both axes.
         assert_eq!(
             (
                 ability_definition_reads_sibling_mutable(&ledger),
-                ability_definition_reads_sibling_mutable_for_loop(&ledger),
+                ability_definition_reads_growing_class_for_loop(&ledger),
             ),
             (
                 ability_definition_reads_sibling_mutable(&live),
-                ability_definition_reads_sibling_mutable_for_loop(&live),
+                ability_definition_reads_growing_class_for_loop(&live),
             ),
             "(3) parity: `BattlefieldEntriesThisTurn` and `EnteredThisTurn` are the \
              same board-aggregate class on the sibling axis",
@@ -8965,8 +8975,8 @@ mod tests {
     /// on the Conservative trigger-`condition` path that already forces
     /// `sibling: true` (the Gargoyle Flock trap: `true → true`, non-discriminating).
     ///
-    /// REVERT-PROBE: set the ledger arm's `sibling` back to `false` → (2) FAILS.
-    /// Measured: PRE-0c `false`, POST-0c `true`, with `condition.is_none()` in both.
+    /// REVERT-PROBE: set the ledger arm's `sibling` and `projected` back to `false`
+    /// → (2) FAILS.
     #[test]
     fn bbfu10_shipped_ledger_observer_flips_for_loop_axis() {
         let db = crate::test_support::shared_card_db();
@@ -8997,9 +9007,9 @@ mod tests {
 
         // (2) THE DISCRIMINATOR — literally the callee at the block-(1) scan site.
         assert!(
-            ability_definition_reads_sibling_mutable_for_loop(execute),
+            ability_definition_reads_growing_class_for_loop(execute),
             "(2) CR 732.2a: a shipped ledger observer must veto an object-growth \
-             certificate — reads `false` without Step 0c",
+             certificate",
         );
 
         // (4) negative sibling — a plain draw trigger body does NOT veto.
@@ -9016,7 +9026,7 @@ mod tests {
             .and_then(|t| t.execute.as_deref())
             .expect("(4) the plain trigger must parse an execute body");
         assert!(
-            !ability_definition_reads_sibling_mutable_for_loop(plain_execute),
+            !ability_definition_reads_growing_class_for_loop(plain_execute),
             "(4) negative sibling: a fixed draw reads no board aggregate",
         );
     }
@@ -9608,7 +9618,7 @@ mod tests {
     }
 
     /// A `Pump` whose `target` is the effect's own field — the ONLY shape
-    /// [`effect_target_reads_sibling_mutable_for_loop`] is contracted to accept.
+    /// [`effect_target_reads_growing_class_for_loop`] is contracted to accept.
     fn pump_with_target(target: TargetFilter) -> Effect {
         Effect::Pump {
             power: crate::types::ability::PtValue::Fixed(1),
@@ -9628,7 +9638,7 @@ mod tests {
             unreachable!("built as Pump")
         };
         assert!(
-            !effect_target_reads_sibling_mutable_for_loop(&effect, target),
+            !effect_target_reads_growing_class_for_loop(&effect, target),
             "`SelfRef` reads no board population, so the contracted shape must answer false \
              — and must not trip the binding assert on its way there"
         );
@@ -9640,7 +9650,7 @@ mod tests {
     /// the wrong census discipline — silently, and with a plausible-looking bool.
     ///
     /// MUTATION PROBE: delete the `debug_assert!(effect.target_filter() == Some(target))`
-    /// from [`effect_target_reads_sibling_mutable_for_loop`] ⇒ this row FAILS (no panic).
+    /// from [`effect_target_reads_growing_class_for_loop`] ⇒ this row FAILS (no panic).
     #[test]
     #[should_panic(expected = "must BE that effect's target filter")]
     fn effect_target_wrapper_refuses_a_target_that_is_not_the_effects_own() {
@@ -9648,6 +9658,6 @@ mod tests {
         // A filter that is NOT `effect`'s field. `Effect::target_filter()` is the authority
         // that says so, and it is what the assert consults.
         let foreign = TargetFilter::Any;
-        let _ = effect_target_reads_sibling_mutable_for_loop(&effect, &foreign);
+        let _ = effect_target_reads_growing_class_for_loop(&effect, &foreign);
     }
 }

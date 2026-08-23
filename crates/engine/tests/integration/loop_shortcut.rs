@@ -5269,7 +5269,7 @@ fn predicted_winner_concede_mid_apnap_does_not_drive() {
 /// trigger `execute` body carries the CR 608.2i
 /// `QuantityRef::BattlefieldEntriesThisTurn` read, which
 /// `fire_time_conditions_read_growing_class` block (1) scans at the
-/// `ability_definition_reads_sibling_mutable_for_loop` call site.
+/// `ability_definition_reads_growing_class_for_loop` call site.
 const PARK_HEIGHTS_PEGASUS_ORACLE: &str = "Flying, trample\nWhenever this creature deals combat damage to a player, draw a card if you had two or more creatures enter the battlefield under your control this turn.";
 
 /// ANTI-VACUITY CONTROL: the same board shape with a trigger that reads NOTHING
