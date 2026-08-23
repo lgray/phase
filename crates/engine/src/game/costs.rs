@@ -1363,9 +1363,12 @@ fn pay_ability_cost_inner(
                     // (CR 118.12). The two legs partition the space; they do not
                     // disagree.
                     //
-                    // CR 614.17b + CR 119.8 (analogue): the CHOICE is refused upstream, at every
-                    // site that consumes `resolution_cost_includes_impossible_event`. This arm is
-                    // retained as defense in depth for the CR 614.17a mid-window case.
+                    // CR 614.17b + CR 119.8 (analogue): the CHOICE is refused upstream at every
+                    // RESOLUTION-scope site that consumes
+                    // `resolution_cost_includes_impossible_event`, but that predicate is never
+                    // consulted at `PaymentScope::Activation` — `is_payable_for_activation` admits
+                    // every `EffectCost` unconditionally, and `can_pay` dry-runs this arm — so here
+                    // it is the only CR 614.17b gate an activated counter cost meets.
                     let prevented = self_counter_placement_is_prohibited(
                         state,
                         player,
@@ -2076,6 +2079,9 @@ pub(crate) fn resolution_cost_includes_impossible_event(
                 ..
             } => false,
             // `supports_effect_cost_payment` refuses every other effect-cost shape upstream.
+            // CR 614.17b: widening that predicate to admit a further counter-placing shape owes a
+            // matching arm here in the same change, or the new shape answers "no impossible event"
+            // and silently loses this refusal.
             _ => false,
         },
         // Prohibition is the De Morgan dual of payability: `can_pay_resolution` answers
@@ -3504,7 +3510,7 @@ mod tests {
             "a Composite with no counter component must not be prohibited"
         );
 
-        // (ii) Step 3c's fold: the payability oracle follows the leaves.
+        // (ii) The payability oracle follows the leaves.
         assert!(
             !can_pay(&scenario.state, P0, src, &counter_composite, &scope),
             "can_pay must refuse a Composite whose payment includes an impossible event"

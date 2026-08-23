@@ -977,9 +977,9 @@ fn serpent_society_ward_mandatory_prohibition_wins_over_an_optional_replacement(
 /// P1 payer, so the Ward prompt is unaffected.
 ///
 /// Passes before and after the change by construction. It exists to fail if the
-/// partition is drawn wrong — an implementer widening `is_prohibited()` past
-/// `Prevented`, or reading the replacement definition directly instead of going
-/// through the previews and thereby dropping the player-scope check.
+/// partition is drawn wrong — an implementer reading the replacement definition
+/// directly instead of going through the previews, and thereby dropping the
+/// player-scope check.
 #[test]
 fn serpent_society_ward_prohibition_scoped_to_the_source_controller_leaves_the_payer_alone() {
     let mut scenario = GameScenario::new();
