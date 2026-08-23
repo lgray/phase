@@ -14,6 +14,9 @@ use engine::types::zones::Zone;
 const ABOROTH_ORACLE: &str =
     "Cumulative upkeep—Put a -1/-1 counter on this creature. (At the beginning of your upkeep, put an age counter on this permanent, then sacrifice it unless you pay its upkeep cost for each age counter on it.)";
 
+const SOLEMNITY_ORACLE: &str = "Players can't get counters.\n\
+Counters can't be put on artifacts, creatures, enchantments, or lands.";
+
 const VORINCLEX_ORACLE: &str = "Trample, haste\n\
 If you would put one or more counters on a permanent or player, put twice that many of each of those kinds of counters on that permanent or player instead.\n\
 If an opponent would put one or more counters on a permanent or player, they put half that many of each of those kinds of counters on that permanent or player instead, rounded down.";
@@ -303,5 +306,84 @@ fn assert_replacement_choice_between_vorinclex_and_doc_samson(
     assert!(
         names.contains(&"Doc Samson, Super Psychiatrist"),
         "{context}: Doc Samson must be a candidate, got {names:?}"
+    );
+}
+
+/// CR 614.17b + CR 702.24a: the object-counter leg of "a player can't choose to
+/// pay a cost that includes an event that can't happen".
+///
+/// Aboroth's cumulative upkeep is an `AbilityCost::EffectCost` whose payment
+/// puts a -1/-1 counter on Aboroth itself. Solemnity's second sentence —
+/// "Counters can't be put on artifacts, creatures, enchantments, or lands." —
+/// is a CR 614.17 can't-effect on exactly that placement, so the pay branch is
+/// never offered and CR 702.24a's "sacrifice it" happens instead.
+///
+/// Revert probe: without the choice-time refusal the prompt is
+/// `WaitingFor::UnlessPayment { cost: EffectCost { PutCounter M1M1 SelfRef } }`
+/// and Aboroth stays on the battlefield, failing both the `Priority` assertion
+/// and the `Zone::Graveyard` assertion.
+#[test]
+fn aboroth_with_an_age_counter_under_solemnity_cannot_choose_to_pay() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::Untap);
+    scenario.add_enchantment_from_oracle(P0, "Solemnity", SOLEMNITY_ORACLE);
+    let aboroth = scenario
+        .add_creature_from_oracle(P0, "Aboroth", 9, 9, ABOROTH_ORACLE)
+        .id();
+    // Control: an ordinary creature with no cumulative upkeep. The mechanism
+    // under test cannot sacrifice it, so it must NOT reach the graveyard.
+    let control = scenario.add_creature(P0, "Control Bear", 2, 2).id();
+    // Without a library the suppressed prompt lets the turn run into the Draw
+    // step, P0 decks out, and EVERY P0 object is exiled — which satisfies a
+    // `!= Battlefield` assertion for the control creature too.
+    scenario.with_library_top(P0, &["Filler A", "Filler B", "Filler C"]);
+    let mut runner = scenario.build();
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&aboroth)
+        .expect("Aboroth exists")
+        .counters
+        .insert(CounterType::Age, 1);
+
+    // Aboroth's upkeep cost only materialises at >= 1 age counter.
+    runner.auto_advance_to_main_phase();
+    runner.advance_until_stack_empty();
+
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0),
+        "the prohibited pay branch must leave no unless-payment prompt, got {:?}",
+        runner.state().waiting_for
+    );
+    let legal = engine::ai_support::legal_actions(runner.state());
+    assert!(
+        !legal.is_empty(),
+        "the action vector must still be live, got {legal:?}"
+    );
+    assert!(
+        !legal.contains(&GameAction::PayUnlessCost { pay: true }),
+        "paying a -1/-1 counter cost must not be legal under Solemnity, got {legal:?}"
+    );
+
+    // CR 702.24a: an unpaid cumulative upkeep sacrifices the permanent.
+    assert_eq!(
+        runner
+            .state()
+            .objects
+            .get(&aboroth)
+            .map(|obj| obj.zone)
+            .expect("Aboroth object still exists"),
+        Zone::Graveyard,
+        "an unpayable cumulative upkeep must sacrifice Aboroth"
+    );
+    assert_eq!(
+        runner
+            .state()
+            .objects
+            .get(&control)
+            .map(|obj| obj.zone)
+            .expect("the control creature still exists"),
+        Zone::Battlefield,
+        "the control creature has no cumulative upkeep and must not be sacrificed"
     );
 }

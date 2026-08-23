@@ -570,6 +570,30 @@ pub(super) fn handle_unless_payment_choose_cost(
                     costs.len()
                 ))
             })?;
+            // CR 614.17b: "If an event can't happen, a player can't choose to pay a cost
+            // that includes that event." The prohibition attaches to CHOOSING, so an
+            // impossible branch is refused at the pick, before it is accumulated — not at
+            // the collapse that follows the last pick. The difference is not cosmetic: for
+            // a `Composite{[OneOf; N]}` cumulative-upkeep expansion (CR 702.24a) this arm
+            // surfaces the NEXT prompt and returns `Ok`, so a refusal deferred to
+            // `handle_unless_payment` would accept the prohibited pick, record it in
+            // `chosen`, and leave the player unable to take the legal branch of a prompt
+            // they have already answered. CR 702.24a: "either the entire set of costs is
+            // paid, or none of them is paid. Partial payments aren't allowed."
+            if crate::game::costs::resolution_cost_includes_impossible_event(
+                state,
+                player,
+                &picked,
+                pending_effect.as_ref(),
+            ) {
+                return Err(EngineError::InvalidAction(
+                    "CR 614.17b: a player can't choose to pay a cost that includes an event that can't happen"
+                        .to_string(),
+                ));
+            }
+            // strict-failure: CR 118.12a disjunctive unless-costs with a counter branch are
+            // refused at the pick, not removed from the offered `costs` list;
+            // `legal_actions` already excludes the refused index.
             // CR 702.24a + CR 118.12: If more disjunctive prompts remain
             // (cumulative-upkeep `OneOf × N` expansion), accumulate this pick
             // and surface the next prompt without paying anything yet.
@@ -766,6 +790,27 @@ pub(super) fn handle_unless_payment(
     // CR 118.12a: Preserved for the "unless any player pays" poll re-emit —
     // `cost` itself is moved by the `match cost` below on the pay path.
     let poll_cost = cost.clone();
+
+    // CR 614.17b + CR 614.17a: re-check on the LIVE board. A can't-effect must
+    // exist when the event occurs, and this window admits mana abilities
+    // (CR 117.1d / CR 118.2), so the board can change between the prompt and this
+    // answer. Refusing the CHOICE — not the settle — is the rules-correct seam,
+    // mirroring the CR 119.8 analogue (`life_costs::can_pay_life_cost` is the
+    // choice-time half; `PayLifeCostResult::Prohibited` is the payment-time half).
+    // Only the pay branch is refused; `PayUnlessCost { pay: false }` stays legal.
+    if pay
+        && costs::resolution_cost_includes_impossible_event(
+            state,
+            player,
+            &cost,
+            pending_effect.as_ref(),
+        )
+    {
+        return Err(EngineError::InvalidAction(
+            "CR 614.17b: a player can't choose to pay a cost that includes an event that can't happen"
+                .to_string(),
+        ));
+    }
 
     let mut payment_failed = !pay;
     let post_action_event_start = None;
@@ -1510,13 +1555,27 @@ fn finish_unless_payment(
     events: &mut Vec<GameEvent>,
 ) -> Result<ActionResult, EngineError> {
     if !pay || payment_failed {
+        // CR 614.17b + CR 614.17a: the CR 118.12a poll re-emit re-asks eligibility on
+        // the LIVE board, so a prohibition that appears mid-poll skips the payer it
+        // reaches instead of offering that payer a choice the rules forbid.
         // CR 118.12a: "[Effect] unless any player pays ..." poll — when the
         // current player declines (or cannot pay) and more players remain,
         // prompt the next player in APNAP order rather than resolving the
         // effect. The first player to pay prevents the effect; only when every
         // polled player has declined does the effect resolve (once). Mirrors
         // the `OpponentMayChoice` decline-branch poll re-emit.
-        if let Some((&next, rest)) = remaining.split_first() {
+        if let Some((&next, rest)) = remaining
+            .iter()
+            .position(|p| {
+                !costs::resolution_cost_includes_impossible_event(
+                    state,
+                    *p,
+                    &poll_cost,
+                    pending_effect.as_ref(),
+                )
+            })
+            .and_then(|head| remaining[head..].split_first())
+        {
             state.waiting_for = WaitingFor::UnlessPayment {
                 player: next,
                 cost: poll_cost,
@@ -2069,7 +2128,8 @@ pub(super) fn resume_ward_sacrifice_payment(
 }
 
 /// CR 118.12a + CR 702.21a + CR 702.24a: Resume a counter-addition unless-payment
-/// after the CR 616.1 replacement choice that paused it mid-cost settled. Two cost
+/// after its `AddCounter` replacement choice — a single optional candidate or a
+/// CR 616.1 ordering — that paused it mid-cost settled. Two cost
 /// authorities park here, and a reader who thinks this is Ward-only will mis-scope
 /// the next change: `AbilityCost::GetPlayerCounters` (Ward's player-counter
 /// payment, CR 702.21a) and the source-counter / fixed-mana `AbilityCost::
@@ -2171,8 +2231,9 @@ pub(super) fn resume_counter_addition_unless_payment(
 /// authorized before the replacement is ever consulted. A redirect (Library of
 /// Leng) and a prevention alike leave that choice intact.
 ///
-/// The earlier `Delivered → Paid` / `Prevented → Failed` mapping was copied from
-/// `resume_counter_addition_unless_payment` rather than derived from CR 118.12;
+/// The earlier `Delivered → Paid` / `Prevented → Failed` mapping was the mapping
+/// `resume_counter_addition_unless_payment` then had, rather than one derived
+/// from CR 118.12;
 /// under it, an applicable replacement preventing the first move would sacrifice
 /// Balduvian Horde out from under a player who had paid.
 ///
@@ -4134,6 +4195,290 @@ mod tests {
         assert_eq!(
             state.players[0].life, 20,
             "gain-life effect suppressed by payment"
+        );
+    }
+
+    /// Installs a synthetic MANDATORY `Prevent`-on-`AddCounter` replacement on a
+    /// fresh permanent controlled by `controller`, scoped by `scope`.
+    ///
+    /// CR 614.17c: a MANDATORY prohibition is short-circuited by
+    /// `replacement::pipeline_loop` ahead of any CR 616.1 ordering prompt. No
+    /// printed card produces an OPTIONAL `AddCounter` replacement, so a
+    /// synthetic definition is the only route to this state.
+    ///
+    /// `scope` and `controller` are the two typed axes, so `You`-scoped and
+    /// `AnyPlayer`-scoped fixtures share one definition site.
+    fn install_mandatory_counter_prevention(
+        state: &mut GameState,
+        scope: crate::types::ability::ReplacementPlayerScope,
+        controller: PlayerId,
+    ) {
+        let source = create_object(
+            state,
+            CardId(9201),
+            controller,
+            "Mandatory Poison Warden".to_string(),
+            Zone::Battlefield,
+        );
+        let mut def = crate::types::ability::ReplacementDefinition::new(
+            crate::types::replacements::ReplacementEvent::AddCounter,
+        );
+        def.mode = crate::types::ability::ReplacementMode::Mandatory;
+        def.quantity_modification = Some(crate::types::ability::QuantityModification::Prevent);
+        def.valid_player = Some(scope);
+        let reps = vec![def];
+        let obj = state.objects.get_mut(&source).unwrap();
+        obj.replacement_definitions = reps.clone().into();
+        obj.base_replacement_definitions = Arc::new(reps);
+    }
+
+    /// CR 614.17b + CR 614.17a + CR 118.12a: the poll re-emit re-asks
+    /// eligibility on the live board, so a payer who cannot CHOOSE to pay is
+    /// skipped rather than prompted.
+    ///
+    /// The prohibition is scoped `You` on a P1-controlled permanent, so only P1
+    /// is prohibited and the prompted head P0 is not — which keeps this
+    /// hand-built prompt consistent with what the interceptor would construct.
+    ///
+    /// Revert probe: without the re-emit filter, P1 is prompted and the pending
+    /// `GainLife(4)` never resolves, so P0's life stays at 20.
+    #[test]
+    fn unless_pay_poll_skips_a_payer_who_cannot_choose_to_pay() {
+        use crate::game::effects::player_counter::preview_player_counter_addition;
+        use crate::types::ability::ReplacementPlayerScope;
+        use crate::types::player::PlayerCounterKind;
+
+        let mut state = GameState::new_two_player(42);
+        state.players[0].life = 20;
+        state.players[1].life = 20;
+        install_mandatory_counter_prevention(&mut state, ReplacementPlayerScope::You, PlayerId(1));
+
+        // Reach guards: the prohibition really was installed AND is correctly
+        // scoped. Without them, the skip this row asserts is satisfiable by a
+        // fixture that installed nothing at all.
+        assert!(
+            preview_player_counter_addition(
+                &state,
+                PlayerId(1),
+                PlayerId(1),
+                PlayerCounterKind::Poison,
+                5,
+            )
+            .is_prohibited(),
+            "the `You`-scoped prohibition must bite its own controller"
+        );
+        assert!(
+            !preview_player_counter_addition(
+                &state,
+                PlayerId(0),
+                PlayerId(0),
+                PlayerCounterKind::Poison,
+                5,
+            )
+            .is_prohibited(),
+            "the `You`-scoped prohibition must not bite P0"
+        );
+
+        let pending = ResolvedAbility::new(gain_life(4), vec![], ObjectId(100), PlayerId(0));
+        state.waiting_for = WaitingFor::UnlessPayment {
+            player: PlayerId(0),
+            cost: AbilityCost::GetPlayerCounters {
+                counter_kind: PlayerCounterKind::Poison,
+                count: 5,
+            },
+            pending_effect: Box::new(pending),
+            trigger_event: None,
+            effect_description: None,
+            remaining: vec![PlayerId(1)],
+        };
+
+        let mut events = Vec::new();
+        let wf = state.waiting_for.clone();
+        handle_unless_payment(&mut state, wf, false, &mut events).expect("poll advance");
+
+        assert!(
+            !matches!(&state.waiting_for, WaitingFor::UnlessPayment { player, .. } if *player == PlayerId(1)),
+            "a payer who cannot choose to pay must not be prompted, got {:?}",
+            state.waiting_for
+        );
+        assert_eq!(
+            state.players[0].life, 24,
+            "the pending effect must resolve exactly once when nobody else qualifies"
+        );
+    }
+
+    /// The control leg of `unless_pay_poll_skips_a_payer_who_cannot_choose_to_pay`:
+    /// the identical poll on the identical board with a `PayLife` cost, which no
+    /// counter prohibition can reach. P1 IS re-emitted and the effect does not
+    /// resolve mid-poll.
+    ///
+    /// Written as its own `#[test]` so a failure names which leg broke.
+    #[test]
+    fn unless_pay_poll_control_cost_still_re_emits_for_the_next_payer() {
+        use crate::types::ability::ReplacementPlayerScope;
+
+        let mut state = GameState::new_two_player(42);
+        state.players[0].life = 20;
+        state.players[1].life = 20;
+        install_mandatory_counter_prevention(&mut state, ReplacementPlayerScope::You, PlayerId(1));
+
+        let pending = ResolvedAbility::new(gain_life(4), vec![], ObjectId(100), PlayerId(0));
+        state.waiting_for = WaitingFor::UnlessPayment {
+            player: PlayerId(0),
+            cost: AbilityCost::PayLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+            },
+            pending_effect: Box::new(pending),
+            trigger_event: None,
+            effect_description: None,
+            remaining: vec![PlayerId(1)],
+        };
+
+        let mut events = Vec::new();
+        let wf = state.waiting_for.clone();
+        handle_unless_payment(&mut state, wf, false, &mut events).expect("poll advance");
+
+        assert!(
+            matches!(&state.waiting_for, WaitingFor::UnlessPayment { player, .. } if *player == PlayerId(1)),
+            "a cost no prohibition can reach must still re-emit for P1, got {:?}",
+            state.waiting_for
+        );
+        assert_eq!(
+            state.players[0].life, 20,
+            "the effect must not resolve mid-poll"
+        );
+    }
+
+    /// CR 614.17b: a prohibited BRANCH of a disjunctive unless-cost is refused
+    /// AT THE PICK, before it is accumulated into `chosen`.
+    ///
+    /// CR 702.24a: the `Composite{[OneOf; N]}` shape `expand_per_counter`
+    /// produces at two age counters surfaces the NEXT prompt and returns `Ok`,
+    /// so a refusal deferred to the collapse would accept the prohibited pick,
+    /// record it, and leave the player unable to take the legal branch of a
+    /// prompt they had already answered — "either the entire set of costs is
+    /// paid, or none of them is paid."
+    ///
+    /// Revert probe: without the gate, `pick(0)` returns `Ok` and `chosen`
+    /// contains the prohibited `GetPlayerCounters` branch.
+    #[test]
+    fn unless_pay_choose_cost_refuses_a_prohibited_branch_at_the_pick() {
+        use crate::game::effects::player_counter::preview_player_counter_addition;
+        use crate::types::ability::ReplacementPlayerScope;
+        use crate::types::actions::{GameAction, UnlessCostBranch};
+        use crate::types::player::PlayerCounterKind;
+
+        let pick = |index: usize| GameAction::ChooseUnlessCostBranch {
+            choice: UnlessCostBranch::Pay { index },
+        };
+        let poison = AbilityCost::GetPlayerCounters {
+            counter_kind: PlayerCounterKind::Poison,
+            count: 5,
+        };
+        let life = AbilityCost::PayLife {
+            amount: QuantityExpr::Fixed { value: 1 },
+        };
+
+        let build = || {
+            let mut state = GameState::new_two_player(42);
+            state.players[0].life = 20;
+            state.players[1].life = 20;
+            // MANDATORY `Prevent`-on-`AddCounter`, scope `AnyPlayer`, on a
+            // P0-controlled permanent — so P0, the prompted player, IS
+            // prohibited.
+            install_mandatory_counter_prevention(
+                &mut state,
+                ReplacementPlayerScope::AnyPlayer,
+                PlayerId(0),
+            );
+            // Reach guard, asserted BEFORE the prompt so a broken install
+            // cannot pass silently.
+            assert!(
+                preview_player_counter_addition(
+                    &state,
+                    PlayerId(0),
+                    PlayerId(0),
+                    PlayerCounterKind::Poison,
+                    5,
+                )
+                .is_prohibited(),
+                "the prohibition must bite the prompted player"
+            );
+            state.waiting_for = WaitingFor::UnlessPaymentChooseCost {
+                player: PlayerId(0),
+                costs: vec![poison.clone(), life.clone()],
+                pending_effect: Box::new(ResolvedAbility::new(
+                    gain_life(4),
+                    vec![],
+                    ObjectId(100),
+                    PlayerId(0),
+                )),
+                trigger_event: None,
+                effect_description: None,
+                remaining_choices: vec![vec![poison.clone(), life.clone()]],
+                chosen: vec![],
+            };
+            state
+        };
+
+        // (i) index 0 is the impossible branch.
+        let mut state = build();
+        assert!(
+            crate::game::engine::apply_as_current(&mut state, pick(0)).is_err(),
+            "picking the prohibited branch must be refused"
+        );
+        // (iii) the refusal happens BEFORE `chosen.push`.
+        assert!(
+            matches!(
+                &state.waiting_for,
+                WaitingFor::UnlessPaymentChooseCost { chosen, .. } if chosen.is_empty()
+            ),
+            "the refused pick must not be accumulated, got {:?}",
+            state.waiting_for
+        );
+        // (iv) the legality surface agrees, with two in-vector controls.
+        let legal = crate::ai_support::legal_actions(&state);
+        assert!(
+            !legal.contains(&pick(0)),
+            "the prohibited index must not be offered, got {legal:?}"
+        );
+        assert!(
+            legal.contains(&pick(1)),
+            "the payable index must still be offered, got {legal:?}"
+        );
+        assert!(
+            legal.contains(&GameAction::ChooseUnlessCostBranch {
+                choice: UnlessCostBranch::Decline
+            }),
+            "declining must still be offered, got {legal:?}"
+        );
+
+        // (ii) CONTROL: the same call at index 1, same board, same prompt.
+        let mut control = build();
+        crate::game::engine::apply_as_current(&mut control, pick(1))
+            .expect("the payable branch must still be accepted");
+        assert!(
+            matches!(
+                &control.waiting_for,
+                WaitingFor::UnlessPaymentChooseCost { chosen, .. }
+                    if chosen.as_slice() == [life.clone()]
+            ),
+            "the accepted pick must be accumulated, got {:?}",
+            control.waiting_for
+        );
+
+        // (v) The stranding, positive form: after the refusal the payable route
+        // is still reachable and the prompt advances to the second round.
+        crate::game::engine::apply_as_current(&mut state, pick(1))
+            .expect("the payable branch is still reachable after the refusal");
+        assert!(
+            matches!(
+                &state.waiting_for,
+                WaitingFor::UnlessPaymentChooseCost { chosen, remaining_choices, .. }
+                    if chosen.as_slice() == [life.clone()] && remaining_choices.is_empty()
+            ),
+            "the prompt must advance to the second round with the payable pick recorded, got {:?}",
+            state.waiting_for
         );
     }
 }

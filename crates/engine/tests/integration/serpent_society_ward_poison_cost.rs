@@ -13,10 +13,11 @@
 //!     ten or more poison counters loses the game (a separate SBA, not
 //!     exercised by this test).
 
+use engine::game::effects::player_counter::preview_player_counter_addition;
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::game::zones::create_object;
 use engine::types::ability::{
-    EffectKind, QuantityModification, ReplacementDefinition, ReplacementMode,
+    AbilityCost, EffectKind, QuantityModification, ReplacementDefinition, ReplacementMode,
     ReplacementPlayerScope,
 };
 use engine::types::actions::GameAction;
@@ -223,30 +224,32 @@ fn serpent_society_ward_payment_that_reaches_ten_poison_loses_the_game() {
 }
 
 /// CR 122.1 + CR 614.17 + CR 702.21a: Solemnity's "Players can't get
-/// counters" is a CR 614.17 can't-effect, not a CR 614.1 replacement, and it
-/// makes Ward's poison-counter cost a FAILED payment rather than a free bypass.
-/// Before this fix, `add_player_counter_with_replacement` reported `Prevented`
-/// as if it were a paid cost, so the targeting opponent's spell would
-/// incorrectly continue resolving even though no poison was actually given —
-/// nullifying Ward's entire deterrent for free.
+/// counters" is a CR 614.17 can't-effect, not a CR 614.1 replacement, so
+/// Ward's poison-counter cost includes an event that can't happen.
 ///
-/// CR 614.17c is why this row never reaches the deferred settle at all: an
-/// event that can't happen "can only be replaced by a self-replacement effect …
-/// Other replacement and/or prevention effects can't modify or replace it", so
+/// CR 614.17b: "If an event can't happen, a player can't choose to pay a cost
+/// that includes that event." The pay branch is therefore never offered — the
+/// engine suppresses the prompt rather than accepting the choice and failing
+/// the payment afterwards.
+///
+/// CR 614.17c is why no replacement prompt intervenes: an event that can't
+/// happen "can only be replaced by a self-replacement effect … Other
+/// replacement and/or prevention effects can't modify or replace it", so
 /// `replacement::pipeline_loop` short-circuits a MANDATORY prohibition ahead of
-/// any CR 616.1 ordering prompt. The payment is therefore decided synchronously
-/// inside `costs::pay_ability_cost_for_resolution` (CR 614.17b: a player can't
-/// pay a cost that includes an event that can't happen) and never parks. That
-/// is what makes this row the over-reach discriminator: if the payment ever did
-/// park, `resume_counter_addition_unless_payment` would settle it PAID under
-/// CR 118.12 and this row's premise would be wrong — so the synchronous settle
-/// is asserted below, not just the final board.
+/// any CR 616.1 ordering prompt and nothing parks.
+///
+/// CR 702.21a: the board outcome is unchanged by the seam move — an unpaid Ward
+/// still counters the targeting spell, and Serpent Society survives.
+///
+/// Revert probe: restoring the pay branch re-emits
+/// `WaitingFor::UnlessPayment { player: P1, cost: GetPlayerCounters }`, which
+/// fails the `Priority { player: P1 }` assertion.
 ///
 /// Solemnity's real Oracle text is "Players can't get counters." /
 /// "Counters can't be put on artifacts, creatures, enchantments, or lands." —
 /// only the first (relevant) sentence is used in this fixture.
 #[test]
-fn serpent_society_ward_payment_prevented_by_solemnity_counters_the_spell() {
+fn serpent_society_ward_solemnity_makes_the_payment_unchoosable_and_counters_the_spell() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario
@@ -272,25 +275,36 @@ fn serpent_society_ward_payment_prevented_by_solemnity_counters_the_spell() {
         .commit();
     runner.advance_until_stack_empty();
 
-    runner
-        .act(GameAction::PayUnlessCost { pay: true })
-        .expect("attempting to pay Ward's poison-counter cost must be a legal action even when Solemnity prevents the actual counter gain");
+    // CR 614.17b: no unless-payment prompt is ever emitted for a payer whose
+    // payment would include an impossible event.
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1),
+        "the prohibited pay branch must leave no unless-payment prompt, got {:?}",
+        runner.state().waiting_for
+    );
+    let legal = engine::ai_support::legal_actions(runner.state());
+    assert!(
+        !legal.contains(&GameAction::PayUnlessCost { pay: true }),
+        "paying Ward's poison-counter cost must not be legal under Solemnity, got {legal:?}"
+    );
+    // Control on the same vector: a dead `legal_actions` would satisfy the
+    // `!contains(pay: true)` assertion for the wrong reason.
+    assert!(
+        legal.contains(&GameAction::PassPriority),
+        "the action vector must still be live, got {legal:?}"
+    );
+    assert!(
+        runner.act(GameAction::PayUnlessCost { pay: true }).is_err(),
+        "submitting the refused choice directly must also be rejected"
+    );
 
     // CR 614.17c: a mandatory "players can't get counters" effect is
-    // short-circuited ahead of any CR 616.1 ordering prompt, so this payment is
-    // settled synchronously and never parks.
+    // short-circuited ahead of any CR 616.1 ordering prompt, so nothing parks.
     assert!(
         runner.state().pending_cost_move_resume.is_none(),
         "a mandatory can't-effect must not park a cost-move resume, got {:?}",
         runner.state().pending_cost_move_resume
     );
-    assert!(
-        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1),
-        "the Solemnity-prevented payment settles synchronously, got {:?}",
-        runner.state().waiting_for
-    );
-
-    runner.advance_until_stack_empty();
 
     assert_eq!(
         runner.state().players[P1.0 as usize].poison_counters,
@@ -573,5 +587,475 @@ fn serpent_society_ward_optional_counter_prevention_declined_pays_the_cost_and_r
             .get(&serpent_society)
             .is_none_or(|obj| obj.zone != Zone::Battlefield),
         "a successfully paid Ward cost must let the targeted destroy spell resolve"
+    );
+}
+
+/// CR 702.21a: the single-variable partner of
+/// `serpent_society_ward_solemnity_makes_the_payment_unchoosable_and_counters_the_spell`
+/// — the identical board with Solemnity absent.
+///
+/// Reach guard, not a discriminator: it passes before and after the CR 614.17b
+/// change. Its job is to make that row's "no prompt / no `pay: true`"
+/// assertions non-vacuous, by showing this fixture does reach the prompt and
+/// does offer both branches when nothing forbids the counter event.
+#[test]
+fn serpent_society_ward_without_solemnity_offers_the_pay_branch() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let serpent_society = scenario
+        .add_creature_from_oracle(P0, "The Serpent Society", 3, 4, SERPENT_SOCIETY)
+        .id();
+    let destroy = scenario
+        .add_spell_to_hand_from_oracle(P1, "Destroy Spell", true, "Destroy target creature.")
+        .id();
+    let mut runner = scenario.build();
+    {
+        let state = runner.state_mut();
+        state.active_player = P1;
+        state.priority_player = P1;
+        state.waiting_for = WaitingFor::Priority { player: P1 };
+    }
+
+    runner
+        .cast(destroy)
+        .target_objects(&[serpent_society])
+        .commit();
+    runner.advance_until_stack_empty();
+
+    assert!(
+        matches!(
+            &runner.state().waiting_for,
+            WaitingFor::UnlessPayment { player, cost, .. }
+                if *player == P1
+                    && matches!(
+                        cost,
+                        AbilityCost::GetPlayerCounters {
+                            counter_kind: PlayerCounterKind::Poison,
+                            count: 5,
+                        }
+                    )
+        ),
+        "with nothing prohibiting the counter event the Ward prompt must exist, got {:?}",
+        runner.state().waiting_for
+    );
+    let legal = engine::ai_support::legal_actions(runner.state());
+    assert!(
+        legal.contains(&GameAction::PayUnlessCost { pay: true }),
+        "the pay branch must be offered when the counter event can happen, got {legal:?}"
+    );
+    assert!(
+        legal.contains(&GameAction::PayUnlessCost { pay: false }),
+        "the decline branch must be offered too, got {legal:?}"
+    );
+
+    runner
+        .act(GameAction::PayUnlessCost { pay: true })
+        .expect("the opponent pays Ward's poison-counter cost");
+    runner.advance_until_stack_empty();
+
+    assert_eq!(
+        runner.state().players[P1.0 as usize].poison_counters,
+        5,
+        "paying must give the targeting opponent five poison counters"
+    );
+    assert!(
+        runner
+            .state()
+            .objects
+            .get(&serpent_society)
+            .is_none_or(|obj| obj.zone != Zone::Battlefield),
+        "paying must let the targeted destroy spell resolve"
+    );
+}
+
+/// Installs a synthetic MANDATORY "players can't get counters" replacement on a
+/// fresh P0 permanent, scoped by `ReplacementPlayerScope`.
+///
+/// The mandatory sibling of `install_optional_player_counter_prevention`: every
+/// parameter is preserved verbatim except `mode` (`ReplacementMode::Mandatory`)
+/// and `valid_player` (`Some(scope)`). `valid_card` stays `None` for the reason
+/// that helper's doc records.
+///
+/// CR 614.17c: a MANDATORY prohibition is short-circuited by
+/// `replacement::pipeline_loop` ahead of any CR 616.1 ordering prompt, which is
+/// why these rows never reach a replacement choice.
+///
+/// `scope` is the typed axis rather than one helper per scope, so the `You` and
+/// `AnyPlayer` fixtures share one definition site.
+fn install_mandatory_player_counter_prevention(
+    state: &mut engine::types::game_state::GameState,
+    scope: ReplacementPlayerScope,
+) {
+    let source = create_object(
+        state,
+        CardId(9102),
+        P0,
+        "Mandatory Poison Warden".to_string(),
+        Zone::Battlefield,
+    );
+    let mut def = ReplacementDefinition::new(ReplacementEvent::AddCounter);
+    def.mode = ReplacementMode::Mandatory;
+    def.quantity_modification = Some(QuantityModification::Prevent);
+    def.valid_player = Some(scope);
+    let reps = vec![def];
+    let obj = state.objects.get_mut(&source).unwrap();
+    obj.replacement_definitions = reps.clone().into();
+    obj.base_replacement_definitions = Arc::new(reps);
+}
+
+/// Reaches the Ward prompt with nothing prohibiting the counter event, then
+/// installs a mandatory prohibition while the prompt is live.
+///
+/// CR 614.17a: a can't-effect must exist when the event occurs, so the answer
+/// is re-checked on the LIVE board rather than latched when the prompt was
+/// built. The prompt survives; only the pay branch is refused, and the decline
+/// branch stays legal (CR 118.12a).
+///
+/// Revert probe: without the reducer-side re-check, `PayUnlessCost { pay: true }`
+/// stays legal after the install and `act(pay: true)` returns `Ok`, failing both
+/// the `!legal.contains(pay: true)` and the `is_err()` assertions.
+#[test]
+fn serpent_society_ward_prohibition_arriving_mid_window_removes_the_pay_branch() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let serpent_society = scenario
+        .add_creature_from_oracle(P0, "The Serpent Society", 3, 4, SERPENT_SOCIETY)
+        .id();
+    let destroy = scenario
+        .add_spell_to_hand_from_oracle(P1, "Destroy Spell", true, "Destroy target creature.")
+        .id();
+    let mut runner = scenario.build();
+    {
+        let state = runner.state_mut();
+        state.active_player = P1;
+        state.priority_player = P1;
+        state.waiting_for = WaitingFor::Priority { player: P1 };
+    }
+
+    runner
+        .cast(destroy)
+        .target_objects(&[serpent_society])
+        .commit();
+    runner.advance_until_stack_empty();
+
+    // Positive reach guard: the prompt exists before the prohibition arrives.
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::UnlessPayment { .. }),
+        "the fixture must reach the Ward prompt before the prohibition is installed, got {:?}",
+        runner.state().waiting_for
+    );
+    let legal_before = engine::ai_support::legal_actions(runner.state());
+    assert!(
+        legal_before.contains(&GameAction::PayUnlessCost { pay: true }),
+        "the pay branch must be offered before the prohibition arrives, got {legal_before:?}"
+    );
+
+    install_mandatory_player_counter_prevention(
+        runner.state_mut(),
+        ReplacementPlayerScope::AnyPlayer,
+    );
+
+    // CR 614.17a: the prompt itself survives — only the CHOICE is refused.
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::UnlessPayment { .. }),
+        "the prompt must survive a mid-window prohibition, got {:?}",
+        runner.state().waiting_for
+    );
+    let legal = engine::ai_support::legal_actions(runner.state());
+    assert!(
+        !legal.contains(&GameAction::PayUnlessCost { pay: true }),
+        "the pay branch must be refused on the live board, got {legal:?}"
+    );
+    // Control on the same vector: a member the mechanism must NOT remove.
+    assert!(
+        legal.contains(&GameAction::PayUnlessCost { pay: false }),
+        "the decline branch must stay legal (CR 118.12a), got {legal:?}"
+    );
+    assert!(
+        runner.act(GameAction::PayUnlessCost { pay: true }).is_err(),
+        "the reducer must refuse a pay choice that includes an impossible event"
+    );
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::UnlessPayment { .. }),
+        "the refused action must not consume the prompt, got {:?}",
+        runner.state().waiting_for
+    );
+
+    runner
+        .act(GameAction::PayUnlessCost { pay: false })
+        .expect("declining stays legal after the pay branch is refused");
+    runner.advance_until_stack_empty();
+
+    assert_eq!(
+        runner.state().players[P1.0 as usize].poison_counters,
+        0,
+        "declining must give no poison counters"
+    );
+    assert!(
+        runner
+            .state()
+            .objects
+            .get(&serpent_society)
+            .is_some_and(|obj| obj.zone == Zone::Battlefield),
+        "an unpaid Ward must counter the targeting spell, so Serpent Society survives"
+    );
+    assert!(
+        !runner.state().stack.iter().any(|entry| entry.id == destroy),
+        "the countered spell must be removed from the stack"
+    );
+}
+
+/// CR 614.17c: two MANDATORY prohibitions on the same `AddCounter` event.
+///
+/// An event that can't happen "can only be replaced by a self-replacement
+/// effect", so `replacement::pipeline_loop` short-circuits ahead of the CR 616.1
+/// ordering step: two sources produce one refusal, never an ordering prompt.
+/// The single-source form of the same board is
+/// `serpent_society_ward_solemnity_makes_the_payment_unchoosable_and_counters_the_spell`,
+/// which is this row's single-variable control — if this row passed with two
+/// sources while that one failed with one, the gate would be counting sources
+/// rather than short-circuiting.
+#[test]
+fn serpent_society_ward_two_mandatory_prohibitions_still_refuse_once_without_ordering() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let serpent_society = scenario
+        .add_creature_from_oracle(P0, "The Serpent Society", 3, 4, SERPENT_SOCIETY)
+        .id();
+    let destroy = scenario
+        .add_spell_to_hand_from_oracle(P1, "Destroy Spell", true, "Destroy target creature.")
+        .id();
+    let mut runner = scenario.build();
+    {
+        let state = runner.state_mut();
+        state.active_player = P1;
+        state.priority_player = P1;
+        state.waiting_for = WaitingFor::Priority { player: P1 };
+    }
+    install_mandatory_player_counter_prevention(
+        runner.state_mut(),
+        ReplacementPlayerScope::AnyPlayer,
+    );
+    install_mandatory_player_counter_prevention(
+        runner.state_mut(),
+        ReplacementPlayerScope::AnyPlayer,
+    );
+
+    runner
+        .cast(destroy)
+        .target_objects(&[serpent_society])
+        .commit();
+    runner.advance_until_stack_empty();
+
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1),
+        "two mandatory prohibitions must leave the pay branch unchoosable, got {:?}",
+        runner.state().waiting_for
+    );
+    // CR 614.17c: no ordering prompt over an impossible event.
+    assert!(
+        !matches!(
+            runner.state().waiting_for,
+            WaitingFor::ReplacementChoice { .. }
+        ),
+        "a mandatory prohibition must short-circuit ahead of any CR 616.1 ordering, got {:?}",
+        runner.state().waiting_for
+    );
+    let legal = engine::ai_support::legal_actions(runner.state());
+    assert!(
+        !legal.contains(&GameAction::PayUnlessCost { pay: true }),
+        "the pay branch must not be offered, got {legal:?}"
+    );
+    assert!(
+        legal.contains(&GameAction::PassPriority),
+        "the action vector must still be live, got {legal:?}"
+    );
+
+    assert_eq!(
+        runner.state().players[P1.0 as usize].poison_counters,
+        0,
+        "no poison counters may be given"
+    );
+    assert!(
+        runner.state().pending_cost_move_resume.is_none(),
+        "nothing may park, got {:?}",
+        runner.state().pending_cost_move_resume
+    );
+    assert!(
+        runner
+            .state()
+            .objects
+            .get(&serpent_society)
+            .is_some_and(|obj| obj.zone == Zone::Battlefield),
+        "an unpaid Ward must counter the targeting spell"
+    );
+    assert!(
+        !runner.state().stack.iter().any(|entry| entry.id == destroy),
+        "the countered spell must be removed from the stack"
+    );
+}
+
+/// CR 614.17c: one MANDATORY and one OPTIONAL prohibition on the same
+/// `AddCounter` event — the mandatory one wins ahead of any choice.
+///
+/// Control: `serpent_society_ward_optional_counter_prevention_accepted_…` and
+/// `…_declined_…` show the same optional source ALONE parks and settles PAID
+/// under CR 118.12. Same board, same optional source, one variable — the
+/// mandatory sibling. So "no park" here is caused by the mandatory prohibition,
+/// not by the fixture failing to install anything.
+#[test]
+fn serpent_society_ward_mandatory_prohibition_wins_over_an_optional_replacement() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let serpent_society = scenario
+        .add_creature_from_oracle(P0, "The Serpent Society", 3, 4, SERPENT_SOCIETY)
+        .id();
+    let destroy = scenario
+        .add_spell_to_hand_from_oracle(P1, "Destroy Spell", true, "Destroy target creature.")
+        .id();
+    let mut runner = scenario.build();
+    {
+        let state = runner.state_mut();
+        state.active_player = P1;
+        state.priority_player = P1;
+        state.waiting_for = WaitingFor::Priority { player: P1 };
+    }
+    install_mandatory_player_counter_prevention(
+        runner.state_mut(),
+        ReplacementPlayerScope::AnyPlayer,
+    );
+    install_optional_player_counter_prevention(runner.state_mut());
+
+    runner
+        .cast(destroy)
+        .target_objects(&[serpent_society])
+        .commit();
+    runner.advance_until_stack_empty();
+
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1),
+        "the mandatory prohibition must make the pay branch unchoosable, got {:?}",
+        runner.state().waiting_for
+    );
+    // The optional park is never entered.
+    assert!(
+        !matches!(
+            runner.state().waiting_for,
+            WaitingFor::ReplacementChoice { .. }
+        ),
+        "the optional replacement must not be offered, got {:?}",
+        runner.state().waiting_for
+    );
+    assert!(
+        runner.state().pending_cost_move_resume.is_none(),
+        "the optional park must never be entered, got {:?}",
+        runner.state().pending_cost_move_resume
+    );
+    let legal = engine::ai_support::legal_actions(runner.state());
+    assert!(
+        !legal.contains(&GameAction::PayUnlessCost { pay: true }),
+        "the pay branch must not be offered, got {legal:?}"
+    );
+    assert!(
+        legal.contains(&GameAction::PassPriority),
+        "the action vector must still be live, got {legal:?}"
+    );
+
+    assert_eq!(
+        runner.state().players[P1.0 as usize].poison_counters,
+        0,
+        "no poison counters may be given"
+    );
+    assert!(
+        !runner.state().stack.iter().any(|entry| entry.id == destroy),
+        "the countered spell must be removed from the stack"
+    );
+}
+
+/// CR 614.17b + the replacement player-scope gate: a prohibition scoped
+/// `ReplacementPlayerScope::You` on a P0-controlled source bites P0, not the
+/// P1 payer, so the Ward prompt is unaffected.
+///
+/// Passes before and after the change by construction. It exists to fail if the
+/// partition is drawn wrong — an implementer widening `is_prohibited()` past
+/// `Prevented`, or reading the replacement definition directly instead of going
+/// through the previews and thereby dropping the player-scope check.
+#[test]
+fn serpent_society_ward_prohibition_scoped_to_the_source_controller_leaves_the_payer_alone() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let serpent_society = scenario
+        .add_creature_from_oracle(P0, "The Serpent Society", 3, 4, SERPENT_SOCIETY)
+        .id();
+    let destroy = scenario
+        .add_spell_to_hand_from_oracle(P1, "Destroy Spell", true, "Destroy target creature.")
+        .id();
+    let mut runner = scenario.build();
+    {
+        let state = runner.state_mut();
+        state.active_player = P1;
+        state.priority_player = P1;
+        state.waiting_for = WaitingFor::Priority { player: P1 };
+    }
+    install_mandatory_player_counter_prevention(runner.state_mut(), ReplacementPlayerScope::You);
+
+    // Paired reach guard: the prohibition really was installed AND really does
+    // bite somebody — its partner is the same call for the payer.
+    assert!(
+        preview_player_counter_addition(runner.state(), P0, P0, PlayerCounterKind::Poison, 5)
+            .is_prohibited(),
+        "a `You`-scoped prohibition on a P0 source must bite P0"
+    );
+    assert!(
+        !preview_player_counter_addition(runner.state(), P1, P1, PlayerCounterKind::Poison, 5)
+            .is_prohibited(),
+        "a `You`-scoped prohibition on a P0 source must not bite P1"
+    );
+
+    runner
+        .cast(destroy)
+        .target_objects(&[serpent_society])
+        .commit();
+    runner.advance_until_stack_empty();
+
+    assert!(
+        matches!(
+            &runner.state().waiting_for,
+            WaitingFor::UnlessPayment { player, cost, .. }
+                if *player == P1
+                    && matches!(
+                        cost,
+                        AbilityCost::GetPlayerCounters {
+                            counter_kind: PlayerCounterKind::Poison,
+                            count: 5,
+                        }
+                    )
+        ),
+        "P1 must still be prompted, got {:?}",
+        runner.state().waiting_for
+    );
+    let legal = engine::ai_support::legal_actions(runner.state());
+    assert!(
+        legal.contains(&GameAction::PayUnlessCost { pay: true }),
+        "the pay branch must still be offered to the unaffected payer, got {legal:?}"
+    );
+
+    runner
+        .act(GameAction::PayUnlessCost { pay: true })
+        .expect("the unaffected payer may pay Ward's cost");
+    runner.advance_until_stack_empty();
+
+    assert_eq!(
+        runner.state().players[P1.0 as usize].poison_counters,
+        5,
+        "paying must give the unaffected payer five poison counters"
+    );
+    assert!(
+        runner
+            .state()
+            .objects
+            .get(&serpent_society)
+            .is_none_or(|obj| obj.zone != Zone::Battlefield),
+        "paying must let the targeted destroy spell resolve"
     );
 }

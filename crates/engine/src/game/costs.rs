@@ -1355,33 +1355,24 @@ fn pay_ability_cost_inner(
                     // and/or prevention effects can't modify or replace it") is
                     // implemented by `replacement::pipeline_loop`'s
                     // short-circuit, which fires ahead of any CR 616.1 ordering
-                    // prompt. An ordering choice instead returns
-                    // `CounterAdditionPreview::ChoiceRequired`, falls through,
-                    // parks, and is settled as PAID by
+                    // prompt. Its `AddCounter` replacement choice — a single
+                    // optional candidate, or a CR 616.1 ordering — instead
+                    // returns `CounterAdditionPreview::ChoiceRequired`, falls
+                    // through, parks, and is settled as PAID by
                     // `engine_payment_choices::resume_counter_addition_unless_payment`
                     // (CR 118.12). The two legs partition the space; they do not
                     // disagree.
                     //
-                    // Known deviation, recorded not fixed: CR 614.17b's subject
-                    // is the CHOICE ("a player can't choose to pay"), while this
-                    // engine enforces it at the payment event — `PayUnlessCost
-                    // { pay: true }` stays legal and fails here. The
-                    // rules-correct seam is the CR 119.8 analogue
-                    // (`static_abilities::player_cant_pay_life_as_cost` /
-                    // `PayLifeCostResult::Prohibited`): refuse the choice, not
-                    // the settle. Same observable, wrong seam.
-                    let prevented = state.objects.get(&source_id).is_some_and(|object| {
-                        matches!(
-                            super::effects::counters::preview_counter_addition(
-                                state,
-                                player,
-                                ObjectIncarnationRef::from_object(object),
-                                counter_type.clone(),
-                                count.unsigned_abs(),
-                            ),
-                            Some(super::effects::counters::CounterAdditionPreview::Prevented)
-                        )
-                    });
+                    // CR 614.17b + CR 119.8 (analogue): the CHOICE is refused upstream, at every
+                    // site that consumes `resolution_cost_includes_impossible_event`. This arm is
+                    // retained as defense in depth for the CR 614.17a mid-window case.
+                    let prevented = self_counter_placement_is_prohibited(
+                        state,
+                        player,
+                        source_id,
+                        counter_type.clone(),
+                        counter_cost_count(count),
+                    );
                     if prevented {
                         return Ok(payment_failed(
                             "Counter-placement cost prevented by a replacement effect",
@@ -1392,7 +1383,7 @@ fn pay_ability_cost_inner(
                         player,
                         source_id,
                         counter_type.clone(),
-                        count.unsigned_abs(),
+                        counter_cost_count(count),
                         events,
                     ) {
                         return Ok(PaymentOutcome::Paused {
@@ -1514,11 +1505,14 @@ fn pay_ability_cost_inner(
         // replaced by a self-replacement effect … other replacement and/or
         // prevention effects can't modify or replace it", so
         // `replacement::pipeline_loop` short-circuits it ahead of any CR 616.1
-        // prompt. A CR 616.1 ordering choice instead returns `NeedsChoice`
-        // below, parks, and is settled as PAID by
+        // prompt. Its `AddCounter` replacement choice — a single optional
+        // candidate, or a CR 616.1 ordering — instead returns `NeedsChoice`,
+        // parks, and is settled as PAID by
         // `engine_payment_choices::resume_counter_addition_unless_payment`
-        // (CR 118.12). Same partition as the `EffectCost`/`PutCounter` arm
-        // above, whose header records the CR 614.17b seam deviation once.
+        // (CR 118.12). Same partition as the `EffectCost`/`PutCounter` cost
+        // arm. `resolution_cost_includes_impossible_event` refuses the CHOICE
+        // at every site that consumes it, so this refusal is defense in depth
+        // for the CR 614.17a mid-window case rather than the only gate.
         AbilityCost::GetPlayerCounters {
             counter_kind,
             count,
@@ -1811,10 +1805,10 @@ fn pay_ability_cost_inner(
     Ok(PaymentOutcome::Paid)
 }
 
-/// CR 118.3 + CR 601.2h: The single affordability authority. Returns whether
+/// CR 118.3 + CR 601.2h: The single payability authority. Returns whether
 /// `payer` could pay `cost` right now in the active [`PaymentScope`].
 ///
-/// Activation scope reproduces the A2 aggregate (relocated from
+/// Activation scope reproduces the aggregate (relocated from
 /// `casting::can_pay_ability_cost_now`): the [`AbilityCost::is_payable`]
 /// choice-eligibility/resource gate plus a clone-and-dry-run of
 /// `pay_ability_cost_inner`, which is the affordability oracle for every
@@ -1829,10 +1823,11 @@ fn pay_ability_cost_inner(
 /// Composite containing a Waterbend leg, so gating on the class would wrongly
 /// suppress the dry run that checks the `{T}` leg's tapped-source state.
 ///
-/// Resolution scope answers CR 118.12 affordability: a resource/eligibility
-/// match per `AbilityCost` (relocated from the deleted
-/// `effects::pay::can_pay_resolution_ability_cost`, A3). It is exhaustive with
-/// no wildcard so a new `AbilityCost` variant forces a deliberate decision.
+/// Resolution scope answers CR 118.12 payability per `AbilityCost` (relocated
+/// from the deleted `effects::pay::can_pay_resolution_ability_cost`): a resource
+/// match, plus — for the two counter-placement arms — CR 614.17b event
+/// possibility. It is exhaustive with no wildcard so a new `AbilityCost` variant
+/// forces a deliberate decision.
 pub(crate) fn can_pay(
     state: &GameState,
     payer: PlayerId,
@@ -1982,10 +1977,167 @@ pub(crate) fn supported_at_resolution(cost: &AbilityCost) -> bool {
     }
 }
 
-/// CR 118.3 + CR 118.12: Resolution-time affordability (relocated A3). A player
-/// can't pay a cost without the resources to pay it fully; used as the
-/// `Composite` pre-flight so the resolver never commits a sub-cost before
-/// discovering a later sub-cost is unpayable. Exhaustive over `AbilityCost`.
+/// CR 614.17b: would a mandatory can't-effect stop this player-counter gain?
+fn player_counter_gain_is_prohibited(
+    state: &GameState,
+    payer: PlayerId,
+    counter_kind: crate::types::player::PlayerCounterKind,
+    count: u32,
+) -> bool {
+    super::effects::player_counter::preview_player_counter_addition(
+        state,
+        payer,
+        payer,
+        counter_kind,
+        count,
+    )
+    .is_prohibited()
+}
+
+/// CR 614.17b: object-counter sibling, for the `EffectCost`/`PutCounter{SelfRef}` shape.
+fn self_counter_placement_is_prohibited(
+    state: &GameState,
+    payer: PlayerId,
+    source_id: ObjectId,
+    counter_type: crate::types::counter::CounterType,
+    count: u32,
+) -> bool {
+    state.objects.get(&source_id).is_some_and(|object| {
+        super::effects::counters::preview_counter_addition(
+            state,
+            payer,
+            ObjectIncarnationRef::from_object(object),
+            counter_type,
+            count,
+        )
+        .is_some_and(super::effects::counters::CounterAdditionPreview::is_prohibited)
+    })
+}
+
+/// CR 118.5 + CR 702.24a: how many counters a resolution-time counter cost
+/// places, from its resolved `QuantityExpr`.
+///
+/// Single authority on purpose. The choice-time predicate
+/// (`resolution_cost_includes_impossible_event`) and the payment path
+/// (`pay_ability_cost_inner`) must preview the SAME count: if they disagree, a
+/// count the predicate reads as 0 short-circuits both previews to
+/// `Applied { count: 0 }`, the pay branch is offered, and the payment then
+/// refuses it — the exact offered-then-rejected defect CR 614.17b forbids.
+fn counter_cost_count(resolved: i32) -> u32 {
+    resolved.unsigned_abs()
+}
+
+/// CR 614.17b: "If an event can't happen, a player can't choose to pay a cost
+/// that includes that event." Answers exactly that, for a resolution-time cost.
+///
+/// NOT an affordability test. CR 118.3 (resources) is answered by `can_pay`; an
+/// unaffordable cost may still legally be CHOSEN, because the unless-payment
+/// window exists so the payer can produce the resources (CR 118.2: "the player
+/// paying the cost has a chance to activate mana abilities"; CR 117.1d: mana
+/// abilities may be activated "whenever a rule or effect asks for a mana
+/// payment"). An impossible event admits no such window.
+///
+/// The verdict comes from the live replacement pipeline
+/// (`replacement::pipeline_loop`'s CR 614.17c short-circuit via
+/// `mandatory_prevention_applies`), reached through the read-only
+/// `preview_*_counter_addition` primitives — never from a per-card test.
+pub(crate) fn resolution_cost_includes_impossible_event(
+    state: &GameState,
+    payer: PlayerId,
+    cost: &AbilityCost,
+    ability: &ResolvedAbility,
+) -> bool {
+    use crate::types::ability::Effect;
+    match cost {
+        // CR 614.17b + CR 702.21a + CR 122.1: Ward's player-counter cost places the event.
+        AbilityCost::GetPlayerCounters {
+            counter_kind,
+            count,
+        } => player_counter_gain_is_prohibited(state, payer, *counter_kind, *count),
+        AbilityCost::EffectCost { effect } => match effect.as_ref() {
+            // CR 614.17b + CR 702.24a: cumulative upkeep's source-counter effect-cost shape.
+            Effect::PutCounter {
+                counter_type,
+                count,
+                target: TargetFilter::SelfRef,
+            } => {
+                let resolved = resolve_quantity_with_targets(state, count, ability);
+                self_counter_placement_is_prohibited(
+                    state,
+                    payer,
+                    ability.source_id,
+                    counter_type.clone(),
+                    counter_cost_count(resolved),
+                )
+            }
+            // CR 118.1: producing mana performs no counter placement, so nothing to prohibit.
+            Effect::Mana {
+                produced: crate::types::ability::ManaProduction::Fixed { .. },
+                ..
+            } => false,
+            // `supports_effect_cost_payment` refuses every other effect-cost shape upstream.
+            _ => false,
+        },
+        // Prohibition is the De Morgan dual of payability: `can_pay_resolution` answers
+        // `Composite` with `.all()` and `OneOf` with `.any()`; this predicate answers them
+        // with `.any()` and `.all()`. Copying one arm from the other is a rules bug in
+        // whichever direction it is copied.
+        // CR 614.17b: every component must be paid, so a cost that INCLUDES an impossible
+        // component is itself unchoosable.
+        AbilityCost::Composite { costs } => costs
+            .iter()
+            .any(|c| resolution_cost_includes_impossible_event(state, payer, c, ability)),
+        // CR 614.17b + CR 118.12a: exactly one option is paid, so the cost is unchoosable
+        // only if EVERY option includes an impossible event.
+        // Only the offending index is refused at the pick; whether the WHOLE disjunctive
+        // cost is unchoosable is this arm's question — `.all()`, not `.any()`.
+        AbilityCost::OneOf { costs } => costs
+            .iter()
+            .all(|c| resolution_cost_includes_impossible_event(state, payer, c, ability)),
+        // CR 702.24a: `expand_per_counter` resolves this into a concrete cost before the
+        // predicate is consulted.
+        AbilityCost::PerCounter { .. } => false,
+        // No counter-placement event is performed while paying any remaining variant.
+        AbilityCost::Mana { .. }
+        | AbilityCost::ManaDynamic { .. }
+        | AbilityCost::Tap
+        | AbilityCost::Untap
+        | AbilityCost::Loyalty { .. }
+        | AbilityCost::Sacrifice(_)
+        | AbilityCost::PayLife { .. }
+        | AbilityCost::Discard { .. }
+        | AbilityCost::Exile { .. }
+        | AbilityCost::ExileMaterials { .. }
+        | AbilityCost::CollectEvidence { .. }
+        | AbilityCost::ExileWithAggregate { .. }
+        | AbilityCost::TapCreatures { .. }
+        | AbilityCost::RemoveCounter { .. }
+        | AbilityCost::PayEnergy { .. }
+        | AbilityCost::PaySpeed { .. }
+        | AbilityCost::ReturnToHand { .. }
+        | AbilityCost::Unattach
+        | AbilityCost::UnattachFrom { .. }
+        | AbilityCost::Mill { .. }
+        | AbilityCost::Exert
+        | AbilityCost::Blight { .. }
+        | AbilityCost::Reveal { .. }
+        | AbilityCost::Behold { .. }
+        | AbilityCost::Waterbend { .. }
+        | AbilityCost::NinjutsuFamily { .. }
+        | AbilityCost::KeywordCostOfCastSpell { .. }
+        | AbilityCost::Unimplemented { .. } => false,
+    }
+}
+
+/// CR 118.3 + CR 118.12: resolution-time payability. A player can't pay a cost
+/// without the resources to pay it fully; used as the `Composite` pre-flight so
+/// the resolver never commits a sub-cost before discovering a later sub-cost is
+/// unpayable. Exhaustive over `AbilityCost`.
+///
+/// CR 614.17b: the counter-placement arms additionally refuse a cost whose
+/// payment includes an event a mandatory can't-effect forbids — impossibility,
+/// not affordability. `resolution_cost_includes_impossible_event` owns that
+/// question; this function only folds its answer into those two leaves.
 fn can_pay_resolution(
     state: &GameState,
     payer: PlayerId,
@@ -2106,14 +2258,23 @@ fn can_pay_resolution(
         AbilityCost::OneOf { costs } => costs
             .iter()
             .any(|cost| can_pay_resolution(state, payer, cost, ability)),
-        // CR 702.21a + CR 122.1: Always payable — no resource/eligibility
-        // limit on giving yourself more counters (poison's ten-or-more loss
-        // condition is a separate SBA, not a payment-time affordability gate).
-        AbilityCost::GetPlayerCounters { .. } => true,
-        // CR 118.3: Every deterministic effect-cost payment admitted by the
-        // shared support predicate is offerable; its resolver handles any
+        // CR 118.3 + CR 104.3d: no RESOURCE limit on giving yourself counters — the
+        // ten-or-more poison loss condition is a state-based action, not a
+        // payment-time affordability gate.
+        // CR 614.17b: the one bar is a mandatory can't-effect on the counter
+        // placement, which `resolution_cost_includes_impossible_event` answers.
+        AbilityCost::GetPlayerCounters {
+            counter_kind,
+            count,
+        } => !player_counter_gain_is_prohibited(state, payer, *counter_kind, *count),
+        // CR 118.3: every deterministic effect-cost payment admitted by the shared
+        // support predicate has the resources to be paid; its resolver handles any
         // replacement effects while paying it.
-        AbilityCost::EffectCost { .. } if cost.supports_effect_cost_payment() => true,
+        // CR 614.17b: it is offerable only if paying it does not require an event a
+        // mandatory can't-effect forbids.
+        AbilityCost::EffectCost { .. } if cost.supports_effect_cost_payment() => {
+            !resolution_cost_includes_impossible_event(state, payer, cost, ability)
+        }
         // Variants below have no resolution-time payment arm
         // (`supported_at_resolution` is the shared membership authority).
         // Refusing here is the conservative affordability answer (treat as
@@ -3213,6 +3374,170 @@ mod tests {
         assert!(
             !scenario.state.objects.get(&src).unwrap().tapped,
             "Tap at Resolution must not tap the source"
+        );
+    }
+
+    /// Installs a synthetic MANDATORY `Prevent`-on-`AddCounter` replacement
+    /// scoped `AnyPlayer` on a fresh P0 permanent — the unit-side sibling of
+    /// `serpent_society_ward_poison_cost.rs`'s installers. No printed card
+    /// produces an OPTIONAL `AddCounter` replacement, and CR 614.17c
+    /// short-circuits every MANDATORY one ahead of the CR 616.1 prompt.
+    fn install_any_player_counter_prohibition(scenario: &mut GameScenario) {
+        let source = scenario.add_creature(P0, "Poison Warden", 1, 1).id();
+        let mut def = crate::types::ability::ReplacementDefinition::new(
+            crate::types::replacements::ReplacementEvent::AddCounter,
+        );
+        def.mode = crate::types::ability::ReplacementMode::Mandatory;
+        def.quantity_modification = Some(crate::types::ability::QuantityModification::Prevent);
+        def.valid_player = Some(crate::types::ability::ReplacementPlayerScope::AnyPlayer);
+        let reps = vec![def];
+        let obj = scenario.state.objects.get_mut(&source).unwrap();
+        obj.replacement_definitions = reps.clone().into();
+        obj.base_replacement_definitions = std::sync::Arc::new(reps);
+    }
+
+    /// CR 614.17b: the aggregate arms of
+    /// `resolution_cost_includes_impossible_event`, pinned from both sides.
+    ///
+    /// `Composite` is `.any()` — CR 614.17b's "a cost that INCLUDES that event"
+    /// — and `OneOf` is `.all()`, because CR 118.12a pays exactly one option, so
+    /// a disjunctive cost is unchoosable only when EVERY option is. The two are
+    /// the De Morgan dual of `can_pay_resolution`'s `.all()` / `.any()`.
+    ///
+    /// Affordability is held CONSTANT across the pair: every leg is affordable
+    /// at life 20, and the row asserts the life totals so that stays true.
+    ///
+    /// Revert probe: writing the `OneOf` arm as `.any()` makes `mixed_oneof`
+    /// answer `true` and fails assertion (iii) on the same board that keeps
+    /// `counter_composite` answering `true`.
+    #[test]
+    fn resolution_cost_prohibition_covers_composite_and_disjunctive_shapes() {
+        use crate::types::player::PlayerCounterKind;
+
+        let poison5 = AbilityCost::GetPlayerCounters {
+            counter_kind: PlayerCounterKind::Poison,
+            count: 5,
+        };
+        let poison3 = AbilityCost::GetPlayerCounters {
+            counter_kind: PlayerCounterKind::Poison,
+            count: 3,
+        };
+        let pay_life_1 = AbilityCost::PayLife {
+            amount: QuantityExpr::Fixed { value: 1 },
+        };
+        let counter_composite = AbilityCost::Composite {
+            costs: vec![poison5.clone(), pay_life_1.clone()],
+        };
+        let control_composite = AbilityCost::Composite {
+            costs: vec![pay_life_1.clone(), pay_life_1.clone()],
+        };
+        let mixed_oneof = AbilityCost::OneOf {
+            costs: vec![poison5.clone(), pay_life_1.clone()],
+        };
+        let all_impossible_oneof = AbilityCost::OneOf {
+            costs: vec![poison5, poison3],
+        };
+
+        let mut scenario = GameScenario::new();
+        let src = scenario.add_creature(P0, "Source", 1, 1).id();
+        let ability = ResolvedAbility::new(
+            Effect::PutCounter {
+                counter_type: CounterType::Plus1Plus1,
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::SelfRef,
+            },
+            Vec::new(),
+            src,
+            P0,
+        );
+        let scope = PaymentScope::Resolution {
+            ability: &ability,
+            cost_move_root: ResolutionCostMoveRoot::EffectPayCost,
+        };
+
+        // (v) + (vi) CLEAN board: the instrument fires only on the prohibition,
+        // and every leg is affordable at life 20.
+        assert_eq!(
+            scenario.state.players[P0.0 as usize].life, 20,
+            "affordability is held constant across the pair"
+        );
+        for (name, cost) in [
+            ("counter_composite", &counter_composite),
+            ("control_composite", &control_composite),
+            ("mixed_oneof", &mixed_oneof),
+            ("all_impossible_oneof", &all_impossible_oneof),
+        ] {
+            assert!(
+                !resolution_cost_includes_impossible_event(&scenario.state, P0, cost, &ability),
+                "{name} must not be prohibited on a clean board"
+            );
+            assert!(
+                can_pay(&scenario.state, P0, src, cost, &scope),
+                "{name} must be payable on a clean board"
+            );
+        }
+
+        install_any_player_counter_prohibition(&mut scenario);
+        assert_eq!(
+            scenario.state.players[P0.0 as usize].life, 20,
+            "installing the prohibition must not change affordability"
+        );
+
+        // (i) `Composite` INCLUDES an impossible component ⇒ prohibited.
+        assert!(
+            resolution_cost_includes_impossible_event(
+                &scenario.state,
+                P0,
+                &counter_composite,
+                &ability
+            ),
+            "a Composite including a prohibited counter gain must be prohibited"
+        );
+        // Control cost: same board, same prohibition, same affordability.
+        assert!(
+            !resolution_cost_includes_impossible_event(
+                &scenario.state,
+                P0,
+                &control_composite,
+                &ability
+            ),
+            "a Composite with no counter component must not be prohibited"
+        );
+
+        // (ii) Step 3c's fold: the payability oracle follows the leaves.
+        assert!(
+            !can_pay(&scenario.state, P0, src, &counter_composite, &scope),
+            "can_pay must refuse a Composite whose payment includes an impossible event"
+        );
+        assert!(
+            can_pay(&scenario.state, P0, src, &control_composite, &scope),
+            "can_pay must still accept the control Composite"
+        );
+
+        // (iii) The `.any()`-leak guard: one payable option keeps the whole
+        // disjunctive cost choosable (CR 118.12a).
+        assert!(
+            !resolution_cost_includes_impossible_event(&scenario.state, P0, &mixed_oneof, &ability),
+            "a OneOf with one payable option must not be prohibited"
+        );
+        assert!(
+            can_pay(&scenario.state, P0, src, &mixed_oneof, &scope),
+            "a OneOf with one payable option must stay payable"
+        );
+
+        // (iv) Its paired opposite: every option impossible ⇒ prohibited.
+        assert!(
+            resolution_cost_includes_impossible_event(
+                &scenario.state,
+                P0,
+                &all_impossible_oneof,
+                &ability
+            ),
+            "a OneOf whose every option is impossible must be prohibited"
+        );
+        assert!(
+            !can_pay(&scenario.state, P0, src, &all_impossible_oneof, &scope),
+            "a OneOf whose every option is impossible must not be payable"
         );
     }
 }
