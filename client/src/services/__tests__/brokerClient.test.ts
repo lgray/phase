@@ -7,6 +7,7 @@ import {
   subscribeLobbyOver,
 } from "../brokerClient";
 import type { LobbyGame } from "../../adapter/types";
+import { PROTOCOL_VERSION, type ServerInfo } from "../../adapter/ws-adapter";
 
 class MockWebSocket extends EventTarget {
   static OPEN = 1;
@@ -28,7 +29,10 @@ class MockWebSocket extends EventTarget {
   }
 }
 
-function makePhaseSocket(ws: MockWebSocket): PhaseSocket {
+function makePhaseSocket(
+  ws: MockWebSocket,
+  serverInfo: Partial<ServerInfo> = {},
+): PhaseSocket {
   return {
     ws: ws as unknown as WebSocket,
     serverInfo: {
@@ -36,6 +40,7 @@ function makePhaseSocket(ws: MockWebSocket): PhaseSocket {
       buildCommit: "test",
       protocolVersion: 1,
       mode: "LobbyOnly",
+      ...serverInfo,
     },
     close: () => ws.close(),
   };
@@ -51,6 +56,61 @@ beforeEach(() => {
       }
     });
   }
+});
+
+describe("resolveGuestOver full-game surface guard", () => {
+  // `JoinGameWithPassword` is the one frame a lobby-surface socket sends that a
+  // `Full` server answers off its server-run game path — `SessionAttached` plus
+  // a serialized `StateUpdate`. A client that cannot speak the server's
+  // full-game protocol must not put it on the wire at all: by the time a reply
+  // arrived the server would already have attached a session.
+  it("refuses to send on a Full server this client cannot play on", async () => {
+    const ws = new MockWebSocket();
+    const socket = makePhaseSocket(ws, {
+      mode: "Full",
+      protocolVersion: PROTOCOL_VERSION - 2,
+    });
+
+    const result = await resolveGuestOver(socket, "ABC123");
+
+    expect(result).toMatchObject({ ok: false, reason: "build_mismatch" });
+    // The assertion that matters: nothing reached the wire, so no session can
+    // have been attached and no game state can have been streamed back.
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  it("still sends on a Full server this client CAN play on", async () => {
+    // Non-vacuity pair for the refusal above: same code path, same frame, and
+    // only the server's full-game protocol differs.
+    const ws = new MockWebSocket();
+    const socket = makePhaseSocket(ws, {
+      mode: "Full",
+      protocolVersion: PROTOCOL_VERSION,
+    });
+
+    void resolveGuestOver(socket, "ABC123");
+
+    expect(ws.send).toHaveBeenCalledWith(
+      expect.stringContaining('"type":"JoinGameWithPassword"'),
+    );
+  });
+
+  it("still sends to a LobbyOnly broker whose full-game protocol is stale", async () => {
+    // The broker cannot run a game at all, so its full-game number says nothing
+    // about this frame. Guarding on it would break the P2P join path this PR
+    // exists to keep working.
+    const ws = new MockWebSocket();
+    const socket = makePhaseSocket(ws, {
+      mode: "LobbyOnly",
+      protocolVersion: PROTOCOL_VERSION - 9,
+    });
+
+    void resolveGuestOver(socket, "ABC123");
+
+    expect(ws.send).toHaveBeenCalledWith(
+      expect.stringContaining('"type":"JoinGameWithPassword"'),
+    );
+  });
 });
 
 describe("resolveGuestOver", () => {

@@ -56,10 +56,15 @@ export interface OpenOptions<T extends PhaseSocketTransport = WebSocket> {
    * conservative choice: a caller that has not thought about it gets the
    * exact-match full-game window.
    *
-   * Pass `"lobby"` ONLY for a socket that will carry lobby frames exclusively
-   * (`LobbyClientMessage` in `crates/lobby-broker/src/protocol.rs`). Server-run
-   * hosting, joining, drafts and spectating each open their own socket and must
-   * keep the default.
+   * Pass `"lobby"` ONLY for a socket that can never elicit a full-game reply.
+   * Sending `LobbyClientMessage` variants is necessary but NOT sufficient: a
+   * `Full` server answers `JoinGameWithPassword` and `CreateGameWithSettings`
+   * from its server-run game path with `SessionAttached`/`StateUpdate`, which
+   * are not `LobbyServerMessage` variants at all. Those two frames are gated in
+   * `brokerClient.ts` — `resolveGuestOver` refuses them on a `Full` server this
+   * client cannot play on, and `openBrokerClient` accepts only `LobbyOnly`
+   * servers. Server-run hosting, joining, drafts and spectating each open their
+   * own socket and must keep the default.
    */
   surface?: ProtocolSurface;
 }
@@ -257,9 +262,9 @@ export function openPhaseSocket(
       // in `crates/phase-server/src/main.rs` holds every socket a `Full` server
       // accepts to `MIN_SUPPORTED_PROTOCOL..=PROTOCOL_VERSION` — the echo is
       // therefore this client's only way to declare the socket lobby-only, and
-      // the one that reaches servers already deployed. Sound because the
-      // surface carries no `GameState`/`GameAction` frame in either direction;
-      // see {@link OpenOptions.surface}.
+      // the one that reaches servers already deployed. Sound only because the
+      // caller keeps its side of {@link OpenOptions.surface} — a `Full` server
+      // will still answer a game frame sent over this socket.
       //
       // `lobby_protocol_version` is always our own: a server that understands
       // it gates on that instead, which is what decouples the lobby handshake

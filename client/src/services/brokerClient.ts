@@ -6,7 +6,11 @@ import type {
   MatchConfig,
   PeerInfo,
 } from "../adapter/types";
-import type { ServerInfo } from "../adapter/ws-adapter";
+import {
+  PROTOCOL_VERSION,
+  serverProtocolRejection,
+  type ServerInfo,
+} from "../adapter/ws-adapter";
 import {
   HandshakeError,
   openPhaseSocket,
@@ -107,6 +111,10 @@ export async function openBrokerClient(
   opts: OpenBrokerOptions = {},
 ): Promise<BrokerClient> {
   const socket = await openPhaseSocket(wsUrl, { ...opts, surface: "lobby" });
+  // Load-bearing for surface safety, not just for API shape: `registerHost`
+  // sends `CreateGameWithSettings`, which a `Full` server answers by creating a
+  // server-run game and streaming its state. Refusing every non-`LobbyOnly`
+  // server here is what keeps that frame off a lobby-surface socket.
   if (socket.serverInfo.mode !== "LobbyOnly") {
     socket.close();
     throw new HandshakeError(
@@ -279,10 +287,33 @@ export function resolveGuestOver(
   password?: string,
   opts: ResolveGuestOptions = {},
 ): Promise<ResolveResult> {
-  const { ws } = socket;
+  const { ws, serverInfo } = socket;
   const { signal, timeoutMs = 10_000 } = opts;
 
   return new Promise<ResolveResult>((resolve) => {
+    // SINGLE AUTHORITY for putting `JoinGameWithPassword` on the wire, and the
+    // one frame a lobby-surface socket sends that a `Full` server can answer
+    // with a full-game payload: it skips the broker branch
+    // (`crates/phase-server/src/main.rs`, `if matches!(mode, ServerMode::LobbyOnly)`),
+    // attaches a session and replies `SessionAttached` + `StateUpdate`. Those
+    // are not `LobbyServerMessage` variants, so the lobby surface's independence
+    // does not cover them and a relaxed handshake must not carry this frame.
+    //
+    // Refuse before `send` rather than after: the hazard is the server attaching
+    // a session at all, which has already happened by the time a reply could be
+    // filtered. Browsing the lobby on such a server stays available — only
+    // joining through it is refused.
+    if (serverInfo.mode === "Full") {
+      const fullGameRejection = serverProtocolRejection(serverInfo, "full");
+      if (fullGameRejection) {
+        resolve({
+          ok: false,
+          reason: "build_mismatch",
+          message: `This server runs game protocol ${serverInfo.protocolVersion}; this client speaks ${PROTOCOL_VERSION}. Refresh to update — you can still browse this server's lobby.`,
+        });
+        return;
+      }
+    }
     if (ws.readyState !== WebSocket.OPEN) {
       resolve({
         ok: false,
