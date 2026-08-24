@@ -25631,12 +25631,22 @@ mod tests {
     /// carries that condition. VERBATIM Oracle text from the pinned export, same rule as the
     /// sibling fixtures above.
     fn dragonskull_summit_def() -> crate::types::ability::ReplacementDefinition {
-        tapland_replacement(
+        let def = tapland_replacement(
             "Dragonskull Summit",
             "This land enters tapped unless you control a Swamp or a Mountain.\n{T}: Add {B} \
              or {R}.",
             &[],
-        )
+        );
+        assert!(
+            matches!(
+                def.condition,
+                Some(crate::types::ability::ReplacementCondition::UnlessControlsSubtype { .. })
+            ),
+            "fixture pin: Dragonskull Summit must parse to the `UnlessControlsSubtype` arm this \
+             fixture exists to feed — two cluster siblings report the same sibling axis, so a \
+             parser re-route would leave the row green with that arm untested"
+        );
+        def
     }
 
     fn copperline_gorge_def() -> crate::types::ability::ReplacementDefinition {
@@ -25887,9 +25897,9 @@ mod tests {
     }
 
     /// **Row 2 (NEGATIVE — a non-`SelfRef` `valid_card` keeps the veto).** CR 614.1d's other
-    /// half — "[Objects] enter [the battlefield] . . ." — watches a general subset of
-    /// permanents that the loop's own arrivals join, so its subject is emphatically NOT in the
-    /// past. `Typed{Land}` is the real card shape ("lands you control enter tapped").
+    /// half — "[Objects] enter [the battlefield] . . ." — is not self-scoped, so the relief's
+    /// `Some(SelfRef)` conjunct fails on syntax alone, without asking what the filter matches.
+    /// `Typed{Land}` is the real card shape ("lands you control enter tapped").
     ///
     /// REVERT / MUTATION PROBE: delete the `matches!(def.valid_card, Some(SelfRef))` conjunct
     /// ⇒ **FAILS**.
@@ -25903,8 +25913,8 @@ mod tests {
         let (state, members, _) = spent_self_entry_board(def);
         assert!(
             scan_with_identity_proof(&state, &members, &stable),
-            "row 2: CR 614.1d — an '[Objects] enter' definition watches a POPULATION the \
-             loop's arrivals join, so its subject is not in the past and it keeps its veto"
+            "row 2: CR 614.1d — an '[Objects] enter' definition is not self-scoped, so the \
+             relief's `Some(SelfRef)` conjunct fails and the veto stands"
         );
 
         // PAIRED POSITIVE: the byte-identical definition with only `valid_card` swapped back.

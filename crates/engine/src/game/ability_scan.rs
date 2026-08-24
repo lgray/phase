@@ -4630,9 +4630,9 @@ fn scan_replacement_condition(x: &ReplacementCondition, mode: ScanMode) -> Axes 
         // `scan_target_filter`, and inspecting the payload to relax the axis would re-open a
         // census the evaluator still runs.
         //
-        // CR 732.2a: where a growing class is proven, the shortcut offer survives through the
-        // def-scoped inapplicability relief; where none is proven the veto stands and routes an
-        // accepted shortcut to the discrete driver — it never suppresses the offer.
+        // CR 732.2a: no disjointness arm matches this variant, so the only def block (3) spares
+        // is one `replacement_is_spent_self_entry` skips whole — an unblinked `SelfRef` entry
+        // hosted on the battlefield, outside the proven class. Every other one vetoes here.
         ReplacementCondition::UnlessControlsSubtype { subtypes: _ } => Axes {
             event: false,
             sibling: true,
@@ -8105,8 +8105,8 @@ mod tests {
         );
         assert!(
             leq.sibling && leq.projected && leq.event,
-            "untouched cluster sibling: an edit that tidied the whole cluster onto one shape \
-             would relax this arm away from its conservative verdict"
+            "untouched cluster sibling: a red here says the edit reached this arm too, i.e. the \
+             whole `UnlessControls*` cluster was retuned rather than the one arm this row pins"
         );
         assert!(
             replacement_condition_reads_sibling_mutable(&ReplacementCondition::And {

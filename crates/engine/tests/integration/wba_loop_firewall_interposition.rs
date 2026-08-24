@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use engine::game::zones::create_object;
 use engine::types::ability::{
-    AbilityKind, Effect, ReplacementDefinition, TargetFilter, TypedFilter,
+    AbilityKind, Effect, ReplacementCondition, ReplacementDefinition, TargetFilter, TypedFilter,
 };
 use engine::types::card_type::CoreType;
 use engine::types::game_state::{GameState, WaitingFor};
@@ -125,8 +125,8 @@ fn graft_census_land(state: &mut GameState, name: &str, def: ReplacementDefiniti
 }
 
 /// Rewrite the grafted definition's `valid_card` from `SelfRef` to `Typed{Land}` — CR 614.1d's
-/// OTHER half, "[Objects] enter [the battlefield] . . .", which watches a population the loop's
-/// own arrivals join and is therefore not spent by anything.
+/// OTHER half, "[Objects] enter [the battlefield] . . .". `replacement_is_spent_self_entry`
+/// tests `valid_card` for `SelfRef` syntactically, so this rewrite alone lapses that relief.
 ///
 /// Written through `Arc::make_mut` on `base_replacement_definitions` and mirrored into the live
 /// store, because `game/layers.rs` re-seeds the live store from the base store on every pass: a
@@ -241,11 +241,12 @@ fn spent_self_entry_relief_offers_on_three_real_entry_census_lands() {
         make_it_watch_every_land(&mut watching, host);
         assert!(
             !drive_and_report(watching, name),
-            "ARM B ({name}): CR 614.1d's other half — '[Objects] enter [the battlefield] . . .' \
-             — watches a POPULATION, and a loop that puts permanents onto the battlefield can \
-             make it apply again inside the window. The veto is correct here, and this arm is \
-             also ARM A's reach-guard: block (3) demonstrably sees this definition, so ARM A's \
-             offer is the self-entry scope and not a blind walk"
+            "ARM B ({name}): with `valid_card` rewritten off `SelfRef` the definition is CR \
+             614.1d's other half — '[Objects] enter [the battlefield] . . .' — so the relief \
+             fails its `Some(SelfRef)` conjunct, block (3) consults the condition, and that \
+             live census keeps the veto. This arm is also ARM A's reach-guard: block (3) \
+             demonstrably sees this definition, so ARM A's offer is the self-entry scope and \
+             not a blind walk"
         );
     }
 }
@@ -610,8 +611,8 @@ const OTHER_LEQ_CONTROL: (&str, &str, &[&str]) = (
 /// CR 614.1d + CR 614.12 + CR 400.7: on ARM A the land is already on the battlefield and stays
 /// the same object, so its own entry replacement cannot apply inside the window and the
 /// def-scoped relief carries the offer whatever the condition says. ARM B rewrites `valid_card`
-/// to CR 614.1d's other half, which watches a population the window's arrivals join, so the
-/// relief lapses, the condition is consulted, and no disjointness arm relieves a subtype census.
+/// away from `SelfRef`, failing the relief's `Some(SelfRef)` conjunct — a syntactic test, not a
+/// population one — so the condition is consulted and no arm relieves this subtype census.
 ///
 /// REVERT / MUTATION PROBE: restore `=> Axes::NONE` on `scan_replacement_condition`'s
 /// `UnlessControlsSubtype` arm ⇒ both ARM B assertions OFFER ⇒ **FAILS**. ARM A is invariant
@@ -651,6 +652,15 @@ fn check_lands_still_offer_with_the_subtype_arm_repaired() {
 
     for (name, oracle, subtypes) in CHECK_LANDS {
         let def = census_land_def(name, oracle, subtypes);
+        assert!(
+            matches!(
+                def.condition,
+                Some(ReplacementCondition::UnlessControlsSubtype { .. })
+            ),
+            "fixture pin: {name} must parse to the `UnlessControlsSubtype` arm this row pins — \
+             two cluster siblings report the same sibling axis, so a parser re-route would leave \
+             the arms below green while that arm goes untested"
+        );
 
         // ── ARM A: the real card, alone on the board ──
         let mut with_land = load_realistic_dump();
@@ -670,11 +680,11 @@ fn check_lands_still_offer_with_the_subtype_arm_repaired() {
         make_it_watch_every_land(&mut watching, host);
         assert!(
             !drive_and_report(watching, name),
-            "ARM B ({name}): with the definition watching a POPULATION the window's arrivals \
-             join, the relief no longer applies and block (3) reaches the condition. The \
-             evaluator censuses the live battlefield for a controlled permanent of a listed \
-             subtype, and no disjointness arm can prove that census invariant, so CR 732.2a's \
-             predictability requirement is unmet and the offer is refused"
+            "ARM B ({name}): with `valid_card` rewritten off `SelfRef` the relief fails its \
+             `Some(SelfRef)` conjunct and block (3) reaches the condition. The evaluator \
+             censuses the live battlefield for a controlled permanent of a listed subtype, and \
+             no disjointness arm can prove that census invariant, so CR 732.2a's predictability \
+             requirement is unmet and the offer is refused"
         );
     }
 }
