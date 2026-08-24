@@ -106,7 +106,7 @@ export async function openBrokerClient(
   wsUrl: string,
   opts: OpenBrokerOptions = {},
 ): Promise<BrokerClient> {
-  const socket = await openPhaseSocket(wsUrl, opts);
+  const socket = await openPhaseSocket(wsUrl, { ...opts, surface: "lobby" });
   if (socket.serverInfo.mode !== "LobbyOnly") {
     socket.close();
     throw new HandshakeError(
