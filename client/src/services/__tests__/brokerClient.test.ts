@@ -92,11 +92,17 @@ describe("resolveGuestOver full-game surface guard", () => {
       protocolVersion: PROTOCOL_VERSION - 9,
     });
 
-    void resolveGuestOver(socket, "ABC123");
+    const result = resolveGuestOver(socket, "ABC123");
 
     expect(ws.send).toHaveBeenCalledWith(
       expect.stringContaining('"type":"JoinGameWithPassword"'),
     );
+
+    ws.fireClose();
+    await expect(result).resolves.toMatchObject({
+      ok: false,
+      reason: "connection_lost",
+    });
   });
 });
 
