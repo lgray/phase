@@ -59,79 +59,33 @@ beforeEach(() => {
 });
 
 describe("resolveGuestOver full-game surface guard", () => {
-  // `JoinGameWithPassword` is the one frame a lobby-surface socket sends that a
-  // `Full` server answers off its server-run game path — `SessionAttached` plus
-  // a serialized `StateUpdate`. A client that cannot speak the server's
-  // full-game protocol must not put it on the wire at all: by the time a reply
-  // arrived the server would already have attached a session.
-  it("refuses to send on a Full server this client cannot play on", async () => {
+  // This resolver asks for `PeerInfo`. A `Full` server never publishes a P2P
+  // row — both of its lobby registrations hardcode `host_peer_id:
+  // String::new()` — so it has no peer id to return, and it answers this frame
+  // off its server-run join path instead: `SessionAttached` + `StateUpdate`,
+  // neither of which the listener handles. Sending would seat the guest
+  // server-side and then time out as `connection_lost`. Refusing is
+  // unconditional on mode so a relaxed lobby handshake can never carry a
+  // full-game join.
+  it.each([
+    ["version-mismatched", PROTOCOL_VERSION - 2],
+    ["version-compatible", PROTOCOL_VERSION],
+  ])("refuses to send to a %s Full server", async (_label, protocolVersion) => {
     const ws = new MockWebSocket();
-    const socket = makePhaseSocket(ws, {
-      mode: "Full",
-      protocolVersion: PROTOCOL_VERSION - 2,
-    });
+    const socket = makePhaseSocket(ws, { mode: "Full", protocolVersion });
 
     const result = await resolveGuestOver(socket, "ABC123");
 
-    expect(result).toMatchObject({ ok: false, reason: "build_mismatch" });
+    expect(result.ok).toBe(false);
     // The assertion that matters: nothing reached the wire, so no session can
     // have been attached and no game state can have been streamed back.
     expect(ws.send).not.toHaveBeenCalled();
   });
 
-  // The remedy is not cosmetic: a stale SERVER cannot be fixed by reloading the
-  // page, and telling a self-hoster to refresh sends them down a dead end. The
-  // pair pins each direction against the other's advice.
-  it("tells a stale server's guest to update the SERVER, not to refresh", async () => {
-    const ws = new MockWebSocket();
-    const socket = makePhaseSocket(ws, {
-      mode: "Full",
-      protocolVersion: PROTOCOL_VERSION - 2,
-    });
-
-    const result = await resolveGuestOver(socket, "ABC123");
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.message).toContain("The server needs updating");
-    expect(result.message).not.toContain("Refresh");
-  });
-
-  it("tells a stale client's guest to refresh, not to update the server", async () => {
-    const ws = new MockWebSocket();
-    const socket = makePhaseSocket(ws, {
-      mode: "Full",
-      protocolVersion: PROTOCOL_VERSION + 2,
-    });
-
-    const result = await resolveGuestOver(socket, "ABC123");
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.message).toContain("Refresh to update this client");
-    expect(result.message).not.toContain("server needs updating");
-  });
-
-  it("still sends on a Full server this client CAN play on", async () => {
-    // Non-vacuity pair for the refusal above: same code path, same frame, and
-    // only the server's full-game protocol differs.
-    const ws = new MockWebSocket();
-    const socket = makePhaseSocket(ws, {
-      mode: "Full",
-      protocolVersion: PROTOCOL_VERSION,
-    });
-
-    void resolveGuestOver(socket, "ABC123");
-
-    expect(ws.send).toHaveBeenCalledWith(
-      expect.stringContaining('"type":"JoinGameWithPassword"'),
-    );
-  });
-
   it("still sends to a LobbyOnly broker whose full-game protocol is stale", async () => {
-    // The broker cannot run a game at all, so its full-game number says nothing
-    // about this frame. Guarding on it would break the P2P join path this PR
-    // exists to keep working.
+    // The broker cannot run a game, so its full-game number says nothing about
+    // this frame and it is the one server kind that can answer with `PeerInfo`.
+    // Guarding it would break the P2P join path this PR exists to keep working.
     const ws = new MockWebSocket();
     const socket = makePhaseSocket(ws, {
       mode: "LobbyOnly",

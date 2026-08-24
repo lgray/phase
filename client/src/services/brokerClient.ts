@@ -6,11 +6,7 @@ import type {
   MatchConfig,
   PeerInfo,
 } from "../adapter/types";
-import {
-  PROTOCOL_VERSION,
-  serverProtocolRejection,
-  type ServerInfo,
-} from "../adapter/ws-adapter";
+import type { ServerInfo } from "../adapter/ws-adapter";
 import {
   HandshakeError,
   openPhaseSocket,
@@ -292,36 +288,33 @@ export function resolveGuestOver(
 
   return new Promise<ResolveResult>((resolve) => {
     // SINGLE AUTHORITY for putting `JoinGameWithPassword` on the wire, and the
-    // one frame a lobby-surface socket sends that a `Full` server can answer
-    // with a full-game payload: it skips the broker branch
-    // (`crates/phase-server/src/main.rs`, `if matches!(mode, ServerMode::LobbyOnly)`),
-    // attaches a session and replies `SessionAttached` + `StateUpdate`. Those
-    // are not `LobbyServerMessage` variants, so the lobby surface's independence
-    // does not cover them and a relaxed handshake must not carry this frame.
+    // only frame a lobby-surface socket sends that a `Full` server can answer
+    // off its server-run game path.
     //
-    // Refuse before `send` rather than after: the hazard is the server attaching
-    // a session at all, which has already happened by the time a reply could be
-    // filtered. Browsing the lobby on such a server stays available — only
-    // joining through it is refused.
+    // This resolver asks for `PeerInfo` — the peer id of a P2P host. A `Full`
+    // server has none to give: both of its lobby registrations hardcode
+    // `host_peer_id: String::new()` ("Full-mode server runs the engine itself —
+    // no PeerJS peer is involved"), so every row it publishes carries
+    // `is_p2p: false` and no caller should route a Full server's code here.
+    //
+    // Sending anyway would be worse than useless. The frame skips the broker
+    // branch on a `Full` server (`if matches!(mode, ServerMode::LobbyOnly)` in
+    // `crates/phase-server/src/main.rs`), attaches a session, and replies
+    // `SessionAttached` + `StateUpdate` — neither of which the listener below
+    // handles, so the promise would hang to its timeout and report
+    // `connection_lost` AFTER the server had already seated the guest. Refusing
+    // every `Full` server, not merely the version-mismatched ones, is what makes
+    // "a relaxed lobby socket never carries a full-game join" unconditional.
+    // Browsing such a server's lobby stays available; only joining through this
+    // resolver is refused.
     if (serverInfo.mode === "Full") {
-      if (serverProtocolRejection(serverInfo, "full")) {
-        // Which side is behind decides what the player can actually do about
-        // it, so the two directions cannot share one instruction: refreshing
-        // fixes a stale CLIENT and does nothing for a stale SERVER. The two
-        // cases are exhaustive — a rejection on the full-game surface means
-        // `protocolVersion` is outside an exact-match window, so it is strictly
-        // below or strictly above this client's.
-        const remedy =
-          serverInfo.protocolVersion < PROTOCOL_VERSION
-            ? "The server needs updating"
-            : "Refresh to update this client";
-        resolve({
-          ok: false,
-          reason: "build_mismatch",
-          message: `This server runs game protocol ${serverInfo.protocolVersion}; this client speaks ${PROTOCOL_VERSION}, so joining a game on it would desync. ${remedy} — you can still browse this server's lobby.`,
-        });
-        return;
-      }
+      resolve({
+        ok: false,
+        reason: "error",
+        message:
+          "This server runs its own games, so it has no peer-to-peer room to join.",
+      });
+      return;
     }
     if (ws.readyState !== WebSocket.OPEN) {
       resolve({

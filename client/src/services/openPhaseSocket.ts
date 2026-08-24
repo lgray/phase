@@ -61,10 +61,10 @@ export interface OpenOptions<T extends PhaseSocketTransport = WebSocket> {
    * `Full` server answers `JoinGameWithPassword` and `CreateGameWithSettings`
    * from its server-run game path with `SessionAttached`/`StateUpdate`, which
    * are not `LobbyServerMessage` variants at all. Those two frames are gated in
-   * `brokerClient.ts` — `resolveGuestOver` refuses them on a `Full` server this
-   * client cannot play on, and `openBrokerClient` accepts only `LobbyOnly`
-   * servers. Server-run hosting, joining, drafts and spectating each open their
-   * own socket and must keep the default.
+   * `brokerClient.ts` — `resolveGuestOver` refuses every `Full` server, and
+   * `openBrokerClient` accepts only `LobbyOnly` ones. Server-run hosting,
+   * joining, drafts and spectating each open their own socket and must keep the
+   * default.
    */
   surface?: ProtocolSurface;
 }
