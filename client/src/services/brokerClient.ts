@@ -304,12 +304,21 @@ export function resolveGuestOver(
     // filtered. Browsing the lobby on such a server stays available — only
     // joining through it is refused.
     if (serverInfo.mode === "Full") {
-      const fullGameRejection = serverProtocolRejection(serverInfo, "full");
-      if (fullGameRejection) {
+      if (serverProtocolRejection(serverInfo, "full")) {
+        // Which side is behind decides what the player can actually do about
+        // it, so the two directions cannot share one instruction: refreshing
+        // fixes a stale CLIENT and does nothing for a stale SERVER. The two
+        // cases are exhaustive — a rejection on the full-game surface means
+        // `protocolVersion` is outside an exact-match window, so it is strictly
+        // below or strictly above this client's.
+        const remedy =
+          serverInfo.protocolVersion < PROTOCOL_VERSION
+            ? "The server needs updating"
+            : "Refresh to update this client";
         resolve({
           ok: false,
           reason: "build_mismatch",
-          message: `This server runs game protocol ${serverInfo.protocolVersion}; this client speaks ${PROTOCOL_VERSION}. Refresh to update — you can still browse this server's lobby.`,
+          message: `This server runs game protocol ${serverInfo.protocolVersion}; this client speaks ${PROTOCOL_VERSION}, so joining a game on it would desync. ${remedy} — you can still browse this server's lobby.`,
         });
         return;
       }

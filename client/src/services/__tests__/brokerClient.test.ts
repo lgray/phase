@@ -79,6 +79,39 @@ describe("resolveGuestOver full-game surface guard", () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
+  // The remedy is not cosmetic: a stale SERVER cannot be fixed by reloading the
+  // page, and telling a self-hoster to refresh sends them down a dead end. The
+  // pair pins each direction against the other's advice.
+  it("tells a stale server's guest to update the SERVER, not to refresh", async () => {
+    const ws = new MockWebSocket();
+    const socket = makePhaseSocket(ws, {
+      mode: "Full",
+      protocolVersion: PROTOCOL_VERSION - 2,
+    });
+
+    const result = await resolveGuestOver(socket, "ABC123");
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("The server needs updating");
+    expect(result.message).not.toContain("Refresh");
+  });
+
+  it("tells a stale client's guest to refresh, not to update the server", async () => {
+    const ws = new MockWebSocket();
+    const socket = makePhaseSocket(ws, {
+      mode: "Full",
+      protocolVersion: PROTOCOL_VERSION + 2,
+    });
+
+    const result = await resolveGuestOver(socket, "ABC123");
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("Refresh to update this client");
+    expect(result.message).not.toContain("server needs updating");
+  });
+
   it("still sends on a Full server this client CAN play on", async () => {
     // Non-vacuity pair for the refusal above: same code path, same frame, and
     // only the server's full-game protocol differs.
