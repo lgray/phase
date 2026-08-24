@@ -658,8 +658,9 @@ fn check_lands_still_offer_with_the_subtype_arm_repaired() {
                 Some(ReplacementCondition::UnlessControlsSubtype { .. })
             ),
             "fixture pin: {name} must parse to the `UnlessControlsSubtype` arm this row pins — \
-             two cluster siblings report the same sibling axis, so a parser re-route would leave \
-             the arms below green while that arm goes untested"
+             `UnlessControlsMatching` reports the same sibling axis and gets no \
+             `condition_disjoint` relief, so a re-route there would leave the arms below green \
+             while that arm goes untested"
         );
 
         // ── ARM A: the real card, alone on the board ──

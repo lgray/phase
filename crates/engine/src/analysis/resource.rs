@@ -25643,8 +25643,9 @@ mod tests {
                 Some(crate::types::ability::ReplacementCondition::UnlessControlsSubtype { .. })
             ),
             "fixture pin: Dragonskull Summit must parse to the `UnlessControlsSubtype` arm this \
-             fixture exists to feed — two cluster siblings report the same sibling axis, so a \
-             parser re-route would leave the row green with that arm untested"
+             fixture exists to feed — `UnlessControlsMatching` reports the same sibling axis \
+             and gets no `condition_disjoint` relief, so a re-route there would leave the row \
+             green with that arm untested"
         );
         def
     }
