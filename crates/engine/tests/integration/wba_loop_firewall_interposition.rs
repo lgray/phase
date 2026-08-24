@@ -570,3 +570,111 @@ fn chocobo_camp_offers_untapped_and_tapped() {
          a blind scan"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// CR 732.2a SUBTYPE-CENSUS acceptance.
+//
+// The arms above all run on `UnlessControlsMatching` lands. This half runs the corpus shape
+// whose scan arm now reports the census its evaluator runs — `UnlessControlsSubtype` — beside
+// the cluster sibling whose arm is untouched, so a verdict here is attributable to that arm
+// and not to the grafting harness.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// The two `UnlessControlsSubtype` check lands, VERBATIM Oracle text from the pinned export.
+/// Both are `core_types: [Land]` with no printed subtypes and one parsed replacement each.
+const CHECK_LANDS: [(&str, &str, &[&str]); 2] = [
+    (
+        "Dragonskull Summit",
+        "This land enters tapped unless you control a Swamp or a Mountain.\n{T}: Add {B} or {R}.",
+        &[],
+    ),
+    (
+        "Hinterland Harbor",
+        "This land enters tapped unless you control a Forest or an Island.\n{T}: Add {G} or {U}.",
+        &[],
+    ),
+];
+
+/// The untouched cluster sibling: `UnlessControlsOtherLeq`, whose scan arm is
+/// `Axes::CONSERVATIVE` before and after this change. Same Oracle-text discipline.
+const OTHER_LEQ_CONTROL: (&str, &str, &[&str]) = (
+    "Blackcleave Cliffs",
+    "This land enters tapped unless you control two or fewer other lands.\n{T}: Add {B} or {R}.",
+    &[],
+);
+
+/// **Two REAL subtype-census lands, each ALONE on the combo board, still offer the CR 732.2a
+/// shortcut once their condition reports the census it runs; and each REFUSES the moment its
+/// definition stops being self-scoped.**
+///
+/// CR 614.1d + CR 614.12 + CR 400.7: on ARM A the land is already on the battlefield and stays
+/// the same object, so its own entry replacement cannot apply inside the window and the
+/// def-scoped relief carries the offer whatever the condition says. ARM B rewrites `valid_card`
+/// to CR 614.1d's other half, which watches a population the window's arrivals join, so the
+/// relief lapses, the condition is consulted, and no disjointness arm relieves a subtype census.
+///
+/// REVERT / MUTATION PROBE: restore `=> Axes::NONE` on `scan_replacement_condition`'s
+/// `UnlessControlsSubtype` arm ⇒ both ARM B assertions OFFER ⇒ **FAILS**. ARM A is invariant
+/// under every mutation of that arm; its own revert is deleting block (3)'s spent-self-entry
+/// `continue` in `analysis::resource::fire_time_conditions_read_growing_class_scoped`.
+#[test]
+fn check_lands_still_offer_with_the_subtype_arm_repaired() {
+    assert!(
+        drive_and_report(load_realistic_dump(), "baseline"),
+        "BASELINE positive control: the untouched combo board OFFERS the CR 732.2a shortcut. \
+         Without it, every arm below is vacuous and a green row is about the harness"
+    );
+
+    // ── CONTROL, run FIRST so both of its readings survive a red arm below: the untouched
+    // cluster sibling through the SAME two shapes. Block (3) carries a disjointness relief
+    // for `UnlessControlsOtherLeq` and none for `UnlessControlsSubtype`, so this pair offers
+    // through both shapes while the pair below separates at ARM B — the difference is the
+    // condition, not the `valid_card` rewrite the two shapes share.
+    let (control_name, control_oracle, control_subtypes) = OTHER_LEQ_CONTROL;
+    let control_def = census_land_def(control_name, control_oracle, control_subtypes);
+    let mut control_a = load_realistic_dump();
+    graft_census_land(&mut control_a, control_name, control_def.clone());
+    assert!(
+        drive_and_report(control_a, control_name),
+        "CONTROL ARM A ({control_name}): the sibling condition takes the same def-scoped \
+         relief the subtype lands take below"
+    );
+    let mut control_b = load_realistic_dump();
+    let control_host = graft_census_land(&mut control_b, control_name, control_def);
+    make_it_watch_every_land(&mut control_b, control_host);
+    assert!(
+        drive_and_report(control_b, control_name),
+        "CONTROL ARM B ({control_name}): an 'other lands you control' census provably cannot \
+         count a growing class of creature tokens, so block (3)'s disjointness relief clears \
+         it and the `valid_card` rewrite ALONE does not refuse an offer"
+    );
+
+    for (name, oracle, subtypes) in CHECK_LANDS {
+        let def = census_land_def(name, oracle, subtypes);
+
+        // ── ARM A: the real card, alone on the board ──
+        let mut with_land = load_realistic_dump();
+        graft_census_land(&mut with_land, name, def.clone());
+        assert!(
+            drive_and_report(with_land, name),
+            "ARM A ({name}): CR 614.1d + CR 614.12 + CR 400.7 — the land is already on the \
+             battlefield and stays the same object across the window, so its own entry \
+             replacement can never apply inside the proposed sequence. The def-scoped relief \
+             fires ahead of the condition surface, so repairing the subtype arm does not cost \
+             this offer"
+        );
+
+        // ── ARM B: one field changed — the definition now watches EVERY land ──
+        let mut watching = load_realistic_dump();
+        let host = graft_census_land(&mut watching, name, def);
+        make_it_watch_every_land(&mut watching, host);
+        assert!(
+            !drive_and_report(watching, name),
+            "ARM B ({name}): with the definition watching a POPULATION the window's arrivals \
+             join, the relief no longer applies and block (3) reaches the condition. The \
+             evaluator censuses the live battlefield for a controlled permanent of a listed \
+             subtype, and no disjointness arm can prove that census invariant, so CR 732.2a's \
+             predictability requirement is unmet and the offer is refused"
+        );
+    }
+}

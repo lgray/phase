@@ -18540,6 +18540,64 @@ mod tests {
         );
     }
 
+    /// CR 732.2a: a subtype "enters tapped unless" land on the battlefield makes the COUNTER
+    /// axis of an accepted shortcut OBSERVED. Both live readers of this function — the route
+    /// decision at shortcut ACCEPT and the LoopCollapse pay-amount boundary — pass no proven
+    /// growing class, so nothing relieves the condition surface and its census verdict stands.
+    /// Routing observed picks the discrete driver; it never suppresses the offer.
+    ///
+    /// REVERT / MUTATION PROBE: restore `=> Axes::NONE` on `scan_replacement_condition`'s
+    /// `UnlessControlsSubtype` arm ⇒ the subtype assertion FAILS, with no other source
+    /// mutation.
+    #[test]
+    fn subtype_check_land_makes_counter_growth_observed() {
+        // NEGATIVE CONTROL: the bare board is silent on this axis, so the verdict below is
+        // attributable to the installed definition.
+        assert!(
+            !counter_growth_is_observed(&two_player_board_with_one_bare_permanent()),
+            "a quiet board must NOT observe counter growth"
+        );
+
+        // POSITIVE CONTROL, true at BOTH revisions: the untouched cluster sibling is already
+        // Axes::CONSERVATIVE, so a tapland-shaped definition can answer true here without the
+        // subtype arm reporting anything — which is what makes the subtype row's base-time
+        // silence that arm's, and not a dead harness.
+        let mut sibling = two_player_board_with_one_bare_permanent();
+        install_board_replacement(&mut sibling, 301, blackcleave_cliffs_def());
+        assert!(
+            counter_growth_is_observed(&sibling),
+            "the UnlessControlsOtherLeq sibling censuses the board and no class is proven \
+             here, so its condition surface keeps the veto"
+        );
+
+        // NEGATIVE CONTROL ON THE ROW'S OWN DEFINITION: `with_condition` swaps the condition
+        // and asserts one was already there, so the CONDITION is the single variable between
+        // this board and the one below. A turn-order condition censuses nothing, so the walk
+        // finds no reader and the axis stays unobserved.
+        let mut turn_gated = two_player_board_with_one_bare_permanent();
+        install_board_replacement(
+            &mut turn_gated,
+            303,
+            with_condition(
+                dragonskull_summit_def(),
+                crate::types::ability::ReplacementCondition::UnlessYourTurn,
+            ),
+        );
+        assert!(
+            !counter_growth_is_observed(&turn_gated),
+            "the same tapland definition under a turn-order condition reads nothing a growing \
+             class can move, so the counter axis stays unobserved"
+        );
+
+        let mut subtype_land = two_player_board_with_one_bare_permanent();
+        install_board_replacement(&mut subtype_land, 302, dragonskull_summit_def());
+        assert!(
+            counter_growth_is_observed(&subtype_land),
+            "CR 732.2a: the subtype condition censuses the live battlefield, and with no \
+             growing class proven nothing relieves it — the counter axis is observed"
+        );
+    }
+
     /// ★ THE ANTI-BLANKET DISCRIMINATOR. A fix that greens 1a/1b/1c by making the walk
     /// unconditionally `true` reds THIS row. Without it the three rows above are satisfiable by
     /// `fn ..._is_observed(_) -> bool { true }`.
@@ -25565,6 +25623,18 @@ mod tests {
             "Blackcleave Cliffs",
             "This land enters tapped unless you control two or fewer other lands.\n{T}: Add \
              {B} or {R}.",
+            &[],
+        )
+    }
+
+    /// The only `UnlessControlsSubtype` fixture in this module — no shipped def helper
+    /// carries that condition. VERBATIM Oracle text from the pinned export, same rule as the
+    /// sibling fixtures above.
+    fn dragonskull_summit_def() -> crate::types::ability::ReplacementDefinition {
+        tapland_replacement(
+            "Dragonskull Summit",
+            "This land enters tapped unless you control a Swamp or a Mountain.\n{T}: Add {B} \
+             or {R}.",
             &[],
         )
     }

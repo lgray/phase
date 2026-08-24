@@ -4619,31 +4619,25 @@ fn scan_replacement_condition(x: &ReplacementCondition, mode: ScanMode) -> Axes 
             sibling: false,
             projected: false,
         },
-        // ⛔ DO NOT "TIDY" THE `UnlessControlsSubtype` ARM BELOW, AND DO NOT RELY ON ITS VERDICT.
+        // CR 614.1d: an "enters tapped unless you control a [subtype]" self-entry
+        // replacement. Its evaluator censuses the live battlefield — other permanents this
+        // controller controls carrying a listed subtype — and reads no triggering-event
+        // characteristic and no projected player resource, so the verdict below is the
+        // narrow census literal rather than `Axes::CONSERVATIVE`.
         //
-        // (a) IT IS A KNOWN FAIL-OPEN (FU-18). It discards `subtypes` and declares "reads nothing",
-        //     while its evaluator (`game/replacement.rs`, `UnlessControlsSubtype` arm) runs a LIVE
-        //     BATTLEFIELD CENSUS: `state.objects.values().any(|o| o.zone == Zone::Battlefield
-        //     && o.controller == controller && o.id != source_id && subtypes.iter().any(..))`.
-        //     ALL FOUR members of the `UnlessControls*` cluster census the board; this is the only one
-        //     whose scan arm says otherwise (`UnlessControlsOtherLeq` => CONSERVATIVE;
-        //     `UnlessControlsMatching` / `UnlessControlsCountMatching` => `scan_target_filter(..,
-        //     LiveBoardCensus, ..)`). Repair is FU-18, deliberately NOT in the CR 732.2a relief lane:
-        //     repairing it ADDS a veto while that lane REMOVES vetoes, and one commit doing both is
-        //     unreadable — each masks the other's net effect.
+        // The literal is written inline rather than delegated because the payload is a list
+        // of subtype names, not a `TargetFilter`: there is nothing to hand to
+        // `scan_target_filter`, and inspecting the payload to relax the axis would re-open a
+        // census the evaluator still runs.
         //
-        // (b) THE CR 732.2a BLOCK-(3) RELIEF IS COMPLETE ON TODAY'S BOARDS *BECAUSE* OF (a).
-        //     Measured on `tests/fixtures/witherbloom_altar_sprout_swarm_4p.json.gz`: 5
-        //     condition-bearing block-(3) definitions, of which 4 veto (2 `UnlessControlsCountMatching`
-        //     + 2 `UnlessControlsOtherLeq`, relieved by `analysis/resource.rs`'s block-(3)
-        //     relief arms) and this one does not. NO relief arm matches
-        //     `UnlessControlsSubtype`. So repairing (a) makes it veto, block (3) refuses
-        //     again, and the loop-shortcut offer REGRESSES.
-        //     ⇒ WHOEVER REPAIRS THIS OWES THE MATCHING RELIEF ARM IN THE SAME CHANGE: an
-        //     `UnlessControlsSubtype`-shaped sibling of `analysis/resource.rs`'s
-        //     `UnlessControlsCountMatching` relief, pinned to THIS evaluator's own subtype
-        //     test, not to `matches_target_filter`.
-        ReplacementCondition::UnlessControlsSubtype { subtypes: _ } => Axes::NONE,
+        // CR 732.2a: where a growing class is proven, the shortcut offer survives through the
+        // def-scoped inapplicability relief; where none is proven the veto stands and routes an
+        // accepted shortcut to the discrete driver — it never suppresses the offer.
+        ReplacementCondition::UnlessControlsSubtype { subtypes: _ } => Axes {
+            event: false,
+            sibling: true,
+            projected: false,
+        },
         ReplacementCondition::UnlessControlsOtherLeq { .. } => Axes::CONSERVATIVE,
         ReplacementCondition::UnlessControlsMatching { filter } => {
             let mut acc = Axes::NONE;
@@ -8011,6 +8005,116 @@ mod tests {
                 LoopFirewall
             )
             .sibling
+        );
+    }
+
+    /// CR 614.1d + CR 732.2a: the `UnlessControlsSubtype` arm reports the census its
+    /// evaluator runs — the live-board `sibling` axis and nothing else, so the verdict is the
+    /// narrow literal and not `Axes::CONSERVATIVE`. Asserted on the raw axes in both scan
+    /// modes and through the two production accessors the firewall consults; the `event`
+    /// conjunct goes direct because neither accessor exposes that axis.
+    ///
+    /// REVERT / MUTATION PROBE: restore `=> Axes::NONE` ⇒ the `sibling` assertions FAIL;
+    /// replace the arm with `=> Axes::CONSERVATIVE` ⇒ the `projected` and `event` assertions
+    /// FAIL. Both directions redden this one row.
+    #[test]
+    fn unless_controls_subtype_reports_the_census_it_runs() {
+        use crate::types::ability::{ReplacementCondition, TurnUpCostSource};
+        let subtype = |subs: &[&str]| ReplacementCondition::UnlessControlsSubtype {
+            subtypes: subs.iter().map(|s| (*s).to_string()).collect(),
+        };
+        let dragonskull = subtype(&["Swamp", "Mountain"]);
+
+        for mode in [ScanMode::Conservative, ScanMode::LoopFirewall] {
+            let axes = scan_replacement_condition(&dragonskull, mode);
+            assert!(
+                axes.sibling,
+                "the evaluator walks the battlefield for another controlled permanent carrying \
+                 a listed subtype, so the scan must report the sibling axis in every mode"
+            );
+            assert!(
+                !axes.projected,
+                "the evaluator reads no player-level monotone resource, so the narrow form must \
+                 not widen into Axes::CONSERVATIVE"
+            );
+            assert!(
+                !axes.event,
+                "the evaluator reads no triggering-event characteristic, so the narrow form \
+                 must not widen into Axes::CONSERVATIVE"
+            );
+        }
+
+        assert!(
+            replacement_condition_reads_sibling_mutable(&dragonskull),
+            "the accessor block (3) actually consults must carry the census verdict, not only \
+             the private walk"
+        );
+        assert!(
+            !replacement_condition_reads_projected_resource(&dragonskull),
+            "the projected accessor must stay false — a board census is not a player-resource \
+             read"
+        );
+
+        // Each axis owes a fixture that moves it, and the sibling axis one that leaves it
+        // false; without them these conjuncts are satisfied by a scanner that answers the
+        // same way for every condition.
+        assert!(
+            replacement_condition_reads_sibling_mutable(
+                &ReplacementCondition::UnlessControlsMatching {
+                    filter: TargetFilter::Typed(TypedFilter::creature())
+                }
+            ),
+            "positive control: the cluster sibling that delegates its census reports the \
+             sibling axis"
+        );
+        assert!(
+            !replacement_condition_reads_sibling_mutable(&ReplacementCondition::UnlessYourTurn),
+            "negative control: a turn-order condition censuses nothing, so this accessor can \
+             still answer false"
+        );
+        assert!(
+            replacement_condition_reads_projected_resource(
+                &ReplacementCondition::UnlessPlayerLifeAtMost { amount: 5 }
+            ),
+            "positive control: the projected accessor can answer true, so the false above is a \
+             verdict and not a dead axis"
+        );
+        assert!(
+            scan_replacement_condition(
+                &ReplacementCondition::TurnUpCostSourcePaid {
+                    source: TurnUpCostSource::Megamorph
+                },
+                ScanMode::Conservative
+            )
+            .event,
+            "positive control: the event axis can answer true, so the false above is a verdict \
+             and not a dead axis"
+        );
+
+        assert!(
+            replacement_condition_reads_sibling_mutable(&subtype(&[])),
+            "an empty subtype list makes the census ANSWER vacuously false while the walk still \
+             happens, so relaxing the axis by inspecting the payload is wrong"
+        );
+        let leq = scan_replacement_condition(
+            &ReplacementCondition::UnlessControlsOtherLeq {
+                count: 2,
+                filter: TypedFilter::land(),
+            },
+            ScanMode::Conservative,
+        );
+        assert!(
+            leq.sibling && leq.projected && leq.event,
+            "untouched cluster sibling: an edit that tidied the whole cluster onto one shape \
+             would relax this arm away from its conservative verdict"
+        );
+        assert!(
+            replacement_condition_reads_sibling_mutable(&ReplacementCondition::And {
+                conditions: vec![dragonskull, ReplacementCondition::UnlessYourTurn],
+            }),
+            "the And recursion ors the axes, so a compound inherits the subtype arm's census \
+             verdict; paired with the UnlessYourTurn negative control above, the true here is \
+             attributable to that arm"
         );
     }
 
