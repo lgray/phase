@@ -111,13 +111,17 @@ fn census_land_def(
         "fixture pin: {name} carries the CR 614.1d self-entry triple (Moved / SelfRef / \
          Battlefield)"
     );
+    // Debug's leading identifier is the variant, and the variant is the whole of what this
+    // assert compares; `expected`'s payload is a placeholder and must never print as a fixture
+    // value.
+    let expected_arm: String = format!("{expected:?}")
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
     assert_eq!(
         def.condition.as_ref().map(std::mem::discriminant),
         Some(std::mem::discriminant(&expected)),
-        "fixture pin: {name} must parse to the arm its row reads ({expected:?}), not {:?} — \
-         `UnlessControlsMatching` and `UnlessControlsSubtype` report the SAME sibling axis and \
-         neither draws a `condition_disjoint` relief, so a re-route between them would leave \
-         this row's arms green with the arm the row names untested",
+        "fixture pin: {name} must parse to {expected_arm}, the arm its row reads, not {:?}",
         def.condition
     );
     def
