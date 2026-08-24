@@ -16435,6 +16435,10 @@ declare_game_state! {
     /// top-level chain entry (depth == 0) in `resolve_ability_chain`, and — when
     /// the chain is modal — again at each CR 700.2 mode boundary, keyed on
     /// [`Self::resolving_modal_instruction`].
+    ///
+    /// Resolution-scoped, so `normalize_for_loop` clears it for the CR 104.4b
+    /// position comparison: between resolutions it is the previous resolution's
+    /// residue and must not split two identical positions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_tracked_set_id: Option<TrackedSetId>,
 
@@ -23068,10 +23072,19 @@ impl GameState {
         // then differ here alone and never confirm a repeated position. It is
         // eq-compared (AI-search dedup legitimately reads it), so it is
         // normalized away HERE rather than excluded from `PartialEq`.
-        // NOTE: its lockstep partner `chain_tracked_set_id` carries the same
-        // residue and is deliberately NOT cleared here — that is pre-existing
-        // behavior with its own follow-up, not something this line may widen.
         clone.resolving_modal_instruction = None;
+        // CR 608.2c + CR 104.4b: the chain tracked-set pointer is that latch's
+        // lockstep partner and is resolution-scoped for the same reason — a chain's
+        // "those cards" anaphor names only what THIS resolution's instructions
+        // produced. Nothing narrows it at chain EXIT (a `repeat_for` drain even
+        // re-enters at depth 1 to preserve it), so between resolutions it still names
+        // the last resolution's set while the arena it points into
+        // (`tracked_object_sets` / `next_tracked_set_id` — real accumulated content,
+        // deliberately left compared) is unchanged. The pointer alone then splits two
+        // identical positions, so neither the CR 104.4b draw confirmation nor the
+        // CR 732.2a recurrence certification that shares this seam can confirm a
+        // repeat.
+        clone.chain_tracked_set_id = None;
         // CR 104.4b + CR 400.7: the all-zone incarnation bump advances a source's
         // epoch on every zone change, so a mandatory loop that cycles its source's
         // zones would otherwise carry a growing `TriggerSourceContext` into loop
@@ -29989,6 +30002,101 @@ mod tests {
             loop_states_equal(&first.normalize_for_loop(), &second.normalize_for_loop()),
             "CR 104.4b: positions differing only in the resolution-scoped mode-boundary \
              latch must confirm as a repeat"
+        );
+    }
+
+    /// CR 608.2c + CR 104.4b: the chain-local tracked-set pointer is resolution-scoped
+    /// and is narrowed only at scope ENTRY, so between resolutions it still names the
+    /// last resolution's set as pure residue. Two identical positions — the SAME
+    /// published set at the SAME counter — must still confirm as a repeated position
+    /// when only the pointer differs.
+    ///
+    /// DISCRIMINATION: delete `clone.chain_tracked_set_id = None;` from
+    /// `normalize_for_loop` and this test FAILS on the equality assertion — the field
+    /// is eq-compared, so the residue alone defeats the repeat. The `!=` assertion is
+    /// the paired non-vacuity witness: it proves the two inputs really do differ
+    /// BEFORE normalization.
+    #[test]
+    fn normalize_for_loop_clears_the_chain_tracked_set_residue() {
+        let mut first = GameState::new_two_player(7);
+        // Content authority identical in both — the published set and the advanced
+        // counter are established BEFORE the clone, so the pointer is the only
+        // difference.
+        first
+            .tracked_object_sets
+            .insert(TrackedSetId(1), Vec::new());
+        first.next_tracked_set_id = 2;
+        let mut second = first.clone();
+        first.chain_tracked_set_id = Some(TrackedSetId(1));
+        second.chain_tracked_set_id = None;
+
+        assert!(
+            first != second,
+            "non-vacuity: the two states must differ before normalization, else the \
+             equality assertion below proves nothing"
+        );
+
+        assert!(
+            loop_states_equal(&first.normalize_for_loop(), &second.normalize_for_loop()),
+            "CR 104.4b: positions naming the same published set must confirm as a repeat \
+             whether or not the resolution-scoped pointer still holds it"
+        );
+    }
+
+    /// CR 104.4b: `tracked_object_sets` and `next_tracked_set_id` are the tracked-set
+    /// CONTENT authority — real accumulated progress, not resolution-scoped residue.
+    /// `normalize_for_loop` neutralizes the chain POINTER into that arena and must
+    /// leave the arena and its mint compared: normalizing them would collapse two
+    /// genuinely different positions into one and draw a game that is still
+    /// progressing.
+    ///
+    /// DISCRIMINATION: this row's failing arrangement is not the clear this change
+    /// adds but a widening of it — add `clone.tracked_object_sets.clear();` or
+    /// `clone.next_tracked_set_id = 0;` to `normalize_for_loop` and the matching
+    /// inequality FAILS. The first assertion is the paired reach-guard: it differs
+    /// only in a field normalization does neutralize, so a normalization that stopped
+    /// running reddens it instead of leaving the inequalities to pass by default.
+    #[test]
+    fn normalize_for_loop_leaves_the_tracked_set_content_authority_compared() {
+        let mut base = GameState::new_two_player(7);
+        base.tracked_object_sets
+            .insert(TrackedSetId(1), vec![ObjectId(90_001)]);
+        base.next_tracked_set_id = 2;
+        base.chain_tracked_set_id = Some(TrackedSetId(1));
+
+        let mut volatile_only = base.clone();
+        volatile_only.state_revision = 99;
+        assert!(
+            loop_states_equal(
+                &base.normalize_for_loop(),
+                &volatile_only.normalize_for_loop()
+            ),
+            "reach guard: holding the arena equal, this pair must still confirm — else the \
+             inequalities below say nothing about the arena"
+        );
+
+        let mut other_members = base.clone();
+        other_members
+            .tracked_object_sets
+            .insert(TrackedSetId(1), vec![ObjectId(90_002)]);
+        assert!(
+            !loop_states_equal(
+                &base.normalize_for_loop(),
+                &other_members.normalize_for_loop()
+            ),
+            "CR 104.4b: differing tracked-set membership is real accumulated content and \
+             must not be normalized into a repeat"
+        );
+
+        let mut other_counter = base.clone();
+        other_counter.next_tracked_set_id = 3;
+        assert!(
+            !loop_states_equal(
+                &base.normalize_for_loop(),
+                &other_counter.normalize_for_loop()
+            ),
+            "CR 104.4b: a further minted tracked set is real accumulated content and must \
+             not be normalized into a repeat"
         );
     }
 
