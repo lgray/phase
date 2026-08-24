@@ -1,38 +1,17 @@
-//! `ResourceVector`: the monotone resource axes a net-progress loop can pump,
-//! plus the resource-projected loop equality that distinguishes a beneficial
-//! (CR 732.2) loop from a mandatory-draw (CR 104.4b / CR 732.4) loop.
+//! `ResourceVector`: the monotone resource axes a net-progress loop can pump, plus the
+//! resource-projected loop equality that distinguishes a beneficial (CR 732.2) loop from a
+//! mandatory-draw (CR 104.4b / CR 732.4) loop.
 //!
-//! # Why a *separate* comparison from `loop_states_equal`
+//! CR 104.4b: a loop of *mandatory* actions that repeats a sequence "with no way to stop" is a
+//! draw, and the engine's `loop_states_equal` answers exactly that — two states are the same
+//! loop point only when life, damage, counters and mana also match, because a mandatory loop
+//! that keeps changing those is not repeating.
 //!
-//! CR 104.4b: a loop of *mandatory* actions that repeats a sequence "with no way
-//! to stop" is a draw. The engine's existing `loop_states_equal` answers exactly
-//! that question: it treats two states as the same loop point only when life,
-//! damage, counters, and mana also match — because a mandatory loop that keeps
-//! changing those values is not truly repeating and is *not* a draw.
-//!
-//! CR 732.2a: a player may instead take a *shortcut* through a loop "that repeats
-//! a specified number of times". This is how a *beneficial* loop terminates: it
-//! makes net progress on some resource each cycle (deal 1 more damage, add 1 more
-//! mana, mill 1 more card), so the board returns to an identical configuration
-//! while a resource counter strictly increases. Detecting that requires the
-//! **complement** of `loop_states_equal`: board/zones/tap-state identical, but the
-//! monotone resources allowed to differ.
-//!
-//! [`ResourceVector`] is the typed catalogue of those monotone axes;
-//! [`loop_states_equal_modulo_resources`] is the projected comparison.
-//!
-//! # Citing `game/ability_scan.rs` from here: name the SYMBOL, never the coordinate
-//!
-//! A line number is a fact about someone else's edit that nothing here rechecks; a match-arm
-//! PATTERN is a grep key the compiler keeps honest. Cite `` `scan_effect`'s `Effect::Mana`
-//! arm ``, not `ability_scan.rs:NNNN` — and cite the arm WITH its field list, because a bare
-//! `Type::Variant` key is not unique: `QuantityRef::CountersOn` substring-matches the
-//! `CountersOnObjects` arm and `ManaProduction::AnyOneColor` matches
-//! `AnyOneColorAmongPermanents`.
-//!
-//! A COUNT is a coordinate too: "`f` returns X for N reasons" is a fact about `f`'s current
-//! body that nothing rechecks, and it rots the same silent way while reading as freshly
-//! verified. Name the function that IS the enumeration and let the reader grep it.
+//! CR 732.2a: a player may instead take a *shortcut* through a loop "that repeats a specified
+//! number of times". That is how a *beneficial* loop terminates — net progress on some resource
+//! each cycle while the board returns to an identical configuration — so detecting it requires
+//! the **complement** of `loop_states_equal`: board/zones/tap-state identical, monotone
+//! resources allowed to differ. [`loop_states_equal_modulo_resources`] is that comparison.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -69,20 +48,10 @@ mod verdict_memo {
 
     /// The shipped probe cap, per classification run.
     ///
-    /// RE-DERIVED FROM MEASUREMENT. The retired `12` was fitted to per-mint charge
-    /// counts (dellian 2–4 / F4 1) taken over the CURRENT STACK only, before the
-    /// verdict door existed. Over the door's derived `(frame, entry)` population the
-    /// announcement gate mints keys too, and the measured demand at the corpus's one
-    /// offering beat — dina `beat=19`, `ring=3 stack=10`, driven through `apply()` —
-    /// is **13 charges** (`asks=13`, one charge per key), i.e. `12` starved the
-    /// acceptance offer by exactly one.
-    ///
-    /// `26` is `2 ×` that measured demand: an offering beat may carry double the
-    /// observed key population (≈ a 20-entry stack at the measured 1.3 keys/entry)
-    /// and still certify. The ceiling is not arbitrary either — it stays far below
-    /// the unexempted sweep the frozen exemption exists to prevent, whose demand
-    /// measures **96–107** on dellian's `ring=16 stack≈176` beats, so an unexempted
-    /// full-stack classification still exhausts and still refuses fail-closed.
+    /// Twice the measured per-beat key demand of the metered mint, so an offering
+    /// beat carrying double the observed key population still certifies. It stays
+    /// far below the demand of an unexempted full-stack classification, which
+    /// therefore still exhausts the budget and refuses fail-closed.
     pub(crate) const PROBE_BUDGET: u32 = 26;
 
     /// CR 732.2a: cost is a COVERAGE knob, never a soundness knob — an
@@ -237,10 +206,9 @@ mod verdict_memo {
         /// [`PeriodVerdicts::for_period_with_cap`] instead, because
         /// `verdict_memo` cannot mint the `CapAuthority` that door demands.
         ///
-        /// Every U3 caller is a `#[cfg(test)]` site, so the plain lib target sees
-        /// this as dead (U1's `denied()` precedent). Its production reader is the
-        /// still-unwritten R22 row; keeping the gate `not(test)`-scoped means that
-        /// row lands with no annotation churn.
+        /// Every caller is a `#[cfg(test)]` site, so a plain lib build sees this as
+        /// dead. The gate is `not(test)`-scoped so a production reader can land with
+        /// no annotation churn.
         #[cfg_attr(not(test), allow(dead_code))]
         pub(super) fn for_period(
             ring: &[&'a GameState],
@@ -269,9 +237,7 @@ mod verdict_memo {
         }
 
         /// Every other path (including the unscoped sibling): frames =
-        /// `[current]`, NO proposer ⇒ nothing published ⇒ no relief. That is
-        /// byte-identical to the pre-change unproven behaviour, where relief
-        /// died on `scope.pinned == None` before any mint call.
+        /// `[current]`, NO proposer ⇒ nothing published ⇒ no relief.
         pub(super) fn unproven(current: &'a GameState) -> Self {
             Self::build(&[], current, None, PROBE_BUDGET)
         }
@@ -358,8 +324,7 @@ mod verdict_memo {
         pub(crate) fn conjunct6_frozen_skips(&self) -> u32 {
             self.conjunct6_frozen_skips
         }
-        /// Calls of `stack_entry_reads_projected_resource` from item (4)'s
-        /// `.any()`, which is the only body change item (4) takes.
+        /// Calls of `stack_entry_reads_projected_resource` from item (4)'s `.any()`.
         pub(crate) fn conjunct4_scans(&self) -> u32 {
             self.conjunct4_scans
         }
@@ -457,8 +422,7 @@ impl CounterClass {
 /// CR 701.x keyword-action and CR 603.x triggered-ability families. These counts
 /// are **not** directly readable from a `GameState` snapshot — they are events,
 /// not stored totals — so [`ResourceVector::snapshot`] always leaves
-/// [`ResourceVector::generic_triggers`] empty and the simulation harness (PR-1)
-/// feeds them.
+/// [`ResourceVector::generic_triggers`] empty and the simulation harness feeds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TriggerKind {
     /// CR 701.34: proliferate (the keyword action a loop can pump mana-neutrally).
@@ -478,29 +442,18 @@ pub enum TriggerKind {
 
 /// A vector of the **monotone** resources an infinite loop can pump.
 ///
-/// "Monotone" = a beneficial loop only ever drives these in one direction within
-/// a cycle (it gains mana/life/damage/tokens/triggers; a *consumed* axis like
-/// mana or life may also be spent, which is why net-progress is tested as a
-/// *delta* over a full cycle, not per step).
+/// "Monotone" = a beneficial loop only ever drives these in one direction within a
+/// cycle (a *consumed* axis like mana or life may also be spent, which is why
+/// net-progress is tested as a *delta* over a full cycle, not per step).
 ///
-/// # Two population sources
+/// Two population sources: **state-readable** levels the engine stores directly,
+/// filled by [`ResourceVector::snapshot`]; and **event-fed** counts of events no
+/// single `GameState` retains (damage, tokens, draws, casts, trigger firings), left
+/// zero by `snapshot` and fed by the harness. Each field below says which.
 ///
-/// 1. **State-readable** (filled by [`ResourceVector::snapshot`]): absolute
-///    levels the engine stores directly — floating mana, per-player life,
-///    library sizes, and counters on objects/players.
-/// 2. **Event-fed** (left zero by `snapshot`, populated externally by the PR-1
-///    harness): counts of events the engine does not retain as a running total
-///    readable from a single `GameState` — damage dealt, tokens created, cards
-///    drawn, casts, and trigger firings. Each such field is documented below.
-///
-/// Compare two snapshots with [`ResourceVector::delta`] to get the per-cycle
-/// change; [`ResourceVector::is_net_progress`] then decides whether the cycle is
-/// a beneficial (CR 732.2) loop.
-///
-/// `Serialize`/`Deserialize` exist because a per-cycle delta rides
-/// [`PeriodicDelta`] on the `WaitingFor::LoopShortcut` /
-/// `WaitingFor::RespondToShortcut` wire. Every map whose key is NOT string-like
-/// needs an adaptor to get there — see [`map_key_pairs`].
+/// [`ResourceVector::delta`] gives the per-cycle change and [`Self::is_net_progress`]
+/// decides whether it is a beneficial (CR 732.2) loop. Serde exists because a delta
+/// rides [`PeriodicDelta`] on the `WaitingFor::LoopShortcut` wire; see [`map_key_pairs`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceVector {
     /// CR 106.1: floating mana by color, indexed `[W, U, B, R, G, C]` (see
@@ -581,40 +534,18 @@ pub struct ResourceVector {
 
 /// Serde adaptor for every [`ResourceVector`] map whose key is not string-like:
 /// [`ResourceVector::counters`] (a `(CounterClass, ObjectClass)` TUPLE key) and the four
-/// [`PlayerId`]-keyed maps. Ride the wire as a pair SEQUENCE — the shape
-/// `ShortcutDecisionSchema.points` already uses — so there is no map key to encode.
+/// [`PlayerId`]-keyed maps, riding the wire as a pair SEQUENCE — the shape
+/// `ShortcutDecisionSchema.points` already uses — so there is no map key to encode. Not
+/// `types::game_state::tuple_key_map`: it stringifies, and is monomorphic.
 ///
-/// Not reusing `types::game_state::tuple_key_map` (the repo's other adaptor, which
-/// stringifies instead): it is monomorphic over `HashMap<(ObjectId, usize), u32>`.
-///
-/// ⚠ **THE `PlayerId` MAPS ARE NOT OPTIONAL, contrary to what this doc claimed before.**
-/// The struck form read "the two sibling maps need no adaptor — `PlayerId` is a newtype
-/// over an integer … which `serde_json` accepts as keys". That is true of `to_string` /
-/// `from_str` and of `to_value` / `from_value` in ISOLATION, which is why the direct
-/// `periodic_delta_survives_the_serde_json_wire` arm passed and gave false confidence —
-/// but it is FALSE on the production path, for a reason that is about the ENCLOSING type,
-/// not this one:
-///
-/// * `WaitingFor` is `#[serde(tag = "type", content = "data")]` (ADJACENTLY TAGGED), so
-///   its payload is buffered through serde's private `Content` before being handed to the
-///   variant. `Content` represents every map key as a STRING.
-/// * `PlayerId` is `#[serde(transparent)]` over `u8`, so it asks for a `u8` and gets a
-///   string ⇒ `invalid type: string "0", expected u8`.
-/// * `PersistedGameState::deserialize` funnels EVERY persisted decode through
-///   `serde_json::Value` and then `serde_json::from_value` — including the production
-///   WASM restore at `crates/engine-wasm/src/lib.rs`'s `from_str::<PersistedGameState>`.
-///   So a saved game whose `RespondToShortcut` proposal carried a populated `per_cycle`
-///   would fail to restore.
-///
-/// MEASURED, all four combinations, on `serde_json` 1.0.149: bare `BTreeMap<PlayerId, i64>`
-/// is `Ok` for `from_str`/`from_value` standalone and for `from_str` under an adjacently
-/// tagged enum, and `Err("invalid type: string \"0\", expected u8")` for `from_value` under
-/// one — the exact error text this repo had already recorded in
-/// `tests/integration/loop_shortcut.rs`. With this adaptor all four are `Ok`.
-///
-/// [`ResourceVector::generic_triggers`] deliberately keeps its bare map: `TriggerKind` is a
-/// unit-variant enum, so its key is genuinely a string and it was measured `Ok` through the
-/// same adjacently-tagged `from_value` path that breaks `PlayerId`.
+/// The `PlayerId` maps need it on the PRODUCTION path though they encode fine in isolation,
+/// and the reason is the ENCLOSING type: `WaitingFor` is adjacently tagged, so its payload
+/// buffers through serde's private `Content`, which represents every map key as a STRING,
+/// while `PlayerId` is `#[serde(transparent)]` over `u8`. And `PersistedGameState::deserialize`
+/// funnels EVERY persisted decode through `serde_json::from_value` — production WASM restore
+/// included — so a saved game whose `RespondToShortcut` carried a populated `per_cycle` would
+/// fail to restore. [`ResourceVector::generic_triggers`] keeps its bare map: `TriggerKind` is a
+/// unit-variant enum, so its key is genuinely a string and rides that path intact.
 mod map_key_pairs {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
@@ -650,38 +581,20 @@ mod map_key_pairs {
 /// ([`ResourceVector::elimination_bounds`]) collects at its call site.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeriodicDelta {
-    /// How many RETAINED RING FRAMES one repetition spans. DERIVED on both certification
-    /// bases — from the certifying prior's index in the ring for direct recurrence, and as
-    /// `k` for a signature derived by [`ring_delta_signature`]. It is NOT "1 for direct
-    /// recurrence": that was a hardcode until fix round 1, and it was measured wrong (the
-    /// `interactive_3p_subset_lethal_does_not_crown` fixture's repetition spans TWO frames,
-    /// a gain-life resolution then a lose-life one).
+    /// How many RETAINED RING FRAMES one repetition spans — the certifying prior's ring index
+    /// for direct recurrence, `k` for a [`ring_delta_signature`] basis. NOT constant `1` for
+    /// direct recurrence: a repetition can span several frames.
     ///
     /// CONSUMER: `game::engine::drive_one_shortcut_cycle` DELIMITS a committed cycle by this
-    /// count. It has to, for the class [`ring_delta_signature`] certifies: that basis proves
-    /// a periodic DELTA, not a recurring board, so the drive's board-recurrence predicates are
-    /// false at every settle beat and `Fixed(n)`'s `n` would otherwise be structurally inert.
-    /// The count is measured the same way it is minted, and that now takes TWO sites to
-    /// state: `record_loop_detect_sample` is called from the settle sampler in
-    /// `game::engine::pass_priority_once_with_pipeline` AND from the forced-window answer
-    /// site in `game::engine::apply_action`. `drive_one_shortcut_cycle` covers both — it
-    /// steps `pass_priority_once_with_pipeline` on its priority beats and answers every other
-    /// prompt through `inject_pinned_answer`. Of its FOUR arms, three end in `apply_action`
-    /// (`OrderTriggers`, `TriggerTargetSelection`, `OptionalEffectChoice`) and the fourth is
-    /// `_ => Err(RecastAbort)`, which returns before any frame advance — as do the early `Err`
-    /// exits inside the two template arms. So every path that returns `Ok` HAS dispatched
-    /// `apply_action`, and every path that does not aborts the drive rather than advancing it
-    /// uncounted.
+    /// count, because the class [`ring_delta_signature`] certifies proves a periodic DELTA and
+    /// not a recurring board — the drive's board-recurrence predicates are false at every
+    /// settle beat, so `Fixed(n)`'s `n` would otherwise be inert. Mint and measure stay
+    /// one-to-one: every drive arm returning `Ok` has dispatched `apply_action`, every other
+    /// arm aborts rather than advancing uncounted, and both frame-advancing arms key on the
+    /// ring's back allocation actually changing.
     ///
-    /// The drive advances `frames_this_cycle` in BOTH of ITS OWN arms — the active-player
-    /// `Priority` arm and the `inject_pinned_answer` arm, not to be confused with the four
-    /// above — each keyed on the ring's back allocation actually changing, so mint and measure
-    /// stay one-to-one. Before the second site existed this doc claimed a single call site;
-    /// that premise is dead, and the count would silently read a HALF period if only one of
-    /// the drive's two arms counted.
-    ///
-    /// Named for its unit on purpose: `game::engine::shortcut_drive_period` maps a
-    /// TEMPLATE to a repeat count, which is a different quantity in the same subsystem.
+    /// Named for its unit: `game::engine::shortcut_drive_period` maps a TEMPLATE to a repeat
+    /// count, a different quantity in the same subsystem.
     pub frames_per_period: u32,
     /// The whole-game resource change across one repetition, measured from the very
     /// frame pair that certified it.
@@ -708,7 +621,7 @@ impl ResourceVector {
     ///
     /// Event-fed fields (damage, tokens, draws, casts, all `*_triggers`, and
     /// [`Self::generic_triggers`]) are left at their `Default` (zero/empty); the
-    /// PR-1 harness feeds them from the event stream.
+    /// harness feeds them from the event stream.
     pub fn snapshot(state: &GameState) -> ResourceVector {
         let mut v = ResourceVector::default();
 
@@ -748,21 +661,18 @@ impl ResourceVector {
         }
 
         // CR 500.8 + CR 506.1 + CR 500.1: extra COMBAT phases created this turn.
-        // CR 506.1 / CR 500.1: a turn has exactly one natural combat phase, so
+        // A turn has exactly one natural combat phase, so
         // `combat_phases_started_this_turn` (every begin-combat ENTERED this turn,
-        // natural + extra) minus that one natural combat yields extra combats
-        // already entered; the `Phase::BeginCombat` entries still queued in
-        // `state.extra_phases` (CR 500.8) add extra combats created but not yet
-        // entered. The two terms are disjoint — `advance_phase` removes an extra
-        // phase from `state.extra_phases` before entering it — so a consumed extra
-        // combat is counted by the first term, a pending one by the second, never
-        // both. This is "extra combats created", monotone within the turn and
+        // natural + extra) minus that one yields extra combats already entered; the
+        // `Phase::BeginCombat` entries still queued in `state.extra_phases` (CR 500.8)
+        // add extra combats created but not yet entered. The two terms are disjoint —
+        // `advance_phase` removes an extra phase from `state.extra_phases` before
+        // entering it. This is "extra combats created", monotone within the turn and
         // independent of consumption timing, so a self-sustaining extra-combat loop
-        // does not net to zero. NOTE: `combat_phases_started_this_turn` is engine
-        // bookkeeping that resets each turn (in `start_next_turn`), so across a turn
-        // boundary this axis can read negative under `delta`; that is a benign
-        // false-NEGATIVE for a `Gained` axis (CR 732.2a `is_net_progress` only vetoes
-        // on negative `Consumed` axes), never a false-positive.
+        // does not net to zero. `combat_phases_started_this_turn` resets each turn (in
+        // `start_next_turn`), so across a turn boundary this axis can read negative
+        // under `delta`; that is a benign false-NEGATIVE for a `Gained` axis
+        // (CR 732.2a `is_net_progress` only vetoes on negative `Consumed` axes).
         let entered_extra_combats = state.combat_phases_started_this_turn.saturating_sub(1) as i64;
         let queued_extra_combats = state
             .extra_phases
@@ -855,19 +765,13 @@ impl ResourceVector {
     /// 1. at least one component strictly increased (the loop makes progress
     ///    each cycle), and
     /// 2. no **consumed** component (mana, life) is net-negative — a loop that
-    ///    spends more mana/life than it makes is not sustainable and would stop
-    ///    on its own (so it is not an infinite net-progress loop).
+    ///    spends more mana/life than it makes would stop on its own.
     ///
-    /// `Gained` axes (damage, tokens, draws, counters, triggers, library) are
-    /// allowed to be negative on a *given* axis (e.g. a mill loop drives
-    /// `library_delta` negative — that is the win, not a violation); only the
-    /// *consumed* axes constrain sustainability. A mill loop still satisfies (1)
-    /// via some other axis (or via a negative library being the unbounded
-    /// resource — callers read [`Self::unbounded_components`] for that).
-    ///
-    /// CR 121.4 + CR 704.5b: a *pure*-mill loop whose only changing axis is a
-    /// negative `library_delta` also counts as net-progress here — emptying a
-    /// library is the win even though no axis strictly increased.
+    /// `Gained` axes (damage, tokens, draws, counters, triggers, library) may be
+    /// negative on a given axis (a mill loop drives `library_delta` negative — that
+    /// is the win); only the consumed axes constrain sustainability. CR 121.4 +
+    /// CR 704.5b: a *pure*-mill loop whose only changing axis is a negative
+    /// `library_delta` counts as net-progress here even though no axis increased.
     pub fn is_net_progress(&self) -> bool {
         let mut any_increase = false;
         for (component, value) in self.components() {
@@ -881,11 +785,9 @@ impl ResourceVector {
         }
         // CR 121.4 + CR 704.5b: a pure-mill loop is net-progress even though its
         // only changing axis (`library_delta`) is *negative* — driving a library
-        // toward empty is the win (the opponent loses on the next attempted draw,
-        // a state-based action). Recognized consistently with `unbounded_components`,
-        // which surfaces `library_delta` on either sign; positive library growth is
-        // already counted by the generic `value > 0` clause above, so this clause is
-        // strictly additive for the negative (mill) case.
+        // toward empty is the win (the opponent loses on the next attempted draw, a
+        // state-based action). Strictly additive for the negative case: positive
+        // library growth is already counted by the generic `value > 0` clause above.
         let mills = self.library_delta.values().any(|&n| n < 0);
         any_increase || mills
     }
@@ -897,16 +799,12 @@ impl ResourceVector {
     /// the same fields: that one yields the [`Component`] CONSUMED/GAINED classification with
     /// no axis identity, for [`Self::is_net_progress`].
     ///
-    /// The distinction from that method is the SIGN, and it is the whole reason this exists:
-    /// `unbounded_components` reports only what a loop *accrues*, so a drain loop's defining
-    /// term — the victim's NEGATIVE `life` — is invisible through it. A consumer that has to
-    /// state what a repetition COSTS, rather than what it gains, cannot be built on that
-    /// method. The one such consumer today is `game::interaction`'s CR 732.2a shortcut
-    /// preview, which states the finished magnitude of a declared repeat count and would
-    /// otherwise show a lethal drain as producing nothing.
-    ///
-    /// Order is fixed (mana, life, damage, library, poison, counters, triggers, then the
-    /// scalar axes) and every map is a `BTreeMap`, so the result is deterministic.
+    /// The distinction from `unbounded_components` is the SIGN, and it is the whole reason
+    /// this exists: that method reports only what a loop *accrues*, so a drain loop's defining
+    /// term — the victim's NEGATIVE `life` — is invisible through it. `game::interaction`'s
+    /// CR 732.2a shortcut preview states what a repetition COSTS and would otherwise show a
+    /// lethal drain as producing nothing. Order is fixed (mana, life, damage, library, poison,
+    /// counters, triggers, then the scalar axes) over `BTreeMap`s, so the result is deterministic.
     pub fn axis_components(&self) -> Vec<(ResourceAxis, i64)> {
         let mut out = Vec::new();
         for (i, &n) in self.mana.iter().enumerate() {
@@ -963,26 +861,18 @@ impl ResourceVector {
         out
     }
 
-    /// The component axes that strictly increased over this delta — the
-    /// candidate **unbounded** resources a `WinKind` classifier (PR-2) reads to
-    /// name the loop's win condition. A mill axis surfaces here as a negative
-    /// `library_delta`, so it is reported separately via its sign.
-    ///
-    /// Returns each increasing axis as a [`ResourceAxis`] tag with its signed
-    /// magnitude.
+    /// The component axes that strictly increased over this delta — the candidate
+    /// **unbounded** resources a `WinKind` classifier reads to name the loop's win
+    /// condition. Returns each axis as a [`ResourceAxis`] tag with its signed magnitude.
     ///
     /// CR 401: the `LibraryDelta` exemption is what keeps a mill loop — unbounded
-    /// *downward* on library size — in the result while every other axis is required to
-    /// have risen.
+    /// *downward* on library size — in the result while every other axis must have risen.
     ///
-    /// CR 704.5c: rising poison on a victim is an unbounded loss axis — and unlike mill it
-    /// needs no exemption, because poison RISES toward the ten-counter loss, so `Poison(p)`
-    /// is carried by the `n > 0` term itself. RELOCATED, not re-derived: this annotation sat
-    /// above the poison arm of this method's own loop until the `axis_components` split moved
-    /// that loop out, and it belongs beside the CR 401 term because the pair is what states
-    /// WHICH loss axes survive the filter and why. Re-verified against
-    /// `docs/MagicCompRules.txt`: "704.5c If a player has ten or more poison counters, that
-    /// player loses the game."
+    /// CR 704.5c: rising poison on a victim is an unbounded loss axis, and unlike mill it
+    /// needs no exemption, because poison RISES toward the ten-counter loss ("If a player
+    /// has ten or more poison counters, that player loses the game"), so `Poison(p)` is
+    /// carried by the `n > 0` term itself. The pair states WHICH loss axes survive the
+    /// filter and why.
     pub fn unbounded_components(&self) -> Vec<(ResourceAxis, i64)> {
         self.axis_components()
             .into_iter()
@@ -990,163 +880,37 @@ impl ResourceVector {
             .collect()
     }
 
-    /// CR 732.2a + CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: the largest number of
-    /// times this per-period delta may legally be repeated in one shortcut proposal.
-    ///
-    /// # The convention, and why it stops STRICTLY SHORT
-    ///
-    /// `N` is the largest count such that after each of the `N` cycles **no living player
-    /// has crossed a CR 704 loss threshold**. CR 732.2a forbids a shortcut that contains a
-    /// conditional action and requires its ending point to be a place a player would
-    /// receive priority; CR 704.3 checks state-based actions whenever a player would get
-    /// priority, and a cycle contains several such points. A mid-sequence CR 704.5a death
-    /// therefore makes the remaining declared choices unmakeable — CR 800.4a removes the
-    /// seat — which is both a conditional action and an illegal proposal. So the bound is
-    /// `headroom / magnitude` with headroom measured to *one short of* the threshold.
-    ///
-    /// | axis | threshold | headroom for a living `p` |
-    /// |---|---|---|
-    /// | life | CR 704.5a (0 or less life) | `life[p] - 1` |
-    /// | poison | CR 704.5c (ten or more counters) | `9 - poison[p]` |
-    /// | library | CR 104.3c + CR 121.4 (draw from empty) | `library[p].len()` |
-    ///
-    /// # Aggregation per DECLARABLE victim
-    ///
-    /// `declarable_victims` is the union of the ANNOUNCED target slots' legal player targets
-    /// — EMPTY for the untargeted class. `slot_magnitude` is the per-period life loss the
-    /// certificate attributed to each announced slot. A declaration may aim **every** slot
-    /// at **one** opponent, so a declarable victim's life magnitude is the SUM over all
-    /// slots; that is what makes an all-slots-on-one-seat declaration bounded by
-    /// construction rather than by a cross-slot check in `validate_pins`.
-    ///
-    /// ANNOUNCED, NOT PUBLISHED, and the caller
-    /// (`game::engine::bounded_cycle_charged_targets_for_window`) supplies it that way on
-    /// purpose. CR 732.2a withholds a decision point when the announcement is FORCED — the
-    /// player makes no choice — but CR 704.5a charges that victim regardless of who chose it.
-    /// Feeding this the PUBLISHED point set instead dropped a forced victim into the `else`
-    /// arm below and RAISED the bound; on a victim whose measured period nets a life GAIN it
-    /// disarmed the life axis at `MAX_SHORTCUT_CYCLES` outright.
-    ///
-    /// PRECISELY WHAT IS IMPLEMENTED, and how it differs from the specified rule: this
-    /// sums **every** positive `slot_magnitude` and charges that one total `S` to **every**
-    /// member of `declarable_victims`. The specified rule is `S(p) = Σ over slots s with
-    /// p ∈ s.legal_targets` — a per-victim sum. The two coincide exactly when every slot
-    /// can reach every declarable victim, which is the only shape reachable today
-    /// (`declarable_victims` arrives as the UNION of the slots' legal targets, and the
-    /// per-slot sets are not passed in at all — the signature carries no per-slot target
-    /// information, so the per-victim sum is not computable here). Where they differ —
-    /// a slot that can only reach seat A, another that can only reach seat B — this
-    /// charges A with A+B and B with A+B, i.e. it OVER-charges, which yields a SMALLER
-    /// bound. Conservative, therefore safe, and deliberately so: this is the fail-closed
-    /// approximation of the specified rule, not the rule itself. **No current test
-    /// discriminates the two** (every case's slots share identical legal-target sets), so
-    /// do not read the battery as evidence for the exact rule. Threading per-slot
-    /// `legal_targets` in (replacing `slot_magnitude: &BTreeMap<DecisionSlot, i64>` with a
-    /// per-slot `(legal_targets, magnitude)` pairing) is what turns this into the exact
-    /// §4.2 rule; it would only ever RAISE the bound, so it cannot invalidate an offer
-    /// this form already permitted.
-    ///
-    /// The observed per-period loss and the declared slot magnitude are combined
-    /// ADDITIVELY, with the observed term floored at zero: `observed.max(0) + S`. Where the
-    /// two measure the SAME drain — the ring observed the loss the slot causes — the sum
-    /// DOUBLE-COUNTS and over-charges, returning a smaller bound than strictly necessary
-    /// (measured: a one-slot drain on a 16-life seat yields **7**, where `max` yielded 15).
-    /// **7 is the shipped value and it is right**: this signature cannot prove that the
-    /// observed loss and the slot magnitude are the same drain, so the over-charge is a
-    /// PRECISION cost, never unsoundness.
-    ///
-    /// # SOUNDNESS — unconditional, and what the clamp is for
-    ///
-    /// The `max` form this replaced was **CORRECT ONLY IF `L_unattributed(p) == 0`** for
-    /// every declarable victim — only if every non-proposer loss in the measured period was
-    /// attributable to a published slot. That premise is **DISCHARGED BY CONSTRUCTION**
-    /// here: the sum no longer needs it. A victim carrying an untargeted drain of 1 **and**
-    /// a re-aimable slot of magnitude 1 has a true per-period loss of **2**; `max` returned
-    /// **1**, overstating the bound 2× and permitting an in-proposal elimination
-    /// (CR 704.5a) inside a proposed shortcut — exactly the conditional action CR 732.2a
-    /// forbids. `max` fails OPEN; this form fails CLOSED, which is this repo's convention.
-    ///
-    /// The **`.max(0)` clamp is load-bearing and not optional.** `observed_life_loss`
-    /// negates `self.life`, a per-period NET delta, so its sign is UNCONSTRAINED: a victim
-    /// who nets a life GAIN yields a negative value. Unclamped, `observed + S` can be `<= 0`,
-    /// the `narrow` closure never fires (its guard is `magnitude > 0`), and the life axis is
-    /// silently DISARMED at `MAX_SHORTCUT_CYCLES` — a fail-open in the change whose purpose
-    /// is closing one. Clamped, a net gain contributes nothing and cannot credit against the
-    /// slot magnitude either (CR 119.3: each gain and loss adjusts the total as it happens;
-    /// the net says nothing about order).
-    ///
-    /// `declared_life_magnitude >= 0` is a **CONSTRUCTION** fact, not an assumption: its
-    /// initializer filters `*m > 0` and sums, and the empty sum is `0`. With that, for
-    /// `observed >= 0` the sum is `>= max(observed, S)`, and for `observed < 0` it equals
-    /// `S == max(observed, S)` exactly — so this magnitude dominates the `max` form on EVERY
-    /// input, and `narrow` is monotone non-increasing in its divisor. The bound can only
-    /// SHRINK.
-    ///
-    /// `elimination_bounds_mixed_loss_charges_both_terms` (case (n), split out so its
-    /// revert-probe is reachable) DISCRIMINATES: `1` under `max`, `0` here. It supersedes
-    /// the earlier note that every
-    /// case had `S == 0` or `L_unattributed == 0` and that the battery was therefore
-    /// non-discriminating on this axis.
-    ///
-    /// Option (ii) — threading per-slot `(legal_targets, magnitude)` pairs — repairs `S(p)`
-    /// only and supplies no attribution of *observed* loss to slots, so it remains the open
-    /// PRECISION upgrade rather than a soundness prerequisite.
-    ///
-    /// The netting residual is a property of `self.life` being a per-period **net**
-    /// `delta()` output, and is identical under either operator.
-    ///
-    /// TREE-SCOPED: the first production consumer lands in a successor branch. This bound is
-    /// made fail-closed AHEAD of that consumer rather than in it, and **does not depend on
-    /// that branch's producer guard**.
-    ///
-    /// # Uniform over EVERY living player, including the proposer
-    ///
-    /// There is deliberately no `p == proposer => unbounded` case: `net_progress_for` reads
-    /// only the proposer's mana and life, so it is blind to the proposer's own poison and
-    /// to intra-cycle life dips. A proposer who drains themselves is bounded here like
-    /// anyone else. An ELIMINATED seat contributes no term at all (CR 800.4a — it is no
-    /// longer in the game), so a corpse at 1 life cannot pin the bound to zero.
-    ///
-    /// # Per-cycle magnitude constancy is a PREMISE, not a proof
-    ///
-    /// The bound extrapolates one measured period. Do NOT add a monotone-magnitude
-    /// conjunct to "fix" that — it would reject every 2-frame window. The backstops are
-    /// conformance (a cycle whose magnitude changed stops committing) and the live
-    /// elimination guard during the drive, never an extrapolated total.
-    ///
-    /// Clamped to `MAX_SHORTCUT_CYCLES`. A return of `0` means no legal repetition exists
-    /// and the caller must not offer; callers require `N >= 1`.
     /// CR 704.5a: the per-period life loss ONE published pin slot may charge to whichever
     /// seat its declaration names — the `slot_magnitude` term
     /// [`ResourceVector::elimination_bounds`] divides the headroom by.
     ///
     /// **MAX over seats, not SUM, and not the observed spread.** A pin is a
     /// STATE-INDEPENDENT designation (CR 732.2a), so a declaration may aim *every*
-    /// iteration of a slot at *one* seat. Charging what the observed — unpinned — iteration
-    /// happened to spread around would UNDER-charge and overstate the bound, which fails
-    /// OPEN. Charging the sum over seats is not a loss any single seat can suffer from one
-    /// slot; it over-charges, which only SHRINKS the bound and is the fail-closed direction
-    /// this repo takes when the two disagree.
+    /// iteration of a slot at *one* seat. Charging what the observed — unpinned —
+    /// iteration happened to spread around would UNDER-charge and overstate the bound,
+    /// which fails OPEN. Charging the sum over seats is not a loss any single seat can
+    /// suffer from one slot; it over-charges, which only SHRINKS the bound and is the
+    /// fail-closed direction this repo takes when the two disagree.
     ///
     /// Life GAINS contribute nothing (`(-n).max(0)`), so a proposer gaining 5 while three
     /// opponents lose 1, 2 and 3 yields 3 — never 5, and never 6.
-    ///
-    /// Extracted from `game::engine::try_offer_bounded_cycle_shortcut` so the max-vs-sum fork
-    /// has a callable seam. ⚠ THE NOTE THAT STOOD HERE — *"`victim_slot` is empty on every
-    /// trajectory that offers today … no fixture reaches it"* — IS FALSIFIED, and is replaced
-    /// rather than softened: once the answer-beat sampling site in `apply_action` announces
-    /// the entries a FORCED pre-priority window puts on the stack, a CR 608.2b `Targets`
-    /// declaration is announced like any other and `victim_slot` is NON-EMPTY on the F4
-    /// boards. `worst_seat_life_loss_is_the_max_seat_never_the_sum` is therefore no longer the
-    /// only discriminator: the real-dump rows re-derive this value through
-    /// `elimination_bounds` (`r1_the_bounded_offer_fires_on_the_real_f4_dump`), and
-    /// `b5f_the_declared_term_can_suppress_an_otherwise_legal_offer` measures it flipping a
-    /// live offer to `NoNarrowedLegalCount`.
     pub(crate) fn worst_seat_life_loss(&self) -> i64 {
         self.life.values().map(|&n| (-n).max(0)).max().unwrap_or(0)
     }
 
-    // The first production consumer is `game::engine::try_offer_bounded_cycle_shortcut`.
+    /// CR 732.2a + CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: the largest number of
+    /// times this per-period delta may legally be repeated in one shortcut proposal.
+    ///
+    /// `N` is the largest count such that after each of the `N` cycles **no living player
+    /// has crossed a CR 704 loss threshold**, and it stops STRICTLY SHORT of one.
+    /// CR 732.2a forbids a shortcut containing a conditional action and requires its ending
+    /// point to be a place a player would receive priority; CR 704.3 checks state-based
+    /// actions at every such point, so a mid-sequence CR 704.5a death makes the remaining
+    /// declared choices unmakeable (CR 800.4a removes the seat). Each axis below is
+    /// therefore `headroom / magnitude`, headroom measured to one short of its threshold.
+    ///
+    /// Clamped to `MAX_SHORTCUT_CYCLES`. A return of `0` means no legal repetition exists
+    /// and the caller must not offer; callers require `N >= 1`.
     pub(crate) fn elimination_bounds(
         &self,
         state: &GameState,
@@ -1154,9 +918,20 @@ impl ResourceVector {
         slot_magnitude: &BTreeMap<DecisionSlot, i64>,
     ) -> u32 {
         let cap = crate::game::engine::MAX_SHORTCUT_CYCLES as i64;
-        // Every published slot is assumed reachable to every declarable victim, so ONE
-        // total is charged to each of them (see "PRECISELY WHAT IS IMPLEMENTED" above:
-        // the conservative, over-charging approximation of the per-victim sum).
+        // ANNOUNCED, NOT PUBLISHED: `declarable_victims` is the union of the ANNOUNCED target
+        // slots' legal player targets (EMPTY for the untargeted class). CR 732.2a withholds a
+        // decision point when the announcement is FORCED, but CR 704.5a charges that victim
+        // regardless of who chose it, so feeding this the PUBLISHED point set drops a forced
+        // victim into the `else` arm below and RAISES the bound.
+        //
+        // Every published slot is assumed reachable to every declarable victim, so ONE total
+        // is charged to each. The specified rule is the per-victim sum over the slots that can
+        // reach `p`; this signature carries no per-slot target information, so the two coincide
+        // wherever every slot reaches every declarable victim (the only shape reachable today)
+        // and this OVER-charges otherwise — a smaller bound, which is the fail-closed
+        // direction. Where the observed loss and a slot magnitude measure the SAME drain the
+        // sum DOUBLE-COUNTS: a precision cost, never unsoundness. No current test
+        // discriminates the exact rule from this approximation.
         let declared_life_magnitude: i64 =
             slot_magnitude.values().copied().filter(|m| *m > 0).sum();
 
@@ -1168,71 +943,53 @@ impl ResourceVector {
         };
 
         for p in &state.players {
-            // CR 800.4a: an eliminated seat has left the game and constrains nothing.
+            // UNIFORM over EVERY living player, including the proposer: `net_progress_for`
+            // reads only the proposer's mana and life, so a proposer who drains themselves is
+            // bounded here like anyone else. NOT bounded by this operator: intra-cycle dips —
+            // a period that drains 5 and lifelinks 7 reports a NET -2 while dipping below
+            // `life - 5` mid-cycle. That blindness is a property of the NET input; the
+            // backstops are conformance and the live elimination guard during the drive.
+            //
+            // Per-cycle magnitude constancy is a PREMISE, not a proof — the bound
+            // extrapolates one measured period. Do NOT add a monotone-magnitude conjunct to
+            // "fix" it; that would reject every 2-frame window.
+            //
+            // CR 800.4a: an ELIMINATED seat has left the game and contributes no term, so a
+            // corpse at 1 life cannot pin the bound to zero.
             if p.is_eliminated {
                 continue;
             }
-            // CR 704.5a. A negative life delta is the per-period loss.
+            // CR 704.5a (a player at 0 or less life loses): a negative life delta is the
+            // per-period loss.
             let observed_life_loss = -self.life.get(&p.id).copied().unwrap_or(0);
             let life_magnitude = if declarable_victims.contains(&p.id) {
-                // CR 704.5a (MagicCompRules.txt:5492) + CR 732.2a
-                // (MagicCompRules.txt:6372). Combined
-                // ADDITIVELY, with the OBSERVED term floored at zero. `max` is correct only
-                // if `L_unattributed(p) == 0` — every non-proposer loss in the measured
-                // period attributable to a published slot — and this signature carries no
-                // per-slot victim attribution with which to discharge that premise. A
-                // victim carrying an untargeted drain of 1 AND a re-aimable slot of
-                // magnitude 1 loses 2 per period; `max` returns 1, overstating the bound
-                // and permitting an in-proposal elimination — the conditional action
-                // CR 732.2a forbids.
+                // CR 704.5a + CR 732.2a: the observed per-period loss and the declared slot
+                // magnitude combine ADDITIVELY, observed term floored at zero. `max` is
+                // correct only if every non-proposer loss in the measured period is
+                // attributable to a published slot, and this signature carries no per-slot
+                // victim attribution to discharge that: a victim carrying an untargeted drain
+                // of 1 AND a re-aimable slot of magnitude 1 loses 2 per period, where `max`
+                // returns 1 and permits the in-proposal elimination CR 732.2a forbids.
                 //
-                // TIGHT **given the information in this signature**: with `d` the slot
-                // loss actually delivered to `p`, the worst case is `observed + (S - d)`
-                // for `0 <= d <= S`, whose supremum over the unattributable `d` is
-                // `observed + S`.
-                //
-                // WHY `.max(0)`, AND WHY IT IS NOT OPTIONAL. `observed_life_loss` negates
-                // `self.life`, a per-period NET delta (`ResourceVector::life`, produced by
-                // `ResourceVector::delta` via `map_delta`), so its
-                // sign is UNCONSTRAINED: a victim who nets a life GAIN yields a negative
-                // value. Unclamped, `observed + S` can then be <= 0, the `narrow` closure
-                // never fires (its guard is `magnitude > 0`), and the life axis is silently
-                // DISARMED at MAX_SHORTCUT_CYCLES. Clamped, a net gain contributes nothing
-                // and cannot credit against the slot magnitude either (CR 119.3,
-                // MagicCompRules.txt:1065: each gain and loss adjusts the total as it
-                // happens; the net says nothing about order).
-                //
-                // FAIL-CLOSED OVER THE WHOLE DOMAIN, not merely where both terms are
-                // positive. `declared_life_magnitude` is `>= 0` by construction — its
-                // initializer filters `*m > 0` and sums, and the empty sum is 0. For
-                // `observed >= 0`, `observed + S >= max(observed, S)`; for `observed < 0`
-                // it equals `S == max(observed, S)` exactly. So this magnitude is >= the
-                // `max` form on EVERY input, and `narrow` is monotone non-increasing in its
-                // divisor (non-negative numerator), so the returned bound can only SHRINK.
-                //
-                // Where `observed` and `S` measure the SAME drain this DOUBLE-COUNTS and
-                // over-charges (precision loss, never unsoundness) — case (m) in
-                // `elimination_bounds_conventions` is that shape, 15 -> 7. Accepted: it
-                // errs toward refusal, and this repo's convention is fail-closed. The
-                // precision upgrade is per-slot `(legal_targets, magnitude)` attribution.
-                //
-                // NOT BOUNDED BY THIS OPERATOR, stated plainly: intra-cycle dips. A period
-                // that drains 5 and lifelinks 7 reports `observed = -2` while dipping below
-                // `life - 5` mid-cycle; this charges `0 + S`. That blindness is a property
-                // of the NET INPUT and is identical under `max` — the operator swap neither
-                // introduces nor repairs it. The backstops are conformance and the live
-                // elimination guard during the drive.
+                // `.max(0)` IS NOT OPTIONAL. `observed_life_loss` negates `self.life`, a
+                // per-period NET delta, so a victim who nets a life GAIN yields a negative
+                // value; unclamped, `observed + S` can be <= 0, `narrow` never fires (its
+                // guard is `magnitude > 0`), and the life axis is silently DISARMED at
+                // MAX_SHORTCUT_CYCLES. CR 119.3 — each gain and loss adjusts the total as it
+                // happens — is why a net gain must not credit against the slot magnitude.
                 observed_life_loss.max(0) + declared_life_magnitude
             } else {
                 observed_life_loss
             };
             narrow(p.life as i64 - 1, life_magnitude);
-            // CR 704.5c. A positive poison delta is the per-period gain.
+            // CR 704.5c (ten or more poison counters lose): a positive poison delta is the
+            // per-period gain.
             narrow(
                 9 - p.poison_counters as i64,
                 self.poison.get(&p.id).copied().unwrap_or(0),
             );
-            // CR 104.3c + CR 121.4. A negative library delta is the per-period drain.
+            // CR 104.3c + CR 121.4 (drawing from an empty library loses): a negative
+            // library delta is the per-period drain.
             narrow(
                 p.library.len() as i64,
                 -self.library_delta.get(&p.id).copied().unwrap_or(0),
@@ -1248,11 +1005,11 @@ impl ResourceVector {
     /// unbounded progress on ≥1 axis without leaving the loop's controller with an
     /// unsustainable net deficit on a *consumed* axis (their own life or mana).
     ///
-    /// Distinct from [`Self::is_net_progress`] (PR-0) only in *who* the
-    /// consumed-axis constraint applies to: the controller's life going negative
-    /// is unsustainable (false), but an *opponent's* life/library going negative
-    /// is the drain/mill win (progress). Engine B layers an `unbounded_production`
-    /// override on top of this base check for dynamic production (HIGH-1).
+    /// Distinct from [`Self::is_net_progress`] only in *who* the consumed-axis
+    /// constraint applies to: the controller's life going negative is unsustainable
+    /// (false), but an *opponent's* life/library going negative is the drain/mill win
+    /// (progress). Engine B layers an `unbounded_production` override on top of this
+    /// base check for dynamic production.
     pub(crate) fn net_progress_for(&self, controller: PlayerId) -> bool {
         // CR 106.1: a loop that net-spends mana across the whole pool is not
         // sustainable. Mana is not attributed per player in the summed `mana`
@@ -1306,7 +1063,7 @@ enum Component {
 }
 
 /// A tagged, named resource axis — the typed identity of one unbounded resource,
-/// used by the (PR-2) `WinKind` classifier to describe a loop certificate.
+/// used by the `WinKind` classifier to describe a loop certificate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ResourceAxis {
     Mana(ManaType),
@@ -1363,10 +1120,10 @@ impl ResourceAxis {
     ///
     /// THE CRITERION a new variant is decided by (not "is it mana"): an axis is
     /// `StandingCapability` iff the engine holds a LIVE REALIZER that keeps the resource at its
-    /// unbounded value while the mark stands. MEASURED: `unbounded_resources` has exactly one
-    /// such reader — `game::mana_payment::refill_infinite_mana`, gated on `ResourceAxis::Mana(_)`
-    /// and pinned by `refill_infinite_mana_gated_on_mana_axis_only`. Every other read of that map
-    /// is the `derived_views` HUD projection, a writer, or a clear authority.
+    /// unbounded value while the mark stands. `unbounded_resources` has exactly one such
+    /// reader — `game::mana_payment::refill_infinite_mana`, gated on `ResourceAxis::Mana(_)`.
+    /// Every other read of that map is the `derived_views` HUD projection, a writer, or a
+    /// clear authority.
     pub(crate) fn unbounded_mark_kind(self) -> UnboundedMarkKind {
         match self {
             // CR 500.5 + CR 106.4: a mana pool empties at the end of each step and phase, so an
@@ -1382,7 +1139,7 @@ impl ResourceAxis {
 
             // CR 732.2c: every remaining axis is growth the collapse delivers, so the collapse
             // ends its mark. Listed by name (never `_`) so an 18th variant is decided, not
-            // defaulted. Reachability at the object-growth producer, MEASURED:
+            // defaulted. Reachability at the object-growth producer:
             //   * CR 119.3 `Life`, CR 122.1 `Counter`, `TokensCreated` — reachable today, each
             //     with a batched item (`LoopCollapseAxis::from_resource_axis` => `Some`).
             //   * CR 401 `LibraryDelta` — reachable POSITIVE today; NEGATIVE once the mill board
@@ -1455,34 +1212,14 @@ fn map_delta<K: Ord + Copy>(
 ///
 /// Searches `k` in `1..=(frames - 1) / 2`, smallest first, for a period whose consecutive
 /// frame-deltas repeat, and certifies only a period it has observed **twice** (`2k` deltas
-/// ⇒ `2k + 1` frames). `k` is an OUTPUT, never an input: no period constant exists in this
-/// subsystem — `game::engine::shortcut_drive_period` derives its period from the template
-/// schedule and `LOOP_DETECT_RING_CAP` merely CAPS how large a derivable `k` can be
-/// (16 frames ⇒ `k <= 7`).
+/// ⇒ `2k + 1` frames). `k` is an OUTPUT, never an input: `LOOP_DETECT_RING_CAP` merely CAPS
+/// how large a derivable `k` can be (16 frames ⇒ `k <= 7`).
 ///
-/// Fail-closed in FOUR places. Fewer than `2k + 1` frames for every candidate `k` ⇒ `None`
-/// (a period seen once is a coincidence, not a signature). A smallest repeating period whose
-/// delta is the zero vector ⇒ `None`, because every multiple of it is zero too and a cycle
-/// that moves no resource states no CR 704 threshold to bound. A certifying window that is
-/// not TURN-POSITION invariant ⇒ `None` (the CR 703.1 conjunct below). Reading the RING only
-/// — never the live `state` — keeps the compared frames homogeneous: every ring frame is a
-/// `normalize_for_loop` snapshot taken at `WaitingFor::Priority{active_player}`. That holds
-/// across BOTH of `game::engine`'s `record_loop_detect_sample` sites (the settle sampler in
-/// `pass_priority_once_with_pipeline` and the forced-window answer site in `apply_action`),
-/// because the two gate on the same `wf` conjunct — the homogeneity argument no longer rests
-/// on there being one site, it rests on that shared conjunct. Meanwhile the live state is not
-/// normalized. It does not consult a board predicate, but it DOES require the frames it
-/// compares to be homogeneous in turn position, which is what "homogeneous" above now means
-/// in full.
-///
-/// ⚠ SCOPE OF THAT REQUIREMENT — what this function READS, versus where the frames' sameness
-/// comes from. It reads exactly two things: `ResourceVector::snapshot(&f.normalized)` and
-/// `window_scope_from_cover_frames(..).phase_invariant`, and `phase_invariant` is
-/// `turn_number` + `phase` + `extra_phases.is_empty()`. The sampler gate that mints the frames
-/// also makes them homogeneous in `waiting_for`/`priority_player`, but THIS function never
-/// looks at those two — basis A does, via `loop_states_equal_modulo_resources` ⇒
-/// `loop_states_equal` ⇒ `impl PartialEq for GameState`. Do not cite `ring_delta_signature` as
-/// the consumer of either field.
+/// Fail-closed in FOUR places: too few frames for every candidate `k`; a smallest repeating
+/// period whose delta is the zero vector; a certifying window that is not TURN-POSITION
+/// invariant (the CR 703.1 conjunct below); and reading the RING only — never the live
+/// `state` — so every compared frame is a `normalize_for_loop` snapshot taken at
+/// `WaitingFor::Priority{active_player}`, the conjunct both sampler sites gate on.
 pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVector)> {
     let frames = state.loop_detect_ring.len();
     // 2k + 1 with k >= 1.
@@ -1509,24 +1246,12 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
         // A cycle that moves no resource states no CR 704 threshold to bound, so it
         // supplies no per-period magnitude and is refused.
         //
-        // This is deliberately a WHOLE-SEARCH refusal, and the struck justification for
-        // it was WRONG. It read "smallest repeating period, so every longer one is a
-        // whole number of copies of this one — a zero here cannot become non-zero at a
-        // larger `k`". The repetition test above inspects only the most recent `2k`
-        // deltas, which does NOT establish that the whole ring is periodic with period
-        // `k`, so a larger `k'` need not be a multiple of `k` and its per-period delta
-        // can be non-zero. Counter-example over 8 frames (deltas `d1..d7`, oldest
-        // first): at `k = 1` the last two deltas are equal and zero, so this returns
-        // `None`; at `k' = 3` the test compares `[d1,d2,d3]` against `[d4,d5,d6]`, and
-        // `d5 = d6 = 0` forces `d2 = d3 = 0` while leaving `d4` unconstrained, so the
-        // `k' = 3` period is `d4 + d5 + d6 = d4`, which can be non-zero.
-        //
-        // The BEHAVIOUR is still the safe direction — refusing outright costs a missed
-        // offer, never a wrong one — so this is a comment defect, not a soundness
-        // defect. It is corrected rather than deleted because the false claim is the
-        // kind a later reader would lean on to justify widening the search while keeping
-        // the early return, or to replace the search with a single-`k` probe. If that
-        // missed class ever needs to certify, `continue` is sound here for the same
+        // A WHOLE-SEARCH refusal, and deliberately not justified by "every longer period is
+        // a whole number of copies of this one": the repetition test above inspects only the
+        // most recent `2k` deltas, which does not establish that the whole ring is periodic
+        // with period `k`, so a larger `k'` need not be a multiple of `k` and its per-period
+        // delta can be non-zero. Refusing outright costs a missed offer, never a wrong one.
+        // If that missed class ever needs to certify, `continue` is sound here for the same
         // reason the return is safe: each candidate `k` is validated independently.
         if per_period == ResourceVector::default() {
             return None;
@@ -1537,27 +1262,14 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
         // sequence of game choices, for all players" — so a period whose repetition is paved
         // by step/phase boundaries is not a sequence that rule can describe. A 2-player
         // draw-go board is exactly periodic in `library_delta` and in an upkeep life ticker,
-        // and without this conjunct that turn structure certifies as a "loop".
-        //
-        // Basis A cannot make that mistake: `loop_states_equal` delegates to
-        // `impl PartialEq for GameState`, which compares `turn_number`, `active_player` and
-        // `phase`, and neither `normalize_for_loop` nor `project_out_resources` neutralizes
-        // any of the three — the deliberate, ratified design recorded at
-        // `types::game_state::WaitingFor::is_forced_cascade_window`'s doc. Basis B compares
-        // only resource deltas, so it escaped that discipline silently; this restores parity.
-        // It is NOT a new policy and NOT a claim that shortcuts may not cross turns —
-        // CR 732.2a says verbatim that a shortcut "may even cross multiple turns". What is
-        // refused is a cross-turn certification by the BOARD-BLIND basis.
-        //
-        // KNOWINGLY ACCEPTED FALSE NEGATIVE, and it is the price of reusing the shipped
-        // authority instead of forking a second turn-position predicate:
-        // `window_scope_from_cover_frames` requires `extra_phases.is_empty()` on BOTH frames
-        // (CR 500.8 — effects can add phases to a turn), not merely equal counts. So a
-        // legitimate WITHIN-turn loop running while an extra phase is queued (the
-        // extra-combat class) mints no basis-B offer. That is the fail-closed direction — a
-        // missed offer, never a wrong one. If that class ever needs to certify, widen
-        // `window_scope_from_cover_frames` ITSELF, where both suppressing firewall callers
-        // see the change too; do not add a second local test here.
+        // and without this conjunct that turn structure certifies as a "loop". Basis A
+        // cannot make that mistake: `loop_states_equal` compares `turn_number`,
+        // `active_player` and `phase`. This is NOT a claim that shortcuts may not cross
+        // turns — CR 732.2a says a shortcut "may even cross multiple turns"; what is refused
+        // is a cross-turn certification by the BOARD-BLIND basis. KNOWINGLY ACCEPTED FALSE
+        // NEGATIVE: `window_scope_from_cover_frames` requires `extra_phases.is_empty()` on
+        // BOTH frames (CR 500.8), so a legitimate WITHIN-turn loop running while an extra
+        // phase is queued mints no basis-B offer. Widen that authority, not a local test.
         let window: Vec<&GameState> = state
             .loop_detect_ring
             .iter()
@@ -1566,8 +1278,12 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
             .collect();
         if !window.windows(2).all(|w| {
             // `identity_unstable: None` — a CR 104.4b ring SIGNATURE is a resource-delta
-            // fact about a period, not a window proof about any object's CR 400.7 identity,
-            // and only `.phase_invariant` is read off the result here.
+            // fact about a period, not a window proof about any object's CR 400.7 identity.
+            // This function reads exactly two things: `ResourceVector::snapshot` of each
+            // frame, and `.phase_invariant` (turn number + phase + `extra_phases.is_empty()`)
+            // off this call. The sampler gate also makes the frames homogeneous in
+            // `waiting_for`/`priority_player`, but nothing here looks at those — basis A does,
+            // via `loop_states_equal_modulo_resources`.
             window_scope_from_cover_frames(w[0], w[1], None, None, None)
                 .phase_invariant
                 .is_some()
@@ -1579,43 +1295,20 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
     None
 }
 
-/// CR 732.2a vs CR 104.4b: the **complement** of the engine's strict loop
-/// equality (`types::game_state::loop_states_equal`).
+/// CR 732.2a vs CR 104.4b: the **complement** of the engine's strict loop equality
+/// (`types::game_state::loop_states_equal`), which also requires life, damage, counters,
+/// P/T, loyalty and mana to match — correct for a *mandatory* loop, a draw only if it
+/// truly repeats with nothing changing. For a *beneficial* loop (CR 732.2a, the shortcut)
+/// the question is the opposite: identical in **board, zones and tap-state**, with the
+/// monotone resources allowed to differ. Built on `normalize_for_loop`, then
+/// [`project_out_resources`], then `loop_states_equal`.
 ///
-/// `loop_states_equal` treats two states as the same loop point only when life,
-/// damage, counters, power/toughness, loyalty, and mana also match — correct for
-/// a *mandatory* loop, which is a draw (CR 104.4b / CR 732.4) only if it truly
-/// repeats with nothing changing.
-///
-/// This function answers the opposite question for a *beneficial* loop
-/// (CR 732.2a, the shortcut): are the two states identical in **board, zones, and
-/// tap-state**, allowing the monotone resources to differ? It is built directly
-/// on `normalize_for_loop` (so it inherits the exact volatile-field exclusions
-/// the strict path uses) and then additionally projects out the monotone
-/// resources before delegating to `loop_states_equal`:
-///
-/// - per-player `life`, `mana_pool`, and the per-turn resource trackers
-///   (life gained/lost, cards drawn, tokens, …) the strict `PartialEq` compares;
-/// - per-object `damage_marked` and `counters` (and the counter-derived
-///   `power`/`toughness`/`loyalty`/`defense`), so a +1/+1 or loyalty pump loop is
-///   recognized as the same board.
-///
-/// Everything else — controller, zone, tapped, attachments, names, object count,
-/// stack, phase, priority — must still match exactly, so a genuine board change
-/// (an extra permanent, a different tap state, a moved card) returns `false`.
-///
-/// # Inherited extrapolation assumption (R1-B2 honesty; behavior UNCHANGED here)
-///
-/// This constant-depth path extrapolates the per-cycle resource delta over an
-/// unbounded number of cycles WITHOUT a syntactic guard on either the on-stack or
-/// the off-stack fire-time read surface — it trusts that a board-equal-modulo-
-/// resources recurrence keeps reproducing the same delta. That premise is
-/// refutable in principle (a dormant intervening-if / static / replacement that
-/// reads a projected resource could arm mid-extrapolation), but the shipped 2p
-/// drain detection depends on this behavior and it is regression-pinned, so it is
-/// left as-is. The NEW growing-cascade path
-/// ([`loop_states_cover_modulo_growth`]) closes both read surfaces by construction
-/// rather than inheriting this assumption.
+/// INHERITED EXTRAPOLATION ASSUMPTION: this constant-depth path extrapolates the per-cycle
+/// delta over unboundedly many cycles with NO syntactic guard on either fire-time read
+/// surface. A dormant intervening-if / static / replacement reading a projected resource
+/// could arm mid-extrapolation; the shipped 2p drain detection depends on this behaviour
+/// and is regression-pinned. [`loop_states_cover_modulo_growth`] closes both surfaces by
+/// construction rather than inheriting the assumption.
 pub fn loop_states_equal_modulo_resources(a: &GameState, b: &GameState) -> bool {
     let pa = project_out_resources(a);
     let pb = project_out_resources(b);
@@ -1625,12 +1318,11 @@ pub fn loop_states_equal_modulo_resources(a: &GameState, b: &GameState) -> bool 
     // `loop_states_equal`. Compare it analysis-locally (do NOT widen the strict
     // comparator, do NOT zero the field) so a loop that re-activates a loyalty
     // ability (count k -> k+1) compares UNEQUAL and is not falsely certified.
-    // F1 (PR-7 Phase 4d-ii / P7 v3): `last_loop_action_sequence` is EXCLUDED from `impl PartialEq
-    // for GameState` (`loop_states_equal` never compares it) and NOT cleared by
-    // `project_out_resources`, so compare it explicitly here (fail-closed) — a heterogeneous or
-    // reordered period is caught (order-sensitive `Vec` `PartialEq`), a homogeneous period's
-    // invariant sequence compares equal. `[] == []` for every non-loop-action state ⇒ zero
-    // regression to existing loop-equality tests.
+    // `last_loop_action_sequence` is EXCLUDED from `impl PartialEq for GameState` and NOT
+    // cleared by `project_out_resources`, so compare it explicitly here (fail-closed) — a
+    // heterogeneous or reordered period is caught (order-sensitive `Vec` `PartialEq`), a
+    // homogeneous period's invariant sequence compares equal. `[] == []` for every
+    // non-loop-action state.
     loop_states_equal(&pa, &pb)
         && loyalty_activation_counts_match(&pa, &pb)
         && pa.last_loop_action_sequence == pb.last_loop_action_sequence
@@ -1653,9 +1345,9 @@ fn loyalty_activation_counts_match(a: &GameState, b: &GameState) -> bool {
 /// permanent that persists at a loop's fixpoint (a residual board object, NOT a
 /// [`ResourceAxis`] scalar). Identity via `oracle_id` (cross-incarnation stable,
 /// CR 400.7-proof) so a later materialization phase can recreate it; `controller` +
-/// `tapped` are the split B4 must preserve (the "+1 untapped").
-// PR-7 Phase 3: serde-derived because it rides inside `LoopCertificate.residual_board_delta`,
-// which serializes into `WaitingFor::LoopShortcut`.
+/// `tapped` are the split a materialization must preserve (the "+1 untapped").
+// Serde-derived because it rides inside `LoopCertificate.residual_board_delta`, which
+// serializes into `WaitingFor::LoopShortcut`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResidualPermanent {
     pub oracle_id: String,
@@ -1671,7 +1363,7 @@ pub struct ResidualPermanent {
 /// tap). EMPTY for a constant-depth or stack-growth loop (their battlefields are
 /// identical by construction). Non-empty only once an object-growth detection path feeds
 /// [`board_delta`] non-identical battlefields.
-// PR-7 Phase 3: serde-derived — serializes into `WaitingFor::LoopShortcut`'s certificate.
+// Serde-derived — serializes into `WaitingFor::LoopShortcut`'s certificate.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct BoardDelta {
     /// Battlefield permanents present in `after` but not `before` (by `ObjectId`).
@@ -1680,13 +1372,12 @@ pub struct BoardDelta {
     pub removed: Vec<ResidualPermanent>,
 }
 
-/// Pure set-difference producer — analysis plumbing, deliberately UN-annotated per
-/// CLAUDE.md ("don't annotate serialization or plumbing — only code that implements a
-/// rule"): it computes `after − before` over battlefield permanents (the CR 110.1
-/// concept lives on the types it produces, [`BoardDelta`]/[`ResidualPermanent`], not on
-/// this diff). Iterates `state.objects.values()` filtered to `Zone::Battlefield`, keyed
-/// by `ObjectId`. `oracle_id` is read from `obj.printed_ref.oracle_id` (falls back to an
-/// empty string when absent — tokens without a printed ref). PURE.
+/// Pure set-difference producer — analysis plumbing, deliberately UN-annotated: it computes
+/// `after − before` over battlefield permanents (the CR 110.1 concept lives on the types it
+/// produces, [`BoardDelta`]/[`ResidualPermanent`], not on this diff). Iterates
+/// `state.objects.values()` filtered to `Zone::Battlefield`, keyed by `ObjectId`. `oracle_id`
+/// is read from `obj.printed_ref.oracle_id` (empty string when absent — tokens without a
+/// printed ref). PURE.
 pub fn board_delta(before: &GameState, after: &GameState) -> BoardDelta {
     fn battlefield_ids(state: &GameState) -> HashSet<ObjectId> {
         state
@@ -1725,25 +1416,18 @@ pub fn board_delta(before: &GameState, after: &GameState) -> BoardDelta {
 
 /// CR 732.2a: WHICH certificate a window's touch is derived under.
 ///
-/// The frozen exemption's extrapolation limb needs BOTH a board-level premise
-/// that the certified period cannot SHRINK the stack (P2) AND the Karp–Miller
-/// read-surface guard that makes the fast-forward the repetition of the observed
-/// period (P4). Exactly one certifying disjunct supplies both, so the exemption
-/// is keyed to the DISJUNCT rather than to the basis — as a type rather than a
-/// call-site convention, because a convention an executor drops compiles and is
-/// fail-OPEN.
+/// The frozen exemption's extrapolation limb needs BOTH a board-level premise that the
+/// certified period cannot SHRINK the stack (P2) AND the Karp–Miller read-surface guard that
+/// makes the fast-forward the repetition of the observed period (P4). Exactly one certifying
+/// disjunct supplies both, so the exemption is keyed to the DISJUNCT rather than to the
+/// basis — as a type rather than a call-site convention, which an executor can drop.
 ///
-/// Three variants, two of which behave identically today, and that is
-/// deliberate: collapsing the equality disjunct onto [`PeriodCertification::
-/// ResourceSignatureOnly`] would make the type lie about provenance (equality
-/// DOES consult a board predicate), and a mislabel is the fail-open re-entry
-/// path — the obvious future "fix" for an equality pair tagged
-/// `ResourceSignatureOnly` is to retag it `BoardCovered`.
-/// `pub` rather than `pub(crate)` for ONE reason, named so a future reader does not
-/// widen it further: it is the type of [`crate::game::engine::MintMeter`]'s
-/// `certification` field, the only surface on which the certifying disjunct is
-/// observable at all. It is not serialized, not a variant on any gated engine enum,
-/// and no card-data export reads it.
+/// Two of the three variants behave identically today, deliberately: collapsing the equality
+/// disjunct onto [`PeriodCertification::ResourceSignatureOnly`] would make the type lie about
+/// provenance (equality DOES consult a board predicate), and a mislabel is the fail-open
+/// re-entry path. `pub` for ONE reason: it is the type of
+/// [`crate::game::engine::MintMeter`]'s `certification` field, the only surface on which the
+/// certifying disjunct is observable at all. Do not widen it further.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeriodCertification {
     /// Basis A, COVER disjunct — the pair passed
@@ -1755,18 +1439,13 @@ pub enum PeriodCertification {
     /// Basis A, EQUALITY disjunct — the pair passed
     /// [`loop_states_equal_modulo_resources`]. P2 holds (the stack is compared
     /// exactly ⇒ constant depth) but P4 does NOT: that predicate has no items
-    /// (4)/(5), and this crate says so in its own words — the Karp–Miller NOTE
-    /// above [`loop_states_cover_modulo_growth`] ("makes the SAME extrapolation
-    /// with NONE of these") and that predicate's own inherited-assumption
-    /// section. A replacement that arms mid-extrapolation is exactly the route
-    /// P4 forecloses, so `frozen_ids` is forced EMPTY here. The shipped
-    /// constant-depth 2p drain detection is unaffected: this value narrows only
-    /// the NEW subtraction.
+    /// (4)/(5), as its own inherited-assumption section says. A replacement that
+    /// arms mid-extrapolation is exactly the route P4 forecloses, so `frozen_ids`
+    /// is forced EMPTY here.
     BoardEqualOnly,
     /// Basis B — [`ring_delta_signature`] only, which by its own doc "does not
     /// consult a board predicate". Neither P2 nor P4 ⇒ `frozen_ids` is forced
-    /// EMPTY and the resolution gate scans every current-stack entry, exactly as
-    /// before this change.
+    /// EMPTY and the resolution gate scans every current-stack entry.
     ResourceSignatureOnly,
 }
 
@@ -1867,13 +1546,13 @@ pub(crate) fn certified_period_touch<'a>(
     }
 }
 
-/// CR 603.5 + CR 603.4 + CR 608.2k: re-classify ONE entry's ability with its
-/// published "may" gate discharged, on the board `resolve_top` would hand the
-/// resolver — this entry off the stack, resolution scope bound.
+/// CR 603.5 + CR 603.4 + CR 608.2k: re-classify ONE entry's ability with its published "may"
+/// gate discharged, on the board `resolve_top` would hand the resolver — this entry off the
+/// stack, resolution scope bound.
 ///
-/// The ONE classifier answers the counterfactual; this module never
-/// re-implements the reasons the classifier returns `MayPrompt` for. `None` ⇒ not a triggered ability, or the resolution scope cannot bind,
-/// both of which are refusals rather than relief.
+/// The ONE classifier answers the counterfactual; this module never re-implements the reasons
+/// the classifier returns `MayPrompt` for. `None` ⇒ not a triggered ability, or the resolution
+/// scope cannot bind — both refusals rather than relief.
 fn optional_cleared_classification(
     frame: &GameState,
     entry: &StackEntry,
@@ -1884,20 +1563,17 @@ fn optional_cleared_classification(
     };
     let mut without_may_gate = (**ability).clone();
     without_may_gate.optional = false;
-    // CR 732.2a: the same cheap-precondition-before-the-clone rule the primary
-    // classifier follows. This is the SIBLING site, and it had the identical shape:
-    // `frame.clone()` is a whole `GameState` copy, and a `may` trigger whose ability is
-    // rejected on a pure AST gate (a non-allow-listed effect, an `UpTo` count, a modal
-    // header) used to buy that copy plus a scope binding to reach a verdict that never
+    // CR 732.2a: the same cheap-precondition-before-the-clone rule the primary classifier
+    // follows. `frame.clone()` is a whole `GameState` copy, and a `may` trigger whose ability
+    // is rejected on a pure AST gate (a non-allow-listed effect, an `UpTo` count, a modal
+    // header) would otherwise buy that copy plus a scope binding to reach a verdict that never
     // looks at the board — once per ring frame.
     //
-    // EQUIVALENCE, verified rather than assumed. Hoisting changes exactly one case:
-    // an entry whose scope would have FAILED to bind AND whose chain is gated now
-    // returns `Some(MayPrompt)` where it previously returned `None`. `residual` has
-    // exactly one reader (`optional_relief_for`), and it opens
-    // `match cached.residual.as_ref()?` with a `MayPrompt => None` arm — so `None` and
-    // `Some(MayPrompt)` produce the identical downstream result. Re-derived here by
-    // grepping every `.residual` read in this file: one, plus one comment.
+    // EQUIVALENCE: hoisting changes exactly one case — an entry whose scope would have FAILED
+    // to bind AND whose chain is gated now returns `Some(MayPrompt)` where it previously
+    // returned `None`. `residual`'s one reader (`optional_relief_for`) opens
+    // `match cached.residual.as_ref()?` with a `MayPrompt => None` arm, so the two produce the
+    // identical downstream result.
     if crate::game::resolution_prompt::chain_offers_choice(&without_may_gate) {
         return Some(crate::game::resolution_prompt::ResolutionChoiceFreedom::MayPrompt);
     }
@@ -1922,16 +1598,13 @@ fn optional_cleared_classification(
 /// design is FAIL-CLOSED BY CONSTRUCTION — forgetting to thread a proof can only make
 /// a predicate more conservative, never less.
 ///
-/// The `_scoped` predicates below stay identity for [`LoopWindowScope::unproven`]
-/// (asserted by `scoped_wrappers_are_identity`) because every guard that reads a field
-/// sits inside an `if let Some(..)` / `is_some_and`. EVERY field is now read:
-/// `phase_invariant` and `sole_driver` by the growing-class firewall's CR 510.2 / CR 506.1
-/// and CR 117.1b guards, `cast_card_ids` by the projected firewall's CR 601.2f cost guard,
-/// `pinned` by [`loop_states_cover_modulo_growth_scoped`]'s CR 732.2a gates (3) and (6), and
-/// `identity_unstable` by the growing-class firewall's CR 400.7 host-stability conjunct
-/// ([`host_identity_is_stable`], read at block (3)'s spent-self-entry relief AND at block (2)'s
-/// proposal-absence relief — TWO consumers of one proof, which is why the derivation lives in
-/// [`identity_unstable_ids`] and not at either call site).
+/// The `_scoped` predicates below stay identity for [`LoopWindowScope::unproven`] because
+/// every guard that reads a field sits inside an `if let Some(..)` / `is_some_and`. EVERY
+/// field is read: `phase_invariant` and `sole_driver` by the growing-class firewall's
+/// CR 510.2 / CR 506.1 and CR 117.1b guards, `cast_card_ids` by the projected firewall's
+/// CR 601.2f cost guard, `pinned` by [`loop_states_cover_modulo_growth_scoped`]'s CR 732.2a
+/// gates (3) and (6), and `identity_unstable` by the CR 400.7 host-stability conjunct
+/// ([`host_identity_is_stable`]), whose TWO consumers are why it lives in one derivation.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LoopWindowScope<'a> {
     /// `Some(phase)` iff the caller proved both frames are equal on turn number AND
@@ -2004,47 +1677,31 @@ impl LoopWindowScope<'static> {
             // behaviour. `Option<&PeriodTouch>` is const-constructible as
             // `None`, so this stays a `const fn` on `LoopWindowScope<'static>`.
             period: None,
-            // CR 400.7: DELIBERATE, and row `scoped_wrappers_are_identity` is its
-            // discharge. `None` is what makes `host_identity_is_stable` answer `false`
-            // here, so the spent-self-entry relief at block (3) can never fire on the
-            // offline classifier's path and the 2-arg wrappers stay byte-identical.
-            // Populating this with `Some(&EMPTY)` would relieve every stable host on a
-            // path that proved nothing about identity — relief in the forbidden direction.
+            // CR 400.7: DELIBERATE. `None` is what makes `host_identity_is_stable`
+            // answer `false` here, so the spent-self-entry relief at block (3) can never
+            // fire on the offline classifier's path and the 2-arg wrappers stay
+            // byte-identical. Populating this with `Some(&EMPTY)` would relieve every
+            // stable host on a path that proved nothing about identity — relief in the
+            // forbidden direction.
             identity_unstable: None,
         }
     }
 }
 
-/// CR 510.2 / CR 506.1 / CR 117.1b: the proof a cover pair carries about its own
-/// window. SINGLE AUTHORITY — both suppressing firewall callers derive their scope
-/// here, so the two [`LoopWindowScope`] populations can never drift apart.
+/// CR 510.2 / CR 506.1 / CR 117.1b: the proof a cover pair carries about its own window.
+/// SINGLE AUTHORITY — both suppressing firewall callers derive their scope here, so the two
+/// [`LoopWindowScope`] populations can never drift apart. Fail-closed in every branch: a
+/// frame pair that proves nothing gets the [`LoopWindowScope::unproven`] values.
 ///
 /// `phase_invariant`: `Some(phase)` only when the frames agree on turn number AND
-/// step-granular phase AND neither carries a pending extra phase (CR 500.8 can insert
-/// a duplicate of the SAME phase inside one turn, which would break "equal phase ⇒
-/// never left it"). Derived LOCALLY from the frames rather than read off a preceding
-/// gate, so it is independent of gate ORDER — in
-/// [`loop_states_cover_modulo_fodder_growth`] the firewall call PRECEDES
-/// `eq_except_growable`. (`extra_turns` is deliberately NOT a conjunct: an extra TURN
-/// is taken after the current one and `turn_number` is monotone, so it cannot insert a
-/// duplicate phase inside a window whose frames already agree on `turn_number`.)
-///
-/// `sole_driver`: `Some(p)` only when BOTH frames' driving sequences are non-empty and
-/// every entry in BOTH names controller `p` (CR 117.1b: a player may activate an
-/// ability only with priority, and no other player receives priority inside the taken
-/// shortcut). Reading only `prior` would mint `Some(p)` for a window whose other frame
-/// was driven by someone else — the RELIEVING direction. An empty sequence proves
-/// nothing, so it yields `None`, not "nobody drove this".
-///
-/// `identity_unstable` (CR 400.7): NOT derived here, and that is deliberate. The two frames
-/// this function receives are the caller's already-PROJECTED frames, and
-/// [`identity_unstable_ids`] must be computed from the same pair the caller then hands the
-/// firewall — so the set is derived at the call site and threaded in, exactly as `pinned` and
-/// `period` are. A caller that has not derived it passes `None` and gets byte-identical
-/// pre-change behaviour, because [`host_identity_is_stable`] is `false` on `None`.
-///
-/// Fail-closed in every branch: a frame pair that proves nothing gets the
-/// [`LoopWindowScope::unproven`] values and therefore byte-identical behaviour.
+/// step-granular phase AND neither carries a pending extra phase (CR 500.8 can insert a
+/// duplicate of the SAME phase inside one turn). Derived LOCALLY, so it is independent of gate
+/// ORDER; `extra_turns` is not a conjunct because an extra TURN is taken after the current one
+/// and `turn_number` is monotone. `sole_driver`: `Some(p)` only when BOTH frames' driving
+/// sequences are non-empty and every entry in BOTH names controller `p` (CR 117.1b) — reading
+/// only `prior` would mint `Some(p)` for a window another player drove. `identity_unstable`
+/// (CR 400.7) is NOT derived here: [`identity_unstable_ids`] must be computed from the same
+/// PROJECTED pair the caller hands the firewall, so it is threaded in as `pinned` and `period`.
 fn window_scope_from_cover_frames<'a>(
     pa: &GameState,
     pb: &GameState,
@@ -2091,36 +1748,17 @@ fn window_scope_from_cover_frames<'a>(
 /// CR 732.2a: is this stack entry's ANNOUNCEMENT-time target choice (gate (3)) already
 /// SPECIFIED by a slot the offer published?
 ///
-/// The acceptance test is NOT re-derived here: it is the mint's own,
-/// [`crate::game::engine::entry_publishes_pin_slots`], called for this one entry with the
-/// pins' own proposer. That is what keeps the relief predicate from being coarser than the
-/// mint predicate — controller (precondition (c)), entry kind, target shape and the
-/// CR 400.7 incarnation binding are all one function, so a slot can never be *matched*
-/// here on terms it was not *minted* on.
-///
-/// SCOPE OF DISCHARGE. The caller's relief is a bare `continue`, so a `true` here skips
-/// ALL FOUR facts [`stack_entry_has_no_ordering_input`] rejects on, while the pin answers
-/// exactly one of them (the target). Three of the other three are ability facts the mint
-/// itself now refuses to publish on (`multi_target` / `distribution` /
-/// `target_constraints`). The fourth, `pending_trigger_entry` (CR 603.3c mid-construction),
-/// is a property of THIS state rather than of the offer's schema, so it is enforced HERE —
-/// the mint is documented a function of the BOARD, never of the PROMPT (it reads many
-/// `GameState` fields; what it must never read is a prompt-coupled one), and
-/// `pending_trigger_entry` is set exactly while a `TriggerTargetSelection` prompt is up.
-/// That makes this predicate strictly NARROWER than the mint's, which
-/// is the safe direction; the forbidden direction is coarser.
-///
-/// Fail-closed in every branch: no published pins, a non-qualifying entry, a missing source
-/// object, or a mid-construction entry ⇒ not pinned ⇒ the gate that called this keeps
-/// rejecting.
-/// THE BOARD IS THE PAIR'S CARRYING FRAME — the identical `&GameState` the caller
-/// handed [`PeriodVerdicts::frame_ix`] to mint `f`, never a second board. That is
-/// what makes the two halves agree by construction: the cached `published` is
-/// `entry_publishes_pin_slots(frames[f], entry, proposer)`, so the mint half and
-/// the CR 603.3c half read ONE board per key. Dropping the board (and with it the
-/// CR 603.3c conjunct) would COMPILE and would be fail-OPEN, which is why it is a
-/// parameter rather than something a `FrameIx` is expected to recover:
-/// `PeriodVerdicts.frames` is private to `verdict_memo`.
+/// The acceptance test is NOT re-derived here — it is the mint's own,
+/// [`crate::game::engine::entry_publishes_pin_slots`], asked for this one entry with the
+/// pins' own proposer, so a slot can never be *matched* here on terms it was not *minted* on.
+/// The caller's relief is a bare `continue`, so a `true` skips ALL FOUR facts
+/// [`stack_entry_has_no_ordering_input`] rejects on while the pin answers one; the mint
+/// refuses to publish on three of the rest, and the fourth — `pending_trigger_entry`,
+/// CR 603.3c mid-construction — is a property of THIS state rather than of the schema and is
+/// enforced HERE. That makes this predicate strictly NARROWER than the mint's, the safe
+/// direction. `frame` must be the pair's CARRYING frame (the board that minted `f`), never a
+/// second one; it is a parameter because `PeriodVerdicts.frames` is private, and dropping it
+/// would COMPILE and be fail-OPEN. Fail-closed in every other branch too.
 fn entry_target_choice_is_pinned(
     board: &GameState,
     f: FrameIx,
@@ -2157,33 +1795,23 @@ fn entry_target_choice_is_pinned(
 /// explained by an optional gate the offer published — and if so, what verdict does the
 /// entry carry once that one axis is discharged?
 ///
-/// `Some(residual)` ⇒ relieved, and `residual` is the classification the entry would have
-/// had WITHOUT its CR 603.5 gate, which the caller must go on to gate exactly like any
-/// unpinned entry's (a pinned "may" says nothing about the CR 616.1 replacement surface
-/// for whichever event classes the residual names). `None` ⇒ no relief.
+/// `Some(residual)` ⇒ relieved, and `residual` is the classification the entry would have had
+/// WITHOUT its CR 603.5 gate, which the caller must go on to gate exactly like any unpinned
+/// entry's (a pinned "may" says nothing about the CR 616.1 replacement surface for whichever
+/// event classes the residual names). `None` ⇒ no relief.
 ///
 /// ATTRIBUTION is the load-bearing part. `ability_resolution_choice_freedom` reaches
-/// `MayPrompt` from two producers, both named here: ANY guard in
-/// `game::resolution_prompt::chain_offers_choice`, and `resolution_probe_verdict`'s
-/// `ResolutionProbe::Prompted` — which is reached only once `chain_offers_choice` has said
-/// no. The offer publishes a `MayChoice` point for exactly ONE guard inside the first:
-/// `ability.optional`, which is the single field `optional_cleared_classification` clears.
-/// `chain_offers_choice` IS the guard enumeration; no guard COUNT is restated here, for the
-/// reason the module doc gives.
-///
-/// So relief requires both published slots to be pinned AND the same ability, re-classified
-/// with `optional` cleared, to come back choice-free. Every other cause keeps returning
-/// `MayPrompt` and gets no relief, because no published pin specifies it — including the two
-/// that most invite the opposite reading: `optional_targeting` / `optional_for` SHARE a
-/// `return true` with `optional` yet are NOT what the pin publishes, and a CR 608.2d
-/// `repeat_for` "up to N" repeat COUNT prompts with no optional flag on the ability at all.
-/// An `unless_pay` (CR 118.12), a resolution-time `target_chooser`,
-/// `TargetChoiceTiming::Resolution`, a modal header, a `RepeatContinuation::ControllerChoice`
-/// repeat, and a CR 701.34a proliferate sub-ability are the same story.
-///
-/// It performs NO classification of its own and calls the mint not at all: both
-/// the published slots and the optional-cleared residual are read through the ONE
-/// door, which is what keeps the relief from being a second, drifting authority.
+/// `MayPrompt` from any guard in `game::resolution_prompt::chain_offers_choice` (that function
+/// IS the guard enumeration; no count is restated) and from `resolution_probe_verdict`'s
+/// `ResolutionProbe::Prompted`. The offer publishes a `MayChoice` point for exactly ONE of
+/// them: `ability.optional`, the single field [`optional_cleared_classification`] clears. So
+/// relief requires both published slots pinned AND the same ability, re-classified with
+/// `optional` cleared, to come back choice-free; every other cause keeps returning `MayPrompt`,
+/// including the two that most invite the opposite reading — `optional_targeting` /
+/// `optional_for`, which SHARE a `return true` with `optional` yet are not what the pin
+/// publishes, and a CR 608.2d `repeat_for` "up to N" repeat COUNT, which prompts with no
+/// optional flag at all. It performs NO classification of its own and calls the mint not at
+/// all: both the published slots and the residual are read through the ONE door.
 fn pinned_may_choice_relief(
     f: FrameIx,
     entry: &StackEntry,
@@ -2219,24 +1847,20 @@ fn pinned_may_choice_relief(
     }
 }
 
-/// CR 603.5: is this entry's optional trigger ALREADY ANSWERED by a stored "don't ask
-/// again" auto-choice — and with which answer?
+/// CR 603.5: is this entry's optional trigger ALREADY ANSWERED by a stored "don't ask again"
+/// auto-choice — and with which answer?
 ///
-/// ADOPTION C. This used to re-derive the CR 603.5 gate's conjunct set here, which made it a
-/// THIRD copy: it asked the three repeat-shape predicates and the recipient authority
-/// directly, and — measured — it OMITTED both `optional_for` and the feasibility probe, so it
-/// called a may "answered" on two ability shapes where the gate never reads the store at all.
-/// It now delegates the whole question to `effects::stored_may_answer`, the consumer half of
-/// the one authority `resolve_chain_body`'s own branch and the mint's guard (b) both take.
+/// The whole question is delegated to `effects::stored_may_answer`, the consumer half of the
+/// one authority `resolve_chain_body`'s own branch and the mint's guard (b) both take. Do not
+/// re-derive the CR 603.5 gate's conjunct set here: a local copy omitted `optional_for` and
+/// the feasibility probe and called a may "answered" on ability shapes where the gate never
+/// reads the store at all.
 ///
-/// NOT keyed to the proposer, and that survives the adoption: the gate asks whoever
-/// `optional_prompt_player` names, and a stored answer specifies that choice regardless of
-/// whose it is — a per-iteration window that never opens is specified for every seat at once
-/// (CR 732.2a).
-///
-/// `None` ⇒ no up-front gate opens, or it will PROMPT, or the ability carries no
-/// `may_trigger_origin` for a preference to key on. All are unspecified windows, which is the
-/// fail-closed direction.
+/// NOT keyed to the proposer: the gate asks whoever `optional_prompt_player` names, and a
+/// stored answer specifies that choice regardless of whose it is — a per-iteration window that
+/// never opens is specified for every seat at once (CR 732.2a). `None` ⇒ no up-front gate
+/// opens, or it will PROMPT, or the ability carries no `may_trigger_origin` for a preference
+/// to key on. All are unspecified windows.
 fn auto_may_answer_for(
     frame: &GameState,
     entry: &StackEntry,
@@ -2251,20 +1875,16 @@ fn auto_may_answer_for(
 /// announces is answered by a stored auto-choice, so the shortcut opens no window there.
 ///
 /// The SIBLING of [`pinned_may_choice_relief`] and deliberately its identical shape: both
-/// discharge exactly the `ability.optional` axis and both hand back the SAME
-/// optional-cleared residual for the caller to go on gating, because a specified `may`
-/// says nothing about the CR 616.1 replacement surface of the events it then proposes.
-/// Every OTHER `MayPrompt` producer — enumerated by symbol on
-/// [`pinned_may_choice_relief`], not counted here — keeps returning `MayPrompt` as the
-/// residual and gets no relief here, exactly as it gets none from a pin.
+/// discharge exactly the `ability.optional` axis and both hand back the SAME optional-cleared
+/// residual for the caller to go on gating, because a specified `may` says nothing about the
+/// CR 616.1 replacement surface of the events it then proposes. Every OTHER `MayPrompt`
+/// producer — enumerated by symbol on [`pinned_may_choice_relief`] — gets no relief here.
 ///
-/// ONLY `Accept` IS RELIEVED, and the asymmetry is not caution — it is what the residual
-/// MEANS. `optional_cleared_classification` re-classifies the ability as if it RESOLVED
-/// with its gate discharged, which is what a stored `Accept` produces. A stored `Decline`
-/// is equally prompt-free but produces the opposite board, so that residual would be a
-/// claim about events the shortcut never proposes. (It also cannot arise in a certified
-/// period: a declined `may` contributes none of the per-cycle delta the ring recurrence
-/// was built from.)
+/// ONLY `Accept` IS RELIEVED, and the asymmetry is what the residual MEANS:
+/// [`optional_cleared_classification`] re-classifies the ability as if it RESOLVED with its
+/// gate discharged, which is what a stored `Accept` produces. A stored `Decline` is equally
+/// prompt-free but produces the opposite board, so that residual would be a claim about
+/// events the shortcut never proposes.
 fn auto_may_choice_relief(
     frame: &GameState,
     f: FrameIx,
@@ -2282,38 +1902,20 @@ fn auto_may_choice_relief(
     }
 }
 
-/// Karp–Miller-style ω-acceleration (Karp–Miller 1969; Finkel et al. 2021), sound
-/// GIVEN the in-loop transition relation — the WHOLE beat: top-of-stack resolution
-/// (CR 608.1) with its resolution-time payments (CR 605.3a / CR 608.2g), trigger
-/// collection (CR 603.4), replacement application (CR 614.1), static condition
-/// gating (CR 604.1 / CR 613.1), SBA application (CR 704.3 / CR 704.5), and elimination
-/// processing (CR 800.4a) — is invariant under the projected-out player-level
-/// resources. Enforced by construction: object/board axes are STRICT-COMPARED
-/// ([`object_resource_axes_match`] — SBA object reads CR 704.5f/g/i can never
-/// observe hidden drift); the remaining projected set (player monotone resources +
-/// journals) is scanned fail-closed on BOTH read surfaces
-/// ([`stack_entry_reads_projected_resource`] on every current-stack entry,
-/// [`fire_time_conditions_read_projected_resource`] on every live
-/// trigger/replacement/static definition); player-life SBAs are the modeled outcome
-/// itself (controller non-dip + all-fallers-simultaneous, so the first CR 800.4a
-/// elimination is terminal per CR 104.2a); library/poison drift is firewalled to
-/// `None` by the winner predicate. Depth-independence of top-of-stack resolution:
-/// CR 608.1 / CR 405.5.
-///
-/// NOTE: the shipped constant-depth 2p path
-/// ([`loop_states_equal_modulo_resources`]) makes the SAME extrapolation with NONE
-/// of these — that inherited assumption is documented there, not silently claimed
-/// as a theorem here.
-///
-/// Returns `true` iff `current` **covers** `prior`: board equal modulo the narrowed
-/// projection with object resource axes strict-equal (item 1), `prior`'s normalized
-/// stack order-preservingly embeds in `current`'s with strict growth confined to
-/// already-occupied places (item 2), every grown place is a mandatory
-/// no-ordering-input triggered ability (item 3), no current-stack entry reads a
-/// still-projected resource (item 4), no live fire-time condition reads one
-/// either (item 5), and no current-stack entry can open a resolution-time player
-/// choice — either intrinsically or through the life-event replacement
-/// environment (item 6, CR 732.2a + CR 608.2d).
+/// Karp–Miller-style ω-acceleration (Karp–Miller 1969; Finkel et al. 2021), sound GIVEN the
+/// in-loop transition relation — the WHOLE beat: top-of-stack resolution (CR 608.1) with its
+/// resolution-time payments (CR 605.3a / CR 608.2g), trigger collection (CR 603.4),
+/// replacement application (CR 614.1), static condition gating (CR 604.1 / CR 613.1), SBA
+/// application (CR 704.3 / CR 704.5) and elimination processing (CR 800.4a) — is invariant
+/// under the projected-out player-level resources. Enforced by construction: object/board
+/// axes are STRICT-COMPARED ([`object_resource_axes_match`]); the remaining projected set is
+/// scanned fail-closed on BOTH read surfaces ([`stack_entry_reads_projected_resource`],
+/// [`fire_time_conditions_read_projected_resource`]); player-life SBAs are the modeled
+/// outcome itself; library/poison drift is firewalled to `None` by the winner predicate.
+/// Depth-independence of top-of-stack resolution: CR 608.1 / CR 405.5. NOTE that the shipped
+/// constant-depth 2p path ([`loop_states_equal_modulo_resources`]) makes the SAME
+/// extrapolation with NONE of these — that assumption is documented there, not claimed as a
+/// theorem here.
 pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameState) -> bool {
     // The zero-proof container: frames = `[current]`, no proposer ⇒ nothing published ⇒ no
     // relief, which is byte-identically what an `unproven()` scope already meant. The four
@@ -2331,46 +1933,22 @@ pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameS
 /// SPECIFIED one — published by the offer's pins, or absent altogether?
 ///
 /// The conjunct a BOUNDED offer needs, and the reason it is not
-/// [`loop_states_cover_modulo_growth_scoped`]: that predicate answers whether one frame
-/// COVERS another, and its item (1) additionally requires `object_resource_axes_match`
-/// STRICTLY — an axis [`loop_states_equal_modulo_resources`] deliberately projects OUT. An
-/// offer certified by exact recurrence would therefore be refused by an unrelated BOARD fact
-/// while its choice surface was never examined. Cover is the authority for cover; this is the
-/// authority for choices.
+/// [`loop_states_cover_modulo_growth_scoped`]: that predicate answers whether one frame COVERS
+/// another, and its item (1) additionally requires `object_resource_axes_match` STRICTLY — an
+/// axis [`loop_states_equal_modulo_resources`] deliberately projects OUT, so an offer certified
+/// by exact recurrence would be refused by an unrelated BOARD fact while its choice surface was
+/// never examined. Cover is the authority for cover; this is the authority for choices, and it
+/// re-derives nothing: the same [`stack_entry_has_no_ordering_input`],
+/// [`stack_entry_resolution_choice_freedom`], pin relief and CR 616.1 environmental guard that
+/// predicate's gates (3) and (6) use.
 ///
-/// SINGLE AUTHORITY nonetheless, shared verbatim with that predicate's gates (3) and (6) —
-/// the same [`stack_entry_has_no_ordering_input`] (CR 601.2c announcement-time input, reached
-/// for a triggered ability via CR 603.3d), the same
-/// [`stack_entry_resolution_choice_freedom`] (CR 608.2d resolution-time prompts), the same
-/// [`entry_target_choice_is_pinned`] / [`pinned_may_choice_relief`] pin relief, and the same
-/// CR 616.1 [`proposed_event_prompt_cause`] environmental guard the
-/// `FreeUnlessReplacements` verdict's own contract requires. Nothing is re-derived here.
-///
-/// THE WIDTH IS THE CERTIFIED PERIOD'S, NOT THE OFFER-BEAT STACK'S. Both loops range over
-/// `touch.announced` ∪ (`state.stack` \ `touch.frozen_ids`), each pair evaluated against its
-/// own carrying frame. That is WIDER than the offer-beat stack on the announced half — the
-/// majority population on both measured dumps, 157/161 (F4) and 19/23 (dellian) beats carry
-/// off-stack announced pairs — and NARROWER only on the proven-frozen half.
-///
-/// ⚠ THE JUSTIFICATION THIS DOC USED TO CARRY FOR SCANNING EVERY CURRENT-STACK ENTRY WAS
-/// CORRECT FOR A FUNCTION WITH NO WINDOW, AND IS NOW SUPERSEDED BY ONE. It read: "a frozen
-/// entry is one the window has NO evidence about, which is precisely the entry a grown-only
-/// scan would skip. The width is right." Its PREMISE survives — without a window parameter
-/// "no evidence" was all this predicate could say. With one, absence of evidence about
-/// RESOLUTION becomes positive evidence about POSITION: a frozen id is PROVEN to hold the
-/// same (index, id) in every certified frame and in `state`, under a certificate that forbids
-/// the stack shrinking. Measured on the `dellian` 4p fixture, a growing cascade over a frozen
-/// bottom prefix: up to 152 of 156 current-stack entries are exempt at the certified beat.
-///
-/// WHAT LICENSES THE EXEMPTION HERE, since this function establishes none of the cover
-/// predicate's premises itself (its whole body is the two loops plus the CR 616.1 tail): a
-/// non-empty `frozen_ids` can only have been built under [`PeriodCertification::BoardCovered`]
-/// ⟺ the offer's basis-A `else if` matched ⟺ [`loop_states_cover_modulo_growth_pinned`]
-/// returned `true` ⇒ that predicate's items (2)/(4)/(5) all passed UNEXEMPTED, and those run
-/// strictly before this conjunct. The premises are inherited as discharged facts about the
-/// same `(prior, current)` pair, never assumed. When `frozen_ids` is empty — every basis-B
-/// path, every equality-certified path, the degenerate alias — every current-stack entry is
-/// scanned exactly as before this change.
+/// THE WIDTH IS THE CERTIFIED PERIOD'S, NOT THE OFFER-BEAT STACK'S: both loops range over the
+/// announced pairs plus the current-stack entries the window did not prove frozen, each pair
+/// evaluated against its own carrying frame. A non-empty `frozen_ids` can only have been built
+/// under [`PeriodCertification::BoardCovered`], i.e. after
+/// [`loop_states_cover_modulo_growth_pinned`]'s items (2)/(4)/(5) passed UNEXEMPTED, so the
+/// exemption's premises are inherited as discharged facts about the same pair. When
+/// `frozen_ids` is empty every current-stack entry is scanned.
 pub(crate) fn stack_choices_are_all_specified<'a>(
     state: &'a GameState,
     proposer: PlayerId,
@@ -2484,20 +2062,13 @@ fn resolution_events_are_discharged(
     match verdict {
         ResolutionChoiceFreedom::MayPrompt => false,
         ResolutionChoiceFreedom::FreeUnlessReplacements(events) => {
-            // CR 616.1: FAIL CLOSED ON AN EMPTY DERIVATION, IN EVERY BUILD.
-            //
-            // This was a `debug_assert!(!events.is_empty(), ..)` resting on the contract
-            // that `probe_resolution` returns `Prompted` for an empty derivation. That
-            // contract is real but it lives in ANOTHER module and is not enforceable from
-            // here — and `debug_assert!` compiles out of release, where `any()` over an
-            // empty slice is `false`, so `!any(..)` would return `true` and discharge the
-            // obligation having inspected NOTHING. Fail-open is the single direction this
-            // predicate exists to prevent.
-            //
-            // A REFUSAL, not a panic, is the right shape: every other seam in this module
-            // answers an unclassifiable input with "no certificate, no offer", and the
-            // refusal is what a test can pin. A `debug_assert!` here could not be covered
-            // at all — it aborts the very build tests run in.
+            // CR 616.1: FAIL CLOSED ON AN EMPTY DERIVATION, IN EVERY BUILD. The contract that
+            // `probe_resolution` returns `Prompted` for an empty derivation is real but lives
+            // in ANOTHER module and is not enforceable from here, and a `debug_assert!`
+            // compiles out of release — where `any()` over an empty slice is `false`, so
+            // `!any(..)` would discharge the obligation having inspected NOTHING. A REFUSAL,
+            // not a panic: every other seam in this module answers an unclassifiable input
+            // with "no certificate, no offer", and a refusal is what a test can pin.
             if events.is_empty() {
                 return false;
             }
@@ -2547,32 +2118,20 @@ pub(crate) fn loop_states_cover_modulo_growth_pinned<'a>(
     loop_states_cover_modulo_growth_scoped(prior, current, scope, verdicts)
 }
 
-/// CR 601.2f + CR 601.2a: the set of card ids this loop window's recorded driving
-/// sequence touches — a SUPERSET of the true cast set (only `LoopAction::Recast`
-/// genuinely casts, CR 601.2a; `Activate` and `TapLandForMana` do not), which is the
-/// CONSERVATIVE direction: over-stating the cast set makes `!ids.contains(..)` false
-/// more often ⇒ fewer relieved defs ⇒ more vetoes.
+/// CR 601.2f + CR 601.2a: the set of card ids this loop window's recorded driving sequence
+/// touches — a SUPERSET of the true cast set (only `LoopAction::Recast` genuinely casts), which
+/// is the CONSERVATIVE direction: over-stating it makes `!ids.contains(..)` false more often ⇒
+/// fewer relieved defs ⇒ more vetoes.
 ///
 /// FAIL-CLOSED ON EMPTY, and this is the whole reason the function exists: an empty
-/// `last_loop_action_sequence` means NO RECORDED PROOF, not "this window casts
-/// nothing". `Some(vec![])` would assert the latter and relieve EVERY conditioned
-/// self-cost static — relief in the forbidden direction. `None` = scan everything.
-/// Pinned by `empty_loop_action_sequence_proves_nothing_about_casting`.
+/// `last_loop_action_sequence` means NO RECORDED PROOF, not "this window casts nothing".
+/// `Some(vec![])` would assert the latter and relieve EVERY conditioned self-cost static.
+/// `None` = scan everything.
 ///
-/// FAIL-CLOSED ON A FOREIGN PERIOD, for the same reason one level up (CR 732.2a). A recorded
-/// period is evidence about the seat that recorded it and no one else, so when the caller names
-/// a `proposer` only THAT seat's own period is proof of what this window casts. Otherwise an
-/// opponent's choice of WHICH CARD TO ACTIVATE would select which soundness relief applies to
-/// the proposer's certification — the same "relief in the forbidden direction" the emptiness
-/// contract above rules out, arriving through a different door. This became reachable when the
-/// bounded mint's step (1b) went seat-relative: before that, a bounded offer could not be minted
-/// with any sequence present, so the question never arose.
-///
-/// `is_some_and`, NOT `is_some`: the proposer-less 2-arg entry
-/// [`loop_states_cover_modulo_growth`] builds a `PeriodVerdicts::unproven` container used by the
-/// object-growth detection covers in `analysis::loop_check`, which have no proposer to bind. When
-/// the container names none, this is byte-identical to the pre-fix behaviour; requiring
-/// `Some(proposer)` there would strip relief from that whole class.
+/// FAIL-CLOSED ON A FOREIGN PERIOD (CR 732.2a): a recorded period is evidence about the seat
+/// that recorded it, so an opponent's choice of WHICH CARD TO ACTIVATE must not select which
+/// soundness relief applies to the proposer's certification. `is_some_and`, NOT `is_some`: the
+/// proposer-less 2-arg entry binds no proposer, and requiring one would strip that class.
 fn window_cast_card_ids(state: &GameState, proposer: Option<PlayerId>) -> Option<Vec<CardId>> {
     if proposer.is_some_and(|p| state.loop_period_controller() != Some(p)) {
         return None;
@@ -2589,23 +2148,19 @@ fn window_cast_card_ids(state: &GameState, proposer: Option<PlayerId>) -> Option
     }
 }
 
-/// Scoped sibling of [`loop_states_cover_modulo_growth`] — see [`LoopWindowScope`].
-/// The `scope` parameter now carries CR 732.2a pin proofs INTO this body: gate (3)
-/// skips an entry whose published target [`DecisionSlot`] the offer pinned
-/// ([`entry_target_choice_is_pinned`]) and gate (6) discharges a `MayPrompt` that is
-/// wholly attributable to a published CR 603.5 gate ([`pinned_may_choice_relief`]), per
-/// the EXTENSION POINT's three preconditions. That is this body's own use of the
-/// parameter.
+/// Scoped sibling of [`loop_states_cover_modulo_growth`] — see [`LoopWindowScope`]. The
+/// `scope` parameter carries CR 732.2a pin proofs INTO this body: gate (3) skips an entry
+/// whose published target [`DecisionSlot`] the offer pinned ([`entry_target_choice_is_pinned`])
+/// and gate (6) discharges a `MayPrompt` wholly attributable to a published CR 603.5 gate
+/// ([`pinned_may_choice_relief`]), per the EXTENSION POINT's three preconditions.
 ///
-/// The parameter is ALSO the seam for the SIBLING covers, which build their scope
-/// through the single authority [`window_scope_from_cover_frames`] — its third
-/// argument is `pinned`, passed `None` at both live sibling call sites today.
+/// The parameter is ALSO the seam for the SIBLING covers, which build their scope through the
+/// single authority [`window_scope_from_cover_frames`].
 ///
-/// Not carried by the parameter: the PROJECTED conjunct (5) this body passes
-/// downstream is derived LOCALLY from `current`'s own driving sequence
-/// ([`window_cast_card_ids`]), and the `projected_scope` built for that call
-/// deliberately holds `pinned: None` — the projected firewall is a different
-/// axis and must not inherit the caller's pins.
+/// Not carried by the parameter: the PROJECTED conjunct (5) this body passes downstream is
+/// derived LOCALLY from `current`'s own driving sequence ([`window_cast_card_ids`]), and the
+/// `projected_scope` built for that call deliberately holds `pinned: None` — the projected
+/// firewall is a different axis and must not inherit the caller's pins.
 pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
     prior: &GameState,
     current: &'a GameState,
@@ -2613,7 +2168,7 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
     verdicts: &mut PeriodVerdicts<'a>,
 ) -> bool {
     // (1) Board equal modulo the NARROWED projection AND modulo the stack, with the
-    // object resource axes STRICT-COMPARED (R5-B1). Project both, clear both stacks
+    // object resource axes STRICT-COMPARED. Project both, clear both stacks
     // and their stack-entry-indexed firing sidecars (the stack is compared separately
     // in (2)), then require full board equality plus loyalty-activation parity plus
     // strict object damage/counter equality.
@@ -2648,11 +2203,9 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
     for (orig, norm) in current.stack.iter().zip(cur_stack.iter()) {
         // CR 732.2a EXTENSION POINT (see item 6's block): a slot the OFFER publishes is
         // a SPECIFIED choice, not a free one, so its announcement-time target input is
-        // no longer player ordering input.
-        //
-        // Deliberately NOT frozen-filtered: the PLACEMENT RULE keeps the frozen skip in
-        // item (6) alone, because items (4)/(5) are what establish the premise that skip
-        // consumes — reading it here would consume a premise not yet proved.
+        // no longer player ordering input. Deliberately NOT frozen-filtered: the frozen
+        // skip lives in item (6) alone, because items (4)/(5) establish the premise that
+        // skip consumes.
         if entry_target_choice_is_pinned(current, f_current, orig, verdicts, scope) {
             continue;
         }
@@ -2663,13 +2216,11 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
         }
     }
 
-    // (4) On-stack fail-closed resource-read guard: NO entry on `current`'s stack may
-    // carry an AST that reads a still-projected axis (player monotone resources +
-    // journals). Object-axis readers pass — their drift breaks gate (1) instead.
-    // The closure is the ONLY body change item (4) takes: it counts the scans so the
-    // PLACEMENT RULE ("the frozen skip lives in item (6) and nowhere earlier") has an
-    // assertable surface instead of an argued one. The population is the UNEXEMPTED
-    // current stack — `frozen_ids` is deliberately not read here.
+    // (4) On-stack fail-closed resource-read guard: NO entry on `current`'s stack may carry
+    // an AST that reads a still-projected axis (player monotone resources + journals).
+    // Object-axis readers pass — their drift breaks gate (1) instead. The closure counts the
+    // scans so the placement rule ("the frozen skip lives in item (6) and nowhere earlier")
+    // has an assertable surface. The population is the UNEXEMPTED current stack.
     if current.stack.iter().any(|e| {
         verdicts.note_conjunct4_scan();
         stack_entry_reads_projected_resource(e)
@@ -2709,60 +2260,32 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
         return false;
     }
 
-    // (6) CR 732.2a + CR 608.2d: resolution-time choice gate, fail-closed, over
-    // EVERY current-stack entry — the extrapolation models future resolutions the
-    // window never observed (grown kinds) and re-runs observed kinds in states that
-    // differ on projected axes, where a resolver's choice surface (e.g. proliferate
-    // eligibility over player counters, CR 701.34a) can open a prompt that the
-    // AST-level item-4 scan cannot see. Verdicts come from the ability_scan
-    // classifier (pure fact-producers — rejection is decided ONLY here);
-    // FreeUnlessReplacements additionally requires the CR 616.1 environmental
-    // guard below, for exactly the event classes its payload names. THIS block is the
-    // single gate seam for resolution-choice rejection (item 3 is untouched and gates
-    // a different fact — announcement-time ordering input). Perf: O(stack × AST) +
-    // O(objects × defs) via the guard — same order as items (4)/(5).
+    // (6) CR 732.2a + CR 608.2d: resolution-time choice gate, fail-closed, over EVERY
+    // current-stack entry — the extrapolation models future resolutions the window never
+    // observed (grown kinds) and re-runs observed kinds in states that differ on projected
+    // axes, where a resolver's choice surface (proliferate eligibility over player counters,
+    // CR 701.34a) can open a prompt the AST-level item-4 scan cannot see. Verdicts come from
+    // the ability_scan classifier (pure fact-producers — rejection is decided ONLY here);
+    // `FreeUnlessReplacements` additionally requires the CR 616.1 environmental guard below.
+    // THIS block is the single gate seam for resolution-choice rejection; item 3 gates a
+    // different fact (announcement-time ordering input).
     //
-    // EXTENSION POINT — pinned fixed choices (CR 732.2a): a shortcut proposal MAY
-    // pre-specify choices in advance ("always choose permanent P"); only
-    // CONDITIONAL actions are forbidden. A future consumer may treat a MayPrompt
-    // entry as choice-free when a pin covers it, PROVIDED: (a) the pin is a
-    // STATE-INDEPENDENT designation whose option remains legal at every iteration
-    // of the growing state (never "the newest copy"); (b) cover-modulo-growth
-    // still holds under the pinned outcomes; (c) only the acting player's own
-    // choices are pinnable — opponent-choice entries remain rejectors unless EVERY
-    // option preserves the certificate (the win stays forced per the
-    // CR 104.2a-grounded winner predicate). Plug pins in at THIS seam as an
-    // additional input; do not rewire the classifiers or spread the decision.
-    //
-    // PINS ARE PLUGGED IN HERE (`scope.pinned`, minted by the single authority
-    // `game::engine::bounded_cycle_pin_slots`). Precondition (a) holds by construction:
-    // the pins that channel carries are SEAT designations and `MayChoice` designations,
-    // both state-independent (never "the newest copy"). A seat designation now has TWO
-    // spellings and (a) holds for both: `TargetPin::Player` is the CR 115.10a CHOICE class,
-    // while a CR 601.2c TARGET-class seat is
-    // `Scheduled(TargetSchedule::Constant(Ranking::one(AnnouncementSubject::Seat(..))))` —
-    // one entry, selected without reading the iteration index, so it too can never denote
-    // "the newest copy". The split changes WHICH AUTHORITY judges a seat's legality, never
-    // whether the designation is state-independent, which is all this precondition asks.
-    // (This module reads no pin VARIANT at all — every `TargetPin::` occurrence in it is
-    // prose — so no relief verdict can move with the spelling.) Precondition (c) is NOT taken on
-    // trust from the mint site: [`pinned_may_choice_relief`] re-runs the mint's own
-    // per-entry acceptance test — controller conjunct included — for THIS entry, so the
-    // relief predicate is the mint predicate rather than a coarser sibling of it.
-    // Precondition (b) is why relief is not a `continue`: the entry's RESIDUAL verdict
-    // (its classification with the published CR 603.5 gate discharged) re-enters the same
-    // gating an unpinned entry gets, so `FreeUnlessReplacements` still arms the
-    // CR 616.1 environmental guard below for the classes it names — a pinned target/"may"
-    // says nothing about whose life- or draw-event replacements might prompt.
-    //
-    // CR 608.1 + CR 732.2a: an entry the certified window proves FROZEN — same id at the
-    // same index in every window frame and in `current` — neither announced nor resolved in
-    // the described sequence, so it makes no choice there. THE FROZEN SKIP LIVES HERE AND
-    // NOWHERE EARLIER: items (2)/(4)/(5) are what establish the premises it consumes, and
-    // each of them returns on failure strictly above this loop, so by the time control
-    // arrives the premises are discharged facts about `(prior, current)` rather than
-    // assumptions about this predicate's own eventual answer.
+    // EXTENSION POINT — pinned fixed choices (CR 732.2a): a proposal MAY pre-specify choices in
+    // advance ("always choose permanent P"); only CONDITIONAL actions are forbidden. A
+    // `MayPrompt` entry may be treated as choice-free when a pin covers it, PROVIDED (a) the pin
+    // is a STATE-INDEPENDENT designation whose option stays legal at every iteration (never "the
+    // newest copy"); (b) cover-modulo-growth still holds under the pinned outcomes; (c) only the
+    // acting player's own choices are pinnable. (a) holds by construction for both spellings of
+    // a seat designation; (c) is not taken on trust — [`pinned_may_choice_relief`] re-runs the
+    // mint's own per-entry acceptance test, controller conjunct included; (b) is why relief is
+    // not a `continue`: the RESIDUAL verdict re-enters the same gating an unpinned entry gets.
+    // Plug future pins in at THIS seam; do not rewire the classifiers or spread the decision.
     for entry in &current.stack {
+        // CR 608.1 + CR 732.2a: an entry the certified window proves FROZEN — same id at the
+        // same index in every window frame and in `current` — neither announced nor resolved
+        // in the described sequence, so it makes no choice there. THE FROZEN SKIP LIVES HERE
+        // AND NOWHERE EARLIER: items (2)/(4)/(5) are what establish the premises it consumes,
+        // and each returns on failure strictly above this loop.
         if scope
             .period
             .is_some_and(|t| t.frozen_ids.contains(&entry.id))
@@ -2790,7 +2313,7 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
 }
 
 // ===========================================================================
-// PR-7 Phase 4a — offline object-growth loop detection (soundness core).
+// Offline object-growth loop detection (soundness core).
 //
 // The object-axis analogue of `loop_states_cover_modulo_growth`: `current`'s
 // battlefield = `prior`'s + a set of INERT grown permanents G (Karp–Miller
@@ -2814,10 +2337,10 @@ fn battlefield_ids(state: &GameState) -> HashSet<ObjectId> {
         .collect()
 }
 
-/// Clone through `flush_layers` so every derived characteristic (live abilities,
-/// P/T, keywords, static grants) reflects the current continuous environment
-/// before any content compare or firewall scan (§5.3b MAJOR-A: flush ONCE, up
-/// front, on both frames — a stale layer state could hide a |G|-scaling grant).
+/// Clone through `flush_layers` so every derived characteristic (live abilities, P/T,
+/// keywords, static grants) reflects the current continuous environment before any content
+/// compare or firewall scan — flush ONCE, up front, on both frames, because a stale layer
+/// state could hide a |G|-scaling grant.
 fn flush_clone(state: &GameState) -> GameState {
     let mut clone = state.clone();
     crate::game::layers::flush_layers(&mut clone);
@@ -2830,19 +2353,19 @@ fn flush_clone(state: &GameState) -> GameState {
 /// Mirrors `loop_states_cover_modulo_growth`'s scaffold, relaxing ONLY the board
 /// axis (permits strict battlefield growth) and confining that growth to an inert,
 /// unobserved class. Returns `true` iff ALL of:
-/// 1″. every NON-grown object is content-equal on the §5.2c 136-field partition
+/// 1″. every NON-grown object is content-equal on the `object_content_eq` field partition
 ///     ([`board_covers`]), each grown id confines to an inert class member already
 ///     in `prior`, object resource axes strict-match, and every non-object
-///     GameState field is strict-equal ([`eq_except_growable`], S3);
-/// 2″. every grown object is churn-inert (MAJOR-1, [`grown_objects_are_inert`]);
-/// 3″. no live fire-time observer reads the growing class (§5.3a firewall, S5);
-/// 4″. no cost surface references the growing class (§5.4 EXHAUSTIVE + the
-///     cost-keyword keystone rejectors, CR 732.2a / §6).
+///     GameState field is strict-equal ([`eq_except_growable`]);
+/// 2″. every grown object is churn-inert ([`grown_objects_are_inert`]);
+/// 3″. no live fire-time observer reads the growing class (the off-stack firewall);
+/// 4″. no cost surface references the growing class (CR 732.2a — the EXHAUSTIVE cost scan
+///     plus the cost-keyword keystone rejectors).
 pub(crate) fn loop_states_cover_modulo_object_growth(
     prior: &GameState,
     current: &GameState,
 ) -> bool {
-    // §5.3b: flush BOTH clones once, up front, then project out the monotone
+    // Flush BOTH clones once, up front, then project out the monotone
     // resources for the board/GameState equality axes.
     let pf = flush_clone(prior);
     let cf = flush_clone(current);
@@ -2851,7 +2374,7 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
     pa.stack.clear();
     pb.stack.clear();
 
-    // P-19: absolute-ObjectId battlefield set-difference. Growth must be PURE —
+    // Absolute-ObjectId battlefield set-difference. Growth must be PURE —
     // no battlefield object may leave (a shrink is a real board change, not ω-cover).
     let bf_prior = battlefield_ids(&pa);
     let bf_current = battlefield_ids(&pb);
@@ -2866,7 +2389,7 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
         return false;
     }
 
-    // (1″) Board equal modulo the inert growth set + all non-object GameState fields.
+    // (1) Board equal modulo the inert growth set + all non-object GameState fields.
     if !(board_covers(&pa, &pb, &grown_ids)
         && object_resource_axes_match(prior, current)
         && loyalty_activation_counts_match(&pa, &pb)
@@ -2881,37 +2404,17 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
         return false;
     }
 
-    // (3″) No live fire-time observer reads the growing class (§5.3a, S5).
-    // `None` class context: the offline object-growth path (`detect_loop`) has no proven
-    // class set to gate ETB matchers against, so the firewall keeps its conservative veto on
-    // every observer whose relief is class-keyed (byte-identical to pre-gate behavior).
-    // ⚠ The window scope is NOT class-keyed: CR 117.1b (`sole_driver`) and CR 510.2 / CR 506.1
-    // (`phase_invariant`) relief IS live here, so this OFFLINE classifier can now emit
-    // certificates where it previously vetoed. That is the one seam this phase can widen.
+    // (3) No live fire-time observer reads the growing class.
+    // `None` class context: the offline object-growth path (`detect_loop`) has no proven class
+    // set to gate ETB matchers against, so the firewall keeps its conservative veto on every
+    // observer whose relief is class-keyed. The window scope is NOT class-keyed, though:
+    // CR 117.1b (`sole_driver`) and CR 510.2 / CR 506.1 (`phase_invariant`) relief IS live here.
     //
-    // NO AUTOMATED DETECTOR WATCHES IT, stated plainly rather than implied. The
-    // `cargo combo-verify` row-for-row diff was measured at ZERO sensitivity to this seam:
-    // forcing this predicate to `return true` — its most restrictive possible behavior —
-    // moved no corpus row at all. That zero is NOT an untested instrument: the same
-    // invocation, with `detect_loop` forced to `return None`, moves 10 of the 54 rows
-    // (13 confirmed / 0 failed becomes 3 confirmed / 10 failed), so the row diff can and
-    // does register change. It is discriminating but not total — 3 confirmed rows survive
-    // that mutation, i.e. they are certified by a path that never consults `detect_loop`.
-    // WHY every row is insensitive to THIS seam has NOT been measured, and no mechanism is
-    // asserted here: the liveness control establishes that the instrument works, not why
-    // the seam figure is zero.
-    //
-    // What bounds the SHIPPED blast radius is not a detector but compile-time exclusion of
-    // the CALLERS: `loop_states_cover_modulo_object_growth`'s only non-test caller is
+    // NO AUTOMATED DETECTOR WATCHES THAT SEAM. What bounds the shipped blast radius is
+    // compile-time exclusion of the CALLERS: this predicate's only non-test caller is
     // `detect_loop`, whose only non-test callers live in `analysis::corpus`, which is
-    // `#[cfg(any(test, feature = "combo-verify"))]` — and `combo-verify` is non-default
-    // (the crate manifest declares no `default` feature at all). Precisely: `detect_loop`
-    // itself still compiles into the default lib; nothing in a default build CALLS it.
-    // The `cfg(test)` unit call sites of `loop_states_cover_modulo_object_growth` in this
-    // file's own `mod tests` are what exercise this line at all; `cargo combo-verify`
-    // remains worth running as corroboration, but it is NOT evidence about this seam.
-    // CR 400.7: bound before the call so NLL keeps the borrow live across it
-    // (`LoopWindowScope::identity_unstable` is `Option<&'a HashSet<ObjectId>>`).
+    // `#[cfg(any(test, feature = "combo-verify"))]` — and `combo-verify` is non-default.
+    // CR 400.7: bound before the call so NLL keeps the borrow live across it.
     let identity_unstable = identity_unstable_ids(&pa, &pb);
     if fire_time_conditions_read_growing_class_scoped(
         &cf,
@@ -2928,7 +2431,7 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
         return false;
     }
 
-    // (4″) No cost surface references the growing class (§5.4 + §6 keystone).
+    // (4″) No cost surface references the growing class (CR 732.2a keystone).
     if cost_surface_references_growing_class(&cf) {
         return false;
     }
@@ -2951,7 +2454,7 @@ pub(crate) fn fodder_content_eq(a: &GameObject, b: &GameObject) -> bool {
 /// Does `id` name a member of the fodder class in `state`? Content-derived (via
 /// [`fodder_content_eq`]), NOT ObjectId — fodder tokens are not id-stable (a
 /// reproduced token gets a fresh id; a tapped one keeps its id but flips `tapped`).
-#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests.
+#[cfg_attr(not(test), allow(dead_code))] // exercised by this module's unit tests.
 fn is_fodder(state: &GameState, id: &ObjectId, class: &GameObject) -> bool {
     state
         .objects
@@ -2986,25 +2489,17 @@ pub(crate) fn tapped_fodder_members(
 /// CR 110.1 / CR 732.2a: the fodder-axis board cover. Partitions the battlefield by
 /// [`fodder_content_eq`] into a STABLE-ENGINE and a FODDER part:
 ///  * STABLE-ENGINE (non-fodder objects, ALL zones): id-keyed content equality via
-///    [`objects_content_eq`]. This is REQUIRED, not redundant: `impl PartialEq for
-///    GameState` compares only `objects.len()` (game_state.rs), so the caller's
-///    `eq_except_growable` (which reuses that PartialEq) is BLIND to a stable-engine
-///    content drift (tap / counter / attachment / move). This `object_content_eq`
-///    compare is the SOLE authority for it — exactly as the object-growth
-///    `board_covers` is the sole authority for its non-grown partition.
-///  * FODDER (content == class modulo tapped): a tapped-split multiset cover (the
-///    convoke/affinity loop taps one fodder member and reproduces another):
-///      - `untapped_fodder(current) >= untapped_fodder(prior)` (B1 — untapped
-///        reproduction preserved; a draining loop is not a sustainable ω-cover), and
-///      - `total_fodder(current) > total_fodder(prior)` (STRICT object growth — this
-///        predicate, like [`loop_states_cover_modulo_object_growth`], certifies
-///        growth only, never a constant-depth loop).
+///    [`objects_content_eq`]. REQUIRED, not redundant: `impl PartialEq for GameState`
+///    compares only `objects.len()`, so the caller's `eq_except_growable` (which reuses that
+///    PartialEq) is BLIND to a stable-engine content drift (tap / counter / attachment /
+///    move). This compare is the SOLE authority for it.
+///  * FODDER (content == class modulo tapped): a tapped-split multiset cover — untapped
+///    fodder must not shrink (a draining loop is not a sustainable ω-cover) and total fodder
+///    must strictly grow (this predicate certifies growth only, never constant depth).
 ///
-/// Fodder INERTNESS is deliberately NOT checked here — it is the single
-/// responsibility of the caller's `grown_objects_are_inert` (mirroring how the
-/// object-growth `board_covers` leaves inertness to that same helper), so the
-/// F-B7 discriminator stays non-vacuous.
-#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests.
+/// Fodder INERTNESS is deliberately NOT checked here — it is the single responsibility of
+/// the caller's `grown_objects_are_inert`, so that discriminator stays non-vacuous.
+#[cfg_attr(not(test), allow(dead_code))] // exercised by this module's unit tests.
 fn board_covers_modulo_fodder(
     prior: &GameState,
     current: &GameState,
@@ -3043,7 +2538,7 @@ fn board_covers_modulo_fodder(
     };
     let (prior_untapped, prior_total) = fodder_split(prior);
     let (current_untapped, current_total) = fodder_split(current);
-    // B1: untapped reproduction preserved.
+    // Untapped reproduction preserved.
     if current_untapped < prior_untapped {
         return false;
     }
@@ -3051,24 +2546,20 @@ fn board_covers_modulo_fodder(
     current_total > prior_total
 }
 
-/// CR 732.2a fodder-axis cover: does `current` cover `prior` by pure inert,
-/// unobserved tapped-fodder growth (the convoke/affinity Sprout-Swarm shape)? A
-/// near-clone of [`loop_states_cover_modulo_object_growth`], swapping the board
-/// sub-predicate for the tapped-split multiset ([`board_covers_modulo_fodder`]) and
-/// DROPPING the `cost_surface_references_growing_class` firewall (§6 keystone): the
-/// fodder path is for the 4d-ii DRIVEN classifier that pays the real convoke+affinity
-/// cost on a clone and measures sustainability empirically, so the offline "models no
-/// cost ⇒ reject any board-scaling cost keyword" rejector does NOT apply here.
-/// `detect_loop` keeps the firewall (it stays on the object-growth predicate — T-B1i
-/// pins this). LIVE, not tree-scoped: called twice at `game::engine`'s `cover_ok` in
-/// `try_offer_object_growth_shortcut`, itself invoked from `apply()`'s empty-stack offer
-/// hook — so a change here can move a SHIPPED offer verdict. (`elimination_bounds` is the
-/// genuinely tree-scoped one; this is not.)
-///
-/// `fodder_class` is a CONTENT authority (a representative `&GameObject`), compared
-/// LIVE each call via [`fodder_content_eq`] (modulo tapped) — not latched by
-/// ObjectId, because fodder tokens are not id-stable. Covers any inert fungible token
-/// class (Saproling, Elf Warrior, Thopter, …), so it builds for the class not a card.
+/// CR 732.2a fodder-axis cover: does `current` cover `prior` by pure inert, unobserved
+/// tapped-fodder growth (the convoke/affinity Sprout-Swarm shape)? A near-clone of
+/// [`loop_states_cover_modulo_object_growth`], swapping the board sub-predicate for the
+/// tapped-split multiset ([`board_covers_modulo_fodder`]) and DROPPING the
+/// `cost_surface_references_growing_class` firewall: this path serves the DRIVEN classifier,
+/// which pays the real convoke+affinity cost on a clone and measures sustainability
+/// empirically, so the offline "models no cost ⇒ reject any board-scaling cost keyword"
+/// rejector does not apply. `detect_loop` keeps that firewall on the object-growth predicate.
+/// LIVE, not tree-scoped: reached from `apply()`'s empty-stack offer hook via
+/// `game::engine`'s `try_offer_object_growth_shortcut`, so a change here can move a SHIPPED
+/// offer verdict. `fodder_class` is a CONTENT authority (a representative `&GameObject`),
+/// compared LIVE each call via [`fodder_content_eq`] (modulo tapped) — not latched by
+/// ObjectId, because fodder tokens are not id-stable. Covers any inert fungible token class
+/// (Saproling, Elf Warrior, Thopter, …), so it builds for the class not a card.
 pub(crate) fn loop_states_cover_modulo_fodder_growth(
     prior: &GameState,
     current: &GameState,
@@ -3108,11 +2599,9 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     // fodder class so the firewall's block(1) can skip an ETB observer whose matcher provably
     // excludes EVERY member of it (CR 603.6a). There is deliberately no representative to
     // choose: relief is universally quantified over the class, so no member-selection rule
-    // (and no CR 110.5b tiebreak) is needed or sound here. Order-independence: the
-    // member-quantified predicates are pure state reads, so `HashSet` iteration order moves
-    // only the short-circuit point, never the verdict. The ids are projection-stable, so they
-    // resolve against the flushed-current `cf` the firewall scans; an empty set never relieves
-    // (the `!is_empty()` guards) → conservative veto preserved.
+    // (and no CR 110.5b tiebreak) is needed or sound here. The member-quantified predicates
+    // are pure state reads, so `HashSet` iteration order moves only the short-circuit point,
+    // never the verdict; an empty set never relieves (the `!is_empty()` guards).
     // ponytail: O(observers x |G|), short-circuiting on the first non-excluding member. If |G|
     // ever measures hot, hoist the member-independent conjuncts out of the per-member loop.
     let class_members: HashSet<ObjectId> = all_fodder
@@ -3142,7 +2631,7 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
         return false;
     }
 
-    // CR 606.3 fail-safe legality gate (§5): a fodder loop that ALSO re-activates a
+    // CR 606.3 fail-safe legality gate: a fodder loop that ALSO re-activates a
     // loyalty ability must not certify. Transparent (all-zero) for the target class.
     if !loyalty_activation_counts_match(&pa, &pb) {
         return false;
@@ -3152,7 +2641,7 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
 }
 
 // ===========================================================================
-// PR-7 — preserved-`Generic`-counter growth cover (the proliferate/charge axis).
+// Preserved-`Generic`-counter growth cover (the proliferate/charge axis).
 //
 // The counter analogue of `loop_states_cover_modulo_object_growth`: `current`'s
 // board equals `prior`'s except that one or more PRESERVED `Generic` object
@@ -3184,15 +2673,14 @@ enum CounterGrowthDisposition {
 /// construction, so a new `CounterType` variant will not compile until it is
 /// explicitly classified here. Scoped to the ω-COVER DIRECTION GATE alone
 /// (`classify_generic_counter_growth`) — it is NOT the display partition. Sharing one
-/// partition between the cover and the ∞ display channel WAS the bug: it made every
-/// non-`Generic` beneficial counter loop (+1/+1, loyalty, defense) collapse correctly
-/// while rendering no `∞` pill at all. The display and batched-collapse channels use
-/// `counter_is_beneficial_materializable` instead, and the two partitions are now
-/// deliberately different rather than accidentally shared. Kept in lockstep with
+/// partition between the cover and the ∞ display channel made every non-`Generic` beneficial
+/// counter loop (+1/+1, loyalty, defense) collapse correctly while rendering no `∞` pill at
+/// all; the display and batched-collapse channels use
+/// `counter_is_beneficial_materializable` instead. Kept in lockstep with
 /// `CounterType::is_monotone_loop_resource`, which governs the projection: monotone
-/// P/T / loyalty / defense counters are `project_out_resources`'d away, the
-/// non-`Generic` preserved counters gate SBAs/durations and so must compare
-/// strict-equal, and only `Generic` is a pure pumped marker.
+/// P/T / loyalty / defense counters are projected away, the non-`Generic` preserved counters
+/// gate SBAs/durations and so must compare strict-equal, and only `Generic` is a pure
+/// pumped marker.
 fn generic_counter_is_growable(ct: &CounterType) -> bool {
     match ct {
         // CR 122.1: a `Generic` marker is a pure pumped resource (charge /
@@ -3377,52 +2865,20 @@ fn equalize_generic_counters(prior: &GameState, current: &GameState) -> GameStat
     eq
 }
 
-/// CR 122.1 + CR 732.2a: does `current` cover `prior` by pure PRESERVED-`Generic`
-/// counter growth — the proliferate/charge (Pentad Prism) and burden (The One
-/// Ring) ω-cover shape? Returns `true` iff (i) ≥1 `Generic` object counter strictly
-/// grew and none fell across the cycle, and (ii) equalizing those `Generic` counts
-/// back to `prior`'s makes the two boards equal-modulo-resources.
-///
-/// # Fail-closed direction (strict growth ONLY)
-///
-/// `Stable` (no `Generic` motion) is rejected — a constant-depth loop is the
-/// existing `loop_states_equal_modulo_resources` path's job, not this one.
-/// `Consumed` (any `Generic` counter fell) is rejected — a loop that spends a
-/// finite `Generic` counter is not an unbounded pump but an ∞-consume trap, and
-/// the extrapolation would be unsound. Only `StrictGrowth` proceeds.
-///
-/// # New `Generic`-counter projection axis (bounded by revocability, below)
-///
-/// This predicate rides the FIREWALL-FREE constant-depth
-/// `loop_states_equal_modulo_resources` (which requires normalized-stack EQUALITY),
-/// NOT the object-growth cover's stack-clearing Karp–Miller path. It therefore
-/// inherits that base's documented dormant-condition extrapolation assumption
-/// (a dormant intervening-if / static / replacement reading a projected resource
-/// could arm mid-extrapolation). Beyond that inherited surface, `equalize_generic_counters`
-/// projects out a `Generic` object-counter axis the base itself does NOT project
-/// (the base projects player consumables + monotone object counters only) — so a
-/// dormant condition reading a GROWING `Generic` counter (e.g. "as long as ~ has
-/// three or more charge counters, …") is a genuinely-new projected-axis observer
-/// this predicate introduces. That is sound here not by parity but by the
-/// revocability bound below: the sole consequence is an Advantage-classed offer /
-/// revocable mark, never a `GameOver`, so any such mis-extrapolation is a
-/// declinable / revocable over-claim, not a wrongful game-end.
-///
-/// # Revocability bound (why an over-claim is safe)
-///
-/// Both wirings of this predicate — the offline `detect_loop` Advantage
-/// certification and the live `interactive_loop_bridge` Path-C capability mark —
-/// never crown a `GameOver`. A charge/burden growth loop classifies
-/// `WinKind::Advantage` (CR 104.4b: an optional loop is not a draw), so an
-/// over-claim is a declinable shortcut OFFER / a revocable unbounded-capability
-/// mark, never a wrongful game-end. It is deliberately NOT wired into any
-/// Path-A/Path-B (GameOver-capable) seam.
-///
-/// # General over preserved-`Generic` growth
-///
-/// The axis is the `Generic` counter class, not one card: Pentad Prism (charge)
-/// and The One Ring (burden) are the SAME cover, so One-Ring's growth cover is
-/// discharged by this predicate — no per-card sibling needed.
+/// CR 122.1 + CR 732.2a: does `current` cover `prior` by pure PRESERVED-`Generic` counter
+/// growth — the proliferate/charge (Pentad Prism) and burden (The One Ring) ω-cover shape?
+/// `true` iff (i) ≥1 `Generic` object counter strictly grew and none fell, and (ii) equalizing
+/// those counts back to `prior`'s makes the boards equal-modulo-resources. The axis is the
+/// counter CLASS, so both cards are the same cover.
+/// STRICT GROWTH ONLY: `Stable` (no `Generic` motion) is
+/// [`loop_states_equal_modulo_resources`]' job, and `Consumed` (a `Generic` counter fell) is an
+/// ∞-consume trap, not a pump. It rides the FIREWALL-FREE constant-depth base (normalized-stack
+/// EQUALITY), not the object-growth cover's Karp–Miller path, and `equalize_generic_counters`
+/// projects out an axis that base does not — so a dormant condition reading a GROWING `Generic`
+/// counter ("as long as ~ has three or more charge counters, …") is a new projected-axis
+/// observer. Sound by revocability, not parity: both wirings classify `WinKind::Advantage`
+/// (CR 104.4b — an optional loop is not a draw) and never crown a `GameOver`, so a
+/// mis-extrapolation is declinable or revocable; it is wired into no GameOver-capable seam.
 pub(crate) fn loop_states_cover_modulo_counter_growth(
     prior: &GameState,
     current: &GameState,
@@ -3434,12 +2890,11 @@ pub(crate) fn loop_states_cover_modulo_counter_growth(
 }
 
 /// CR 110.1 + CR 613.1b: the object-axis board cover. Every NON-grown object (the
-/// shared-id complement over ALL zones) is content-equal via `object_content_eq`
-/// (the §5.2c 136-field partition); every grown battlefield object confines to an
-/// inert class member already present in `prior`'s battlefield — the Karp–Miller
-/// repetition guarantee (growth of an EXISTING inert class, not a never-observed
-/// 0→1 introduction). Absolute ObjectId: `normalize_for_loop` zeroes
-/// `next_object_id` but does not renumber existing ids.
+/// shared-id complement over ALL zones) is content-equal via `object_content_eq`;
+/// every grown battlefield object confines to an inert class member already present in
+/// `prior`'s battlefield — the Karp–Miller repetition guarantee (growth of an EXISTING
+/// inert class, not a never-observed 0→1 introduction). Absolute ObjectId:
+/// `normalize_for_loop` zeroes `next_object_id` but does not renumber existing ids.
 fn board_covers(prior: &GameState, current: &GameState, grown: &HashSet<ObjectId>) -> bool {
     // Non-grown content equality: strip grown ids from `current`, then require
     // id-keyed content equality with `prior`. A stray extra object in ANY zone (or
@@ -3468,7 +2923,7 @@ fn board_covers(prior: &GameState, current: &GameState, grown: &HashSet<ObjectId
     })
 }
 
-/// CR 732.2a MAJOR-1: is `o` a churn-inert permanent — one whose presence cannot
+/// CR 732.2a: is `o` a churn-inert permanent — one whose presence cannot
 /// change any observer's per-iteration behavior no matter how many copies exist?
 /// Requires: NO functioning triggered / static / replacement definitions (so no
 /// CDA P/T either — CDAs are characteristic-defining STATICS, CR 604.3), NO
@@ -3491,14 +2946,14 @@ fn object_is_inert(o: &GameObject) -> bool {
         && !o.card_types.supertypes.contains(&Supertype::World)
 }
 
-/// CR 732.2a MAJOR-1: every grown object is churn-inert.
+/// CR 732.2a: every grown object is churn-inert.
 fn grown_objects_are_inert(current: &GameState, grown: &HashSet<ObjectId>) -> bool {
     grown
         .iter()
         .all(|id| current.objects.get(id).is_some_and(object_is_inert))
 }
 
-/// BLOCKER-S3: every NON-object GameState field is strict-equal across the two
+/// Every NON-object GameState field is strict-equal across the two
 /// projected frames. Reuses `impl PartialEq for GameState` wholesale (the
 /// `_gamestate_partition_is_total` guard keeps that reuse honest as fields are
 /// added): strip the grown ids from both object maps and clear the battlefield
@@ -3517,155 +2972,84 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
     b.battlefield.clear(); // allow-raw-zone: clears a discarded comparison CLONE for loop-cover equality (fn takes &GameState, mutates a local clone) - not a gameplay zone event
     a.stack.clear();
     b.stack.clear();
-    // Rebase-adaptation (ONE-SIDED-SAFETY): compare the new upstream scalar
-    // `post_replacement_token_substitution_count` here even though upstream's
-    // `impl PartialEq for GameState` excludes it. Excluding a COUNT from the cover gate
-    // is the fail-DANGEROUS direction (a growing count could let two cycles compare EQUAL
-    // → false CR 732.2a certification); COMPARING it is fail-safe. It is provably `None` at
-    // every loop sample beat (cleared in effects/mod.rs whenever `waiting_for == Priority`
-    // — the sample gate itself), and on the only path that could leave it `Some` it is a
-    // DIRECT assignment of a CopyTokenOf substitution's fixed count (constant across a real
-    // copy-token loop's iterations), so comparing it can never suppress a legitimate loop's
-    // detection. (The self-referential incarnation field `resolution_source_relatch` is the
-    // opposite case — it VARIES per iteration at the sample beat, so it MUST stay excluded,
-    // like a timestamp; see the `_gamestate_partition_is_total` note.)
-    // F1 (PR-7 Phase 4d-ii / P7 v3, ONE-SIDED-SAFETY): compare `last_loop_action_sequence` here
-    // even though `impl PartialEq for GameState` excludes it. Excluding a decision context whose
-    // elements are loop-INVARIANT (unit-variant ConvokeMode, cross-incarnation-stable CardId,
-    // constant controller/from_zone/uses_buyback across a homogeneous period) is the
-    // fail-DANGEROUS direction — a HETEROGENEOUS / reordered sequence (alternating uses_buyback /
-    // from_zone, or a different activation order) whose board coincidentally covers would compare
-    // EQUAL under exclusion and be falsely certified an infinite CR 732.2a shortcut. COMPARING
-    // (order-sensitive `Vec` `PartialEq`) catches the differing sequence and rejects. It is `[]`
-    // at every non-loop-action sample beat, so this never suppresses a legitimate loop's detection
-    // (this IS the sole discriminator — the custom PartialEq omits it).
+    // ONE-SIDED SAFETY: compare `post_replacement_token_substitution_count` here even though
+    // `impl PartialEq for GameState` excludes it. Excluding a COUNT from the cover gate is the
+    // fail-DANGEROUS direction (a growing count could let two cycles compare EQUAL → false
+    // CR 732.2a certification); COMPARING it is fail-safe. It is provably `None` at every loop
+    // sample beat (cleared whenever `waiting_for == Priority` — the sample gate itself), and on
+    // the only path that could leave it `Some` it is a DIRECT assignment of a CopyTokenOf
+    // substitution's fixed count, so comparing it can never suppress a legitimate loop.
+    // (`resolution_source_relatch` VARIES per iteration, so it MUST stay excluded.)
+    //
+    // Same one-sided safety for `last_loop_action_sequence`: excluding a decision context whose
+    // elements are loop-INVARIANT is fail-DANGEROUS, because a HETEROGENEOUS or reordered
+    // sequence whose board coincidentally covers would compare EQUAL and be falsely certified.
+    // COMPARING (order-sensitive `Vec` `PartialEq`) catches it, and it is `[]` at every
+    // non-loop-action sample beat, so it never suppresses a legitimate loop.
     a == b
         && a.post_replacement_token_substitution_count
             == b.post_replacement_token_substitution_count
         && a.last_loop_action_sequence == b.last_loop_action_sequence
 }
 
-/// CR 732.2a + CR 608.2h + CR 608.2i + CR 608.2j: does this trigger's `execute` body observe the
-/// growing class ONLY through a battlefield-entry-ledger condition whose filter PROVABLY
-/// cannot count `class_member`? Returns `true` iff so — then the read's value is
-/// invariant across the loop's growth and the observer does not observe the loop.
+/// CR 732.2a + CR 608.2h + CR 608.2i + CR 608.2j: does this trigger's `execute` body observe
+/// the growing class ONLY through a battlefield-entry-ledger condition whose filter PROVABLY
+/// cannot count `class_member`? Returns `true` iff so — then the read's value is invariant
+/// across the loop's growth and the observer does not observe the loop.
 ///
-/// SOUNDNESS rests on the SAME disjointness premise as
-/// `etb_observer_provably_excludes_class` (the GAP-1 doc on this function's caller): the
-/// fodder is the only class that changes across the covered cycle, guaranteed IN ORDER by
-/// `game::engine::derived_fodder_class`'s ONE-CLASS rule (it returns `None` unless every new
-/// battlefield object of the cycle is the same class under BOTH `fodder_content_eq` AND
-/// `game::printed_cards::intrinsic_copiable_values`, so a `Some` means k >= 1 members of one class
-/// and nothing else) — which also has a second, display-only caller;
-/// the soundness-bearing one is inside the fodder-cover arm — then
-/// `board_covers_modulo_fodder` at its ONLY call site, which PRECEDES this call. Do not
+/// SOUNDNESS rests on the same ordered pair of invariants as
+/// `etb_observer_provably_excludes_class`: the fodder is the only class that changes across
+/// the covered cycle, guaranteed IN ORDER by `game::engine::derived_fodder_class`'s ONE-CLASS
+/// rule (it returns `None` unless every new battlefield object of the cycle is the same class
+/// under BOTH `fodder_content_eq` AND `game::printed_cards::intrinsic_copiable_values`), then
+/// by `board_covers_modulo_fodder` at its ONLY call site, which PRECEDES this call. Do not
 /// reorder that gate after the firewall.
 ///
-/// WHAT THE ONE-REPRESENTATIVE TEST ESTABLISHES, AND WHAT IT DOES NOT (a measured bound,
-/// not a generalisation proof — an earlier draft asserted the generalisation and it was
-/// FALSE). Fodder membership is `fodder_content_eq`, which routes through
-/// `object_content_eq` (`types/game_state.rs`). That function compares exactly
-/// 32 `GameObject` fields and does NOT compare `card_types`, `color` or `keywords`.
-/// `BattlefieldEntryRecord` (`types/game_state.rs`) has exactly 8 fields, no
-/// `..`: object_id / name / core_types / subtypes / supertypes / colors / keywords /
-/// controller.
-///   COVERED by the fodder relation:  `name`, `controller`.
-///   NOT COVERED:                     `core_types`, `subtypes`, `supertypes`, `colors`,
-///                                    `keywords` — and this matcher reads every one of
-///                                    them (restrictions.rs:493 type, :502 color,
-///                                    :507 keyword).
-///   `object_id` differs by construction and feeds exactly one predicate,
-///   `FilterProp::Another` (restrictions.rs:514), whose verdict is invariant across
-///   fodder members because none of them is the ability source.
-/// ⇒ ESTABLISHED: the representative's exclusion carries to every fodder member that
-///   agrees with it on those five uncompared record fields.
-/// ⇒ NOT ESTABLISHED: that fodder members must so agree. Two objects can be
-///   `fodder_content_eq` — hence both in the growing class — while differing in exactly
-///   the fields this matcher tests. The residual is a member whose
-///   type/subtype/supertype/colour/keyword set diverges under an effect that moves none
-///   of the 32 compared fields, against a filter reading the diverged field. That is
-///   relief for a class whose later members the observer DOES count — the one direction
-///   #4603 forbids — so it is a STATED residual, not an accepted one.
-/// ⇒ MEASURED, PER AXIS, EACH COUNT WITH ITS POPULATION PREDICATE. Population: all 60
-///   live `QuantityRef::BattlefieldEntriesThisTurn` refs in `data/card-data.json` sha256
-///   f6dfbe98… (recursively 68 `Typed` leaves; NONE has an empty `type_filters`).
-///   - `keywords`: `FilterProp::WithKeyword` is 0/60 — but that is a PROP count, NOT a
-///     `keywords`-axis count. `TypeFilter::Subtype` also reads `record.keywords`
-///     (restrictions.rs:452, the CR 702.73a Changeling branch), and 18 of the 79
-///     type-filter entries are `Subtype`.
-///   - `core_types`: read by the other 61 of the 79 entries — Creature 17, Artifact 11,
-///     Permanent 11, Non(Land) 11, Land 9, Planeswalker 2.
-///   - `subtypes` + `supertypes`: read by those same 18 `Subtype` entries.
-///   - `colors`: `FilterProp::HasColor` is 1/60, LIVE.
-///   - filter-level `controller` is 0/60 and IRRELEVANT: `controller` IS one of the 32
-///     compared fields, so it cannot diverge inside a fodder class at all.
+/// RESIDUAL. Fodder membership is `fodder_content_eq` -> `object_content_eq`, which
+/// does NOT compare `card_types`, `color` or `keywords`, while `BattlefieldEntryRecord`
+/// carries `core_types` / `subtypes` / `supertypes` / `colors` / `keywords` and this matcher
+/// reads every one of them (`object_id` differs by construction and feeds only
+/// `FilterProp::Another`, whose verdict is invariant across fodder members). So a member's
+/// exclusion carries to every fodder member AGREEING with it on those five uncompared record
+/// fields; it does NOT establish that fodder members must so agree.
 ///
-///   ⇒ FOUR of the five uncompared record fields are read VERDICT-BEARINGLY by a live
-///   filter on today's pool. THE RESIDUAL IS REACHABLE, NOT LATENT. The fifth,
-///   `supertypes`, is argument-read but verdict-inert (its only consumer is gated on the
-///   subtype being `Host`, and none of the 18 live subtype values is `Host`);
-///   over-stating it as read is the CONSERVATIVE direction. What is NOT measured and NOT
-///   excluded is the other half: whether a per-member characteristic-changing effect
-///   exists that moves NONE of the 32 compared fields (`name` among them).
-///   Undischarged, deliberately. Re-derive if `data/card-data.json` is regenerated.
-/// DO NOT restate this as "all fodder members' records differ only in `object_id`". That
-/// sentence is false, and it was shipped once already as the closure of a review finding.
+/// ARG-EQUIVALENCE — THE LOAD-BEARING SOUNDNESS PREMISE, and the reason there is no
+/// separate "is this filter evaluable?" conjunct. This predicate must call
+/// `battlefield_entry_matches_filter` with arguments EQUIVALENT to the resolver's own call in
+/// `game::quantity`'s `QuantityRef::BattlefieldEntriesThisTurn` arm — same record source, same
+/// `filter`, the ability controller for `player`, the same `all_creature_types`, and
+/// `Some(<source object id>)`. Given that, the invariant is that this predicate asks THE SAME
+/// MATCHER the resolver will ask about the NEW class member, so a `false` means each member
+/// the loop creates contributes 0 TO THE TALLY WHATEVER THE TALLY'S ABSOLUTE VALUE IS. That is
+/// invariance-under-growth, not constant-0: `restrictions.rs`
+/// documents that under `TargetFilter::Or` an unsupported leaf turns a LOUD constant 0 into a
+/// SILENT PARTIAL COUNT, and `Or` is live in this class. Invariance-under-growth is `Or`-proof;
+/// constant-0 is not, so relieving an unanswerable filter is CORRECT and gating on
+/// `ledger_filter_is_evaluable` would refuse a sound relief. If the argument shapes ever
+/// diverge this pin breaks first: do not "simplify" the call by dropping `source.id` or by
+/// substituting the scoped player for the controller.
 ///
-/// ⛔ ARG-EQUIVALENCE PIN — THE LOAD-BEARING SOUNDNESS PREMISE, AND THE REASON THERE IS
-/// NO SEPARATE "is this filter evaluable?" CONJUNCT. This predicate must call
-/// `battlefield_entry_matches_filter` with arguments EQUIVALENT to the resolver's own
-/// call at game/quantity.rs:3426-3432 (inside `resolve_per_player_scalar`,
-/// game/quantity.rs:5354; the whole `BattlefieldEntriesThisTurn` resolver arm is
-/// :3411-3436) — same record source, same `filter`, the ability controller for `player`,
-/// the same `all_creature_types`, and `Some(<source object id>)`.
-///
-/// GIVEN THAT, THE INVARIANT IS: this predicate asks THE SAME MATCHER the resolver will
-/// ask, about the NEW class member. A `false` verdict therefore means each member the
-/// loop creates contributes 0 TO THE TALLY WHATEVER THE TALLY'S ABSOLUTE VALUE IS —
-/// invariance under growth, which is all the soundness argument needs. Do NOT restate
-/// this as "an unanswerable filter makes the tally a constant 0": restrictions.rs's
-/// `ledger_filter_is_evaluable` doc does say that, but restrictions.rs:519-526 documents
-/// the exception in the same file — under `TargetFilter::Or` an unsupported leaf turns a
-/// LOUD constant 0 into a SILENT PARTIAL COUNT, and `Or` is live in this class (4 of 60
-/// refs). Invariance-under-growth is `Or`-proof; constant-0 is not. Relieving an
-/// unanswerable filter is therefore CORRECT, not merely harmless, and gating on
-/// `ledger_filter_is_evaluable` would refuse a sound relief (measured benefit 0/60,
-/// measured cost 0/60). Asserted by `ledger_exclusion_is_precise_and_fail_closed` arms
-/// (vi) and (vii). If the argument shapes ever diverge, this pin is what breaks first —
-/// do not "simplify" the call by dropping `source.id` or by substituting the scoped
-/// player for the controller.
-///
-/// NOT A VISITOR, deliberately (#4603 error direction): an INCOMPLETE `QuantityRef`
-/// collector is unsound HERE, because "every collected read excludes" is vacuously true
-/// over a set that missed one. Instead, FOUR fail-closed conjuncts, each of which keeps
-/// the conservative veto whenever it cannot prove its half:
-///   (0) NO ACTIVATION RESTRICTIONS on this def: `exec.activation_restrictions.is_empty()`.
-///       LOAD-BEARING, and conjunct (a) does NOT cover it — `ability_definition_axes`
-///       destructures `activation_restrictions: _` (`ability_scan::ability_definition_axes`), so the scan is
-///       BLIND to it and the clone-and-rescan would return `false` even with a
+/// NOT A VISITOR, deliberately: an INCOMPLETE `QuantityRef` collector is unsound HERE, because
+/// "every collected read excludes" is vacuously true over a set that missed one. Instead, FOUR
+/// fail-closed conjuncts, each keeping the conservative veto whenever it cannot prove its half:
+///   (0) NO ACTIVATION RESTRICTIONS on this def. LOAD-BEARING, and (a) does NOT cover it —
+///       `ability_scan::ability_definition_axes` destructures `activation_restrictions: _`, so
+///       the scan is BLIND to it and the clone-and-rescan would answer `false` even with a
 ///       class-MATCHING `ActivationRestriction::RequiresCondition` on the same def.
-///       Measured cost: ZERO — no trigger `execute` in the card pool carries any
-///       (positive control: 3195 on `abilities`).
-///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, set
-///       `condition = None`, and re-run `ability_definition_reads_growing_class_for_loop`.
-///       Only if THAT is `false` is `condition` the def's only growing-class read — so no effect
-///       body, cost, sub-ability or other field hides a second read this predicate never
-///       looked at.
-///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`. No recursion, therefore
-///       no totality obligation: a compound (`And`/`Or`/`Not`), an rhs-position read, a
-///       non-`QuantityCheck` variant, or a non-`BattlefieldEntriesThisTurn` ref all fall
-///       to `_` and KEEP the veto. `rhs` must be `Fixed` so it cannot smuggle a second
-///       board read.
+///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, set `condition = None`,
+///       re-run `ability_definition_reads_growing_class_for_loop`. Only if THAT is `false` is
+///       `condition` the def's only growing-class read, so no effect body, cost, sub-ability
+///       or other field hides a second read this predicate never looked at.
+///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`. No recursion, therefore no
+///       totality obligation: a compound (`And`/`Or`/`Not`), an rhs-position read, a
+///       non-`QuantityCheck` variant or a non-`BattlefieldEntriesThisTurn` ref all fall to `_`
+///       and KEEP the veto. `rhs` must be `Fixed` so it cannot smuggle a second board read.
 ///   (c) EXCLUSION delegated verbatim to the ledger's own fire-time matcher
-///       `restrictions::battlefield_entry_matches_filter` — the SAME matcher, with the
-///       SAME arguments (see the ARG-EQUIVALENCE PIN), that
-///       `QuantityRef::BattlefieldEntriesThisTurn` resolves through. NOT
-///       `matches_target_filter`: game/quantity.rs:1069-1085 documents that it is not a
-///       superset of the ledger matcher (entry-time snapshot vs live object), so its
-///       `false` can coexist with a fire-time `true` — relief in the forbidden direction.
-///       The resolver's scoped-player test is a separate AND conjunct
-///       (game/quantity.rs:3425), so a `false` here excludes the member for EVERY scoped
-///       player and no `PlayerScope` resolution is required.
+///       `restrictions::battlefield_entry_matches_filter` (see the pin). NOT
+///       `matches_target_filter`: that is not a superset of the ledger matcher (entry-time
+///       snapshot vs live object), so its `false` can coexist with a fire-time `true` — relief
+///       in the forbidden direction. The resolver's scoped-player test is a separate AND
+///       conjunct, so a `false` here excludes the member for EVERY scoped player.
 fn execute_ledger_condition_provably_excludes_class(
     exec: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -3674,8 +3058,7 @@ fn execute_ledger_condition_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::{AbilityCondition, QuantityExpr, QuantityRef};
 
-    // (0) the firewall is BLIND to activation restrictions (`ability_scan::ability_definition_axes`) —
-    // fail closed.
+    // (0) the firewall is BLIND to activation restrictions — fail closed.
     if !exec.activation_restrictions.is_empty() {
         return false;
     }
@@ -3698,7 +3081,7 @@ fn execute_ledger_condition_provably_excludes_class(
         return false;
     };
     // (c) exclusion — fail-closed if the member is gone from the scanned frame.
-    //     ARG-EQUIVALENCE PIN: these five arguments mirror game/quantity.rs:3426-3432.
+    //     ARG-EQUIVALENCE: these five arguments mirror the resolver's own call.
     let Some(member_obj) = state.objects.get(&class_member) else {
         return false;
     };
@@ -3730,220 +3113,103 @@ fn execute_ledger_condition_provably_excludes_class(
 }
 
 /// SIBLING DISJUNCT of [`execute_ledger_condition_provably_excludes_class`] at the SAME
-/// block-(1b) consult (phase C arm S1, Pyreswipe Hawk's attack pump): does this trigger
-/// `execute` body's `Effect::Pump` read a board aggregate whose id population PROVABLY
-/// excludes `class_member`? Returns `true` iff so — then the pump's value is invariant
-/// across the loop's growth and this def does not observe the loop.
+/// block-(1b) consult (Pyreswipe Hawk's attack pump): does this trigger `execute` body's
+/// `Effect::Pump` read a board aggregate whose id population PROVABLY excludes
+/// `class_member`? Returns `true` iff so — then the pump's value is invariant across the
+/// loop's growth and this def does not observe the loop.
 ///
-/// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan::scan_effect`'s `Effect::Pump`
-/// arm now DESCENDS under `ScanMode::LoopFirewall` into both `PtValue` halves and the
-/// target, so a read-free pump no longer reaches this consult at all. That descent is as
-/// far as a scanner can go: `scan_quantity_ref` gives `QuantityRef::Aggregate` a
-/// `sibling: true` BEFORE it walks the filter, because no scanner change can distinguish a
-/// class-reading aggregate from a class-disjoint one without knowing the class. So the
-/// distinction still has to be drawn where the class IS known — the descent removed this
-/// arm's trivially-invariant traffic, not its reason to exist.
+/// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan::scan_effect`'s `Effect::Pump` arm
+/// descends under `ScanMode::LoopFirewall` into both `PtValue` halves and the target, so a
+/// read-free pump no longer reaches this consult at all. That descent is as far as a scanner
+/// can go: `scan_quantity_ref` gives `QuantityRef::Aggregate` a `sibling: true` BEFORE it
+/// walks the filter, because no scanner change can distinguish a class-reading aggregate from
+/// a class-disjoint one without knowing the class.
 ///
 /// SOUNDNESS rests on the SAME ordered pair of invariants as its sibling — see that
-/// function's doc and the GAP-1 comment at this arm's call site:
-/// `derived_fodder_class`'s ONE-CLASS rule on the first accept-time frame pair, then
-/// `board_covers_modulo_fodder`'s all-zones stable-partition content equality at its ONLY
-/// call site (the `if !board_covers_modulo_fodder(&pa, &pb, fodder_class)` gate inside
-/// [`loop_states_cover_modulo_fodder_growth`], this file), which PRECEDES the only firewall
-/// call any of these arms can reach — the `fire_time_conditions_read_growing_class_scoped`
-/// call in that SAME function, the one passing `Some(&class_members)`. The other production
-/// call, in [`loop_states_cover_modulo_object_growth`], passes `class_members: None`, so no
-/// arm runs there. (VERIFIED: those are the only two production call sites that reach a
-/// firewall with a class set.)
+/// function's doc: `derived_fodder_class`'s ONE-CLASS rule on the first accept-time frame
+/// pair, then `board_covers_modulo_fodder`'s all-zones stable-partition content equality at
+/// its ONLY call site, which PRECEDES the only firewall call any of these arms can reach (the
+/// `fire_time_conditions_read_growing_class_scoped` call passing `Some(&class_members)`; the
+/// call in [`loop_states_cover_modulo_object_growth`] passes `None`, so no arm runs there).
 /// Do not reorder the `board_covers_modulo_fodder` gate after the firewall.
-/// CR 608.2h (MagicCompRules.txt): "If an effect requires information from the game (such
-/// as the number of creatures on the battlefield), the answer is determined only once,
-/// when the effect is applied" — so a pump whose aggregate cannot count any member of the
-/// growing class has the same value on every cycle of the loop.
+/// CR 608.2h: "If an effect requires information from the game (such as the number of
+/// creatures on the battlefield), the answer is determined only once, when the effect is
+/// applied" — so a pump whose aggregate cannot count any member of the growing class has the
+/// same value on every cycle of the loop.
 ///
-/// ⛔ ARG-EQUIVALENCE PIN. Conjunct (d) calls
-/// `game::quantity::object_count_matching_ids(state, filter, &ctx, source.id)` — literally
-/// the call the `QuantityRef::Aggregate` resolver arm makes at game/quantity.rs:3701 — so
-/// this predicate asks THE SAME id-population authority the resolver will ask, about the
-/// NEW class member. `aggregate_property_over` (game/quantity.rs:3702) is deliberately NOT
-/// called: it aggregates over exactly those ids, so an id population that excludes the
-/// member makes its value invariant whatever the absolute value is. Do not "simplify" this
-/// into `matches_target_filter`: that is a different authority (zone selection and the
-/// `OtherThanTriggerObject` exclusion live in `object_count_matching_ids`).
+/// ARG-EQUIVALENCE. Conjunct (d) calls
+/// `game::quantity::object_count_matching_ids(state, filter, &ctx, source.id)` — literally the
+/// call the `QuantityRef::Aggregate` resolver arm makes — so this predicate asks THE SAME
+/// id-population authority the resolver will ask, about the NEW class member.
+/// `aggregate_property_over` is deliberately NOT called: it aggregates over exactly those ids,
+/// so an id population that excludes the member makes its value invariant whatever the
+/// absolute value is. Do not "simplify" this into `matches_target_filter`: zone selection and
+/// the `OtherThanTriggerObject` exclusion live in `object_count_matching_ids`.
 ///
-/// SAME STATED RESIDUAL AS THE SIBLING, restated because this arm's filter reads exactly
-/// the field the residual is about. The member-quantified test proves exclusion for the
-/// members LIVE IN THE COMPARED FRAME; growth beyond them is covered by
-/// `derived_fodder_class`'s ONE-CLASS rule, and `fodder_content_eq` routes through
-/// `object_content_eq`, which does NOT compare `card_types`. `TypedFilter::type_filters` is
-/// a `card_types` predicate. So two objects can be in the same fodder class while this
-/// filter counts one and not the other — ESTABLISHED here is "exclusion carries to every
-/// member agreeing with the tested ones on `card_types`", NOT "members must so agree".
-/// That is the sibling's residual verbatim, not a new one, and it is STATED rather than
-/// accepted. Do not restate it as "all fodder members differ only in `object_id`" — that
-/// sentence is false and has been shipped once already.
+/// SAME RESIDUAL AS THE SIBLING, and this arm's filter reads exactly the field it is about:
+/// `object_content_eq` does not compare `card_types`, and `TypedFilter::type_filters` is a
+/// `card_types` predicate, so two objects can be in the same fodder class while this filter
+/// counts one and not the other. Exclusion carries to every member agreeing with the tested
+/// ones on `card_types`; it does not establish that members must so agree.
 ///
-/// ⛔ CONTEXT-SHAPE GUARD, and why relief WITHOUT it would be unsound. At fire time
+/// CONTEXT-SHAPE GUARD, and why relief WITHOUT it would be unsound. At fire time
 /// `resolve_ref` builds the filter context from the RESOLVING ability
-/// (`FilterContext::from_ability_with_controller(a, a.original_controller.unwrap_or(a.controller))`,
-/// game/quantity.rs:3227-3230). At firewall time no `ResolvedAbility` exists, so this arm
-/// must build `FilterContext::from_source_with_controller(source.id, source.controller)`.
-/// MEASURED field-by-field against the two constructors' bodies
-/// (`FilterContext::from_source_with_controller` / `::from_ability_with_controller`,
-/// `game/filter.rs`), because an enumeration is only worth as much as the reading behind
-/// it — this one shipped once with two entries that do not differ and one omitted that
-/// does, and once more covering five of `FilterContext`'s SIX fields. All six are below;
-/// the count is stated so the next reader can check the enumeration against the struct
-/// rather than against this sentence:
-///   * `source_id` — `source.id` vs `ability.source_id`. Does NOT differ, and the
-///     equivalence is by construction rather than by coincidence: the firewall passes the
-///     id of the very object it is scanning, and this arm's whole reachable set is trigger
-///     `execute` bodies on that same battlefield permanent (see conjunct (b)'s reachable-root
-///     paragraph), so the resolving ability's `source_id` IS that permanent.
-///   * `ability` — `None` vs `Some(ability)`. Differs.
-///   * `trigger_source` — `None` vs `ability.trigger_source.as_ref()`. Differs.
-///   * `source_controller` — `Some(..)` in BOTH, but a DIFFERENT VALUE: the firewall binds
-///     the scanned frame's `source.controller`, the resolver binds
-///     `a.original_controller.unwrap_or(a.controller)`. Differs, and this is the one the
-///     admitted `controller` shapes below resolve against.
-///   * `recipient_id`, `scoped_iteration_player` — `None` in BOTH constructors, so they do
-///     not differ HERE. The effective scoped-player read can still diverge, but it routes
-///     through `ability` (`scoped_player_or_controller` consults `ability.scoped_player`
-///     ahead of `scoped_iteration_player`), i.e. through the first bullet, not these.
+/// (`FilterContext::from_ability_with_controller`); at firewall time no `ResolvedAbility`
+/// exists, so this arm builds `FilterContext::from_source_with_controller(source.id,
+/// source.controller)`. Field by field: `source_id` does NOT differ, and by construction
+/// rather than coincidence (the firewall passes the id of the object it is scanning, and this
+/// arm's reachable set is trigger `execute` bodies on that same permanent); `ability` and
+/// `trigger_source` differ (`None` vs `Some`); `source_controller` is `Some(..)` in both but a
+/// DIFFERENT VALUE (the scanned frame's `source.controller` vs
+/// `a.original_controller.unwrap_or(a.controller)`); `recipient_id` and
+/// `scoped_iteration_player` are `None` in both constructors, and the effective scoped-player
+/// read routes through `ability`, i.e. through the second bullet, not these.
 ///
-/// That difference is immaterial ONLY for a filter that reads none of them, so conjunct
-/// (d) additionally requires an empty `properties` list and a `controller` of `None` or
-/// `ControllerRef::You` on the `TypedFilter`, and refuses every non-`Typed` `TargetFilter`.
+/// That difference is immaterial ONLY for a filter reading none of them, so conjunct (d)
+/// additionally requires an empty `properties` list and a `controller` of `None` or
+/// `ControllerRef::You`, and refuses every non-`Typed` `TargetFilter`. `You` is safe despite
+/// resolving to the field that differs: `controller_ref_player`'s arm is literally
+/// `ControllerRef::You => source_controller`, so it is a self-referential question — "the
+/// SOURCE's own controller" — and the firewall's binding IS that value by construction. The
+/// two contexts can only disagree if the source's controller MOVED inside the window, and the
+/// cover forecloses that: the source is a stable-engine object, so
+/// [`board_covers_modulo_fodder`]'s `stable` partition content-compares it with
+/// `object_content_eq`, whose FIRST compared field is `x.controller`.
+/// `ControllerRef::Opponent` is refused because it is not self-referential: it names the
+/// complement population, so a disagreement about who "you" is re-partitions the whole board
+/// rather than being absorbed by the cover's fix on one object. A filter carrying ANY property
+/// keeps its veto: this arm's coverage ceiling.
 ///
-/// ⛔ WHY ADMITTING `Some(ControllerRef::You)` IS SAFE, given it resolves to exactly the
-/// field that differs. `controller_ref_player`'s arm is literally
-/// `ControllerRef::You => source_controller` (and `filter_inner`'s object arm is
-/// `source_controller != Some(obj_ctrl)`), so `You` is a self-referential question — "the
-/// SOURCE's own controller" — and the firewall's binding is that value BY CONSTRUCTION:
-/// it passes `source.controller` off the very object it is scanning. The two contexts can
-/// therefore only disagree if the source's controller MOVED between the resolver's
-/// binding and the scanned frame, and the cover gate forecloses that across the loop
-/// window: the source is a stable-engine object (it is not `fodder_content_eq` to the
-/// class rep), so [`board_covers_modulo_fodder`]'s `stable` partition content-compares it
-/// with `object_content_eq`, whose FIRST compared field is `x.controller`. A control
-/// change inside the window makes the cover reject before this arm is ever consulted.
-/// LATENT, not live. `ControllerRef::Opponent` is refused despite reading the same field
-/// because it is not self-referential: it names the complement population, so a
-/// resolver/firewall disagreement about who "you" is re-partitions the whole board rather
-/// than being absorbed by the cover's pin on one object — see the `(ix)` row in
-/// `pump_aggregate_gate_is_precise_and_fail_closed`.
-/// A filter carrying ANY property keeps its veto — that is this arm's honest coverage
-/// ceiling, not an oversight (regression row: the `FilterProp::Another` negative).
-///
-/// NOT A VISITOR (#4603 error direction), same as its sibling — four fail-closed conjuncts,
-/// each keeping the conservative veto whenever it cannot prove its half:
+/// NOT A VISITOR, same as its sibling — fail-closed conjuncts, each keeping the conservative
+/// veto whenever it cannot prove its half:
 ///   (0) NO ACTIVATION RESTRICTIONS: `ability_definition_axes` destructures
-///       `activation_restrictions: _` (`ability_scan::ability_definition_axes`; the literal
-///       is unique in that file, so `grep -n 'activation_restrictions: _'` is the pin), so
-///       the scan is BLIND to them
-///       and conjunct (a)'s rescan would answer `false` even with a class-matching
-///       `ActivationRestriction::RequiresCondition` on the same def.
-///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the EFFECT
-///       with `Effect::NoOp` (`Effect::NoOp => Axes::NONE` in `ability_scan::scan_effect`) and re-run
-///       `ability_definition_reads_growing_class_for_loop`. Only if THAT is `false` is the
-///       effect the def's only growing-class read — `ability_definition_axes` destructures with
-///       NO `..`, so the rescan covers `sub_ability`,
-///       `else_ability`, `duration`, `condition`, `multi_target`, `target_constraints`,
-///       `modal`, `mode_abilities`, `repeat_for`, `announced_x`, `player_scope`,
-///       `starting_with`, `target_chooser`, `repeat_until`, `unless_pay`, `distribute`,
-///       `cost_reduction` and `optional_player` without this arm enumerating any of them.
+///       `activation_restrictions: _`, so the scan is BLIND to them and (a)'s rescan would
+///       answer `false` even with a class-matching restriction on the same def.
+///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the EFFECT with
+///       `Effect::NoOp` and re-run `ability_definition_reads_growing_class_for_loop`. Only if
+///       THAT is `false` is the effect the def's only growing-class read —
+///       `ability_definition_axes` destructures with NO `..`, so the rescan covers
+///       `sub_ability`, `else_ability`, `duration`, `condition`, `multi_target`, `modal`,
+///       `repeat_for`, `unless_pay`, `cost_reduction` and the rest without enumerating them.
 ///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`, and NO `..` on
 ///       `Effect::Pump`, so a new `Pump` field is a compile error here rather than a silent
-///       unscanned read. (b-t) then requires the bound `target` to contribute NO growing-class
-///       read, for the SAME reason the two sibling arms pattern-match `target: None` (see
-///       [`exiled_colors_provably_exclude_class`]'s (b)): conjunct (d) proves only that the
-///       P/T AGGREGATE cannot count the class, and says nothing whatever about the target.
-///       A def reaching this arm did so because its aggregate half set `sibling` — which
-///       `scan_quantity_ref` does unconditionally for `QuantityRef::Aggregate` — so the
-///       target has NOT been separately cleared, and relieving without (b-t) would relieve
-///       a board-reading target on evidence that never examined it. This survives
-///       `scan_effect`'s `Effect::Pump` descent verbatim: that descent's own target leg
-///       evaluates the SAME expression, but it is `.or()`-ed with the aggregate, so it
-///       cannot un-set a `sibling` the aggregate already set. `Effect::Pump` cannot state that as a
-///       pattern (its `target` is a `TargetFilter`, NOT an `Option<_>`), so it is a
-///       PREDICATE through the scanner's own authority:
+///       unscanned read.
+///   (b-t) the bound `target` must contribute NO growing-class read: (d) proves only that the
+///       P/T AGGREGATE cannot count the class and says nothing about the target. A def
+///       reaching this arm did so because its aggregate half set `sibling` — which
+///       `scan_quantity_ref` does unconditionally for `QuantityRef::Aggregate` — so the target
+///       has NOT been separately cleared, and relieving without (b-t) would relieve a
+///       board-reading target on evidence that never examined it. `Effect::Pump` cannot state
+///       that as a pattern (its `target` is a `TargetFilter`, not an `Option<_>`), so it is a
+///       PREDICATE through the scanner's own authority,
 ///       `ability_scan::effect_target_reads_growing_class_for_loop`, which derives the
-///       `FilterReadContext` from THIS effect via `effect_target_ctx` rather than pinning
-///       one. Measured: `Effect::Pump` sits in the `SnapshotOrEvent` group
-///       (the `SnapshotOrEvent` group in `ability_scan`'s effect-group table, reached via
-///       `effect_target_ctx`) TODAY; earlier revisions of this sentence carried raw line
-///       coordinates that drifted twice inside one round, which is why it now names the
-///       group and the deriving function instead; hardcoding that would be correct today
-///       and silently desynchronised the moment the grouping changes — which is exactly the
-///       defect class (b-t) exists to close. MEASURED coverage cost of the narrowing:
-///       ZERO — but the figure is meaningless
-///       without its PREDICATE, so state it. This arm's ONLY production consult is the
-///       `execute_ledger_condition_provably_excludes_class(..) ||
-///       pump_aggregate_provably_excludes_class(..)` disjunct inside block (1b)'s
-///       `functioning_abilities::active_trigger_definitions(state, obj)` -> `def.execute`
-///       loop, and conjunct (b) matches the TOP-LEVEL `exec.effect` only. So the reachable
-///       root set is TRIGGER EXECUTE BODIES on battlefield permanents — NOT `abilities[]`,
-///       and never a spell's own effect. Measured by the implementation review over the full
-///       `card-data.json` export and recorded here (INHERITED from that review, not
-///       re-measured since — treat the figure as provenance, not as a live count): 845
-///       `Effect::Pump` defs are reachable at that consult (828 `triggers[].execute` + 17
-///       granted `modifications[].trigger.execute`); ZERO of them carry a target that reads
-///       the sibling axis; ~625 already pass the pre-fix relief bound. FIVE match this
-///       arm's subject shape: Pyreswipe Hawk, Edgar Master Machinist,
-///       Orcish Siegemaster and Rubblebelt Rioters (`SelfRef`) plus Oaken Power Suit (bare
-///       `Typed{Creature}`) — (b-t) relaxes ALL FIVE. Accelerated Mutation and Boon of
-///       Boseiju share the bare-`Typed` shape and were counted here once, but both are
-///       INSTANTS carried at `abilities[]` / `kind: "Spell"`: neither is ever a `def.execute`
-///       on a battlefield permanent, so neither can reach this arm and neither is part of
-///       its cost. Executioner's Swing — the corpus's ONE `Effect::Pump` target that DOES
-///       read the sibling axis (`Typed{Creature, [DealtDamageThisTurn]}`, via
-///       `FilterProp::DealtDamageThisTurn => Axes::CONSERVATIVE`) — is likewise an instant,
-///       at `abilities > [] > effect`, so it is UNREACHABLE by the consult. THAT, not merely
-///       "it is outside the subject-shape set", is the reason the cost is zero. The
-///       corollary, stated rather than left implied: the corpus is NOT a positive control
-///       that (b-t) is non-constant-false, because over the reachable set the predicate
-///       answers `false` uniformly — arm C of `pump_target_axis_is_not_blind` is that
-///       control. The zero cost holds over the 845 reachable defs AND over all 2336 defs the
-///       review's census saw, including the 83 the implementer's own walker never visited.
-///   (c) the member must be LIVE ON THE BATTLEFIELD in the scanned frame. `contains_key`
-///       alone was NOT enough and this is a deliberate NARROWING (it removes relief, the
-///       fail-closed direction): `object_count_matching_ids`' universe for the only filter
-///       shape this arm admits is battlefield-scoped — MEASURED, a graveyard artifact
-///       identical to a battlefield one is absent from the `Typed{Artifact, You}`
-///       population — so an id that merely EXISTS is trivially absent from the population
-///       and satisfies (d) having proved nothing. That is relief with no evidence, exactly
-///       what this conjunct is for. Row: the `(v-M3)` arm of
-///       `pump_aggregate_gate_is_precise_and_fail_closed` — THIS arm's own row, driving the
-///       graveyard/battlefield artifact twin the MEASURED sentence above describes.
-///       ⛔ It shipped once citing the SIBLING arm's row
-///       (`exiled_colors_gate_is_precise_and_fail_closed`'s `M3`) as its coverage, which is
-///       not coverage of this conjunct at all: that row calls
-///       `exiled_colors_provably_exclude_class`, so this narrowing was measured by NOTHING.
-///       MEASURED at the time: reverting THIS conjunct to
-///       `state.objects.contains_key(&class_member)` left the full lib suite green.
+///       `FilterReadContext` from THIS effect via `effect_target_ctx` rather than pinning one.
+///   (c) the member must be LIVE ON THE BATTLEFIELD in the scanned frame. `contains_key` alone
+///       is NOT enough: `object_count_matching_ids`' universe for the only filter shape this
+///       arm admits is battlefield-scoped, so an id that merely EXISTS is trivially absent
+///       from the population and satisfies (d) having proved nothing.
 ///   (d) BOTH P/T halves must be provably invariant — `toughness` as much as `power`
 ///       (`Pump` carries two independent `PtValue`s and either can hold the aggregate).
-///
-/// ⛔ DIVERGENCE FROM PLAN r4's S1 SPECIFICATION, recorded here rather than hidden — placed
-/// BELOW the conjunct list so the (0)/(a)/(b)/(c)/(d) enumeration a reader follows the proof
-/// through is not broken in half. r4 specified conjuncts (0)/(a)/(b)/(c)/(d) and did NOT
-/// anticipate the target axis; (b-t) is not in it. It was added because the landed arm was
-/// measured target-BLIND: three byte-identical Pyreswipe Hawk defs differing ONLY in `target`
-/// (`SelfRef` / bare `Typed{Creature}` / board-reading) all relieved, while the TARGET scan —
-/// `effect_target_reads_growing_class_for_loop`, this change's wrapper — answered
-/// `false / false / true` across them. Name it, because the WHOLE-DEF scan
-/// `ability_definition_reads_growing_class_for_loop` cannot tell the three apart: the
-/// aggregate the three defs SHARE makes it `true` on all three regardless of target
-/// (`scan_quantity_ref` sets `sibling` for `QuantityRef::Aggregate` before walking the
-/// filter) — indeed block (1b) only reaches this arm once it IS true. At the time of that
-/// measurement the whole-def `true` came instead from a blanket
-/// `Effect::Pump { .. } => Axes::CONSERVATIVE` arm; `scan_effect` now descends under
-/// `ScanMode::LoopFirewall`, which changes the SOURCE of that `true` and not the fact,
-/// so (b-t) is exactly as load-bearing as when it was added. Corpus
-/// reachability was ZERO at that measurement, so this was latent rather than live — and the
-/// zero is a fragile corpus intersection, not a structural guarantee, which is why the arm is
-/// narrowed rather than left to the corpus. r4 is BYTE-FROZEN; the divergence lives at the arm
-/// it changes. Row: `pump_target_axis_is_not_blind`.
 fn pump_aggregate_provably_excludes_class(
     exec: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -3952,9 +3218,7 @@ fn pump_aggregate_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::Effect;
 
-    // (0) the firewall is BLIND to activation restrictions
-    // (`ability_scan::ability_definition_axes`) —
-    // fail closed.
+    // (0) the firewall is BLIND to activation restrictions — fail closed.
     if !exec.activation_restrictions.is_empty() {
         return false;
     }
@@ -3973,10 +3237,9 @@ fn pump_aggregate_provably_excludes_class(
     else {
         return false;
     };
-    // (b-t) the TARGET must itself contribute no growing-class read — conjunct (d) is about the
-    // P/T AGGREGATE and says nothing about what the target reads. Asked through the
-    // scanner's own authority (which derives the census context from THIS effect), never a
-    // pinned `FilterReadContext`. See this function's doc.
+    // (b-t) the TARGET must itself contribute no growing-class read — conjunct (d) is about
+    // the P/T AGGREGATE and says nothing about what the target reads. Asked through the
+    // scanner's own authority, which derives the census context from THIS effect.
     if crate::game::ability_scan::effect_target_reads_growing_class_for_loop(
         exec.effect.as_ref(),
         target,
@@ -4035,25 +3298,17 @@ fn pt_value_aggregate_provably_excludes_class(
         // every other `QuantityExpr` / `QuantityRef` fall through and KEEP the veto.
         _ => return false,
     };
-    // CONTEXT-SHAPE GUARD: only a filter that reads none of the four fields the two
+    // CONTEXT-SHAPE GUARD: only a filter that reads none of the fields the two
     // `FilterContext` constructors disagree about may be evaluated with the firewall's own
-    // context. Any non-`Typed` `TargetFilter` (`Or`, `Not`, `And`, `TrackedSet`, …) keeps
-    // the veto rather than being walked here.
-    // DESTRUCTURED WITH NO `..` AND EVERY FIELD NAMED, for the same reason the property-layer
-    // seam in `node_has_non_arrival_invariant_property` is: the pre-fix form here was
-    // `Typed(typed)` + FIELD ACCESS (`typed.properties` / `typed.controller`), which reads the
-    // axes it names and keeps compiling as axes are ADDED. A new field on `TypedFilter` is now
-    // an E0027 compile error at this seam too, instead of a silently unscanned read inside a
-    // guard whose whole job is to enumerate what the filter may read. The admitted VALUE set
-    // below is unchanged by that reshaping — this is a compile backstop, not a re-litigation of
-    // which values are admitted.
+    // context. Any non-`Typed` `TargetFilter` (`Or`, `Not`, `And`, `TrackedSet`, …) keeps the
+    // veto rather than being walked here. DESTRUCTURED WITH NO `..` AND EVERY FIELD NAMED, so
+    // a new field on `TypedFilter` is an E0027 compile error at this seam instead of a
+    // silently unscanned read inside a guard whose whole job is to enumerate what the filter
+    // may read.
     let TargetFilter::Typed(TypedFilter {
-        // Bound to `_` so the omission is a DECISION recorded at the seam, on the same grounds
-        // as the sibling's: `type_filters` is a `card_types` predicate, and `card_types` is
-        // exactly what this function's STATED RESIDUAL (see the "SAME STATED RESIDUAL AS THE
-        // SIBLING" block on `pump_aggregate_provably_excludes_class`) is already about. Read
-        // that block for the residual's exact wording — and heed the standing warning that
-        // closes it, which names the false restatement that has shipped once already.
+        // Bound to `_` so the omission is a DECISION recorded at the seam: `type_filters` is a
+        // `card_types` predicate, and `card_types` is exactly what this arm's residual
+        // (see [`pump_aggregate_provably_excludes_class`]) is already about.
         type_filters: _,
         // CR 109.4: only objects on the stack or on the battlefield have a controller. This
         // axis is NOT covered by the residual above — `controller` is inside
@@ -4069,197 +3324,100 @@ fn pt_value_aggregate_provably_excludes_class(
         return false;
     }
     // The resolver's OTHER context branch is unreachable for this shape, and that is a
-    // measured property of the type rather than of this fixture: `resolve_ref` swaps in a
-    // scoped context when `filter.references_exiled_by_source()` (game/quantity.rs:3682-3700),
-    // and that predicate answers `true` only for `ExiledBySource` / `And` / `Or` /
-    // `TrackedSetFiltered`, with `_ => false` covering `Typed` (types/ability.rs:16237-16249).
-    // The guard above has already refused every non-`Typed` filter, so this holds by
-    // construction. Stated as a `debug_assert!` and NOT as a `return false` branch: a
-    // runtime arm here would be dead code, and its usual justification ("a future
-    // `TypedFilter` field could reopen it") is FALSE — that predicate matches on the
-    // `TargetFilter` variant and never looks inside `TypedFilter`.
+    // property of the type rather than of this fixture: `resolve_ref` swaps in a scoped
+    // context when `filter.references_exiled_by_source()`, and that predicate answers `true`
+    // only for `ExiledBySource` / `And` / `Or` / `TrackedSetFiltered`, with `_ => false`
+    // covering `Typed`. The guard above has already refused every non-`Typed` filter, so this
+    // holds by construction. A `debug_assert!` and not a `return false` branch: a runtime arm
+    // here would be dead code, and its usual justification ("a future `TypedFilter` field
+    // could reopen it") is FALSE — that predicate matches on the `TargetFilter` variant and
+    // never looks inside `TypedFilter`.
     debug_assert!(
         !filter.references_exiled_by_source(),
         "a `TargetFilter::Typed` can never reference the source's exile set; if it can, the \
          arg-equivalence pin below is against the wrong `FilterContext`"
     );
-    // ARG-EQUIVALENCE PIN — game/quantity.rs:3701.
+    // ARG-EQUIVALENCE — `game::quantity::object_count_matching_ids`.
     !crate::game::quantity::object_count_matching_ids(state, filter, ctx, source_id)
         .contains(&class_member)
 }
 
-/// BLOCK-(2) ARM (phase C arm S2, Pit of Offerings' exiled-colour mana): does this
-/// battlefield ability's `ChoiceAmongExiledColors` production read a linked-exile set
-/// that PROVABLY excludes `class_member`? Returns `true` iff so — then the legal
-/// colour set is invariant across the loop's growth and this ability does not observe
-/// the loop.
+/// BLOCK-(2) ARM (Pit of Offerings' exiled-colour mana): does this battlefield ability's
+/// `ChoiceAmongExiledColors` production read a linked-exile set that PROVABLY excludes
+/// `class_member`? Returns `true` iff so — then the legal colour set is invariant across the
+/// loop's growth and this ability does not observe the loop.
 ///
-/// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan`'s arm is
-/// `ManaProduction::ChoiceAmongExiledColors { .. } => Axes::CONSERVATIVE`
-/// (`ability_scan::scan_mana_production`) — BLANKET, and it EXPOSES NO SUBJECT SET at all (the link
-/// relation lives in `state.exile_links`, not in the AST), so no scanner change can
-/// distinguish a class-reading link set from a class-disjoint one. The distinction has
-/// to be drawn where the class AND the state are both known.
+/// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan::scan_mana_production`'s arm is
+/// `ManaProduction::ChoiceAmongExiledColors { .. } => Axes::CONSERVATIVE` — BLANKET, and it
+/// EXPOSES NO SUBJECT SET at all (the link relation lives in `state.exile_links`, not in the
+/// AST), so no scanner change can distinguish a class-reading link set from a class-disjoint
+/// one. The distinction has to be drawn where the class AND the state are both known.
 ///
-/// SOUNDNESS rests on the SAME ordered pair of invariants as the block-(1b) arms —
-/// see [`pump_aggregate_provably_excludes_class`] and the GAP-1 comment at the call
-/// site: `derived_fodder_class`'s ONE-CLASS rule on the first accept-time frame pair,
-/// then `board_covers_modulo_fodder`'s all-zones stable-partition content equality at
-/// its ONLY call site (the `if !board_covers_modulo_fodder(&pa, &pb, fodder_class)` gate
-/// inside [`loop_states_cover_modulo_fodder_growth`], this file), which PRECEDES the only
-/// firewall call any of these arms can reach — the
-/// `fire_time_conditions_read_growing_class_scoped` call in that SAME function, passing
-/// `Some(&class_members)`. The call in [`loop_states_cover_modulo_object_growth`] passes
-/// `class_members: None`, so no arm runs there. Do not reorder the `board_covers_modulo_fodder` gate after the
-/// firewall.
-/// CR 608.2h (MagicCompRules.txt:2808): "If an effect requires information from the
-/// game (such as the number of creatures on the battlefield), the answer is determined
-/// only once, when the effect is applied" — so a production whose link set cannot
-/// contain any member of the growing class offers the same colours on every cycle.
+/// SOUNDNESS rests on the SAME ordered pair of invariants as the block-(1b) arms — see
+/// [`pump_aggregate_provably_excludes_class`]. Do not reorder the
+/// `board_covers_modulo_fodder` gate after the firewall. CR 608.2h: "If an effect requires
+/// information from the game … the answer is determined only once, when the effect is
+/// applied" — so a production whose link set cannot contain any member of the growing class
+/// offers the same colours on every cycle.
 ///
-/// THE EXILE PILE'S LINK MEMBERSHIP IS PINNED BEFORE ANY RELIEF IS CONSULTED, which is
-/// what lets a subject set living OUTSIDE the battlefield be argued about at all.
-/// [`board_covers_modulo_fodder`]'s STABLE-ENGINE partition (its `stable` closure) does
-/// iterate all of `state.objects`, not just the battlefield, and it precedes this
-/// firewall. An exiled card is always IN that partition: the closure removes only
-/// objects that are [`fodder_content_eq`] to the class representative, and
-/// `object_content_eq` compares `zone`, so an Exile-zone object can never match a
-/// battlefield class rep (MEASURED: `fodder_content_eq(exile_saproling, saproling_class)`
-/// = `false`, `fodder_content_eq(bf_saproling, saproling_class)` = `true`).
+/// THE EXILE PILE'S LINK MEMBERSHIP IS FIXED BEFORE ANY RELIEF IS CONSULTED, which is what
+/// lets a subject set living OUTSIDE the battlefield be argued about at all.
+/// [`board_covers_modulo_fodder`]'s STABLE-ENGINE partition iterates all of `state.objects`,
+/// not just the battlefield, and it precedes this firewall. An exiled card is always IN that
+/// partition: the closure removes only objects [`fodder_content_eq`] to the class
+/// representative, and `object_content_eq` compares `zone`, so an Exile-zone object can never
+/// match a battlefield class rep.
 ///
-/// ⛔ WHAT THAT COVER DOES **NOT** PIN — stated because the claim used to be wider than
-/// the mechanism. `objects_content_eq` delegates to `object_content_eq`, which compares
-/// 32 fields (`types/game_state.rs`) and DELIBERATELY omits `color`. MEASURED:
-/// `object_content_eq` answers `true` for two objects differing only in `color`. The read
-/// this arm relieves is `exiled_color_options` -> `GameObject::effective_colors()` ->
-/// `self.color`, so the cover pins WHICH cards are linked and still exiled — the arm's
-/// actual subject, and what conjunct (d) reasons about — and NOT their colours.
-///
-/// Colour drift is out of scope here, and that is an argument rather than an omission: no
-/// modelled continuous effect can make an exiled card's colour a function of the growing
-/// class. The three colour-modifying variants are ALL classified read-free
-/// (`Axes::NONE`) by `ability_scan::scan_continuous_modification`, and the enumeration is
-/// stated in full because a 2-of-3 version of it shipped once:
-/// `ContinuousModification::SetColor { colors }` and `AddColor { color }` carry FIXED
-/// colour lists, so they cannot scale with `|G|` by construction; `AddChosenColor { mode }`
-/// is the one that needed arguing, because its own doc says it "Reads from
-/// `chosen_attributes` at layer evaluation time" — NOT a fixed list. It is read-free
-/// anyway, and for the reason that matters here: a `ChosenAttribute::Color` is a
-/// player CHOICE stored on the granting source (CR 105.3 + CR 613.1e), not an aggregate
-/// over a population, so it is not a function of the class SIZE however the class grows.
-/// (`StaticMode` has NO colour-SETTING variant at all, which is why an earlier
-/// `StaticMode::SetColor` citation here named a type path that does not exist. Its
-/// colour-DATA-bearing members are the THREE the `ManaColor` needle finds —
-/// `DefilerCostReduction { color }` (the colour of the SPELLS a cost reduction applies
-/// to), `PayLifeAsColoredMana { color }` (a life-for-coloured-mana payment substitution)
-/// and `StepEndUnspentMana { filter: Option<ManaColor> }` (which unspent MANA a step-end
-/// rule applies to). `SpendManaAsAnyColor` sits beside them in this argument but carries
-/// NO colour data — only `spell_filter` and `activation_source_filter` (both
-/// `Option<TargetFilter>`) — naming a colour in prose alone.
-/// ⛔ NAME THE NEEDLE YOU RAN. An earlier revision called those four "every
-/// colour-MENTIONING member", which is FALSE, and false in a way worth keeping on the
-/// record: it reported a `ManaColor` census under a "mentions a colour" predicate.
-/// Different needle, different set. Re-run either census over the self-locating body
-/// range `R = awk '/^pub enum StaticMode \{/,/^\}/' crates/engine/src/types/statics.rs`:
-///   R | grep -n ManaColor            -> 4 hits, exhaustive for the 3 members above
-///   R | grep -in color               -> 21 hits spanning SIX members, not four
-///   R | grep -cE 'SetColor|AddColor' -> 0, the load-bearing claim
-/// (`grep -n` on that pipe numbers lines WITHIN the slice, not in the file — cite the
-/// ordinal, never an absolute line, or the citation contradicts its own command.)
-/// The two extra owners are `ReduceActionCost` ("a generic cost reduction can't touch
-/// colored/colorless components", CR 118.7a) and `ExileCastPermission`, which is itself
-/// colour-DATA-bearing via `mana_spend_permission: Option<ManaSpendPermission>`
-/// (`AnyColor` / `AnyTypeOrColor`, `types/ability.rs`) — so it would have refuted the
-/// data-bearing count too, had the needle been `color`.
-/// That second census is what carries the argument: it is exhaustive over colour MENTIONS,
-/// and all six owners are cost / mana-payment / mana-pool / cast-permission rules that
-/// READ or name a colour and set none. Stated residual, because the step from "mentions"
-/// to "sets" is inspection of those six and not a grep — a variant setting a colour
-/// through an embedded type that never spells "color" would escape both needles. None of
-/// the six does, and the colour-SETTING variants really do live one enum over (below).
-/// ⛔ DOC-OWNER TRAP, and it governs the `ManaColor` count: of those four hits the SECOND
-/// is a DOC line, and a doc comment belongs to the item that FOLLOWS it
-/// (`PayLifeAsColoredMana`), so an "enclosing item = last variant opened at or before"
-/// reading mis-attributes it to `SpendManaAsAnyColor` and inflates THREE to four. Read the
-/// variant BODIES. The ordinal is load-bearing and was itself wrong here once — it said
-/// "the fourth", which is the doc line's position in no numbering at all.
-/// The `SetColor` / `AddColor` CR citations are deliberately NOT repeated here — this is a
-/// type-shape claim, and a borrowed citation is a referent this arm has not verified.
-/// ⛔ The two enums are real and distinct: `SetColor`, `AddColor` and `AddChosenColor` are
-/// `ContinuousModification` variants (`types/ability.rs`), and
-/// `ContinuousModification::AddStaticMode { mode: StaticMode }` embeds one enum in the
-/// other, so the original citation was a mis-citation and not shorthand.)
+/// WHAT THAT COVER DOES **NOT** ESTABLISH. `object_content_eq` DELIBERATELY omits `color`, so the
+/// cover pins WHICH cards are linked and still exiled — the arm's actual subject, and what
+/// conjunct (d) reasons about — and NOT their colours. Colour drift is nonetheless out of
+/// scope, by argument rather than omission: no modelled continuous effect can make an exiled
+/// card's colour a function of the growing class. All three colour-modifying
+/// `ContinuousModification` variants are classified read-free by
+/// `ability_scan::scan_continuous_modification` — `SetColor { colors }` and
+/// `AddColor { color }` carry FIXED lists, and `AddChosenColor { mode }` reads
+/// `chosen_attributes`, which is a player CHOICE stored on the granting source
+/// (CR 105.3 + CR 613.1e) and not an aggregate over a population, so it is not a function of
+/// the class SIZE however the class grows. `StaticMode` has NO colour-SETTING variant at all;
+/// its colour-mentioning members are cost / mana-payment / mana-pool / cast-permission rules
+/// that READ or name a colour and set none. (The two enums are real and distinct, and
+/// `ContinuousModification::AddStaticMode { mode: StaticMode }` embeds one in the other.)
 /// Widening `object_content_eq` to compare `color` is the alternative, and it is a
-/// wide-blast-radius change to the shared CR 104.4b row comparator that every cover gate
-/// in this file consumes — DEFERRED as FU-28 (`color` in `object_content_eq`) rather than
-/// smuggled in behind this arm. FU-N designators in this lane are comment-only labels;
-/// there is no in-repo follow-up registry to check one against.
+/// wide-blast-radius change to the shared CR 104.4b comparator every cover gate here consumes.
 ///
-/// The member-quantified test below is kept anyway, so the arm does not REST on that
-/// cover — the cover is why the arm is sound, the test is what makes it fail closed.
+/// The member-quantified test below is kept anyway, so the arm does not REST on that cover —
+/// the cover is why the arm is sound, the test is what makes it fail closed.
 ///
-/// ⛔ ARG-EQUIVALENCE PIN. Conjunct (d) calls
-/// `game::effects::mana::linked_exiled_ids(state, scope, source.id)` — literally the
-/// link authority `exiled_color_options` (and therefore the mana resolver, at
-/// game/effects/mana.rs:789) consumes, extracted for exactly this reason. Do not
-/// "simplify" this into an inline `state.exile_links` walk: CR 607.2a scopes a linked
-/// ability to cards *still in the exile zone* that were exiled by *this* object, and
-/// both conjuncts live in that function. An inline copy drifts from the resolver
-/// silently, and this arm's whole claim is that it asks the resolver's own question.
+/// ARG-EQUIVALENCE. Conjunct (d) calls
+/// `game::effects::mana::linked_exiled_ids(state, scope, source.id)` — literally the link
+/// authority `exiled_color_options`, and therefore the mana resolver, consumes. Do not
+/// "simplify" this into an inline `state.exile_links` walk: CR 607.2a scopes a linked ability
+/// to cards *still in the exile zone* that were exiled by *this* object, and both conjuncts
+/// live in that function.
 ///
-/// NOT A VISITOR (#4603 error direction), same as the block-(1b) arms — four
-/// fail-closed conjuncts, each keeping the conservative veto whenever it cannot prove
-/// its half:
+/// NOT A VISITOR, same as the block-(1b) arms — four fail-closed conjuncts, each keeping the
+/// conservative veto whenever it cannot prove its half:
 ///   (0) NO ACTIVATION RESTRICTIONS: `ability_definition_axes` destructures
-///       `activation_restrictions: _` (`ability_scan::ability_definition_axes`), so the
-///       scan is BLIND to
-///       them and conjunct (a)'s rescan would answer `false` even with a
-///       class-matching restriction on the same def.
-///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the
-///       EFFECT with `Effect::NoOp` (`Effect::NoOp => Axes::NONE` in `ability_scan::scan_effect`)
-///       and re-run `ability_definition_reads_growing_class_for_loop`. Only if THAT
-///       is `false` is the effect the def's only growing-class read —
-///       `ability_definition_axes` destructures with NO `..`, so the rescan covers
-///       `sub_ability`, `condition`, `cost_reduction`, `unless_pay` and the rest
-///       without this arm enumerating any of them.
+///       `activation_restrictions: _`, so the scan is BLIND to them and (a)'s rescan would
+///       answer `false` even with a class-matching restriction on the same def.
+///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the EFFECT with
+///       `Effect::NoOp` and re-run `ability_definition_reads_growing_class_for_loop`. Only if
+///       THAT is `false` is the effect the def's only growing-class read.
 ///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`, and NO `..` on
-///       `Effect::Mana`, so a new `Mana` field is a compile error here rather than a
-///       silent unscanned read. `target: None` is part of that shape and is
-///       LOAD-BEARING, not a formality: the `LoopFirewall` branch of
-///       `ability_scan::scan_effect`'s `Effect::Mana` arm descends `target`'s
-///       `declared_filters()` through
-///       `scan_target_filter(.., SnapshotOrEvent)`, so a `Some(role)` veto can be
-///       raised BY THE TARGET's own class-reading filter — which conjunct (d)'s
-///       link-set argument says nothing about. Binding `target: _` would relieve
-///       that veto on evidence that never examined it. Measured coverage cost of
-///       the narrowing: ZERO — all 2 `ChoiceAmongExiledColors` productions in the
-///       card corpus carry `target: None` (positive control: 58 of 2893
-///       `Effect::Mana` productions DO carry a target, so the census can see one).
-///   (c) the member must be LIVE ON THE BATTLEFIELD in the scanned frame — see the same
-///       conjunct on [`pump_aggregate_provably_excludes_class`] for the measurement. Here
-///       the vacuity is starker still: `linked_exiled_ids` yields only Exile-zone ids, so
-///       under a bare `contains_key` ANY battlefield-absent member was excluded from the
-///       link set by construction and relieved on no evidence at all. Narrowing to
-///       `zone == Zone::Battlefield` costs nothing in production — the sole production
-///       caller's `class_members` are all battlefield ids (see conjunct (d)) — and it is
-///       the fail-closed direction for every other caller. Row: the `M3` arm of
-///       `exiled_colors_gate_is_precise_and_fail_closed`.
-///   (d) MEMBER-QUANTIFIED exclusion against that pinned link authority. ⛔ (d) IS
-///       DEFENCE-IN-DEPTH AT THE PRODUCTION SEAM, NOT THE FAIL-CLOSED MECHANISM — do not
-///       cite it as the thing that keeps this arm honest in production. The sole
-///       production caller is [`loop_states_cover_modulo_fodder_growth`], which builds
-///       `class_members` as `all_fodder` filtered by `cf.objects`, and `all_fodder` is
-///       collected from `pa.battlefield.chain(pb.battlefield)`. `linked_exiled_ids`
-///       yields only `zone == Zone::Exile` ids. The two populations therefore cannot
-///       intersect and (d) is CONSTANT-TRUE on every input production can construct; the
-///       guarantee that actually carries there is the cover above. (d) still earns its
-///       place — it is what makes the arm sound for any future caller that hands it a
-///       differently-built class set, and it is a compile-time-free fail-closed default —
-///       but a row that exercises its `false` branch has to hand-build an Exile-zone
-///       class set (`exiled_colors_gate_is_precise_and_fail_closed`'s (ii) arm does
-///       exactly that, deliberately). The row that reaches this arm the way production
-///       does is `s2_arm_is_reached_through_the_production_class_constructor`, and it
-///       pins the non-intersection as an assertion rather than as prose.
+///       `Effect::Mana`. `target: None` is part of that shape and is LOAD-BEARING: the
+///       `LoopFirewall` branch of `scan_effect`'s `Effect::Mana` arm descends `target`'s
+///       `declared_filters()`, so a `Some(role)` veto can be raised BY THE TARGET's own
+///       class-reading filter — which conjunct (d)'s link-set argument says nothing about.
+///   (c) the member must be LIVE ON THE BATTLEFIELD in the scanned frame. Under a bare
+///       `contains_key` ANY battlefield-absent member is excluded from an Exile-only link set
+///       by construction and relieved on no evidence at all.
+///   (d) MEMBER-QUANTIFIED exclusion against that link authority. It is DEFENCE-IN-DEPTH, not
+///       the fail-closed mechanism: the sole production caller builds `class_members` from
+///       `pa.battlefield.chain(pb.battlefield)` and `linked_exiled_ids` yields only
+///       `zone == Zone::Exile` ids, so the two populations cannot intersect and (d) is
+///       CONSTANT-TRUE on every input production can construct — the guarantee that carries
+///       there is the cover above. (d) earns its place by keeping the arm sound for a future
+///       caller that hands it a differently-built class set.
 fn exiled_colors_provably_exclude_class(
     ability: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -4268,9 +3426,7 @@ fn exiled_colors_provably_exclude_class(
 ) -> bool {
     use crate::types::ability::{Effect, ManaProduction};
 
-    // (0) the firewall is BLIND to activation restrictions
-    // (`ability_scan::ability_definition_axes`) —
-    // fail closed.
+    // (0) the firewall is BLIND to activation restrictions — fail closed.
     if !ability.activation_restrictions.is_empty() {
         return false;
     }
@@ -4300,74 +3456,51 @@ fn exiled_colors_provably_exclude_class(
     {
         return false;
     }
-    // (d) ARG-EQUIVALENCE PIN — game/effects/mana.rs `linked_exiled_ids`.
+    // (d) ARG-EQUIVALENCE — `game::effects::mana::linked_exiled_ids`.
     crate::game::effects::mana::linked_exiled_ids(state, *link_scope, source.id)
         .all(|(id, _)| id != class_member)
 }
 
-/// BLOCK-(2) ARM (phase C arm S3, Glittering Stockpile's stash-counter mana): does this
-/// battlefield ability's `AnyOneColor` production read a counter total on an object
-/// that PROVABLY is not `class_member`? Returns `true` iff so — then the produced
-/// amount is invariant across the loop's growth and this ability does not observe the
-/// loop.
+/// BLOCK-(2) ARM (Glittering Stockpile's stash-counter mana): does this battlefield
+/// ability's `AnyOneColor` production read a counter total on an object that PROVABLY is not
+/// `class_member`? Returns `true` iff so — then the produced amount is invariant across the
+/// loop's growth and this ability does not observe the loop.
 ///
 /// WHY AN ARM AND NOT A SCANNER RELAXATION: `QuantityRef::CountersOn { scope, .. }`
-/// self-asserts `sibling: true` in `ability_scan::scan_quantity_ref`'s
-/// `QuantityRef::CountersOn { scope, .. }` arm BEFORE that arm consults
+/// self-asserts `sibling: true` in `ability_scan::scan_quantity_ref` BEFORE that arm consults
 /// `scan_object_scope(scope)`. It is the one veto source in this lane that preserves a
-/// subject, and it is still unrelaxable by any scanner change — the self-assertion is
-/// unconditional. Reach chain, measured: `scan_effect`'s `Effect::Mana` arm
-/// (`LoopFirewall` branch) -> `scan_mana_production` -> its
-/// `ManaProduction::AnyOneColor { count, .. }` arm -> `scan_quantity_expr(count)` ->
-/// `scan_quantity_ref`'s `QuantityRef::CountersOn { scope, .. }` arm.
+/// subject, and the self-assertion is unconditional, so no scanner change can relax it.
 ///
-/// RELIEF CLAIM — IDENTITY, NOT FILTER. CR 122.1 (MagicCompRules.txt:1178): "A counter
-/// is a marker placed on an object or player that modifies its characteristics" —
-/// counters are read off ONE NAMED OBJECT, never a population, so the growing class is
-/// irrelevant to this value unless the named object IS a member.
-/// `ObjectScope::Source` resolves to the ability's own source object on BOTH resolver
-/// branches: `object_id_for_scope`'s `Source` arm returns `ctx.source` when
+/// RELIEF CLAIM — IDENTITY, NOT FILTER. CR 122.1: "A counter is a marker placed on an object
+/// or player that modifies its characteristics" — counters are read off ONE NAMED OBJECT,
+/// never a population, so the growing class is irrelevant to this value unless the named
+/// object IS a member. `ObjectScope::Source` resolves to the ability's own source object on
+/// BOTH resolver branches: `object_id_for_scope`'s `Source` arm returns `ctx.source` when
 /// `trigger_source` is `None` and the captured incarnation's id when it is `Some`, and
-/// `resolve_counters_on_live_or_lki_scope` (game/quantity.rs:5838-5847) routes `Source`
-/// through `source_lki_for_context` in the trigger case — the SAME object's LKI.
-/// ⇒ relief iff the resolved id differs from every member.
+/// `resolve_counters_on_live_or_lki_scope` routes `Source` through `source_lki_for_context`
+/// in the trigger case — the SAME object's LKI. ⇒ relief iff the resolved id differs from
+/// every member.
 ///
-/// ⛔ ARG-EQUIVALENCE PIN, and the `trigger_source` divergence stated rather than
-/// hidden. Conjunct (d) calls `game::quantity::object_id_for_scope` — the resolver's
-/// own scope authority (this arm is why it is `pub(crate)`) — with a firewall-built
-/// `QuantityContext` carrying `trigger_source: None`, because at firewall time no
-/// triggered resolution exists to capture. That differs from a triggered fire-time
-/// context, and the difference is IMMATERIAL HERE ONLY BECAUSE both branches yield the
-/// source's own identity (above), so the verdict is branch-independent. That
-/// branch-independence is not assumed: it is pinned by the S3-P2 row, which asserts it
-/// on BOTH branches. Every other scope keeps its veto at conjunct (b), so no other
-/// context field can be reached.
+/// ARG-EQUIVALENCE, including the `trigger_source` divergence.
+/// Conjunct (d) calls `game::quantity::object_id_for_scope` — the resolver's own scope
+/// authority (this arm is why it is `pub(crate)`) — with a firewall-built `QuantityContext`
+/// carrying `trigger_source: None`, because at firewall time no triggered resolution exists
+/// to capture. That differs from a triggered fire-time context, and is IMMATERIAL HERE ONLY
+/// BECAUSE both branches yield the source's own identity, so the verdict is
+/// branch-independent. Every other scope keeps its veto at conjunct (b), so no other context
+/// field can be reached.
 ///
-/// SAME FOUR FAIL-CLOSED CONJUNCTS as [`exiled_colors_provably_exclude_class`]; see
-/// that function's doc for (0), (a) and the shared soundness bridge. (b) here is a
-/// FOUR-LEVEL but strictly NON-RECURSIVE match — the load-bearing property is
-/// non-recursion, not depth: a compound `QuantityExpr` (`Offset`, `Multiply`,
-/// `DivideRounded`, …) falls to `_` and KEEPS the veto. `target: None` is
-/// load-bearing here for the SAME reason as in the sibling arm (see its (b)): the
-/// scanner descends a `Some(role)`'s declared filters, so a target-raised veto is
-/// not something conjunct (d)'s `object_id_for_scope` identity argument can
-/// discharge. Measured cost: ZERO — all 14 corpus productions of this shape carry
-/// `target: None`.
-///
-/// ⛔ (c) GETS ITS OWN SENTENCE HERE — the cross-reference above does NOT cover it, and
-/// this doc carried none until the review that added the row below. The two sibling arms'
-/// (c) closes a POPULATION vacuity: an off-battlefield id is absent from a
-/// battlefield-scoped id population, or from an Exile-only link set, for ZONE reasons, so
-/// it satisfies their conjunct (d) having measured nothing. Conjunct (d) HERE is an
-/// IDENTITY test, so that argument does not transfer: an off-battlefield id differs from
-/// the source no more trivially than a battlefield one does. What (c) buys here is that
-/// relief is granted only over the class the sole production caller can build — see
-/// [`exiled_colors_provably_exclude_class`]'s (c)/(d) for that caller's `class_members`
-/// construction, from which the ZERO production cost follows identically — and it keeps
-/// this arm fail-closed for every other caller, this file's own tests included. Row: the
-/// `(v-M3)` arm of `counters_on_source_gate_is_precise_and_fail_closed`. It shipped with
-/// NO row at all: reverting this conjunct to `state.objects.contains_key(&class_member)`
-/// left the full lib suite green.
+/// SAME FOUR FAIL-CLOSED CONJUNCTS as [`exiled_colors_provably_exclude_class`]; see that
+/// doc for (0), (a) and the shared soundness bridge. (b) here is a FOUR-LEVEL but strictly
+/// NON-RECURSIVE match — the load-bearing property is non-recursion, not depth: a compound
+/// `QuantityExpr` (`Offset`, `Multiply`, `DivideRounded`, …) falls to `_` and KEEPS the veto.
+/// `target: None` is load-bearing for the SAME reason as in the sibling arm. (c) does NOT
+/// inherit the siblings' argument: theirs closes a POPULATION vacuity (an off-battlefield id
+/// is absent from a battlefield-scoped population for ZONE reasons), while (d) here is an
+/// IDENTITY test, where an off-battlefield id differs from the source no more trivially than
+/// a battlefield one does. What (c) buys here is that relief is granted only over the class
+/// the sole production caller can build, and that the arm stays fail-closed for every other
+/// caller.
 fn counters_on_source_provably_excludes_class(
     ability: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -4376,9 +3509,7 @@ fn counters_on_source_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::{Effect, ManaProduction, ObjectScope, QuantityExpr, QuantityRef};
 
-    // (0) the firewall is BLIND to activation restrictions
-    // (`ability_scan::ability_definition_axes`) —
-    // fail closed.
+    // (0) the firewall is BLIND to activation restrictions — fail closed.
     if !ability.activation_restrictions.is_empty() {
         return false;
     }
@@ -4422,7 +3553,7 @@ fn counters_on_source_provably_excludes_class(
     {
         return false;
     }
-    // (d) ARG-EQUIVALENCE PIN — game/quantity.rs `object_id_for_scope`. Fail closed on
+    // (d) ARG-EQUIVALENCE — `game::quantity::object_id_for_scope`. Fail closed on
     // `None`: an unresolvable scope proves nothing about which object is read.
     let ctx = crate::game::quantity::QuantityContext {
         entering: None,
@@ -4439,19 +3570,15 @@ fn counters_on_source_provably_excludes_class(
 /// TOTAL by construction: every axis of `def` other than `kind` and `effect` is at
 /// `AbilityDefinition::new`'s value.
 ///
-/// `ability_scan::ability_definition_axes` destructures `AbilityDefinition` with no `..` and binds
-/// **20 of its 39 fields `_`** — so a scanner-only inertness test is blind to all 20, and
-/// `AbilityCost::EffectCost { effect }` (one of them) is routed to `scan_effect` by
-/// `scan_ability_cost`'s `AbilityCost::EffectCost { effect } => scan_effect(..)` arm, i.e. the
-/// codebase's own authority says that payload can read the board. Equality against the canonical
-/// constructor asks about every field instead of a hand-maintained list: `AbilityDefinition::new`
-/// (`types/ability.rs:21030`) is an exhaustive struct literal with no `..Default`, and
-/// `AbilityDefinition` derives `PartialEq`, so a NEW FIELD carrying a non-constructor value fails
-/// here without anyone remembering to extend anything — and a new field also breaks `new`'s literal
-/// at compile time. `#[derive(Clone, PartialEq, Eq)]` sits at `types/ability.rs:20390`, so this is
-/// DERIVED STRUCTURAL equality over all 39 fields — a strict superset of the 20 the scan binds `_`,
-/// a future field participates automatically, and the fail direction is REFUSAL.
-/// Pinned by S6-A0 (22 disagreeing inputs) and S6-A12.
+/// `ability_scan::ability_definition_axes` destructures `AbilityDefinition` with no `..` and
+/// binds most of its fields `_`, so a scanner-only inertness test is blind to all of them —
+/// and `AbilityCost::EffectCost { effect }` (one of them) is routed to `scan_effect` by
+/// `scan_ability_cost`, i.e. the codebase's own authority says that payload can read the
+/// board. Equality against the canonical constructor asks about every field instead of a
+/// hand-maintained list: `AbilityDefinition::new` is an exhaustive struct literal with no
+/// `..Default` and `AbilityDefinition` derives `PartialEq`, so a NEW FIELD carrying a
+/// non-constructor value fails here without anyone remembering to extend anything, a future
+/// field participates automatically, and the fail direction is REFUSAL.
 fn ability_definition_carries_only_its_effect(
     def: &crate::types::ability::AbilityDefinition,
 ) -> bool {
@@ -4463,62 +3590,35 @@ fn ability_definition_carries_only_its_effect(
 /// board-census scanner, the totality check, and the arrival-invariance guard the reveal
 /// `filter` clears at (b-f). The scanner alone is not enough — it and the arrival authority
 /// DISAGREE on exactly the resolution-local ledger leaves this lane's growing class writes.
-///
-/// **WHERE THEY DISAGREE, quoted rather than paraphrased.** The population authority's own
-/// operative clause — the doc comment on
-/// [`crate::game::filter::affected_filter_uses_object_population`] — defines the hazard as
+/// The population authority's operative clause (on
+/// [`crate::game::filter::affected_filter_uses_object_population`]) defines the hazard as
 /// *"another object entering or leaving the battlefield can change whether a PRE-EXISTING
-/// object satisfies this filter"*, and `LastCreated` violates that clause DIRECTLY: minting a
-/// token ASSIGNS `state.last_created_token_ids` (assignment, never append), so a pre-existing
-/// object that was failing `Not { LastCreated }` starts passing it. The scanner nevertheless
-/// classifies those leaves as read-free. CR 608.2c is the rules shape they lower — "…if that
-/// spell is countered **this way**…", a reference resolved inside the resolution that produced
-/// it. See [`arrival_can_move_a_nonmember_match`], which is where that fail-closing lives.
+/// object satisfies this filter"*, and `LastCreated` violates it directly: minting a token
+/// ASSIGNS `state.last_created_token_ids` (assignment, never append), so a pre-existing object
+/// failing `Not { LastCreated }` starts passing it. The scanner nevertheless classifies those
+/// leaves read-free — they lower CR 608.2c's "…if that spell is countered **this way**…", a
+/// reference resolved inside the resolution that produced it; see
+/// [`arrival_can_move_a_nonmember_match`], where the fail-closing lives.
 ///
-/// **WHY CHECK 2 IS AN EQUALITY AND NOT A FIELD ALLOWLIST.**
-/// `ability_scan::ability_definition_axes` binds **20 of `AbilityDefinition`'s 39 fields
-/// `_`**, so a scanner-only inertness test on this branch is blind to all 20 — a
-/// hand-maintained allowlist would have to be extended by whoever adds field 40, and nobody
-/// would remember. Equality against the canonical constructor is TOTAL BY CONSTRUCTION
-/// instead; see
-/// [`ability_definition_carries_only_its_effect`].
-///
-/// **MEASURED CLASS EVIDENCE.** Predicate: a card-face entry in `data/card-data.json` (md5
-/// `39c353b4e0cc4395925a12ad30b590aa`) carrying a `replacements[]` element whose
-/// `execute.effect.type == "RevealFromHand"`; unit, one row per card face; **21 faces**. Over
-/// that corpus **21/21** `on_decline` effects are `SetTapState`, **21/21** of their targets are
-/// `SelfRef`, and **19/21** faces are relieved by this gate — the 2 misses are exactly the 2
-/// faces carrying a non-null `on_decline.condition`. ⚠ Those 2 misses are an **INTERIM**
-/// conservative approximation, not correct-by-design: `(b-d)` refuses a board-reading decline
-/// condition without ever asking whether that census intersects the growing class. The
-/// block-(1b) `execute_ledger_condition_provably_excludes_class` shape — which proves the
-/// condition's OWN census excludes the class — relieves them when it lands.
-///
-/// CHECK 3 IS A SINGLE-VARIANT ALLOWLIST, AND THAT IS A **SCOPE RULING, NOT A DESIGN
-/// JUDGMENT.** `arrival_can_move_a_nonmember_match` takes a `&TargetFilter`; there is no
-/// **filter-enumerating walk** over an `Effect` in this codebase (`filter_contains` is
-/// `TargetFilter`-rooted), and `game/filter.rs` is READ-ONLY for this phase, so building one
-/// here is out of scope by ruling rather than by preference. **FU-36** owns that walk (and the
-/// repair of `affected_filter_uses_object_population`'s contradiction on the ledger leaves);
-/// when it lands, check 3 becomes that call and this allowlist dissolves. Until then the
-/// allowlist can only UNDER-relieve — the residual is "the offer fails to appear", this
-/// subsystem's safe direction — never relieve wrongly. Do not widen it casually; extend it by
-/// doing FU-36's walk. Pinned by S6-A6, S6-A11, S6-A12.
+/// CHECK 3 IS A SINGLE-VARIANT ALLOWLIST because `arrival_can_move_a_nonmember_match` takes a
+/// `&TargetFilter` and no filter-enumerating walk over an `Effect` exists here
+/// (`filter_contains` is `TargetFilter`-rooted). Until one does the allowlist can only
+/// UNDER-relieve — the residual is "the offer fails to appear", the safe direction — so extend
+/// it by building that walk. Check 2 is an equality rather than a field allowlist for the
+/// reason [`ability_definition_carries_only_its_effect`] gives.
 fn reveal_from_hand_decline_branch_is_arrival_invariant(
     decl: &crate::types::ability::AbilityDefinition,
 ) -> bool {
     use crate::types::ability::Effect;
-    // 1. BOARD-CENSUS AUTHORITY. Refuses Fortified Beachhead / Temple of the Dragon Queen,
-    //    whose `on_decline.condition` is a live `ControllerControlsMatching` census — and,
-    //    measured over every distinct `SetTapState` target in `card-data.json` (156 distinct
-    //    filters over 2462 occurrences), the SOLE refuser for 87 of 156.
+    // 1. BOARD-CENSUS AUTHORITY. Refuses a branch whose `on_decline.condition` is a live
+    //    `ControllerControlsMatching` census (Fortified Beachhead, Temple of the Dragon
+    //    Queen).
     if crate::game::ability_scan::ability_definition_reads_sibling_mutable(decl) {
         return false;
     }
-    // 2. TOTALITY — the same authority (0) uses, at this level. NO field is exempt. Measured
-    //    non-redundant with check 1: a branch canonical except `optional: true` gives
-    //    `check1_refuses=false check2_admits=false check3_admits=true`, so check 2 is the sole
-    //    refuser (S6-A12).
+    // 2. TOTALITY — the same authority (0) uses, at this level. NO field is exempt, and it is
+    //    non-redundant with check 1: a branch canonical except `optional: true` is refused
+    //    here and nowhere else.
     if !ability_definition_carries_only_its_effect(decl) {
         return false;
     }
@@ -4536,181 +3636,100 @@ fn reveal_from_hand_decline_branch_is_arrival_invariant(
     }
 }
 
-/// **S6** — CR 732.2a block-(3) relief on a replacement definition's `execute` BODY, for the
+/// CR 732.2a block-(3) relief on a replacement definition's `execute` BODY, for the
 /// reveal-land class (`Effect::RevealFromHand`, CR 701.20a). Answers "can this execute body
 /// observe the growing class?" with a UNIVERSE argument rather than a census-invariance one.
 ///
-/// **CR ANCHORS, each stating what it licenses.**
-///  * **CR 701.20a** ("To reveal a card, show that card to all players for a brief time") —
-///    what `Effect::RevealFromHand` implements, i.e. what conjunct (b) matches on.
-///  * **CR 614.1c** ("Effects that read '[This permanent] enters with …,' 'As [this permanent]
+/// CR ANCHORS, each stating what it licenses:
+///  * CR 701.20a ("To reveal a card, show that card to all players for a brief time") — what
+///    `Effect::RevealFromHand` implements, i.e. what conjunct (b) matches on.
+///  * CR 614.1c ("Effects that read '[This permanent] enters with …,' 'As [this permanent]
 ///    enters …' … are replacement effects") — why "As this land enters" is a
 ///    `ReplacementDefinition` at all, i.e. why this arm sits at block (3).
-///  * **CR 614.1d** (continuous "[This permanent] enters …" effects are replacement effects) —
+///  * CR 614.1d (continuous "[This permanent] enters …" effects are replacement effects) —
 ///    the object-attached store the board half of `loop_window_replacement_defs` walks.
-///  * **CR 111.7** ("A token that's in a zone other than the battlefield ceases to exist") —
-///    the universe argument's floor: the growing class is battlefield-resident, so a TOKEN
-///    class member cannot simultaneously be a card in a hand.
-///  * **CR 109.4** + **CR 108.4a** (only stack/battlefield objects have a controller;
-///    otherwise use the owner) — what `replacement_source_player` implements at conjunct (d).
-///  * **CR 611.2** ("A continuous effect may be generated by the resolution of a spell or
-///    ability") — the FLOATING store, and why the call site's fail-closed residual is YAGNI
-///    rather than a capability gap; contrast **CR 611.3** (static-ability generated), the
+///  * CR 111.7 ("A token that's in a zone other than the battlefield ceases to exist") — the
+///    universe argument's floor: the growing class is battlefield-resident, so a TOKEN class
+///    member cannot simultaneously be a card in a hand.
+///  * CR 109.4 + CR 108.4a (only stack/battlefield objects have a controller; otherwise use
+///    the owner) — what `replacement_source_player` implements at conjunct (d).
+///  * CR 611.2 ("A continuous effect may be generated by the resolution of a spell or
+///    ability") — the FLOATING store, contrast CR 611.3 (static-ability generated), the
 ///    object-attached half this arm actually reaches.
-///  * **CR 732.2a** (the player with priority may suggest a shortcut) — the firewall's own
+///  * CR 732.2a (the player with priority may suggest a shortcut) — the firewall's own
 ///    question, i.e. what the relief is relief *from*.
 ///
-/// ⛔ **THE UNIVERSE ARGUMENT — this arm's whole basis, and it is not a census.**
+/// THE UNIVERSE ARGUMENT — this arm's whole basis, and it is not a census.
 /// `reveal_from_hand::resolve` draws its subjects from `players[controller].hand` and only
-/// THEN filters them (`game/effects/reveal_from_hand.rs:48-62`), while the growing class is
-/// battlefield objects. A class member absent from that hand can therefore never be in the
-/// eligible set, whatever the filter says — so relief here rests on the SUBJECT POOL, not on
-/// proving a count invariant. CR 111.7 is why a token member cannot be in both places at once.
+/// THEN filters them, while the growing class is battlefield objects. A class member absent
+/// from that hand can therefore never be in the eligible set, whatever the filter says.
 ///
-/// ⛔ **WHY AN ARM AND NOT A SCANNER RELAXATION.** The blanket being relieved is
+/// WHY AN ARM AND NOT A SCANNER RELAXATION. The blanket being relieved is
 /// `Effect::RevealFromHand { .. } => Axes::CONSERVATIVE` in `ability_scan::scan_effect`, whose
-/// immediate neighbour `Effect::RevealHand` DOES descend (`scan_target_filter` on `target` and
-/// on `card_filter`, `scan_quantity_expr` on `count`). That asymmetry is recorded, not
-/// repaired: `RevealHand` has a discrete target slot (`Effect::target_filter()` answers
-/// `Some`) and two filter leaves, while `RevealFromHand` answers `None` there. That `None`
-/// arm's own annotation says why: it "implicitly targets the controller's own hand" and has no
-/// discrete `target` field (CR 701.20a is the reveal keyword action itself, not the hand
-/// claim). `RevealFromHand`'s second payload field is an `Option<Box<AbilityDefinition>>`,
-/// which is what puts it among the 8 DIRECT nested-ability carriers enumerated below — the
-/// one carrier `(b)` matches instead of refusing. `scan_effect` does compute
-/// `effect_target_ctx(x, mode)` for it — which files it under "a bounded selection from a
-/// non-battlefield pool — an O(1) read that does NOT scale with the growing class", this arm's
-/// universe argument in the scanner's own words — and then DISCARDS the value, because the arm
-/// never calls `scan_target_filter`. Three reasons the descent is nonetheless not the fix,
-/// in order of decisiveness:
+/// neighbour `Effect::RevealHand` DOES descend. That asymmetry is recorded, not repaired:
+/// `RevealHand` has a discrete target slot and two filter leaves, while `RevealFromHand`
+/// answers `None` to `Effect::target_filter()` because it implicitly targets the controller's
+/// own hand. Three reasons the descent is not the fix, in order of decisiveness:
+///  1. THE RELIEF IS NOT A FUNCTION OF THE AST. The same `AbilityDefinition` against the same
+///     board must relieve for a battlefield member and veto for a member sitting in the
+///     controller's hand. `scan_effect(&Effect, ScanMode) -> Axes` takes no `GameState` and no
+///     `ObjectId`, and `Axes` is three bools with nowhere to record "relative to WHICH
+///     member", so no scanner arm can return both. `(c)` and `(d)` are where that relativity
+///     lives, and `(c)` deliberately does NOT narrow to `Zone::Battlefield`, so the in-hand
+///     member is a REACHABLE input.
+///  2. DESCENDING WOULD IMPORT THE FAIL-OPEN AUTHORITY. `scan_target_filter`'s
+///     `TargetFilter::LastCreated => Axes::NONE` arm disagrees with
+///     `arrival_can_move_a_nonmember_match` on exactly that leaf (minting a token ASSIGNS
+///     `state.last_created_token_ids`, so a PRE-EXISTING object starts matching
+///     `Not { LastCreated }`). A relaxed arm would relieve precisely the filters `(b-f)` and
+///     `(b-d)` refuse.
+///  3. BLAST RADIUS — the blanket is MODE-INVARIANT and sets all three axes. At
+///     `Conservative`, `Axes::sibling`/`event` feed `game::triggers`'s CR 603.3b
+///     distinct-event auto-resolve gate and `Axes::projected` feeds a DIFFERENT firewall.
+///     This lane's business is ONE axis in ONE mode; relaxing the arm would move trigger
+///     ordering in every game.
 ///
-///  1. **THE RELIEF IS NOT A FUNCTION OF THE AST, AND A LANDED ROW MEASURES BOTH ANSWERS ON
-///     ONE.** [`s6_arm_keeps_the_veto_when_a_member_is_in_the_controllers_hand`] (S6-A2)
-///     evaluates the SAME `AbilityDefinition` against the SAME board twice: relief for the
-///     battlefield member, veto for the member sitting in the controller's hand.
-///     `scan_effect(&Effect, ScanMode) -> Axes` takes no `GameState` and no `ObjectId`, and
-///     `Axes` is three bools with nowhere to record "relative to WHICH member", so no scanner
-///     arm — descending or blanket — can return both. `(c)` and `(d)` are where that
-///     relativity lives, and `(c)` deliberately does NOT narrow to `Zone::Battlefield`, so the
-///     in-hand member is a REACHABLE input rather than a hypothetical one.
-///  2. **DESCENDING WOULD IMPORT THE FAIL-OPEN AUTHORITY.** MEASURED through the neighbour
-///     that already descends: a `RevealHand` whose `card_filter` is `TargetFilter::LastCreated`
-///     comes back `false` from `ability_definition_reads_growing_class_for_loop`
-///     AND from the `Conservative` accessor, while `arrival_can_move_a_nonmember_match` on
-///     that same leaf is `true`. `scan_target_filter`'s `TargetFilter::LastCreated =>
-///     Axes::NONE` arm is the disagreement, and it is the one
-///     [`reveal_from_hand_decline_branch_is_arrival_invariant`]'s doc quotes: minting a token
-///     ASSIGNS `state.last_created_token_ids`, so a PRE-EXISTING object starts matching
-///     `Not { LastCreated }`. A relaxed `RevealFromHand` arm would relieve precisely the
-///     filters `(b-f)` and `(b-d)` refuse. Repairing that disagreement is FU-36's job, not
-///     this arm's.
-///  3. **BLAST RADIUS — the blanket is MODE-INVARIANT and sets all three axes.** MEASURED:
-///     `RevealFromHand` answers `true` under BOTH `LoopFirewall` and `Conservative`. At
-///     `Conservative`, `Axes::sibling` and `Axes::event` feed `game::triggers`'s CR 603.3b
-///     distinct-event auto-resolve gate, and `Axes::projected` feeds
-///     `ability_scan::ability_reads_projected_resource` — a DIFFERENT firewall. This lane's
-///     business is ONE axis in ONE mode; relaxing the arm would move trigger ordering in every
-///     game, `LoopDetectionMode::Off` included (#4603 byte-identity).
+/// THE SPLIT IS NOT "ALL OF THIS IS CLASS-RELATIVE": all of the cluster but `(c)` and `(d)`
+/// is a pure function of the definition, and a scanner change could in principle host that
+/// AST-only majority. What it cannot host is the part that DECIDES — reason (1). The AST-only
+/// majority is not delegated either, because of (2).
 ///
-/// ⚠ **THE SPLIT IS NOT "ALL OF THIS IS CLASS-RELATIVE" — MEASURED.** This arm's cluster
-/// (this fn, [`reveal_from_hand_decline_branch_is_arrival_invariant`],
-/// [`ability_definition_carries_only_its_effect`], [`arrival_can_move_a_nonmember_match`] and
-/// its two node predicates) is 192 code lines, and all but `(c)`+`(d)` — about ten — are PURE
-/// FUNCTIONS OF THE DEFINITION. A scanner change could in principle host that AST-only
-/// majority. What it cannot host is the part that DECIDES: reason (1). Do not restate this as
-/// "the whole arm is class-relative" — that is the crude form of the argument and it is false
-/// on the line count. The AST-only majority is nevertheless not delegated to the scanner
-/// either, because of (2): expressed in scanner terms it would be unsound before it was
-/// useful.
+/// The SIBLING arms' reason does not transfer: [`exiled_colors_provably_exclude_class`]
+/// argues that `ChoiceAmongExiledColors` EXPOSES NO SUBJECT SET. `RevealFromHand`'s subject
+/// set is entirely IN the AST; what the scanner cannot see is the UNIVERSE it is drawn from.
 ///
-/// ⚠ The SIBLING arms' stated reason does NOT transfer and is deliberately not reused here.
-/// [`exiled_colors_provably_exclude_class`] argues that `ChoiceAmongExiledColors` EXPOSES NO
-/// SUBJECT SET (the link relation lives in `state.exile_links`, outside the AST).
-/// `RevealFromHand`'s subject set — `filter` plus `on_decline` — is entirely IN the AST. What
-/// the scanner cannot see here is not the subject set but the UNIVERSE it is drawn from.
+/// The conjuncts, each fail-closed:
+///   (0) TOTALITY, not a field list: `ability_definition_axes` binds most of
+///       `AbilityDefinition`'s fields `_`, and `scan_ability_cost` routes one of them straight
+///       into `scan_effect`, so a scanner-only inertness test is blind to it. See
+///       [`ability_definition_carries_only_its_effect`]. There is no `(a)` clone-and-rescan
+///       here, and that is a CLOSED-FORM argument rather than a sample count: on the
+///       `(0)`-ADMITTED set the probe is literally `AbilityDefinition::new(kind,
+///       Effect::NoOp)`, one value per `AbilityKind` inhabitant, all measured non-reading. A
+///       conjunct that can never be the sole refuser cannot be driven RED.
+///   (b) SHAPE, single level, no `..`, `_ => false`, so every sibling nested-ability carrier
+///       keeps its blanket veto and a new field on the variant is a compile error.
+///   (b-f)/(b-d) the reveal `filter` and the decline branch must be ARRIVAL-INVARIANT, not
+///       merely class-disjoint: two corpus faces carry an `on_decline` board census the outer
+///       shape check cannot see ("…unless you revealed a Soldier card this way **or you
+///       control a Soldier**"). Those faces fail closed until a conditional relief proving the
+///       `on_decline` condition's own census excludes the class lands.
+///   (c) a bare `contains_key` frame-presence guard, and the sibling's `zone == Battlefield`
+///       narrowing does NOT transfer: that narrowing exists because THEIR `(d)` counts a
+///       battlefield-scoped population, while this `(d)`'s population is the CONTROLLER'S
+///       HAND — "this battlefield token is not in that hand" IS the universe argument, not a
+///       vacuity, and the zone form would additionally refuse a member sitting in a graveyard.
+///   (d) a `let-else`, NOT `!…is_some_and(..)`: the two differ only when the player lookup
+///       returns `None`, and there the negated form yields RELIEF, which is fail-OPEN on the
+///       one input where nothing has been proved.
 ///
-/// ⛔ **WHY `(0)` IS A TOTALITY CHECK AND NOT A FIELD LIST.**
-/// `ability_scan::ability_definition_axes` binds **20 of `AbilityDefinition`'s 39 fields
-/// `_`**, and `scan_ability_cost`'s `AbilityCost::EffectCost { effect } => scan_effect(..)`
-/// arm routes one of those 20 straight into `scan_effect`, i.e. the codebase's own authority
-/// says that payload CAN read the board. A scanner-only inertness test is blind to it.
-/// Equality against the canonical constructor asks about every axis at once; see
-/// [`ability_definition_carries_only_its_effect`]. Pinned by S6-A0, whose 22 inputs each
-/// differ from the canonical control on exactly one axis.
-///
-/// ⛔ **WHY THERE IS NO `(a)` — the clone-and-rescan the traced sibling arms carry. This is a
-/// CLOSED-FORM argument, not a sample count.** `(0)` admits `exec` iff
-/// `exec == AbilityDefinition::new(exec.kind, (*exec.effect).clone())`, and
-/// `AbilityDefinition::new` (`types/ability.rs:21030`) is an exhaustive struct literal whose
-/// every field but `kind` and `effect` is a payload-free constant. So on the `(0)`-ADMITTED
-/// set, `(a)`'s probe (clone the def, set `*effect = Effect::NoOp`, rescan) is LITERALLY
-/// `AbilityDefinition::new(kind, Effect::NoOp)` — one value per `AbilityKind` inhabitant, and
-/// nothing else. `AbilityKind` (`types/ability.rs:19984`) is a 5-variant fieldless `Copy`
-/// enum, and `ability_definition_axes` binds `kind` itself `_`. The probe domain is therefore
-/// exactly **5 values**, all 5 measured non-reading — an EXHAUSTIVE enumeration, not a sample.
-/// A conjunct that can never be the sole refuser cannot be driven RED, so keeping it would
-/// ship an unpinnable production line. Corroboration only, and cited as such: over a 46-input
-/// battery, `a_refusals_total=1` (the control, which `(0)` also refuses) and
-/// `A_REFUSALS_WHERE_0_ADMITS=0`. The three axes `(a)` genuinely saw (`sub_ability`,
-/// `else_ability`, `mode_abilities`) are re-homed onto `(0)` and each still reddens there.
-/// ⚠ This DIVERGES from [`pump_aggregate_provably_excludes_class`], which keeps the
-/// `(0)`+`(a)` pair; that divergence is deliberate and is disclosed here rather than hidden at
-/// the sibling. It is a NARROWING — the totality check refuses everything `(a)` refused, and
-/// 19 further axes the pair let through — with a MEASURED coverage cost of ZERO (all 21 corpus
-/// `execute` defs stay canonical under the full-field equality).
-///
-/// ⛔ **WHY `(b-f)` AND `(b-d)` EXIST.** Two corpus faces make plan-r4's specified S6 arm fail
-/// OPEN, and both are printed on the card: Fortified Beachhead ("…unless you revealed a
-/// Soldier card this way **or you control a Soldier**") and Temple of the Dragon Queen ("…**or
-/// you control a Dragon**"). That printed clause is the source of an `on_decline` board census
-/// the outer shape check cannot see. `(b-f)` carries the arrival question onto the reveal
-/// `filter`; `(b-d)` carries it onto the decline branch. MEASURED CEILING, stated rather than
-/// rounded: **19 of the 21** corpus faces are relieved and **2 fail closed** — those same two.
-/// Relieving them needs a conditional relief proving the `on_decline` condition's own census
-/// excludes the class, which is a different arm's shape and is filed as a follow-up.
-///
-/// ⛔ **WHY `(c)` IS BARE `contains_key` HERE, AND WHY THE SIBLING'S ARGUMENT DOES NOT
-/// TRANSFER.** [`pump_aggregate_provably_excludes_class`]'s `(c)` needed a
-/// `zone == Battlefield` narrowing because ITS `(d)` counted a battlefield-scoped population,
-/// so an id that merely EXISTED was trivially absent from that population and satisfied `(d)`
-/// having proved nothing. That vacuity argument does not transfer: this arm's `(d)` population
-/// is the CONTROLLER'S HAND, and "this battlefield token is not in that hand" IS the universe
-/// argument, not a vacuity. The zone form would additionally REFUSE a class member sitting in,
-/// say, a graveyard — a narrowing the universe argument does not need. `(c)` is a
-/// frame-presence guard only and binds nothing. Pinned by S6-A7, whose registered mutation is
-/// this conjunct's DELETION.
-///
-/// ⛔ **WHY `(d)` IS A `let-else` AND NOT `!…is_some_and(..)`.** The two differ only when the
-/// player lookup returns `None`, and there the negated form yields RELIEF: `None.is_some_and(_)`
-/// is `false`, and the leading `!` flips it to `true`. That is the fail-OPEN direction on the
-/// one input where nothing has been proved. The `let-else` returns `false` — keep the veto.
-/// Pinned by S6-A9, whose registered mutation is exactly the negated form.
-///
-/// ⛔ **CONTROLLER AUTHORITY: `replacement::replacement_source_player`, NEVER the raw
-/// `source.controller` field.** That is the binding `apply_post_replacement_effect` itself
-/// makes (`game/engine_replacement.rs:2450`), and `GameObject::controller_or_owner` yields
-/// `self.owner` for a NON-EMBLEM Command-zone carrier (CR 109.4 + CR 108.4a). **MEASURED SCOPE
-/// OF THAT HAZARD, so nobody re-derives it from the wrong premise:** this walk cannot currently
-/// reach the divergence — `object_functions` returns `false` for `Zone::Command && !is_emblem`
-/// and `functioning_board_replacement_defs` keeps only `[Battlefield, Command]`, so every
-/// object reaching this arm satisfies `controller_or_owner() == controller`. The authority is
-/// taken anyway because it is free and because the equivalence must be PROVEN rather than
-/// asserted; it is NOT taken on the strength of a live divergence, and NO ROW HERE CLAIMS ONE.
-///
-/// ⛔ **THE MECHANISM CLASS `(b)` CLOSES, with both predicates and both counts.** Predicate
-/// DIRECT: an `Effect` variant with ≥1 field whose DECLARED TYPE mentions `AbilityDefinition`
-/// (field lines only; doc comments and `#[…]` excluded) — **8 of 232 variants**
-/// (`Vote.per_choice_effect`, `SeparateIntoPiles.{chosen,unchosen}_pile_effect`,
-/// `RevealFromHand.on_decline`, `CreateDelayedTrigger.effect`, `FlipCoin.{win,lose}_effect`,
-/// `FlipCoins.{win,lose}_effect`, `FlipCoinUntilLose.win_effect`, `ChooseOneOf.branches`).
-/// Predicate TRANSITIVE: a variant with a `Box<Effect>` field, which can hold ANY variant
-/// including those 8 — **+2** (`CreateDrawReplacement.replacement_effect`,
-/// `CreatePlaneswalkReplacement.replacement_effect`). ⚠ A naive line-grep that includes doc
-/// comments and attributes returns **11** and is wrong: `RevealHand`, `RollDie` and
-/// `DraftFromSpellbook` have no such field. `(b)`'s `let-else` refuses all 9 non-
-/// `RevealFromHand` carriers, so the mechanism is closed BY CONSTRUCTION rather than by
-/// descent — this is a FORWARD GUARD for whoever extends `(b)`, not the repair of a live hole.
-/// Pinned by S6-A10 on 5 of them, 3 direct and BOTH transitive.
+/// CONTROLLER AUTHORITY: `replacement::replacement_source_player`, NEVER the raw
+/// `source.controller` field — that is the binding `apply_post_replacement_effect` itself
+/// makes, and `GameObject::controller_or_owner` yields `self.owner` for a NON-EMBLEM
+/// Command-zone carrier (CR 109.4 + CR 108.4a). This walk cannot currently reach the
+/// divergence (`object_functions` returns `false` for `Zone::Command && !is_emblem`), so the
+/// authority is taken because the equivalence must be PROVEN rather than asserted, not on the
+/// strength of a live divergence.
 fn reveal_from_hand_execute_provably_excludes_class(
     exec: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -4719,11 +3738,10 @@ fn reveal_from_hand_execute_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::Effect;
 
-    // (0) TOTALITY. The scan is blind to 20 of this struct's 39 axes; rather than fail closed
+    // (0) TOTALITY. The scan is blind to most of this struct's axes; rather than fail closed
     //     on the one axis we happened to notice, require every axis but `kind` and `effect`
     //     to be at its constructor value. Subsumes the sibling arms' activation-restriction
-    //     guard AND their clone-and-rescan `(a)` — measured: `(a)` refuses nothing this
-    //     admits. See this function's doc.
+    //     guard AND their clone-and-rescan `(a)`. See this function's doc.
     if !ability_definition_carries_only_its_effect(exec) {
         return false;
     }
@@ -4750,7 +3768,7 @@ fn reveal_from_hand_execute_provably_excludes_class(
     if !state.objects.contains_key(&class_member) {
         return false;
     }
-    // (d) THE UNIVERSE PIN. `reveal_from_hand::resolve` draws its subjects from
+    // (d) THE UNIVERSE ARGUMENT. `reveal_from_hand::resolve` draws its subjects from
     //     `players[controller].hand` and only then filters, so a member absent from that
     //     hand can never be in the eligible set.
     let controller = crate::game::replacement::replacement_source_player(source);
@@ -4760,34 +3778,24 @@ fn reveal_from_hand_execute_provably_excludes_class(
     !player.hand.iter().any(|&h| h == class_member)
 }
 
-/// CR 400.7: the object ids whose RULES identity is not stable across this window — either
-/// the incarnation epoch advanced ([`GameObject::bump_incarnation`], the single bump
-/// primitive: every real zone move, plus the merge/relatch sites that call it directly), or
-/// the object is ABSENT from `prior`, i.e. it ARRIVED inside the window.
+/// CR 400.7: the object ids whose RULES identity is not stable across this window — either the
+/// incarnation epoch advanced ([`GameObject::bump_incarnation`], the single bump primitive:
+/// every real zone move, plus the merge/relatch sites that call it directly), or the object is
+/// ABSENT from `prior`, i.e. it ARRIVED inside the window. A DEPARTED id — in `prior`, absent
+/// from `current` — is deliberately NOT in the set, and walking `current.objects` makes that
+/// structural rather than a filter a later reader could tidy away; both consumers only ask
+/// about a host already resolved on the battlefield of the SCANNED frame.
 ///
-/// A DEPARTED id — in `prior`, absent from `current` — is deliberately NOT in the set, and
-/// walking `current.objects` is what makes that structural rather than a filter a later reader
-/// could "tidy" away. Both consumers only ever ask about a host already resolved on the
-/// battlefield of the SCANNED frame, so a departed id is unreachable by construction. Row
-/// `identity_unstable_ids_names_reentered_and_arrived_objects` asserts the EXACT set on a pair
-/// carrying a departed object, so an over-broad implementation fails there rather than passing
-/// silently — a `contains` assertion would not see it.
-///
-/// ⛔ **THIS IS NOT AVAILABLE FROM THE COVER, AND THAT IS THE WHOLE REASON IT EXISTS.**
-/// [`object_content_eq`] — the sole authority for the cover's stable partition — is keyed by
-/// `ObjectId` (STORAGE identity) and deliberately omits `timestamp` / `incarnation` /
+/// NOT AVAILABLE FROM THE COVER, which is why it exists. [`object_content_eq`] is keyed by
+/// `ObjectId` (STORAGE identity) and omits `timestamp` / `incarnation` /
 /// `transformation_count`, because the same comparator serves CR 104.4b's constant-depth loop
-/// detector and must ignore the epoch. MEASURED: a permanent blinked through
+/// detector and must ignore the epoch — so a permanent blinked through
 /// `game::zones::move_to_zone` keeps its id, is `object_content_eq` to its pre-blink self, and
 /// a steady-state blink pair passes EVERY gate of [`loop_states_cover_modulo_fodder_growth`].
-/// **Do not "simplify" this by tightening `object_content_eq` instead** — both narrower
-/// candidates were measured and rejected: tightening it rejects every buyback loop and changes
-/// the draw comparator.
-///
-/// CR 613.7d (an object receives a timestamp when it enters a zone) is the sibling fact and is
-/// deliberately NOT the test used here: a timestamp also moves when an Aura or Equipment
-/// becomes attached (CR 613.7e), which is not a zone change and does not make a new object.
-/// `incarnation` moves for exactly the CR 400.7 event this predicate is about.
+/// Tightening `object_content_eq` instead would reject every buyback loop and change the draw
+/// comparator. CR 613.7d (an object receives a timestamp when it enters a zone) is the sibling
+/// fact and deliberately not the test used: a timestamp also moves when an Aura or Equipment
+/// becomes attached (CR 613.7e), which is not a zone change and makes no new object.
 fn identity_unstable_ids(prior: &GameState, current: &GameState) -> HashSet<ObjectId> {
     current
         .objects
@@ -4816,26 +3824,16 @@ fn host_identity_is_stable(host: ObjectId, identity_unstable: Option<&HashSet<Ob
 /// is this definition SPENT for the proposed window, its only subject an entrance of its own
 /// source that is already in the past?
 ///
-/// ⛔ **THIS RELIEF IS DEF-SCOPED AND ITS CALLER USES `continue`; THE TWO SIBLING ARMS ARE
-/// SURFACE-SCOPED AND MUST NOT BE CHANGED TO MATCH.** The siblings
+/// DEF-SCOPED, and its caller uses `continue`; the two sibling arms
 /// ([`count_matching_condition_provably_excludes_class`] /
-/// [`other_leq_condition_provably_excludes_class`]) prove *condition-value invariance*, which
-/// says nothing about the `execute` surface — relieving a whole def on that is exactly the
-/// defect pinned by `block3_condition_relief_does_not_carry_the_execute_surface`. This arm
-/// proves *inapplicability*, and a definition that cannot apply at all runs NONE of its
-/// surfaces. Row `spent_self_entry_relief_carries_the_execute_surface` pins the difference, so
-/// narrowing the `continue` into a surface-scoped guard turns a row red rather than passing.
-///
-/// ⛔ **THE TWO SIBLING ARMS DELIBERATELY DO NOT GET THE CR 400.7 IDENTITY CONJUNCT.** They are
-/// value-invariance claims: a blinked host still evaluates its condition, to the same value, so
-/// the batched collapse still agrees with the replay. Only the inapplicability claim is
-/// falsified by a re-entry, which is why the conjunct lives here and nowhere else.
-///
-/// ⛔ **THIS RELIEF DELIBERATELY DOES NOT CONSULT [`arrival_can_move_a_nonmember_match`].** That
-/// guard carries "no member is counted" to "the count is unchanged". This arm never claims the
-/// condition has an invariant value; it claims the condition is never evaluated. Consulting the
-/// guard would import a premise this argument does not use, and would cost Argoth, Sanctum of
-/// Nature and Taiga Stadium — the two measured cards the guard refuses — for nothing.
+/// [`other_leq_condition_provably_excludes_class`]) are SURFACE-scoped and must not be changed
+/// to match. They prove *condition-value invariance*, which says nothing about the `execute`
+/// surface; this arm proves *inapplicability*, and a definition that cannot apply runs NONE of
+/// its surfaces. That is also why only this arm carries the CR 400.7 identity conjunct: a
+/// blinked host still evaluates its condition to the same value, so a re-entry falsifies only
+/// the inapplicability claim. And it is why it does not consult
+/// [`arrival_can_move_a_nonmember_match`] — that guard carries "no member is counted" to "the
+/// count is unchanged", while this arm claims the condition is never evaluated at all.
 fn replacement_is_spent_self_entry(
     source: Option<&GameObject>,
     def: &crate::types::ability::ReplacementDefinition,
@@ -4855,10 +3853,9 @@ fn replacement_is_spent_self_entry(
     // "[Objects] enter [the battlefield] . . ."; CR 614.12 makes the first apply "only [to]
     // that permanent" ("It won't affect itself" is its Orb of Dreams example, read the other
     // way round). `ReplacementEvent::Moved` ALONE, and that narrowness is measured rather than
-    // assumed: over 35,798 card faces and 2,775 replacement definitions, all 2,137 carrying
-    // `SelfRef` + `Battlefield` are `Moved` and ZERO are `ChangeZone`, so the narrow and the
-    // wide predicate are extensionally identical on any board built from real cards. Add the
-    // variant the day one exists — do not widen it speculatively.
+    // assumed: every corpus definition carrying `SelfRef` + `Battlefield` is `Moved` and none
+    // is `ChangeZone`, so the narrow and the wide predicate are extensionally identical on any
+    // board built from real cards. Add the variant the day one exists — not speculatively.
     if !matches!(def.valid_card, Some(TargetFilter::SelfRef)) {
         return false;
     }
@@ -4893,29 +3890,17 @@ fn replacement_is_spent_self_entry(
 ///
 /// A shortcut is *"a sequence of game choices, for all players, that may be legally taken based
 /// on the current game state and the predictable results of the sequence of choices"*
-/// (CR 732.2a), and once the last player has accepted it *"the game advances to the last
-/// proposed ending point, with all game choices contained in the shortcut proposal having been
-/// taken"* (CR 732.2c). An activated ability that is absent from that sequence is therefore
-/// never activated inside the window, so it cannot act on the growing class — **whatever it
-/// reads**. That is why this relief is INAPPLICABILITY-shaped and reaches lands whose read is
-/// genuine on the merits, where no disjointness arm ever could.
-///
-/// CR 732.2b's *"or shorten it by naming a place where they will make a game choice that's
-/// different than what's been proposed"* is the rules' OWN mechanism for deviating, and it is a
-/// declaration a player makes — not something the engine may guess at scan time. Pre-emptively
-/// vetoing on an ability nobody proposed activating is the engine taking that declaration on
-/// itself.
-///
-/// ⛔ **CONTINGENT RELIEF, and the contingency is the proposal's content.** A loop whose
-/// sequence DOES name this `(ObjectId, ability_index)` pair restores the veto — rows
-/// `loop_driving_activation_is_not_relieved` and `loop_driving_mana_activation_is_not_relieved`
-/// are the intersection tests. Do not restate this arm as a general claim about observers.
-///
-/// ⛔ **THIS ARM IS DEPTH-ZERO AND MAKES NO CLAIM ABOUT ANYTHING NESTED INSIDE THE EFFECT.**
-/// It matches the same `&AbilityDefinition` block (2) raises its veto on, plus the
-/// `(obj.id, ability_index)` pair. A veto that lives further down the effect tree (a `Pump`
-/// leaf under a token's granted trigger, say) is untouched by this relief and must be answered
-/// where it lives, in `game::ability_scan`.
+/// (CR 732.2a), and once accepted *"the game advances to the last proposed ending point, with
+/// all game choices contained in the shortcut proposal having been taken"* (CR 732.2c). An
+/// activated ability absent from that sequence is never activated inside the window, so it
+/// cannot act on the growing class **whatever it reads** — which is why this relief is
+/// INAPPLICABILITY-shaped and reaches lands whose read is genuine on the merits, where no
+/// disjointness arm could. CR 732.2b's deviation mechanism is a declaration a player makes, not
+/// something the engine may guess at scan time. The contingency is the proposal's content: a
+/// loop whose sequence DOES name this `(ObjectId, ability_index)` pair restores the veto.
+/// DEPTH-ZERO — it matches the same `&AbilityDefinition` block (2) vetoes on, plus the
+/// `(obj.id, ability_index)` pair; a veto further down the effect tree (a `Pump` leaf under a
+/// token's granted trigger) is untouched and must be answered in `game::ability_scan`.
 fn activated_ability_is_not_a_loop_choice(
     state: &GameState,
     obj: &GameObject,
@@ -4934,27 +3919,20 @@ fn activated_ability_is_not_a_loop_choice(
         return false;
     }
 
-    // CR 605.3a: a mana ability may be activated "whenever they have priority, whenever they are
-    // casting a spell or activating an ability that requires a mana payment, or whenever a rule
-    // or effect asks for a mana payment, even if it's in the middle of casting or resolving a
-    // spell" — the last two clauses OUTSIDE the priority rule, i.e. in the middle of the loop's
-    // own cost payment.
+    // CR 605.3a: a mana ability may be activated "whenever they have priority, whenever they
+    // are casting a spell or activating an ability that requires a mana payment, or whenever a
+    // rule or effect asks for a mana payment, even if it's in the middle of casting or
+    // resolving a spell" — the last two clauses OUTSIDE the priority rule, i.e. in the middle
+    // of the loop's own cost payment.
     //
-    // FAIL CLOSED, and this is a NAMED MISSING INSTRUMENT rather than a rules carve-out.
-    // MEASURED: all three sites that append a mana step to `last_loop_action_sequence`
-    // (`game::engine::record_mana_loop_action_step`'s callers) sit under a
+    // FAIL CLOSED because the record is incomplete, not because of a rules carve-out: all three
+    // sites that append a mana step to `last_loop_action_sequence` sit under a
     // `(WaitingFor::Priority { .. }, ..)` reducer arm, so a mana ability tapped while PAYING A
     // COST is recorded nowhere. Absence from the record therefore does NOT mean "never
     // activated" for a mana ability, and the record-absence test below would be UNSOUND without
-    // this guard. Row `mana_ability_is_not_relieved_by_the_proposal_argument` is its discharge
-    // and names deleting this line as the failing revert.
-    //
-    // RETIREMENT CONDITION, written down so it does not calcify into folklore: sink the record
-    // write down to the two execution chokepoints
+    // this guard. Upgrade path: sink the record write down to the two execution chokepoints
     // (`game::mana_sources::activate_mana_source_option_with_output` and
-    // `game::casting_costs::auto_tap_mana_sources_inner`) and this guard has no case left. NOT
-    // done here, deliberately — no card this relief serves needs it, and building an instrument
-    // nothing consumes is the deferral trap running in reverse.
+    // `game::casting_costs::auto_tap_mana_sources_inner`) and this guard has no case left.
     if crate::game::mana_abilities::is_mana_ability(ability) {
         return false;
     }
@@ -4990,246 +3968,89 @@ fn activated_ability_is_not_a_loop_choice(
         })
 }
 
-/// **S4** — CR 732.2a block-(3) relief on a replacement effect's
-/// `UnlessControlsCountMatching` condition (CR 614.1d): is the condition's value provably
-/// INVARIANT as the growing class grows by `class_member`?
+/// CR 732.2a block-(3) relief on a replacement effect's `UnlessControlsCountMatching`
+/// condition (CR 614.1d): is the condition's value provably INVARIANT as the growing class
+/// grows by `class_member`?
 ///
 /// The condition is vetoed at the scanner because `ability_scan::scan_replacement_condition`
 /// routes its `filter` through `scan_target_filter(.., FilterReadContext::LiveBoardCensus,
 /// ..)`, whose base sets `sibling: true` INDEPENDENT of the filter's shape and never relaxes
 /// it. No scanner change can help, so the relief is decided HERE — as a skip, BEFORE the scan
-/// verdict is consulted, the same position block (1a)'s skip occupies. That position is also
-/// why `ScanMode::Conservative` is irrelevant to this arm's soundness: the arm BYPASSES the
-/// mode's unconditional `Typed` forcing rather than depending on any mode behaviour, which is
-/// what makes S4/S5 safe at `Conservative` where an S1-shaped arm would not be.
+/// verdict is consulted. That position is also why `ScanMode::Conservative` is irrelevant to
+/// this arm's soundness: it BYPASSES the mode's unconditional `Typed` forcing rather than
+/// depending on any mode behaviour.
 ///
-/// ⛔ **SOLE-SOURCENESS IS DEFINITIONAL HERE, AND DELIBERATELY NOT PROBED.** The sibling arms
-/// in this cluster discharge it with a clone-and-blank-and-rescan (their conjunct (a)). That
-/// probe has no meaning here: the scanned node IS the matched node, so blanking it would
-/// re-scan nothing and pass vacuously — the exact shape a vacuous probe takes. What discharges
-/// it instead is the TOP-LEVEL-ONLY match below: `And` (or any other variant) falls to the
-/// `let ... else` and KEEPS the veto, while `scan_replacement_condition` recurses through
-/// compounds, so a read hidden inside one is still seen by the scanner. The `else` arm is
-/// fail-closed by MEASUREMENT, not assumption — probe P-5, row
-/// `s4_s5_compound_condition_keeps_the_veto`.
+/// SOLE-SOURCENESS IS DEFINITIONAL HERE, AND DELIBERATELY NOT PROBED. The sibling arms
+/// discharge it with a clone-and-blank-and-rescan; that probe has no meaning here, because the
+/// scanned node IS the matched node, so blanking it would re-scan nothing and pass vacuously.
+/// What discharges it is the TOP-LEVEL-ONLY match below: `And` (or any other variant) falls to
+/// the `let ... else` and KEEPS the veto, while `scan_replacement_condition` recurses through
+/// compounds, so a read hidden inside one is still seen by the scanner.
 ///
-/// ⛔ **ARG-EQUIVALENCE PIN — mirror `game::replacement`'s own `UnlessControlsCountMatching`
-/// evaluator arm CONJUNCT-FOR-CONJUNCT.** Its census is
-/// `state.objects.values().filter(|o| o.zone == Zone::Battlefield && o.id != source_id
-/// && matches_target_filter(state, o.id, filter, &ctx)).count()`, with
+/// ARG-EQUIVALENCE — mirror `game::replacement`'s own `UnlessControlsCountMatching`
+/// evaluator arm CONJUNCT-FOR-CONJUNCT: its census filters on `o.zone == Zone::Battlefield &&
+/// o.id != source_id && matches_target_filter(state, o.id, filter, &ctx)` with
 /// `ctx = FilterContext::from_source_with_controller(source_id, controller)`. Mirroring the
 /// ZONE GATE and the `o.id != source_id` EXCLUSION is part of the pin, not decoration: the
 /// claim is "no member is ever COUNTED", and a member that arm would skip anyway is not
 /// counted. `minimum` is deliberately unread — the claim is invariance of the COUNT, which
 /// makes the comparison invariant at every threshold.
 ///
-/// ⛔ **WHY THIS ARM CARRIES A POPULATION-INDEPENDENCE GUARD, AND WHAT THE GUARD PROVES.**
-/// "No class member is counted" is invariance of the COUNT only if a class member's ARRIVAL
-/// cannot change whether a NON-member matches. A filter carrying a population-dependent
-/// property breaks that implication, and the scanner does not cover the case either
-/// (`ability_scan::scan_filter_prop` classifies `FilterProp::MostPrevalentCreatureTypeIn` as
-/// `scan_controller_ref(scope)`, discarding the population axis). Before this lane the
-/// variant vetoed unconditionally, so RELIEF IS WHAT CREATES THE FAIL-OPEN — it is not
-/// inherited from the scanner, and it is closed here rather than deferred.
+/// WHY THIS ARM CARRIES A POPULATION-INDEPENDENCE GUARD. "No class member is counted" is
+/// invariance of the COUNT only if a class member's ARRIVAL cannot change whether a NON-member
+/// matches. A filter carrying a population-dependent property breaks that implication, and the
+/// scanner does not cover the case either. Before this relief existed the variant vetoed
+/// unconditionally, so RELIEF IS WHAT CREATES THE FAIL-OPEN — it is closed here rather than
+/// deferred, by delegating to the canonical authority
+/// [`crate::game::filter::affected_filter_uses_object_population`] through the shared
+/// input-domain guard [`arrival_can_move_a_nonmember_match`]. NOTE THE POLARITY: the authority
+/// and the guard are phrased positively (`true` = movable), and this arm consumes them at the
+/// COMPLEMENTARY polarity (`if arrival_can_move_a_nonmember_match(..) { return false; }`).
+/// Reading it backwards inverts a fail-closed guard into a fail-open one.
 ///
-/// ⛔ **AUTHORITY ADJUDICATION — THERE IS EXACTLY ONE, AND THESE ARMS ARE CONSUMERS.**
-/// The canonical authority on population dependence is
-/// [`crate::game::filter::affected_filter_uses_object_population`]. It already answers this
-/// arm's exact question — its own doc names the hazard as "another object entering or
-/// leaving the battlefield can change whether a PRE-EXISTING object satisfies this filter" —
-/// so both relief arms DELEGATE to it rather than restating it. They reach it through the
-/// shared input-domain guard [`arrival_can_move_a_nonmember_match`], which composes it with
-/// `filter.rs`'s other authority (`filter_contains`, the recursive-SHAPE walk) and adds a
-/// refusal step by enum identity. That guard's doc carries the full argument for why it is a
-/// DOMAIN RESTRICTION on this arm's input and not a second predicate answering the same
-/// question; read it before touching either call site.
-///  * **Polarity.** The authority is phrased positively (`true` = population-DEPENDENT), and
-///    the guard that wraps it keeps that polarity (`true` = movable). The arms consume it at
-///    the COMPLEMENTARY polarity: `if arrival_can_move_a_nonmember_match(..) { return false; }`,
-///    i.e. relief requires a `false`. Reading the polarity backwards inverts a fail-closed
-///    guard into a fail-open one, which is why it is stated here rather than left to the call
-///    site.
-///  * **A LOCAL ALLOWLIST IS BACK, AT TWO LAYERS THE AUTHORITY CANNOT BE ASKED ABOUT — and
-///    the distinction from the deleted one is the whole design.** An earlier revision carried
-///    a private `filter_props_are_population_independent` allowlist that ANSWERED the
-///    population question locally from a hand-listed set; that is a second authority which can
-///    drift from the first, and it was deleted for that reason. [`prop_is_arrival_invariant`]
-///    and [`player_filter_is_arrival_invariant`] do NOT answer the population question — they
-///    answer "is this node's read arrival-invariant", and they exist at the `FilterProp` and
-///    `PlayerFilter` layers, which `filter_contains` structurally CANNOT surface to any leaf
-///    predicate (it is parameterised by `&dyn Fn(&TargetFilter) -> bool`, so a dependence
-///    living ON a prop or player node is invisible to the canonical authority and to every
-///    other consumer of the walk). The population authority is still called, unchanged, at
-///    every `TargetFilter` node; the allowlists narrow this arm's admitted domain BELOW what
-///    that authority admits. Row `s4_s5_bare_resolution_local_anaphor_keeps_the_veto`'s
-///    matched control still pins the old difference: a bare `SelfRef` filter RELIEVES, which
-///    the deleted allowlist refused for its shape.
-///  * **The polarity is INVERTED relative to every earlier round, deliberately.** Rounds 1-3
-///    each closed this defect by naming the KNOWN-BAD nodes and each time the next layer down
-///    leaked (leaf `TargetFilter`s, then `FilterProp`, then `PlayerFilter`). The bad set is
-///    unbounded and grows with the enums; the good set is a handful of arms, each carrying a
-///    stated proof. So relief now requires every node at all four layers to be RECOGNISED,
-///    and anything unrecognised is refused. **Measured cost: ZERO** — re-running the census
-///    below over the pinned corpus gives 0 productions on which the pre-inversion guard and
-///    this one disagree, and 0 productions refused, at every layer including the round-5
-///    `controller` one (whose two admitted arms cover all 41 productions).
-///  * **Round 5 found the leak was not a fifth LAYER but an unscanned FIELD, and that is a
-///    different failure mode with a different fix.** Layers 1-3 were reached by exhaustive
-///    matches, which the compiler keeps honest as VARIANTS are added. The `Typed` node's
-///    fields were reached by FIELD ACCESS (`typed.properties`) — the recipe that compiles
-///    forever as FIELDS are added, and the same recipe `filter.rs`'s own walkers use
-///    (`TypedFilter { properties, .. }`). The fix is therefore structural as well as
-///    classificatory: see the no-`..` destructure in
-///    [`node_has_non_arrival_invariant_property`].
-///  * **Why the canonical authority is at least as fail-closed.** Its leaf classifier
-///    `filter_prop_uses_object_population` is an EXHAUSTIVE, wildcard-free `match`, so a new
-///    `FilterProp` is a COMPILE ERROR until someone classifies it. The deleted allowlist
-///    delivered the same "unclassified is not admitted" property by construction (`matches!`
-///    with no wildcard); the compiler now delivers it over ~99 variants instead of two, and
-///    it cannot silently go stale. Sibling `filter.rs` walkers (`target_filter_characteristic_reads`)
-///    deliberately live beside it so one seam forces both decisions.
-///  * **Sole-sourceness is unaffected.** What discharges it is the CONDITION-level
-///    top-level-only match (`ReplacementCondition::And` falls to the `let ... else` while
-///    `scan_replacement_condition` recurses through compounds) — a different `let ... else`
-///    from the filter-shape one this delegation removed. Row
-///    `s4_s5_compound_condition_keeps_the_veto` measures that surviving refusal.
-///
-/// ⇒ **NO NODE OF AN ADMITTED FILTER READS ANYTHING A CLASS MEMBER'S ARRIVAL WRITES**, so
-/// the count is invariant on every input `arrival_can_move_a_nonmember_match` admits —
-/// including inputs today's corpus does not contain, because the certification is over the
-/// guard's admitted domain and not over the shapes that happen to be printed. That is an
-/// ALLOWLIST claim: a node not RECOGNISED by the four classifiers below is refused, so a new
-/// enum variant is a compile error rather than a silent admit — **and, since round 5, so is a
-/// new FIELD on `TypedFilter`**, because the one place the guard sees that struct's fields
-/// destructures it with no `..` and every field named (E0027). The variant half of that
-/// backstop had been holding for three rounds while the field half leaked: `controller` was
-/// never read by ANY of the classifiers, so a new `ControllerRef` variant compiled and was
-/// silently ADMITTED. It rests on exactly five stated things, each checkable at one named
-/// seam, and if any of the five is falsified this sentence is too:
+/// ⇒ NO NODE OF AN ADMITTED FILTER READS ANYTHING A CLASS MEMBER'S ARRIVAL WRITES, so the
+/// count is invariant on every input that guard admits — including inputs today's corpus does
+/// not contain. That is an ALLOWLIST claim: a node not RECOGNISED is refused, so a new enum
+/// variant is a compile error rather than a silent admit, and so is a new FIELD on
+/// `TypedFilter` (the one place the guard sees that struct destructures it with no `..`,
+/// E0027). It rests on exactly five stated things, each checkable at one named seam:
 ///  1. every admitted `TargetFilter` node resolves to a fixed object/player or to the stack /
-///     triggering event — [`node_reads_mutable_resolution_local_state`], exhaustive and
-///     wildcard-free, refusal-polarity;
-///  2. every property on every admitted `Typed` node is on a proven-arrival-invariant list —
-///     [`prop_is_arrival_invariant`], exhaustive and wildcard-free;
-///  3. every `PlayerFilter` a `FilterProp::ControllerMatches` crosses to is likewise on one —
-///     [`player_filter_is_arrival_invariant`], exhaustive and wildcard-free;
-///  4. every `TypedFilter::controller` on every admitted `Typed` node is likewise on one —
-///     [`controller_ref_is_arrival_invariant`], exhaustive and wildcard-free. `type_filters`
-///     is the ONE field deliberately unread, and it is the `card_types` residual already
-///     stated below — not a fourth unscanned axis;
+///     triggering event — [`node_reads_mutable_resolution_local_state`];
+///  2. every property on every admitted `Typed` node is proven arrival-invariant —
+///     [`prop_is_arrival_invariant`];
+///  3. every `PlayerFilter` a `FilterProp::ControllerMatches` crosses to is likewise —
+///     [`player_filter_is_arrival_invariant`];
+///  4. every `TypedFilter::controller` on every admitted `Typed` node is likewise —
+///     [`controller_ref_is_arrival_invariant`]. `type_filters` is the ONE field deliberately
+///     unread, and it is the `card_types` residual stated below;
 ///  5. the canonical population authority is consulted at every node on top of 1-4.
+/// All four classifiers are exhaustive and wildcard-free.
 ///
-/// ⛔ **SAME STATED RESIDUAL AS THE SIBLINGS, restated because THIS arm's filter reads exactly
-/// the field the residual is about.** `TypedFilter::type_filters` is a `card_types` predicate
-/// (`filter::type_filter_matches` reads `obj.card_types`), and `card_types` lies OUTSIDE the
+/// RESIDUAL — THIS arm's filter reads exactly the field it is about.
+/// `TypedFilter::type_filters` is a `card_types` predicate, and `card_types` lies OUTSIDE the
 /// compared frame: `board_covers_modulo_fodder`'s STABLE partition compares the non-fodder
-/// remainder through `objects_content_eq` -> `object_content_eq`, whose 32 compared fields do
-/// not include `card_types` (nor `color` / `keywords`), and `impl PartialEq for GameState`
-/// compares `objects` by `.len()` alone. So what is ESTABLISHED is "invariance of the count
-/// across the arrival for objects agreeing with the compared frame on `card_types`", NOT
-/// "objects must so agree". That is the sibling's residual verbatim — see the fodder-cover
-/// arm's statement and its member-quantified restatement — STATED rather than accepted, and
-/// not a new one.
-///
-/// **MEASURED, because a plausible second formulation of it was nearly filed as a separate
-/// hazard.** The temporal shape — an arriving class member's own CONTINUOUS EFFECT rewriting
-/// a PRE-EXISTING object's `card_types`, `game::layers` writing `card_types.core_types` and
-/// `card_types.subtypes` — is the SAME residual, not a distinct facet. It lands on the
-/// identical omission at the identical seam: the rewritten object sits in the non-fodder
-/// remainder, compared by that same 32-field relation, so the frame cannot distinguish "two
-/// objects disagree on `card_types`" from "one object's `card_types` moved". And
-/// `object_content_eq`'s own doc already names this write path as the JUSTIFICATION for the
-/// omission — "layer-derived characteristics (firewall-scanned statics)" — i.e. the axis is
-/// delegated to the static firewall, not to the content relation. No allowlist over filter
-/// NODES can narrow it either: all eight corpus filters ARE type filters, so refusing type
+/// remainder through `object_content_eq`, whose compared fields exclude `card_types` (and
+/// `color` / `keywords`), and `impl PartialEq for GameState` compares `objects` by `.len()`
+/// alone. So what is ESTABLISHED is invariance of the count across the arrival FOR OBJECTS
+/// AGREEING with the compared frame on `card_types`, NOT that objects must so agree. The
+/// temporal shape — an arriving member's own CONTINUOUS EFFECT rewriting a pre-existing
+/// object's `card_types` through `game::layers` — is the SAME residual, not a distinct facet:
+/// it lands on the identical omission at the identical seam, and `object_content_eq`'s own doc
+/// names that write path as the JUSTIFICATION for the omission (the axis is delegated to the
+/// static firewall). No allowlist over filter NODES can narrow it either, since refusing type
 /// reads would veto the very class this arm exists to relieve.
 ///
-/// ⛔ **THAT IS DELIBERATELY NOT A CLAIM ABOUT EVERY POSSIBLE `TargetFilter`, AND AN EARLIER
-/// REVISION OF THIS LINE SAID IT WAS.** It read *"invariant on every input this arm relieves"*
-/// while the guard was a ROOT-ONLY call on the population authority, which admits (a) all three
-/// resolution-local anaphor ledgers and (b) any population-dependent property boxed inside
-/// `CanEnchant` / `Targets` / `TargetsOnly`. Both classes had been refused by the allowlist the
-/// delegation deleted, so both were introduced HERE, and both are now refused by the guard
-/// rather than disclaimed. What the certification does and does not extend to, stated so the
-/// next reader does not have to re-derive the boundary:
-///  * **NO LEDGER RESIDUAL SURVIVES.** The refused set is not the three anaphors the finding
-///    opened with — it is EVERY leaf in that arm list that resolves through mutable
-///    resolution-local state (eleven, enumerated and compiler-held in
-///    [`node_reads_mutable_resolution_local_state`]). Every leaf still admitted is admitted on
-///    a stated invariance reason, not on absence of evidence: it resolves either to a FIXED
-///    object/player or against the STACK / TRIGGERING EVENT, neither of which a battlefield
-///    class member's arrival writes. The burden runs that way round on purpose — refusing
-///    keeps the veto and costs nothing, so admission is what has to be earned.
-///  * **`filter.rs` itself is unchanged, and its own defect is NOT closed.** The guard removes
-///    these shapes from THIS arm's admitted domain; it does not repair
-///    `filter_prop_uses_object_population`'s untraversed `..` arms, nor the contradiction
-///    between the authority's operative clause and its arm-list comment, for any other
-///    consumer. That surface is FU-36's and nothing here closes it.
-///
-/// **DELEGATION IS ZERO BEHAVIOURAL CHANGE ON EVERY REAL CARD, AND THAT IS A MEASUREMENT.**
-/// The canonical authority is strictly WIDER than the deleted allowlist (it admits compounds
-/// and every leaf-false `FilterProp`), so the swap was gated on measuring the two verdicts
-/// against each other over the whole corpus rather than assumed.
-///
-/// **PREDICATE, NEEDLE, AND INSTRUMENT — stated inline so the next reader can tell what was
-/// counted.** Corpus: the pinned `AtomicCards.json`. Needle: a card face whose lowercased
-/// Oracle text contains `"unless you control "` OR `"unless your opponents control "`. That
-/// needle is STRUCTURAL, not a phrasing guess — it is read off the parser's own producers,
-/// which are the only three in the workspace: `parse_controls_typed_condition` and
-/// `parse_opponents_control_condition` (both `UnlessControlsCountMatching`) and
-/// `parse_fast_condition` (`UnlessControlsOtherLeq`) in `parser/oracle_replacement.rs`, whose
-/// `strip_after` prefixes are exactly those two strings. Predicate: every matching face
-/// parsed through `parser::parse_oracle_text`, every `replacements[].condition` flattened
-/// through `ReplacementCondition::And`, counting each variant production and its filter.
-///
-/// **MEASURED (116 card faces matched the needle):**
-///  * **30 `UnlessControlsCountMatching` productions in 8 distinct filters**;
-///  * **11 `UnlessControlsOtherLeq` productions in 1 distinct filter**;
-///  * **0 productions on which the deleted allowlist and the canonical authority disagree**;
-///  * **0 productions on which the pre-guard ROOT-ONLY delegation and the composed guard
-///    [`arrival_can_move_a_nonmember_match`] disagree** — re-run when the guard changed, on
-///    BOTH the pinned and the live `AtomicCards.json`, with identical figures on both. Every
-///    corpus filter is a bare `Typed` with no nested `TargetFilter` and no ledger leaf, so the
-///    guard's added refusals are confined to hypotheticals exactly as the delegation's were.
-///
-/// Every one of the 41 is a bare `TargetFilter::Typed` whose `type_filters` are intrinsic
-/// (`Land` / a basic land subtype) and whose `properties` are a subset of exactly
-/// `{Another, HasSupertype{Basic}}` — or EMPTY, which is the 8th filter:
-/// `{type_filters: [Land], controller: Opponent, properties: []}`, the Turbulent
-/// Fen/Moor/Springs/Steppe/Wilderness cycle ("This land enters tapped unless your opponents
-/// control eight or more lands"). No compound filter and no relative property in either
-/// variant. ⇒ the widening is confined to HYPOTHETICALS, which is what keeps this
-/// delegation inside C3b-1's charter instead of being a semantics change.
-///
-/// The census DISCRIMINATES rather than returning a convenient zero: it surfaced EIGHT
-/// distinct S4 filters spanning both `ControllerRef::You` and `ControllerRef::Opponent`, so a
-/// divergent production would have shown up. ⛔ **A PRIOR REVISION OF THIS BLOCK REPORTED
-/// 25 productions in 7 filters over "111 cards".** It under-counted because its needle was
-/// `"unless you control"` alone, which misses the five-card opponent cycle above and with it
-/// the 8th filter — the reason the needle is now derived from the producers rather than from
-/// a phrasing. Re-run THIS census, with THIS needle, before changing either arm's guard OR
-/// [`arrival_can_move_a_nonmember_match`] — the guard is where the arm's admitted input domain
-/// is decided, so a change there is a change to what this census certifies.
-///
-/// ⛔ **CONTROLLER AUTHORITY: `replacement::replacement_source_player`, NEVER the raw
-/// `source.controller` field.** Every production condition site derives the evaluator's
-/// `controller` argument that way (`object_replacement_candidate_applies` binds
-/// `replacement_source_player(obj)`; the granted-ETB path uses
-/// `.map(replacement_source_player).unwrap_or(state.active_player)`), and
-/// `GameObject::controller_or_owner` yields `self.owner` for a NON-EMBLEM Command-zone
-/// carrier (CR 109.4 + CR 108.4a; CR 109.4c is the emblem exception). Since
-/// `FilterContext.source_controller` is what resolves `ControllerRef::You` and the parser
-/// pre-sets `You` for this whole cluster, binding the raw field could census a DIFFERENT
-/// PLAYER than the evaluator — relief in the FORBIDDEN direction.
-/// **MEASURED SCOPE OF THAT HAZARD, so nobody re-derives it from the wrong premise:** this
-/// walk cannot currently reach the divergence. `functioning_board_replacement_defs` admits
-/// `Zone::Battlefield | Zone::Command`, but it is layered over
-/// `functioning_abilities::active_replacements`, which drops every object failing
-/// `object_functions` — and that predicate already returns `false` for
-/// `Zone::Command && !obj.is_emblem`. So every object reaching this arm satisfies
-/// `controller_or_owner() == controller`. The authority is taken anyway because it is free
-/// and because the equivalence must be PROVEN rather than asserted; it is NOT taken on the
-/// strength of a live divergence, and no row here claims one.
+/// CONTROLLER AUTHORITY: `replacement::replacement_source_player`, NEVER the raw
+/// `source.controller` field. Every production condition site derives the evaluator's
+/// `controller` argument that way, and `GameObject::controller_or_owner` yields `self.owner`
+/// for a NON-EMBLEM Command-zone carrier (CR 109.4 + CR 108.4a; CR 109.4c is the emblem
+/// exception). Since `FilterContext.source_controller` resolves `ControllerRef::You` and the
+/// parser pre-sets `You` for this whole cluster, binding the raw field could census a
+/// DIFFERENT PLAYER than the evaluator — relief in the FORBIDDEN direction. This walk cannot
+/// currently reach the divergence (`functioning_abilities::active_replacements` drops every
+/// object failing `object_functions`, which is already `false` for
+/// `Zone::Command && !obj.is_emblem`); the authority is taken because the equivalence must be
+/// PROVEN rather than asserted, not on the strength of a live divergence.
 fn count_matching_condition_provably_excludes_class(
     condition: &crate::types::ability::ReplacementCondition,
     state: &GameState,
@@ -5244,11 +4065,10 @@ fn count_matching_condition_provably_excludes_class(
         return false;
     };
     // POPULATION-MOVEMENT GUARD — the shared input-domain guard, consumed at COMPLEMENTARY
-    // POLARITY (relief requires `false`); see `arrival_can_move_a_nonmember_match` for why it
-    // composes `filter.rs`'s two authorities rather than being a third one, and this
-    // function's doc for the adjudication. NOTE the pin below still passes the ORIGINAL
-    // `filter`: the guard READS it and never rebinds or reshapes it, so the evaluator's
-    // argument identity is untouched by the guard.
+    // POLARITY (relief requires `false`); see [`arrival_can_move_a_nonmember_match`] for why
+    // it composes `filter.rs`'s two authorities rather than being a third one. It READS the
+    // filter and never rebinds or reshapes it, so the pin below still passes the ORIGINAL
+    // `filter` and the evaluator's argument identity is untouched.
     if arrival_can_move_a_nonmember_match(filter) {
         return false;
     }
@@ -5269,36 +4089,24 @@ fn count_matching_condition_provably_excludes_class(
         && crate::game::filter::matches_target_filter(state, member.id, filter, &ctx))
 }
 
-/// **S5** — the `UnlessControlsOtherLeq` sibling of
+/// The `UnlessControlsOtherLeq` sibling of
 /// [`count_matching_condition_provably_excludes_class`] (the tapland class: "This land enters
 /// tapped unless you control two or fewer other lands"). See that function's doc for the
 /// position argument, the `ScanMode::Conservative` argument, and why sole-sourceness is
-/// definitional rather than probed — all three carry over unchanged.
+/// definitional rather than probed — all three carry over unchanged. The VETO SOURCE differs
+/// without changing the conclusion: this variant is a BLANKET `=> Axes::CONSERVATIVE` arm in
+/// `scan_replacement_condition`, and the relief is a skip decided before the scan verdict is
+/// consulted, so that blanket is never consulted. CR 614.1c / CR 614.1d ("As [this permanent]
+/// enters …" / "[This permanent] enters …" effects are replacement effects) anchor the shape.
 ///
-/// The VETO SOURCE differs and it does not change the conclusion: this variant is a BLANKET
-/// `=> Axes::CONSERVATIVE` arm in `scan_replacement_condition`, not a `LiveBoardCensus`
-/// injection. Because the relief is a skip decided before the scan verdict is consulted, the
-/// scanner's blanket verdict on the variant is simply not consulted.
-///
-/// ⛔ **THE ARG-EQUIVALENCE PIN IS THIS ARM'S, NOT S4'S, AND THE DIFFERENCES ARE THE ARM.**
-/// The evaluator's own census is
-/// `state.objects.values().filter(|o| o.zone == Zone::Battlefield
-/// && matches_target_filter(state, o.id, &TargetFilter::Typed(filter.clone()), &ctx)).count()`
-/// with `ctx = FilterContext::from_source(state, source_id)`. Three deliberate divergences
-/// from S4, each mirroring the evaluator:
-///  1. the `filter` is a `TypedFilter` and must be WRAPPED in `TargetFilter::Typed`;
-///  2. the context ctor is `from_source` (controller derived internally via
-///     `filter::source_controller_or_lki`), NOT `from_source_with_controller`;
-///  3. there is **NO `o.id != source_id` exclusion** — this arm counts the source itself if
-///     it matches. Adding S4's exclusion here would relieve a class whose member IS the
-///     source while the evaluator still counts it. Pinned by row
-///     `s5_arm_counts_the_source_itself`.
-///
-/// CR 614.1c ("As [this permanent] enters . . ." effects are replacement effects) and
-/// CR 614.1d ("[This permanent] enters . . ." continuous effects are replacement effects) are
-/// the two anchors for the tapland shape. The `CR 305.7` the evaluator's own comment carries
-/// is about SUBTYPE-SETTING on lands and does not bear on an "unless you control" gate; it is
-/// deliberately not repeated here.
+/// ARG-EQUIVALENCE IS THIS ARM'S, NOT ITS SIBLING'S. The evaluator's census filters on
+/// `o.zone == Zone::Battlefield && matches_target_filter(state, o.id,
+/// &TargetFilter::Typed(filter.clone()), &ctx)` with `ctx = FilterContext::from_source(state,
+/// source_id)`. Three deliberate divergences, each mirroring the evaluator: (1) the `filter` is
+/// a `TypedFilter` and must be WRAPPED in `TargetFilter::Typed`; (2) the context ctor is
+/// `from_source`, NOT `from_source_with_controller`; (3) there is **NO `o.id != source_id`
+/// exclusion** — this arm counts the source itself if it matches, and adding the sibling's
+/// exclusion would relieve a class whose member IS the source while the evaluator counts it.
 fn other_leq_condition_provably_excludes_class(
     condition: &crate::types::ability::ReplacementCondition,
     state: &GameState,
@@ -5332,82 +4140,52 @@ fn other_leq_condition_provably_excludes_class(
 /// the implication S4/S5 need in order to read "no class member is ever counted" as
 /// invariance of the COUNT. Relief requires `false`.
 ///
-/// ⛔ **THIS IS NOT A THIRD AUTHORITY. IT COMPOSES TWO EXISTING `filter.rs` ONES AND ADDS ONE
-/// REFUSAL STEP.**
+/// THIS IS NOT A THIRD AUTHORITY. IT COMPOSES TWO EXISTING `filter.rs` ONES AND ADDS ONE
+/// REFUSAL STEP.
 ///  * [`crate::game::filter::filter_contains`] is `filter.rs`'s canonical authority on
-///    `TargetFilter`'s recursive SHAPE ("does this filter, or any filter nested anywhere
-///    inside it, satisfy `leaf`"). It is predicate-driven and exhaustive, so the walk is not
-///    restated here.
+///    `TargetFilter`'s recursive SHAPE. Predicate-driven and exhaustive, so the walk is not
+///    re-implemented here.
 ///  * [`crate::game::filter::affected_filter_uses_object_population`] is the canonical
-///    authority on population DEPENDENCE. It is consulted unchanged, at the complementary
-///    polarity, and no part of its classification is duplicated here.
+///    authority on population DEPENDENCE, consulted unchanged at the complementary polarity.
 ///  * The local content is FOUR exhaustive, wildcard-free classifiers, none of which
 ///    re-answers the population question. [`node_reads_mutable_resolution_local_state`] is a
-///    REFUSAL BY ENUM IDENTITY over `TargetFilter`: it names the leaves the population
-///    authority answers `false` for while they resolve through state the growth period itself
-///    writes. [`node_has_non_arrival_invariant_property`] carries the question from a
-///    `TargetFilter` node down onto EVERY FIELD of a `Typed` node (destructured with no `..`,
-///    so a new field is a compile error there), and from there
+///    REFUSAL BY ENUM IDENTITY over `TargetFilter`; [`node_has_non_arrival_invariant_property`]
+///    carries the question onto EVERY FIELD of a `Typed` node, and from there
 ///    [`prop_is_arrival_invariant`], [`player_filter_is_arrival_invariant`] and
 ///    [`controller_ref_is_arrival_invariant`] are ALLOWLISTS over the `FilterProp`,
 ///    `PlayerFilter` and `ControllerRef` layers.
 ///
-/// ⛔ **WHY LAYERS 2, 3 AND 4 CANNOT BE EXPRESSED AS A LEAF PREDICATE, WHICH IS WHY THEY ARE
-/// LOCAL.** `filter_contains` is parameterised by `&dyn Fn(&TargetFilter) -> bool`. It DOES
-/// descend `Typed -> filter_prop_contains -> ControllerMatches -> player_filter_contains ->
+/// WHY THOSE LAYERS CANNOT BE EXPRESSED AS A LEAF PREDICATE, WHICH IS WHY THEY ARE LOCAL.
+/// `filter_contains` is parameterised by `&dyn Fn(&TargetFilter) -> bool`. It DOES descend
+/// `Typed -> filter_prop_contains -> ControllerMatches -> player_filter_contains ->
 /// ControlsCount`, but the only node it ever hands the predicate at the bottom is the INNER
-/// `TargetFilter`. A dependence living ON the `FilterProp` or `PlayerFilter` node is invisible
-/// to every leaf predicate by construction — including the canonical authority's. Measured
-/// instance, and the reason round 4 exists:
+/// `TargetFilter`. A dependence living ON a `FilterProp` or `PlayerFilter` node is invisible to
+/// every leaf predicate by construction, the canonical authority's included:
 /// `Typed{ Land, [ControllerMatches{ ControlsCount{ Typed{Creature}, GE, 1 } }] }` was
-/// ADMITTED, while `effects::player_control_count_compares` resolves that `ControlsCount`
-/// against the LIVE `state.battlefield`. Row
-/// `s4_s5_player_axis_board_census_keeps_the_veto` pins it with the four attribution
-/// assertions that show which guard admits and which refuses.
+/// ADMITTED while `effects::player_control_count_compares` resolves that `ControlsCount`
+/// against the LIVE `state.battlefield`. `TypedFilter::controller` is worse still — both
+/// `filter.rs` walkers destructure the node as `TypedFilter { properties, .. }`, so the field
+/// is dropped before any predicate could see it.
 ///
-/// Layer 4 is local for a STRICTER version of the same reason, and it is worth separating:
-/// `TypedFilter::controller` is not merely unreachable by a `&dyn Fn(&TargetFilter) -> bool`,
-/// it is unreachable by `filter.rs`'s walkers AT ALL. Both of them destructure the node as
-/// `TypedFilter { properties, .. }` / `typed.properties`, so the field is dropped before any
-/// predicate — leaf or not — could see it. Row `s4_s5_controller_axis_keeps_the_veto` pins
-/// that with the same attribution shape.
-///
-/// ⛔ **THE POPULATION AUTHORITY CONTRADICTS ITSELF ON THESE LEAVES, AND THAT — NOT A
-/// DIFFERENCE OF SCOPE — IS WHY THE REFUSAL IS LOCAL.** Its operative clause — the doc
-/// comment on `affected_filter_uses_object_population` itself (`game/filter.rs:134-136` at
-/// this writing; `filter.rs` is FU-36's to edit, so grep the quoted sentence rather than the
-/// line) — defines the hazard as *"another object entering or leaving the battlefield can
-/// change whether a PRE-EXISTING object satisfies this filter"*, and
-/// `LastCreated` violates that clause DIRECTLY: minting a token ASSIGNS
-/// `state.last_created_token_ids` (`token.rs`'s create paths, `effects/mod.rs`'s zone-change
-/// publish, `reveal.rs` — assignment, never append), so a pre-existing object that was failing
+/// THE POPULATION AUTHORITY CONTRADICTS ITSELF ON THESE LEAVES, AND THAT — NOT A DIFFERENCE
+/// OF SCOPE — IS WHY THE REFUSAL IS LOCAL. Its operative clause (the doc comment on
+/// `affected_filter_uses_object_population`) defines the hazard as *"another object entering
+/// or leaving the battlefield can change whether a PRE-EXISTING object satisfies this
+/// filter"*, and `LastCreated` violates that clause DIRECTLY: minting a token ASSIGNS
+/// `state.last_created_token_ids`, so a pre-existing object that was failing
 /// `Not { LastCreated }` starts passing it. The comment over that function's own leaf-`false`
 /// arm list nevertheless justifies the same leaves as reading *"a specific zone or ledger, not
-/// battlefield membership"* — the narrow reading, which is what admits them. So this guard is not
-/// compensating for an authority that is merely differently-scoped; it is FAIL-CLOSING over an
-/// authority whose classification contradicts its own operative clause. Repairing that
-/// contradiction belongs to `filter.rs` (FU-36); this arm consumes the file and must not edit
-/// it, so it narrows its own input domain instead. CR 608.2c is the rules shape the refused
-/// leaves lower ("…if that spell is countered **this way**…": a reference resolved within the
-/// resolution that produced it).
+/// battlefield membership"*. So this guard is FAIL-CLOSING over an authority whose
+/// classification contradicts its own operative clause; repairing that belongs to `filter.rs`,
+/// which this arm consumes and must not edit, so it narrows its own input domain instead.
+/// CR 608.2c is the rules shape the refused leaves lower ("…if that spell is countered **this
+/// way**…": a reference resolved within the resolution that produced it).
 ///
-/// ⛔ **WHY THE POPULATION AUTHORITY IS APPLIED AT EVERY NODE AND NOT AT THE ROOT.** Its leaf
+/// WHY THE POPULATION AUTHORITY IS APPLIED AT EVERY NODE AND NOT AT THE ROOT. Its leaf
 /// classifier `filter_prop_uses_object_population` handles `CanEnchant` / `Targets` /
 /// `TargetsOnly` in a leaf-`..` arm, so it never reads the `TargetFilter` those props box —
-/// while its sibling walker in the same file (`filter_prop_characteristic_reads_at`) DOES
-/// recurse them. A root-only call therefore admits a population-dependent property hidden one
-/// level down. Running the authority as `filter_contains`'s leaf predicate removes that shape
-/// from THIS arm's admitted domain. It does NOT repair the walker — that surface belongs to
-/// `filter.rs` and is tracked as FU-36 — and nothing here should be read as closing it.
-///
-/// Rows: `s4_s5_bare_resolution_local_anaphor_keeps_the_veto` (the leaf classifier alone),
-/// `s4_s5_nested_resolution_local_anaphor_keeps_the_veto` (both disjuncts),
-/// `s4_s5_population_dependent_prop_behind_an_untraversed_filter_bearing_prop_keeps_the_veto`
-/// (the `filter_contains` wrapper alone), and
-/// `s4_s5_non_anaphor_resolution_local_ledger_leaf_keeps_the_veto` (the eight non-anaphor
-/// leaves), and `s4_s5_controller_axis_keeps_the_veto` (layer 4, the axis no layer read at
-/// all before round 5). Each names the mutation that reddens it and the input on which the
-/// correct and mutant designs disagree.
+/// while its sibling walker in the same file DOES recurse them. A root-only call therefore
+/// admits a population-dependent property hidden one level down.
 fn arrival_can_move_a_nonmember_match(filter: &crate::types::ability::TargetFilter) -> bool {
     crate::game::filter::filter_contains(filter, &|node| {
         node_reads_mutable_resolution_local_state(node)
@@ -5420,45 +4198,38 @@ fn arrival_can_move_a_nonmember_match(filter: &crate::types::ability::TargetFilt
 /// through MUTABLE RESOLUTION-LOCAL STATE that the class-growth period itself writes", so
 /// relief must be refused.
 ///
-/// ⛔ **THE BURDEN IS INVERTED HERE, DELIBERATELY.** Relief is granted only on PROVEN
+/// THE BURDEN IS INVERTED HERE, DELIBERATELY. Relief is granted only on PROVEN
 /// arrival-invariance; a leaf that is merely *not known* to move is REFUSED. That direction is
-/// free — refusing keeps the veto, i.e. no shortcut is offered — while admitting is what needs
-/// a proof. Read `false` as "this reference is provably fixed against a class member's
-/// arrival", never as "nobody has found a way to move it yet".
+/// free — refusing keeps the veto — while admitting is what needs a proof. Read `false` as
+/// "this reference is provably fixed against a class member's arrival", never as "nobody has
+/// found a way to move it yet".
 ///
-/// ⛔ **EXHAUSTIVE AND WILDCARD-FREE, FOR THE SAME REASON THE POPULATION AUTHORITY IS.** A
+/// EXHAUSTIVE AND WILDCARD-FREE, FOR THE SAME REASON THE POPULATION AUTHORITY IS. A
 /// `_ => false` would silently ADMIT every future `TargetFilter` variant, and silent admission
 /// is the fail-open direction. With the wildcard gone a new variant does not compile until
-/// someone decides which side of this match it belongs on. This shape was chosen after the
-/// refused set grew from three leaves to eleven on first contact with the arm list — an
-/// enumeration that grew once will drift again unless the compiler holds it.
+/// someone decides which side of this match it belongs on.
 ///
 /// **REFUSED — mutable resolution-local state.** Each of these resolves by membership in, or
 /// lookup through, a `GameState` field that a resolution ASSIGNS rather than accumulates, so
 /// the arrival of a class member can flip a PRE-EXISTING object's verdict with no member ever
-/// being counted (measured leaf-by-leaf against `filter::filter_inner_for_object`'s arms):
-/// `last_created_token_ids`, `last_revealed_ids`, `last_zone_changed_ids`,
+/// being counted: `last_created_token_ids`, `last_revealed_ids`, `last_zone_changed_ids`,
 /// `tracked_object_sets` (both tracked-set leaves — and `TrackedSetId(0)` is a SENTINEL that
-/// `targeting::resolve_tracked_set_id` re-binds to the latest non-empty published set, so a
-/// publication moves the population read without touching the filter),
-/// `last_chosen_damage_source`, the cost-paid / chosen-card / chosen-name resolution slots, and
-/// the per-source exile ledgers. CR 608.2c is the rules shape they lower — "…if that spell is
-/// countered **this way**…", a reference resolved inside the resolution that produced it.
+/// `targeting::resolve_tracked_set_id` re-binds to the latest non-empty published set),
+/// `last_chosen_damage_source`, the cost-paid / chosen-card / chosen-name resolution slots,
+/// and the per-source exile ledgers. CR 608.2c is the rules shape they lower.
 ///
-/// **ADMITTED — provably arrival-invariant.** Two classes, and nothing else is admitted:
-/// (1) references that resolve to a FIXED object or player — self / source / granting /
-/// specific / named / owner / controller / opponent / neighbor / scoped, and the parent-target
-/// and post-replacement families, which are bound before this walk runs; (2) references that
-/// resolve against the STACK or the TRIGGERING EVENT rather than battlefield membership — the
-/// stack-entry, triggering-*, and event-target leaves. A battlefield class member's arrival
-/// writes neither. ⚠ **`SourceOrPaired` LOOKS like class (1) and is NOT** — it reads
-/// `source.paired_with`, and CR 702.95a's second soulbond trigger is "Whenever another
-/// creature you control enters ... you may pair THAT creature with this creature", so an
-/// arriving class member writes exactly that field. It is refused, and it is the reason
-/// `s4_s5_non_anaphor_resolution_local_ledger_leaf_keeps_the_veto` uses `AttachedTo` for its
-/// matched control instead. The three structural variants (`And` / `Or` / `Not`) and `Typed` are
-/// admitted AT THIS NODE because their contents are judged by the caller's recursion and by
-/// the population authority, not because the subtree is trusted.
+/// **ADMITTED — provably arrival-invariant.** Two classes and nothing else: (1) references
+/// that resolve to a FIXED object or player — self / source / granting / specific / named /
+/// owner / controller / opponent / neighbor / scoped, and the parent-target and
+/// post-replacement families, all bound before this walk runs; (2) references that resolve
+/// against the STACK or the TRIGGERING EVENT rather than battlefield membership. A battlefield
+/// class member's arrival writes neither. **`SourceOrPaired` LOOKS like class (1) and is
+/// NOT** — it reads `source.paired_with`, and CR 702.95a's second soulbond trigger is
+/// "Whenever another creature you control enters ... you may pair THAT creature with this
+/// creature", so an arriving class member writes exactly that field. The three structural
+/// variants (`And` / `Or` / `Not`) and `Typed` are admitted AT THIS NODE because their contents
+/// are judged by the caller's recursion and by the population authority, not because the
+/// subtree is trusted.
 fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::TargetFilter) -> bool {
     use crate::types::ability::TargetFilter;
 
@@ -5534,85 +4305,52 @@ fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::Targe
 /// **LAYER 2 ADAPTER — carries the guard's question from the `TargetFilter` layer down onto
 /// EVERY FIELD of a `Typed` node.** `true` means "this node carries a property OR a controller
 /// reference whose arrival-invariance is NOT proven", so relief must be refused. It is the one
-/// place THIS guard's recursion sees a `TypedFilter`'s fields, so within the recursion it is the
-/// one place that can be made to FAIL TO COMPILE when a field is added — see the no-`..`
+/// place THIS guard's recursion sees a `TypedFilter`'s fields, so within the recursion it is
+/// the one place that can be made to FAIL TO COMPILE when a field is added — see the no-`..`
 /// destructure in the body.
 ///
-/// COUNT PREDICATE, stated so the number is re-derivable rather than recalled — a bare count is
-/// how round 5's sweep reported `0` field-access sites for this file while one existed. Region =
-/// production only (above this module's `#[cfg(test)]`), text = comment-stripped and
-/// whitespace-normalised, needle = a `TargetFilter::Typed` BINDING that is not an exhaustive
-/// no-`..` `TypedFilter` destructure. Under that predicate the file carries TWO no-`..` seams
-/// and ZERO field-access ones: this arm, and the context-shape guard in
-/// [`pt_value_aggregate_provably_excludes_class`], which fix round 6 converted. Expression-
-/// position `TypedFilter { .. }` LITERALS are outside the needle — E0063 already covers those.
-///
-/// ⛔ **ROUND 5 ADDED THE CONTROLLER AXIS, AND THE REASON IS THE SAME MECHANISM FOUR TIMES
-/// OVER.** Rounds 1-3 each closed a layer and the next one down leaked; round 4 closed the
-/// `PlayerFilter` layer; round 5's finding is that `TypedFilter::controller` had never been
-/// read AT ALL. Not because anybody classified it as safe — because this function reached the
-/// node by FIELD ACCESS (`typed.properties`) and `filter.rs`'s own walkers reach it by
-/// `TypedFilter { properties, .. }`, and neither shape can fail to compile when an axis is
-/// added. Measured at the tree: every one of the 14 `ControllerRef` variants produced a verdict
-/// byte-identical to `controller: None`, while the same node's `properties` axis moved it. The
-/// axis is on 41/41 admitted corpus productions, so it was the ONE axis present on every
-/// production the guard certifies. Nothing here claims a live hazard on it (see
-/// [`controller_ref_is_arrival_invariant`]); the finding is that the ⇒ sentence's
-/// compile-error backstop did not cover the axis, and now it does.
-///
-/// ⛔ **WHY THIS EXISTS AT ALL — `filter_contains` CANNOT ASK THE QUESTION.** `filter.rs`'s
-/// shape walk is parameterised by a `&dyn Fn(&TargetFilter) -> bool`: the only nodes it ever
-/// hands the leaf predicate are `TargetFilter`s. It DOES descend
+/// WHY THIS EXISTS AT ALL — `filter_contains` CANNOT ASK THE QUESTION. `filter.rs`'s shape
+/// walk is parameterised by a `&dyn Fn(&TargetFilter) -> bool`: the only nodes it ever hands
+/// the leaf predicate are `TargetFilter`s. It DOES descend
 /// `Typed -> filter_prop_contains -> ControllerMatches -> player_filter_contains ->
 /// ControlsCount -> recurse(filter)`, but what it passes at the bottom is the INNER
 /// `TargetFilter`, never the `FilterProp` or `PlayerFilter` node the path crossed. So a
 /// population dependence living ON one of those nodes is invisible to every leaf predicate,
-/// including this arm's. That is the measured hole this function closes:
+/// the canonical authority's included:
 /// `Typed{ Land, [ControllerMatches{ ControlsCount{ Typed{Creature}, GE, 1 } }] }` — "a Land
-/// whose controller controls one or more creatures" — was ADMITTED, because
-/// `filter_prop_uses_object_population` classifies `ControllerMatches` leaf-`false` and the
-/// only node the leaf predicate ever saw was the population-independent `Typed{Creature}`
-/// inside. Meanwhile `game::effects`'s `player_control_count_compares` resolves
-/// `ControlsCount` against the LIVE `state.battlefield`, so an arriving class member takes
-/// the controller's creature count 0 -> 1 and a PRE-EXISTING Land starts matching.
+/// whose controller controls one or more creatures" — was ADMITTED, while
+/// `game::effects`'s `player_control_count_compares` resolves that `ControlsCount` against the
+/// LIVE `state.battlefield`, so an arriving class member takes the controller's creature count
+/// 0 -> 1 and a PRE-EXISTING Land starts matching.
 ///
-/// ⛔ **EXHAUSTIVE AND WILDCARD-FREE OVER `TargetFilter`, LIKE ITS SIBLINGS — AND NO `..` OVER
-/// `TypedFilter`'S FIELDS, WHICH IS THE OTHER HALF OF THE SAME GUARANTEE.** A `_ => false`
-/// would silently exempt a future VARIANT that boxes a `TypedFilter` from the property layer
-/// entirely; a `TypedFilter { properties, .. }` would silently exempt a future FIELD. Both are
-/// the fail-open direction and both are closed here (E0004 and E0027 respectively), because
-/// round 5 measured that the variant half alone had been holding for three rounds while the
-/// field half leaked. The duplication of the arm list against
-/// [`node_reads_mutable_resolution_local_state`] is deliberate: the two answer different
-/// questions (resolution-local mutability vs. property/controller-layer invariance) and a
-/// future variant must be decided on BOTH axes, so they are two matches rather than one.
+/// EXHAUSTIVE AND WILDCARD-FREE OVER `TargetFilter`, AND NO `..` OVER `TypedFilter`'S
+/// FIELDS, which is the other half of the same guarantee. A `_ => false` would silently exempt
+/// a future VARIANT that boxes a `TypedFilter` from the property layer entirely; a
+/// `TypedFilter { properties, .. }` would silently exempt a future FIELD. Both are the
+/// fail-open direction and both are closed here (E0004 and E0027). The duplication of the arm
+/// list against [`node_reads_mutable_resolution_local_state`] is deliberate: the two answer
+/// different questions and a future variant must be decided on BOTH axes.
 fn node_has_non_arrival_invariant_property(node: &crate::types::ability::TargetFilter) -> bool {
     use crate::types::ability::{TargetFilter, TypedFilter};
 
     match node {
         // The only node kind that carries a property list — and the only one with FIELDS,
-        // which is why it is DESTRUCTURED WITH NO `..` AND EVERY FIELD NAMED: the idiom
-        // `count_matching_condition_provably_excludes_class` already states one layer up
-        // ("no `..` at any level, so a new field on the variant is a compile error here
-        // rather than a silently unscanned read"), applied here as well. A new field on
-        // `TypedFilter` is then an E0027 compile error at this seam. The pre-round-5 form
-        // was `Typed(typed) => typed.properties.iter()...` — FIELD ACCESS, which reads one
-        // axis and keeps compiling as axes are added; that is how `controller` went four
-        // review rounds unscanned while the exhaustive matches below were catching every
-        // new VARIANT.
+        // which is why it is DESTRUCTURED WITH NO `..` AND EVERY FIELD NAMED: a new field on
+        // `TypedFilter` is then an E0027 compile error at this seam. Field ACCESS
+        // (`typed.properties`) reads one axis and keeps compiling as axes are added, which is
+        // how `controller` went unscanned while the exhaustive matches below were catching
+        // every new VARIANT.
         TargetFilter::Typed(TypedFilter {
             // NOT the same residual class as `controller`: `type_filters` is the
-            // `card_types` predicate this arm's STATED RESIDUAL is already about (see the
-            // "SAME STATED RESIDUAL AS THE SIBLINGS" block on
-            // `count_matching_condition_provably_excludes_class` — `card_types` lies outside
-            // `object_content_eq`'s compared frame, and refusing type reads would veto the
-            // very class the arm exists to relieve, since all eight corpus filters are type
-            // filters). Bound to `_` so the omission is a DECISION recorded at the seam.
+            // `card_types` predicate this arm's STATED RESIDUAL is already about (see
+            // [`count_matching_condition_provably_excludes_class`] — `card_types` lies
+            // outside `object_content_eq`'s compared frame, and refusing type reads would
+            // veto the very class the arm exists to relieve). Bound to `_` so the omission is
+            // a DECISION recorded at the seam.
             type_filters: _,
             // LAYER 4 (CR 109.4) — the object's controller. This axis is NOT covered by the
-            // residual above: `controller` is INSIDE `object_content_eq`'s compared fields
-            // (`x.controller == y.controller`), so the frame does see it. `None` constrains
-            // nothing and therefore reads nothing.
+            // residual above: `controller` is INSIDE `object_content_eq`'s compared fields, so
+            // the frame does see it. `None` constrains nothing and therefore reads nothing.
             controller,
             properties,
         }) => {
@@ -5685,46 +4423,30 @@ fn node_has_non_arrival_invariant_property(node: &crate::types::ability::TargetF
 /// **LAYER 2 — THE `FilterProp` ALLOWLIST.** `true` means "a class member's ARRIVAL provably
 /// cannot change whether a PRE-EXISTING object satisfies this property".
 ///
-/// ⛔ **THIS IS AN ALLOWLIST, AND THAT IS THE WHOLE POINT.** Three consecutive review rounds
-/// closed this defect one layer at a time by naming the KNOWN-BAD nodes, and each time the
-/// next layer down leaked. The bad set is unbounded and grows with the enum; the good set is
-/// small, and every member of it carries a stated proof below. **Anything not recognised is
-/// REFUSED**, so a leak can only ever cost a relief that was never measured to matter — never
-/// a false certification. Refusing keeps the veto and costs nothing; admitting is what has to
-/// be earned.
-///
-/// **MEASURED COST OF THE INVERSION: ZERO.** Every `UnlessControlsCountMatching` /
-/// `UnlessControlsOtherLeq` production in the pinned corpus is a bare `Typed` whose
-/// `properties` are a subset of `{Another, HasSupertype{Basic}}` or EMPTY (see
-/// [`count_matching_condition_provably_excludes_class`]'s census block for the needle,
-/// predicate and figures). Both of those are admitted below, so no real card changes verdict.
+/// THIS IS AN ALLOWLIST, AND THAT IS THE WHOLE POINT. The bad set is unbounded and grows
+/// with the enum; the good set is small, and every member of it carries a stated proof below.
+/// **Anything not recognised is REFUSED**, so a leak can only ever cost a relief — never a
+/// false certification. Refusing keeps the veto and costs nothing; admitting has to be earned.
 ///
 /// **ADMITTED, with the proof for each:**
 ///  * `Another` — an identity comparison against the source object id. Fixed for the period.
 ///  * `HasSupertype` — reads the candidate's own stored supertypes.
 ///  * `Tapped` / `Untapped` — reads the candidate's own tap state. Arrival taps nothing else.
-///  * `Targets` / `TargetsOnly` — reads the candidate stack entry's OWN target list, which is
-///    fixed once the entry is on the stack (CR 601.2c). The boxed `TargetFilter` is a separate
-///    node that `filter_contains` visits and this guard judges on its own.
+///  * `Targets` / `TargetsOnly` — reads the candidate stack entry's OWN target list, fixed
+///    once the entry is on the stack (CR 601.2c). The boxed `TargetFilter` is a separate node
+///    that `filter_contains` visits and this guard judges on its own.
 ///  * `ControllerMatches` — carries no verdict of its own; it crosses to the player axis
 ///    (CR 109.4), so it delegates to [`player_filter_is_arrival_invariant`]. Admitting the
-///    CROSSING while refusing at the player layer is deliberate: it is what makes a
-///    re-admission of the player layer observable as a red row rather than a silent no-op.
+///    CROSSING while refusing at the player layer is deliberate: it makes a re-admission of
+///    the player layer observable rather than a silent no-op.
 ///  * `Not` / `AnyOf` — pure prop-layer combinators; recurse. `AnyOf` needs ALL disjuncts
 ///    invariant, since any one of them can carry the verdict.
 ///
-/// **REFUSED — the named blast radius, each an arriving object moving a PRE-EXISTING
-/// object's verdict:**
-///  * `Unpaired` — CR 702.95a: "Whenever another creature you control enters ... you may pair
-///    THAT creature with this creature". An arriving creature unpairs a pre-existing one.
-///  * `HasAttachment` / `HasAnyAttachmentOf` — CR 303.4f: an Aura entering by any means other
-///    than resolving chooses what it enchants AS IT ENTERS, so an arriving Aura gives a
-///    pre-existing permanent an attachment.
-///  * `AttackingAlone` / `BlockingAlone` — CR 506.5 defines "attacking alone" as "attacking
-///    but no other creatures are", and CR 506.3b contemplates effects putting a creature onto
-///    the battlefield attacking. An arriving attacker flips a pre-existing attacker's verdict
-///    from `true` to `false`.
-///
+/// **REFUSED — the named blast radius, each an arriving object moving a PRE-EXISTING object's
+/// verdict:** `Unpaired` (CR 702.95a — an arriving creature unpairs a pre-existing one);
+/// `HasAttachment` / `HasAnyAttachmentOf` (CR 303.4f — an Aura entering by any means other
+/// than resolving chooses what it enchants AS IT ENTERS); `AttackingAlone` / `BlockingAlone`
+/// (CR 506.5 with CR 506.3b — an arriving attacker flips a pre-existing attacker's verdict).
 /// Everything else is refused for want of a proof, not for a named hazard.
 fn prop_is_arrival_invariant(prop: &crate::types::ability::FilterProp) -> bool {
     use crate::types::ability::FilterProp;
@@ -5841,24 +4563,20 @@ fn prop_is_arrival_invariant(prop: &crate::types::ability::FilterProp) -> bool {
     }
 }
 
-/// **LAYER 3 — THE `PlayerFilter` ALLOWLIST**, reached only through
-/// `FilterProp::ControllerMatches` (CR 109.4). `true` means "a class member's ARRIVAL provably
-/// cannot change WHICH PLAYERS this filter designates".
+/// **LAYER 3 — THE `PlayerFilter` ALLOWLIST** (CR 109.4), reached only through
+/// `FilterProp::ControllerMatches`. `true` means "a class member's ARRIVAL provably cannot
+/// change WHICH PLAYERS this filter designates".
 ///
-/// **ADMITTED:** filters that name players by a FIXED role or identity — the source's
-/// controller, its opponents, the defending player, the whole table, the triggering player and
-/// its opponent relations, the parent target's controller/owner, and an already-chosen player.
-/// A battlefield arrival changes none of those seat assignments. `AllExcept` is a pure
-/// combinator over the same axis and recurses.
+/// ADMITTED: filters naming players by a FIXED role or identity — the source's controller, its
+/// opponents, the defending player, the whole table, the triggering player and its opponent
+/// relations, the parent target's controller/owner, an already-chosen player. A battlefield
+/// arrival changes none of those seat assignments; `AllExcept` recurses over the same axis.
 ///
-/// **REFUSED, and `ControlsCount` is the finding this layer exists for:**
-/// `game::effects`'s `player_control_count_compares` resolves it against the LIVE
-/// `state.battlefield`, so "a Land whose controller controls one or more creatures" starts
-/// matching a PRE-EXISTING Land the moment a class member arrives — with no member ever
-/// counted by the census. `TrackedSetPossessor` and `OwnersOfCardsExiledBySource` read the
-/// mutable tracked-set and per-source exile ledgers (the player-axis twins of the leaves
-/// [`node_reads_mutable_resolution_local_state`] refuses). The remaining refusals are
-/// event/attribute-derived designations with no arrival-invariance proof.
+/// REFUSED, and `ControlsCount` is why this layer exists: `player_control_count_compares`
+/// resolves it against the LIVE `state.battlefield`, so "a Land whose controller controls one
+/// or more creatures" starts matching a PRE-EXISTING Land the moment a class member arrives,
+/// with no member ever counted. `TrackedSetPossessor` and `OwnersOfCardsExiledBySource` read
+/// mutable ledgers; the rest are event-derived designations with no arrival-invariance proof.
 fn player_filter_is_arrival_invariant(filter: &crate::types::ability::PlayerFilter) -> bool {
     use crate::types::ability::PlayerFilter;
 
@@ -5898,55 +4616,32 @@ fn player_filter_is_arrival_invariant(filter: &crate::types::ability::PlayerFilt
 /// or the battlefield have a controller). `true` means "a class member's ARRIVAL provably
 /// cannot change whether a PRE-EXISTING object satisfies this controller constraint".
 ///
-/// ⛔ **THIS LAYER IS A BACKSTOP, NOT A HAZARD REPORT — SAY SO PLAINLY.** Round 5 measured
-/// all 14 arms through [`arrival_can_move_a_nonmember_match`] and every one produced a verdict
-/// byte-identical to `controller: None`, i.e. the axis was NEVER READ. The reachability picture
-/// agrees: `filter::controller_ref_player` and `filter_inner_for_object`'s controller block
-/// resolve every arm to a seat — a fixed player, a resolution-scoped choice, the active player,
-/// an attached player — and none of them counts battlefield population. So NO ROW HERE CLAIMS
-/// A LIVE MOVER on this axis. What the finding is about is the ⇒ sentence on
-/// [`count_matching_condition_provably_excludes_class`]: it promises that an unrecognised node
-/// is REFUSED, so a new enum variant is a compile error rather than a silent admit. On this
-/// axis a new `ControllerRef` variant used to compile and be silently ADMITTED. That is the
-/// recurrence mechanism of rounds 1-3, and this function plus the no-`..` destructure in
-/// [`node_has_non_arrival_invariant_property`] are what close it.
+/// THIS LAYER IS A BACKSTOP, NOT A HAZARD REPORT. Every `ControllerRef`
+/// arm produces a verdict byte-identical to `controller: None` through
+/// [`arrival_can_move_a_nonmember_match`], i.e. the axis was NEVER READ, and the reachability
+/// picture agrees: `filter::controller_ref_player` and `filter_inner_for_object`'s controller
+/// block resolve every arm to a seat, none of which counts battlefield population. NOTHING
+/// HERE CLAIMS A LIVE MOVER. What this closes is the promise on
+/// [`count_matching_condition_provably_excludes_class`] that an unrecognised node is REFUSED:
+/// on this axis a new `ControllerRef` variant used to compile and be silently ADMITTED.
 ///
-/// **ADMITTED — the two arms whose reads are proven fixed against an arrival, and the only two
-/// the corpus prints:**
+/// **ADMITTED — the two arms whose reads are proven fixed against an arrival:**
 ///  * `You` — resolves to `ctx.source_controller`, which both relief arms bind ONCE from the
-///    source (S4 via `replacement::replacement_source_player`, S5 via `from_source`) before
-///    any member arrives, and compares against the candidate's own `effective_controller`. An
-///    arriving object writes neither.
-///  * `Opponent` — the same two reads at the complementary polarity, plus
-///    `players::is_alive`, which reads `state.players[].is_eliminated` (CR 800.4: a player who
-///    has left the game is no longer one of CR 102.1's people in the game). A battlefield
-///    arrival does not eliminate a player, so that read is arrival-invariant too.
+///    source before any member arrives, and compares against the candidate's own
+///    `effective_controller`. An arriving object writes neither.
+///  * `Opponent` — the same two reads at the complementary polarity, plus `players::is_alive`,
+///    which reads `state.players[].is_eliminated` (CR 800.4: a player who has left the game is
+///    no longer one of CR 102.1's people in the game). A battlefield arrival eliminates nobody.
 ///
-/// **REFUSED — the other twelve, for want of a proof rather than for a named hazard**, which
-/// is the same burden [`node_reads_mutable_resolution_local_state`] states: refusing keeps the
-/// veto and costs nothing, so admission is what has to be earned. **Measured cost of refusing
-/// all twelve: ZERO** — the corpus census over the pinned `AtomicCards.json` prints 41 admitted
-/// productions and every one carries `controller: Some(You)` (36) or `controller:
-/// Some(Opponent)` (5). Re-run that census (its needle and predicate are stated on
-/// [`count_matching_condition_provably_excludes_class`]) before widening this list.
-///
-/// ⛔ **DISCLOSED ASYMMETRY AGAINST LAYERS 1 AND 3, so the next reader does not read it as an
-/// oversight.** [`player_filter_is_arrival_invariant`] admits `PlayerFilter::DefendingPlayer` /
-/// `TriggeringPlayer` / `ParentObjectTarget*` / `ChosenPlayer`, and
-/// [`node_reads_mutable_resolution_local_state`] admits `TargetFilter::ScopedPlayer` /
-/// `SourceChosenPlayer` / `SpecificPlayer`; this layer refuses their `ControllerRef` twins.
-/// The asymmetry is deliberate and runs in the FAIL-CLOSED direction. Those layers' wider sets
-/// were earned arm-by-arm in earlier rounds against the questions THOSE layers ask; this layer
-/// asks a different question at a different seam (`filter_inner_for_object`'s controller block,
-/// not `player_filter_matches` or the shape walk), and transplanting another layer's proof is
-/// exactly the drifting-second-authority pattern the deleted
-/// `filter_props_are_population_independent` allowlist was removed for. Widening this list is
-/// a per-arm proof obligation, not a consistency fix.
-///
-/// ⛔ **EXHAUSTIVE AND WILDCARD-FREE, LIKE ITS THREE SIBLINGS.** A `_ => false` reads as
-/// fail-closed but would be a lie the moment someone wrote `_ => true`, and more to the point
-/// it would stop the compiler asking. With the wildcard gone a new `ControllerRef` variant does
-/// not compile until someone decides which side it belongs on (E0004).
+/// **REFUSED — every other arm, for want of a proof rather than for a named hazard**, the same
+/// burden [`node_reads_mutable_resolution_local_state`] states. The asymmetry against layers 1
+/// and 3 (which admit the `PlayerFilter` / `TargetFilter` twins of some refused arms) is
+/// deliberate and runs FAIL-CLOSED: those sets were earned arm-by-arm against the questions
+/// THOSE layers ask, at a different seam (`filter_inner_for_object`'s controller block, not
+/// `player_filter_matches` or the shape walk), and transplanting another layer's proof is the
+/// drifting-second-authority pattern this design exists to avoid. Widening this list is a
+/// per-arm proof obligation, not a consistency fix. Exhaustive and wildcard-free like its
+/// three siblings: a new variant does not compile until someone decides its side (E0004).
 fn controller_ref_is_arrival_invariant(controller: &crate::types::ability::ControllerRef) -> bool {
     use crate::types::ability::ControllerRef;
 
@@ -5970,16 +4665,15 @@ fn controller_ref_is_arrival_invariant(controller: &crate::types::ability::Contr
     }
 }
 
-/// §5.3a firewall (BLOCKER-S1 + S5 + MAJOR-A): does ANY live off-stack fire-time
-/// observer read the growing class (`sibling` ∨ `projected`)? Scans, on the
-/// FLUSHED current: (1) trigger conditions AND `execute` bodies; (2) [S5] EVERY
-/// ability def on a functioning battlefield permanent regardless of `kind`; (3)
-/// replacement conditions AND bodies; (4) condition-gated statics — condition plus
-/// any live continuous modification (default-CONSERVATIVE: no
-/// scan_continuous_modification walker exists, and an anthem/P-T grant applies to
-/// and scales with the growing class); (5) transient continuous effects; (5b)
-/// granted-keyword synthesized triggers; (6) the S3 belt over pending/delayed
-/// ability-body stores. Fail-closed on every surface it cannot classify.
+/// The off-stack fire-time firewall: does ANY live observer read the growing class
+/// (`sibling` ∨ `projected`)? Scans, on the FLUSHED current: (1) trigger conditions AND
+/// `execute` bodies; (2) EVERY ability def on a functioning battlefield permanent regardless
+/// of `kind`; (3) replacement conditions AND bodies; (4) condition-gated statics — condition
+/// plus any live continuous modification (default-CONSERVATIVE: no
+/// `scan_continuous_modification` walker exists, and an anthem/P-T grant applies to and scales
+/// with the growing class); (5) transient continuous effects; (5b) granted-keyword synthesized
+/// triggers; (6) the belt over pending/delayed ability-body stores. Fail-closed on every
+/// surface it cannot classify.
 fn fire_time_conditions_read_growing_class(
     state: &GameState,
     class_members: Option<&HashSet<ObjectId>>,
@@ -6035,49 +4729,37 @@ fn fire_time_conditions_read_growing_class_scoped(
             }
             // CR 603.2 / CR 603.6a: an enters-the-battlefield observer whose entry matcher
             // PROVABLY excludes EVERY member of `class_members` never fires on the loop's
-            // per-cycle token creation, so it does NOT observe the loop — skip it rather than
-            // veto. GAP-1 (soundness + ordering, load-bearing): this is sound only because the
-            // fodder is the ONLY class that changed across the covered cycle, guaranteed IN ORDER
-            // by (a) `game::engine::derived_fodder_class`'s ONE-CLASS rule on the FIRST
-            // accept-time frame pair — it returns `None` unless EVERY new battlefield object of
-            // that cycle is the same class under BOTH `fodder_content_eq` AND
-            // `game::printed_cards::intrinsic_copiable_values`, so a `Some` fodder class means the
-            // entrants were k >= 1 members of that one class and nothing else. (STRENGTHENED, not
-            // weakened, by the k-multiset relaxation: the old rule delivered one class by
-            // CARDINALITY — one entrant is trivially one class — where this delivers it by
-            // CONTENT, on a strictly wider equality than the cover below uses. What the relief
-            // needs is "one class", and it still gets it.) That fn also has a second, display-only
-            // caller; the soundness-bearing one is inside the fodder-cover arm — and (b)
-            // `board_covers_modulo_fodder`'s all-zones stable-partition content-equality, at
-            // its ONLY call site, on the SECOND cover frame pair, which PRECEDES this firewall
-            // call. Do not reorder that gate
-            // after the firewall. GAP-2 (block(1)-ONLY, deliberate FAIL-CLOSED residual): only
-            // this printed-trigger surface is gated. Block (5b)'s
-            // `granted_keyword_triggers_in_zone` (`game/triggers.rs`) CAN synthesize granted ETB
-            // triggers carrying matchers; a granted ETB observer disjoint from the fodder stays
-            // UN-gated and still conservatively vetoes. That is a scoping choice (fail-closed),
-            // not an impossibility claim — the other surfaces (statics/anthems that scale with
-            // |G| continuously, activated bodies that fire on activation, pending stores) do not
-            // fire on the fodder *entering* via a `valid_card` matcher, so gating them would be
-            // unsound.
+            // per-cycle token creation, so it does not observe the loop — skip rather than
+            // veto. ORDERING IS LOAD-BEARING: this holds only because the fodder is the ONLY
+            // class that changed across the covered cycle, guaranteed in order by (a)
+            // `game::engine::derived_fodder_class`'s ONE-CLASS rule on the FIRST accept-time
+            // frame pair (`None` unless EVERY new battlefield object of that cycle is the same
+            // class under BOTH `fodder_content_eq` AND
+            // `game::printed_cards::intrinsic_copiable_values`) and (b)
+            // `board_covers_modulo_fodder`'s all-zones stable-partition content equality at its
+            // ONLY call site, on the SECOND cover frame pair, which PRECEDES this call. Do not
+            // reorder that gate after the firewall.
+            //
+            // FAIL-CLOSED RESIDUAL: only this printed-trigger surface is gated. Block (5b)'s
+            // `granted_keyword_triggers_in_zone` can synthesize granted ETB triggers carrying
+            // matchers, and a granted ETB observer disjoint from the fodder stays UN-gated and
+            // still vetoes. The other surfaces (statics scaling with |G| continuously, activated
+            // bodies firing on activation, pending stores) do not fire on the fodder *entering*
+            // via a `valid_card` matcher, so gating them would be unsound.
             if let Some(members) = class_members {
-                // CR 603.6a (MagicCompRules.txt:2599): relief requires the entry matcher to
-                // provably exclude EVERY member of the growing class, not one representative.
-                // The one-representative test was unsound in the ACCEPTING direction: this
-                // function's own doc measures that fodder equivalence
-                // (`object_content_eq`, `types/game_state.rs`, 32 compared fields) does NOT
-                // compare `card_types`, `color` or `keywords`, so two members can differ on
-                // exactly the axes a `valid_card` matcher reads.
-                // `!is_empty()` is LOAD-BEARING and mirrors the `std::iter::once` guard in
-                // `execute_ledger_condition_provably_excludes_class`: an empty set must not
-                // make `.all()` vacuously true. NOTE the def-kind test lives INSIDE the closure
-                // (`etb_observer_provably_excludes_class` opens with
-                // `matches!(def.mode, ChangesZone | ChangesZoneAll)`), and `Iterator::all`
-                // on an empty set returns `true` WITHOUT invoking it — so without this
-                // guard the `continue` fires for every def of every mode.
-                // Order-independence: both member-quantified predicates are pure state
-                // reads, so `HashSet` iteration order moves only the short-circuit point,
-                // never the verdict.
+                // CR 603.6a: relief requires the entry matcher to provably exclude EVERY
+                // member of the growing class, not one representative. The
+                // one-representative test was unsound in the ACCEPTING direction: fodder
+                // equivalence (`object_content_eq`) does NOT compare `card_types`, `color` or
+                // `keywords`, so two members can differ on exactly the axes a `valid_card`
+                // matcher reads. `!is_empty()` is LOAD-BEARING: an empty set must not make
+                // `.all()` vacuously true, and because the def-kind test lives INSIDE the
+                // closure (`etb_observer_provably_excludes_class` opens with
+                // `matches!(def.mode, ChangesZone | ChangesZoneAll)`) while `Iterator::all`
+                // on an empty set returns `true` WITHOUT invoking it, the `continue` would
+                // otherwise fire for every def of every mode. Both member-quantified
+                // predicates are pure state reads, so `HashSet` iteration order moves only
+                // the short-circuit point, never the verdict.
                 if !members.is_empty()
                     && members.iter().all(|&member| {
                         crate::game::triggers::etb_observer_provably_excludes_class(
@@ -6098,32 +4780,25 @@ fn fire_time_conditions_read_growing_class_scoped(
             {
                 return true;
             }
-            // P3 (DEFERRED-8): the trigger EFFECT BODY is scanned in LoopFirewall mode
-            // (`..._for_loop`), the SAME descending walk block-(2) already applies to
-            // battlefield ability bodies (the walk's verdict depends only on def
-            // content, not provenance). This is what lets Intruder Alarm's `untap all
-            // creatures` (a `SetTapState{Typed{Creature}}` body) relax under the
-            // CR 732.2a `Typed`-precision firewall so the canary can OFFER.
+            // The trigger EFFECT BODY is scanned in LoopFirewall mode (`..._for_loop`), the
+            // SAME descending walk block (2) applies to battlefield ability bodies (the walk's
+            // verdict depends only on def content, not provenance). This is what lets Intruder
+            // Alarm's `untap all creatures` (a `SetTapState{Typed{Creature}}` body) relax under
+            // the CR 732.2a `Typed`-precision firewall so the canary can OFFER.
             if let Some(exec) = def.execute.as_ref() {
                 // CR 608.2h + CR 608.2i + CR 608.2j: a ledger read whose filter provably
                 // cannot count the growing fodder has a value invariant across the loop's
                 // growth, so this def does not observe the loop — skip it rather than veto.
-                // Fail-closed on `class_members: None` (the OFFLINE cover passes `None` and
-                // is therefore untouched BY this narrowing — note that the CR 117.1b /
-                // CR 510.2 scope guards above are NOT class_members-gated and DO reach it).
+                // Fail-closed on `class_members: None` (the OFFLINE cover passes `None`; note
+                // that the CR 117.1b / CR 510.2 scope guards above are NOT class_members-gated
+                // and DO reach it).
                 //
                 // The two exclusion predicates are SIBLING DISJUNCTS of ONE consult, not two
-                // relief points: a def is relieved when EVERY member is excluded by EITHER
-                // the ledger read's entry matcher (block-(1a)'s sibling) or the S1 pump
-                // aggregate's id population, so the `.all()` / `!is_empty()` guard is SHARED
-                // and reasoned about once. Both are CR 608.2h value-invariance claims over
-                // the SAME member set; adding a disjunct cannot relieve a def that neither
-                // predicate can prove disjoint.
-                //
-                // `!members.is_empty()` is LOAD-BEARING for BOTH disjuncts (an empty set must
-                // not make `.all()` vacuously true) — see block (1)'s ETB gate above for the
-                // full rationale, and the `..._empty_class_member_set_does_not_relieve` rows,
-                // which now carry one fixture per surface.
+                // relief points: a def is relieved when EVERY member is excluded by EITHER the
+                // ledger read's entry matcher or the pump aggregate's id population, so the
+                // `.all()` / `!is_empty()` guard is SHARED and reasoned about once. Both are
+                // CR 608.2h value-invariance claims over the SAME member set. `!members
+                // .is_empty()` is LOAD-BEARING for BOTH — see block (1)'s ETB gate above.
                 if scan::ability_definition_reads_growing_class_for_loop(exec)
                     && !class_members.is_some_and(|members| {
                         !members.is_empty()
@@ -6139,17 +4814,15 @@ fn fire_time_conditions_read_growing_class_scoped(
             }
         }
     }
-    // (2) S5: EVERY ability def on a functioning battlefield permanent, any kind.
-    // ponytail: this ability-BODY scan is scoped to the battlefield (CR 113.6
-    // (MagicCompRules.txt:771): "Abilities of all other objects usually function only
-    // while that object is on the battlefield"), so an OFF-battlefield source's
-    // |G|-reading activated-ability effect body is unscanned. Reachability is very
-    // low and the dominant failure mode — a |G|-scaled monotone pump — keeps the loop
-    // unbounded (not a false COVER on unboundedness). Upgrade path: 4a-live / B3 must
-    // widen this scan (or gate on activation zone) if a non-battlefield |G|-exact-win
-    // source ever becomes reachable. The off-battlefield COST surface is already
-    // all-zones (`cost_surface_references_growing_class`); only effect bodies are
-    // battlefield-scoped here.
+    // (2) EVERY ability def on a functioning battlefield permanent, any kind.
+    // ponytail: this ability-BODY scan is scoped to the battlefield (CR 113.6: "Abilities of
+    // all other objects usually function only while that object is on the battlefield"), so an
+    // OFF-battlefield source's |G|-reading activated-ability effect body is unscanned.
+    // Reachability is very low and the dominant failure mode — a |G|-scaled monotone pump —
+    // keeps the loop unbounded (not a false COVER on unboundedness). Upgrade path: widen this
+    // scan (or gate on activation zone) if a non-battlefield |G|-exact-win source ever becomes
+    // reachable. The off-battlefield COST surface is already all-zones
+    // (`cost_surface_references_growing_class`); only effect bodies are battlefield-scoped.
     for obj in state.objects.values() {
         if obj.zone != Zone::Battlefield || obj.is_phased_out() {
             continue;
@@ -6169,107 +4842,56 @@ fn fire_time_conditions_read_growing_class_scoped(
                 // trigger body, block (1)) must keep vetoing.
                 // Fail-closed on `sole_driver: None` (the caller proved nothing).
                 let relieved = scope.sole_driver.is_some_and(|driver| {
-                    // CR 117.1b (MagicCompRules.txt:930) is a statement about ACTIVATED
-                    // abilities only: "a player may activate an activated ability any time
-                    // they have priority". A `Spell`/`BeginGame`/`Database`/`Mulligan`-kind
-                    // def is not reached through the priority rule at all, so a priority-based
-                    // rationale can say nothing about it and must not relieve it. Same
-                    // authority `layers.rs` uses to decide "this def is activatable".
-                    //
-                    // Measured on `data/card-data.json` (name-keyed object, 35 516 keys,
-                    // 22 634 `abilities[]` entries): 9 797 of them are NOT `Activated`
-                    // (`{Spell 9768, BeginGame 27, Mulligan 2}`), so this conjunct is not a
-                    // no-op. Narrowing to entries that syntactically carry one of the 17
-                    // `sibling: true` `QuantityRef` tags in `ability_scan.rs`: 1 465
-                    // entries, 769 of them non-`Activated`. That 1 465/769 pair is an
-                    // ESTIMATE of the at-risk class, NOT a bound in either direction — the
-                    // predicate over-counts (a tagged ref need not reach the scan's sibling
-                    // axis) and under-counts (the scan also flags sibling reads from
-                    // non-`QuantityRef` surfaces and from every `Axes::CONSERVATIVE` subtree).
+                    // CR 117.1b is a statement about ACTIVATED abilities only: "a player may
+                    // activate an activated ability any time they have priority". A
+                    // `Spell`/`BeginGame`/`Database`/`Mulligan`-kind def is not reached through
+                    // the priority rule at all, so a priority-based rationale can say nothing
+                    // about it and must not relieve it. Same authority `layers.rs` uses to
+                    // decide "this def is activatable", and not a no-op: a large minority of
+                    // the corpus's `abilities[]` entries are not `Activated`.
                     ability.kind == crate::types::ability::AbilityKind::Activated
                     && obj.controller != driver
                     && !crate::game::mana_abilities::is_mana_ability(ability)
-                    // CR 602.2 (MagicCompRules.txt:2527): "Only an object's controller (or
-                    // its owner, if it doesn't have a controller) can activate its
-                    // activated ability UNLESS THE OBJECT SPECIFICALLY SAYS OTHERWISE."
-                    // `activator_filter` is that "otherwise": with `All` or `Opponent` the
-                    // SOLE DRIVER may activate this FOREIGN permanent's ability while
-                    // holding priority inside the window, so `obj.controller != driver`
-                    // does not imply unreachability.
+                    // CR 602.2: "Only an object's controller (or its owner, if it doesn't have
+                    // a controller) can activate its activated ability UNLESS THE OBJECT
+                    // SPECIFICALLY SAYS OTHERWISE." `activator_filter` is that "otherwise":
+                    // with `All` or `Opponent` the SOLE DRIVER may activate this FOREIGN
+                    // permanent's ability while holding priority inside the window, so
+                    // `obj.controller != driver` does not imply unreachability.
                     //
-                    // Fail closed on ANY `Some(..)`, never on an enumeration of the two
-                    // widening variants. `PlayerFilter` (`types/ability.rs`) carries
-                    // dozens of variants and keeps growing; enumerating would make THIS
+                    // Fail closed on ANY `Some(..)`, never on an enumeration of the widening
+                    // variants: `PlayerFilter` keeps growing, and enumerating would make THIS
                     // site assert that every OTHER variant leaves a foreign ability
-                    // unreachable — a claim nothing forces anyone to re-verify when the
-                    // next variant lands. (Deliberately no count here: a hardcoded
-                    // number goes stale silently.) `is_none()` asserts nothing about
-                    // any variant: it keys on CR 602.2's own predicate, whether the object
-                    // says otherwise AT ALL. Note `player_may_begin_activating`'s
-                    // `Some(_) => player == source_controller` catch-all (`casting.rs`)
-                    // NARROWS an unmodeled variant to controller-only, so that surface is a
-                    // silent under-model of a future widening variant and must not be
-                    // inherited here. LATENT on today's pool, deliberately: 45 defs carry
-                    // `activator_filter`, 0 of which are growing-class-read candidates.
+                    // unreachable. `is_none()` keys on CR 602.2's own predicate — whether the
+                    // object says otherwise AT ALL. `player_may_begin_activating`'s
+                    // `Some(_) => player == source_controller` catch-all NARROWS an unmodeled
+                    // variant to controller-only, so that surface must not be inherited here.
                     && ability.activator_filter.is_none()
                 });
-                // PHASE C arms S2 + S3 — a SEPARATE named local, deliberately NOT a
-                // widening of `relieved`. The two are INDEPENDENT claims about different
-                // rules and must stay that way:
-                //   * `relieved` is a CR 117.1b PRIORITY-REACHABILITY claim ("a player may
-                //     activate an activated ability any time they have priority"), which
-                //     CR 605.3a (MagicCompRules.txt:2694) BOUNDS — a mana ability is
-                //     activatable "whenever they are casting a spell or activating an
-                //     ability that requires a mana payment", i.e. outside the priority
-                //     rule. Both Pit of Offerings and Glittering Stockpile ARE mana
-                //     abilities, so `relieved` is `false` for them by construction.
+                // A SEPARATE named local, deliberately NOT a widening of `relieved`. The two
+                // are INDEPENDENT claims about different rules and must stay that way:
+                //   * `relieved` is a CR 117.1b PRIORITY-REACHABILITY claim, which CR 605.3a
+                //     BOUNDS — a mana ability is activatable "whenever they are casting a
+                //     spell or activating an ability that requires a mana payment", i.e.
+                //     outside the priority rule. Both arms' subject cards ARE mana abilities,
+                //     so `relieved` is `false` for them by construction.
                 //   * `disjoint` is a CR 608.2h VALUE-INVARIANCE claim, which does not care
                 //     whether the ability is reachable at all.
-                // Widening `relieved` to carry S2/S3 would reopen the CR 605.3a hole for
-                // every foreign mana ability; adding an independent conjunct does not touch
-                // it. Do not merge these two locals.
+                // Widening `relieved` to carry the disjointness arms would reopen the CR 605.3a
+                // hole for every foreign mana ability. Do not merge these two locals.
                 //
-                // `!members.is_empty()` is LOAD-BEARING and mirrors the `std::iter::once`
-                // guard in `execute_ledger_condition_provably_excludes_class`: an empty set
-                // must not make `.all()` vacuously true and relieve every surface.
-                // PER-ABILITY, never per-object — this closure is inside
-                // `obj.abilities.iter().any(..)`, so a sibling ability on the SAME object
-                // that reads the class keeps vetoing on its own turn through the loop.
+                // `!members.is_empty()` is LOAD-BEARING (an empty set must not make `.all()`
+                // vacuously true and relieve every surface), and this closure is inside
+                // `obj.abilities.iter().any(..)` — PER-ABILITY, never per-object, so a sibling
+                // ability on the SAME object that reads the class keeps vetoing on its own
+                // turn through the loop.
                 //
-                // ORDERED AFTER the scan, not before it (the one place this differs from the
-                // plan's sketch, and it mirrors block (1b)'s landed shape, where the scan
-                // likewise precedes its `class_members` consult). BLOCK (1b) IS PINNED BY
-                // SYMBOL, NEVER BY LINE: it is the `if let Some(exec) = def.execute` construct
-                // in the block-(1) trigger loop earlier in THIS function — the one whose
-                // condition is `scan::ability_definition_reads_growing_class_for_loop(exec)
-                // && !class_members.is_some_and(..)`, with the
-                // `execute_ledger_condition_provably_excludes_class(..) ||
-                // pump_aggregate_provably_excludes_class(..)` disjunct as its consult.
-                // (1b) is the LAST gate in that loop, and it is NOT the loop itself and NOT
-                // block (1)'s ETB gate — the `members.iter().all(|&member|
-                // etb_observer_provably_excludes_class(..))` `continue`, which this comment
-                // named for a round until three independent reviews caught it.
-                // THE DISCRIMINATOR, stated so it can be re-measured rather than re-read: the
-                // ordering claim above is about a SCAN preceding a `class_members` consult, and
-                // `scan::` is called exactly TWICE in block (1) — `trigger_condition_reads_
-                // sibling_mutable` (the condition gate) and
-                // `ability_definition_reads_growing_class_for_loop`. BOTH sit AFTER the ETB gate's
-                // consult, so NO scan precedes it and the claim is false of it. What does
-                // precede the ETB gate is `trigger_definition_functions_in_zone` and the
-                // `scope.phase_invariant` gate — two `continue`s, neither of them a scan. (Do
-                // not restate this as "nothing precedes the ETB gate": that is false, it was
-                // asserted during this very fix, and the grep
-                // `awk 'NR>=<block1 start>,NR<=<block1 end>' | grep 'scan::'` is what settles
-                // it.) A symbol pin goes stale as silently as a line pin when it names the
-                // wrong symbol. The `:4232-4240`
-                // coordinate this comment carried before that had already drifted twice in one
-                // round, and a stale pin does not go stale loudly — it silently cites whatever
-                // code moved into those lines. Both arms
-                // CLONE the def and re-run the whole scan once PER MEMBER for conjunct (a),
-                // so evaluating them for abilities that carry no veto at all would pay the
-                // arms' cost on every ability of every battlefield permanent to relieve a
-                // veto that was never raised. `&&` over three pure predicates is
-                // order-independent in value, so this is strictly a cost ordering.
+                // ORDERED AFTER the scan, mirroring block (1b)'s landed shape: both arms CLONE
+                // the def and re-run the whole scan once PER MEMBER for conjunct (a), so
+                // evaluating them for abilities that carry no veto at all would pay the arms'
+                // cost on every ability of every battlefield permanent to relieve a veto that
+                // was never raised. `&&` over three pure predicates is order-independent in
+                // value, so this is strictly a cost ordering.
                 let disjoint = || {
                     class_members.is_some_and(|members| {
                         !members.is_empty()
@@ -6282,32 +4904,23 @@ fn fire_time_conditions_read_growing_class_scoped(
                     })
                 };
                 // CR 732.2a + CR 732.2c — the PROPOSAL-ABSENCE relief. A SEPARATE named local,
-                // deliberately not a widening of `relieved` or of `disjoint`, for the same reason
-                // those two are separate: the three are independent claims under different rules and
-                // a reader who merges any two of them silently exports one's premises onto another.
-                //   * `relieved` is CR 117.1b PRIORITY-REACHABILITY ("a FOREIGN controller never gets
-                //     priority inside the window"), which CR 605.3a bounds.
-                //   * `disjoint` is CR 608.2h VALUE-INVARIANCE ("the read's value does not move").
-                //   * `not_proposed` is CR 732.2a INAPPLICABILITY ("the proposal never activates it,
-                //     so it is never evaluated at all") — which is why it reaches the OWN-controller
-                //     permanents `relieved` cannot, and reaches lands whose census is genuine on the
-                //     merits, which no disjointness argument could ever relieve.
+                // deliberately not a widening of `relieved` or of `disjoint`: the three are
+                // independent claims under different rules, and merging any two silently
+                // exports one's premises onto another.
+                //   * `relieved` is CR 117.1b PRIORITY-REACHABILITY, which CR 605.3a bounds.
+                //   * `disjoint` is CR 608.2h VALUE-INVARIANCE.
+                //   * `not_proposed` is CR 732.2a INAPPLICABILITY ("the proposal never
+                //     activates it, so it is never evaluated at all") — which is why it reaches
+                //     the OWN-controller permanents `relieved` cannot, and lands whose census
+                //     is genuine on the merits.
                 //
-                // `scope.sole_driver` is `Some` exactly when BOTH cover frames carry a non-empty,
-                // single-controller loop period AND agree on its controller
-                // (`window_scope_from_cover_frames`, derived from
-                // `GameState::loop_period_controller`). That is the proof that
-                // `last_loop_action_sequence` on the SCANNED frame describes THIS window rather than
-                // some earlier one; without it the record is a stale artifact and absence from it
-                // proves nothing. `LoopWindowScope::unproven()` — the offline classifier — reaches
-                // none of this, so the 2-arg wrapper stays byte-identical
-                // (`scoped_wrappers_are_identity`, `offline_classifier_verdict_is_unchanged`).
-                //
-                // PER-ABILITY, never per-object: this closure is inside
-                // `obj.abilities.iter().enumerate().any(..)`, so a sibling ability on the SAME object
-                // that the proposal DOES name keeps vetoing on its own turn through the loop. The
-                // `ability_index` is that per-ability coordinate and is exactly what
-                // `LoopAction::Activate` binds.
+                // `scope.sole_driver` is `Some` exactly when BOTH cover frames carry a
+                // non-empty, single-controller loop period AND agree on its controller. That is
+                // the proof that `last_loop_action_sequence` on the SCANNED frame describes
+                // THIS window rather than an earlier one; without it the record is a stale
+                // artifact and absence from it proves nothing. PER-ABILITY, never per-object:
+                // this closure is inside `obj.abilities.iter().enumerate().any(..)`, and
+                // `ability_index` is exactly what `LoopAction::Activate` binds.
                 let not_proposed = scope.sole_driver.is_some()
                     && activated_ability_is_not_a_loop_choice(
                         state,
@@ -6339,32 +4952,24 @@ fn fire_time_conditions_read_growing_class_scoped(
         if replacement_is_spent_self_entry(source, def, class_members, scope.identity_unstable) {
             continue;
         }
-        // CR 732.2a relief (S4/S5), SCOPED TO THE `condition` SURFACE ONLY — never a
-        // `continue` over the whole def. A def whose condition is provably invariant may
-        // still carry a class-observing `execute`/`runtime_execute`, and relieving the def
-        // on one surface's verdict is the "relief-by-`continue`" defect pinned by
-        // `block3_condition_relief_does_not_carry_the_execute_surface`.
-        //
-        // `!members.is_empty()` is LOAD-BEARING, exactly as in block (2): an empty class
-        // must not make `.all()` vacuously true and relieve every surface. ORDERED AFTER
-        // the scan for the same cost reason block (2) states — `&&` over pure predicates is
-        // order-independent in value, so this is strictly a cost ordering.
+        // CR 732.2a relief, SCOPED TO THE `condition` SURFACE ONLY — never a `continue` over
+        // the whole def. A def whose condition is provably invariant may still carry a
+        // class-observing `execute`/`runtime_execute`, and relieving the def on one surface's
+        // verdict is the relief-by-`continue` defect. `!members.is_empty()` is LOAD-BEARING,
+        // exactly as in block (2), and the ordering after the scan is the same cost ordering.
         let condition_disjoint = |condition: &crate::types::ability::ReplacementCondition| {
-            // FLOATING HALF ⇒ FAIL CLOSED. With no source object there is no `source_id`
-            // and no controller to build the evaluator's own arguments from, so no
-            // arg-equivalence pin can be constructed at THIS call. The residual is also
-            // vanishingly narrow on the merits: a floating def belongs to CR 611.2's
-            // "generated by the resolution of a spell or ability" store, a DIFFERENT
-            // mechanism from the CR 611.3 object-attached one, and cannot carry an S4/S5
-            // "as this enters" shape (CR 614.1c / CR 614.1d) — probe P-6 measured ZERO
-            // floating defs on all three dumps, re-confirmed here on
-            // `witherbloom_altar_sprout_swarm_4p.json.gz`.
-            // ⛔ THIS IS YAGNI + FAIL-CLOSED, **NOT** A CAPABILITY GAP. `game::replacement`'s
-            // floating branch already builds exactly the pair this arm would need and hands
-            // it straight to `evaluate_replacement_condition` as
+            // FLOATING HALF ⇒ FAIL CLOSED. With no source object there is no `source_id` and
+            // no controller to build the evaluator's own arguments from, so no arg-equivalence
+            // pin can be constructed at THIS call. The residual is vanishingly narrow on the
+            // merits: a floating def belongs to CR 611.2's "generated by the resolution of a
+            // spell or ability" store, a DIFFERENT mechanism from the CR 611.3 object-attached
+            // one, and cannot carry an "as this enters" shape (CR 614.1c / CR 614.1d).
+            // THIS IS YAGNI + FAIL-CLOSED, **NOT** A CAPABILITY GAP. `game::replacement`'s
+            // floating branch already builds exactly the pair this arm would need and hands it
+            // to `evaluate_replacement_condition` as
             // `(repl_def.source_controller.unwrap_or(state.active_player), ObjectId(0))`, so
-            // the pin is CONSTRUCTIBLE the day a floating def can carry this shape. The door
-            // is unopened, not welded shut — do not reword this as "impossible".
+            // the pin is CONSTRUCTIBLE the day a floating def can carry this shape. The door is
+            // unopened, not welded shut — do not reword this as "impossible".
             let Some(source) = source else {
                 return false;
             };
@@ -6392,16 +4997,14 @@ fn fire_time_conditions_read_growing_class_scoped(
         {
             return true;
         }
-        // CR 732.2a relief (S6), SCOPED TO THE `execute` SURFACE ONLY — never a `continue`
-        // over the whole def, for the same reason the `condition` surface above is scoped
-        // (row `block3_execute_relief_does_not_carry_the_condition_surface`).
+        // CR 732.2a relief, SCOPED TO THE `execute` SURFACE ONLY — never a `continue` over
+        // the whole def, for the same reason the `condition` surface above is scoped.
         let execute_disjoint = |exec: &crate::types::ability::AbilityDefinition| {
             // FLOATING HALF ⇒ FAIL CLOSED — the `.execute` twin of the `condition_disjoint`
-            // residual C3b-1 landed. CR 611.2's floating store has no source object, so
-            // `replacement_source_player` has no argument and the universe pin has no player
-            // to census. Same YAGNI + fail-closed posture as the sibling, and the same
-            // caveat: the door is unopened, not welded shut — do not reword this as
-            // "impossible".
+            // residual. CR 611.2's floating store has no source object, so
+            // `replacement_source_player` has no argument and the universe pin has no player to
+            // census. Same YAGNI + fail-closed posture as the sibling, and the same caveat: the
+            // door is unopened, not welded shut — do not reword this as "impossible".
             let Some(source) = source else {
                 return false;
             };
@@ -6445,12 +5048,11 @@ fn fire_time_conditions_read_growing_class_scoped(
             {
                 return true;
             }
-            // CR 613.1: a live continuous modification vetoes iff it READS a mutable
-            // board aggregate (`sibling`) OR a projected player resource
-            // (`projected`). BOTH axes (M9): the projected-resource firewall has no
-            // modification scan, so this descent is the sole guard against a
-            // projected-reading modification (a `SetDynamicPower{Ref(LifeTotal)}`
-            // anthem) reaching the ω/drain cover.
+            // CR 613.1: a live continuous modification vetoes iff it READS a mutable board
+            // aggregate (`sibling`) OR a projected player resource (`projected`). BOTH axes:
+            // the projected-resource firewall has no modification scan, so this descent is the
+            // sole guard against a projected-reading modification (a
+            // `SetDynamicPower{Ref(LifeTotal)}` anthem) reaching the ω/drain cover.
             if def.modifications.iter().any(|m| {
                 scan::continuous_modification_reads_sibling_mutable(m)
                     || scan::continuous_modification_reads_projected_resource(m)
@@ -6502,7 +5104,7 @@ fn fire_time_conditions_read_growing_class_scoped(
             }
         }
     }
-    // (6) S3 belt — pending/delayed ability-body stores. Both compared frames sit at
+    // (6) The belt — pending/delayed ability-body stores. Both compared frames sit at
     // a clean priority window where these are normally empty; a non-empty store
     // carries a deferred ability body that could read |G|, so reject conservatively.
     if !state.delayed_triggers.is_empty()
@@ -6516,7 +5118,7 @@ fn fire_time_conditions_read_growing_class_scoped(
     false
 }
 
-/// §5.3a: does a stack entry's AST read the growing class (axis-2 `sibling`)?
+/// Does a stack entry's AST read the growing class (the `sibling` axis)?
 /// Delegates to the axis-2 accessors over the embedded ability plus the
 /// trigger-level intervening-if (CR 603.4). `KeywordAction` has no AST ⇒ fail
 /// closed; a permanent `Spell { ability: None }` reads nothing (its resolution
@@ -6538,8 +5140,8 @@ fn stack_entry_reads_growing_class(entry: &StackEntry) -> bool {
     }
 }
 
-/// §5.4 (BLOCKER-S2 + FINDING-2 + §6 keystone): does ANY cost surface reference the
-/// growing class? ONE predicate over EVERY cost surface on the FLUSHED current:
+/// CR 601.2f + CR 732.2a: does ANY cost surface reference the growing class? ONE predicate
+/// over EVERY cost surface on the FLUSHED current:
 /// (1) the cost-KEYWORD family — a board/graveyard-referencing cost reducer or
 /// tap/sacrifice aggregate (Affinity/Convoke/Crew/Delve/Emerge/…) on ANY object (a
 /// recast loop's keyword rides an off-battlefield card), printed or granted;
@@ -6549,8 +5151,8 @@ fn stack_entry_reads_growing_class(entry: &StackEntry) -> bool {
 /// `ManaCost`), plus the `AbilityCost`-bearing and keyword-granting cost variants;
 /// (3) the object-level `additional_cost`; (4) the full ability TREE's activation
 /// costs — the top-level `cost` plus every nested `sub_ability`/`else_ability`/
-/// `mode_abilities` cost — each via the EXHAUSTIVE `AbilityCost` scan (Finding-2, NO
-/// `_`). CR 732.2a keystone: the cost-affordability that the `ResourceVector` cannot
+/// `mode_abilities` cost — each via the EXHAUSTIVE `AbilityCost` scan (NO `_`).
+/// CR 732.2a keystone: the cost-affordability that the `ResourceVector` cannot
 /// model. Each surface is fail-closed on anything it cannot classify.
 fn cost_surface_references_growing_class(state: &GameState) -> bool {
     use crate::game::ability_scan as scan;
@@ -6614,7 +5216,7 @@ fn cost_surface_references_growing_class(state: &GameState) -> bool {
     false
 }
 
-/// §5.4 + CR 601.2f: EXHAUSTIVE no-`_` scan of a `StaticDefinition::mode`'s cost
+/// CR 601.2f: EXHAUSTIVE no-`_` scan of a `StaticDefinition::mode`'s cost
 /// surface. Every cost-carrying variant routes its dynamic component fail-closed;
 /// every non-cost variant (or fixed-cost variant) binds read-free. A new
 /// `StaticMode` variant fails to compile here until it is classified.
@@ -6630,7 +5232,7 @@ fn static_mode_references_growing_class(mode: &crate::types::statics::StaticMode
         // `dynamic_count: Option<QuantityRef>` ("for each X you control"). An
         // `ObjectCount` of the grown class reads |G|, so route it fail-closed — for
         // BOTH directions: `Raise`+`ObjectCount` is the false-positive-∞ case, and
-        // `Reduce` is the §6 keystone-REJECT case. `amount` (a fixed `ManaCost`) and
+        // `Reduce` is the keystone-REJECT case. `amount` (a fixed `ManaCost`) and
         // every other field are read-free.
         StaticMode::ModifyCost { dynamic_count, .. }
         | StaticMode::ReduceAbilityCost { dynamic_count, .. } => {
@@ -6663,19 +5265,17 @@ fn static_mode_references_growing_class(mode: &crate::types::statics::StaticMode
         // CR 508.1d + CR 604.1: the required defender splits by whether it is a
         // resolution-time SNAPSHOT or a LIVE class.
         //
-        // `Fixed`/`Permanent` are frozen ids (a `PlayerId`, an
-        // `ObjectIncarnationRef`) — nothing is re-derived from the board, so they
-        // are genuinely read-free.
+        // `Fixed`/`Permanent` are frozen ids (a `PlayerId`, an `ObjectIncarnationRef`) —
+        // nothing is re-derived from the board, so they are genuinely read-free.
         //
         // `Matching` is not. `combat::must_attack_defender_directives_for_creature`
         // re-evaluates its `PlayerFilter` against live player state at EVERY
-        // declare-attackers step (Galactus's "opponent with the most life among
-        // your opponents"), so the class it names can change as the board does and
-        // a cached analysis result can go stale. Fail closed on ANY filter rather
-        // than enumerating `PlayerFilter`'s variants — the same doctrine the
-        // `activator_filter` site above states at length, and for the same reason:
-        // enumerating here would silently assert something about every future
-        // variant.
+        // declare-attackers step (Galactus's "opponent with the most life among your
+        // opponents"), so the class it names can change as the board does and a cached
+        // analysis result can go stale. Fail closed on ANY filter rather than enumerating
+        // `PlayerFilter`'s variants — the same doctrine as the `activator_filter` site above,
+        // and for the same reason: enumerating here would silently assert something about
+        // every future variant.
         StaticMode::MustAttackDefender { defender } => match defender {
             crate::types::statics::RequiredDefender::Fixed { .. }
             | crate::types::statics::RequiredDefender::Permanent { .. } => false,
@@ -6805,13 +5405,13 @@ fn static_mode_references_growing_class(mode: &crate::types::statics::StaticMode
     }
 }
 
-/// §5.4 (review LOW): the object's full ability TREE cost surface — the top-level
-/// `cost` plus every nested `sub_ability` / `else_ability` / `mode_abilities` cost
+/// The object's full ability TREE cost surface — the top-level `cost` plus every nested
+/// `sub_ability` / `else_ability` / `mode_abilities` cost
 /// (each `AbilityDefinition` carries its own `cost`). `ability_definition_axes`
 /// binds `cost` read-free (deferred here), so a board-scaling cost on a NESTED
-/// sub-ability would otherwise be scanned by neither the §5.3a effect firewall nor a
+/// sub-ability would otherwise be scanned by neither the off-stack fire-time firewall nor a
 /// top-level-only cost scan. Each cost routes through the EXHAUSTIVE `AbilityCost`
-/// scanner (Finding-2, NO `_`).
+/// scanner (NO `_`).
 fn ability_tree_cost_references_growing_class(
     def: &crate::types::ability::AbilityDefinition,
 ) -> bool {
@@ -6838,7 +5438,7 @@ fn ability_tree_cost_references_growing_class(
         .any(ability_tree_cost_references_growing_class)
 }
 
-/// §5.4 item (3): unwrap an `AdditionalCost` to its embedded `AbilityCost`(s) and
+/// Unwrap an `AdditionalCost` to its embedded `AbilityCost`(s) and
 /// scan each through the EXHAUSTIVE cost scanner. Exhaustive no-`_` over
 /// `AdditionalCost` so a new cost shape forces a decision.
 fn additional_cost_references_growing_class(a: &crate::types::ability::AdditionalCost) -> bool {
@@ -6920,7 +5520,7 @@ fn normalized_stack_entries(state: &GameState) -> Vec<(StackEntry, Option<Trigge
         .collect()
 }
 
-/// Stack coverability (§2.2 item 2): `prior` is an order-preserving bottom-up
+/// Stack coverability (item 2): `prior` is an order-preserving bottom-up
 /// SUBSEQUENCE of `current` (2a), at least one normalized kind strictly grew, and
 /// EVERY kind that grew already occurs in `prior` with count ≥ 1 (2b — a
 /// never-before-seen 0→1 entry is rejected outright, its resolution behavior never
@@ -6965,21 +5565,19 @@ fn stack_covers(
     any_growth
 }
 
-/// CR 603.3c / CR 603.3d + CR 601.2d: does a stack entry take NO player ordering
-/// input at resolution? Only a `TriggeredAbility` qualifies (`Spell`/
-/// `ActivatedAbility` are player-driven; `KeywordAction` carries no `ResolvedAbility`)
-/// with no targets, no variable-count targeting, no divide/distribute assignment,
-/// and no cross-target constraints on the embedded ability. The mid-construction
-/// modal firewall (`state.pending_trigger_entry != Some(entry.id)`) is unreachable
-/// while both compared states sit at `WaitingFor::Priority`, but keeps the guard
-/// closed under future sampling changes (a chosen mode is otherwise baked into the
-/// entry's `ability`, so the normalized key already separates distinct modes).
+/// CR 603.3c / CR 603.3d + CR 601.2d: does a stack entry take NO player ordering input at
+/// resolution? Only a `TriggeredAbility` qualifies (`Spell`/`ActivatedAbility` are
+/// player-driven; `KeywordAction` carries no `ResolvedAbility`) with no targets, no
+/// variable-count targeting, no divide/distribute assignment, and no cross-target constraints
+/// on the embedded ability. The mid-construction modal firewall
+/// (`state.pending_trigger_entry != Some(entry.id)`) is unreachable while both compared states
+/// sit at `WaitingFor::Priority`, but keeps the guard closed under future sampling changes.
 ///
-/// Contract boundary: this gate owns only ANNOUNCEMENT-time ordering input
-/// (targets, divide/distribute, cross-target constraints). Resolution-time
-/// choices (CR 608.2d — proliferate/populate/sacrifice-choice/optional/…) are
-/// owned by item 6 (`stack_entry_resolution_choice_freedom`), applied to every
-/// current-stack entry, not just grown ones.
+/// Contract boundary: this gate owns only ANNOUNCEMENT-time ordering input (targets,
+/// divide/distribute, cross-target constraints). Resolution-time choices (CR 608.2d —
+/// proliferate/populate/sacrifice-choice/optional/…) are owned by item 6
+/// (`stack_entry_resolution_choice_freedom`), applied to every current-stack entry, not just
+/// grown ones.
 fn stack_entry_has_no_ordering_input(state: &GameState, entry: &StackEntry) -> bool {
     let StackEntryKind::TriggeredAbility { ability, .. } = &entry.kind else {
         return false;
@@ -7012,32 +5610,20 @@ fn stack_entry_has_no_ordering_input(state: &GameState, entry: &StackEntry) -> b
     forced_unique_targeting(state, ability)
 }
 
-/// CR 603.3d / CR 608.2b / CR 732.2a: exactly one legal target assignment ⇒ the
-/// target choice is FORCED, not player ordering input. Reuses the engine's own
-/// auto-target oracle (`auto_select_targets_for_ability => Ok(Some(_))` iff a
-/// single legal assignment exists, limit=2) — the same authority the trigger
-/// dispatcher uses. Fail-closed on any build error, empty slots, or ≥2 legal
-/// assignments (`Ok(None)` / `Err`).
+/// CR 603.3d / CR 608.2b / CR 732.2a: exactly one legal target assignment ⇒ the target choice
+/// is FORCED, not player ordering input. Reuses the engine's own auto-target oracle
+/// (`auto_select_targets_for_ability => Ok(Some(_))`, limit=2, iff a single legal assignment
+/// exists) — the same authority `triggers::prepare_trigger_targets` uses: it routes
+/// `Ok(Some(targets))` to `PreparedTriggerTargets::AutoAssigned` (assigned at dispatch, no
+/// prompt) and `Ok(None)` to `NeedsPlayerChoice`, so `true` is exactly "the dispatcher
+/// announces this target itself and the player is never asked". Fail-closed on any build error,
+/// empty slots, or ≥2 legal assignments. `pub(crate)` for the publish side of the same question:
+/// [`crate::game::engine::entry_publishes_pin_slots`] must not publish a CR 732.2a decision
+/// point for a choice no player makes, and a second copy could disagree with it.
 ///
-/// "The same authority the trigger dispatcher uses" is MEASURED, not asserted:
-/// `triggers::prepare_trigger_targets` calls this very function and routes
-/// `Ok(Some(targets))` to `PreparedTriggerTargets::AutoAssigned` (targets assigned
-/// at dispatch, no prompt) and `Ok(None)` to `NeedsPlayerChoice` (the
-/// `WaitingFor::TriggerTargetSelection` prompt). So `true` here is exactly "the
-/// dispatcher will announce this target itself and the player is never asked".
-///
-/// `pub(crate)` for ONE additional consumer, and it is the publish side of the same
-/// question: [`crate::game::engine::entry_publishes_pin_slots`] must not publish a
-/// CR 732.2a decision point for a choice no player makes. Exported rather than
-/// re-derived there — two copies of this predicate could disagree about whether a
-/// choice is forced, and the publisher and the relief disagreeing is precisely the
-/// fail-open shape gate (3) exists to prevent.
-///
-/// ⚠ THE BOARD IS THE VERDICT. Every caller must pass the frame the rest of its own
-/// derivation uses — the announced pair's CARRYING FRAME for a retained sample, the
-/// live board only for a live entry. Handing a retained pair the live board is
-/// fail-OPEN: a target legal on the frame but gone from the live board collapses the
-/// assignment to "forced" and relieves (or unpublishes) a choice that is not forced.
+/// THE BOARD IS THE VERDICT: pass the frame the rest of the derivation uses — a retained
+/// sample's CARRYING FRAME, the live board only for a live entry. Handing a retained pair the
+/// live board is fail-OPEN: a frame-legal target gone from the live board reads as "forced".
 pub(crate) fn forced_unique_targeting(
     state: &GameState,
     ability: &crate::types::ability::ResolvedAbility,
@@ -7056,9 +5642,9 @@ pub(crate) fn forced_unique_targeting(
     }
 }
 
-/// §2.2 item 4: does this stack entry's AST read ANY still-projected axis (the
+/// Item 4: does this stack entry's AST read ANY still-projected axis (the
 /// narrowed set: player-level monotone resources/tallies + the journal/count block)?
-/// Delegates to the C0 walker's third axis over the embedded ability (which itself
+/// Delegates to the scan walker's third axis over the embedded ability (which itself
 /// recurses `sub_ability`/`else_ability` and the ability-level `AbilityCondition`),
 /// plus the trigger-level `TriggerCondition` (CR 603.4 intervening-if). Object-axis
 /// readers classify as NON-reading — their drift breaks gate (1) instead. A
@@ -7094,7 +5680,7 @@ fn stack_entry_reads_projected_resource(entry: &StackEntry) -> bool {
     }
 }
 
-/// §2.2 item 6: can resolving this stack entry offer a resolution-time player
+/// Item 6: can resolving this stack entry offer a resolution-time player
 /// choice (a non-priority `WaitingFor` the C2/no-ordering-input gate cannot see)?
 /// Delegates to the ability_scan choice classifier over the embedded ability.
 /// Exhaustive over all four `StackEntryKind`s (no wildcard): only a
@@ -7112,39 +5698,26 @@ fn stack_entry_resolution_choice_freedom(
     use crate::game::resolution_prompt::ResolutionChoiceFreedom;
     match &entry.kind {
         StackEntryKind::TriggeredAbility { ability, .. } => {
-            // CR 603.4 + CR 608.2k: the classifier probes a RESOLUTION, so it
-            // must be handed the board `resolve_top` would hand
-            // `resolve_ability_chain` — this entry off the stack, with
-            // resolution scope bound. Handing it the raw pre-resolution board
-            // resolves every `EventContextAmount` / `Triggering*` reference
-            // against an absent context and is FAIL-OPEN for the `> 0`-gated
-            // virtual replacement arms.
+            // CR 603.4 + CR 608.2k: the classifier probes a RESOLUTION, so it must be
+            // handed the board `resolve_top` would hand `resolve_ability_chain` — this entry
+            // off the stack, with resolution scope bound. Handing it the raw pre-resolution
+            // board resolves every `EventContextAmount` / `Triggering*` reference against an
+            // absent context and is FAIL-OPEN for the `> 0`-gated virtual replacement arms.
             //
-            // The entry is removed BY ID, never by `pop`: the callers walk the
-            // stack at arbitrary depth, so "pop the top" is wrong for every
-            // non-top entry, while "this entry is the one resolving" is the
-            // counterfactual being asked. The clone lands only on the probe —
-            // `resolve_top` calls the same shared binding on its own
-            // `&mut GameState` and pays nothing.
-            // CR 732.2a: THE CHEAP BINDING PRECONDITION RUNS BEFORE THE CLONE.
+            // The entry is removed BY ID, never by `pop`: the callers walk the stack at
+            // arbitrary depth, so "pop the top" is wrong for every non-top entry, while "this
+            // entry is the one resolving" is the counterfactual being asked. The clone lands
+            // only on the probe.
             //
-            // The whole-`GameState` clone below is the dominant per-entry work, and it
-            // used to be paid unconditionally — including for entries the classifier was
-            // about to reject on a pure AST gate (`optional`, `unless_pay`, a modal
-            // header, an `UpTo` count, a non-allow-listed effect). Those entries bought
-            // a full board copy and a scope binding to reach a verdict that never looked
-            // at the board.
-            //
-            // `chain_offers_choice` is that verdict's AST half, so asking it here costs
-            // nothing and removes the clone entirely for every gated entry.
-            //
-            // DELIBERATELY NOT a `try_charge_one` in this position, which was the other
-            // remedy on offer: the meter's charge sits BELOW the `optional` gate by
-            // design, and `r16_the_f4_offering_beats_probe_demand_is_exactly_measured`
-            // pins `spent == conjunct6_asks` for exactly that reason — its own message
-            // predicts that hoisting the charge above the gate makes every optional ask
-            // charge twice. Measured: adding a charge here does make that row fail. The
-            // precondition form bounds the same dominant work without moving the meter.
+            // CR 732.2a: THE CHEAP BINDING PRECONDITION RUNS BEFORE THE CLONE. The
+            // whole-`GameState` clone below is the dominant per-entry work, and an entry the
+            // classifier is about to reject on a pure AST gate (`optional`, `unless_pay`, a
+            // modal header, an `UpTo` count, a non-allow-listed effect) would otherwise buy a
+            // full board copy and a scope binding to reach a verdict that never looks at the
+            // board. `chain_offers_choice` is that verdict's AST half, so asking it here costs
+            // nothing. DELIBERATELY NOT a `try_charge_one` in this position: the meter's charge
+            // sits BELOW the `optional` gate by design, and hoisting it above the gate makes
+            // every optional ask charge twice.
             if crate::game::resolution_prompt::chain_offers_choice(ability) {
                 return ResolutionChoiceFreedom::MayPrompt;
             }
@@ -7165,43 +5738,30 @@ fn stack_entry_resolution_choice_freedom(
     }
 }
 
-/// §2.2 item 5 (the R4-G1 second scan surface): does ANY live off-stack fire-time
-/// condition read a still-projected resource? A dormant intervening-if / replacement
-/// / condition-gated static that reads a projected axis (CR 603.4 / CR 614.1 /
-/// CR 604.1 / CR 613.1 / CR 101.2) produces NO stack entry on either compared frame,
-/// so item 4 cannot see it — yet it arms mid-extrapolation and breaks the replay.
-/// Run once on `current` (item-1 board equality makes the definition sets identical).
-/// Fail-closed: any surface the scan cannot classify ⇒ reject (no shortcut).
+/// Item 5, the second scan surface: does ANY live off-stack fire-time condition read a
+/// still-projected resource? A dormant intervening-if / replacement / condition-gated static
+/// that reads a projected axis (CR 603.4 / CR 614.1 / CR 604.1 / CR 613.1 / CR 101.2) produces
+/// NO stack entry on either compared frame, so item 4 cannot see it — yet it arms
+/// mid-extrapolation and breaks the replay. Run once on `current` (item-1 board equality makes
+/// the definition sets identical). Fail-closed: any surface the scan cannot classify ⇒ reject.
 ///
-/// Keyword-synthesized granted triggers (`KeywordTriggerInstaller::triggers_for`
-/// / `synthesize_granted_keyword_triggers`) ARE scanned here — loop (iv), via
-/// `crate::game::triggers::granted_keyword_triggers_in_zone` (the same synthesis
-/// authority the live trigger-collection path uses). They are produced
-/// on-the-fly during trigger collection and (for off-zone grants, and in any
-/// state where layer 6 has not reinstalled them) never land on
-/// `obj.trigger_definitions`, so `active_trigger_definitions` (loop (i)) cannot
-/// be relied on to reach them. Most such triggers carry non-projected fire-time
-/// conditions (Echo→`EchoDue`, Renown→`Not(IsRenowned)`, Suspend/Soulshift/
-/// Vanishing/CumulativeUpkeep→counter/zone conditions, Soulbond→filter
-/// conditions), but Dethrone does not — see below.
+/// Keyword-synthesized granted triggers ARE scanned here — loop (iv), via
+/// `crate::game::triggers::granted_keyword_triggers_in_zone`, the same synthesis authority the
+/// live trigger-collection path uses. They are produced on-the-fly during trigger collection
+/// and (for off-zone grants, and in any state where layer 6 has not reinstalled them) never
+/// land on `obj.trigger_definitions`, so loop (i) cannot be relied on to reach them.
 ///
-/// The item-5 classifier (`trigger_condition_reads_projected_resource`) flags
-/// four granted-keyword conditions as projected-reading — Dethrone, Increment,
-/// Soulbond, Training — but only Dethrone is a GENUINE projected read. Dethrone
-/// (CR 702.105a) compares the defending player's `LifeTotal` to the max
-/// `LifeTotal` among all players (CR 119 life = a PROJECTED axis this pass
-/// zeroes); Increment/Soulbond/Training are fail-closed false positives
-/// (`ManaSpentToCast` / control-filter / co-attacker-power reads the classifier's
-/// `Axes::CONSERVATIVE` walk cannot descend, all cast/combat/object state gate (1)
-/// strict-compares). Because loop (iv) now scans these synthesized defs, a
-/// runtime-GRANTED Dethrone (`Effect::GrantKeywords` /
-/// `ContinuousModification::AddKeyword`) whose dormant condition would arm
-/// mid-extrapolation is caught (fail-safe reject) — closing the inc2b
-/// dormant-arming hole (false WIN, N1(k) class). This makes item-5 structurally
-/// complete for granted keywords rather than a hand-list. The guard test
-/// `granted_keyword_trigger_conditions_projected_reads_are_exactly_known_gaps` in
-/// `game::triggers` still pins the flagged set so a NEW projected-reading
-/// granted-keyword condition surfaces as a review signal.
+/// Of the four granted-keyword conditions the item-5 classifier flags as projected-reading,
+/// only Dethrone is a GENUINE projected read: CR 702.105a compares the defending player's
+/// `LifeTotal` to the max among all players (CR 119 life is a PROJECTED axis this pass zeroes).
+/// Increment / Soulbond / Training are fail-closed false positives (`ManaSpentToCast` /
+/// control-filter / co-attacker-power reads the `Axes::CONSERVATIVE` walk cannot descend, all
+/// of them cast/combat/object state gate (1) strict-compares). Because loop (iv) scans the
+/// synthesized defs, a runtime-GRANTED Dethrone whose dormant condition would arm
+/// mid-extrapolation is caught, which makes item 5 structurally complete for granted keywords
+/// rather than a hand-list. `game::triggers`'
+/// `granted_keyword_trigger_conditions_projected_reads_are_exactly_known_gaps` pins the
+/// flagged set so a NEW projected-reading granted-keyword condition surfaces as a signal.
 fn fire_time_conditions_read_projected_resource(state: &GameState) -> bool {
     fire_time_conditions_read_projected_resource_scoped(state, LoopWindowScope::unproven())
 }
@@ -7365,14 +5925,14 @@ fn functioning_board_trigger_defs(
 /// firewalls that ask "does this board carry ANY functioning trigger of this shape".
 ///
 /// Both keys these firewalls scan for carry an `Option<CoreType>` narrowing that the firewalls
-/// deliberately DISCARD (a sound over-approximation — see each wrapper's doc), so the test is on
-/// the VARIANT, not on the key value. That is why this cannot reuse `board_has_event_observer`'s
-/// payload-SENSITIVE `contains(&trig_key)`: they ask different questions of the same scan.
+/// deliberately DISCARD (a sound over-approximation — see each wrapper's doc), so the test is
+/// on the VARIANT, not on the key value. That is why this cannot reuse
+/// `board_has_event_observer`'s payload-SENSITIVE `contains(&trig_key)`: they ask different
+/// questions of the same scan.
 ///
-/// A new class is one arm here plus a one-line wrapper. The sibling coverage gap
-/// (`Taps` / `TapsForMana` / `AbilityOrCopyActivated` / `Sacrificed`) is chartered to
-/// F-route-residual and is deliberately NOT pre-added — parameterizing is what makes each of
-/// those a one-line arm when its own soundness argument is discharged.
+/// A new class is one arm here plus a one-line wrapper. The sibling coverage gap (`Taps` /
+/// `TapsForMana` / `AbilityOrCopyActivated` / `Sacrificed`) is deliberately NOT pre-added —
+/// parameterizing is what makes each a one-line arm once its own soundness argument holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoardTriggerClass {
     /// CR 603.6a: a permanent entered the battlefield.
@@ -7409,35 +5969,27 @@ fn board_has_functioning_trigger(state: &GameState, class: BoardTriggerClass) ->
 ///
 /// The route firewall for a batched collapse that MINTS TOKENS: each minted token is a real
 /// CR 603.6a entry, so every board ETB trigger fires for real on top of whatever the batched
-/// arithmetic already applied. Measured on the Sprout Swarm 4p dump: the batched
-/// `[Tokens, Life { per_cycle_delta: 1 }]` pair took P0 from 546 to 596 at the collapse, and
-/// draining the 50 real token-ETB triggers paid the SAME life again, ending at 646. Routing to
-/// the concrete replay makes the real ETB triggers the ONLY source, which is what the board does.
+/// arithmetic already applied — the batched life pair and the drained real token-ETB triggers
+/// would each pay the same life. Routing to the concrete replay makes the real ETB triggers
+/// the ONLY source, which is what the board does.
 ///
-/// SHAPE-AGNOSTIC by construction. An earlier form asked whether the trigger's effect chain was
-/// an `Effect::GainLife`, which is under-approximate: life reaches `apply_life_gain` from four
-/// resolvers (`effects/life.rs`, `effects/double.rs`, `effects/exchange_life.rs`, and
-/// `effects/deal_damage.rs`'s CR 702.15b lifelink leg), so a Terror-of-the-Peaks-shaped board —
+/// SHAPE-AGNOSTIC by construction. Asking whether the trigger's effect chain is an
+/// `Effect::GainLife` is under-approximate: life reaches `apply_life_gain` from four resolvers
+/// (`game::effects::life`, `::double`, `::exchange_life`, and `::deal_damage`'s
+/// CR 702.15b lifelink leg), so a Terror-of-the-Peaks-shaped board —
 /// an ETB damage trigger on a permanent with lifelink — grows a genuinely ETB-sourced life axis
 /// that no `Effect`-shape test can see. Asking only "is there a functioning ETB trigger" cannot
-/// miss a life source.
-///
-/// This predicate and the effect-shape test it replaced are INCOMPARABLE, not nested — dropping the
-/// `Effect::GainLife` conjunct is strictly LOOSER on effect shape (any ETB trigger counts, not just
-/// a life-gaining one). What narrows the CALLER is a different axis: it pairs this with
-/// `token_profile.is_some()`, so only a collapse that MINTS the entries can route here and a
-/// token-less loop never does. Looser on shape, narrower on axis; neither side contains the other.
+/// miss a life source. The two tests are INCOMPARABLE, not nested: this is strictly LOOSER on
+/// effect shape, and what narrows the CALLER is a different axis — it pairs this with
+/// `token_profile.is_some()`, so only a collapse that MINTS the entries can route here.
 ///
 /// Distinct from [`life_growth_is_observed`], which asks whether a LUMP gain would miscount an
-/// observer. Here the batched arithmetic is right and the double-apply comes from the collapse
-/// itself. Deliberately NOT folded into `life_growth_is_observed`: that predicate also gates the
-/// offer firewall, where this shape is not an observation. Deliberately NOT a
-/// registration-cancelling suppressor either — the axis can be MIXED-cause (an ETB rider plus a
-/// drain), and the batched `Life` registration is per-player, so dropping it would under-apply
-/// the non-ETB half and silence the wrong beneficiary.
-///
-/// A sound OVER-approximation in the same idiom as its siblings: a true result routes to the
-/// discrete N-cycle driver, which is always correct (only slower).
+/// observer; here the batched arithmetic is right and the double-apply comes from the collapse
+/// itself. Deliberately NOT folded into it (that predicate also gates the offer firewall, where
+/// this shape is not an observation) and deliberately NOT a registration-cancelling suppressor
+/// (the axis can be MIXED-cause, and the batched `Life` registration is per-player, so dropping
+/// it would under-apply the non-ETB half). A sound OVER-approximation in the same idiom as its
+/// siblings: a true result routes to the discrete N-cycle driver, which is always correct.
 pub(crate) fn board_has_functioning_etb_trigger(state: &GameState) -> bool {
     board_has_functioning_trigger(state, BoardTriggerClass::EnterBattlefield)
 }
@@ -7447,37 +5999,29 @@ pub(crate) fn board_has_functioning_etb_trigger(state: &GameState) -> bool {
 /// The route firewall for a batched collapse whose per-cycle side effect is sourced from the
 /// loop's own CAST. The batched arm NEVER casts anything — the cast event belongs to the ELIDED
 /// period, not to the collapse — so a batched accept re-performs a cast-sourced effect ZERO
-/// times, where live play performs it once per cycle (MEASURED: a cast-sourced per-cycle mill
-/// reads [0,0,0,0] at N=5 batched and [0,N,N,N] forced to the replay).
+/// times where live play performs it once per cycle.
 ///
 /// SHAPE-AGNOSTIC, exactly as [`board_has_functioning_etb_trigger`]: the `SpellCast` payload is
 /// DISCARDED, so a trigger narrowed to "whenever you cast a creature spell" still routes a loop
-/// that casts an Instant. That is a sound OVER-approximation in the same idiom as its sibling —
-/// a true result routes to the discrete N-cycle driver, which is always correct (only slower).
-/// Narrowing it by running the trigger's own matcher against the captured cast is DEFERRED to
-/// F-route-precision, gated on an undischarged proof that the matcher's verdict is invariant
-/// across cycles; a false negative there re-opens the fidelity gap this predicate closes.
+/// that casts an Instant. A sound OVER-approximation — a true result routes to the discrete
+/// N-cycle driver, which is always correct, only slower. Narrowing it by running the trigger's
+/// own matcher against the captured cast is DEFERRED, gated on an undischarged proof that the
+/// matcher's verdict is invariant across cycles; a false negative there re-opens the fidelity
+/// gap this predicate closes.
 ///
 /// NOT paired with `token_profile.is_some()` the way its sibling is. That conjunct is sound for
-/// ETB sourcing because the batched arm MINTS the entries that re-fire those triggers — no mint,
-/// nothing re-fires. It is UNSOUND here: a counter-growth loop driven by a buyback recast has a
-/// `SpellCast` trigger and NO token profile, registers batched `Counters`, and re-performs the
-/// cast trigger 0x. Reusing the sibling's conjunct would preserve exactly the gap being closed.
+/// ETB sourcing because the batched arm MINTS the entries that re-fire those triggers — no
+/// mint, nothing re-fires. It is UNSOUND here: a counter-growth loop driven by a buyback recast
+/// has a `SpellCast` trigger and NO token profile, registers batched `Counters`, and re-performs
+/// the cast trigger 0x.
 ///
 /// CR 113.6 + CR 113.6b: the zone gate lives in [`functioning_board_trigger_defs`], so a cast
 /// trigger on a card in a library or hand does not count. CR 113.6 covers the DEFAULT branch
-/// ("Abilities of all other objects usually function only while that object is on the
-/// battlefield" — the empty-`trigger_zones` case); CR 113.6b is the authority for the DECLARED
-/// branch ("An ability that states which zones it functions in functions only from those
-/// zones."), which is the branch every measured cast trigger actually takes. MEASURED on two
-/// shipped 4p dumps: every `SpellCast`-keyed definition present was library-resident with
-/// `trigger_zones` naming only Battlefield or Stack, so none functions.
-/// (Citing the sub-rule mirrors the shipped sibling, which already writes `CR 113.6 (CR 113.6k)`
-/// on the shared walk above.)
-///
-/// CR 707.10: `TriggerEventKey::SpellCast` covers cast OR copied, and
-/// `trigger_index::keys_from_trigger_def` folds `TriggerMode::SpellCast`, `SpellCastOrCopy` and
-/// `SpellCopy` into it — one arm, three authoring modes.
+/// (the empty-`trigger_zones` case); CR 113.6b is the authority for the DECLARED branch ("An
+/// ability that states which zones it functions in functions only from those zones"), which is
+/// the branch cast triggers actually take. CR 707.10: `TriggerEventKey::SpellCast` covers cast
+/// OR copied, and `trigger_index::keys_from_trigger_def` folds `TriggerMode::SpellCast`,
+/// `SpellCastOrCopy` and `SpellCopy` into it — one arm, three authoring modes.
 pub(crate) fn board_has_functioning_cast_trigger(state: &GameState) -> bool {
     board_has_functioning_trigger(state, BoardTriggerClass::SpellCast)
 }
@@ -7494,9 +6038,8 @@ pub(crate) fn board_has_functioning_cast_trigger(state: &GameState) -> bool {
 ///
 /// The TRIGGER half is [`board_has_keyed_trigger`], EXTRACTED (not copied) because
 /// [`life_growth_is_observed`] pairs that same trigger question with a differently-FILTERED
-/// replacement question — the same extract-don't-copy split [`functioning_board_replacement_defs`]
-/// records on the replacement side. Two callers remain ([`counter_growth_is_observed`] and
-/// [`token_growth_is_observed`]'s EVENT-1), and both want the UNFILTERED replacement half.
+/// replacement question — the same extract-don't-copy split
+/// [`functioning_board_replacement_defs`] records on the replacement side.
 fn board_has_event_observer(
     state: &GameState,
     trig_key: crate::types::triggers::TriggerEventKey,
@@ -7530,42 +6073,28 @@ fn board_has_keyed_trigger(
 /// command zone. The shared walk the per-event replacement questions specialize — the mirror of
 /// [`functioning_board_trigger_defs`] on the replacement side, extracted (not copied) because
 /// [`token_growth_is_observed`] asks a differently-FILTERED question of the same walk than
-/// [`board_has_event_observer`] does.
-///
-/// The zone narrowing is this walk's whole contribution: `active_replacements` is all-zones, and
-/// dropping the narrowing would let a graveyard-resident replacement route loops.
+/// [`board_has_event_observer`] does. The zone narrowing is this walk's whole contribution:
+/// `active_replacements` is all-zones, and dropping it would let a graveyard-resident
+/// replacement route loops.
 ///
 /// IT YIELDS THE HOST OBJECT, AND NARROWING THE ITEM BACK TO THE BARE DEF IS A CAPABILITY
-/// DELETION, NOT A TIDY-UP. The extraction that created this walk discarded `obj`
-/// (`.map(|(_, _, def)| def)`) on the verified ground that the deleted inline zone gate was its
-/// only reader. That was true of the tree at that moment and false one phase later, because
-/// nothing else can supply what `obj` supplies: `ReplacementDefinition` has NO source-id field at
-/// all, and its `source_controller` is documented `None` for exactly the object-attached case —
-/// *"`None` = resolve controller from the source object as before (every object-attached
-/// replacement)"* (`types/ability.rs`, `ReplacementDefinition::source_controller`). So for a board
-/// def the host object is the ONLY route to either the source id or its controller.
+/// DELETION, NOT A TIDY-UP. Nothing else can supply what `obj` supplies: `ReplacementDefinition`
+/// has NO source-id field at all, and its `source_controller` is documented `None` for exactly
+/// the object-attached case — *"`None` = resolve controller from the source object as before
+/// (every object-attached replacement)"*. So for a board def the host object is the ONLY route
+/// to either the source id or its controller. The law, stated here because this is the site it
+/// governs: *"this field is read only by the code I am deleting" is a claim about the current
+/// tree, not about the abstraction.* When an extraction narrows a shared walk's item type, the
+/// audit question is "what could a caller want that the narrowed type cannot express?", never
+/// "who reads it today?". Callers wanting only the def discard the object at their own site.
 ///
-/// The law, stated here because this is the site it governs: *"this field is read only by the code
-/// I am deleting" is a claim about the current tree, not about the abstraction.* When an extraction
-/// narrows a shared walk's item type, the audit question is "what could a caller want that the
-/// narrowed type cannot express?", never "who reads it today?". Callers wanting only the def
-/// discard the object at their own site, where the discard is local and reversible.
-///
-/// THE `usize` IS `ReplacementId::index`, AND IT IS THE SAME REASONING ONE LEVEL DOWN. The
-/// pipeline's instance identity is `ReplacementId { source, index }`
-/// (`types/proposed_event.rs`), and `legacy_object_replacement_candidates` builds it from exactly
-/// this walk's underlying `active_replacements` triple (`game/replacement.rs`). `(obj, def)` cannot
-/// name one of two `Moved` replacements on one permanent; `(obj, idx, def)` can, and `idx` was
-/// already in hand — it was being dropped by the same `.map(|(_, obj, def)| ..)` that dropped the
-/// host. Callers that only want the def bind `_idx`.
-///
-/// ⛔ AND IT HAS NO PRODUCTION READER TODAY — stated plainly rather than left implied, because the
-/// paragraphs above read as if one existed. MEASURED (`grep -n '_idx' analysis/resource.rs`): every
-/// non-test consumer of this walk and of [`loop_window_replacement_defs`] binds `_idx`; the ONLY
-/// reader is the `C3A-1` slot-identity row in this file's `mod tests`. The argument for widening is
-/// therefore the capability-deletion law stated above and NOT a current caller, and no forward
-/// consumer is named here, because a named-but-unlanded one would be a referent no reader can
-/// check. When the first production reader lands, replace this paragraph with it.
+/// THE `usize` IS `ReplacementId::index`, and it is the same reasoning one level down: the
+/// pipeline's instance identity is `ReplacementId { source, index }`, and
+/// `legacy_object_replacement_candidates` builds it from exactly this walk's underlying
+/// `active_replacements` triple. `(obj, def)` cannot name one of two `Moved` replacements on
+/// one permanent; `(obj, idx, def)` can. It has NO production reader today — every non-test
+/// consumer binds `_idx` — so the argument for carrying it is the capability-deletion law
+/// above and not a current caller.
 fn functioning_board_replacement_defs(
     state: &GameState,
 ) -> impl Iterator<
@@ -7582,81 +6111,50 @@ fn functioning_board_replacement_defs(
 
 /// CR 611.2 / CR 614.3: every LIVE game-state-level ("floating") replacement definition —
 /// `state.pending_damage_replacements`, installed under sentinel source `ObjectId(0)`, with NO
-/// board object. The other half of [`loop_window_replacement_defs`], and a DIFFERENT MECHANISM from
-/// `obj.replacement_definitions` under a different CR rule: evidence about one is never evidence
-/// about the other.
+/// board object. The other half of [`loop_window_replacement_defs`], and a DIFFERENT MECHANISM
+/// from `obj.replacement_definitions` under a different CR rule: evidence about one is never
+/// evidence about the other.
 ///
 /// THE ABSENT ZONE GATE IS NOT AN OMISSION. [`functioning_board_replacement_defs`] narrows to
-/// `[Battlefield, Command]` because an object-attached replacement is a CR 611.3 continuous effect
-/// from "the static ability of an object", and CR 611.3b says such an effect "applies at all times
-/// that the permanent generating it is on the battlefield or the object generating it is in the
-/// appropriate zone". CR 113.6 supplies the exclusivity that narrowing depends on — abilities of all
-/// other objects "usually function only while that object is on the battlefield", with the
-/// off-battlefield cases enumerated as its explicit exceptions.
+/// `[Battlefield, Command]` because an object-attached replacement is a CR 611.3 continuous
+/// effect from "the static ability of an object", and CR 611.3b says such an effect "applies at
+/// all times that the permanent generating it is on the battlefield or the object generating it
+/// is in the appropriate zone"; CR 113.6 supplies the exclusivity that narrowing depends on. A
+/// floating def is the OTHER kind: CR 611.2, "generated by the resolution of a spell or
+/// ability", whose applicability rules are CR 611.2a plus CR 614.3 for replacement entries and
+/// CR 615.3 for the prevention shields this store also holds — both of which read "Such effects
+/// last until they're used up or their duration has expired." NONE mentions a zone, and there is
+/// no object whose zone could be read.
 ///
-/// A floating def is the OTHER kind: CR 611.2, "generated by the resolution of a spell or ability".
-/// Its applicability rules are CR 611.2a (it "lasts as long as stated by the spell or ability
-/// creating it") plus CR 614.3 for the replacement entries and CR 615.3 for the prevention shields
-/// this store also holds — both of which read, verbatim: "Such effects last until they're used up
-/// or their duration has expired." NONE of those mentions a zone, and there is no object here whose
-/// zone could be read: the def is installed under sentinel `ObjectId(0)`, which has no entry in
-/// `state.objects` at all. Imposing a zone gate would add a condition the CR does not place on this
-/// class of effect.
+/// CR 611.2c IS AFFIRMATIVE HERE — BUT ONLY ITS SECOND HALF, AND THE RULE CONTAINS BOTH. The
+/// FIRST half locks the affected set of an effect that "modifies the characteristics or changes
+/// the controller of any objects"; the SECOND says an effect that does NEITHER "modifies the
+/// rules of the game, so it can affect objects that weren't affected when that continuous effect
+/// began". A floating CreateToken/AddCounter/GainLife quantity replacement changes no existing
+/// object's characteristics and no controller, so the FIRST half's antecedent is FALSE and the
+/// SECOND applies: it DOES reach the loop's not-yet-created tokens, which is why it observes the
+/// growing class. The rule's own example for this half — "Prevent all damage creatures would
+/// deal this turn" — reaches damage "from creatures that weren't on the battlefield when the
+/// continuous effect began", and its parenthetical "(Note that this works differently than a
+/// continuous effect from a static ability.)" is the CR stating the two-kinds split.
+/// RESIDUAL: its closing sentence covers MIXED effects, so a
+/// floating def whose payload ALSO modifies characteristics has that part's affected set locked
+/// by the first half. This walk counts such a def as an observer anyway (fail-closed).
 ///
-/// CR 611.2c IS AFFIRMATIVE HERE — BUT ONLY ITS SECOND HALF, AND THE RULE CONTAINS BOTH.
-///  - FIRST half (does NOT govern this): "If a continuous effect generated by the resolution of a
-///    spell or ability modifies the characteristics or changes the controller of any objects, the
-///    set of objects it affects is determined when that continuous effect begins. After that point,
-///    the set won't change."
-///  - SECOND half (GOVERNS a token/counter/life-count replacement): "A continuous effect generated
-///    by the resolution of a spell or ability that doesn't modify the characteristics or change the
-///    controller of any objects modifies the rules of the game, so it can affect objects that
-///    weren't affected when that continuous effect began."
-///
-/// A floating CreateToken/AddCounter/GainLife quantity replacement changes no existing object's
-/// characteristics and no controller, so the FIRST half's antecedent is FALSE and the SECOND
-/// applies: it DOES reach the loop's not-yet-created tokens. That is why it observes the growing
-/// class.
-///
-/// CR 611.2c carries TWO examples, one per half (`MagicCompRules.txt:2911-2913`): the +1/+1 example
-/// illustrates the locked-set half; "Prevent all damage creatures would deal this turn" illustrates
-/// THIS half — the CR says it reaches damage "from creatures that weren't on the battlefield when
-/// the continuous effect began". The rule pairing an example with each half is what makes the
-/// two-halves reading undeniable, and why half-quoting 611.2c argues the reverse of this walk.
-///
-/// RESIDUAL, stated rather than smoothed: CR 611.2c's closing sentence covers MIXED effects — "the
-/// set of objects each part applies to is determined independently" — so a floating def whose
-/// payload ALSO modifies characteristics has that part's affected set locked by the first half.
-/// This walk counts such a def as an observer anyway (fail-closed), so the imprecision costs the
-/// O(N) driver and never correctness.
-///
-/// CR 611.2c's own parenthetical — "(Note that this works differently than a continuous effect from
-/// a static ability.)" — is the CR itself stating the two-kinds split the zone argument rests on.
-///
-/// THE LIVENESS FILTER IS PARITY WITH THE PRODUCTION ADMISSION GATE, NOT CAUTION — and the
-/// distinction matters, because only the parity claim survives review. `find_applicable_replacements`
-/// scans this exact store in `game/replacement.rs` with
-/// `for (index, repl_def) in state.pending_damage_replacements.iter().enumerate()` — grep that
-/// literal, it is the only iteration of the store — and its very next statement is
-/// `if repl_def.is_consumed { continue; }`. So `!def.is_consumed` is the same
-/// admission test the pipeline itself applies, and it is the ONLY one that scan applies before the
-/// per-event gates. A consumed def therefore CANNOT apply, and declining to count it is EXACT — not
-/// an under-veto, which is the one direction that could break #7045. (No consumed-but-live runtime
-/// state exists for this to drop: `is_consumed` is only ever re-cleared by
-/// `fix_legacy_parse_time_consumed_flag`, a LOAD-TIME legacy migration in `types/ability.rs`, not
-/// runtime semantics.)
-///
-/// `expiry` is DELIBERATELY NOT READ: production does not consult it at apply time either (pruning
-/// is a separate phase-transition pass in `game/turns.rs`), so reading it here would make the
-/// firewall NARROWER than the pipeline it guards — and narrower is the unsound direction.
+/// THE LIVENESS FILTER IS PARITY WITH THE PRODUCTION ADMISSION GATE, NOT CAUTION.
+/// `find_applicable_replacements` scans this exact store in `game::replacement` and its very
+/// next statement is `if repl_def.is_consumed { continue; }`, so `!def.is_consumed` is the same
+/// admission test the pipeline applies, and the ONLY one it applies before the per-event gates.
+/// A consumed def CANNOT apply, so declining to count it is EXACT — not an under-veto. `expiry`
+/// is DELIBERATELY NOT READ: production does not consult it at apply time either (pruning is a
+/// separate phase-transition pass), so reading it here would make the firewall NARROWER than the
+/// pipeline it guards, which is the unsound direction.
 ///
 /// THE YIELDED `usize` IS THE STORE SLOT, NOT A POSITION IN THIS FILTERED SEQUENCE, and the
-/// `.enumerate()` therefore sits BEFORE the `.filter(..)`. `find_applicable_replacements` numbers
-/// this store with `for (index, repl_def) in state.pending_damage_replacements.iter().enumerate()`
-/// and only THEN does `if repl_def.is_consumed { continue; }`, so a consumed def still consumes an
-/// index. Enumerating after the filter would renumber every live def after a consumed one and hand
-/// a caller a `ReplacementId` addressing the wrong entry. Row: `c3a_loop_window_yield_pins_the_def\
-/// _sequence_and_the_host_binding` keeps a consumed def BETWEEN two live ones for this.
+/// `.enumerate()` therefore sits BEFORE the `.filter(..)`: `find_applicable_replacements`
+/// enumerates and only THEN skips consumed defs, so a consumed def still consumes an index.
+/// Enumerating after the filter would renumber every live def after a consumed one and hand a
+/// caller a `ReplacementId` addressing the wrong entry.
 fn live_floating_replacement_defs(
     state: &GameState,
 ) -> impl Iterator<Item = (usize, &crate::types::ability::ReplacementDefinition)> {
@@ -7672,26 +6170,21 @@ fn live_floating_replacement_defs(
 /// ([`functioning_board_replacement_defs`]) and the live floating ones
 /// ([`live_floating_replacement_defs`]). The firewall's question is "can any replacement observe
 /// the growing class", and that question is store-AGNOSTIC: both stores feed the same
-/// `game::replacement::replace_event` pipeline via `find_applicable_replacements`, which scans
-/// `state.pending_damage_replacements` alongside the per-object candidates.
+/// `game::replacement::replace_event` pipeline via `find_applicable_replacements`.
 ///
 /// EXTRACTED, NOT COPIED. Three sites walked `active_replacements` with a byte-identical inline
-/// `matches!(obj.zone, Battlefield | Command)` gate, and every one of them was structurally blind to
-/// the floating store: the gate needs `obj.zone`, and a floating def has no object. Unioning inside
-/// the shared walk closes all three at once instead of repairing one and leaving two.
+/// `matches!(obj.zone, Battlefield | Command)` gate, and every one was structurally blind to the
+/// floating store: the gate needs `obj.zone`, and a floating def has no object.
 ///
 /// `Option<&GameObject>` IS THE STORE DISCRIMINANT, AND `None` IS NOT "HOST UNKNOWN" — IT IS "NO
-/// HOST EXISTS". A board def is CR 611.3 continuous-effect machinery hosted BY a permanent, so its
-/// host is always present; a floating def is CR 611.2 machinery installed under the sentinel
-/// `ObjectId(0)` — which is precisely why the accompanying `usize` is NOT redundant with the host:
-/// for the floating half it is the only half of `ReplacementId` this walk can supply, the sentinel
-/// standing in for `source`. That sentinel has no entry in `state.objects` at all (see
-/// [`live_floating_replacement_defs`], and `ReplacementDefinition::source_controller`'s own doc,
-/// which exists precisely because that sentinel has no controller to resolve). A caller that needs
-/// a source identity therefore gets it for the board half and must decide the floating half on its
-/// own terms — fail-closed being the only sound direction — rather than being handed a synthesized
-/// host that does not exist. The order of the union is part of the contract: board defs first, in
-/// `active_replacements` order, then live floating defs in store order.
+/// HOST EXISTS". A board def is CR 611.3 machinery hosted BY a permanent; a floating def is
+/// CR 611.2 machinery installed under the sentinel `ObjectId(0)`, which has no entry in
+/// `state.objects` at all — which is why the accompanying `usize` is NOT redundant with the
+/// host: for the floating half it is the only half of `ReplacementId` this walk can supply. A
+/// caller that needs a source identity gets it for the board half and must decide the floating
+/// half on its own terms — fail-closed being the only sound direction — rather than being handed
+/// a synthesized host that does not exist. The order of the union is part of the contract: board
+/// defs first, in `active_replacements` order, then live floating defs in store order.
 fn loop_window_replacement_defs(
     state: &GameState,
 ) -> impl Iterator<
@@ -7710,49 +6203,38 @@ fn loop_window_replacement_defs(
 /// ANY of `repl_events` in a way that could apply to the event the collapse would batch?
 /// Slice-taking so one board walk answers the whole set.
 ///
-/// TWO CALLERS, TWO AXES, ONE SHARED EXCLUSION — and the exclusion is justified SEPARATELY on each,
-/// because the two rules below are ENTRY-scoped and one caller does not ask an entry question:
-/// - [`token_growth_is_observed`]'s entry keys (`ChangeZone` / `Moved` / `Counter` / `Attached`):
-///   "could this apply to a permanent this collapse would CREATE?" — answered by CR 614.1d +
-///   CR 614.12 below.
-/// - [`life_growth_is_observed`]'s `GainLife`: "could this apply to the batched life gain?" — NOT
-///   an entry question, so neither entry rule reaches it. What justifies the exclusion there is
-///   ENGINE-STRUCTURAL and stated on that predicate: a `LifeGain` event has NO affected object
-///   (CR 119.3 — the subject of a life gain is a PLAYER), so `game::replacement`'s
-///   `replacement_valid_card_matches` reaches `event.affected_object_id().map(..).unwrap_or(false)`
-///   and a `valid_card: SelfRef` `GainLife` definition can NEVER match any life gain at all.
+/// TWO CALLERS, TWO AXES, ONE SHARED EXCLUSION — and the exclusion is justified SEPARATELY on
+/// each, because the two rules below are ENTRY-scoped and one caller does not ask an entry
+/// question:
+/// - [`token_growth_is_observed`]'s entry keys: "could this apply to a permanent this collapse
+///   would CREATE?" — answered by CR 614.1d + CR 614.12 below.
+/// - [`life_growth_is_observed`]'s `GainLife`: NOT an entry question, so neither entry rule
+///   reaches it. What justifies the exclusion there is ENGINE-STRUCTURAL and stated on that
+///   predicate: a `LifeGain` event has NO affected object (CR 119.3 — the subject of a life gain
+///   is a PLAYER), so `replacement_valid_card_matches` reaches its `.unwrap_or(false)` tail and a
+///   `valid_card: SelfRef` `GainLife` definition can NEVER match any life gain at all.
 ///
-/// **THE COUNTER AXIS MUST NOT CALL THIS.** See [`counter_growth_is_observed`]'s
-/// `SELFREF IS NOT EXCLUDED HERE` block: an `AddCounter` event's affected object is the RECIPIENT,
-/// so a SelfRef `AddCounter` definition matches whenever recipient == host, and excluding it would
-/// let the boundary batch-apply counters that a `Prevent` definition must prevent.
+/// **THE COUNTER AXIS MUST NOT CALL THIS.** See [`counter_growth_is_observed`]: an `AddCounter`
+/// event's affected object is the RECIPIENT, so a SelfRef `AddCounter` definition matches
+/// whenever recipient == host, and excluding it would let the boundary batch-apply counters that
+/// a `Prevent` definition must prevent.
 ///
 /// SELF-SCOPED REPLACEMENTS ARE EXCLUDED, and that exclusion is what makes this predicate mean
-/// anything on the entry axis. The two rules are cited for two different halves of the ENTRY
-/// argument, and neither substitutes for the other:
-/// - **CR 614.1d** (`MagicCompRules.txt:3064`) is the TEMPLATING authority — it distinguishes
-///   "[This permanent] enters . . ." from "[Objects] enter [the battlefield] . . .", which is
-///   exactly the `valid_card: SelfRef` / non-`SelfRef` split, and is the sub-rule
-///   `game::replacement`'s `apply_state_level_gates` names for the `valid_card` gate.
-/// - **CR 614.12** (MagicCompRules.txt:3100) is the APPLICABILITY authority — "Such effects may come from the
-///   permanent itself IF THEY AFFECT ONLY THAT PERMANENT (as opposed to a general subset of
-///   permanents that includes it)", with the Orb of Dreams example spelling out the negative
-///   ("It won't affect itself").
-///
-/// So a `valid_card: SelfRef` replacement ("~ enters tapped") applies ONLY to the object carrying
-/// it — the same rule `game::replacement`'s entering-object gate enforces by testing
-/// `repl_def.valid_card != Some(TargetFilter::SelfRef)`. Such a definition can never observe a
-/// DIFFERENT, newly-created permanent entering, and MEASURED on this lane's own target dump all 12
-/// battlefield entry replacements are exactly that shape (taplands). Without the exclusion this
-/// predicate is TRUE on every realistic board, which is not conservatism — it is a firewall that
-/// has stopped discriminating.
-///
-/// A self-replacement carried BY a minted token still applies to that token, identically on both
-/// routes (once per entering copy), so excluding the board's own self-replacements cannot make the
-/// batched arm diverge from the replay.
-///
-/// Every other `valid_card` shape stays fail-closed (counted as an observer), because deciding
-/// whether an arbitrary filter matches a permanent that does not exist yet is not decidable here.
+/// anything on the entry axis. Two rules, for two different halves of the ENTRY argument:
+/// CR 614.1d is the TEMPLATING authority — it distinguishes "[This permanent] enters . . ." from
+/// "[Objects] enter [the battlefield] . . .", exactly the `valid_card: SelfRef` split
+/// `game::replacement`'s `apply_state_level_gates` enforces; CR 614.12 is the APPLICABILITY
+/// authority — "Such effects may come from the permanent itself IF THEY AFFECT ONLY THAT
+/// PERMANENT (as opposed to a general subset of permanents that includes it)", with the Orb of
+/// Dreams example spelling out the negative. So a `valid_card: SelfRef` replacement ("~ enters
+/// tapped") applies ONLY to the object carrying it and can never observe a DIFFERENT, newly
+/// created permanent entering. Without the exclusion this predicate is TRUE on every realistic
+/// board — not conservatism but a firewall that has stopped discriminating. A self-replacement
+/// carried BY a minted token still applies to that token, identically on both routes, so
+/// excluding the board's own self-replacements cannot make the batched arm diverge from the
+/// replay. Every other `valid_card` shape stays fail-closed (counted as an observer), because
+/// deciding whether an arbitrary filter matches a permanent that does not exist yet is not
+/// decidable here.
 pub(crate) fn board_has_active_replacement_among(
     state: &GameState,
     repl_events: &[ReplacementEvent],
@@ -7764,82 +6246,54 @@ pub(crate) fn board_has_active_replacement_among(
                 Some(crate::types::ability::TargetFilter::SelfRef)
             )
     })
-        // THE FLOATING HALF DELIBERATELY DOES NOT INHERIT THE SelfRef EXCLUSION, and this is the one
-        // place the two stores are NOT a straight union. Every justification for the exclusion above
-        // is premised on the def being HOSTED BY a permanent, so that a self-scoped `valid_card` can
-        // only ever match that host. A floating def has NO host: it lives under sentinel
-        // `ObjectId(0)`, which has no entry in `state.objects` at all — `find_applicable_replacements`
-        // says so where it has to synthesize a `FilterContext` for exactly that reason. The
-        // exclusion's premise is therefore unsatisfiable here, and an unsatisfiable premise licenses
-        // nothing; inheriting the conclusion anyway would be the reasoning error, not the caution.
-        // So: fail-closed. Over-veto costs the O(N) discrete driver (PERFORMANCE ONLY); under-veto is
-        // a #7045 elision-vs-performance fidelity break.
+        // THE FLOATING HALF DELIBERATELY DOES NOT INHERIT THE SelfRef EXCLUSION, and this is
+        // the one place the two stores are NOT a straight union. Every justification for the
+        // exclusion above is premised on the def being HOSTED BY a permanent, so that a
+        // self-scoped `valid_card` can only ever match that host. A floating def has NO host: it
+        // lives under sentinel `ObjectId(0)`, which has no entry in `state.objects` at all. The
+        // exclusion's premise is unsatisfiable here, and an unsatisfiable premise licenses
+        // nothing. So: fail-closed. Over-veto costs the O(N) discrete driver (PERFORMANCE ONLY);
+        // under-veto is an elision-vs-performance fidelity break.
         || live_floating_replacement_defs(state).any(|(_idx, def)| repl_events.contains(&def.event))
 }
 
 /// CR 732.2a + CR 122.1 / CR 701.34a: is the growing COUNTER axis OBSERVED — does any live
 /// trigger, replacement, or count-reader react to a counter placement each cycle? A sound
-/// OVER-approximation: a true result ROUTES the loop to the discrete N-cycle driver (always safe),
-/// never a wrong single-batch. Returns true iff ANY:
+/// OVER-approximation: a true result ROUTES the loop to the discrete N-cycle driver (always
+/// safe), never a wrong single-batch. Returns true iff ANY:
 /// - [`fire_time_conditions_read_growing_class`] — counter count-readers (a charge-count static;
-///   a counter-reading condition / body / cost). Retained from the fodder firewall.
+///   a counter-reading condition / body / cost).
 /// - a battlefield-functioning `CounterAdded` trigger ("whenever a +1/+1 counter is put …").
 /// - an active battlefield/command `AddCounter` replacement (Corpsejack's counter doubler).
 ///
-/// The batched N×δ counter collapse is sound ONLY when this is false, and THE TWO HALVES FAIL FOR
-/// OPPOSITE REASONS — an earlier revision of this paragraph gave the trigger half's reason for
-/// both, which reads as an argument that the replacement half does not make:
-/// - **TRIGGER half — SINGLE-FIRE.** `apply_counter_addition` (`game::effects::counters`) pushes
-///   ONE lump `GameEvent::CounterAdded { count: δ×N }`, so a `CounterAdded` trigger fires once
-///   where N live cycles fire it N× (CR 603.2c: an ability triggers once per occurrence of its
-///   trigger event).
+/// The batched N×δ counter collapse is sound ONLY when this is false, and THE TWO HALVES FAIL
+/// FOR OPPOSITE REASONS:
+/// - **TRIGGER half — SINGLE-FIRE.** `apply_counter_addition` pushes ONE lump
+///   `GameEvent::CounterAdded { count: δ×N }`, so a `CounterAdded` trigger fires once where N
+///   live cycles fire it N× (CR 603.2c: an ability triggers once per occurrence of its event).
 /// - **REPLACEMENT half — MID-WINDOW ARRIVAL, *not* the bypass.** That same applier deliberately
-///   does NOT re-enter CR 614's pipeline (`apply_resolved_counter_edit`'s own doc), and that bypass
-///   is what makes δ×N *correct* for a def present at δ-capture: δ was captured from a live cycle
-///   that already ran the doubler, so re-running it would apply the multiplication TWICE (an
-///   unfiltered Corpsejack control AGREES between replay and batch). What the replacement half
-///   actually guards is the def that arrives AFTER δ was pinned — accept→boundary, where the
-///   replay's N cycles apply it and the batched δ×N cannot: DEV-PROBE replay 6 vs batched 3 for an
-///   unfiltered `Times{2}`.
+///   does NOT re-enter CR 614's pipeline, and that bypass is what makes δ×N *correct* for a def
+///   present at δ-capture: δ was captured from a live cycle that already ran the doubler, so
+///   re-running it would multiply twice. What this half guards is the def that arrives AFTER δ
+///   was pinned, where the replay's N cycles apply it and the batched δ×N cannot.
 ///
 /// SELFREF IS NOT EXCLUDED HERE, AND THAT IS DELIBERATE. **Do not "fix" this by symmetry with
 /// [`life_growth_is_observed`]** — the two axes look alike and are not:
 /// `ProposedEvent::AddCounter { placement, .. }`'s `affected_object_id()` returns the counter's
-/// RECIPIENT (`types::proposed_event`), so `game::replacement`'s `replacement_valid_card_matches`
-/// DOES match a `valid_card: SelfRef` `AddCounter` definition whenever recipient == host. Excluding
-/// SelfRef here would flip this predicate to `false` on exactly that board and let the boundary
-/// batch-apply counters onto a permanent that cannot have counters put on it — a CORRECTNESS
-/// break, not a fidelity nicety (DEV-PROBE at the boundary with such a def on the recipient: the
-/// replay places 0 counters, a batched apply places 3).
-///
-/// THE CLAIM ABOVE IS PINNED IN-REPO, NOT BY A NUMBER: the test row
-/// `selfref_prevent_counter_replacement_must_stay_observed` reconstructs that board and asserts
-/// this predicate stays `true`, and its revert probe (hand the counter axis
-/// [`board_has_active_replacement_among`]) flips it RED. That row is the re-runnable artifact; run
-/// it, do not try to reproduce the boundary counts.
-///
-/// PROVENANCE OF THE NUMBERS, so nobody mistakes one kind for the other:
-/// - **DEV-PROBE** = measured with throwaway instrumentation during development. NOT re-derivable
-///   by running this tree — no shipped test reproduces those replay-vs-batched counts. Treat them
-///   as calibration for how large the divergence is, never as an assertion you can re-run.
-/// - **CARD-CENSUS** = re-derivable, and here is the instrument: `jq` over `card-data.json` for
-///   `.replacements[] | select(.event=="AddCounter")` grouped by `valid_card`. NOTE THE
-///   PRECONDITION: that file is GITIGNORED (`.gitignore`'s `data/*`) and is ABSENT from a fresh
-///   worktree — generate it with `./scripts/gen-card-data.sh` first, which writes
-///   `data/card-data.json`. Running the `jq` against a missing file yields no rows, which reads
-///   identically to "the shape does not exist" — do not mistake one for the other
-///   yields exactly TWO `SelfRef` cards — Melira's Keepers and Tatterkite, both
-///   `quantity_modification: Prevent`, `execute: null`, "This creature can't have counters put on
-///   it." (CR 113.6i + CR 614.17 + CR 614.6: the prohibition is modelled through the pipeline and
-///   the placement never happens). That is the whole real population of this shape.
+/// RECIPIENT, so `replacement_valid_card_matches` DOES match a `valid_card: SelfRef`
+/// `AddCounter` definition whenever recipient == host. Excluding SelfRef here would flip this
+/// predicate to `false` on exactly that board and let the boundary batch-apply counters onto a
+/// permanent that cannot have counters put on it — a CORRECTNESS break, not a fidelity nicety.
+/// The real population of that shape is two cards, both `quantity_modification: Prevent` with
+/// `execute: null` ("This creature can't have counters put on it", CR 113.6i + CR 614.17 +
+/// CR 614.6: the prohibition is modelled through the pipeline and the placement never happens).
 ///
 /// The residual imprecision runs the safe way: a SelfRef `AddCounter` def hosted on a permanent
 /// that is NOT the recipient reads `true` here and cannot actually apply, so the loop takes the
-/// O(N) discrete driver for nothing. That is a FAIL-CLOSED over-veto — PERFORMANCE ONLY, NEVER
-/// CORRECTNESS.
+/// O(N) discrete driver for nothing — a FAIL-CLOSED over-veto, PERFORMANCE ONLY.
 ///
 /// AXIS-SPECIFIC: a life observer does NOT make counter growth observed (they read different
-/// mutation events), so a pure counter loop still batches on a board carrying only a life observer.
+/// mutation events), so a pure counter loop still batches on a board carrying only one.
 pub(crate) fn counter_growth_is_observed(state: &GameState) -> bool {
     use crate::types::triggers::TriggerEventKey;
     fire_time_conditions_read_growing_class(state, None)
@@ -7850,93 +6304,55 @@ pub(crate) fn counter_growth_is_observed(state: &GameState) -> bool {
         )
 }
 
-/// CR 732.2a + CR 119.3: is the growing LIFE axis OBSERVED — does any live trigger, replacement,
-/// or projected-life-total reader react to a life gain each cycle? A sound OVER-approximation
-/// (true ⇒ drive, always safe). Returns true iff ANY:
+/// CR 732.2a + CR 119.3: is the growing LIFE axis OBSERVED — does any live trigger,
+/// replacement, or projected-life-total reader react to a life gain each cycle? A sound
+/// OVER-approximation (true ⇒ drive, always safe). Returns true iff ANY:
 /// - a player-level projected life-total read off-stack
 ///   ([`fire_time_conditions_read_projected_resource`]) or on-stack
-///   ([`stack_entry_reads_projected_resource`]) — a life-total condition / static / replacement body.
+///   ([`stack_entry_reads_projected_resource`]).
 /// - a battlefield-functioning `LifeChanged` trigger (Heliod "whenever you gain life …"; also
-///   `LifeLost`/`LifeChanged` via the shared event key — an over-approximation, still safe).
-/// - an active battlefield/command `GainLife` replacement (Rhox's life-gain doubler), MINUS the
+///   `LifeLost` via the shared event key — an over-approximation, still safe).
+/// - an active battlefield/command `GainLife` replacement (Rhox's doubler), MINUS the
 ///   self-scoped ones — see below.
 ///
 /// The batched N×δ life collapse is sound ONLY when this is false. `apply_life_gain` re-runs the
-/// replacement pipeline (`game::effects::life` calls `replacement::replace_event`), and that ONE
-/// fact breaks the two halves DIFFERENTLY — stating only the trigger half's consequence, as an
-/// earlier revision did, understates the replacement half:
-/// - **TRIGGER half — SINGLE-FIRE.** A lump gain fires a `LifeChanged` observer ONCE where N live
-///   cycles fire it N× (CR 603.2c).
+/// replacement pipeline, and that ONE fact breaks the two halves DIFFERENTLY:
+/// - **TRIGGER half — SINGLE-FIRE.** A lump gain fires a `LifeChanged` observer ONCE where N
+///   live cycles fire it N× (CR 603.2c).
 /// - **REPLACEMENT half — DOUBLE-APPLY.** δ was captured from a live cycle that already ran the
-///   doubler, so pushing δ×N back through the pipeline multiplies it a SECOND time: DEV-PROBE with
-///   an unfiltered `Times{2}` `GainLife` doubler, replay 6 vs batched 12. THE FIXTURE IS
-///   SYNTHETIC: no real card models life doubling through `quantity_modification` — all 21 real
-///   doublers (Rhox Faithmender, Alhammarret's Archive, Boon Reflection, …) carry
-///   `quantity_modification: null` and multiply inside an `execute` body instead, and the 22nd
-///   (Sulfuric Vortex) is a `Prevent`. The conclusion is unchanged and if anything stronger on the
-///   real shape: an `execute` rider fires once per EVENT, so one lump gain runs it 1× where N
-///   cycles run it N×. This is the same failure mode as
-///   the token mint's, NOT the counter axis's bypass.
-///
-/// AXIS-SPECIFIC: a counter observer does NOT make life growth observed.
+///   doubler, so pushing δ×N back through the pipeline multiplies it a SECOND time. No real card
+///   models life doubling through `quantity_modification` — the real doublers multiply inside an
+///   `execute` body instead — and the conclusion is if anything stronger on that shape: an
+///   `execute` rider fires once per EVENT, so one lump gain runs it 1× where N cycles run it N×.
+///   Same failure mode as the token mint's, NOT the counter axis's bypass.
 ///
 /// CR 119.3: THE REPLACEMENT HALF EXCLUDES `valid_card: SelfRef`, via
-/// [`board_has_active_replacement_among`], because such a definition is STRUCTURALLY INERT on this
-/// event — not merely unlikely. A life gain's subject is a PLAYER, so
-/// `ProposedEvent::LifeGain`'s `affected_object_id()` returns `None`
-/// (`types::proposed_event`); `game::replacement`'s `replacement_valid_card_matches` therefore
-/// reaches its `.map(..).unwrap_or(false)` tail and NO `valid_card` filter of any shape can match a
-/// life gain when the definition is SelfRef-scoped. DEV-PROBE: a SelfRef `GainLife` `Times{2}` on
-/// the board leaves 20→21 (the doubler never applies), while the byte-identical UNFILTERED
-/// definition gives 20→22. So the pre-exclusion `true` on such a board was a PURE FALSE POSITIVE —
-/// it routed a loop to the O(N) driver to protect against a doubler that cannot fire.
+/// [`board_has_active_replacement_among`], because such a definition is STRUCTURALLY INERT on
+/// this event — not merely unlikely. A life gain's subject is a PLAYER, so
+/// `ProposedEvent::LifeGain`'s `affected_object_id()` returns `None`, and
+/// `replacement_valid_card_matches` therefore reaches its `.unwrap_or(false)` tail: NO
+/// `valid_card` filter of any shape can match a life gain when the definition is SelfRef-scoped.
+/// The exclusion does NOT rest on the hazard analysis above — a definition that can never MATCH
+/// can neither single-fire nor double-apply, so it stands on `affected_object_id()` being `None`.
+/// FRAGILITY IT DEPENDS ON: if that arm ever returns `Some(..)`, a SelfRef `GainLife` definition
+/// becomes matchable and this exclusion becomes unsound; the counter axis is the worked example.
 ///
-/// THE EXCLUSION DOES NOT REST ON THE HAZARD ANALYSIS ABOVE. The two are independent, and the
-/// correction from "single-fire" to "double-apply" changed the RATIONALE, not the soundness: a
-/// definition that can never MATCH can neither single-fire nor double-apply, so re-classifying the
-/// hazard leaves the exclusion standing on its own structural ground (`affected_object_id()` is
-/// `None`). If anything the double-apply reading makes it cleaner — both hazards flow through the
-/// same match test that a SelfRef `GainLife` def fails unconditionally.
-///
-/// FRAGILITY THIS EXCLUSION DEPENDS ON: it is sound exactly while `LifeGain` has no affected
-/// object. If that arm of `affected_object_id()` ever returns `Some(..)`, a SelfRef `GainLife`
-/// definition becomes matchable and this exclusion becomes unsound; the counter axis is the
-/// worked example of what that looks like (see [`counter_growth_is_observed`]).
-///
-/// PINNED IN-REPO by `selfref_life_replacement_is_inert_but_the_same_unfiltered_def_is_observed`,
-/// which asserts BOTH directions on the same board shape one field apart. That row is the
-/// re-runnable artifact; the DEV-PROBE life totals above are not (see the provenance note on
-/// [`counter_growth_is_observed`] for what the two tags mean).
-///
-/// CARD-CENSUS (`jq` over `card-data.json` for `.replacements[] | select(.event=="GainLife")`
-/// grouped by `valid_card`; generate the file first with `./scripts/gen-card-data.sh` — it is
-/// gitignored and absent from a fresh worktree): all 22 `GainLife` replacement definitions carry
-/// `valid_card: null`. ZERO real cards have the excluded shape today — this is a
-/// precision/uniformity fix on a synthetic board shape, not a live-card bug fix.
-///
-/// AND THE REACH IS NARROWER STILL, so nobody over-reads that "0 real cards": conjunct 1
+/// AND THE REACH IS NARROWER STILL: conjunct 1
 /// ([`fire_time_conditions_read_projected_resource`]) already returns `true` for any replacement
-/// whose body is `execute`-based (`replacement_body_may_read_projected`'s
-/// `if def.execute.is_some() { return true; }`), and 21 of the 22 real `GainLife` definitions are
-/// exactly that shape. So conjunct 1 DOMINATES the replacement half on essentially every real
-/// board, and this exclusion can only change an answer for a definition that is SelfRef AND
-/// `execute: None` AND carries no projected-reading condition / `runtime_execute` /
-/// `damage_modification`. That is why the paired test rows install a `quantity_modification`-only
-/// definition and reach-guard conjunct 1 to silence: without that guard the rows would pass on
-/// conjunct 1's verdict and prove nothing about the exclusion.
+/// whose body is `execute`-based, which is nearly every real `GainLife` definition. So conjunct 1
+/// DOMINATES the replacement half on essentially every real board, and this exclusion can only
+/// change an answer for a definition that is SelfRef AND `execute: None` AND carries no
+/// projected-reading condition / `runtime_execute` / `damage_modification`.
 ///
-/// FLOATING (CR 611.2) DEFS ARE IN SCOPE ON THIS AXIS, AND THE FIREWALL NO LONGER DEPENDS ON A
-/// NEIGHBOUR'S GATE FOR ANY AXIS. All three growth axes previously walked object-attached defs only
-/// ([`functioning_board_replacement_defs`]), so a `GainLife` doubler installed into
-/// `state.pending_damage_replacements` — a CR 611.2 game-state-level effect with no host permanent —
-/// was structurally invisible to every one of them. What made that look harmless was a DIFFERENT
-/// surface: the loop-COVER guard (`loop_states_cover_modulo_growth`) already declines to cover a
-/// floating life def, but it does so through a LIFE-CLASS gate in `game/replacement.rs`, NOT through
-/// this firewall. MEASURED 2x2 (journal X15): `GainLife` rejects in BOTH modes and `CreateToken`
-/// passes in BOTH modes, so the discriminator there is the EVENT CLASS, not the store — that gate
-/// never covered the token or counter axis at all, and it was never this firewall's own reasoning to
-/// borrow. [`loop_window_replacement_defs`] unions both stores, so every axis now answers its own
-/// question from its own walk.
+/// FLOATING (CR 611.2) DEFS ARE IN SCOPE ON THIS AXIS, and the firewall no longer depends on a
+/// neighbour's gate for any axis. Walking object-attached defs only made a `GainLife` doubler
+/// installed into `state.pending_damage_replacements` structurally invisible. What made that look
+/// harmless was a DIFFERENT surface: the loop-COVER guard declines to cover a floating life def,
+/// but through a LIFE-CLASS gate in `game::replacement`, not through this firewall — that gate
+/// never covered the token or counter axis at all. [`loop_window_replacement_defs`] unions both
+/// stores, so every axis now answers its own question from its own walk.
+///
+/// AXIS-SPECIFIC: a counter observer does NOT make life growth observed.
 pub(crate) fn life_growth_is_observed(state: &GameState) -> bool {
     use crate::types::triggers::TriggerEventKey;
     fire_time_conditions_read_projected_resource(state)
@@ -7948,8 +6364,8 @@ pub(crate) fn life_growth_is_observed(state: &GameState) -> bool {
 /// CR 614.1a + CR 603.6a + CR 111.3 + CR 732.2a: is the growing TOKEN axis OBSERVED — does
 /// anything live re-derive a count from, or react to, the events the batched mint collapses? A
 /// sound OVER-approximation: a true result ROUTES the loop to the discrete N-cycle driver (always
-/// correct, only slower), never a wrong single-batch. Third member of the axis-firewall family
-/// with [`counter_growth_is_observed`] and [`life_growth_is_observed`].
+/// correct, only slower). Third member of the axis-firewall family with
+/// [`counter_growth_is_observed`] and [`life_growth_is_observed`].
 ///
 /// TWO EVENTS, because the mint emits two. (1) `ProposedEvent::CreateToken` — an active
 /// `CreateToken` replacement re-derives the count from it, and a `TokenCreated` trigger fires on
@@ -7958,59 +6374,43 @@ pub(crate) fn life_growth_is_observed(state: &GameState) -> bool {
 /// batched mint that does not re-derive its own k. Both halves are payload-DISCARDING, exactly as
 /// [`board_has_functioning_etb_trigger`].
 ///
-/// GATED ON `per_cycle_delta > 1` AT THE CALL SITE (`game::engine`), and that gate is load-bearing
-/// in both directions — see the route comment there.
+/// GATED ON `per_cycle_delta > 1` AT THE CALL SITE (`game::engine`), load-bearing in both
+/// directions — see the route comment there.
 ///
-/// The batched `per_cycle_delta * N` token collapse is sound ONLY when this is false, and the
-/// reason mirrors ONE sibling, not both. An earlier revision of this paragraph grouped the two as
-/// "BYPASS or SINGLE-FIRE", which conflates appliers that behave OPPOSITELY at the pipeline:
-/// - `apply_counter_addition` BYPASSES it (`apply_resolved_counter_edit` "never re-enters CR 614's
-///   replacement pipeline") — the true MIRROR IMAGE of the mint below.
-/// - `apply_life_gain` RE-RUNS it, exactly as the mint does (`game::effects::life` calls
-///   `replacement::replace_event`), so life is the mint's TWIN on this axis, not its mirror:
-///   DEV-PROBE with an unfiltered `Times{2}` `GainLife` doubler present at δ-capture (SYNTHETIC —
-///   see [`life_growth_is_observed`]; real doublers multiply via `execute`), replay 6 against
-///   batched 12 — δ already carried the doubling and the lump gain ran it a second time.
-///   (DEV-PROBE = development-time instrumentation, not re-derivable by running this tree; the tag
-///   is defined on [`counter_growth_is_observed`].)
-///
-/// The token mint is necessary for the counter axis's opposite reason:
-/// it RE-RUNS the pipeline (`game::effects::token_copy`'s `drive_copy_token_batches` ->
-/// `ProposedEvent::CreateToken` -> `replacement::replace_event`; that module's own comment records
-/// that a different source's replacement — Doubling Season's — still applies). So a per-cycle
-/// count that already included a replacement's multiplication would have it applied a SECOND time
-/// at the boundary: elision `2k*N` against performance `k*N`, a #7045 fidelity break.
+/// The batched `per_cycle_delta * N` collapse is sound ONLY when this is false, and the reason
+/// mirrors ONE sibling, not both: `apply_counter_addition` BYPASSES the replacement pipeline (the
+/// true MIRROR IMAGE of the mint), while `apply_life_gain` RE-RUNS it exactly as the mint does,
+/// so life is the mint's TWIN on this axis. The token mint re-runs the pipeline
+/// (`game::effects::token_copy`'s `drive_copy_token_batches` -> `ProposedEvent::CreateToken` ->
+/// `replacement::replace_event`), so a per-cycle count that already included a replacement's
+/// multiplication would have it applied a SECOND time at the boundary — elision `2k*N` against
+/// performance `k*N`, a fidelity break.
 ///
 /// SHAPE-AGNOSTIC, exactly as [`board_has_functioning_etb_trigger`]: the replacement's payload is
 /// DISCARDED, so a `CreateToken` replacement that only riders (`execute`) and never touches
-/// `quantity_modification` also routes. That is deliberate — a rider fires once per EVENT, so a
-/// single lump mint fires it 1x where N cycles fire it Nx, the same divergence by another door.
-/// Narrowing by reading `quantity_modification` alone would re-open it. Any narrowing belongs in
-/// the `F-token-route-precision` follow-up, behind a per-cycle invariance proof. (NOT the shipped
-/// `F-route-precision` above, which is scoped to the SpellCast firewall's matcher.)
+/// `quantity_modification` also routes. A rider fires once per EVENT, so a single lump mint fires
+/// it 1x where N cycles fire it Nx — the same divergence by another door, and narrowing by
+/// reading `quantity_modification` alone would re-open it. Any narrowing belongs behind a
+/// per-cycle invariance proof.
 ///
-/// AXIS-SPECIFIC: an `AddCounter` or `GainLife` replacement does NOT make token growth observed,
-/// matching the two siblings' axis discipline.
+/// AXIS-SPECIFIC: an `AddCounter` or `GainLife` replacement does NOT make token growth observed.
 pub(crate) fn token_growth_is_observed(state: &GameState) -> bool {
     use crate::types::triggers::TriggerEventKey;
     // EVENT (1) — the creation itself. `board_has_event_observer` asks the TRIGGER and the
     // REPLACEMENT question in one call: `TriggerMode::TokenCreated` / `TokenCreatedOnce` /
-    // `ConjureAll` all fold to `TriggerEventKey::TokenCreated` (`game::trigger_index`'s
-    // `keys_from_trigger_def`), and a once-per-event trigger diverges N-fold when N creations
-    // collapse into one. NO `BoardTriggerClass` arm: that enum exists ONLY to DISCARD an
-    // `Option<CoreType>` payload (see its doc above), and `TokenCreated` is a bare unit variant
-    // (CR 111.1) with no payload to discard.
+    // `ConjureAll` all fold to `TriggerEventKey::TokenCreated`, and a once-per-event trigger
+    // diverges N-fold when N creations collapse into one. NO `BoardTriggerClass` arm: that enum
+    // exists ONLY to DISCARD an `Option<CoreType>` payload, and `TokenCreated` is a bare unit
+    // variant (CR 111.1) with no payload to discard.
     board_has_event_observer(state, TriggerEventKey::TokenCreated, ReplacementEvent::CreateToken)
         // EVENT (2) — the battlefield ENTRIES the mint produces (CR 603.6a).
         || board_has_functioning_etb_trigger(state)
-        // CR 614.12 + CR 614.1d: ALL FOUR entry-replacement keys, fail-closed. THE DISPATCH IS THE
-        // ENUMERATION AUTHORITY, not the variants' doc comments:
-        // `game::replacement`'s `replacement_event_keys_for_event` pushes `ChangeZone`, `Moved`,
-        // `Counter` and `Attached` for one `ProposedEvent::ZoneChange`. The scan tests
-        // `def.event == repl_event`, so a `Counter`- or `Attached`-keyed definition is INVISIBLE
-        // to a `ChangeZone`/`Moved` query — naming two of four is the same hole as naming one of
-        // two. (`Moved` is live for the tapland class: Blackcleave Cliffs' enters-tapped
-        // replacement carries `"event": "Moved"`.)
+        // CR 614.12 + CR 614.1d: ALL FOUR entry-replacement keys, fail-closed. THE DISPATCH IS
+        // THE ENUMERATION AUTHORITY, not the variants' doc comments: `game::replacement`'s
+        // `replacement_event_keys_for_event` pushes `ChangeZone`, `Moved`, `Counter` and
+        // `Attached` for one `ProposedEvent::ZoneChange`. The scan tests `def.event ==
+        // repl_event`, so a `Counter`- or `Attached`-keyed definition is INVISIBLE to a
+        // `ChangeZone`/`Moved` query — naming two of four is the same hole as naming one of two.
         || board_has_active_replacement_among(
             state,
             &[
@@ -8044,12 +6444,11 @@ fn replacement_body_may_read_projected(def: &crate::types::ability::ReplacementD
 }
 
 /// CR 119 / CR 106.1 / CR 122.1: zero every PLAYER axis removed from strict loop
-/// equality. The no-`..` destructure is compiler-total (mirror of
-/// `_gamestate_partition_is_total`, game_state.rs): a new `Player` field BREAKS THE
-/// BUILD until the author classifies it — zero it here (project out) or bind `_`
-/// (keep in strict equality). Paired with [`projected_player_axes`] (the BLOCKER-2
-/// sign-check reads the SAME projected field set, also no-`..`), so a newly-projected
-/// consumable cannot be silently missed by the sign veto.
+/// equality. The no-`..` destructure is compiler-total: a new `Player` field BREAKS THE
+/// BUILD until the author classifies it — zero it here (project out) or bind `_` (keep in
+/// strict equality). Paired with [`projected_player_axes`], whose sign-check reads the SAME
+/// projected field set, also no-`..`, so a newly-projected consumable cannot be silently
+/// missed by the sign veto.
 fn project_out_player_consumables(p: &mut Player) {
     let Player {
         life,
@@ -8140,8 +6539,8 @@ fn project_out_resources(state: &GameState) -> GameState {
     let mut s = state.normalize_for_loop();
 
     for player in &mut s.players {
-        // BLOCKER-2: single authority for the projected player-consumable set,
-        // shared with the `projected_player_axes` sign-check (compiler-total, no-`..`).
+        // Single authority for the projected player-consumable set, shared with the
+        // `projected_player_axes` sign-check (compiler-total, no-`..`).
         project_out_player_consumables(player);
     }
 
@@ -8149,25 +6548,18 @@ fn project_out_resources(state: &GameState) -> GameState {
         project_object_for_loop(object);
     }
 
-    // Per-turn / per-game *bookkeeping* accumulators the dynamic Engine-A path
-    // perturbs each cycle. This block runs ONLY in the offline `loop_states_equal_
-    // modulo_resources` comparison and never touches a live game state, so it cannot
-    // affect the strict CR 104.4b mandatory-draw path (which compares
-    // `normalize_for_loop()` directly, not this projection). The accumulators
-    // partition into two classes that are handled OPPOSITELY:
+    // Per-turn / per-game *bookkeeping* accumulators the dynamic Engine-A path perturbs each
+    // cycle. This block runs ONLY in the offline `loop_states_equal_modulo_resources` comparison
+    // and never touches a live game state, so it cannot affect the strict CR 104.4b
+    // mandatory-draw path. The accumulators partition into two classes handled OPPOSITELY:
     //   * repetition-BLOCKING legality gates (per-turn/per-game activation tallies,
-    //     once-per-turn/N-times trigger limits, per-object loyalty activation count)
-    //     — PRESERVED (or compared analysis-locally) so a GATED loop compares UNEQUAL
-    //     and is not falsely certified as infinite;
-    //   * pure pumped HISTORY (journals, counts, branch/quantity sources) — CLEARED
-    //     so a genuine unrestricted loop compares equal.
-    //
-    // Pure pumped HISTORY: journals, counts, and branch/quantity sources a genuine
-    // loop pumps every cycle. None of these BLOCK loop repetition (they are read by
-    // branch conditions or quantity refs, not by a once-per-turn/N-times legality
-    // gate), so their downstream effect is caught by the board-equality or net-progress
-    // gates — clearing them is required so a real loop compares equal. Only the
-    // repetition-blocking activation/trigger/loyalty gates above are preserved.
+    //     once-per-turn/N-times trigger limits, per-object loyalty activation count) —
+    //     PRESERVED (or compared analysis-locally) so a GATED loop compares UNEQUAL and is not
+    //     falsely certified as infinite;
+    //   * pure pumped HISTORY (journals, counts, branch/quantity sources) — CLEARED so a genuine
+    //     unrestricted loop compares equal. None of these BLOCK repetition (they are read by
+    //     branch conditions or quantity refs, not by a legality gate), so their downstream effect
+    //     is caught by the board-equality or net-progress gates.
     s.spells_cast_this_turn = 0;
     s.spells_cast_last_turn = None;
     s.priority_pass_count = 0;
@@ -8238,39 +6630,30 @@ fn project_out_resources(state: &GameState) -> GameState {
     s.end_steps_started_this_turn = 0;
 
     // CR 104.4b / CR 732.2a — MODULO LAYER ONLY. The strict `loop_states_equal` /
-    // `normalize_for_loop` are deliberately NOT changed; they never call this fn
-    // (`project_out_resources` is reached only via `loop_states_equal_modulo_resources`).
+    // `normalize_for_loop` are deliberately NOT changed; they never call this fn.
     //
     // A triggered/activated ability placed on the stack takes a FRESH
-    // `entry_id = ObjectId(next_object_id++)` every time it goes on the stack, and
-    // `StackEntry`/`GameState` `PartialEq` compare that id. A MANDATORY trigger
-    // cascade (e.g. Marauding Blight-Priest + Bloodthirsty Conqueror) holds one
-    // in-loop trigger on the stack at every priority window (the stack never empties
-    // between resolutions), so two same-phase cycle points differ ONLY in this
-    // volatile id and never compare modulo-equal — the loop is invisible to the
-    // modulo scan. Canonicalize the id to its stack POSITION (the modulo analogue of
-    // `normalize_for_loop` zeroing `next_object_id`) while PRESERVING
-    // source_id/controller/kind, so different triggers/spells from different sources
+    // `entry_id = ObjectId(next_object_id++)` every time, and `StackEntry`/`GameState`
+    // `PartialEq` compare that id. A MANDATORY trigger cascade (Marauding Blight-Priest +
+    // Bloodthirsty Conqueror) holds one in-loop trigger on the stack at every priority window,
+    // so two same-phase cycle points differ ONLY in this volatile id and never compare
+    // modulo-equal — the loop is invisible to the modulo scan. Canonicalize the id to its stack
+    // POSITION (the modulo analogue of `normalize_for_loop` zeroing `next_object_id`) while
+    // PRESERVING source_id/controller/kind, so different triggers/spells from different sources
     // at the same depth still compare UNEQUAL.
     //
-    // What is STILL compared element-wise inside `kind` (and is therefore the real
-    // discriminator, left intentionally untouched): for a `TriggeredAbility` the
-    // `trigger_event` (`GameEvent::LifeChanged { player_id, amount }` for the drain
-    // class — no volatile id, constant amount per cycle), `subject_match_count`, and
-    // `die_result`, plus the boxed `ability` and `condition`. These are CONTENT, not
-    // bookkeeping: a residual difference in any of them only makes the two states
-    // compare UNEQUAL, which SUPPRESSES a match — fail-safe (never a false win). The
-    // `stack_trigger_firings` is the one sidecar indexed by the fresh stack-entry
-    // id, so canonicalize it with the stack. The firing kind remains significant:
-    // CR 603.7 keeps delayed and ordinary trigger firings distinct. A delayed
-    // provenance receipt is monotonic installation history, however, so it is
-    // reduced to the same legacy-delayed marker as `normalize_for_loop`. The same
-    // fail-safe direction holds for any other state field that still references a
-    // raw stack id (`stack_paid_facts`, `pending_trigger_entry`, a `WaitingFor`
-    // carrying a stack-entry id): left AS-IS, a residual mismatch can only suppress
-    // a match.
-    // Canonicalizing the position id can therefore never MANUFACTURE a false positive
-    // (a wrongful win); it can only make a genuine repeat visible.
+    // Still compared element-wise inside `kind`, and therefore the real discriminator: for a
+    // `TriggeredAbility` the `trigger_event`, `subject_match_count` and `die_result`, plus the
+    // boxed `ability` and `condition`. These are CONTENT, not bookkeeping: a residual difference
+    // in any of them only makes the two states compare UNEQUAL, which SUPPRESSES a match —
+    // fail-safe, never a false win. `stack_trigger_firings` is the one sidecar indexed by the
+    // fresh stack-entry id, so it is canonicalized with the stack; the firing kind remains
+    // significant (CR 603.7 keeps delayed and ordinary firings distinct), while a delayed
+    // provenance receipt is monotonic installation history and is reduced to the same
+    // legacy-delayed marker as `normalize_for_loop`. Any other state field still referencing a
+    // raw stack id (`stack_paid_facts`, `pending_trigger_entry`, a `WaitingFor` carrying one) is
+    // left AS-IS: a residual mismatch can only suppress a match, so canonicalizing the position
+    // id can never MANUFACTURE a false positive.
     let mut trigger_firings = std::mem::take(&mut s.stack_trigger_firings);
     for (pos, entry) in s.stack.iter_mut().enumerate() {
         let original_id = entry.id;
@@ -8293,11 +6676,10 @@ fn project_out_resources(state: &GameState) -> GameState {
 /// `life`/`mana_pool` are bound `_` (their sign is the sole authority of
 /// `ResourceVector::net_progress_for` — not re-vetoed here, to avoid dual authority);
 /// `player_counters` is a map-typed consumable, so it is bound `_` here and returned by the
-/// SEPARATE no-`..` [`projected_player_maps`] (its own structural totality guard), then
-/// compared per-kind by [`driving_resources_non_decreasing`]. The two no-`..` destructures
-/// PARTITION the projected consumables (scalars here, maps there) with no field double-bound
-/// or dropped.
-#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests.
+/// SEPARATE no-`..` [`projected_player_maps`], then compared per-kind by
+/// [`driving_resources_non_decreasing`]. The two no-`..` destructures PARTITION the projected
+/// consumables (scalars here, maps there) with no field double-bound or dropped.
+#[cfg_attr(not(test), allow(dead_code))] // exercised by this module's unit tests.
 fn projected_player_axes(p: &Player) -> Vec<i64> {
     let Player {
         poison_counters,
@@ -8347,13 +6729,12 @@ fn projected_player_axes(p: &Player) -> Vec<i64> {
 
 /// CR 122.1: the controller-side MAP-typed PROJECTED player consumables (today only
 /// `player_counters`), in a fixed order. The no-`..` destructure (the map-typed mirror of
-/// [`projected_player_axes`]) is the structural tie that BUILD-BREAKS the moment a second
-/// map-typed projected consumable is added — forcing the author to thread it into
-/// [`driving_resources_non_decreasing`]'s per-kind veto too, so a new map consumable can
-/// never be zeroed by [`project_out_player_consumables`] yet silently escape the sign-check
-/// (closes BLOCKER-2's "one field over" latent gap). Returns references so the caller unions
-/// keys without cloning.
-#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests.
+/// [`projected_player_axes`]) BUILD-BREAKS the moment a second map-typed projected consumable
+/// is added — forcing the author to thread it into [`driving_resources_non_decreasing`]'s
+/// per-kind veto too, so a new map consumable can never be zeroed by
+/// [`project_out_player_consumables`] yet silently escape the sign-check. Returns references so
+/// the caller unions keys without cloning.
+#[cfg_attr(not(test), allow(dead_code))] // exercised by this module's unit tests.
 fn projected_player_maps(
     p: &Player,
 ) -> Vec<&HashMap<crate::types::player::PlayerCounterKind, u32>> {
@@ -8396,24 +6777,24 @@ fn projected_player_maps(
     vec![player_counters]
 }
 
-/// CR 122.1 / CR 119 / CR 106.1: BLOCKER-2 structural sign-check — every projected
-/// controller consumable is non-decreasing across the driven pair. This closes the
-/// hole where `project_out_resources` erases `energy` / `player_counters` (and
-/// monotone OBJECT counters) from strict loop equality with no summed-vector gate
-/// recovering their sign. Blanket fail-closed veto over the compiler-total projected
-/// set (§6.2): any enumerated axis with `current < prior` ⇒ `false`. Same-turn
-/// `MonotoneHistory` axes (life_gained/…) never decrease, so the blanket veto never
-/// false-rejects the fodder class; true consumables (energy / poison / per-kind
-/// player_counters / monotone object counters) reject on any decrease.
+/// CR 122.1 / CR 119 / CR 106.1: structural sign-check — every projected controller
+/// consumable is non-decreasing across the driven pair. This closes the hole where
+/// `project_out_resources` erases `energy` / `player_counters` (and monotone OBJECT counters)
+/// from strict loop equality with no summed-vector gate recovering their sign. Blanket
+/// fail-closed veto over the compiler-total projected set: any enumerated axis with
+/// `current < prior` ⇒ `false`. Same-turn `MonotoneHistory` axes (life_gained/…) never
+/// decrease, so the blanket veto never false-rejects the fodder class; true consumables
+/// (energy / poison / per-kind player_counters / monotone object counters) reject on any
+/// decrease.
 ///
-/// MUST read RAW (un-projected) frames — `project_out_resources` zeroed these, so the
-/// caller passes the raw settle frames (4d-ii) / raw synthetic states (4d-i tests).
+/// MUST read RAW (un-projected) frames — `project_out_resources` zeroed these, so the caller
+/// passes the raw settle frames.
 pub(crate) fn driving_resources_non_decreasing(
     prior: &GameState,
     current: &GameState,
     controller: PlayerId,
 ) -> bool {
-    // CR 119: no `GameState::player` accessor exists — find by id (per §6.3 fallback).
+    // CR 119: no `GameState::player` accessor exists — find by id.
     let (Some(pp), Some(cp)) = (
         prior.players.iter().find(|p| p.id == controller),
         current.players.iter().find(|p| p.id == controller),
@@ -8431,8 +6812,7 @@ pub(crate) fn driving_resources_non_decreasing(
     // (b) CR 122.1 per-kind MAP-typed consumables: union keys, veto any decrease. Driven
     //     from `projected_player_maps` (no-`..`) rather than hardcoding `player_counters`, so
     //     a future 2nd map consumable BUILD-BREAKS `projected_player_maps` until it is threaded
-    //     here too (the structural tie closing BLOCKER-2's "one field over" gap). The two Vecs
-    //     zip index-for-index (same destructure order on both frames).
+    //     here too. The two Vecs zip index-for-index (same destructure order on both frames).
     for (cur_map, pri_map) in projected_player_maps(cp)
         .into_iter()
         .zip(projected_player_maps(pp))
@@ -8471,14 +6851,13 @@ pub(crate) fn driving_resources_non_decreasing(
             return false;
         }
     }
-    // (d) CR 704.5g: veto a controller-side `damage_marked` INCREASE (carry b). OPPOSITE
-    //     polarity to the consumables above — a creature whose total marked damage reaches
-    //     its toughness is destroyed, so a board-growing loop that ALSO accrues damage on the
-    //     controller's own engine each cycle is self-terminating, not a sustainable CR 732.2a
-    //     shortcut. `project_out_resources` zeroes `damage_marked` (invisible to strict
-    //     loop-equality); this recovers the sign. Summed across the controller's battlefield
-    //     (damage is one scalar per object, no per-kind split). A DECREASE (heal) is allowed —
-    //     orthogonal to 4d-i's `sign_check_damage_marked_heal_not_vetoed`.
+    // (d) CR 704.5g: veto a controller-side `damage_marked` INCREASE. OPPOSITE polarity to
+    //     the consumables above — a creature whose total marked damage reaches its toughness is
+    //     destroyed, so a board-growing loop that ALSO accrues damage on the controller's own
+    //     engine each cycle is self-terminating, not a sustainable CR 732.2a shortcut.
+    //     `project_out_resources` zeroes `damage_marked` (invisible to strict loop-equality);
+    //     this recovers the sign. Summed across the controller's battlefield (damage is one
+    //     scalar per object, no per-kind split). A DECREASE (heal) is allowed.
     let damage_total = |s: &GameState| -> u64 {
         s.battlefield
             .iter()
