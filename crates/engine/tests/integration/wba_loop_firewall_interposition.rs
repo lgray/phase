@@ -75,14 +75,24 @@ const CENSUS_LANDS: [(&str, &str, &[&str]); 3] = [
 ];
 
 /// Parse a census land's real Oracle text and hand back its single replacement definition.
-fn census_land_def(name: &str, oracle: &str, subtypes: &[&str]) -> ReplacementDefinition {
+///
+/// `expected` is the condition arm the CALLER's row reads, and it is required: every row this
+/// helper feeds separates on which arm its fixture reaches, so no call site can reach one
+/// without declaring which arm it depends on. Only the discriminant is compared — `expected`'s
+/// payload is a placeholder.
+fn census_land_def(
+    name: &str,
+    oracle: &str,
+    subtypes: &[&str],
+    expected: ReplacementCondition,
+) -> ReplacementDefinition {
     let subs: Vec<String> = subtypes.iter().map(|s| (*s).to_string()).collect();
     let parsed = engine::parser::parse_oracle_text(oracle, name, &[], &["Land".to_string()], &subs);
     assert_eq!(
         parsed.replacements.len(),
         1,
         "fixture pin: {name} parses to exactly ONE replacement definition; a parser change that \
-         splits or merges it re-points every arm of this row"
+         splits or merges it re-points every arm of every row this helper feeds"
     );
     let def = parsed.replacements[0].clone();
     // The exact triple `replacement_is_spent_self_entry` matches, asserted on the REAL parse so
@@ -100,6 +110,15 @@ fn census_land_def(name: &str, oracle: &str, subtypes: &[&str]) -> ReplacementDe
         ),
         "fixture pin: {name} carries the CR 614.1d self-entry triple (Moved / SelfRef / \
          Battlefield)"
+    );
+    assert_eq!(
+        def.condition.as_ref().map(std::mem::discriminant),
+        Some(std::mem::discriminant(&expected)),
+        "fixture pin: {name} must parse to the arm its row reads ({expected:?}), not {:?} — \
+         `UnlessControlsMatching` and `UnlessControlsSubtype` report the SAME sibling axis and \
+         neither draws a `condition_disjoint` relief, so a re-route between them would leave \
+         this row's arms green with the arm the row names untested",
+        def.condition
     );
     def
 }
@@ -220,7 +239,14 @@ fn spent_self_entry_relief_offers_on_three_real_entry_census_lands() {
     );
 
     for (name, oracle, subtypes) in CENSUS_LANDS {
-        let def = census_land_def(name, oracle, subtypes);
+        let def = census_land_def(
+            name,
+            oracle,
+            subtypes,
+            ReplacementCondition::UnlessControlsMatching {
+                filter: TargetFilter::None,
+            },
+        );
 
         // ── ARM A: the real card, alone on the board ──
         let mut with_land = load_realistic_dump();
@@ -632,7 +658,15 @@ fn check_lands_still_offer_with_the_subtype_arm_repaired() {
     // through both shapes while the pair below separates at ARM B — the difference is the
     // condition, not the `valid_card` rewrite the two shapes share.
     let (control_name, control_oracle, control_subtypes) = OTHER_LEQ_CONTROL;
-    let control_def = census_land_def(control_name, control_oracle, control_subtypes);
+    let control_def = census_land_def(
+        control_name,
+        control_oracle,
+        control_subtypes,
+        ReplacementCondition::UnlessControlsOtherLeq {
+            count: 0,
+            filter: TypedFilter::default(),
+        },
+    );
     let mut control_a = load_realistic_dump();
     graft_census_land(&mut control_a, control_name, control_def.clone());
     assert!(
@@ -651,16 +685,13 @@ fn check_lands_still_offer_with_the_subtype_arm_repaired() {
     );
 
     for (name, oracle, subtypes) in CHECK_LANDS {
-        let def = census_land_def(name, oracle, subtypes);
-        assert!(
-            matches!(
-                def.condition,
-                Some(ReplacementCondition::UnlessControlsSubtype { .. })
-            ),
-            "fixture pin: {name} must parse to the `UnlessControlsSubtype` arm this row pins — \
-             `UnlessControlsMatching` reports the same sibling axis and gets no \
-             `condition_disjoint` relief, so a re-route there would leave the arms below green \
-             while that arm goes untested"
+        let def = census_land_def(
+            name,
+            oracle,
+            subtypes,
+            ReplacementCondition::UnlessControlsSubtype {
+                subtypes: Vec::new(),
+            },
         );
 
         // ── ARM A: the real card, alone on the board ──
