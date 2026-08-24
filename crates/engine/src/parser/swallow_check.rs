@@ -4450,7 +4450,7 @@ fn detect_duration_this_turn(
     //       CR 615.1   PreventDamage / CreateDamageReplacement — prevention shields
     //       CR 614.11  CreateDrawReplacement — "next time you would draw ... instead"
     //       CR 614.1a  AddTargetReplacement
-    //       CR 603.7c  CreateDelayedTrigger — delayed triggers from spells expire at EOT
+    //       CR 603.7b  CreateDelayedTrigger — delayed triggers from spells expire at EOT
     //       CR 601.2f  ReduceNextSpellCost — consumed by the next cast
     //       CR 509.1c  ForceBlock — a one-turn combat requirement
     //       CR 601.2   CastFromZone — a cast permission, not a duration
@@ -4469,7 +4469,7 @@ fn detect_duration_this_turn(
     }) {
         return;
     }
-    // (j) CR 603.7c: a `WhenNextEvent` delayed-trigger condition IS the "next [event] this
+    // (j) CR 603.7b: a `WhenNextEvent` delayed-trigger condition IS the "next [event] this
     //     turn" scope (Chandra, the Firebrand -2; Doublecast).
     if evidence.any::<DelayedTriggerCondition>(|c| {
         matches!(c, DelayedTriggerCondition::WhenNextEvent { .. })

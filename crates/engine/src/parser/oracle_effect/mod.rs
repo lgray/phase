@@ -1583,7 +1583,7 @@ fn has_unless_clause(text: &str) -> bool {
 /// introduce its effect clause.
 const DELAYED_TRIGGER_WINDOWS: [&str; 2] = [" this turn, ", " this combat, "];
 
-/// CR 603.7c: Parse "whenever [trigger condition] this turn, [effect]" delayed triggers.
+/// CR 603.7b: Parse "whenever [trigger condition] this turn, [effect]" delayed triggers.
 /// (Also "whenever [trigger condition] this combat, [effect]".)
 /// These create multi-fire delayed triggers that persist until end of turn.
 /// Example: "whenever a creature you control deals combat damage to a player this turn, draw a card"
@@ -9726,7 +9726,7 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         }
     }
 
-    // CR 603.7c: "Whenever X this turn, Y" — multi-fire delayed trigger creation.
+    // CR 603.7b: "Whenever X this turn, Y" — multi-fire delayed trigger creation.
     if let Some(clause) = try_parse_whenever_this_turn(tp) {
         return clause;
     }

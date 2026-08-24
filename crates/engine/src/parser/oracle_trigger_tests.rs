@@ -8852,7 +8852,7 @@ fn trigger_you_attack() {
     assert_eq!(def.mode, TriggerMode::YouAttack);
 }
 
-// CR 508.1 + CR 603.7c: a delayed "Whenever you attack this turn" trigger is
+// CR 508.1 + CR 603.7b: a delayed "Whenever you attack this turn" trigger is
 // prefix-stripped to the bare condition "you attack" before reaching
 // `parse_trigger_condition`. Bare "you attack" must resolve to YouAttack, not
 // Unknown — the #433 root cause (Dalkovan Encampment).
@@ -8872,7 +8872,7 @@ fn trigger_condition_you_attacked_is_not_a_trigger() {
     assert_ne!(mode, TriggerMode::YouAttack);
 }
 
-// CR 603.7c: the full Dalkovan Encampment activated ability — the inner
+// CR 603.7b: the full Dalkovan Encampment activated ability — the inner
 // "Whenever you attack this turn, ..." clause is an effect-body delayed
 // trigger, so it builds a CreateDelayedTrigger whose WheneverEvent trigger
 // has mode YouAttack (previously Unknown — the #433 bug).

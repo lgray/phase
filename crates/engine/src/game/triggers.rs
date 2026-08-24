@@ -10005,7 +10005,7 @@ pub fn check_state_triggers(state: &mut GameState) {
 
 /// CR 603.7: Check if any delayed triggers should fire based on recent events.
 /// One-shot triggers are removed after firing; multi-fire (WheneverEvent) triggers
-/// persist until end-of-turn cleanup (CR 603.7c).
+/// persist until end-of-turn cleanup (CR 603.7b).
 pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Vec<GameEvent> {
     // CR 603.7 + CR 603.12: this is a closing `Any` boundary. Its contract is
     // "match, then terminalize, then dispatch": the unmatched-reflexive pass must
@@ -12467,7 +12467,7 @@ fn delayed_trigger_event_with_index(
                 )
             })
             .map(|(idx, event)| (idx, event.clone())),
-        // CR 603.7c: "Whenever [event] this turn" — delegate to trigger matcher registry.
+        // CR 603.7b: "Whenever [event] this turn" — delegate to trigger matcher registry.
         DelayedTriggerCondition::WheneverEvent { trigger, .. } => {
             let source_context = source_context?;
             if let Some(matcher) = super::trigger_matchers::trigger_matcher(trigger.mode.clone()) {

@@ -210,7 +210,7 @@ pub fn resolve(
     // the creation-time fallback because their later phase event has no object
     // subject.
     //
-    // CR 603.7c: Computed ONCE here and reused for the creation-snapshot gate, the
+    // CR 603.7b: Computed ONCE here and reused for the creation-snapshot gate, the
     // `DelayedTrigger.one_shot` field. `condition`'s variant is not reassigned
     // between them.
     let one_shot = !matches!(
@@ -369,7 +369,7 @@ pub fn resolve(
     // incarnation; a later re-entry must not be restamped when the trigger fires.
     delayed_ability.set_source_incarnation_recursive(source.map(|object| object.incarnation));
 
-    // CR 603.7c: Most delayed triggers fire once and are removed.
+    // CR 603.7b: Most delayed triggers fire once and are removed.
     // WheneverEvent triggers fire each time and persist until end-of-turn cleanup.
     // `one_shot` was computed once above (single source of truth) and is reused here.
     crate::game::triggers::install_delayed_trigger(

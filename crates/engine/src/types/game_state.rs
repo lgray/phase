@@ -6389,7 +6389,7 @@ pub struct DelayedTrigger {
     /// Source permanent that created this delayed trigger.
     pub source_id: ObjectId,
     /// Whether this trigger fires once and is removed (most delayed triggers).
-    /// CR 603.7c.
+    /// CR 603.7b.
     pub one_shot: bool,
     /// Private command-backed installation identity. Legacy delayed triggers
     /// continue through the normal rules lifecycle without receipt or

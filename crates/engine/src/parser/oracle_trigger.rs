@@ -16416,7 +16416,7 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
     // Anchored (NOT a substring scan): an optional "whenever "/"when " prefix
     // followed by "you attack". The bare "you attack" form is the prefix-stripped
     // delayed-trigger condition emitted by `try_parse_whenever_this_turn`
-    // (CR 603.7c) for cards like Dalkovan Encampment.
+    // (CR 603.7b) for cards like Dalkovan Encampment.
     //
     // The trailing `peek` is a word-boundary guard: "you attack" must be followed
     // by end-of-input, a space, or a comma so that "you attacked this turn" (a
