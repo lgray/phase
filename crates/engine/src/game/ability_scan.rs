@@ -90,16 +90,13 @@
 //! over-reject). The projected-resource classifier (question 3) and the
 //! resolution-time choice classifier (question 4) are unchanged. See `ability_rw.rs`
 //! for the conflict model and its CR 603.3b commutation argument.
-//!
-//! BLOCK EXEMPTION — implemented catalogue: the three axes, the conservative set,
-//! and the traversal-closure type list above.
 
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, CardTypeSetSource, ContinuousModification, ControllerRef, CountScope, DelayedTriggerCondition, Duration, EachDamageRecipient, Effect, EffectScope, FilterProp, ForEachCategoryAction, GuessSubject, KeeperConstraint, ManaProduction, ModalChoice,
     MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, PtValue, QuantityExpr, QuantityRef,
     RepeatContinuation, ReplacementCondition, ResolvedAbility, StaticCondition, TargetFilter,
     TrackedAnaphorSource, TriggerCondition, TriggerConstraint, TriggerDefinition, TypedFilter,
-    UnlessPayModifier,
+    UnlessPayModifier, ZoneChangeClause,
 };
 use crate::types::game_state::TargetSelectionConstraint;
 use crate::types::keywords::{DisguiseCost, Keyword};
@@ -3358,9 +3355,6 @@ fn scan_object_scope(x: &ObjectScope) -> Axes {
 /// [`ability_definition_axes`] and [`resolved_ability_axes`] use: a FUTURE
 /// `TriggerDefinition` field fails to compile here until it is classified as
 /// scanned or read-free. Every `_` binding below carries its justification.
-///
-/// BLOCK EXEMPTION — implemented catalogue: the carrier list above and the destructure
-/// discipline every `_` binding below instantiates.
 fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
     let TriggerDefinition {
         // ---- read-bearing: scanned into `acc` below ----
@@ -3376,37 +3370,29 @@ fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
         // `ability_definition_axes` already binds fail-closed rather than ignoring.
         unless_pay,
 
-        // ---- read-free: EVENT-MATCHER filters. CR 603.2 — "whenever a game event
-        //      or game state MATCHES a triggered ability's trigger event, that
-        //      ability automatically triggers". These select WHICH event fires the
-        //      trigger; they are not resolution-time reads, and matcher-observation
-        //      is handled by the firewall's class-scoped relief, never by a read axis.
-        //      That relief — `game::triggers`'s `etb_observer_provably_excludes_class` — is
-        //      ASSERTED, not measured, over the two carriers that reach here:
-        //      `ContinuousModification::GrantTrigger` and `scan_delayed_trigger_condition`,
-        //      the second widening what reaches here. See the retirement rule below.
-        valid_card: _,
-        valid_target: _,
-        valid_subject_player: _,
-        valid_source: _,
-        zone_change_clauses: _,
-        // RETIREMENT for that asserted exclusion: it stands until this census returns
-        // zero — then delete the assertion and this note; above zero, repair both
-        // carriers in one change against this function. The count over-approximates (the
-        // relief also makes a runtime `valid_card_matches` check no static census can
-        // answer), so a zero is sound and a non-zero is a population to read:
-        //   jq '[..|objects|select(.type=="GrantTrigger").trigger,
-        //        (select(.type=="CreateDelayedTrigger").condition
-        //         |..|objects|select(has("trigger_zones")))]
-        //       |map(select(([.valid_card,.valid_target,.valid_subject_player,.valid_source]
-        //                    |any(.!=null)) or ((.zone_change_clauses//[])|length)>0))
-        //       |map(select((([.mode]|inside(["ChangesZone","ChangesZoneAll"]))
-        //                    and ((.zone_change_clauses//[])|length)==0
-        //                    and .destination=="Battlefield" and .valid_card!=null)|not))
-        //       |length' client/public/card-data.json   # ./scripts/gen-card-data.sh
+        // ---- read-bearing: EVENT-MATCHER filters. CR 603.2 — "whenever a game
+        //      event or game state MATCHES a triggered ability's trigger event,
+        //      that ability automatically triggers". Scanned, not assumed inert:
+        //      both carriers that reach here ship matchers carrying real filters,
+        //      so leaving these `_` would let a board-reading matcher pass the
+        //      firewall unread.
+        //
+        //      `SnapshotOrEvent`, NOT the `LiveBoardCensus` default: a matcher
+        //      tests the ONE triggering event's object/player against a filter and
+        //      counts no live battlefield membership, so this CALL SITE injects no
+        //      `sibling` of its own — the same discipline as `payer` below. A
+        //      matcher whose filter DOES have a board-reading component still
+        //      reports `sibling` through `typed_filter_axes` ->
+        //      `scan_filter_prop`'s census recursion, so declining the call-site
+        //      injection is not a relaxation hole.
+        valid_card,
+        valid_target,
+        valid_subject_player,
+        valid_source,
+        zone_change_clauses,
 
-        // ---- read-free: the Room-half (door) STAMP — a matcher key of the class
-        //      above, at its most inert end. `RoomDoor` is a fieldless two-variant
+        // ---- read-free: the Room-half (door) STAMP — a matcher key like the
+        //      filters above, at its most inert end. `RoomDoor` is a fieldless two-variant
         //      discriminator (`game_object`), so unlike `valid_card` it cannot even
         //      express a filter: no payload position reaches a `TargetFilter` or a
         //      `QuantityExpr`, and it opens no traversal-closure hole. It is fixed per
@@ -3487,6 +3473,47 @@ fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
             mode,
         ));
     }
+    // CR 603.2 event matchers — context rationale in the destructure above.
+    let mut matcher = Axes::NONE;
+    for f in [valid_card, valid_target, valid_subject_player, valid_source]
+        .into_iter()
+        .flatten()
+    {
+        matcher = matcher.or(scan_target_filter(
+            f,
+            FilterReadContext::SnapshotOrEvent,
+            mode,
+        ));
+    }
+    // CR 603.6: each disjunctive clause carries its own card matcher. EXHAUSTIVE
+    // destructure with no `..`, like the parent: a future `ZoneChangeClause` field
+    // is `E0027` here until classified.
+    for ZoneChangeClause {
+        valid_card: clause_card,
+        origin: _,                 // CR 603.6c source-zone constraint, no filter payload
+        destination: _,            // Zone tag
+        destination_constraint: _, // CR 700.4 "dies" predicate for LTB forms, no filter
+    } in zone_change_clauses
+    {
+        if let Some(f) = clause_card {
+            matcher = matcher.or(scan_target_filter(
+                f,
+                FilterReadContext::SnapshotOrEvent,
+                mode,
+            ));
+        }
+    }
+    // The `event` axis does NOT propagate off a matcher. CR 603.2 vs CR 603.4: a
+    // matcher SELECTS which event fires the ability; the `event` axis records a
+    // resolution-time read of that event's characteristics, and its only consumer
+    // is the distinct-event ordering term. Two copies of one granted trigger see
+    // the same event through the same matcher, so a matcher can never make their
+    // group order-relevant — and the CR 732.2a firewall reads `sibling`/`projected`
+    // only. Those two DO propagate: they are the reads this descent exists to catch.
+    acc = acc.or(Axes {
+        event: false,
+        ..matcher
+    });
     acc
 }
 
@@ -5118,8 +5145,6 @@ fn scan_ability_cost(cost: &AbilityCost, mode: ScanMode) -> Axes {
 /// characteristic keyword, every fixed-mana or self/hand cost keyword, and every
 /// ETB/triggered mechanic (whose board reads, if any, are caught by the
 /// trigger/replacement firewall, not the cost surface) is SAFE.
-///
-/// BLOCK EXEMPTION — CR table: the TRUE-arm keyword list above, each with its rule.
 pub(crate) fn keyword_cost_reads_growing_class(kw: &Keyword) -> bool {
     match kw {
         // (a)/(b): the casting/activation cost reads a battlefield/graveyard object
@@ -7987,6 +8012,30 @@ mod tests {
         );
     }
 
+    /// Source text of a top-level `fn`, from its signature to the column-0 `}` that
+    /// closes it.
+    ///
+    /// The end anchor is STRUCTURAL — rustfmt puts a top-level closing brace at column
+    /// 0 and nothing inside a body there — so no comment edit can move or delete it.
+    /// The rows below previously ended their slice at a prose `// ----` divider; a
+    /// comment prune deleted it and all three panicked. An anchor a comment audit can
+    /// erase is not an anchor.
+    ///
+    /// Narrowing to the body is also the safe direction for what these rows measure:
+    /// the slice cannot reach `Effect::` names belonging to a LATER function, so a
+    /// derived tag set can only lose members (loud: the `want` lists mismatch), never
+    /// silently gain them.
+    fn top_level_fn_src(header: &str) -> &'static str {
+        let src = include_str!("ability_scan.rs");
+        let start = src
+            .find(header)
+            .unwrap_or_else(|| panic!("{header}: no such top-level fn"));
+        let len = src[start..]
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{header}: no column-0 closing brace"));
+        &src[start..start + len]
+    }
+
     /// The `LiveBoardCensus` tag set of `effect_target_ctx` == EXACTLY the
     /// enumeration-derived MASS-POPULATION set, source-scanned rather than
     /// hand-counted. Under
@@ -7997,9 +8046,7 @@ mod tests {
     /// default) OR an added one turns this RED, forcing a conscious re-audit.
     #[test]
     fn census_tag_set_is_exactly_enumerated() {
-        let src = include_str!("ability_scan.rs");
-        let start = src.find("fn effect_target_ctx(").expect("fn");
-        let fnsrc = &src[start..start + src[start..].find("\n// ----").expect("divider")];
+        let fnsrc = top_level_fn_src("fn effect_target_ctx(");
         let arm_end = fnsrc
             .find("=> FilterReadContext::LiveBoardCensus,")
             .expect("census arm");
@@ -8101,9 +8148,7 @@ mod tests {
             FilterReadContext::SnapshotOrEvent
         );
         // Structural: SetTapState is the ONLY dedicated-arm Snapshot classification.
-        let src = include_str!("ability_scan.rs");
-        let start = src.find("fn effect_target_ctx(").expect("fn");
-        let fnsrc = &src[start..start + src[start..].find("\n// ----").expect("divider")];
+        let fnsrc = top_level_fn_src("fn effect_target_ctx(");
         let after_census = &fnsrc[fnsrc
             .find("=> FilterReadContext::LiveBoardCensus,")
             .expect("census terminator")..];
@@ -8211,11 +8256,8 @@ mod tests {
             v.dedup();
             v
         }
-        let src = include_str!("ability_scan.rs");
-        let etc_start = src.find("fn effect_target_ctx(").expect("etc");
-        let etc = &src[etc_start..etc_start + src[etc_start..].find("\n// ----").expect("etc div")];
-        let ecr_start = src.find("fn effect_census_role(").expect("ecr");
-        let ecr = &src[ecr_start..ecr_start + src[ecr_start..].find("\n}\n").expect("ecr end")];
+        let etc = top_level_fn_src("fn effect_target_ctx(");
+        let ecr = top_level_fn_src("fn effect_census_role(");
         let etc_census = census_names(etc, "=> FilterReadContext::LiveBoardCensus,");
         let ecr_census = census_names(ecr, "=> CensusRole::Census,");
         assert_eq!(
@@ -8435,9 +8477,6 @@ mod tests {
     /// A false positive costs one Relax entry; a missed mass read is a soundness gap,
     /// so the flood is CLASSIFIED, never re-narrowed with an allowlist.
     ///
-    /// BLOCK EXEMPTION — implemented catalogue: the idiom definition above and the
-    /// curated `CLASSIFIED` membership rule this test asserts.
-    ///
     /// KNOWN BLIND SPOT: signal (b) keys on the helper enumerators, so a resolver
     /// iterating via raw `state.battlefield.iter()` / `.values()` is NOT flagged.
     /// Raw-iter MASS reads (`GainActivatedAbilitiesOfTarget`, `BecomeCopy`) are still
@@ -8588,9 +8627,7 @@ mod tests {
         // census_partition_agrees). Reverting that variant's census-tag drops it from the
         // set -> this fails (non-vacuity ii). mod.rs is census-by-delegation; its consumers
         // turn_face_up/down are tied below.
-        let src = include_str!("ability_scan.rs");
-        let ecr_start = src.find("fn effect_census_role(").expect("ecr");
-        let ecr = &src[ecr_start..ecr_start + src[ecr_start..].find("\n}\n").expect("ecr end")];
+        let ecr = top_level_fn_src("fn effect_census_role(");
         let census_block = &ecr[..ecr
             .find("=> CensusRole::Census,")
             .expect("census terminator")];
@@ -9435,10 +9472,11 @@ mod tests {
         );
     }
 
-    // ── B-1a (POSITIVE ×5) — the five EVENT-MATCHER paths bind `_` read-free ──
+    // ── B-1a (POSITIVE ×5) — the five EVENT-MATCHER paths are SCANNED ─────────
     // Each row (i) populates exactly ONE path with the non-degenerate filter,
     // (ii) asserts that population's non-degeneracy inline, (iii) asserts the
-    // walker still clears. Each has its OWN revert probe.
+    // walker reports the filter's own read. Each has its OWN revert probe.
+    // The paired context pin below fixes WHICH `FilterReadContext` they route at.
 
     macro_rules! nondegenerate {
         ($f:expr) => {
@@ -9455,10 +9493,11 @@ mod tests {
         };
     }
 
-    /// B-1a path 1 — `valid_card`.
-    /// Revert probe: route `valid_card` through `scan_target_filter(.., LiveBoardCensus, ..)`.
+    /// B-1a path 1 — `valid_card` is a SCANNED matcher surface.
+    /// Revert probe: bind `valid_card: _` read-free again ⇒ this row flips to
+    /// `sibling == false`.
     #[test]
-    fn b1a_p1_valid_card_is_read_free() {
+    fn b1a_p1_valid_card_is_scanned() {
         let f = census_asserting_filter();
         nondegenerate!(&f);
         let def = TriggerDefinition {
@@ -9466,15 +9505,16 @@ mod tests {
             ..bello_granted_trigger()
         };
         assert!(
-            !sibling_of(&grant_trigger(def)),
-            "B-1a p1: valid_card read-free"
+            sibling_of(&grant_trigger(def)),
+            "B-1a p1: valid_card is scanned"
         );
     }
 
-    /// B-1a path 2 — `valid_target`.
-    /// Revert probe: route `valid_target` through `LiveBoardCensus`.
+    /// B-1a path 2 — `valid_target` is a SCANNED matcher surface.
+    /// Revert probe: bind `valid_target: _` read-free again ⇒ this row flips to
+    /// `sibling == false`.
     #[test]
-    fn b1a_p2_valid_target_is_read_free() {
+    fn b1a_p2_valid_target_is_scanned() {
         let f = census_asserting_filter();
         nondegenerate!(&f);
         let def = TriggerDefinition {
@@ -9482,15 +9522,16 @@ mod tests {
             ..bello_granted_trigger()
         };
         assert!(
-            !sibling_of(&grant_trigger(def)),
-            "B-1a p2: valid_target read-free"
+            sibling_of(&grant_trigger(def)),
+            "B-1a p2: valid_target is scanned"
         );
     }
 
-    /// B-1a path 3 — `valid_subject_player`.
-    /// Revert probe: route `valid_subject_player` through `LiveBoardCensus`.
+    /// B-1a path 3 — `valid_subject_player` is a SCANNED matcher surface.
+    /// Revert probe: bind `valid_subject_player: _` read-free again ⇒ this row flips to
+    /// `sibling == false`.
     #[test]
-    fn b1a_p3_valid_subject_player_is_read_free() {
+    fn b1a_p3_valid_subject_player_is_scanned() {
         let f = census_asserting_filter();
         nondegenerate!(&f);
         let def = TriggerDefinition {
@@ -9498,15 +9539,16 @@ mod tests {
             ..bello_granted_trigger()
         };
         assert!(
-            !sibling_of(&grant_trigger(def)),
-            "B-1a p3: valid_subject_player read-free"
+            sibling_of(&grant_trigger(def)),
+            "B-1a p3: valid_subject_player is scanned"
         );
     }
 
-    /// B-1a path 4 — `valid_source`.
-    /// Revert probe: route `valid_source` through `LiveBoardCensus`.
+    /// B-1a path 4 — `valid_source` is a SCANNED matcher surface.
+    /// Revert probe: bind `valid_source: _` read-free again ⇒ this row flips to
+    /// `sibling == false`.
     #[test]
-    fn b1a_p4_valid_source_is_read_free() {
+    fn b1a_p4_valid_source_is_scanned() {
         let f = census_asserting_filter();
         nondegenerate!(&f);
         let def = TriggerDefinition {
@@ -9514,17 +9556,19 @@ mod tests {
             ..bello_granted_trigger()
         };
         assert!(
-            !sibling_of(&grant_trigger(def)),
-            "B-1a p4: valid_source read-free"
+            sibling_of(&grant_trigger(def)),
+            "B-1a p4: valid_source is scanned"
         );
     }
 
-    /// B-1a path 5 — `zone_change_clauses` -> `ZoneChangeClause::valid_card`.
-    /// Populated with a NON-EMPTY vec whose clause carries the filter: `vec![]` is
-    /// the degeneracy the non-degenerate-filter doc above names explicitly.
-    /// Revert probe: route each clause's `valid_card` through `LiveBoardCensus`.
+    /// B-1a path 5 — `zone_change_clauses` -> `ZoneChangeClause::valid_card` is a
+    /// SCANNED matcher surface. Populated with a NON-EMPTY vec whose clause carries
+    /// the filter: `vec![]` is the degeneracy the non-degenerate-filter doc above
+    /// names explicitly.
+    /// Revert probe: drop the clause loop (bind `zone_change_clauses: _`) ⇒ this row
+    /// flips to `sibling == false`.
     #[test]
-    fn b1a_p5_zone_change_clause_valid_card_is_read_free() {
+    fn b1a_p5_zone_change_clause_valid_card_is_scanned() {
         let f = census_asserting_filter();
         nondegenerate!(&f);
         let clause = ZoneChangeClause {
@@ -9538,10 +9582,11 @@ mod tests {
             ..bello_granted_trigger()
         };
         assert!(
-            !sibling_of(&grant_trigger(def)),
-            "B-1a p5: clause valid_card read-free"
+            sibling_of(&grant_trigger(def)),
+            "B-1a p5: clause valid_card is scanned"
         );
-        // Guard the vec is actually populated (the named degeneracy trap).
+        // Guard the vec is actually populated (the named degeneracy trap): the
+        // empty-vec form must NOT reach the same verdict, or p5 measures nothing.
         let empty = TriggerDefinition {
             zone_change_clauses: vec![],
             ..bello_granted_trigger()
@@ -9551,6 +9596,110 @@ mod tests {
             "control: the empty-vec form is the DEGENERATE population — it must not \
              be what row p5 is measuring"
         );
+    }
+
+    /// B-1a EVENT-AXIS MASK — a matcher's `event` read does not propagate, while its
+    /// `sibling` read does. Pinned because `TargetFilter::Typed` sets `event`
+    /// unconditionally, so scanning matchers at all would otherwise re-classify every
+    /// typed matcher as an ordering-relevant event read.
+    ///
+    /// REACH-GUARD: the fixture filter's own scan sets `event`, asserted inline — so a
+    /// masked `false` below is the mask's verdict and not the filter's silence.
+    /// Revert probe: drop the `Axes { event: false, .. }` mask ⇒ **FAILS**.
+    #[test]
+    fn b1a_matcher_event_axis_is_masked() {
+        let f = census_asserting_filter();
+        assert!(
+            scan_target_filter(
+                &f,
+                FilterReadContext::SnapshotOrEvent,
+                ScanMode::LoopFirewall,
+            )
+            .event,
+            "reach-guard: the fixture filter must set `event` on its OWN scan, or the \
+             mask assertion below is vacuous"
+        );
+        let def = TriggerDefinition {
+            valid_card: Some(f),
+            ..bello_granted_trigger()
+        };
+        let axes = scan_trigger_definition(&def, ScanMode::LoopFirewall);
+        assert!(
+            !axes.event,
+            "a matcher selects WHICH event fires (CR 603.2); it is not the \
+             resolution-time event read (CR 603.4) the ordering term consumes"
+        );
+        assert!(
+            axes.sibling,
+            "paired positive: the SAME matcher's board read still propagates, so the \
+             mask above is axis-scoped and not a re-muted path"
+        );
+    }
+
+    /// B-1a CONTEXT PIN — the five matcher call sites route at `SnapshotOrEvent`,
+    /// NOT the `LiveBoardCensus` default. A bare `Typed{Creature}` matcher carries
+    /// no board-reading component, so under `LoopFirewall` it must RELAX;
+    /// `LiveBoardCensus` would inject `sibling: true` from the call site regardless
+    /// of the filter's shape and veto every granted-trigger offer whose matcher
+    /// merely names a card type.
+    ///
+    /// NON-VACUITY: the same five paths carrying `census_asserting_filter()` DO
+    /// report `sibling` in rows p1..p5 above, so a green here is the context's
+    /// verdict and not an unreachable path.
+    /// Revert probe: route any one of the five through `LiveBoardCensus` ⇒ that
+    /// path's case FAILS.
+    #[test]
+    fn b1a_matcher_paths_route_at_snapshot_or_event() {
+        let bare = || TargetFilter::Typed(TypedFilter::creature());
+        let cases: [(&str, TriggerDefinition); 5] = [
+            (
+                "valid_card",
+                TriggerDefinition {
+                    valid_card: Some(bare()),
+                    ..bello_granted_trigger()
+                },
+            ),
+            (
+                "valid_target",
+                TriggerDefinition {
+                    valid_target: Some(bare()),
+                    ..bello_granted_trigger()
+                },
+            ),
+            (
+                "valid_subject_player",
+                TriggerDefinition {
+                    valid_subject_player: Some(bare()),
+                    ..bello_granted_trigger()
+                },
+            ),
+            (
+                "valid_source",
+                TriggerDefinition {
+                    valid_source: Some(bare()),
+                    ..bello_granted_trigger()
+                },
+            ),
+            (
+                "zone_change_clauses",
+                TriggerDefinition {
+                    zone_change_clauses: vec![ZoneChangeClause {
+                        origin: OriginConstraint::Any,
+                        destination: Some(Zone::Battlefield),
+                        destination_constraint: DestinationConstraint::Any,
+                        valid_card: Some(bare()),
+                    }],
+                    ..bello_granted_trigger()
+                },
+            ),
+        ];
+        for (label, def) in cases {
+            assert!(
+                !sibling_of(&grant_trigger(def)),
+                "{label}: a bare Typed matcher must relax under LoopFirewall — this \
+                 path is routed at LiveBoardCensus, which vetoes every typed matcher"
+            );
+        }
     }
 
     // ── The `Effect::CreateDelayedTrigger` mode-split descent ────────────────
