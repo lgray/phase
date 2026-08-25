@@ -1,4 +1,4 @@
-//! CR 603.3b + CR 603.4 + CR 106.1 / CR 119 / CR 122.1: the PR-6.25/PR-6.5 fail-closed AST
+//! CR 603.3b + CR 603.4 + CR 106.1 / CR 119 / CR 122.1: the fail-closed AST
 //! scanner — a single compiler-exhaustive, wildcard-free walk of a resolved
 //! ability's typed AST that answers three independent classification questions
 //! ("axes") used by trigger ordering (CR 603.3b) and the growing-cascade
@@ -17,7 +17,7 @@
 //!    floating mana CR 106.1, poison/energy/player counters CR 122.1, and the
 //!    per-turn tally/journal block)? Object counters and marked damage are NOT on
 //!    this axis — they are strict-compared by gate (1) of
-//!    `loop_states_cover_modulo_growth` (R5-B1), so an object-counter reader
+//!    `loop_states_cover_modulo_growth`, so an object-counter reader
 //!    (`CountersOn`/`Power`/`Toughness`) classifies as a NON-reader here.
 //!
 //! # Why hand-rolled and wildcard-free
@@ -40,7 +40,7 @@
 //! `AddTargetReplacement`, `QuantityRef::ManaSpentToCast`) already return
 //! `Axes::CONSERVATIVE`, so the scopes themselves are never traversed.
 //!
-//! # Traversal closure (R4-G2)
+//! # Traversal closure
 //!
 //! The compiler-exhaustiveness floor holds only for TRAVERSED subtrees: an
 //! untraversed payload is silently skipped with no compile error, so the traversal
@@ -72,7 +72,7 @@
 //! always prompts), so folding a choice bit into `Axes` would make every
 //! existing `NONE` arm silently claim choice-freeness.
 //!
-//! # Consumers of the read-axis classifiers after PR-6.75
+//! # Consumers of the read-axis classifiers
 //!
 //! CR 603.3b: the legacy UNGATED trigger-ordering paths (same firing event, and
 //! the explicitly-simultaneous ZoneChanged departure batch) no longer consume the
@@ -80,16 +80,19 @@
 //! the richer kind/scope read/write conflict profile in the sibling module
 //! `ability_rw.rs` (`ability_rw_profile` / `trigger_condition_rw_profile` /
 //! `profiles_conflict`), which answers "which kinds of state does the ability READ
-//! and WRITE, at what scope" — the precise read/write predicate those paths require
-//! (PR-6.25 §3 C0(ii)). The event-context and sibling-mutable read classifiers here
-//! are now consumed ONLY by the C2 distinct-event term (`group_is_order_independent`
-//! / `trigger_events_match_for_ordering`), ungated from loop detection (adopted from
-//! #5084) and conjoined with `!batch_conflict` — so a coarse C2-clean verdict may
+//! and WRITE, at what scope" — the precise read/write predicate those paths
+//! require. The event-context and sibling-mutable read classifiers here are now
+//! consumed ONLY by the distinct-event term (`group_is_order_independent` /
+//! `trigger_events_match_for_ordering`), ungated from loop detection and conjoined
+//! with `!batch_conflict` — so a coarse distinct-event verdict may
 //! auto-order a distinct-event group only when the precise `ability_rw` profiler also
 //! agrees it is conflict-clean; a conservative verdict here means a prompt (safe
 //! over-reject). The projected-resource classifier (question 3) and the
 //! resolution-time choice classifier (question 4) are unchanged. See `ability_rw.rs`
 //! for the conflict model and its CR 603.3b commutation argument.
+//!
+//! BLOCK EXEMPTION — implemented catalogue: the three axes, the conservative set,
+//! and the traversal-closure type list above.
 
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, CardTypeSetSource, ContinuousModification, ControllerRef, CountScope, DelayedTriggerCondition, Duration, EachDamageRecipient, Effect, EffectScope, FilterProp, ForEachCategoryAction, GuessSubject, KeeperConstraint, ManaProduction, ModalChoice,
@@ -163,7 +166,7 @@ impl Axes {
 /// `Conservative` is the pre-existing shared answer that the CR 603.3b
 /// trigger-ordering gate (`game::triggers`) and every non-firewall caller
 /// require, and it keeps the `LoopDetectionMode::Off` game byte-identical
-/// (#4603). `LoopFirewall` is used ONLY by the CR 732.2a object-growth
+///. `LoopFirewall` is used ONLY by the CR 732.2a object-growth
 /// firewall (`analysis::resource`), which needs a mode-divergent arm to
 /// DESCEND rather than fail closed. `Off` cannot observe `LoopFirewall`:
 /// this value is constructed nowhere outside this module, inside the
@@ -178,26 +181,19 @@ pub(crate) enum ScanMode {
 }
 
 /// How a given `scan_target_filter` CALL SITE reads its filter — the census
-/// discipline the CR 732.2a object-growth firewall's `Typed` relaxation depends
-/// on. This is analysis plumbing (a sibling of [`ScanMode`]), NOT a game-semantic
-/// variant: it records whether the caller is counting/testing LIVE battlefield
-/// membership (a board census whose `sibling` read is the census's OWN — never
-/// inherited from the filter, never relaxed) or is naming a snapshot / triggering
-/// event / single-object target (where `sibling` may only come from a genuine
-/// board-reading component of the filter).
+/// discipline the CR 732.2a object-growth firewall's `Typed` relaxation depends on.
+/// Analysis plumbing (a sibling of [`ScanMode`]), NOT a game-semantic variant: it
+/// records whether the caller counts/tests LIVE battlefield membership (a board
+/// census whose `sibling` read is its OWN — never inherited from the filter, never
+/// relaxed) or names a snapshot / triggering event / single-object target (where
+/// `sibling` may only come from a genuine board-reading component of the filter). A
+/// REQUIRED parameter with NO `Default` impl, so no caller can obtain a filter's
+/// axes without stating its census intent.
 ///
-/// It is a REQUIRED parameter of [`scan_target_filter`] with NO `Default` impl, so
-/// no caller — present or future — can obtain a filter's axes without stating its
-/// census intent; the old fail-open delegation path (inheriting the relaxed `Typed`
-/// verdict) no longer compiles (REQ-1 structural closure).
-///
-/// **ADD-1 default-to-census:** an AMBIGUOUS or newly-added call site is
-/// [`FilterReadContext::LiveBoardCensus`]. Given the firewall direction
-/// (`LiveBoardCensus` ⇒ `sibling:true` ⇒ VETO; `SnapshotOrEvent` ⇒ relaxed ⇒ may
-/// OFFER), a misjudgment toward census can only OVER-veto (miss a legal offer),
-/// never produce a false offer (CR 732.2a: a coarse relation may reject, never
-/// accept; #4603-preserving). Only a POSITIVELY-PROVEN snapshot/event site earns
-/// `SnapshotOrEvent`.
+/// **Default to census:** an AMBIGUOUS or newly-added call site is
+/// [`FilterReadContext::LiveBoardCensus`]. `LiveBoardCensus` ⇒ `sibling:true` ⇒ VETO
+/// and `SnapshotOrEvent` ⇒ relaxed ⇒ may OFFER, so a misjudgment toward census can
+/// only OVER-veto (CR 732.2a: a coarse relation may reject, never accept).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FilterReadContext {
     /// This call site counts or tests LIVE battlefield membership. The `sibling`
@@ -278,7 +274,7 @@ fn resolved_ability_axes(a: &ResolvedAbility, mode: ScanMode) -> Axes {
         distribution: _,                 // concrete pre-assigned (TargetRef, u32) portions
         chosen_x: _,                     // concrete cast-time X
         cost_paid_object: _,             // concrete captured-object snapshot
-        cost_paid_object_ids: _,         // concrete captured-object ids (issue #4948)
+        cost_paid_object_ids: _,         // concrete captured-object ids
         effect_context_object: _,        // concrete captured-object snapshot
         amassed_army_object: _,          // concrete captured-object snapshot
         ability_index: _,                // usize provenance
@@ -435,7 +431,7 @@ fn scan_target_selection_constraint(c: &TargetSelectionConstraint, mode: ScanMod
 }
 
 fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
-    // BLOCKER-1: the census discipline for THIS effect's target reads, derived ONCE
+    // The census discipline for THIS effect's target reads, derived ONCE
     // (depends only on the effect variant + mode). Passed to every effect-TARGET
     // `scan_target_filter` call below. The mode-divergent `Token`/`Mana` arms pass
     // `SnapshotOrEvent` for their structural owner/attach/recipient selectors (single-
@@ -530,33 +526,20 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             acc = acc.or(scan_target_filter(target, target_ctx, mode));
             acc
         }
-        // CR 732.2a is the OPERATIVE rule for this whole arm. The same mode split
-        // `Effect::Token` and `Effect::Mana` already ship. Under `Conservative` this stays
-        // the byte-identical blanket the CR 603.3b trigger-ordering gate and every
-        // non-firewall consumer already see. Under `LoopFirewall` it DESCENDS, because
-        // CR 732.2a admits a proposal only on "the predictable results of the sequence of
-        // choices" and bars "conditional actions, where the outcome of a game event
-        // determines the next action a player takes".
+        // CR 732.2a is the OPERATIVE rule for this arm, and the mode split is the one
+        // `Effect::Token` and `Effect::Mana` already ship: under `Conservative` this stays
+        // the byte-identical blanket every non-firewall consumer already sees; under
+        // `LoopFirewall` it DESCENDS, because CR 732.2a admits a proposal only on "the
+        // predictable results of the sequence of choices" and bars "conditional actions,
+        // where the outcome of a game event determines the next action a player takes".
         //
-        // The two halves the descent separates rest on different authorities, so they are
-        // labelled separately rather than sharing one citation:
-        //   * RELIEF (both `PtValue`s literal, target read-free). The premise "this pump
-        //     reads nothing" is an AST property -- `PtValue::Fixed` is a literal -- NOT a
-        //     rules fact, and no CR is cited for it. What CR 732.2a then supplies is why
-        //     that matters: nothing later in the sequence becomes conditional on how far
-        //     the loop has run.
-        //   * VETO (a `PtValue` carrying a board aggregate, or -- caught at the consumer,
-        //     through `Axes::reads_growing_class`, not here -- a PROJECTED player resource
-        //     such as a life total). Here CR 608.2h is genuinely operative,
-        //     not decorative: an effect requiring "information from the game (such as the
-        //     number of creatures on the battlefield)" has its answer "determined only
-        //     once, when the effect is applied" -- so each loop iteration re-determines it
-        //     against a LARGER board, or against a DIFFERENT life total, which is exactly
-        //     what makes the sequence's results unpredictable under CR 732.2a.
-        //
-        // CR 208.1: power and toughness are the two values this arm classifies, and either
-        // can carry the read -- `Effect::Pump` holds them independently. Exhaustive
-        // 3-field destructure, NO `..`: a new field fails to compile until classified.
+        // RELIEF is an AST property, not a rules one: two literal `PtValue`s and a
+        // read-free target mean nothing later becomes conditional on how far the loop ran.
+        // VETO is where CR 608.2h bites — an effect requiring "information from the game
+        // (such as the number of creatures on the battlefield)" has its answer "determined
+        // only once, when the effect is applied", so each iteration re-determines it
+        // against a LARGER board or a DIFFERENT life total (CR 208.1: power and toughness
+        // carry the read independently). Exhaustive 3-field destructure, NO `..`.
         Effect::Pump {
             power,
             toughness,
@@ -568,50 +551,25 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
                 acc = acc.or(scan_pt_value(power, mode));
                 acc = acc.or(scan_pt_value(toughness, mode));
                 // `target_ctx` is `effect_target_ctx(x, mode)`, computed once at the head
-                // of this function. It ALREADY classifies `Effect::Pump` into the bounded
-                // `SnapshotOrEvent` group -- a classification `scan_effect` itself has
-                // never consulted, because this arm discarded the payload before reaching
-                // it. It is not dead: the block-(1b) S1 arm's conjunct (b-t) reads it
-                // today via `effect_target_reads_growing_class_for_loop`. Nothing about
-                // the classification changes here; this arm starts reading it too.
+                // of this function; it classifies `Effect::Pump` into the bounded
+                // `SnapshotOrEvent` group. The same classification is what
+                // `effect_target_reads_growing_class_for_loop` derives for
+                // `analysis::resource`'s `pump_aggregate_provably_excludes_class` relief.
                 acc = acc.or(scan_target_filter(target, target_ctx, mode));
-                // The `projected` axis is not re-raised here. Every
-                // `ScanMode::LoopFirewall` consult reads both axes through
-                // `Axes::reads_growing_class`, so `{sibling: false, projected: true}` is a
-                // precise verdict here and a veto at the consumer. Re-adding an
-                // `if acc.projected { Axes::CONSERVATIVE }` escalation would change no
-                // consult's verdict and would make this arm report a sibling read the def
-                // does not have.
+                // The `projected` axis is not re-raised here and the verdict stays precise:
+                // the def-level and effect-target entry points both ask
+                // `Axes::reads_growing_class` (the disjunction), and the two
+                // `continuous_modification_reads_*` entry points project one axis each with
+                // their caller disjoining them — so `{sibling: false, projected: true}`
+                // vetoes at every consumer, while an `if acc.projected` escalation would
+                // make this arm report a sibling read the def does not have.
                 //
-                // Why the growing-class walk carries that axis at all is block (4)'s own
-                // recorded reason, and it holds identically on these two surfaces: the
-                // projected-resource firewall
-                // (`fire_time_conditions_read_projected_resource_scoped`) scans trigger
+                // The walk carries that axis because nothing downstream re-checks it here:
+                // `fire_time_conditions_read_projected_resource_scoped` scans trigger
                 // CONDITIONS, replacement conditions and bodies, static conditions and
-                // transient effects -- never `obj.abilities`, never a trigger `execute`
-                // body, which are exactly blocks (2) and (1b)'s surfaces. Nothing
-                // downstream re-checks them, so this walk is the sole guard there too.
-                //
-                // That absence is a CALL-GRAPH fact, not a textual one, because absence of
-                // a token is not absence of a behaviour: of the five `ability_scan` entry
-                // points that firewall invokes, FOUR take a `TriggerCondition` /
-                // `StaticCondition` / `ReplacementCondition` / `Duration` and none of their
-                // bodies reaches `scan_effect`, `ability_definition_axes` or
-                // `scan_trigger_definition` at all, so no execute body is reachable from
-                // them BY TYPE; the fifth, `ability_reads_projected_resource`, is the one
-                // `AbilityDefinition` walker and is applied ONLY to a replacement's
-                // `runtime_execute`; and that firewall's own
-                // `replacement_body_may_read_projected` fails closed on
-                // `def.execute.is_some()` without descending at all.
-                //
-                // CR 608.2h is operative here and not decorative: a pump scaled by a
-                // player's life total "requires information from the game", whose answer is
-                // "determined only once, when the effect is applied", so each loop
-                // iteration re-determines it against a DIFFERENT life total -- which is
-                // what makes the sequence's results unpredictable under CR 732.2a. The
-                // engine fact about WHICH firewall can see the read is deliberately cited
-                // to NO rule: the Comprehensive Rules describe neither this scanner's axes
-                // nor which of its consumers reads them.
+                // transient effects — never `obj.abilities`, never a trigger `execute`
+                // body; its `AbilityDefinition` walker runs only on a replacement's
+                // `runtime_execute` and fails closed on `def.execute.is_some()`.
                 acc
             }
         },
@@ -688,7 +646,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
                         mode,
                     ));
                 }
-                // A granted static's condition + its layered modifications (P2-a).
+                // A granted static's condition + its layered modifications.
                 for sd in static_abilities {
                     if let Some(cond) = &sd.condition {
                         acc = acc.or(scan_static_condition(cond, mode));
@@ -1170,7 +1128,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             ScanMode::LoopFirewall => {
                 let mut acc = scan_mana_production(produced, mode);
                 // CR 601.2c: a mana target is role-tagged (recipient / count
-                // source). Scan EVERY declared role filter, mirroring the D5
+                // source). Scan EVERY declared role filter, mirroring the
                 // legacy scan (`ability_rw`) and the AI POISON scan
                 // (`ai_support::filter`) — a partial view here would let the
                 // loop firewall miss a target-derived axis.
@@ -1600,8 +1558,8 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             acc
         }
         // CR 205.2a: `category` iterates a FIXED set (the 5 colors / card types),
-        // NOT the growing class. Effect-level fields destructured no-`..` (mitigation #2:
-        // a new census field forces re-audit here via E0027). F2: the inner `action` is
+        // NOT the growing class. Effect-level fields destructured no-`..` (a new
+        // census field forces re-audit here via E0027). The inner `action` is
         // matched EXHAUSTIVELY with NO wildcard — a new `ForEachCategoryAction` variant is
         // a compile error until classified here (closes the fail-OPEN `.. => NONE`).
         Effect::ForEachCategory {
@@ -2495,38 +2453,20 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
             acc
         }
         QuantityRef::BattlefieldEntriesThisTurn { player, filter } => {
-            // CR 732.2a: axis-2 self-assertion. This tally is a board-derived
-            // AGGREGATE — `record_battlefield_entry` (game/restrictions.rs) APPENDS
-            // to `battlefield_entries_this_turn` on every battlefield entry, so a
-            // sibling resolution, or a loop cycle that grows the board, changes its
-            // value.
+            // CR 732.2a: axis-2 self-assertion. `record_battlefield_entry`
+            // (game/restrictions.rs) APPENDS to `battlefield_entries_this_turn` on every
+            // battlefield entry, so this tally is a board-derived AGGREGATE that a
+            // sibling resolution or a loop cycle changes. `project_out_resources`
+            // already clears it as an append-only event journal a loop pumps (CR 400
+            // zones / CR 603.6a ETB / CR 701.21 sacrifice / CR 111 tokens).
             //
-            // The engine ALREADY classifies this journal as loop-pumped:
-            // `project_out_resources` clears it at analysis/resource.rs:2977 under
-            // "CR 400 (zones) / CR 603.6a (ETB) / CR 701.21 (sacrifice) / CR 111
-            // (tokens): append-only event journals a loop pumps". A `sibling: false`
-            // here contradicted that, and in the unsafe direction: it let the
-            // CR 732.2a firewall certify a loop as bounded while a live observer read
-            // the growing class. Per the module header above (ADD-1) over-veto is the
-            // ONLY permitted error direction (#4603-preserving).
-            //
-            // Per the ⛔ INVARIANT on the `TargetFilter::Typed` arm of
-            // `scan_target_filter`, a board-AGGREGATE caller MUST self-assert
-            // `sibling: true` and must NOT delegate its board-read signal to the
-            // `Typed` arm, whose `LoopFirewall` relaxation otherwise erases the
-            // signal at the two `ability_definition_reads_growing_class_for_loop`
-            // scans inside `fire_time_conditions_read_growing_class` — the trigger
-            // `execute` bodies and the battlefield ability bodies — neither of which
-            // has a `projected` twin in `fire_time_conditions_read_projected_resource`.
-            //
-            // The CR 603.3b APNAP ordering gate (game/triggers.rs, the
-            // `c2_order_independent` term) is the OTHER consumer of this arm and is
-            // provably UNAFFECTED: it scans in `ScanMode::Conservative`, where the
-            // `Typed`/`Or[Typed]` filter every producer emits already forces
-            // `sibling: true` — measured.
-            //
-            // The `filter` census intent stays `SnapshotOrEvent`: it is matched
-            // against a `BattlefieldEntryRecord`, never a live board.
+            // Per the ⛔ INVARIANT on `scan_target_filter`'s `Typed` arm, this
+            // board-AGGREGATE caller self-asserts `sibling: true` rather than
+            // delegating: the `Typed` arm's `LoopFirewall` relaxation would otherwise
+            // erase the signal at `fire_time_conditions_read_growing_class`, which has
+            // no `projected` twin. The CR 603.3b ordering gate is unaffected (it scans
+            // `Conservative`), and the `filter` census intent stays `SnapshotOrEvent`:
+            // it is matched against a `BattlefieldEntryRecord`, never a live board.
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -3144,7 +3084,7 @@ fn scan_guess_subject(x: &GuessSubject, mode: ScanMode) -> Axes {
 }
 
 fn scan_target_filter(x: &TargetFilter, ctx: FilterReadContext, mode: ScanMode) -> Axes {
-    // CR 732.2a firewall census discipline (REQ-1). `LiveBoardCensus`: this CALL
+    // CR 732.2a firewall census discipline. `LiveBoardCensus`: this CALL
     // SITE counts/tests battlefield membership ⇒ `sibling` is the census's OWN read,
     // injected here independent of the filter's shape (also fixing the latent
     // non-`Typed` board-filter miss, "bug (a)"), never relaxed. `SnapshotOrEvent`:
@@ -3174,11 +3114,10 @@ fn scan_target_filter(x: &TargetFilter, ctx: FilterReadContext, mode: ScanMode) 
         // like SelfRef — no event/sibling/projected resource axis.
         TargetFilter::OriginalSource => Axes::NONE,
         TargetFilter::SourceOrPaired => Axes::NONE,
-        // CR 106.1 / CR 119 / CR 122.1: a Typed target filter reads a PROJECTED
-        // player resource ONLY via a property/controller that references one
-        // (authority: `project_out_resources`, analysis/resource.rs). Pure
-        // type/controller predicates read none. `event`/`sibling` stay CONSERVATIVE
-        // (byte-preserved) — only the projected axis is refined.
+        // CR 106.1 / CR 119 / CR 122.1: a Typed target filter reads a PROJECTED player
+        // resource ONLY via a property/controller that references one (authority:
+        // `project_out_resources`). Pure type/controller predicates read none;
+        // `event`/`sibling` stay CONSERVATIVE, only the projected axis is refined.
         //
         // ⛔ INVARIANT (CR 732.2a firewall soundness): this arm is the SOLE
         // `sibling: true` source inside `scan_target_filter`. A board-AGGREGATE
@@ -3187,8 +3126,8 @@ fn scan_target_filter(x: &TargetFilter, ctx: FilterReadContext, mode: ScanMode) 
         // `sibling: true` literal and only THEN `.or(scan_target_filter(..))` — it
         // must NOT delegate its board-read signal to this `Typed` arm. Two reasons:
         // (a) a non-`Typed` board filter would be missed even today; (b) a future
-        // P3 (`sibling: mode == Conservative`) relaxation of this arm would silently
-        // turn every delegating aggregate into a false certificate.
+        // `sibling: mode == Conservative` relaxation of this arm would silently turn
+        // every delegating aggregate into a false certificate.
         TargetFilter::Typed(tf) => {
             // CR 732.2a: a mode-divergent arm. `event` stays unconditionally true
             // (byte-preserved).
@@ -3405,9 +3344,10 @@ fn scan_object_scope(x: &ObjectScope) -> Axes {
 /// `ContinuousModification::GrantTrigger`), and the firing condition of a DELAYED triggered
 /// ability created by an effect (CR 603.7, via `scan_delayed_trigger_condition`).
 ///
-/// FOR THE GRANTED CARRIER, block (1) of the object-growth firewall already scans an INSTALLED
+/// FOR THE GRANTED CARRIER, the object-growth firewall already scans an INSTALLED
 /// trigger's `condition` + `execute` on the same layer-flushed frame (`analysis::resource`
-/// blocks (1b)/(5b)), so the blanket `Axes::CONSERVATIVE` this replaces was a redundant SECOND
+/// `fire_time_conditions_read_growing_class_scoped`), so the blanket `Axes::CONSERVATIVE`
+/// this replaces was a redundant SECOND
 /// veto on content already read; a DELAYED trigger is attached to no object, is never reached
 /// by that scan, and the descent there is a FIRST read. Descending is what lets the firewall
 /// NOT over-veto a granted trigger whose body reads nothing (Bello, Bard of the Brambles'
@@ -3440,49 +3380,59 @@ fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
         //      or game state MATCHES a triggered ability's trigger event, that
         //      ability automatically triggers". These select WHICH event fires the
         //      trigger; they are not resolution-time reads, and matcher-observation
-        //      is handled by the firewall's class-scoped relief (block (1a)), never
-        //      by a read axis.
+        //      is handled by the firewall's class-scoped relief, never by a read axis.
         //      That relief — `game::triggers`'s `etb_observer_provably_excludes_class` — is
-        //      ASSERTED, not measured; carriers here: `ContinuousModification::GrantTrigger`
-        //      and `scan_delayed_trigger_condition`, the second widening what reaches here.
+        //      ASSERTED, not measured, over the two carriers that reach here:
+        //      `ContinuousModification::GrantTrigger` and `scan_delayed_trigger_condition`,
+        //      the second widening what reaches here. See the retirement rule below.
         valid_card: _,
         valid_target: _,
         valid_subject_player: _,
         valid_source: _,
         zone_change_clauses: _,
+        // RETIREMENT for that asserted exclusion: it stands until this census returns
+        // zero — then delete the assertion and this note; above zero, repair both
+        // carriers in one change against this function. The count over-approximates (the
+        // relief also makes a runtime `valid_card_matches` check no static census can
+        // answer), so a zero is sound and a non-zero is a population to read:
+        //   jq '[..|objects|select(.type=="GrantTrigger").trigger,
+        //        (select(.type=="CreateDelayedTrigger").condition
+        //         |..|objects|select(has("trigger_zones")))]
+        //       |map(select(([.valid_card,.valid_target,.valid_subject_player,.valid_source]
+        //                    |any(.!=null)) or ((.zone_change_clauses//[])|length)>0))
+        //       |map(select((([.mode]|inside(["ChangesZone","ChangesZoneAll"]))
+        //                    and ((.zone_change_clauses//[])|length)==0
+        //                    and .destination=="Battlefield" and .valid_card!=null)|not))
+        //       |length' client/public/card-data.json   # ./scripts/gen-card-data.sh
 
         // ---- read-free: the Room-half (door) STAMP — a matcher key of the class
         //      above, at its most inert end. `RoomDoor` is a fieldless two-variant
         //      discriminator (`game_object`), so unlike `valid_card` it cannot even
         //      express a filter: no payload position reaches a `TargetFilter` or a
-        //      `QuantityExpr`, and it opens no traversal-closure hole. It is fixed
-        //      per definition, not board-tracked — the only writes are the
-        //      once-claimed stamps in `GameObject::install_room_door_text`, so no
-        //      sibling resolving first can move it. Both readers GATE which printed
-        //      text acts, never a resolution-time value: CR 709.5h (an unlock
-        //      ability triggers for ITS half) compares the stamp to the event's own
-        //      `door` tag, and CR 709.5 (a locked half has no rules text) drops a
-        //      stamped trigger while THAT object's own designation is absent. Both
-        //      verdicts are functions of a per-definition constant, the event's own
-        //      door tag, and the source's own designations — none varies with how
-        //      many members the growing class has, so a door gate can only NARROW
-        //      which triggers reach the firewall, never change the verdict for one
-        //      that does.
+        //      `QuantityExpr`, and it opens no traversal-closure hole. It is fixed per
+        //      definition — the only writes are the once-claimed stamps in
+        //      `GameObject::install_room_door_text`, so no sibling resolving first can
+        //      move it. Both readers GATE which printed text acts, never a
+        //      resolution-time value: CR 709.5h (an unlock ability triggers for ITS
+        //      half) compares the stamp to the event's own `door` tag, and CR 709.5 (a
+        //      locked half has no rules text) drops a stamped trigger while THAT
+        //      object's own designation is absent. Neither verdict varies with the
+        //      growing class's size, so a door gate can only NARROW which triggers
+        //      reach the firewall.
         room_door: _,
 
-        // ---- read-free: pure event SHAPE (CR 603.2). 173 `TriggerMode` variants,
-        //      of which exactly 4 carry a payload (an ability tag, a planeswalk
-        //      role, an ability-lifecycle point, and an `Unknown(String)`
-        //      fallback); none reaches a `TargetFilter` or a `QuantityExpr`.
+        // ---- read-free: pure event SHAPE (CR 603.2). The only `TriggerMode`
+        //      variants carrying a payload hold an ability tag, a planeswalk role,
+        //      an ability-lifecycle point, or an `Unknown(String)` fallback; none
+        //      reaches a `TargetFilter` or a `QuantityExpr`.
         //      ⚠ `mode: _` is load-bearing for COMPILATION as well as for
         //      classification: binding this field by name would shadow the
         //      `mode: ScanMode` parameter that every delegation below threads.
         mode: _,
 
-        // ---- read-free: zone / phase / flag / literal-threshold metadata. None
-        //      reaches a `TargetFilter` or a `QuantityExpr` (measured by resolving
-        //      each field's declared type and recursing its payload positions;
-        //      9 of the 37 fields reach one, and all 9 are handled above).
+        // ---- read-free: zone / phase / flag / literal-threshold metadata. No payload
+        //      position of any field below reaches a `TargetFilter` or a
+        //      `QuantityExpr`; every field that does is handled above.
         origin: _,
         origin_zones: _,
         destination: _,
@@ -3526,11 +3476,8 @@ fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
         // CR 118.12: `payer` names WHO PAYS — a player selector, not a board
         // census; nothing here counts objects. Same field class as
         // `target_chooser` and `optional_player`, which `ability_definition_axes`
-        // already routes at `SnapshotOrEvent`. ADD-1's census default is
-        // DISCHARGED by measurement rather than assumed away: 0 of 556 real
-        // `unless_pay.payer` values in the card corpus express a board-scoped read
-        // (the 4 `Typed` ones carry `properties: []`, so `typed_filter_axes`
-        // yields `Axes::NONE`). This is NOT a relaxation hole — a payer that DOES
+        // already routes at `SnapshotOrEvent`. Declining the census default here is
+        // NOT a relaxation hole — a payer that DOES
         // read the board still reports `sibling` through `typed_filter_axes` ->
         // `scan_filter_prop`'s census recursion; `SnapshotOrEvent` declines only
         // this call site's OWN injection, and `cost` stays scanned regardless.
@@ -3560,7 +3507,7 @@ fn scan_trigger_definition(t: &TriggerDefinition, mode: ScanMode) -> Axes {
 fn scan_trigger_constraint(x: &TriggerConstraint, mode: ScanMode) -> Axes {
     match x {
         // CR 603.2: a filtered spell-count gate — "your second [qualifier] spell
-        // each turn" counts only spells matching `filter`. ADD-1: a newly-added
+        // each turn" counts only spells matching `filter`. A newly-added
         // filter call site is `LiveBoardCensus` until PROVEN snapshot/event, and
         // the same-file precedent for count-gate filters is unanimous
         // (`QuantityRef::ObjectCount`, `TriggerCondition::ControlsType`,
@@ -4008,7 +3955,7 @@ fn scan_delayed_trigger_condition(c: &DelayedTriggerCondition, mode: ScanMode) -
         // to delegate to — the arms below have one, and `effect_target_ctx` is not it,
         // because it classifies EFFECT targets and a delayed-trigger matcher is not
         // one. Replicating a matcher discipline inline would mint a second, unowned
-        // copy of it. `FilterReadContext`'s ADD-1 rule makes census the safe direction
+        // copy of it. `FilterReadContext`'s census default is the safe direction
         // for a contested new call site: over-veto, never a false offer.
         DelayedTriggerCondition::WhenDies { filter }
         | DelayedTriggerCondition::WhenLeavesPlayFiltered { filter }
@@ -4582,7 +4529,7 @@ fn scan_player_filter(x: &PlayerFilter, mode: ScanMode) -> Axes {
         // CR 603.3b + CR 608.2c: the membership set is published by a PRECEDING
         // SIBLING effect in the same chain, and the per-member filter reads live
         // board state for members still on the battlefield — both are
-        // sibling-mutable. Per ADD-1 a newly-added filter site is classified
+        // sibling-mutable. A newly-added filter site is classified
         // `LiveBoardCensus` (fail-closed), matching `ControlsCount`.
         PlayerFilter::TrackedSetPossessor {
             filter,
@@ -4620,19 +4567,19 @@ fn scan_replacement_condition(x: &ReplacementCondition, mode: ScanMode) -> Axes 
             projected: false,
         },
         // CR 614.1d: an "enters tapped unless you control a [subtype]" self-entry
-        // replacement. Its evaluator censuses the live battlefield — other permanents this
-        // controller controls carrying a listed subtype — and reads no triggering-event
-        // characteristic and no projected player resource, so the verdict below is the
-        // narrow census literal rather than `Axes::CONSERVATIVE`.
+        // replacement. Its evaluator censuses the live battlefield — other permanents
+        // this controller controls carrying a listed subtype — and reads no
+        // triggering-event characteristic and no projected player resource, so the
+        // verdict below is the narrow census literal, not `Axes::CONSERVATIVE`.
         //
-        // The literal is written inline rather than delegated because the payload is a list
-        // of subtype names, not a `TargetFilter`: there is nothing to hand to
-        // `scan_target_filter`, and inspecting the payload to relax the axis would re-open a
+        // The literal is inline rather than delegated because the payload is a list of
+        // subtype names, not a `TargetFilter`: there is nothing to hand to
+        // `scan_target_filter`, and inspecting it to relax the axis would re-open a
         // census the evaluator still runs.
         //
-        // CR 732.2a: no disjointness arm matches this variant, so the only def block (3) spares
-        // is one `replacement_is_spent_self_entry` skips whole — an unblinked `SelfRef` entry
-        // hosted on the battlefield, outside the proven class. Every other one vetoes here.
+        // CR 732.2a: no disjointness arm matches this variant, so the only def the
+        // replacement-condition accessor spares is one `replacement_is_spent_self_entry`
+        // skips whole — an unblinked `SelfRef` entry on the battlefield.
         ReplacementCondition::UnlessControlsSubtype { subtypes: _ } => Axes {
             event: false,
             sibling: true,
@@ -4856,7 +4803,7 @@ pub(crate) fn ability_uses_event_context(ability: &ResolvedAbility) -> bool {
 
 /// Axis 2: does this resolved ability read a source/recipient or board-scoped
 /// mutable aggregate a sibling copy could change? (CR 603.3b; `game::triggers`
-/// C2 distinct-event auto-resolve gate — the Rubblebelt Rioters / Orcish
+/// distinct-event auto-resolve gate — the Rubblebelt Rioters / Orcish
 /// Siegemaster exclusion.)
 pub(crate) fn ability_reads_sibling_mutable(ability: &ResolvedAbility) -> bool {
     resolved_ability_axes(ability, ScanMode::Conservative).sibling
@@ -4895,7 +4842,7 @@ pub(crate) fn duration_reads_projected_resource(duration: &Duration) -> bool {
 
 // ---------------------------------------------------------------------------
 // Axis-2 (sibling-mutable) off-stack read surface — the object-growth firewall
-// (`analysis::resource::loop_states_cover_modulo_object_growth`, PR-7 Phase 4a).
+// (`analysis::resource::loop_states_cover_modulo_object_growth`).
 // Mirrors the projected-resource accessors above but projects `.sibling` (the
 // board-scoped mutable-aggregate axis, CR 603.3b): "reads a source/recipient or
 // board aggregate a sibling copy could mutate" IS "reads the inert growth set
@@ -4907,9 +4854,17 @@ pub(crate) fn duration_reads_projected_resource(duration: &Duration) -> bool {
 
 /// Full read-axes of an `AbilityDefinition` (the def-level analogue of
 /// [`resolved_ability_axes`]). Exhaustive no-`..` destructure — a future field
-/// fails to compile until classified. `cost` is bound read-free here because the
-/// object-growth cost surface is scanned separately by
-/// `analysis::resource::cost_surface_references_growing_class` (§5.4).
+/// fails to compile until classified.
+///
+/// `cost` is bound read-free because this walker classifies RESOLUTION-time reads
+/// and an activation cost is not one — CR 601.2f / CR 602.5a place a cost's read at
+/// the moment it is PAID. The object-growth cost surface is a separate scan,
+/// `analysis::resource::cost_surface_references_growing_class`, whose reach is
+/// narrower than this walker's: it descends an object's `abilities` cost tree
+/// (`cost` / `sub_ability` / `else_ability` / `mode_abilities`), so it does not see
+/// a def handed to this walker through [`scan_trigger_definition`] or the
+/// `Effect::CreateDelayedTrigger` arm. Those two carriers, not this binding, are
+/// where a trigger-body cost surface has to be argued.
 fn ability_definition_axes(def: &AbilityDefinition, mode: ScanMode) -> Axes {
     let AbilityDefinition {
         // ---- read-bearing ----
@@ -4933,8 +4888,9 @@ fn ability_definition_axes(def: &AbilityDefinition, mode: ScanMode) -> Axes {
         unless_pay,
         distribute,
         cost_reduction,
-        // ---- read-free: cost scanned separately (§5.4), announce-time metadata,
-        //      flags, and tags — none express a resolution-time dynamic read ----
+        // ---- read-free: cost is a payment-time read (see the doc above),
+        //      announce-time metadata, flags, and tags — none express a
+        //      resolution-time dynamic read ----
         kind: _,
         cost: _,
         description: _,
@@ -5028,7 +4984,7 @@ fn ability_definition_axes(def: &AbilityDefinition, mode: ScanMode) -> Axes {
 }
 
 /// Axis 2 on a def-level `AbilityDefinition` (trigger `execute` bodies, every
-/// `obj.abilities` def regardless of `kind` [S5], granted-ability bodies, and the
+/// `obj.abilities` def regardless of `kind`, granted-ability bodies, and the
 /// pending/delayed store bodies).
 pub(crate) fn ability_definition_reads_sibling_mutable(def: &AbilityDefinition) -> bool {
     ability_definition_axes(def, ScanMode::Conservative).sibling
@@ -5056,7 +5012,7 @@ pub(crate) fn duration_reads_sibling_mutable(duration: &Duration) -> bool {
     scan_duration(duration, ScanMode::Conservative).sibling
 }
 
-/// Axis 2 on any cost surface (§5.4 / Finding-2): EXHAUSTIVE `AbilityCost` match,
+/// Axis 2 on any cost surface: EXHAUSTIVE `AbilityCost` match,
 /// NO `_`. The five `QuantityExpr`-bearing variants route through
 /// [`scan_quantity_expr`]; the three nested containers recurse; `EffectCost` routes
 /// to [`scan_effect`]; every fixed/bounded/structural variant is read-free (a new
@@ -5129,13 +5085,13 @@ fn scan_ability_cost(cost: &AbilityCost, mode: ScanMode) -> Axes {
     }
 }
 
-/// §5.4 item (1) — cost-KEYWORD family. Does casting or activating an object that
+/// The cost-KEYWORD family. Does casting or activating an object that
 /// carries `kw` incur a cost whose MAGNITUDE or PAYABILITY is a function of a
 /// battlefield/graveyard object quantity — i.e. the cost either (a) scales down by a
 /// board/graveyard count, or (b) taps/sacrifices/exiles a member of a board or
 /// graveyard object class? Such an IMPLICIT (keyword-driven) cost reads the inert
 /// growth set |G| and breaks the fixed-cost extrapolation the object-growth cover
-/// relies on (CR 732.2a / §6 keystone: a cast-affordability the `ResourceVector`
+/// relies on (CR 732.2a: a cast-affordability the `ResourceVector`
 /// does not model).
 ///
 /// EXHAUSTIVE no-`_` match on `Keyword` (the repo's no-wildcard scan doctrine): a
@@ -5160,8 +5116,10 @@ fn scan_ability_cost(cost: &AbilityCost, mode: ScanMode) -> Axes {
 /// Undaunted (CR 702.125a) is SAFE — it reduces by the OPPONENT count (CR 119 player
 /// axis), never a board object class, so it cannot read |G|. Every combat/evasion/
 /// characteristic keyword, every fixed-mana or self/hand cost keyword, and every
-/// ETB/triggered mechanic (whose board reads, if any, are caught by the §5.3a
+/// ETB/triggered mechanic (whose board reads, if any, are caught by the
 /// trigger/replacement firewall, not the cost surface) is SAFE.
+///
+/// BLOCK EXEMPTION — CR table: the TRUE-arm keyword list above, each with its rule.
 pub(crate) fn keyword_cost_reads_growing_class(kw: &Keyword) -> bool {
     match kw {
         // (a)/(b): the casting/activation cost reads a battlefield/graveyard object
@@ -5372,12 +5330,12 @@ pub(crate) fn keyword_cost_reads_growing_class(kw: &Keyword) -> bool {
     }
 }
 
-/// §5.4 item (1) — granted-keyword cost family. A runtime-granted cost keyword
+/// The granted-keyword cost family. A runtime-granted cost keyword
 /// (`ContinuousModification::AddKeyword`) or a granted keyword whose cost is
 /// derived from board state (`AddKeywordWithDerivedCost`) reaches the same
 /// affordability hole as a printed one. Every other modification is not a
 /// cost-keyword grant (read-free on THIS axis; its board reads, if any, are caught
-/// by the §5.3a effect-body firewall).
+/// by the effect-body firewall).
 pub(crate) fn modification_grants_growing_cost_keyword(m: &ContinuousModification) -> bool {
     match m {
         ContinuousModification::AddKeyword { keyword } => keyword_cost_reads_growing_class(keyword),
@@ -5391,7 +5349,7 @@ pub(crate) fn modification_grants_growing_cost_keyword(m: &ContinuousModificatio
 // ---------------------------------------------------------------------------
 // CR 732.2a object-growth firewall scanners (LoopFirewall mode only).
 //
-// These are the P2 walkers that make the `Effect::Token`/`Effect::Mana` blankets
+// These are the walkers that make the `Effect::Token`/`Effect::Mana` blankets
 // DESCEND. They are reached exclusively through the `*_for_loop` /
 // `continuous_modification_reads_*` entry points below, which the
 // `analysis::resource` firewall calls under `loop_detection.samples()`. Nothing
@@ -5413,7 +5371,7 @@ fn scan_pt_value(pt: &PtValue, mode: ScanMode) -> Axes {
 /// board/graveyard class? Payload SHAPE alone is unsound (Convoke/Delve/Improvise/
 /// Bargain/Station are UNIT variants that read the board), so the COST-read axis
 /// delegates to the shipped exhaustive semantic authority
-/// [`keyword_cost_reads_growing_class`] (17 tap/sacrifice/exile/scale keywords),
+/// [`keyword_cost_reads_growing_class`] (the tap/sacrifice/exile/scale keywords),
 /// `.or()` a descent of the few keyword PAYLOADS that carry a scannable
 /// `QuantityExpr` / `TargetFilter` / `AbilityCost`. EXHAUSTIVE, NO `_` wildcard —
 /// a new payload-bearing keyword fails to compile until classified.
@@ -5637,11 +5595,11 @@ fn scan_keyword(kw: &Keyword, mode: ScanMode) -> Axes {
 }
 
 /// CR 106.1/106.7/109.1: the produced-mana metric of an `Effect::Mana`. Two
-/// distinct sibling-read paths (R1): a COUNT-DRIVEN metric's board read (if any)
+/// distinct sibling-read paths: a COUNT-DRIVEN metric's board read (if any)
 /// lives entirely inside its `count` (self-guarded by `scan_quantity_ref`'s
 /// `ObjectCount` arm), while a color/type-FROM-BOARD aggregate must self-assert
 /// its OWN `sibling:true` (see the invariant at `scan_target_filter`'s `Typed`
-/// arm). EXHAUSTIVE over all 15 variants, NO `_` wildcard.
+/// arm). EXHAUSTIVE over every variant, NO `_` wildcard.
 fn scan_mana_production(p: &ManaProduction, mode: ScanMode) -> Axes {
     match p {
         // COUNT-DRIVEN: any board read lives inside `count`; NO own sibling literal.
@@ -5668,7 +5626,7 @@ fn scan_mana_production(p: &ManaProduction, mode: ScanMode) -> Axes {
             scan_quantity_expr(count, mode).or(scan_object_scope(scope))
         }
         // ⛔ BOARD-AGGREGATE (color/type-from-board): self-assert OWN `sibling:true`
-        // (R1 — mirror `scan_quantity_ref`; must NOT delegate the board read to the
+        // (mirror `scan_quantity_ref`; must NOT delegate the board read to the
         // `Typed` arm of `scan_target_filter`).
         ManaProduction::DistinctColorsAmongPermanents { filter } => Axes {
             event: false,
@@ -5719,14 +5677,14 @@ fn scan_mana_production(p: &ManaProduction, mode: ScanMode) -> Axes {
 
 /// CR 613.1 + CR 732.2a: does a continuous modification READ a mutable board
 /// aggregate (`sibling`) or a projected player resource (`projected`)? EXHAUSTIVE
-/// over all 53 `ContinuousModification` variants, NO `_` wildcard — a new variant
+/// over every `ContinuousModification` variant, NO `_` wildcard — a new variant
 /// fails to compile until classified. `mode` is threaded to both granted-body
 /// descents (`GrantAbility` / `GrantTrigger`) so a token body inside a grant is
 /// classified in the same mode. The AST is finite and acyclic, so the mutual
 /// recursion terminates.
 fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> Axes {
     match m {
-        // descend the dynamic P/T / dynamic-keyword / enter-counter QuantityExpr (8)
+        // descend the dynamic P/T / dynamic-keyword / enter-counter QuantityExpr
         ContinuousModification::SetDynamicPower { value }
         | ContinuousModification::SetDynamicToughness { value }
         | ContinuousModification::SetPowerDynamic { value }
@@ -5737,7 +5695,7 @@ fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> A
             scan_quantity_expr(value, mode)
         }
         ContinuousModification::AddCounterOnEnter { count, .. } => scan_quantity_expr(count, mode),
-        // descend the granted keyword (2, B4 — routes through the same authority)
+        // descend the granted keyword (routes through the same authority)
         ContinuousModification::AddKeyword { keyword }
         | ContinuousModification::RemoveKeyword { keyword } => scan_keyword(keyword, mode),
         // descend a granted ability body (GrantAbility). Presence of Gond's aura
@@ -5750,7 +5708,7 @@ fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> A
         // same reason, as the `GrantAbility` arm directly above. See
         // `scan_trigger_definition` for the per-field scanned/read-free split.
         ContinuousModification::GrantTrigger { trigger } => scan_trigger_definition(trigger, mode),
-        // fail-closed CONSERVATIVE: inner payloads with no walker (11).
+        // fail-closed CONSERVATIVE: inner payloads with no walker.
         ContinuousModification::CopyValues { .. }
         // CR 707.2c (Metamorphic Alteration): the copy-marker stands in for a
         // copy that grants the donor's whole ability set — fail-closed alongside
@@ -5768,10 +5726,10 @@ fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> A
         | ContinuousModification::AddKeywordWithDerivedCost { .. }
         | ContinuousModification::RetainPrintedTriggerFromSource { .. }
         | ContinuousModification::RetainPrintedAbilityFromSource { .. }
-        // upstream #6009 (Sakashima): copy-layer "retain this object's own abilities"
+        // Sakashima's copy-layer "retain this object's own abilities"
         // — same class as the RetainPrinted* siblings (no inner walker) ⇒ fail-closed.
         | ContinuousModification::RetainAllOtherAbilitiesFromSource => Axes::CONSERVATIVE,
-        // read-free (33): static structural mods (name/type/color/anthem/chosen-
+        // read-free: static structural mods (name/type/color/anthem/chosen-
         // attribute/copy-time) read no growing aggregate. An anthem `Add/SetPower`
         // applies to a growing class but READS nothing.
         ContinuousModification::SetName { .. }
@@ -5816,7 +5774,7 @@ fn scan_continuous_modification(m: &ContinuousModification, mode: ScanMode) -> A
 /// LoopFirewall-mode growing class (`sibling` ∨ `projected`) on a def-level
 /// `AbilityDefinition` (trigger `execute` bodies, every functioning `obj.abilities`
 /// def, granted-ability bodies) — the CR 732.2a object-growth firewall's DESCENDING
-/// body scan (§P0-e row 2).
+/// body scan.
 ///
 /// Both axes, and what `Conservative` consumers ask instead: see
 /// [`Axes::reads_growing_class`].
@@ -5827,26 +5785,17 @@ pub(crate) fn ability_definition_reads_growing_class_for_loop(def: &AbilityDefin
 /// CR 732.2a growing class (`sibling` ∨ `projected`) on ONE effect-TARGET filter,
 /// under that effect's OWN census discipline. `target` MUST be a target-filter field
 /// of `effect`: the `FilterReadContext` is derived from `effect` by
-/// [`effect_target_ctx`] — the same derivation `scan_effect` makes for its own
-/// [`scan_target_filter`] calls — so a future re-grouping of that effect
-/// (`SnapshotOrEvent` -> `LiveBoardCensus`) moves this answer with it instead of
-/// desynchronising a caller that pinned the context.
-///
-/// Both axes, and what `Conservative` consumers ask instead: see
+/// [`effect_target_ctx`], the same derivation `scan_effect` makes for its own
+/// [`scan_target_filter`] calls, so a re-grouping of that effect moves this answer
+/// with it. Both axes, and what `Conservative` consumers ask instead: see
 /// [`Axes::reads_growing_class`].
 ///
-/// `pub(crate)` for ONE reason: the `analysis::resource` block-(1b) relief arm
+/// `pub(crate)` for ONE reason: `analysis::resource`'s relief arm
 /// `pump_aggregate_provably_excludes_class` must prove `Effect::Pump`'s target
-/// contributes no growing-class read before it may relieve that def's veto. That veto
-/// is carried by the aggregate `PtValue` half, which [`scan_quantity_ref`] marks
-/// `sibling` before it walks the filter — so proving the AGGREGATE class-disjoint
-/// leaves the target uncleared. (`scan_effect`'s `Effect::Pump` arm evaluates the
-/// same target expression under `ScanMode::LoopFirewall`, but `.or()`-ed with the
-/// aggregate, so it cannot substitute for this check.) Its two sibling arms
-/// state that as a `target: None` PATTERN; `Effect::Pump` cannot, because its
-/// `target` is a `TargetFilter` and not an `Option<_>`. Exposed as a BOOLEAN so
-/// [`Axes`], [`scan_target_filter`] and [`effect_target_ctx`] all stay private — the
-/// arm gets the verdict, never the walker.
+/// contributes no growing-class read before relieving that def's veto — a veto the
+/// aggregate `PtValue` half carries, since [`scan_quantity_ref`] marks it `sibling`
+/// before walking the filter. Its sibling arms state this as a `target: None`
+/// PATTERN, which `Effect::Pump` cannot: its `target` is not an `Option<_>`.
 pub(crate) fn effect_target_reads_growing_class_for_loop(
     effect: &Effect,
     target: &TargetFilter,
@@ -5881,7 +5830,7 @@ pub(crate) fn continuous_modification_reads_sibling_mutable(m: &ContinuousModifi
 }
 
 /// CR 106.1 / CR 119 / CR 122.1 + CR 732.2a: does a live continuous modification
-/// READ a projected player resource (axis-3 `projected`)? Load-bearing (M9): the
+/// READ a projected player resource (axis-3 `projected`)? Load-bearing: the
 /// projected-resource firewall has NO modification scan, so that descent is
 /// the sole guard against a projected-reading modification (a
 /// `SetDynamicPower{Ref(LifeTotal)}` anthem).
@@ -5889,35 +5838,22 @@ pub(crate) fn continuous_modification_reads_projected_resource(m: &ContinuousMod
     scan_continuous_modification(m, ScanMode::LoopFirewall).projected
 }
 
-/// CR 732.2a + BLOCKER-1: the census discipline for `scan_effect`'s effect-TARGET
-/// filter reads (the `FilterReadContext` a `scan_target_filter(target, _, mode)`
-/// call inside `scan_effect` passes). INVERTED default — census unless PROVEN
-/// inert-checkable. Every effect-target read is `LiveBoardCensus` (veto = safe)
-/// UNLESS the effect is in the small, explicit, pinned proven-inert exception set;
-/// an unclassified / future cardinality-driving `Effect` (the next
-/// `EachSourceDealsDamage`) lands `LiveBoardCensus` = fail-CLOSED (missed offer,
-/// never false offer; #4603-preserving). Mirrors `effect_resolution_choice_freedom`:
-/// EXHAUSTIVE `match e`, NO `_` wildcard — a NEW `Effect` variant fails to compile
-/// until placed in one of the two arms (the natural, safe choice is the census
-/// group). There is NO `_ => SnapshotOrEvent` anywhere in this path.
+/// CR 732.2a: the census discipline for `scan_effect`'s effect-TARGET filter reads.
+/// INVERTED default — every effect-target read is `LiveBoardCensus` (veto = safe)
+/// unless the effect is in the pinned proven-inert exception set, so an unclassified
+/// or future cardinality-driving `Effect` lands fail-CLOSED (missed offer, never a
+/// false one). EXHAUSTIVE `match e`, NO `_` wildcard, and no `_ => SnapshotOrEvent`
+/// anywhere in this path: a NEW `Effect` variant fails to compile until placed in
+/// one of the two arms. The exception set is `{SetTapState}` ONLY (obligation (ii):
+/// tap/untap of an INERT grown token feeds no drivability, and the stable host's tap
+/// state is part of the certified recurrence via `board_covers`); the two damage
+/// aggregates fall to census automatically because their `.sources` cardinality
+/// DRIVES escalating player damage.
 ///
-/// MAJOR-1 mode-gate: under `Conservative` the census-vs-relax decision does NOT
-/// exist — effect targets pass a fixed `SnapshotOrEvent` (base NONE), BYTE-IDENTICAL
-/// to the old scan (non-`Typed` target → NONE; `Typed` target → the `Typed` arm's
-/// `Conservative` `sibling:true`). The inverted census default applies ONLY under
-/// `LoopFirewall`. This touches ONLY effect targets — the self-asserting
-/// `QuantityRef` census arms pass `LiveBoardCensus` directly and are unchanged in
-/// both modes.
-///
-/// Pinned proven-inert exception set = `{SetTapState}` ONLY (obligation (ii):
-/// tap/untap of an INERT grown token feeds no drivability — `object_is_inert`
-/// (resource.rs) guarantees no `{T}` ability for an untap to enable — and the stable
-/// host's tap state is part of the certified recurrence via `board_covers`). The two
-/// damage aggregates (`EachSourceDealsDamage` / `EachDealsDamageEqualToPower`) fall
-/// to census automatically (their `.sources` cardinality DRIVES escalating player
-/// damage), resolving BLOCKER-1 with zero per-site hand-classification.
+/// Mode-gate: under `Conservative` the decision does NOT exist — effect targets pass
+/// a fixed `SnapshotOrEvent`, BYTE-IDENTICAL to the pre-descent scan.
 fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
-    // MAJOR-1: mode-gate the ROUTING. Under `Conservative` effect targets pass a
+    // Mode-gate the ROUTING. Under `Conservative` effect targets pass a
     // fixed `SnapshotOrEvent` (byte-identity). The inverted census default is
     // `LoopFirewall`-only.
     if mode != ScanMode::LoopFirewall {
@@ -5930,8 +5866,8 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
         // growing class ⇒ fail-CLOSED census. obligation-(ii) does NOT license relaxing
         // these: a loop growing INERT tokens a DamageAll reads has all-inert grown objects
         // (grown_objects_are_inert==true) yet the census read still escalates ⇒ only the
-        // sibling veto catches it. Pinned EXACTLY by `census_tag_set_is_exactly_enumerated`
-        // (guard#3). Defense-in-depth: PumpAll/DamageEachPlayer/ChangeZoneAll are census-
+        // sibling veto catches it. Pinned EXACTLY by `census_tag_set_is_exactly_enumerated`.
+        // Defense-in-depth: PumpAll/DamageEachPlayer/ChangeZoneAll are census-
         // tagged even though their scan_effect arm is CONSERVATIVE/non-scanning today, so a
         // future descent into their mass filter cannot silently relax.
         Effect::EachSourceDealsDamage { .. }
@@ -5952,7 +5888,7 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
         | Effect::EachPlayerCopyChosen { .. }
         | Effect::ChooseAndSacrificeRest { .. }
         | Effect::ChooseObjectsIntoTrackedSet { .. }
-        // R1 (CR 701.60a): Suspect/Unsuspect scope:All is a mass-population battlefield
+        // CR 701.60a: Suspect/Unsuspect scope:All is a mass-population battlefield
         // read (`target_filter()`==None; `suspect.rs` enumerates `state.battlefield`,
         // "like DestroyAll") ⇒ census — its read SCALES with the growing class. scope:Single
         // is a single announced target (a2), relaxed in the single-object group below. The
@@ -5971,20 +5907,17 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
         // single announced/anaphoric target (a2), relaxed in the single-object group
         // below. Exhaustive over EffectScope = {Single, All}.
         | Effect::Transform { scope: EffectScope::All, .. }
-        // ── F1-CLASS DUAL-MODE MASS-BATTLEFIELD RESOLVERS (P3-B round-2): each has a
-        // resolver mode that, when the ability carries NO explicit object target,
-        // enumerates the battlefield (or all phased-in/-out permanents) and applies the
-        // effect to EVERY matching object — a MASS-POPULATION read that SCALES with the
-        // growing class, exactly like the DestroyAll/PumpAll group above. There is NO
-        // static field discriminating the announced-single mode from the mass mode
-        // (it's the resolution-time `ability.targets.is_empty()` / `ParentTarget`
-        // branch), so per the fail-closed framework the WHOLE variant censuses:
-        // over-vetoing the bounded/announced mode is the SAFE direction (a missed
-        // shortcut offer, never a false certificate). These sat in the SnapshotOrEvent
-        // relax `|`-chain below (the same silent-miss class as R1's Suspect{All}) until
-        // the resolver audit surfaced them; each `scan_effect` arm routes its filter
-        // through this `target_ctx` (BecomeCopy is `Axes::CONSERVATIVE` today, so its tag
-        // is defense-in-depth parity with PumpAll/ChangeZoneAll). Pinned by guard#3.
+        // ── DUAL-MODE MASS-BATTLEFIELD RESOLVERS: each has a resolver mode that, when
+        // the ability carries NO explicit object target, enumerates the battlefield (or
+        // all phased-in/-out permanents) and applies the effect to EVERY matching
+        // object — a MASS-POPULATION read that SCALES with the growing class, exactly
+        // like the DestroyAll/PumpAll group above. NO static field discriminates the
+        // announced-single mode from the mass mode (it is the resolution-time
+        // `ability.targets.is_empty()` / `ParentTarget` branch), so the WHOLE variant
+        // censuses: over-vetoing the bounded mode is the SAFE direction. Each
+        // `scan_effect` arm routes its filter through this `target_ctx` (BecomeCopy is
+        // `Axes::CONSERVATIVE` today, so its tag is defense-in-depth parity with
+        // PumpAll/ChangeZoneAll). Pinned by `census_tag_set_is_exactly_enumerated`.
         //   CR 702.26 (Phasing): `phase_out.rs` mass "phase out/in each permanent you
         //     control" iterates `battlefield_phased_in_ids()` / `state.battlefield`.
         | Effect::PhaseOut { .. }
@@ -6013,8 +5946,8 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
         //     every matching permanent at resolution and unions the kinds of
         //     counters on them, so the read scales with battlefield growth.
         | Effect::ChooseCounterKind { .. }
-        //   CR 707.2 + CR 509.1g + CR 506.3e (team-lead override of the combat-scoped
-        //     relax): `copy_token_blocking.rs` UNCONDITIONALLY enumerates
+        //   CR 707.2 + CR 509.1g + CR 506.3e: `copy_token_blocking.rs` UNCONDITIONALLY
+        //     enumerates
         //     `zone_object_ids(Battlefield).filter(matches source_filter)` and creates one
         //     token copy per matching attacker — a mass read that GROWS the board. The
         //     combat-fixed population is NOT sound across multi-combat loops: CR 508.1
@@ -6027,10 +5960,10 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
         // classified Snapshot. `SetTapState` ("untap/tap all matching", scope All) is
         // census-ROLE, but tapping/untapping is STATE-CONVERGENT (idempotent per object,
         // adds no ability/counter/keyword): an untapped grown token is still inert
-        // (object_is_inert, resource.rs:1380-1399) AND its tap flag is compared by
+        // (`object_is_inert`) AND its tap flag is compared by
         // board_covers, so the read cannot escalate. NOT a general (b)-license — a specific
         // proven exception. Destructured no-`..` so a new field forces re-audit. Pinned by
-        // `obligation_ii_census_exception_is_exactly_settapstate` (A7').
+        // `obligation_ii_census_exception_is_exactly_settapstate`.
         Effect::SetTapState {
             target: _,
             scope: _,
@@ -6133,7 +6066,7 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
         | Effect::TargetOnly { .. }
         | Effect::Choose { .. }
         | Effect::ChooseDamageSource { .. }
-        // R1 (CR 701.60a): only the scope:Single Suspect/Unsuspect relaxes — a single
+        // CR 701.60a: only the scope:Single Suspect/Unsuspect relaxes — a single
         // announced target (a2). scope:All is a mass battlefield read, census-tagged above.
         | Effect::Suspect { scope: EffectScope::Single, .. }
         | Effect::Unsuspect { scope: EffectScope::Single, .. }
@@ -6172,7 +6105,7 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
         | Effect::VentureInto { .. }
         | Effect::TakeTheInitiative
         | Effect::Planeswalk
-        // upstream #6070 (Susan Foreman): reorders the PLANAR DECK top (Planechase),
+        // Susan Foreman reorders the PLANAR DECK top (Planechase),
         // not a battlefield population ⇒ not a live-board census (relax).
         | Effect::ArrangePlanarDeckTop { .. }
         | Effect::OpenAttractions { .. }
@@ -6257,32 +6190,20 @@ fn effect_target_ctx(e: &Effect, mode: ScanMode) -> FilterReadContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// F3 (CR 732.2a): census-completeness PARTITION. The INDEPENDENT oracle that
-// cross-checks `effect_target_ctx`. The gap that let R1's Suspect{All} bug hide
-// (a census-ROLE slot silently in `effect_target_ctx`'s generic relax `|`-chain)
-// is closed here: EVERY `Effect` variant is classified EXHAUSTIVELY (NO wildcard)
-// into `Census` (mass battlefield population, scales with growth => fail-closed)
-// or `Relax(reason)`, so a new variant fails the exhaustive match (a compile
-// error in every test / `clippy --all-targets` build, both run by CI) until a
-// human assigns its role, and `census_partition_agrees_with_effect_target_ctx`
-// asserts the two functions' `Census` sets are byte-identical. This oracle is
-// `#[cfg(test)]` guard infrastructure (like the other census guards below), not
-// runtime code.
-//
-// The discriminating property is BATTLEFIELD-MASS-POPULATION, NOT
-// `target_filter()==None`. That distinction is load-bearing in BOTH directions:
-//   * `Effect::UnattachAll` is `target_filter()==Some` yet census-ROLE (its
-//     `target` is a mass population filter), so census is NOT a subset of
-//     `target_filter()==None`; we classify by scaling ROLE, mirroring
-//     `effect_target_ctx`.
-//   * `Dig`/`Seek`/`SearchOutsideGame`/`RevealHand` are `target_filter()==None`
-//     yet correctly RELAXED - they read library/hand/exile pools DISJOINT from
-//     the battlefield growth class (`RelaxReason::ZoneDisjoint`). A naive
-//     "`target_filter()==None` => census" rule would fail-CLOSED on all of them.
-// The `Relax` reason sub-tags are documentation (auditor-facing); only the
-// `Census`/`Relax` boundary is guard-enforced.
-// ---------------------------------------------------------------------------
+// CR 732.2a: census-completeness PARTITION — the INDEPENDENT oracle that
+// cross-checks `effect_target_ctx`, closing the gap where a census-ROLE slot sits
+// silently in that function's generic relax `|`-chain. EVERY `Effect` variant is
+// classified EXHAUSTIVELY (NO wildcard) into `Census` (mass battlefield population,
+// scales with growth => fail-closed) or `Relax(reason)`, so a new variant is a
+// compile error until a human assigns its role, and
+// `census_partition_agrees_with_effect_target_ctx` asserts the two functions'
+// `Census` sets are byte-identical. `#[cfg(test)]` guard infrastructure, not runtime
+// code. The discriminating property is BATTLEFIELD-MASS-POPULATION, NOT
+// `target_filter()==None`: `Effect::UnattachAll` is `Some` yet census-ROLE, while
+// `Dig`/`Seek`/`SearchOutsideGame`/`RevealHand` are `None` yet correctly RELAXED
+// (library/hand/exile pools are DISJOINT from the battlefield growth class), so the
+// classification is by scaling ROLE. The `Relax` reason sub-tags are documentation;
+// only the `Census`/`Relax` boundary is guard-enforced.
 
 /// Why a non-census `Effect` read does NOT scale with the battlefield growth
 /// class. Documentation granularity - only the `Census`/`Relax` split is
@@ -6304,26 +6225,26 @@ enum RelaxReason {
 
 /// The census-vs-relax ROLE of an `Effect`'s target-filter read. Mirrors
 /// `effect_target_ctx`'s `LiveBoardCensus`/`SnapshotOrEvent` decision as an
-/// independent, exhaustively-classified oracle (F3).
+/// independent, exhaustively-classified oracle.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CensusRole {
     /// Mass battlefield population read - enumerated over every matching object,
-    /// scales with the growing class => fail-CLOSED census. EXACTLY the 28
+    /// scales with the growing class => fail-CLOSED census. EXACTLY the
     /// `effect_target_ctx` `LiveBoardCensus` members.
     Census,
     Relax(RelaxReason),
 }
 
-/// F3: exhaustive per-variant census-role classification (NO wildcard). A new
+/// Exhaustive per-variant census-role classification (NO wildcard). A new
 /// `Effect` variant is a compile error until placed in one of the arms below,
-/// converting the F1 silent-miss into a forced, reasoned decision for the whole
+/// converting the silent-miss into a forced, reasoned decision for the whole
 /// CLASS. Cross-checked against `effect_target_ctx` by
 /// `census_partition_agrees_with_effect_target_ctx`.
 #[cfg(test)]
 fn effect_census_role(e: &Effect) -> CensusRole {
     match e {
-        // -- CENSUS (31): verbatim mirror of `effect_target_ctx`'s LiveBoardCensus
+        // -- CENSUS: verbatim mirror of `effect_target_ctx`'s LiveBoardCensus
         // arm - mass battlefield population reads that scale with growth.
         Effect::EachSourceDealsDamage { .. }
         | Effect::EachDealsDamageEqualToPower { .. }
@@ -6351,7 +6272,7 @@ fn effect_census_role(e: &Effect) -> CensusRole {
             scope: EffectScope::All,
             ..
         }
-        // -- F1-CLASS DUAL-MODE MASS-BATTLEFIELD RESOLVERS (P3-B round-2): mirror of the
+        // -- DUAL-MODE MASS-BATTLEFIELD RESOLVERS: mirror of the
         // new `effect_target_ctx` LiveBoardCensus members. Each has a resolver mode that,
         // absent an explicit object target, enumerates the battlefield and applies to
         // EVERY matching object (scales with growth). No static discriminator ⇒ whole
@@ -6374,7 +6295,7 @@ fn effect_census_role(e: &Effect) -> CensusRole {
         // CR 608.2d + CR 122.1: a typed counter-kind source domain scans the
         // matching battlefield population and unions its counter kinds.
         | Effect::ChooseCounterKind { .. }
-        // CR 707.2 + CR 509.1g (team-lead override): `copy_token_blocking.rs` creates one
+        // CR 707.2 + CR 509.1g: `copy_token_blocking.rs` creates one
         // token copy per matching attacker over an UNCONDITIONAL battlefield scan (grows
         // the board); unsound across CR 508.1 multi-combat loops. Mirror of the new
         // effect_target_ctx census member.
@@ -6393,7 +6314,8 @@ fn effect_census_role(e: &Effect) -> CensusRole {
         // the census-ROLE proven exception (TapAll/UntapAll - state-convergent/idempotent,
         // does not escalate over inert growth); scope:Single is an ordinary single announced
         // target. BOTH relax, so both AGREE with effect_target_ctx's scope-blind SetTapState
-        // Snapshot arm (the sole dedicated census-role exception, pinned by A7').
+        // Snapshot arm (the sole dedicated census-role exception, pinned by
+        // `obligation_ii_census_exception_is_exactly_settapstate`).
         Effect::SetTapState {
             scope: EffectScope::All,
             ..
@@ -6566,7 +6488,7 @@ fn effect_census_role(e: &Effect) -> CensusRole {
         | Effect::VentureInto { .. }
         | Effect::TakeTheInitiative
         | Effect::Planeswalk
-        // upstream #6070 (Susan Foreman): reorders the PLANAR DECK top (Planechase),
+        // Susan Foreman reorders the PLANAR DECK top (Planechase),
         // not a battlefield population ⇒ not a live-board census (relax).
         | Effect::ArrangePlanarDeckTop { .. }
         | Effect::OpenAttractions { .. }
@@ -6643,8 +6565,8 @@ fn effect_census_role(e: &Effect) -> CensusRole {
 /// `_` wildcard — a FUTURE random-bearing variant BUILD-BREAKS here, so it can
 /// never be silently offered as deterministic. The false-group is the sibling
 /// `effect_resolution_choice_freedom` variant list minus the randomness arms; the
-/// compiler enforces that the two lists stay in lockstep. (A2 determinism gate —
-/// the static, compile-time-exhaustive half.)
+/// compiler enforces that the two lists stay in lockstep — the static,
+/// compile-time-exhaustive half of the determinism gate.
 pub(crate) fn effect_is_randomness_bearing(e: &Effect) -> bool {
     match e {
         // --- auto-resolved randomness (no `WaitingFor`; the recast injector cannot
@@ -6903,7 +6825,7 @@ pub(crate) fn effect_is_randomness_bearing(e: &Effect) -> bool {
 /// exhaustive `ability_graph::collect_effects` walker for traversal, then runs
 /// `effect_is_randomness_bearing` over every collected effect. `None`-free /
 /// fail-open is impossible: the caller treats an undeterminable ability as a
-/// no-offer separately. (A2 determinism gate.)
+/// no-offer separately. The announce-time half of the determinism gate.
 pub(crate) fn spell_ability_bears_randomness(def: &AbilityDefinition) -> bool {
     // CR 700.2b / CR 701.9b: "choose ... at random" at the ability announce layer
     // (`TargetSelectionMode::Random`, e.g. Cult of Skaro) — the walker collects
@@ -7072,7 +6994,7 @@ mod tests {
         );
     }
 
-    // ---- P0/P2: the ScanMode split + descending object-growth firewall ----
+    // ---- the ScanMode split + descending object-growth firewall ----
 
     /// A read-free vanilla token (Presence of Gond's "1/1 green Elf Warrior"):
     /// fixed P/T, no keywords, fixed count, controller owner, no statics/counters.
@@ -7105,7 +7027,7 @@ mod tests {
         }
     }
 
-    /// P0-1: a vanilla token stays fail-closed CONSERVATIVE in `Conservative` mode.
+    /// A vanilla token stays fail-closed CONSERVATIVE in `Conservative` mode.
     /// Revert-probe: make the Token arm descend unconditionally ⇒ `event` flips false.
     #[test]
     fn conservative_mode_token_axes_are_unchanged() {
@@ -7113,7 +7035,7 @@ mod tests {
         assert!(axes.event && axes.sibling && axes.projected);
     }
 
-    /// P0-2: same for `Effect::Mana`.
+    /// Same for `Effect::Mana`.
     /// Revert-probe: make the Mana arm descend unconditionally ⇒ `event` flips false.
     #[test]
     fn conservative_mode_mana_axes_are_unchanged() {
@@ -7130,7 +7052,7 @@ mod tests {
         assert!(axes.event && axes.sibling && axes.projected);
     }
 
-    /// P0-3: the CR 603.3b trigger-ordering gate is byte-identical for a token-bodied
+    /// The CR 603.3b trigger-ordering gate is byte-identical for a token-bodied
     /// trigger — it stays order-DEPENDENT (prompts). Uses the PUBLIC entries that
     /// `game::triggers` consumes (which pass `Conservative`). Revert-probe: descend
     /// the shared arm in `Conservative` ⇒ event/sibling drop ⇒ `c2` flips to true
@@ -7145,7 +7067,7 @@ mod tests {
         );
     }
 
-    /// P0-4: the same vanilla token DESCENDS to NONE in `LoopFirewall` (reads
+    /// The same vanilla token DESCENDS to NONE in `LoopFirewall` (reads
     /// nothing); a dynamic-count token descends to a sibling read. The vanilla→NONE
     /// control proves the sibling in the dynamic case is carried by `count` alone.
     /// Revert-probe: bind `count` to `_` in the Token arm ⇒ the dynamic assertion flips.
@@ -7161,7 +7083,7 @@ mod tests {
         assert!(scan_effect(&dyn_tok, ScanMode::LoopFirewall).sibling);
     }
 
-    // ---- P3 rows 25-28: the `Effect::Pump` blanket becomes a mode-split descent ----
+    // ---- the `Effect::Pump` blanket becomes a mode-split descent ----
 
     /// Pyreswipe Hawk's REAL attack pump, parsed from the card's VERBATIM Oracle text
     /// (MTGJSON `AtomicCards.json`) — never a paraphrase and never a hand-built `Pump`,
@@ -7288,52 +7210,20 @@ mod tests {
         );
     }
 
-    /// **Row 25p** — a `Pump` whose magnitude reads a PROJECTED player resource keeps its
-    /// veto, and keeps it in a form the consuming firewall can actually see.
+    /// A `Pump` whose magnitude reads a PROJECTED player resource keeps its veto, in a
+    /// form the consuming firewall can see. `scan_quantity_ref` classifies
+    /// `QuantityRef::LifeTotal` as `{event: false, sibling: false, projected: true}`,
+    /// and that precision is a veto only because blocks (1b) and (2) of
+    /// `analysis::resource`'s `fire_time_conditions_read_growing_class_scoped` consult
+    /// [`ability_definition_reads_growing_class_for_loop`], whose `projected` half sees
+    /// it (CR 608.2h: the answer is "determined only once, when the effect is
+    /// applied"). The fixture is Loxodon Lifechanter's shipped `abilities[0]` body,
+    /// verbatim, with `Ref(LifeTotal{Controller})` on BOTH load-bearing `PtValue`
+    /// halves; axis isolation is asserted first and two paired controls keep it narrow.
     ///
-    /// WHY THIS ROW EXISTS, stated because the descent shipped without it. `scan_pt_value`
-    /// -> `scan_quantity_expr` -> `scan_quantity_ref` classifies `QuantityRef::LifeTotal`
-    /// as `{event: false, sibling: false, projected: true}` — PRECISELY, and that precision
-    /// is a veto only because blocks (1b) and (2) of `analysis::resource`'s
-    /// `fire_time_conditions_read_growing_class_scoped` consult
-    /// [`ability_definition_reads_growing_class_for_loop`], whose `projected` half sees it.
-    ///
-    /// The fixture is not a shape sketch. It is Loxodon Lifechanter's shipped
-    /// `abilities[0]` body — "{5}{W}: This creature gets +X/+X until end of turn, where X
-    /// is your life total" — whose export carries `Ref(LifeTotal{Controller})` on BOTH
-    /// `PtValue` halves with a `SelfRef` target, on a battlefield-resident ability
-    /// (block (2)). Verified first-party against `client/public/card-data.json` AND
-    /// MTGJSON's Oracle text, in both directions: the card's `+X/+X` is two refs, and no
-    /// corpus `Pump` carries `power: Ref(LifeTotal{Controller})` beside a
-    /// `toughness: Fixed(0)`. A `Fixed(0)` toughness shipped here once while the comments
-    /// still named the card, which made a shipped assert message FALSE about a real card —
-    /// do not "simplify" the second half back out. (The same doubled shape is what the
-    /// block-(1b) carriers ship too: Golden Sidekick and Hurska Sweet-Tooth both carry
-    /// `Ref(LifeGainedThisTurn{Controller})` on both halves.)
-    ///
-    /// CR 608.2h is operative here for the same reason it is on the aggregate half: an
-    /// effect scaled by a life total "requires information from the game", whose answer is
-    /// "determined only once, when the effect is applied", so each loop iteration
-    /// re-determines it against a DIFFERENT life total — which is what makes the
-    /// sequence's results unpredictable under CR 732.2a.
-    ///
-    /// AXIS ISOLATION, asserted first: the payload really is projected-ONLY. If it ever
-    /// carried `sibling` too, the consult's `projected` half would be untested and this row
-    /// would go green while proving nothing about it.
-    ///
-    /// TWO PAIRED CONTROLS, both required, because the descent must be narrow in BOTH
-    /// directions: the read-free pump must still be relieved (it is not an all-or-nothing
-    /// veto), and Pyreswipe Hawk's aggregate pump must still report its PRECISE
-    /// `(true, true, false)` triple (this arm classifies the payload, never "reads anything"
-    /// — `scan_target_filter`'s `TargetFilter::Typed` arm sets `event: true`
-    /// unconditionally, so an all-or-nothing guard would veto every `Typed`-targeted
-    /// pump).
-    ///
-    /// REVERT-PROBE: restore the `if acc.projected { Axes::CONSERVATIVE }` escalation in
-    /// the `LoopFirewall` half of the `Effect::Pump` arm ⇒ the projected pump reports
-    /// `(true, true, true)` ⇒ **FAILS**; narrow
-    /// [`ability_definition_reads_growing_class_for_loop`] to `.sibling` ⇒ the consumer half
-    /// goes `false` ⇒ **FAILS**.
+    /// REVERT-PROBE: restore the `if acc.projected { Axes::CONSERVATIVE }` escalation ⇒
+    /// the projected pump reports `(true, true, true)` ⇒ **FAILS**; narrow
+    /// [`ability_definition_reads_growing_class_for_loop`] to `.sibling` ⇒ **FAILS**.
     #[test]
     fn projected_reading_pump_reports_its_axes_precisely_and_the_consumer_sees_them() {
         let projected_half = PtValue::Quantity(QuantityExpr::Ref {
@@ -7502,7 +7392,7 @@ mod tests {
         }
     }
 
-    /// **Row 26** — `ScanMode::Conservative` is byte-identical for BOTH shapes.
+    /// `ScanMode::Conservative` is byte-identical for BOTH shapes.
     ///
     /// This is the row that keeps the CR 603.3b trigger-ordering gate and every
     /// non-firewall consumer unmoved, and it is why `LoopDetectionMode::Off` games stay
@@ -7528,34 +7418,16 @@ mod tests {
         }
     }
 
-    /// **Row 27** — a `Pump` whose TARGET reads the board still vetoes.
-    ///
-    /// The three-way family the shipped `analysis::resource::pump_target_axis_is_not_blind`
-    /// already uses, at the scanner level: three defs differing ONLY in `target`. The P/T
-    /// halves are read-free on all three, so the target leg is the SOLE possible source of
-    /// a sibling read and each verdict is attributable to `target` alone.
-    ///
-    /// DO NOT "RESTORE" THE HAWK-BASED FIXTURE THIS ROW WAS SPECIFIED WITH — it is
-    /// IMPOSSIBLE, not merely different. Three byte-identical Pyreswipe Hawk defs
-    /// differing only in `target`, which is what the written specification asks for,
-    /// cannot report `false` on ANY arm: Hawk's `power` is a `QuantityRef::Aggregate`, and
-    /// `scan_quantity_ref` sets `sibling: true` for that variant BEFORE it walks the
-    /// filter, so all three arms report `true` and the row loses its entire discriminating
-    /// half. The read-free `PtValue::Fixed` halves below are not a convenience: they are
-    /// what makes `target` the sole possible source of the verdict, which is what the row
-    /// was for.
-    ///
-    /// ALL THREE verdicts are asserted, so a relief in either direction fails: a descent
-    /// that dropped the target leg reddens arm C, and one that vetoed on any target at all
-    /// reddens arms A and B.
-    ///
-    /// CR 732.2a: a target naming a live board population is itself a sibling read. Note
-    /// the coincidence and do not "simplify" it away — this leg evaluates the same
-    /// expression as `analysis::resource`'s block-(1b) conjunct (b-t)
-    /// ([`effect_target_reads_growing_class_for_loop`]). Conjunct (b-t) stays load-bearing
-    /// because a def can trip the scan on its POWER aggregate and still need its target
-    /// proven inert before the S1 arm may relieve, and this leg is `.or()`-ed with that
-    /// aggregate rather than able to override it.
+    /// A `Pump` whose TARGET reads the board still vetoes (CR 732.2a: a target naming
+    /// a live board population is itself a sibling read). The three-way family
+    /// `analysis::resource::pump_target_axis_is_not_blind` already uses, at the scanner
+    /// level: three defs differing ONLY in `target`. The read-free `PtValue::Fixed`
+    /// halves are not a convenience — they make `target` the SOLE possible source of a
+    /// sibling read, which a Pyreswipe Hawk fixture could not do (its `power` is a
+    /// `QuantityRef::Aggregate`, and `scan_quantity_ref` sets `sibling: true` for that
+    /// variant BEFORE walking the filter). ALL THREE verdicts are asserted, so a
+    /// descent that dropped the target leg reddens arm C and one that vetoed on any
+    /// target reddens arms A and B.
     ///
     /// REVERT-PROBE: delete `acc = acc.or(scan_target_filter(target, target_ctx, mode));`
     /// from the `LoopFirewall` half of the `Effect::Pump` arm ⇒ arm C reports `false` ⇒
@@ -7597,20 +7469,17 @@ mod tests {
         }
     }
 
-    /// **Row 28** — Chocobo Camp's `abilities[1]` stops reading the sibling axis.
+    /// Chocobo Camp's `abilities[1]` stops reading the sibling axis.
     ///
     /// The real card, from its VERBATIM Oracle text (MTGJSON `AtomicCards.json`). Its
-    /// `Effect::Pump` sits FOUR path segments below `effect` —
-    /// `abilities[1].effect.static_abilities[0].modifications[0].trigger.execute.effect` —
-    /// reached by `scan_effect`'s existing `Effect::Token` descent →
-    /// `scan_continuous_modification` → `scan_trigger_definition` → `ability_definition_axes`
-    /// → `scan_effect` again. The repair applies at whatever depth the recursion reaches the
-    /// arm, which is why it reaches this one.
-    ///
-    /// REACH GUARD that makes the row non-vacuous, on the SAME descent path rather than on
-    /// a neighbouring ability: `abilities[1]` with the granted trigger's pump `power`
-    /// swapped for an `ObjectCount`-scaled quantity must STILL read the growing class. A
-    /// global kill switch that relieved everything would fail here.
+    /// `Effect::Pump` sits four path segments below `effect` —
+    /// `abilities[1].effect.static_abilities[0].modifications[0].trigger.execute.effect`
+    /// — reached by `scan_effect`'s `Effect::Token` descent →
+    /// `scan_continuous_modification` → `scan_trigger_definition` →
+    /// `ability_definition_axes` → `scan_effect`, so the arm applies at whatever depth
+    /// the recursion reaches it. REACH GUARD, on the SAME descent path: `abilities[1]`
+    /// with the granted trigger's pump `power` swapped for an `ObjectCount`-scaled
+    /// quantity must STILL read the growing class, so a global kill switch fails here.
     ///
     /// REVERT-PROBE: restore `Effect::Pump { .. } => Axes::CONSERVATIVE` ⇒ `abilities[1]`
     /// reads the sibling axis again ⇒ **FAILS**.
@@ -7713,7 +7582,7 @@ mod tests {
         );
     }
 
-    /// P2-1: a fixed anthem modification reads nothing (control for P2-2).
+    /// A fixed anthem modification reads nothing (the control for the dynamic case).
     #[test]
     fn fixed_anthem_modification_reads_nothing() {
         let axes = scan_continuous_modification(
@@ -7723,7 +7592,7 @@ mod tests {
         assert!(!axes.event && !axes.sibling && !axes.projected);
     }
 
-    /// P2-2: a dynamic-P/T modification reads a sibling aggregate.
+    /// A dynamic-P/T modification reads a sibling aggregate.
     /// Revert-probe: move the arm into the read-free bucket (⇒ NONE) ⇒ fails.
     #[test]
     fn dynamic_pt_modification_reads_sibling() {
@@ -7733,8 +7602,8 @@ mod tests {
         assert!(scan_continuous_modification(&m, ScanMode::LoopFirewall).sibling);
     }
 
-    /// P2-3: a token whose `enter_with_counters` count is a board `ObjectCount`
-    /// reads sibling. The vanilla control (P0-4) has empty counters ⇒ NONE, so the
+    /// A token whose `enter_with_counters` count is a board `ObjectCount`
+    /// reads sibling. The vanilla control has empty counters ⇒ NONE, so the
     /// sibling is carried by `enter_with_counters` alone. Revert-probe: bind
     /// `enter_with_counters` to `_` in the Token arm ⇒ flips.
     #[test]
@@ -7750,7 +7619,7 @@ mod tests {
         assert!(scan_effect(&tok, ScanMode::LoopFirewall).sibling);
     }
 
-    /// P2-4: a token whose granted static ability carries a dynamic-P/T modification
+    /// A token whose granted static ability carries a dynamic-P/T modification
     /// reads sibling. Revert-probe: bind `static_abilities` to `_` in the Token arm
     /// ⇒ flips.
     #[test]
@@ -7769,7 +7638,7 @@ mod tests {
         assert!(scan_effect(&tok, ScanMode::LoopFirewall).sibling);
     }
 
-    /// P2-5 (B4): a token carrying a growing-cost keyword (Convoke — a UNIT variant
+    /// A token carrying a growing-cost keyword (Convoke — a UNIT variant
     /// that reads the board) reads sibling. Proves payload-SHAPE classification is
     /// insufficient: `keyword_cost_reads_growing_class` is the semantic authority.
     /// Revert-probe: bind `keywords` to `_` in the Token arm ⇒ flips.
@@ -7782,7 +7651,7 @@ mod tests {
         assert!(scan_effect(&tok, ScanMode::LoopFirewall).sibling);
     }
 
-    /// P2-6 (B5): `AddCounterOnEnter` with a dynamic count reads sibling — it looks
+    /// `AddCounterOnEnter` with a dynamic count reads sibling — it looks
     /// structural but carries a `QuantityExpr`. Revert-probe: sweep the arm into the
     /// read-free bucket ⇒ flips.
     #[test]
@@ -7795,7 +7664,7 @@ mod tests {
         assert!(scan_continuous_modification(&m, ScanMode::LoopFirewall).sibling);
     }
 
-    /// P2-7 (B2 + R1): a board-color aggregate self-asserts its OWN `sibling`, even
+    /// A board-color aggregate self-asserts its OWN `sibling`, even
     /// with a NON-`Typed` filter (`Controller` ⇒ `scan_target_filter` = NONE), so
     /// the signal cannot come from the `Typed` arm. Revert-probe: strip the arm's
     /// own `sibling:true` literal (delegate to `scan_target_filter` only) ⇒ with a
@@ -7808,7 +7677,7 @@ mod tests {
         assert!(scan_mana_production(&p, ScanMode::LoopFirewall).sibling);
     }
 
-    /// P2-8 (B2): `TriggerEventManaType` reads the triggering event (event axis).
+    /// `TriggerEventManaType` reads the triggering event (event axis).
     /// Revert-probe: bin it NONE ⇒ flips.
     #[test]
     fn mana_production_trigger_event_type_is_conservative() {
@@ -7821,11 +7690,11 @@ mod tests {
         );
     }
 
-    /// P2-9: Gaea's Cradle's `{T}: Add {G} for each creature you control` is the
-    /// MEASURED shape `AnyOneColor{count: Ref(ObjectCount{Typed{Creature}}), ...}` —
-    /// a COUNT-path arm whose sibling comes from `count` → `scan_quantity_ref::
-    /// ObjectCount` (NOT a board-aggregate literal, distinct from P2-7's FILTER
-    /// path). Revert-probe: bind the mana arm's `count` to `_` ⇒ flips to NONE.
+    /// Gaea's Cradle's `{T}: Add {G} for each creature you control` parses to
+    /// `AnyOneColor{count: Ref(ObjectCount{Typed{Creature}}), ...}` — a COUNT-path arm
+    /// whose sibling comes from `count` → `scan_quantity_ref::ObjectCount`, NOT from a
+    /// board-aggregate literal (the distinct FILTER path is the board-color row above).
+    /// Revert-probe: bind the mana arm's `count` to `_` ⇒ flips to NONE.
     #[test]
     fn gaeas_cradle_count_path_vetoes() {
         let p = ManaProduction::AnyOneColor {
@@ -7836,9 +7705,9 @@ mod tests {
         assert!(scan_mana_production(&p, ScanMode::LoopFirewall).sibling);
     }
 
-    // ---- P3 (DEFERRED-8): CR 732.2a Typed-precision census discipline ----
+    // ---- CR 732.2a Typed-precision census discipline ----
 
-    /// A5: the census-discipline structural invariant. Under `LoopFirewall`,
+    /// The census-discipline structural invariant. Under `LoopFirewall`,
     /// `SnapshotOrEvent` + a bare `Typed` (and its Not/Or/And wrappers) relaxes to
     /// `sibling:false`; a board-reading property keeps it true (fail-closed); and
     /// `LiveBoardCensus` yields `sibling:true` for ANY filter shape (the census base,
@@ -7879,13 +7748,13 @@ mod tests {
         assert!(scan_target_filter(&TargetFilter::Any, LiveBoardCensus, LoopFirewall).sibling);
     }
 
-    /// A6 (REQ-2): each `LiveBoardCensus` HOLE arm (the R1/G5 defect set, incl. GAP-1
-    /// `ControllerControlsMatching` and GAP-2 `ZoneCardCount`) yields `sibling:true`
+    /// Each `LiveBoardCensus` HOLE arm (including `ControllerControlsMatching`
+    /// and `ZoneCardCount`) yields `sibling:true`
     /// under LoopFirewall with a bare `Typed{Creature}` — the census base, NOT the
     /// (relaxed) `Typed` arm, carries the veto. The control proves it is load-bearing:
     /// the SAME bare `Typed` under `SnapshotOrEvent` relaxes to `sibling:false`, so
     /// flipping any arm's ctx to `SnapshotOrEvent` would relax it into a false
-    /// certificate (the executed flip→FAIL revert-probe is documented in the report).
+    /// certificate.
     #[test]
     fn census_hole_arms_are_load_bearing() {
         use crate::types::ability::{
@@ -7963,7 +7832,7 @@ mod tests {
             )
             .sibling
         );
-        // GAP-1: ControllerControlsMatching (live board census, effects/mod.rs:9492).
+        // ControllerControlsMatching (a live board census).
         assert!(
             scan_ability_condition(
                 &AbilityCondition::ControllerControlsMatching { filter: ct() },
@@ -7983,7 +7852,7 @@ mod tests {
             )
             .sibling
         );
-        // GAP-2: ZoneCardCount (battlefield-scoped census, unconditional fail-closed).
+        // ZoneCardCount (a battlefield-scoped census, unconditional fail-closed).
         assert!(
             scan_quantity_ref(
                 &QuantityRef::ZoneCardCount {
@@ -8118,9 +7987,9 @@ mod tests {
         );
     }
 
-    /// guard#3 (mitigation #3): the `LiveBoardCensus` tag set of `effect_target_ctx`
-    /// == EXACTLY the enumeration-derived MASS-POPULATION set (31). Source-scanned, not
-    /// hand-counted (the hand-count is what produced the earlier "relax=4" miss). Under
+    /// The `LiveBoardCensus` tag set of `effect_target_ctx` == EXACTLY the
+    /// enumeration-derived MASS-POPULATION set, source-scanned rather than
+    /// hand-counted. Under
     /// B's SnapshotOrEvent default this is the primary false-certificate gate: only a
     /// census tag vetoes a mass read that ESCALATES over inert token growth (which
     /// `grown_objects_are_inert` cannot catch — obligation-(ii) is never a relax
@@ -8170,7 +8039,7 @@ mod tests {
             "GoadAll",
             "PumpAll",
             "PutCounterAll",
-            // R1: Suspect/Unsuspect scope:All are mass-population battlefield reads
+            // Suspect/Unsuspect scope:All are mass-population battlefield reads
             // (`suspect.rs` enumerates `state.battlefield`, `target_filter()`==None).
             // Their `Effect::` name appears in the census `|`-chain scope-gated on
             // `EffectScope::All`; the scope:Single arms live in the relax group below and
@@ -8183,7 +8052,7 @@ mod tests {
             "Transform",
             "UnattachAll",
             "Unsuspect",
-            // P3-B round-2: F1-class dual-mode mass-battlefield resolvers (a resolver
+            // Dual-mode mass-battlefield resolvers (a resolver
             // mode enumerates the battlefield and applies to EVERY matching object when
             // no explicit object target is chosen; no static discriminator ⇒ whole
             // variant censuses, fail-closed). See the census-arm comment for CR cites.
@@ -8204,15 +8073,14 @@ mod tests {
         assert_eq!(got.len(), 31, "exactly 31 mass-population census tags");
     }
 
-    /// A7' (mitigation #4, replaces the void census-default A7): with SnapshotOrEvent the
-    /// DEFAULT (author's contract restored), the obligation-(ii)-PROVEN census-role
+    /// With `SnapshotOrEvent` the DEFAULT, the obligation-(ii)-PROVEN census-role
     /// exception set == EXACTLY {SetTapState}. SetTapState is census-ROLE ("tap/untap
     /// all", scope All) yet relaxes because tap-state is state-convergent/idempotent
     /// (a specific proven non-escalation, NOT a general (b)-license). Structurally it is
     /// the SOLE effect with a DEDICATED SnapshotOrEvent arm (the region between the
     /// census arm and the single-object group); giving any OTHER census-role slot a
     /// dedicated Snapshot arm turns this RED. Dual-guard with
-    /// `census_tag_set_is_exactly_enumerated` (guard#3, pins the 31 census tags).
+    /// `census_tag_set_is_exactly_enumerated`, which pins the census tag set.
     #[test]
     fn obligation_ii_census_exception_is_exactly_settapstate() {
         use crate::types::ability::{EffectScope, TapStateChange};
@@ -8260,7 +8128,7 @@ mod tests {
         );
     }
 
-    /// R1 (CR 701.60a): Suspect/Unsuspect census classification is SCOPE-SENSITIVE,
+    /// CR 701.60a: Suspect/Unsuspect census classification is SCOPE-SENSITIVE,
     /// mirroring `target_filter()` (Some for scope:Single, None for scope:All).
     /// scope:All is a mass battlefield population read (`suspect.rs` enumerates
     /// `state.battlefield`) => `LiveBoardCensus`; scope:Single is a single announced
@@ -8308,26 +8176,24 @@ mod tests {
         }
     }
 
-    /// F3 (CR 732.2a): the independent census PARTITION (`effect_census_role`) agrees
-    /// with `effect_target_ctx` on the Census/Relax boundary, closing the F1 gap where a
-    /// census-ROLE slot silently in the generic relax `|`-chain (exactly R1's Suspect{All})
+    /// CR 732.2a: the independent census PARTITION (`effect_census_role`) agrees
+    /// with `effect_target_ctx` on the Census/Relax boundary, closing the gap where a
+    /// census-ROLE slot silently in the generic relax `|`-chain (exactly Suspect{All})
     /// is invisible to the census-arm-only guards. Structural: both functions' `Census`
-    /// name-sets are source-scanned and asserted IDENTICAL (== the 31). Behavioral: the
+    /// name-sets are source-scanned and asserted IDENTICAL. Behavioral: the
     /// two oracles agree on every discriminator, incl. BOTH Suspect/Unsuspect scopes.
     ///
     /// REVERT-PROBE (discrimination proof): moving `Suspect{All}` out of the census arm of
     /// EITHER function breaks this guard — if only `effect_target_ctx` is reverted the
     /// source-scanned census sets diverge (structural `assert_eq!` fails); if
     /// `effect_census_role` misclassifies it as `Relax` the behavioral `Census` assertion
-    /// flips. Executed: reclassifying Suspect{All} to `Relax(BoundedOrNoPopulation)` in
-    /// `effect_census_role` made this test FAIL on both the set-equality and the behavioral
-    /// `census(&Suspect{All}, true)` assertion, then was restored.
+    /// flips.
     #[test]
     fn census_partition_agrees_with_effect_target_ctx() {
         use crate::types::ability::{EffectScope, TapStateChange};
         use ScanMode::LoopFirewall;
 
-        // -- Structural: the two census name-sets are byte-identical (and == 31).
+        // -- Structural: the two census name-sets are byte-identical.
         fn census_names(fnsrc: &str, terminator: &str) -> Vec<String> {
             let end = fnsrc.find(terminator).expect("census terminator");
             let block = &fnsrc[..end];
@@ -8485,21 +8351,17 @@ mod tests {
         }
     }
 
-    /// P3-B round-2 (CR 732.2a): the six team-ruled + two audit-found F1-class mass-
-    /// battlefield resolvers each census in BOTH oracles under `LoopFirewall`. Each
+    /// CR 732.2a: the dual-mode mass-battlefield resolvers each census in BOTH
+    /// oracles under `LoopFirewall`. Each
     /// enumerates the battlefield and applies the effect to EVERY matching object (scales
     /// with the growing class) — six via a dual-mode "no explicit target ⇒ mass scan"
     /// fallback, `CopyTokenBlockingAttacker` UNCONDITIONALLY — so relaxing its filter read
-    /// risks a false combo certificate. Per the team-lead whole-variant / fail-closed
-    /// ruling there is no static discriminator between announced-single and mass modes, so
-    /// the entire variant censuses.
+    /// risks a false combo certificate. There is no static discriminator between
+    /// announced-single and mass modes, so the entire variant censuses.
     ///
-    /// DISCRIMINATING (revert-probe): moving ANY one of these eight back into the
+    /// DISCRIMINATING (revert-probe): moving ANY one of these back into the
     /// `SnapshotOrEvent` relax arm of `effect_target_ctx` (or the `Relax(_)` arm of
     /// `effect_census_role`) flips its assertion below to a mismatch, turning this RED.
-    /// Executed for each member (e.g. `PhaseOut`, `MultiplyCounter`,
-    /// `CopyTokenBlockingAttacker`) — each reverted tag made exactly one `assert_eq!`
-    /// iteration FAIL, then was restored.
     #[test]
     fn round2_mass_battlefield_resolvers_census_in_both_oracles() {
         use crate::types::ability::GrantedAbilityScope;
@@ -8553,48 +8415,41 @@ mod tests {
         }
     }
 
-    /// P3-B round-2 (CR 732.2a): DURABLE forward-protection for the F1 silent-miss class
+    /// CR 732.2a: DURABLE forward-protection for the silent-miss class
     /// at the RESOLVER layer. Scans every `game/effects/*.rs` source for the (broadened)
     /// MASS-BATTLEFIELD-SCAN idiom and asserts the matching file set == a curated
     /// classification. A NEW resolver file that adds the idiom (or a curated file that
     /// stops matching) fails this test until a human re-classifies — the resolver-level
-    /// analogue of the census oracles' no-wildcard forcing. This is a HEURISTIC
-    /// defense-in-depth guard, NOT a proof; the manual resolver audit + the exhaustive
-    /// `effect_census_role` oracle are the completeness authority.
+    /// analogue of the census oracles' no-wildcard forcing. HEURISTIC defense-in-depth,
+    /// NOT a proof: the exhaustive `effect_census_role` oracle is the completeness
+    /// authority.
     ///
-    /// Idiom = union of two signals (team-lead round-2 ruling — RECALL over precision; the
-    /// earlier `from_targets`-gated key PROVABLY missed the guard-varied mass reads, so the
-    /// guard gating is dropped entirely from the detector):
+    /// Idiom = union of two signals, keyed for RECALL over precision (a
+    /// `from_targets`-gated key misses the guard-varied mass reads, so the detector
+    /// does no guard gating at all):
     ///   (a) a reference to `resolved_battlefield_object_ids(` — the shared dual-mode
-    ///       helper (`mod.rs` defines it; `turn_face_up`/`turn_face_down` delegate with
-    ///       zero inline scan, so this call-substring is load-bearing, not optional);
+    ///       helper (`turn_face_up`/`turn_face_down` delegate with zero inline scan,
+    ///       so this call-substring is load-bearing, not optional);
     ///   (b) a battlefield-population enumeration (`battlefield_phased_in_ids` /
-    ///       `zone_object_ids`) filtered by `matches_target_filter`, REGARDLESS of guard.
-    /// A false positive costs one Relax entry; a missed mass read is a soundness gap — so
-    /// the flood is CLASSIFIED, never re-narrowed with an allowlist. Note the ORACLE
-    /// (exhaustive `effect_census_role`) is the PRIMARY completeness guarantee; this test
-    /// is forward-protection only.
+    ///       `zone_object_ids`) filtered by `matches_target_filter`, whatever the guard.
+    /// A false positive costs one Relax entry; a missed mass read is a soundness gap,
+    /// so the flood is CLASSIFIED, never re-narrowed with an allowlist.
     ///
-    /// KNOWN BLIND SPOT & CONSIDERED-AND-EXCLUDED (non-idiom battlefield readers).
-    /// Signal (b) keys on the helper enumerators `battlefield_phased_in_ids` /
-    /// `zone_object_ids`, so a resolver iterating via raw `state.battlefield.iter()` /
-    /// `.values()` — WITH OR WITHOUT `matches_target_filter` — is NOT flagged here:
-    ///   - MASS raw-iter reads (`GainActivatedAbilitiesOfTarget`, `BecomeCopy`) are
-    ///     unflagged by this test but ARE census in the exhaustive `effect_census_role`
-    ///     oracle (the completeness authority), so soundness holds. This test guards
-    ///     helper-enumerator mass reads on existing relaxed variants; raw-iteration mass
-    ///     reads rely on the oracle's no-wildcard forcing.
-    ///   - BOUNDED raw-iter / O(1) reads are deliberately kept OUT of `CLASSIFIED` (so the
-    ///     set-equality stays over the 15 idiom-matched files — no allowlist pollution):
-    ///     `vote.rs` (`votes_per_session_for` = 1 + count of `GrantsExtraVote` statics,
-    ///     snapshotted at session start — bounded single outcome) and `switch_pt.rs`
-    ///     (O(1) `state.battlefield.contains()` over the effect's own `ids` — bounded
-    ///     SelfRef). Their `Vote` / `SwitchPT` variants correctly RELAX in the oracle.
+    /// BLOCK EXEMPTION — implemented catalogue: the idiom definition above and the
+    /// curated `CLASSIFIED` membership rule this test asserts.
     ///
-    /// NON-VACUITY: (i) deleting/adding any file in `CLASSIFIED` makes `matched != curated`
-    /// (the set-equality `assert_eq!` fails); (ii) reverting a census-tag drops the
-    /// variant from the source-scanned `effect_census_role` census set, so the census-tie
-    /// `assert!` fails. Both were executed and observed RED, then restored.
+    /// KNOWN BLIND SPOT: signal (b) keys on the helper enumerators, so a resolver
+    /// iterating via raw `state.battlefield.iter()` / `.values()` is NOT flagged.
+    /// Raw-iter MASS reads (`GainActivatedAbilitiesOfTarget`, `BecomeCopy`) are still
+    /// census in the `effect_census_role` oracle, so soundness holds. Bounded raw-iter
+    /// / O(1) reads are deliberately kept OUT of `CLASSIFIED` so the set-equality stays
+    /// over the idiom-matched files: `vote.rs` (`votes_per_session_for` is snapshotted
+    /// at session start) and `switch_pt.rs` (O(1) `state.battlefield.contains()` over
+    /// the effect's own `ids`). Their variants correctly RELAX in the oracle.
+    ///
+    /// NON-VACUITY: (i) deleting/adding any file in `CLASSIFIED` makes
+    /// `matched != curated`; (ii) reverting a census-tag drops the variant from the
+    /// source-scanned `effect_census_role` census set, so the census-tie fails.
     #[test]
     fn dual_mode_mass_battlefield_resolvers_are_classified() {
         use std::collections::BTreeSet;
@@ -8772,7 +8627,7 @@ mod tests {
         }
     }
 
-    /// A7 byte-identity: the self-asserting `QuantityRef` board-census arms yield
+    /// Byte-identity: the self-asserting `QuantityRef` board-census arms yield
     /// `sibling:true` in BOTH modes (their census read is mode-invariant), so the
     /// LoopFirewall `Typed` relaxation never touches them and CR 603.3b Conservative
     /// is unchanged. Includes the bug-(a) non-`Typed` case (census base covers it).
@@ -8792,7 +8647,7 @@ mod tests {
         assert!(scan_quantity_ref(&oc2, LoopFirewall).sibling);
     }
 
-    // ---- A2 determinism gate: the randomness classifier (CR 732.2a) ----
+    // ---- determinism gate: the randomness classifier (CR 732.2a) ----
     #[test]
     fn randomness_classifier_discriminates() {
         use crate::types::ability::{
@@ -8931,7 +8786,7 @@ mod tests {
                 player: PlayerScope::Controller
             }
         )));
-        // Player-counter axis (CR 122.1) — N1(n) walker pairing; experience has NO
+        // Player-counter axis (CR 122.1) — experience has NO
         // winner-predicate firewall, so this classification is the only rejection.
         assert!(ability_reads_projected_resource(&ability_with_amount(
             QuantityRef::PlayerCounter {
@@ -8988,7 +8843,7 @@ mod tests {
         }));
     }
 
-    // ---- Axis 3: object/board readers are NON-reading (R5-B1 negative) ----
+    // ---- Axis 3: object/board readers are NON-reading ----
     #[test]
     fn object_and_board_readers_are_not_projected() {
         // Object counter / P/T reads are strict-compared by gate (1), not projected.
@@ -9088,24 +8943,16 @@ mod tests {
         )));
     }
 
-    /// CR 400.7d + CR 601.2h: the Adamant ability rider ("if at least three red
-    /// mana was spent to cast this spell, it deals 4 damage instead") now parses
-    /// to the generic `QuantityCheck { ManaSpentToCast { .., OfColor } }` shape
-    /// instead of the legacy `AbilityCondition::ManaColorSpent`. That moves it
-    /// from the `AbilityCondition::ManaColorSpent { color: _, minimum: _ } => Axes::NONE`
-    /// arm (`scan_ability_condition`) onto the `Axes::CONSERVATIVE` arm (reached via
-    /// `QuantityCheck` → `scan_quantity_expr`), flipping
-    /// ALL THREE scan axes false→true for the 11 affected cards.
-    ///
-    /// RULING — the flip is accepted, and is the intended direction:
-    /// - `event`: CORRECT, not merely conservative. CR 400.7d makes the paid-mana
-    ///   record a cost-paid-object characteristic, which is precisely what the
-    ///   `event` axis names; the legacy `Axes::NONE` under-read it.
-    /// - `sibling` / `projected`: over-inclusive but fail-SAFE. The payment record
-    ///   is stamped once at CR 601.2h and is neither sibling-mutable nor a
-    ///   player-level projected resource, so `true` can only make the analysis
-    ///   reject an auto-order cover (prompt) — never auto-resolve something it
-    ///   should have prompted on.
+    /// CR 400.7d + CR 601.2h: the Adamant ability rider ("if at least three red mana
+    /// was spent to cast this spell, it deals 4 damage instead") parses to the generic
+    /// `QuantityCheck { ManaSpentToCast { .., OfColor } }` shape rather than the legacy
+    /// `AbilityCondition::ManaColorSpent`, so it scans on the `Axes::CONSERVATIVE` arm
+    /// (via `QuantityCheck` → `scan_quantity_expr`) instead of `ManaColorSpent`'s
+    /// `Axes::NONE`. All three axes read true, which is the intended direction:
+    /// `event` is CORRECT rather than merely conservative, because CR 400.7d makes the
+    /// paid-mana record a cost-paid-object characteristic; `sibling` / `projected` are
+    /// over-inclusive but fail-SAFE, since the record is stamped once at CR 601.2h and
+    /// a `true` can only make the analysis prompt, never auto-resolve.
     ///
     /// Neither `ordering_parity_sweep` (which imports `ability_rw` only) nor
     /// `coverage-data.json` observes this axis, hence this direct assertion.
@@ -9185,7 +9032,7 @@ mod tests {
         assert!(!ability_uses_event_context(&b));
     }
 
-    // ---- BB-FU10 Step 0c: the CR 608.2i ledger read is an axis-2 board read ----
+    // ---- the CR 608.2i ledger read is an axis-2 board read ----
 
     /// Build an `AbilityDefinition` whose effect magnitude is `qty`.
     fn ability_def_with_amount(qty: QuantityRef) -> crate::types::ability::AbilityDefinition {
@@ -9207,20 +9054,17 @@ mod tests {
         })
     }
 
-    /// T15 (BB-FU10 Step 0c). `battlefield_entries_this_turn` is APPENDED to by
-    /// every battlefield entry (`record_battlefield_entry`), so a read of it is a
-    /// board-derived AGGREGATE and must self-assert `sibling: true` — CR 732.2a:
-    /// the object-growth firewall may only ever OVER-veto, never certify a loop as
-    /// bounded while a live observer reads the growing class.
+    /// `battlefield_entries_this_turn` is APPENDED to by every battlefield entry
+    /// (`record_battlefield_entry`), so a read of it is a board-derived AGGREGATE and
+    /// must self-assert `sibling: true` — CR 732.2a: the object-growth firewall may
+    /// only ever OVER-veto, never certify a bounded loop a live observer disproves.
     ///
-    /// VACUITY TRAP, named explicitly: assertion (1) is `ScanMode::Conservative`,
-    /// where the `TargetFilter::Typed` arm already forces `sibling: true`. It
-    /// passes with AND without Step 0c and is therefore NOT the discriminator.
-    /// Assertion (2) is `ScanMode::LoopFirewall`, the mode the two production
-    /// callers in `analysis::resource::fire_time_conditions_read_growing_class`
-    /// use, and asks the `sibling` axis ALONE. `Axes::reads_growing_class` cannot
-    /// discriminate here: this arm's `projected: true` predates Step 0c, so the
-    /// disjunction is green with AND without it.
+    /// VACUITY TRAP: assertion (1) is `ScanMode::Conservative`, where the
+    /// `TargetFilter::Typed` arm already forces `sibling: true`, so it is NOT the
+    /// discriminator. Assertion (2) is `ScanMode::LoopFirewall` — the mode
+    /// `analysis::resource::fire_time_conditions_read_growing_class` uses — and asks
+    /// the `sibling` axis ALONE. `Axes::reads_growing_class` cannot discriminate here:
+    /// this arm's `projected: true` keeps the disjunction green either way.
     ///
     /// REVERT-PROBE: zero this arm's `sibling` alone, leaving `projected: true` →
     /// (2) and (3) FAIL while (1) and (4) still pass.
@@ -9281,9 +9125,9 @@ mod tests {
         );
     }
 
-    /// T17 (BB-FU10 Step 0c, T16's non-vacuity instrument). Proves the SHIPPED
+    /// The non-vacuity instrument for the row above. Proves the SHIPPED
     /// Park Heights Pegasus face is what
-    /// `analysis::resource::fire_time_conditions_read_growing_class` block (1)
+    /// `analysis::resource::fire_time_conditions_read_growing_class`
     /// visits, and that the flip lands on the trigger `execute` scan rather than
     /// on the Conservative trigger-`condition` path that already forces
     /// `sibling: true` (the Gargoyle Flock trap: `true → true`, non-discriminating).
@@ -9318,7 +9162,7 @@ mod tests {
              not some other board aggregate",
         );
 
-        // (2) THE DISCRIMINATOR — the SIBLING half of what the block-(1) scan site
+        // (2) THE DISCRIMINATOR — the SIBLING half of what the trigger-body scan site
         // calls. That site reads `sibling ∨ projected`, which is green on the
         // `projected` half alone and so cannot be this row's instrument.
         assert!(
@@ -9371,7 +9215,7 @@ mod tests {
         assert!(!ability_reads_sibling_mutable(&fixed_drain()));
     }
 
-    // ---- PR #5872 blocker-2 regression: scry look count is event-context ----
+    // ---- scry look count is event-context ----
 
     /// CR 701.22a + CR 603.2c: "the number of cards looked at while scrying
     /// this way" (Elrond, Master of Healing) reads the CURRENT trigger's
@@ -9399,7 +9243,7 @@ mod tests {
         assert!(!axes.projected);
     }
 
-    /// V13 — `TargetFilter::PlayerMatching` recursion is CLASSIFIED, not
+    /// `TargetFilter::PlayerMatching` recursion is CLASSIFIED, not
     /// blind-defaulted to `Axes::NONE`.
     ///
     /// CR 102.1: the nested `PlayerFilter` can read projected per-player state
@@ -9475,16 +9319,13 @@ mod tests {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // PHASE-B VERIFICATION ROWS — the `TriggerDefinition` walker (S4/S5).
-    // Each row is paired with a revert probe that must flip it; the reverts live
-    // in `.wba-phaseB-probes/run_probes.sh` and are keyed on this walker's source
-    // text. Names and assert messages are the harness's registry keys: do not
-    // reword them without updating `ROW_MSG`.
+    // The `TriggerDefinition` walker's verification rows. Each row is paired with a
+    // revert probe that must flip it.
     // ═════════════════════════════════════════════════════════════════════════
 
     /// The NON-DEGENERATE filter value every B-1a/B-1b path is populated with.
     ///
-    /// E-1 ADDENDUM (a) requires each of the seven paths to hold a filter that
+    /// Each of the seven paths must hold a filter that
     /// WOULD self-assert `sibling: true` if that path were scanned — otherwise
     /// "still `sibling == false`" is uninformative for that path (the degenerate
     /// window one abstraction up).
@@ -9562,7 +9403,7 @@ mod tests {
     }
 
     // ── B-1 (POSITIVE) ──────────────────────────────────────────────────────
-    /// B-1: Bello's exact shape clears. Revert probe R-B1: return the arm to the
+    /// B-1: Bello's exact shape clears. Revert probe: return the arm to the
     /// blanket `CONSERVATIVE` group ⇒ this row flips to `sibling == true`.
     #[test]
     fn b1_bello_exact_shape_clears() {
@@ -9576,8 +9417,7 @@ mod tests {
     /// the ALREADY-descending `GrantAbility` arm must already read nothing.
     /// Without this, B-1's green is unattributable: it could mean "the walker
     /// works" or "this Draw body was never capable of reporting an axis". It is
-    /// also what makes B-1's pre-mechanism RED gate interpretable (see
-    /// run_probes.sh stage RED).
+    /// also what makes B-1's pre-mechanism RED gate interpretable.
     #[test]
     fn b1_reach_guard_grant_ability_draw_body_is_clean() {
         let body = AbilityDefinition::new(
@@ -9598,7 +9438,7 @@ mod tests {
     // ── B-1a (POSITIVE ×5) — the five EVENT-MATCHER paths bind `_` read-free ──
     // Each row (i) populates exactly ONE path with the non-degenerate filter,
     // (ii) asserts that population's non-degeneracy inline, (iii) asserts the
-    // walker still clears. Each has its OWN revert probe (E-1 ADDENDUM (b)).
+    // walker still clears. Each has its OWN revert probe.
 
     macro_rules! nondegenerate {
         ($f:expr) => {
@@ -9616,7 +9456,7 @@ mod tests {
     }
 
     /// B-1a path 1 — `valid_card`.
-    /// Revert R-1: route `valid_card` through `scan_target_filter(.., LiveBoardCensus, ..)`.
+    /// Revert probe: route `valid_card` through `scan_target_filter(.., LiveBoardCensus, ..)`.
     #[test]
     fn b1a_p1_valid_card_is_read_free() {
         let f = census_asserting_filter();
@@ -9632,7 +9472,7 @@ mod tests {
     }
 
     /// B-1a path 2 — `valid_target`.
-    /// Revert R-2: route `valid_target` through `LiveBoardCensus`.
+    /// Revert probe: route `valid_target` through `LiveBoardCensus`.
     #[test]
     fn b1a_p2_valid_target_is_read_free() {
         let f = census_asserting_filter();
@@ -9648,7 +9488,7 @@ mod tests {
     }
 
     /// B-1a path 3 — `valid_subject_player`.
-    /// Revert R-3: route `valid_subject_player` through `LiveBoardCensus`.
+    /// Revert probe: route `valid_subject_player` through `LiveBoardCensus`.
     #[test]
     fn b1a_p3_valid_subject_player_is_read_free() {
         let f = census_asserting_filter();
@@ -9664,7 +9504,7 @@ mod tests {
     }
 
     /// B-1a path 4 — `valid_source`.
-    /// Revert R-4: route `valid_source` through `LiveBoardCensus`.
+    /// Revert probe: route `valid_source` through `LiveBoardCensus`.
     #[test]
     fn b1a_p4_valid_source_is_read_free() {
         let f = census_asserting_filter();
@@ -9681,8 +9521,8 @@ mod tests {
 
     /// B-1a path 5 — `zone_change_clauses` -> `ZoneChangeClause::valid_card`.
     /// Populated with a NON-EMPTY vec whose clause carries the filter: `vec![]` is
-    /// the degeneracy E-1 ADDENDUM (a) names explicitly.
-    /// Revert R-5: route each clause's `valid_card` through `LiveBoardCensus`.
+    /// the degeneracy the non-degenerate-filter doc above names explicitly.
+    /// Revert probe: route each clause's `valid_card` through `LiveBoardCensus`.
     #[test]
     fn b1a_p5_zone_change_clause_valid_card_is_read_free() {
         let f = census_asserting_filter();
@@ -10188,14 +10028,14 @@ mod tests {
     }
 
     // ── B-1b (POSITIVE ×3) — the two NON-MATCHER paths are FAIL-CLOSED ────────
-    // These paths are scanned, not read-free. Measured justification: no firewall
-    // surface reads them (`analysis::resource` reads only `condition` and
-    // `execute`), and `ability_definition_axes` already binds the SAME
-    // `UnlessPayModifier` type fail-closed. Their reverts flip the OTHER way —
+    // These paths are scanned, not read-free: no firewall surface reads them
+    // (`analysis::resource` reads only `condition` and `execute`), and
+    // `ability_definition_axes` already binds the SAME `UnlessPayModifier` type
+    // fail-closed. Their reverts flip the OTHER way —
     // binding the path `_` read-free must turn these red.
 
     /// B-1b path 6 — `constraint` -> `NthSpellThisTurn { filter }`.
-    /// Revert R-6: bind `constraint: _` read-free ⇒ this row flips to false.
+    /// Revert probe: bind `constraint: _` read-free ⇒ this row flips to false.
     #[test]
     fn b1b_p6_constraint_filter_is_scanned() {
         let f = census_asserting_filter();
@@ -10215,7 +10055,7 @@ mod tests {
         // PRECISION control: an unfiltered constraint must NOT veto. This is what
         // distinguishes descending `constraint` from a blanket
         // `constraint.is_some() => CONSERVATIVE`, and `OncePerTurn` is exactly the
-        // populated-but-filterless variant E-1 ADDENDUM (a) names.
+        // populated-but-filterless variant.
         let once = TriggerDefinition {
             constraint: Some(TriggerConstraint::OncePerTurn),
             ..bello_granted_trigger()
@@ -10227,7 +10067,7 @@ mod tests {
     }
 
     /// B-1b path 7a — `unless_pay.payer`.
-    /// Revert R-7: drop the `payer` delegation ⇒ this row flips to false.
+    /// Revert probe: drop the `payer` delegation ⇒ this row flips to false.
     #[test]
     fn b1b_p7a_unless_pay_payer_is_scanned() {
         let f = census_asserting_filter();
@@ -10246,10 +10086,9 @@ mod tests {
         );
     }
 
-    /// B-1b path 7b — `unless_pay.cost`, the `AbilityCost` sub-surface E-1's
-    /// second-order note flags for phase D. Guarded independently of `payer`
+    /// B-1b path 7b — `unless_pay.cost`. Guarded independently of `payer`
     /// because they are separate delegations that can be dropped separately.
-    /// Revert R-8: drop the `scan_ability_cost` delegation ⇒ this row flips.
+    /// Revert probe: drop the `scan_ability_cost` delegation ⇒ this row flips.
     #[test]
     fn b1b_p7b_unless_pay_cost_is_scanned() {
         let def = TriggerDefinition {
@@ -10274,7 +10113,7 @@ mod tests {
     /// the walker DESCENDS AT ALL. Discriminator: `QuantityRef::ObjectCount`
     /// self-asserts `sibling: true` unconditionally. This is NOT a
     /// filter-precision test.
-    /// Revert R-9: replace the walker body with `Axes::NONE` ⇒ this row flips.
+    /// Revert probe: replace the walker body with `Axes::NONE` ⇒ this row flips.
     #[test]
     fn b2_walker_descends_execute_object_count() {
         let def = TriggerDefinition {
@@ -10295,10 +10134,9 @@ mod tests {
 
     /// B-3: the `condition` surface too. Discriminator is
     /// `TriggerCondition::ControlsType`'s OWN `sibling: true` — deliberately NOT
-    /// `ObjectCount`'s, so B-2 and B-3 fail independently (the charter's wording
-    /// routed both through the same self-assertion, which would let one edit red
-    /// both and make neither attributable).
-    /// Revert R-10: drop the `scan_trigger_condition` delegation ⇒ this row flips.
+    /// `ObjectCount`'s, so B-2 and B-3 fail independently: routing both through the
+    /// same self-assertion would let one edit red both and make neither attributable.
+    /// Revert probe: drop the `scan_trigger_condition` delegation ⇒ this row flips.
     #[test]
     fn b3_walker_descends_condition() {
         let def = TriggerDefinition {
@@ -10318,7 +10156,7 @@ mod tests {
     /// is a read (reached via the `FilterProp` recursion); on the matcher fields it
     /// is read-free. One fixture, both halves — a blanket read-free binding of
     /// `execute`/`condition` cannot satisfy it, and neither can scanning matchers.
-    /// Revert R-11: bind `execute`/`condition` `_` read-free alongside the matchers
+    /// Revert probe: bind `execute`/`condition` `_` read-free alongside the matchers
     /// ⇒ this row flips to false.
     #[test]
     fn b4_execute_census_scanned_while_matchers_stay_read_free() {
@@ -10346,19 +10184,15 @@ mod tests {
     }
 
     // ── B-5 (scope guard) ─────────────────────────────────────────────────────
-    /// B-5: the other blanket-arm members are untouched. The arm holds ELEVEN
-    /// members after `GrantTrigger` left it — not the stale "(9)" its comment
-    /// claimed before this change.
+    /// B-5: the other blanket-arm members are untouched.
     ///
-    /// TEN of the eleven are exercised. The one omission is deliberate and priced:
-    /// `CopyValues` needs a 13-field `CopiableValues` literal (`ManaCost`,
-    /// `CardType`, `PrintedLoyalty`, three `Arc<Vec<_>>`) plus a `DisplaySource`
-    /// from `game::game_object` — no `Default`, no constructor — and every field
-    /// of it would be a guess written without a build to check it against. The
-    /// residual risk it leaves is small: `scan_continuous_modification` is
-    /// exhaustive with NO `_` wildcard, so a member cannot silently LEAVE the
-    /// match; only a deliberate move into another arm would evade this row, and
-    /// that is visible in a diff.
+    /// Every member but `CopyValues` is exercised. That omission is deliberate:
+    /// `CopyValues` needs a `CopiableValues` literal (`ManaCost`, `CardType`,
+    /// `PrintedLoyalty`, three `Arc<Vec<_>>`) plus a `DisplaySource` from
+    /// `game::game_object` — no `Default`, no constructor. The residual risk is
+    /// small: `scan_continuous_modification` is exhaustive with NO `_` wildcard, so a
+    /// member cannot silently LEAVE the match; only a deliberate move into another
+    /// arm would evade this row, and that is visible in a diff.
     /// No revert probe (a scope guard, not a mechanism claim).
     #[test]
     fn b5_other_blanket_members_stay_conservative() {
@@ -10417,7 +10251,7 @@ mod tests {
         }
     }
 
-    /// **D3 positive** — the contracted call shape passes the binding assert and returns a
+    /// The contracted call shape passes the binding assert and returns a
     /// verdict. Without this row the `#[should_panic]` sibling below is satisfiable by an
     /// assert that fires on EVERYTHING, which would be a debug-build outage rather than a
     /// binding.
@@ -10434,7 +10268,7 @@ mod tests {
         );
     }
 
-    /// **D3** — the doc's "`target` MUST be a target-filter field of `effect`" is now BOUND,
+    /// The doc's "`target` MUST be a target-filter field of `effect`" is now BOUND,
     /// not requested. The wrapper derives its `FilterReadContext` from `effect` via
     /// `effect_target_ctx`, so a `target` belonging to some other effect is answered under
     /// the wrong census discipline — silently, and with a plausible-looking bool.
