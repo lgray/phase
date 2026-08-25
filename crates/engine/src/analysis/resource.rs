@@ -141,9 +141,9 @@ mod verdict_memo {
         /// `stack_entry_resolution_choice_freedom(frame, entry, budget)` on the
         /// ability AS IT STANDS.
         pub(crate) primary: ResolutionChoiceFreedom,
-        /// CR 603.5: the optional-cleared re-classification the relief used to
-        /// compute inline. `None` for an entry whose mint publishes no `may`
-        /// slot, and for one whose resolution scope cannot bind (CR 603.4).
+        /// CR 603.5: the optional-cleared re-classification the relief consumes.
+        /// `None` for an entry whose mint publishes no `may` slot, and for one
+        /// whose resolution scope cannot bind (CR 603.4).
         pub(crate) residual: Option<ResolutionChoiceFreedom>,
     }
 
@@ -1569,11 +1569,11 @@ fn optional_cleared_classification(
     // header) would otherwise buy that copy plus a scope binding to reach a verdict that never
     // looks at the board — once per ring frame.
     //
-    // EQUIVALENCE: hoisting changes exactly one case — an entry whose scope would have FAILED
-    // to bind AND whose chain is gated now returns `Some(MayPrompt)` where it previously
-    // returned `None`. `residual`'s one reader (`optional_relief_for`) opens
-    // `match cached.residual.as_ref()?` with a `MayPrompt => None` arm, so the two produce the
-    // identical downstream result.
+    // EQUIVALENCE: this ordering differs from the unhoisted one in exactly one case — an entry
+    // whose scope would FAIL to bind AND whose chain is gated yields `Some(MayPrompt)` here
+    // where the unhoisted order yields `None`. `residual`'s one reader (`optional_relief_for`)
+    // opens `match cached.residual.as_ref()?` with a `MayPrompt => None` arm, so the two
+    // produce the identical downstream result.
     if crate::game::resolution_prompt::chain_offers_choice(&without_may_gate) {
         return Some(crate::game::resolution_prompt::ResolutionChoiceFreedom::MayPrompt);
     }
@@ -2790,8 +2790,8 @@ pub(crate) fn counter_is_beneficial_materializable(ct: &CounterType) -> bool {
 /// `(ObjectId, CounterType, delta)` triples whose BENEFICIAL-materializable counters strictly
 /// grew across it (`current` vs `prior`), feeding BOTH the batched-collapse δ stash AND (projected
 /// to `(object, counter)`) the `∞` DISPLAY channel. ONE derivation, two consumers, so the pills
-/// and the growth that lands cannot disagree; the display channel used to run its own Generic-only
-/// diff, which is why beneficial non-`Generic` loops collapsed without ever rendering `∞`.
+/// and the growth that lands cannot disagree; a SECOND Generic-only diff on the display channel
+/// would collapse beneficial non-`Generic` loops without ever rendering `∞`.
 /// Partitioned by `counter_is_beneficial_materializable` (`Generic(_)` / +1/+1 / loyalty /
 /// defense), deliberately WIDER than the ω-cover's `generic_counter_is_growable`. Iterates the
 /// CURRENT side (strict growth ⇒ the grown counter is present in `current`); only SHARED objects
@@ -4649,7 +4649,7 @@ fn player_filter_is_arrival_invariant(filter: &crate::types::ability::PlayerFilt
 /// block resolve every arm to a seat, none of which counts battlefield population. NOTHING
 /// HERE CLAIMS A LIVE MOVER. What this closes is the promise on
 /// [`count_matching_condition_provably_excludes_class`] that an unrecognised node is REFUSED:
-/// on this axis a new `ControllerRef` variant used to compile and be silently ADMITTED.
+/// on this axis a new `ControllerRef` variant would otherwise compile and be silently ADMITTED.
 ///
 /// **ADMITTED — the two arms whose reads are proven fixed against an arrival:**
 ///  * `You` — resolves to `ctx.source_controller`, which both relief arms bind ONCE from the
@@ -6198,9 +6198,9 @@ fn live_floating_replacement_defs(
 /// the growing class", and that question is store-AGNOSTIC: both stores feed the same
 /// `game::replacement::replace_event` pipeline via `find_applicable_replacements`.
 ///
-/// EXTRACTED, NOT COPIED. Three sites walked `active_replacements` with a byte-identical inline
-/// `matches!(obj.zone, Battlefield | Command)` gate, and every one was structurally blind to the
-/// floating store: the gate needs `obj.zone`, and a floating def has no object.
+/// EXTRACTED, NOT COPIED. An inline `matches!(obj.zone, Battlefield | Command)` gate at a call
+/// site is structurally blind to the floating store: the gate needs `obj.zone`, and a floating
+/// def has no object.
 ///
 /// `Option<&GameObject>` IS THE STORE DISCRIMINANT, AND `None` IS NOT "HOST UNKNOWN" — IT IS "NO
 /// HOST EXISTS". A board def is CR 611.3 machinery hosted BY a permanent; a floating def is
@@ -6370,13 +6370,13 @@ pub(crate) fn counter_growth_is_observed(state: &GameState) -> bool {
 /// change an answer for a definition that is SelfRef AND `execute: None` AND carries no
 /// projected-reading condition / `runtime_execute` / `damage_modification`.
 ///
-/// FLOATING (CR 611.2) DEFS ARE IN SCOPE ON THIS AXIS, and the firewall no longer depends on a
-/// neighbour's gate for any axis. Walking object-attached defs only made a `GainLife` doubler
-/// installed into `state.pending_damage_replacements` structurally invisible. What made that look
-/// harmless was a DIFFERENT surface: the loop-COVER guard declines to cover a floating life def,
-/// but through a LIFE-CLASS gate in `game::replacement`, not through this firewall — that gate
-/// never covered the token or counter axis at all. [`loop_window_replacement_defs`] unions both
-/// stores, so every axis now answers its own question from its own walk.
+/// FLOATING (CR 611.2) DEFS ARE IN SCOPE ON THIS AXIS, and the firewall depends on no
+/// neighbour's gate for any axis. Walking object-attached defs only would make a `GainLife`
+/// doubler installed into `state.pending_damage_replacements` structurally invisible, and a
+/// NEIGHBOURING surface is no substitute: the loop-COVER guard declines to cover a floating life
+/// def, but through a LIFE-CLASS gate in `game::replacement`, not through this firewall — that
+/// gate does not cover the token or counter axis at all. [`loop_window_replacement_defs`] unions
+/// both stores, so every axis answers its own question from its own walk.
 ///
 /// AXIS-SPECIFIC: a counter observer does NOT make life growth observed.
 pub(crate) fn life_growth_is_observed(state: &GameState) -> bool {
@@ -8360,9 +8360,9 @@ mod tests {
     /// controller's events, so a fixture that installs a def to be DRAWN as a
     /// candidate must put it on a permanent controlled by the player whose
     /// event it is meant to replace. The event-derived discharge asks the
-    /// pipeline's own `find_applicable_replacements`, which honours that scope;
-    /// the def-scan it replaced deliberately ignored it (over-count ⇒
-    /// over-reject), so a P1-controlled def used to reject a P0 life gain.
+    /// pipeline's own `find_applicable_replacements`, which honours that
+    /// scope, so a def installed on the wrong controller's permanent is
+    /// never drawn as a candidate at all.
     fn bf_object_owned_by(state: &mut GameState, id: u64, owner: PlayerId) -> ObjectId {
         let oid = ObjectId(id);
         let object = crate::game::game_object::GameObject::new(
@@ -23396,7 +23396,7 @@ mod tests {
         );
     }
 
-    // ───────── MED-1 / MED-2 fix rows: conjunct (b)'s `target`, and (0) + (a) ─────────
+    // ───────── Rows for conjunct (b)'s `target`, and conjuncts (0) + (a) ─────────
 
     /// A `TargetFilter` that READS the growing class: `Typed{Creature}` matches the
     /// Saproling fodder token every block-(2) fixture carries. Used as a mana
@@ -23409,7 +23409,7 @@ mod tests {
 
     /// A `ParsedCondition` that READS the growing class: the fodder members are P0
     /// creatures, so a live "you control N+ creatures" census changes value as the loop
-    /// grows. Used for MED-2's conjunct-(0) and conjunct-(a) halves.
+    /// grows. Used for the conjunct-(0) and conjunct-(a) halves.
     fn class_reading_condition() -> crate::types::ability::ParsedCondition {
         crate::types::ability::ParsedCondition::YouControlCoreTypeCountAtLeast {
             core_type: CoreType::Creature,
@@ -23433,7 +23433,7 @@ mod tests {
         out
     }
 
-    /// **MED-1 pin, arm S2** — `exiled_colors_provably_exclude_class` must NOT relieve an
+    /// **Arm S2** — `exiled_colors_provably_exclude_class` must NOT relieve an
     /// ability whose own MANA TARGET reads the growing class, even when its link set is
     /// class-disjoint.
     ///
@@ -23524,7 +23524,7 @@ mod tests {
         );
     }
 
-    /// **MED-1 pin, arm S3** — mirror of the S2 row for
+    /// **Arm S3** — mirror of the S2 mana-target row for
     /// `counters_on_source_provably_excludes_class`, using the OTHER `ManaTargetRole`
     /// variant (`CountSource`, CR 115.1) so both declared-filter roles are covered.
     ///
@@ -23581,7 +23581,7 @@ mod tests {
         );
     }
 
-    /// **MED-2 pin, arm S2** — conjuncts (0) `activation_restrictions` and (a) the
+    /// **Arm S2** — conjuncts (0) `activation_restrictions` and (a) the
     /// `Effect::NoOp` clone-and-rescan, each isolated on Pit's real AST.
     ///
     /// Each half below is a MATCHED CONTROL against the same board's positive relief, so
@@ -23714,10 +23714,10 @@ mod tests {
         );
     }
 
-    /// **MED-2 pin, arm S3** — mirror of the S2 MED-2 row for
+    /// **Arm S3** — mirror of the S2 conjunct-(0)/(a) row for
     /// `counters_on_source_provably_excludes_class`, on Stockpile's real parsed AST.
     /// Conjunct (a) is driven through `else_ability` here rather than `sub_ability`, so
-    /// the two MED-2 rows cover two different fields of the un-enumerated rescan surface.
+    /// the two rows cover two different fields of the un-enumerated rescan surface.
     ///
     /// REVERT / MUTATION PROBES:
     /// * delete conjunct (0) ⇒ **FAILS** on `S3-MED2(0)`.
@@ -23766,7 +23766,7 @@ mod tests {
 
         // ── (a) a class-reading `else_ability` beside the relievable effect ────────
         // A DIFFERENT un-enumerated field from the S2 row's `sub_ability`, so the two
-        // MED-2 rows between them show conjunct (a) covers the rescan surface generally
+        // rows between them show conjunct (a) covers the rescan surface generally
         // rather than one field. (`AbilityDefinition::condition` is an
         // `Option<AbilityCondition>` — a cast/resolution rider, not a board census — so
         // it cannot carry a class read and is the wrong vehicle here.)
