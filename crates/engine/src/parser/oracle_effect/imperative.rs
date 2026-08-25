@@ -9320,7 +9320,7 @@ pub(super) fn that_player_library_filter(ctx: &ParseContext) -> TargetFilter {
     if matches!(ctx.relative_player_scope, Some(ControllerRef::TargetPlayer)) {
         return TargetFilter::TriggeringPlayer;
     }
-    // CR 603.7c: DamageDone triggers use TriggeringPlayer for "that player"
+    // CR 120.3: DamageDone triggers use TriggeringPlayer for "that player"
     if matches!(
         ctx.relative_player_scope,
         Some(ControllerRef::TriggeringPlayer)

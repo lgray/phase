@@ -5949,7 +5949,7 @@ fn parse_dark_leo_trigger_structure() {
     }
 }
 
-/// CR 104.3e + CR 119 + CR 603.4 + CR 603.7c + CR 603.12: Ezio Auditore
+/// CR 104.3e + CR 119 + CR 603.4 + CR 603.12: Ezio Auditore
 /// da Firenze — "Whenever ~ deals combat damage to a player, you may pay
 /// {W}{U}{B}{R}{G} if that player has 10 or less life. When you do, that
 /// player loses the game."
@@ -5966,7 +5966,7 @@ fn parse_dark_leo_trigger_structure() {
 ///    elimination to the ability controller (Ezio's controller), so the
 ///    Ezio player eliminated *themselves*. The new
 ///    `Effect::LoseTheGame.target` field must be
-///    `Some(TargetFilter::TriggeringPlayer)` (CR 603.7c — "that player"
+///    `Some(TargetFilter::TriggeringPlayer)` (CR 120.3 — "that player"
 ///    anaphora binds to the player named by the damage event).
 /// 3. The reflexive "When you do" gate (CR 603.12) on the directed-loss
 ///    sub-ability must be preserved so the loss only fires after the
@@ -5983,7 +5983,7 @@ fn parse_ezio_damage_trigger_full_structure() {
             "Ezio Auditore da Firenze",
         );
 
-    // (a) Mode + damage kind + valid_target — CR 120.3 + CR 603.7c.
+    // (a) Mode + damage kind + valid_target — CR 120.3.
     assert!(
         matches!(def.mode, TriggerMode::DamageDone),
         "mode must be DamageDone, got {:?}",
@@ -6085,7 +6085,7 @@ fn parse_ezio_damage_trigger_full_structure() {
     );
 }
 
-/// CR 104.3e + CR 119 + CR 603.4 + CR 603.7c + CR 603.12: Ezio Auditore
+/// CR 104.3e + CR 119 + CR 603.4 + CR 603.12: Ezio Auditore
 /// da Firenze — VERBATIM printed Oracle text (post-effect `if` form):
 /// "Whenever ~ deals combat damage to a player, you may pay
 /// {W}{U}{B}{R}{G} if that player has 10 or less life. When you do,
@@ -6119,7 +6119,7 @@ fn parse_ezio_damage_trigger_verbatim_oracle_text() {
             "Ezio Auditore da Firenze",
         );
 
-    // (a) Mode + damage kind + valid_target — CR 120.3 + CR 603.7c.
+    // (a) Mode + damage kind + valid_target — CR 120.3.
     // These are unchanged from the normalized form: the trigger shape
     // itself doesn't depend on which side of the comma the `if` clause
     // lives on.
@@ -6250,9 +6250,9 @@ fn parse_ezio_damage_trigger_verbatim_oracle_text() {
     );
 }
 
-/// CR 603.7c + CR 120.3 + CR 119.3: Unstoppable Slasher — "Whenever this
+/// CR 120.3 + CR 119.3: Unstoppable Slasher — "Whenever this
 /// creature deals combat damage to a player, they lose half their life,
-/// rounded up." is an event-bound (non-targeted) trigger per CR 603.6f.
+/// rounded up." is an event-bound (non-targeted) trigger per CR 115.1d.
 /// "they" must resolve to `TriggeringPlayer` (the damaged player), and the
 /// half-life amount must read `PlayerScope::ScopedPlayer`, NOT the
 /// targeting `PlayerScope::Target` (which has no chosen target on an
@@ -7230,7 +7230,7 @@ fn mirror_march_flip_win_effect_folds_copy_haste_exile_on_last_created() {
     );
 }
 
-/// CR 705.2 + CR 603.7c: the fixed-count sibling has the same per-win rider
+/// CR 705.2 + CR 608.2c: the fixed-count sibling has the same per-win rider
 /// boundary as Mirror March. The present-tense form is used by cards such as
 /// Yusri, Fortune's Flame; once lowered, the copied token's haste/exile riders
 /// must be part of `FlipCoins.win_effect`, not post-loop siblings.
@@ -8900,7 +8900,7 @@ fn trigger_dalkovan_encampment_delayed_you_attack() {
     };
     assert_eq!(trigger.mode, TriggerMode::YouAttack);
 
-    // CR 603.7c + CR 513.1: the sacrifice cleanup must nest under the token
+    // CR 603.7a + CR 513.1: the sacrifice cleanup must nest under the token
     // creator inside the WheneverEvent delayed trigger, not as a sibling
     // activated sub registered at ability activation time (issue #2433).
     let Effect::CreateDelayedTrigger { effect: inner, .. } = delayed_effect else {
@@ -10992,7 +10992,7 @@ fn trigger_you_draw_a_card_scopes_to_controller() {
 
 #[test]
 fn trigger_opponent_loses_life_exquisite_blood() {
-    // CR 119.3 + CR 603.2 + CR 603.7c: Exquisite Blood — opponent-scoped
+    // CR 119.3 + CR 603.2: Exquisite Blood — opponent-scoped
     // life-loss trigger whose effect reads "that much" from the event.
     let def = parse_trigger_line(
         "Whenever an opponent loses life, you gain that much life.",
@@ -12955,7 +12955,7 @@ fn trigger_unless_you_pay_dynamic_energy() {
     );
 }
 
-/// CR 608.2k + CR 603.7c: Self-ETB "sacrifice it" anaphor — Azorius
+/// CR 608.2k: Self-ETB "sacrifice it" anaphor — Azorius
 /// Herald, Balduvian Horde, Glint Hawk, Faerie Impostor, Phlage. The
 /// bare object pronoun "it" in a `SelfRef`-subject trigger sub-effect
 /// must resolve to `TargetFilter::SelfRef` (the source itself), NOT to
@@ -15845,7 +15845,7 @@ fn trigger_opponent_causes_you_to_discard_this_card() {
     assert_eq!(def.trigger_zones, vec![Zone::Graveyard, Zone::Exile]);
 }
 
-/// CR 701.9 + CR 603.7c + CR 406.1: Necropotence's on-discard trigger
+/// CR 701.9 + CR 608.2k + CR 406.1: Necropotence's on-discard trigger
 /// exiles the just-discarded card from the graveyard. The "that card"
 /// anaphor must lift from `ParentTarget` to `TriggeringSource` so the
 /// `ChangeZone { origin: Some(Graveyard), destination: Exile }` resolves
@@ -16885,7 +16885,7 @@ fn opponent_draws_trigger_deals_damage_to_them_binds_triggering_player() {
     }
 }
 
-/// CR 603.7c + CR 608.2c: God-Pharaoh's Gift — "create a token that's a copy
+/// CR 608.2c: God-Pharaoh's Gift — "create a token that's a copy
 /// of that card … It gains haste." The "It gains haste" grant, nested as the
 /// token creator's own sub-ability, must apply to the newly created token
 /// (`LastCreated`), not the source artifact (`SelfRef`). Issue #2356.
@@ -25613,7 +25613,7 @@ fn trigger_another_player_attacks_with_two_or_more_creatures_intervening_if() {
                 "expected And(controller AttackersDeclaredCount, target AttackersDeclaredCount), got {other:?}"
             ),
         }
-    // CR 121.1 + CR 603.7c + CR 608.2k: "they draw a card" — the effect-level
+    // CR 121.1 + CR 608.2k: "they draw a card" — the effect-level
     // subject ("they") must be encoded directly on the Draw target as
     // `TriggeringPlayer`, not via a post-hoc `player_scope` override on the
     // execute ability. The runtime auto-binds `target: TriggeringPlayer`
@@ -28362,7 +28362,7 @@ fn relative_player_scope_binds_article_less_damage_source_to_triggering_player()
     }
 }
 
-/// CR 120.3 + CR 603.7c: Sigil of Sleep's bounce must target a creature the
+/// CR 120.3: Sigil of Sleep's bounce must target a creature the
 /// DAMAGED player controls (`ControllerRef::TriggeringPlayer`), not a
 /// separately-chosen `TargetPlayer`. The `TargetPlayer` mis-scoping made the
 /// runtime surface a phantom Player target slot, freezing the game (the reported

@@ -4096,8 +4096,8 @@ pub fn parse_that_much_or_many(input: &str) -> OracleResult<'_, QuantityRef> {
 
 /// Parse event-context quantity references.
 ///
-/// "That {noun}" in a triggered ability refers to the object or value from
-/// the triggering event. The source-object variants resolve via
+/// CR 608.2k: "that {noun}" in a triggered ability refers to the object or
+/// value from the triggering event. The source-object variants resolve via
 /// `extract_source_from_event` → live object or LKI cache.
 fn parse_event_context_refs(input: &str) -> OracleResult<'_, QuantityRef> {
     alt((
@@ -10005,7 +10005,7 @@ mod tests {
         assert_eq!(q, QuantityRef::EventContextAmount);
         assert_eq!(rest, "");
 
-        // CR 603.7c: bare "the damage dealt" form maps to EventContextAmount.
+        // CR 120.1: bare "the damage dealt" form maps to EventContextAmount.
         let (rest, q) = parse_quantity_ref("the damage dealt").unwrap();
         assert_eq!(q, QuantityRef::EventContextAmount);
         assert_eq!(rest, "");

@@ -2069,7 +2069,7 @@ fn reveal_the_card_backref_does_not_hijack_compound_clauses() {
     }
 }
 
-// CR 603.7b + CR 603.7c: a "whenever <trigger>, <effect>" delayed trigger
+// CR 603.7b: a "whenever <trigger>, <effect>" delayed trigger
 // with NO "this turn"/"this combat" infix window (the duration was a consumed
 // prefix) must still split on the trigger-clause comma and produce a
 // CreateDelayedTrigger. Building block for The Sea Devils III.
@@ -2082,7 +2082,7 @@ fn delayed_trigger_no_infix_window_splits_on_comma() {
         panic!("expected CreateDelayedTrigger, got {effect:?}");
     };
 
-    // CR 603.7c: the trigger condition introduces the damaged player as
+    // CR 120.3 + CR 109.4: the trigger condition introduces the damaged player as
     // TriggeringPlayer; the inner effect's "target creature that player
     // controls" must bind its controller to that player — NOT the controller
     // (ControllerRef::You). This is the rules-correctness assertion for The
