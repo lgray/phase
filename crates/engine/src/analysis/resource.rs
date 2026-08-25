@@ -4018,12 +4018,13 @@ fn activated_ability_is_not_a_loop_choice(
 ///     triggering event — [`node_reads_mutable_resolution_local_state`];
 ///  2. every property on every admitted `Typed` node is proven arrival-invariant —
 ///     [`prop_is_arrival_invariant`];
-///  3. every `PlayerFilter` a `FilterProp::ControllerMatches` crosses to is likewise —
-///     [`player_filter_is_arrival_invariant`];
+///  3. every `PlayerFilter` either crossing reaches (`FilterProp::ControllerMatches` and
+///     `TargetFilter::PlayerMatching`) is likewise — [`player_filter_is_arrival_invariant`];
 ///  4. every `TypedFilter::controller` on every admitted `Typed` node is likewise —
 ///     [`controller_ref_is_arrival_invariant`]. `type_filters` is the ONE field deliberately
 ///     unread, and it is the `card_types` residual stated below;
 ///  5. the canonical population authority is consulted at every node on top of 1-4.
+///
 /// All four classifiers are exhaustive and wildcard-free.
 ///
 /// RESIDUAL — THIS arm's filter reads exactly the field it is about.
@@ -4150,8 +4151,9 @@ fn other_leq_condition_provably_excludes_class(
 ///  * The local content is FOUR exhaustive, wildcard-free classifiers, none of which
 ///    re-answers the population question. [`node_reads_mutable_resolution_local_state`] is a
 ///    REFUSAL BY ENUM IDENTITY over `TargetFilter`; [`node_has_non_arrival_invariant_property`]
-///    carries the question onto EVERY FIELD of a `Typed` node, and from there
-///    [`prop_is_arrival_invariant`], [`player_filter_is_arrival_invariant`] and
+///    carries the question onto EVERY PAYLOAD OF A NODE THAT IS NOT ITSELF A `TargetFilter` —
+///    every field of a `Typed` node, and the boxed `PlayerFilter` of a `PlayerMatching` node —
+///    and from there [`prop_is_arrival_invariant`], [`player_filter_is_arrival_invariant`] and
 ///    [`controller_ref_is_arrival_invariant`] are ALLOWLISTS over the `FilterProp`,
 ///    `PlayerFilter` and `ControllerRef` layers.
 ///
@@ -4229,7 +4231,13 @@ fn arrival_can_move_a_nonmember_match(filter: &crate::types::ability::TargetFilt
 /// creature", so an arriving class member writes exactly that field. The three structural
 /// variants (`And` / `Or` / `Not`) and `Typed` are admitted AT THIS NODE because their contents
 /// are judged by the caller's recursion and by the population authority, not because the
-/// subtree is trusted.
+/// subtree is trusted. The CROSSING variant `PlayerMatching` is admitted here for a different
+/// reason again: it designates PLAYERS (CR 102.1) and carries no verdict of its own, and
+/// NEITHER the recursion NOR the population authority judges its boxed `PlayerFilter` —
+/// `filter_contains`'s leaf callback is `&dyn Fn(&TargetFilter)`, so that node is handed to no
+/// predicate at all. Its verdict is taken by [`node_has_non_arrival_invariant_property`]'s
+/// delegation to [`player_filter_is_arrival_invariant`]; delete that arm and admission here
+/// becomes the whole answer.
 fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::TargetFilter) -> bool {
     use crate::types::ability::TargetFilter;
 
@@ -4298,16 +4306,23 @@ fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::Targe
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
         | TargetFilter::TriggeringSourceController
-        | TargetFilter::EventTarget => false,
+        | TargetFilter::EventTarget
+        // ── ADMITTED (4): crossings, judged by the layer-2 adapter, not here ──
+        // CR 102.1: designates PLAYERS. The verdict lives on the boxed `PlayerFilter`, which
+        // no `&dyn Fn(&TargetFilter)` leaf callback is ever handed, so it is taken by
+        // `node_has_non_arrival_invariant_property`, not here.
+        | TargetFilter::PlayerMatching { .. } => false,
     }
 }
 
 /// **LAYER 2 ADAPTER — carries the guard's question from the `TargetFilter` layer down onto
-/// EVERY FIELD of a `Typed` node.** `true` means "this node carries a property OR a controller
-/// reference whose arrival-invariance is NOT proven", so relief must be refused. It is the one
-/// place THIS guard's recursion sees a `TypedFilter`'s fields, so within the recursion it is
-/// the one place that can be made to FAIL TO COMPILE when a field is added — see the no-`..`
-/// destructure in the body.
+/// EVERY PAYLOAD OF A NODE THAT IS NOT ITSELF A `TargetFilter`** — every field of a `Typed`
+/// node, and the boxed `PlayerFilter` of a `PlayerMatching` node. `true` means "this node
+/// carries a property, a controller reference, or a player designation whose
+/// arrival-invariance is NOT proven", so relief must be refused. It is the one place THIS
+/// guard's recursion sees a `TypedFilter`'s fields, so within the recursion it is where a new
+/// field on THAT struct is made to FAIL TO COMPILE; every payload this match reaches into is
+/// destructured to the same rule — see the no-`..` destructures in the body.
 ///
 /// WHY THIS EXISTS AT ALL — `filter_contains` CANNOT ASK THE QUESTION. `filter.rs`'s shape
 /// walk is parameterised by a `&dyn Fn(&TargetFilter) -> bool`: the only nodes it ever hands
@@ -4334,9 +4349,9 @@ fn node_has_non_arrival_invariant_property(node: &crate::types::ability::TargetF
     use crate::types::ability::{TargetFilter, TypedFilter};
 
     match node {
-        // The only node kind that carries a property list — and the only one with FIELDS,
-        // which is why it is DESTRUCTURED WITH NO `..` AND EVERY FIELD NAMED: a new field on
-        // `TypedFilter` is then an E0027 compile error at this seam. Field ACCESS
+        // The only node kind that carries a property list. Every arm here that reaches INTO
+        // a node is DESTRUCTURED WITH NO `..` AND EVERY FIELD NAMED, so a new field on the
+        // type it destructures is an E0027 compile error at this seam. Field ACCESS
         // (`typed.properties`) reads one axis and keeps compiling as axes are added, which is
         // how `controller` went unscanned while the exhaustive matches below were catching
         // every new VARIANT.
@@ -4361,6 +4376,15 @@ fn node_has_non_arrival_invariant_property(node: &crate::types::ability::TargetF
                     .iter()
                     .any(|prop| !prop_is_arrival_invariant(prop))
         }
+        // CR 102.1: the SECOND `TargetFilter -> PlayerFilter` crossing (the first is
+        // `FilterProp::ControllerMatches`, one layer down). Carried here for the same reason
+        // `Typed`'s fields are: `player_filter_contains` recurses only into the inner
+        // `TargetFilter` of `ControlsCount` / `TrackedSetPossessor` / `OpponentDealtDamage`,
+        // so the `PlayerFilter` NODE — where the dependence lives — is invisible to every
+        // leaf predicate. `ControlsCount` is resolved against the live `state.battlefield` by
+        // `effects::player_control_count_compares`, and it is a payload the parser actually
+        // produces here, so admitting this node is the fail-open direction.
+        TargetFilter::PlayerMatching { player } => !player_filter_is_arrival_invariant(player),
         // Every other node carries no `FilterProp`. Nested `TargetFilter`s inside these
         // (`Not`/`And`/`Or`/`TrackedSetFiltered`/`ChosenDamageSource`) are visited by
         // `filter_contains` itself and reach this function on their own.
@@ -4563,9 +4587,10 @@ fn prop_is_arrival_invariant(prop: &crate::types::ability::FilterProp) -> bool {
     }
 }
 
-/// **LAYER 3 — THE `PlayerFilter` ALLOWLIST** (CR 109.4), reached only through
-/// `FilterProp::ControllerMatches`. `true` means "a class member's ARRIVAL provably cannot
-/// change WHICH PLAYERS this filter designates".
+/// **LAYER 3 — THE `PlayerFilter` ALLOWLIST**, reached through two crossings:
+/// `FilterProp::ControllerMatches` (CR 109.4 — an object's controller) and
+/// `TargetFilter::PlayerMatching` (CR 102.1 — a player population). `true` means "a class
+/// member's ARRIVAL provably cannot change WHICH PLAYERS this filter designates".
 ///
 /// ADMITTED: filters naming players by a FIXED role or identity — the source's controller, its
 /// opponents, the defending player, the whole table, the triggering player and its opponent
@@ -27208,6 +27233,188 @@ mod tests {
              and swap ONLY the player leaf for `PlayerFilter::Controller` — a fixed seat \
              designation — and both arms relieve again. The vetoes above are attributable to \
              the live board census on the player axis, not to the crossing itself"
+        );
+    }
+
+    /// REVERT / MUTATION PROBE: replace [`node_has_non_arrival_invariant_property`]'s
+    /// `PlayerMatching` arm with `=> false` and both end-to-end vetoes below FAIL, while
+    /// moving `TargetFilter::PlayerMatching` into [`node_reads_mutable_resolution_local_state`]'s
+    /// REFUSED arm instead FAILS the matched control.
+    #[test]
+    fn s4_s5_player_matching_crossing_keeps_the_veto() {
+        use crate::types::ability::{
+            Comparator, ControllerRef, FilterProp, PlayerFilter, PlayerRelation, PlayerScope,
+            QuantityExpr, QuantityRef, ReplacementCondition, TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        let creatures = || {
+            TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Creature],
+                controller: None,
+                properties: Vec::new(),
+            })
+        };
+        let controls_a_creature = PlayerFilter::ControlsCount {
+            relation: PlayerRelation::Controller,
+            filter: creatures(),
+            comparator: Comparator::GE,
+            count: Box::new(QuantityExpr::Fixed { value: 1 }),
+        };
+        // The other payload `parse_attacked_player_relative_clause` builds ("attacks a player
+        // who has more life than you"): `player_filter_contains` treats it as a LEAF, so the
+        // walk is handed NOTHING below the crossing and no extension of that walk could reach
+        // the dependence — the verdict has to be taken at the node.
+        let more_life = PlayerFilter::PlayerAttribute {
+            relation: PlayerRelation::All,
+            attr: Box::new(QuantityRef::LifeTotal {
+                player: PlayerScope::ScopedPlayer,
+            }),
+            comparator: Comparator::GT,
+            value: Box::new(QuantityExpr::Ref {
+                qty: QuantityRef::LifeTotal {
+                    player: PlayerScope::Controller,
+                },
+            }),
+        };
+        let pm = |player: PlayerFilter| TargetFilter::PlayerMatching {
+            player: Box::new(player),
+        };
+        // "a stack entry that targets a player who controls one or more creatures". S5's
+        // condition carries a bare `TypedFilter`, so a root-position crossing cannot occur
+        // there; `Targets` boxes a `TargetFilter` and is itself ADMITTED at layer 2, so a
+        // refusal below is the player layer's and not the prop's.
+        let targets_a_player = |player: PlayerFilter| TypedFilter {
+            type_filters: vec![TypeFilter::Land],
+            controller: Some(ControllerRef::You),
+            properties: vec![FilterProp::Targets {
+                filter: Box::new(pm(player)),
+            }],
+        };
+
+        // ── ATTRIBUTION PINS: which authority refuses, and which ones admit ──────────────
+        assert!(
+            !crate::game::filter::affected_filter_uses_object_population(&pm(
+                controls_a_creature.clone()
+            )),
+            "pin 1: the canonical population authority ADMITS the crossing, so it cannot be \
+             what refuses below"
+        );
+        assert!(
+            !node_reads_mutable_resolution_local_state(&pm(controls_a_creature.clone())),
+            "pin 2: the crossing reads no resolution-local ledger of its own, so this \
+             classifier admits it and the verdict must be taken one layer down"
+        );
+        assert!(
+            node_has_non_arrival_invariant_property(&pm(controls_a_creature.clone())),
+            "pin 3: the adapter is what refuses, by delegating the boxed `PlayerFilter`"
+        );
+        assert!(
+            !player_filter_is_arrival_invariant(&controls_a_creature),
+            "pin 4: and within that delegation it is layer 3 that says no"
+        );
+        assert!(
+            !arrival_can_move_a_nonmember_match(&creatures()),
+            "pin 5: the one node `filter_contains` hands the leaf predicate BELOW the crossing \
+             is this inner filter, and it is arrival-invariant — the walk alone never reaches \
+             the dependence, which lives on the `PlayerFilter` node"
+        );
+
+        // ── S4 — the crossing in root position ───────────────────────────────────────────
+        let (s4_state, s4_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: pm(controls_a_creature.clone()),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s4_state, Some(&HashSet::from([s4_member]))),
+            "crossing guard (S4): `effects::player_control_count_compares` resolves the boxed \
+             `ControlsCount` against the LIVE `state.battlefield`, so the arriving Saproling \
+             takes a controller's creature count 0 -> 1 and a PRE-EXISTING object starts \
+             matching with no member ever counted"
+        );
+
+        // ── S4 — the payload the walk cannot descend into at all ─────────────────────────
+        let (attr_state, attr_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: pm(more_life.clone()),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(
+                &attr_state,
+                Some(&HashSet::from([attr_member]))
+            ),
+            "crossing guard (S4), `PlayerAttribute` payload: `player_filter_contains` treats \
+             this leaf as terminal, so the walk hands the leaf predicate exactly ONE node — the \
+             crossing itself. Teaching that walk to descend further could not close this; the \
+             verdict has to be taken at the node"
+        );
+
+        // ── S5 — the same crossing nested in a prop, through the arm that wraps its filter ─
+        let (s5_state, s5_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: targets_a_player(controls_a_creature.clone()),
+                },
+            ),
+        )]);
+        assert!(
+            fire_time_conditions_read_growing_class(&s5_state, Some(&HashSet::from([s5_member]))),
+            "crossing guard (S5): the same hazard through the other arm, which wraps its \
+             `TypedFilter` in `TargetFilter::Typed` before consulting the guard"
+        );
+
+        // ── MATCHED CONTROLS: the SAME crossing in the SAME position, ADMITTED player leaf ─
+        // Holds fixed: the crossing, its position, the host filter, both arms. Varies: only
+        // whether the boxed `PlayerFilter` is a live board census.
+        let (c1_state, c1_member, _) = block3_fixture(vec![(
+            900,
+            "Sunken Hollow",
+            with_condition(
+                sunken_hollow_def(),
+                ReplacementCondition::UnlessControlsCountMatching {
+                    minimum: 2,
+                    filter: pm(PlayerFilter::Controller),
+                },
+            ),
+        )]);
+        let (c2_state, c2_member, _) = block3_fixture(vec![(
+            902,
+            "Blackcleave Cliffs",
+            with_condition(
+                blackcleave_cliffs_def(),
+                ReplacementCondition::UnlessControlsOtherLeq {
+                    count: 2,
+                    filter: targets_a_player(PlayerFilter::Controller),
+                },
+            ),
+        )]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&c1_state, Some(&HashSet::from([c1_member])))
+                && !fire_time_conditions_read_growing_class(
+                    &c2_state,
+                    Some(&HashSet::from([c2_member]))
+                ),
+            "matched controls: swap ONLY the boxed `PlayerFilter` for `PlayerFilter::Controller` \
+             — a fixed seat designation — and both arms relieve again. The vetoes above are \
+             attributable to the player leaf, not to the crossing itself, and a blanket refusal \
+             of the crossing at either classifier would deny relief here"
         );
     }
 
