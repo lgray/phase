@@ -2540,27 +2540,18 @@ fn collect_matching_triggers_inner(
             {
                 // CR 508.3e: "Whenever you attack a player" triggers once for
                 // EACH attacked player, each firing bound to its own attacked
-                // player. The printed rulings on Echoing Assault, Soaring
-                // Lightbringer, and Horizon Explorer all state this outright —
-                // and Horizon Explorer has no "that player" anaphor at all,
+                // player. Horizon Explorer has no "that player" anaphor at all,
                 // which is what proves the cardinality belongs to the trigger
                 // CONDITION rather than to the ability's body.
                 //
-                // Ordered against the two arms it sits between, both of which
-                // are MORE specific and must keep winning:
-                //
-                // - `trig_def.batched` (above): a batched trigger's events must
-                //   keep flowing through `matching_batched_trigger_events`,
-                //   which is where static trigger suppression and the
-                //   per-candidate intervening-if are applied.
-                // - the event-source force-block arm (immediately above): its
-                //   attacker demonstrative ("that creature") has no referent in
-                //   a plural event, so it needs one event per ATTACKER. This
-                //   arm groups per attacked PLAYER, which can carry several
-                //   attackers, and would strand that demonstrative.
-                //
-                // No card currently reaches this arm and either of those, so
-                // both are precedence guarantees rather than live tiebreaks.
+                // Ordered against the two arms above it, both MORE specific and
+                // both of which must keep winning: `trig_def.batched`, whose
+                // events must keep flowing through
+                // `matching_batched_trigger_events` (where static suppression and
+                // the per-candidate intervening-if are applied); and the
+                // event-source force-block arm, whose attacker demonstrative
+                // ("that creature") has no referent in a plural event and so needs
+                // one event per ATTACKER — which this per-player grouping strands.
                 super::trigger_matchers::matching_you_attack_events_by_attacked_player(
                     event,
                     trig_def,
@@ -2847,7 +2838,7 @@ pub(crate) fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone
 /// source-relative `FilterContext` path `match_changes_zone` uses at fire time), so no new
 /// subtype/controller logic is written here.
 ///
-/// SOUNDNESS + ORDERING (GAP-1, load-bearing — do not reorder the callers): such a trigger never
+/// SOUNDNESS + ORDERING (load-bearing — do not reorder the callers): such a trigger never
 /// fires on the loop's per-cycle token creation because two invariants, checked IN ORDER inside
 /// `analysis::resource::loop_states_cover_modulo_fodder_growth`, guarantee the fodder is the ONLY
 /// class that changes across the covered cycle:
@@ -2857,11 +2848,9 @@ pub(crate) fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone
 ///    battlefield that cycle is the same class under BOTH
 ///    `analysis::resource::fodder_content_eq` AND
 ///    `game::printed_cards::intrinsic_copiable_values`, so a `Some` fodder class means the k >= 1
-///    entrants were all fodder and nothing else entered. What this invariant needs is "one class",
-///    not "one object": the earlier single-entrant rule delivered that by CARDINALITY, this
-///    delivers it by CONTENT on a strictly wider equality — a strengthening of the disjointness
-///    premise, not a relaxation. Note it also has a second, display-only caller — the
-///    soundness-bearing one is inside the fodder-cover arm); and
+///    entrants were all fodder and nothing else entered. The invariant needs "one class", not
+///    "one object", and content equality delivers it. `derived_fodder_class` also has a second,
+///    display-only caller — the soundness-bearing one is inside the fodder-cover arm); and
 /// 2. the SECOND cover frame pair's "only the fodder partition grows" is guaranteed SOLELY by
 ///    `analysis::resource::board_covers_modulo_fodder`, whose all-zones
 ///    stable-partition content-equality is enforced by its own return value at its ONLY call
@@ -6136,9 +6125,8 @@ pub(crate) fn normalize_ability_identity(ability: &mut ResolvedAbility) {
 /// triggers see a shared LKI freeze (CR 603.10a) and their placement order is
 /// unobservable (CR 603.2c). The mutual `co_departed` sets are stamped by the
 /// same producers in ALL detector modes: `zones::mark_simultaneous_departures`
-/// (zones.rs:787) over `zones::departed_subset` (zones.rs:816) at the four
-/// batch-departure sites (sba.rs:679/:835/:1264/:1319), and the SBA-batch stamp
-/// `zones::stamp_simultaneous_from_slice` (zones.rs:832, called sba.rs:258).
+/// over `zones::departed_subset` at the four batch-departure sites in `sba`, and
+/// the SBA-batch stamp `zones::stamp_simultaneous_from_slice`.
 /// Reachable in ALL modes; single caller (`trigger_events_match_for_ordering`'s
 /// batch branch), retained because the OFF-path departure-batch auto-resolve is
 /// live.
@@ -6177,7 +6165,7 @@ fn trigger_events_match_for_ordering(
 ) -> bool {
     // C1 (CR 603.3b): same firing event auto-orders only when the identical
     // siblings' resolution functions provably COMMUTE — the `ability_rw` kind/
-    // scope read/write conflict profile (§1.2), the precise read/write predicate
+    // scope read/write conflict profile, the precise read/write predicate
     // the shipped deferral demanded (replacing the C0-full fail-open serde
     // allowlist). Commutation is proven MODULO the documented source-actor
     // residual: per-source granted lifelink/deathtouch-class state (CR 702.15 /
@@ -6187,7 +6175,7 @@ fn trigger_events_match_for_ordering(
     // UNCONDITIONALLY by the pre-C1 short-circuit and are inherited unchanged
     // (zero ordering-decision change; strictly less total unsoundness; the
     // constructive close is ledgered). The visible surface of this gate is
-    // exactly the proven-order-dependent groups (PR-6.25 §1 Case A: two
+    // exactly the proven-order-dependent groups (two
     // byte-identical "+1/+1 on each creature; draw if this creature's power ≥ 6"
     // off one event — a counter write feeds the sibling's live power read), which
     // the shipped engine silently auto-ordered, removing the controller's
@@ -6343,7 +6331,7 @@ fn group_source_census(
 /// transformation).
 // CR 603.3b: `trigger_event` (the firing event itself) is NOT compared as an
 // equality field — instead `trigger_events_match_for_ordering` classifies the
-// pair by the `ability_rw` read/write CONFLICT profile (§1.2). A same-event
+// pair by the `ability_rw` read/write CONFLICT profile. A same-event
 // group auto-orders iff its identical siblings' resolution functions provably
 // COMMUTE (`same_event_conflict` false, C1 / CR 603.3b), replacing the shipped
 // fail-open serde allowlist; an explicitly-simultaneous ZoneChanged departure
@@ -6399,7 +6387,7 @@ fn group_is_order_independent(state: &GameState, group: &[PendingTriggerContext]
     // resolver authority for `TriggeringSource`-class writes; `None` ⇒ no event
     // object (e.g. `Phase`) ⇒ those writes no-op at resolution (targeting.rs), so
     // the profile drops them. `event_object_excludes_sources` is the object-
-    // disjointness signal (§2 rule 2), computed DYNAMICALLY for this group: the
+    // disjointness signal, computed DYNAMICALLY for this group: the
     // one shared event object is provably no member's source iff its id differs
     // from every member's `source_id` (valid_card is not carried on
     // `PendingTrigger`; the concrete event-object id is a sound and at-least-as-
@@ -10193,7 +10181,7 @@ pub(crate) fn filter_consumed_trigger_events(
 /// SCOPE: LIVE PLAY. Three residuals remain open, are filed as issues, and are
 /// NOT closed by this filter:
 ///   * R1 — the index is PER-TURN. `zone_changes_this_turn` is cleared at
-///     `turns.rs:1253`, while `start_next_turn` does NOT clear
+///     `end_turn_cleanup`, while `start_next_turn` does NOT clear
 ///     `state.deferred_triggers`, so a witness that survives a turn boundary
 ///     could in principle alias a reset index. The queue is bounded only by
 ///     drain-at-priority (`drain_deferred_trigger_queue_unchecked`), by the
@@ -10205,17 +10193,17 @@ pub(crate) fn filter_consumed_trigger_events(
 ///     `#[serde(default)]` indices, so a restored state can carry index `0` on
 ///     distinct occurrences. Pre-existing and out of scope here.
 ///   * R4 — the `EffectZoneChoice` `SelectCards` arm
-///     (`engine_resolution_choices.rs:4493-4540`) validates length, membership
-///     and current zone but NOT uniqueness, unlike its FIVE sibling arms:
-///     `engine_resolution_choices.rs:833` (keep-on-top), `:864` (dig), `:2891`
-///     (pile A), `:6409` (`EachPlayerCopyChosen`), and `mulligan.rs:561`
-///     (bottom selection), the last of which answers the SAME
+///     (`engine_resolution_choices.rs`) validates length, membership
+///     and current zone but NOT uniqueness, unlike its FIVE sibling arms —
+///     keep-on-top, dig, pile A and `EachPlayerCopyChosen` in
+///     `engine_resolution_choices.rs`, plus bottom selection in `mulligan.rs`,
+///     the last of which answers the SAME
 ///     `GameAction::SelectCards` variant. A duplicate id therefore reaches
 ///     `move_library_origin_cards_in_selection_order`
-///     (`engine_resolution_choices.rs:6941`) and repositions one object twice
+///     (`engine_resolution_choices.rs`) and repositions one object twice
 ///     inside one loop. That is a boundary-validation gap, not a filter defect.
 ///
-/// CARVE-OUT: `game/stack.rs:3608` builds a production `ZoneChanged` carrying
+/// CARVE-OUT: `game/stack.rs` builds a production `ZoneChanged` carrying
 /// index `0`, but it is a local probe passed only to
 /// `trigger_index::candidates_for_event` — it never enters a `Vec<GameEvent>`,
 /// never reaches `state.deferred_triggers`, and is therefore outside the scope
@@ -10236,15 +10224,15 @@ pub(crate) fn filter_consumed_trigger_events(
 ///   * `parked_delivery_records_carry_distinct_occurrence_indices`
 ///     (`tests/integration/search_delivery_observer_dedup.rs`) pins the
 ///     allocator->event fidelity link in production on ONE emit path only
-///     (`zone_pipeline` -> `move_to_zone` ordinary arm -> `zones.rs:1362`). It
+///     (`zone_pipeline` -> `move_to_zone` ordinary arm -> `zones.rs`). It
 ///     is a sentinel, not a census over the four emit sites.
 ///
 /// KNOWN UNCLOSED GUARD GAP, deliberately out of scope here:
 /// `apply_resolved_zone_change` compares the recorder's return value against
-/// `command.turn_zone_change_index` — a SIBLING FIELD of the command — at
-/// `zones.rs:946-953`, and never against
+/// `command.turn_zone_change_index` — a SIBLING FIELD of the command — in
+/// `zones.rs`, and never against
 /// `command.zone_change_record.turn_zone_change_index`, which is the copy that
-/// actually becomes the event (`zones.rs:1199` -> `:1362`). So the emitted
+/// actually becomes the event (`zones.rs`). So the emitted
 /// event's index has NO production guard on any path. Extending that comparison
 /// is the class-wide fix and would cover every path through
 /// `resolve_and_apply_zone_change` at once.
@@ -10442,15 +10430,10 @@ fn delayed_body_outlives_a_false_gate(ability: &ResolvedAbility) -> bool {
 /// `ControlsCommander`) are payload-free. `And`/`Or` do not bridge today; they
 /// recurse here anyway so adding them to the bridge cannot silently bypass this.
 ///
-/// EXHAUSTIVE and wildcard-free, matching every other classifier on this path.
-/// The former `_ => false` tail was inert ONLY because the bridge happens to
-/// decline the arms it covered — which made it a claim about a DIFFERENT
-/// function, silently re-underwritten every time that bridge grows an arm. Each
-/// variant is therefore adjudicated on its own reading, so widening the bridge
-/// can never make this guard fail open: a condition whose reading is
-/// resolution-scoped answers `true` here whether or not it bridges today. Under
-/// today's bridge every reachable arm below answers `false` or recurses, so this
-/// is pure hardening — no hoist changes because of it.
+/// EXHAUSTIVE and wildcard-free, matching every other classifier on this path: each variant is
+/// adjudicated on its own reading rather than on what the bridge happens to decline today, so
+/// widening the bridge can never make this guard fail open — a condition whose reading is
+/// resolution-scoped answers `true` here whether or not it bridges today.
 fn gate_binding_diverges_at_fire_time(condition: &AbilityCondition) -> bool {
     match condition {
         AbilityCondition::QuantityCheck { lhs, rhs, .. } => {
@@ -10900,47 +10883,30 @@ fn card_type_set_source_binding_diverges(source: &CardTypeSetSource) -> bool {
     diverges || !complete
 }
 
-/// CR 603.4: the POPULATION half of [`quantity_ref_binding_diverges`] — does the
-/// fire-time leg bind the objects this filter names the same way the resolving
-/// ability does?
-///
-/// The fire-time reader (`quantity::resolve_quantity_for_trigger_check` →
-/// `resolve_ref`) builds its `FilterContext` from the delayed ability's
-/// controller and its CR 400.7 `TriggerSourceContext`, with `ability = None`,
-/// `targets = &[]` and `recipient = None`; the matched event is visible only
-/// through the `DETECTION_TRIGGER_EVENT` thread-local. The resolution-time
-/// reader gets the whole `ResolvedAbility`. So three families of filter diverge:
-///
-/// * ABILITY-BOUND anaphora — they read `ability.targets` /
-///   `ability.cost_paid_object`, which are the empty set at fire time. The
-///   population-level counterpart of `ObjectScope::Target`;
-/// * RESOLUTION-PUBLISHED LEDGERS — `state.last_*_ids`, the tracked sets, the
-///   linked-exile order and the post-replacement window are all established BY a
-///   resolution (CR 608.2c). At fire time they hold whatever an unrelated earlier
-///   resolution left behind, exactly like `QuantityRef::TrackedSetSize`;
-/// * BRIDGE-REWRITTEN populations — `oracle_trigger::static_condition_to_trigger_condition`
-///   substitutes `FilterProp::Another` → `FilterProp::OtherThanTriggerObject` on
-///   the fire-time leg only (CR 603.4, Valakut's ruling), so the same printed
-///   "two or more OTHER creatures" counts a different population on each leg.
-///
-/// EXHAUSTIVE and wildcard-free, matching `object_scope_unbound_at_fire_time` /
-/// `player_scope_unbound_at_fire_time` / `quantity_ref_binding_diverges`: a new
-/// `TargetFilter` variant must be adjudicated here rather than silently
-/// defaulting to "cannot diverge". The earlier `_ => false` tail rested on
-/// exactly that claim for ~45 variants, and it was FALSE for the whole
-/// resolution-published family below — the same tail was already found wrong in
-/// practice on the `QuantityRef` axis. When in doubt the answer is `true`:
-/// declining costs only the fire-time half of CR 603.4 for that shape, while a
-/// wrong `false` deletes a real ability off the stack
-/// (`false_gate_consumes_one_shot`).
-///
-/// Every sub-payload of `Typed` is adjudicated, each by the classifier that owns
-/// its axis: [`controller_ref_binding_diverges`] for the controller scope and
-/// [`filter_prop_binding_diverges`] for the property list (which recurses back
-/// here for nested populations, and onward to
-/// [`player_filter_binding_diverges`] and `quantity_expr_binding_diverges`).
-/// Nothing on the `Typed` surface reaches the hoist decision unclassified.
+/// CR 603.4: the POPULATION half of [`quantity_ref_binding_diverges`] — does the fire-time leg
+/// bind the objects this filter names the same way the resolving ability does? The fire-time
+/// reader (`quantity::resolve_quantity_for_trigger_check` → `resolve_ref`) builds its
+/// `FilterContext` from the delayed ability's controller and its CR 400.7 `TriggerSourceContext`,
+/// with `ability = None`, `targets = &[]` and `recipient = None`, seeing the matched event only
+/// through `DETECTION_TRIGGER_EVENT`; the resolution-time reader gets the whole `ResolvedAbility`.
+/// Three families diverge: ABILITY-BOUND anaphora (`ability.targets` / `ability.cost_paid_object`
+/// are empty at fire time, the population-level counterpart of `ObjectScope::Target`);
+/// RESOLUTION-PUBLISHED LEDGERS (`state.last_*_ids`, the tracked sets, the linked-exile order and
+/// the post-replacement window are established BY a resolution, CR 608.2c, so at fire time they
+/// hold what an unrelated earlier one left behind); and BRIDGE-REWRITTEN populations
+/// (`oracle_trigger::static_condition_to_trigger_condition` substitutes `FilterProp::Another` →
+/// `FilterProp::OtherThanTriggerObject` on the fire-time leg only — CR 603.4, Valakut's ruling —
+/// so one printed "two or more OTHER creatures" counts a different population on each leg).
 fn filter_binding_diverges(filter: &TargetFilter) -> bool {
+    // EXHAUSTIVE and wildcard-free, matching `object_scope_unbound_at_fire_time` /
+    // `player_scope_unbound_at_fire_time` / `quantity_ref_binding_diverges`: a new `TargetFilter`
+    // variant must be adjudicated here rather than silently defaulting to "cannot diverge". When
+    // in doubt the answer is `true` — declining costs only the fire-time half of CR 603.4 for that
+    // shape, while a wrong `false` deletes a real ability off the stack
+    // (`false_gate_consumes_one_shot`). Every sub-payload of `Typed` goes to the classifier that
+    // owns its axis: [`controller_ref_binding_diverges`] for the controller scope and
+    // [`filter_prop_binding_diverges`] for the property list, which recurses back here for nested
+    // populations and onward to [`player_filter_binding_diverges`] / `quantity_expr_binding_diverges`.
     match filter {
         // CR 603.4: both sub-payloads can re-scope the population — the
         // controller axis through `ability.targets` / the per-iteration player,
@@ -11144,40 +11110,29 @@ fn controller_ref_binding_diverges(controller: &ControllerRef) -> bool {
     }
 }
 
-/// CR 603.4: the PROPERTY axis of [`filter_binding_diverges`] — the last
-/// sub-payload of `TargetFilter::Typed` that could reach the hoist decision
-/// unadjudicated.
+/// CR 603.4: the PROPERTY axis of [`filter_binding_diverges`] — the last sub-payload of
+/// `TargetFilter::Typed` that could reach the hoist decision unadjudicated.
 ///
-/// A `FilterProp` narrows a population, so the same questions apply as one level
-/// up: does the property read the RESOLVING ability (`targets`, `chosen_x`,
-/// `chosen_players`, the layer recipient), a ledger a RESOLUTION publishes
-/// (`last_named_choice`, the tracked sets, the "this way" lists, the CR 607.2a
-/// exile links), or a `current_trigger_event` with no detection-time fallback?
-/// If so, the fire-time leg cannot reproduce it and the hoist must decline.
-///
-/// EXHAUSTIVE and wildcard-free, like every other classifier on this path, so a
-/// new `FilterProp` must be adjudicated rather than silently defaulting to
-/// "cannot diverge". Each nested payload recurses into the authority that owns
-/// it — `filter_binding_diverges` for a nested `TargetFilter`,
-/// [`controller_ref_binding_diverges`] for a controller scope,
-/// [`player_filter_binding_diverges`] for a player predicate, and
-/// `quantity_expr_binding_diverges` for a comparison operand — so each axis
-/// stays one classifier rather than being re-derived here.
-///
-/// Two distinctions worth keeping straight, both taken from the READERS rather
-/// than from the variant names:
-///
-/// * `ControllerRef::TriggeringPlayer` is NON-divergent because
-///   `quantity::triggering_event_player` falls back to the detection-time
-///   thread-local, while `PlayerFilter::TriggeringPlayer` and
-///   `FilterProp::CouldBeTargetedByTriggeringSpell` DO diverge — their readers
-///   consult `state.current_trigger_event` and nothing else, so at fire time
-///   they see `None` and answer `false` for every candidate.
-/// * A choice PERSISTED on the source (`chosen_attributes`, the chosen creature
-///   type) is non-divergent — the `TriggerSourceContext` carries it on both legs
-///   — while a choice published into GLOBAL state by a resolution
-///   (`state.last_named_choice`) is not.
+/// A `FilterProp` narrows a population, so the same questions apply as one level up: does the
+/// property read the RESOLVING ability (`targets`, `chosen_x`, `chosen_players`, the layer
+/// recipient), a ledger a RESOLUTION publishes (`last_named_choice`, the tracked sets, the "this
+/// way" lists, the CR 607.2a exile links), or a `current_trigger_event` with no detection-time
+/// fallback? If so, the fire-time leg cannot reproduce it and the hoist must decline.
 fn filter_prop_binding_diverges(prop: &FilterProp) -> bool {
+    // EXHAUSTIVE and wildcard-free, like every other classifier on this path, so a new
+    // `FilterProp` must be adjudicated rather than silently defaulting to "cannot diverge". Each
+    // nested payload recurses into the authority that owns it — `filter_binding_diverges` for a
+    // nested `TargetFilter`, [`controller_ref_binding_diverges`] for a controller scope,
+    // [`player_filter_binding_diverges`] for a player predicate, `quantity_expr_binding_diverges` for an operand.
+    //
+    // Two distinctions come from the READERS, not the variant names.
+    // `ControllerRef::TriggeringPlayer` is NON-divergent because `quantity::triggering_event_player`
+    // falls back to the detection-time thread-local, while `PlayerFilter::TriggeringPlayer` and
+    // `FilterProp::CouldBeTargetedByTriggeringSpell` DO diverge — their readers consult
+    // `state.current_trigger_event` alone, so at fire time they see `None` and answer `false` for
+    // every candidate. A choice PERSISTED on the source (`chosen_attributes`, the chosen creature
+    // type) is non-divergent — `TriggerSourceContext` carries it on both legs — while a choice
+    // published into GLOBAL state by a resolution (`state.last_named_choice`) is not.
     match prop {
         // ---- Combinators: recurse. ----
         FilterProp::AnyOf { props } => props.iter().any(filter_prop_binding_diverges),
@@ -11379,27 +11334,19 @@ fn filter_prop_binding_diverges(prop: &FilterProp) -> bool {
         | FilterProp::Other { .. } => false,
 
         // ---- BINDING-FREE PAYLOADS: why some fields stay discarded. ----
+        // A sub-axis needs its own exhaustive classifier when it names a REFERENT — a
+        // player, an object scope, or a subject whose identity the fire-time context might
+        // not be able to bind. Those all have one: `ControllerRef`, `PlayerFilter`,
+        // `CountScope`, `ParitySource`, `CombatRelationSubject`, `PtValueScope`,
+        // `PlayerRelation`, `AttackSubject`, plus `TargetFilter` / `QuantityExpr` themselves.
         //
-        // Several arms above take only part of their payload. The rule is that
-        // a sub-axis needs its own exhaustive classifier when it names a
-        // REFERENT — a player, an object scope, or a subject whose identity the
-        // fire-time context might not be able to bind. Those all have one:
-        // `ControllerRef`, `PlayerFilter`, `CountScope`, `ParitySource`,
-        // `CombatRelationSubject`, `PtValueScope`, `PlayerRelation`,
-        // `AttackSubject`, plus `TargetFilter` / `QuantityExpr` themselves.
-        //
-        // The fields still discarded through `..` name no referent and cannot
-        // acquire one without changing what the field MEANS, at which point the
-        // arm has to be revisited anyway:
-        //
-        //   * selectors over a characteristic — `PtStat`, `SharedQuality`,
-        //     `CounterMatch`, `AttachmentKind`, `DamageKindFilter`, `Zone`;
-        //   * polarity flags — `SharedQualityRelation`, `SourceExclusion`;
-        //   * comparison data — `Comparator` and the integer bounds beside it;
-        //   * time windows — `AttackScope`. A window is not a binding: BOTH
-        //     legs read the same window, and the fact that game state can move
-        //     between them is what CR 603.4's two checks are FOR, not a
-        //     divergence in the sense this module screens.
+        // The fields still discarded through `..` name no referent and cannot acquire one
+        // without changing what the field MEANS: selectors over a characteristic (`PtStat`,
+        // `SharedQuality`, `CounterMatch`, `AttachmentKind`, `DamageKindFilter`, `Zone`),
+        // polarity flags (`SharedQualityRelation`, `SourceExclusion`), comparison data
+        // (`Comparator` and the integer bounds beside it), and time windows (`AttackScope` —
+        // BOTH legs read the same window, and state moving between them is what CR 603.4's
+        // two checks are FOR, not a divergence in the sense this module screens).
     }
 }
 
@@ -22882,44 +22829,24 @@ pub mod tests {
         );
     }
 
-    /// CR 608.2c + CR 603.4: the POPULATION axis of the same defect. A filter can
-    /// name a ledger a RESOLUTION writes (`state.last_zone_changed_ids`, the
-    /// tracked sets, the CR 607.2a linked-exile order), so the fire-time leg
-    /// counts whatever an unrelated earlier resolution left behind — here,
-    /// nothing — exactly as `TrackedSetSize` does one axis over.
+    /// CR 608.2c + CR 603.4: the POPULATION axis of the same defect. A filter can name a ledger a
+    /// RESOLUTION writes (`state.last_zone_changed_ids`, the tracked sets, the CR 607.2a
+    /// linked-exile order), so the fire-time leg counts whatever an unrelated earlier resolution
+    /// left behind — here, nothing — exactly as `TrackedSetSize` does one axis over. The second
+    /// half is the CONTROLLER axis of that same filter: CR 115.1 `ControllerRef::TargetPlayer`
+    /// scopes the population to the RESOLVING ability's player target, while the fire-time
+    /// `FilterContext` is built with `ability = None` and `targets = &[]` and so silently
+    /// re-scopes the same printed population to the TRIGGERING player instead.
     ///
-    /// The second half is the CONTROLLER axis of that same filter. CR 115.1
-    /// `ControllerRef::TargetPlayer` scopes the population to the RESOLVING
-    /// ability's player target; the fire-time `FilterContext` is built with
-    /// `ability = None` and `targets = &[]`, so it silently re-scopes the same
-    /// printed population to the TRIGGERING player instead. That axis was
-    /// reachable through `TargetFilter::Typed` — the widest door in the engine —
-    /// while the arm read only `FilterProp::Another`.
-    ///
-    /// MINIMAL PAIRS: every `run` half is `ObjectCount{F} >= 2` and differs from
-    /// the reach-guard only in `F`. The reach-guard proves an `ObjectCount`
-    /// comparison really does bridge and really is evaluated at fire time, so the
-    /// declined halves' `stack == 1` is the decline and nothing else.
-    ///
-    /// The target-bound half needs its OWN fixture (`run_target_bound`) rather
-    /// than another `run` row, because `run` builds the ability with
-    /// `targets: vec![]` — under which BOTH legs fall through to the same
-    /// triggering-player reading, so it could show the decline but never that the
-    /// decline is load-bearing. `run_target_bound` binds a real
-    /// `TargetRef::Player` and splits the boards so the two legs genuinely
-    /// disagree, then resolves the survivor to prove the resolution-time gate was
-    /// TRUE — i.e. that a hoist would have DELETED a live ability, not merely
-    /// re-checked one.
-    ///
-    /// REVERT-TO-RED: restore the `_ => false` tail of `filter_binding_diverges`
-    /// (and drop the `controller` leg of its `Typed` arm) and every declined half
-    /// reports `stack == 0` with `delayed_triggers` emptied — the one-shot deleted
-    /// by `false_gate_consumes_one_shot` on a population the resolver never
-    /// counted. The target-bound half additionally reports `monarch == None`.
+    /// Every `run` half is `ObjectCount{F} >= 2` and differs from the reach-guard only in `F`, so
+    /// the declined halves' `stack == 1` is the decline and nothing else.
+    /// REVERT-TO-RED: restore the `_ => false` tail of `filter_binding_diverges` (and drop the
+    /// `controller` leg of its `Typed` arm) ⇒ every declined half reports `stack == 0` with
+    /// `delayed_triggers` emptied, and the target-bound half also `monarch == None`.
     #[test]
     fn resolution_published_population_gate_declines_the_fire_time_hoist() {
         // Unit pins for the adjudications the production pairs below drive, one
-        // per family the former wildcard tail swallowed.
+        // per family the classifier has to answer for.
         for filter in [
             TargetFilter::LastZoneChanged,
             TargetFilter::LastCreated,
@@ -23067,21 +22994,17 @@ pub mod tests {
         // ---- CR 115.1: the TARGET-BOUND half, on a board where the two legs
         // ---- genuinely read DIFFERENT populations.
         //
-        // The `run` fixture above cannot prove this one: it builds the delayed
-        // ability with `targets: vec![]`, so `ability.targets` is empty at
-        // RESOLUTION too and both legs fall through to the same triggering-player
-        // reading. It shows the decline happening but not that the decline is
-        // load-bearing. This fixture binds a real `TargetRef::Player` and splits
-        // the two players' boards so the readings actually disagree:
+        // The `run` fixture above cannot prove this one: it builds the delayed ability with
+        // `targets: vec![]`, so `ability.targets` is empty at RESOLUTION too and both legs
+        // fall through to the same triggering-player reading — the decline happens but is not
+        // load-bearing. This fixture binds a real `TargetRef::Player` and splits the boards:
         //
         //   * TARGET (P1) controls two creatures  → resolution-time gate TRUE;
         //   * TRIGGERING player / controller (P0) controls none → fire-time gate
         //     FALSE, because `ability` is `None` and the `Typed` arm falls back
         //     to `triggering_event_player` (P0, from `ZoneChangeRecord.controller`).
         //
-        // So a hoist here does not merely re-check — it DELETES a one-shot whose
-        // resolution-time gate was true. That is the whole cost of a wrong
-        // `false`, demonstrated end to end.
+        // So a hoist here DELETES a one-shot whose resolution-time gate was true.
         fn run_target_bound() -> (usize, usize, Option<PlayerId>) {
             let mut state = setup();
             let controller = PlayerId(0);
@@ -23179,35 +23102,20 @@ pub mod tests {
         );
     }
 
-    /// CR 115.1 + CR 603.4: the PROPERTY axis of the hoist guard, on a board
-    /// where the two legs genuinely read DIFFERENT populations.
+    /// CR 115.1 + CR 603.4: the PROPERTY axis of the hoist guard, on a board where the two legs
+    /// genuinely read DIFFERENT populations. `FilterProp::SameNameAsParentTarget` narrows a
+    /// population to objects sharing the parent target's name, and its reader
+    /// (`filter::parent_target_name`) opens with `let ability = ability?`. The fire-time
+    /// `FilterContext` is built with `ability = None`, so that reader answers `None` and the
+    /// property matches NOTHING — while the resolving ability, which does carry the target,
+    /// matches every same-named object. One printed population, two different counts.
     ///
-    /// `FilterProp::SameNameAsParentTarget` narrows a population to objects
-    /// sharing the parent target's name, and its reader
-    /// (`filter::parent_target_name`) opens with `let ability = ability?`. The
-    /// fire-time `FilterContext` is built with `ability = None`, so that reader
-    /// answers `None` and the property matches NOTHING — while the resolving
-    /// ability, which does carry the target, matches every same-named object.
-    /// One printed population, two different counts.
-    ///
-    /// This is the axis the `Typed` arm formerly ignored: it read
-    /// `tf.properties` only for `FilterProp::Another` and let every other
-    /// property through as "cannot diverge", so a gate like this one hoisted and
-    /// was evaluated against a population the resolver never counted.
-    ///
-    /// MINIMAL PAIR against the same filter carrying a property whose reading is
-    /// leg-independent (`FilterProp::Token`, a printed identity). Both halves
-    /// count the same three creatures at resolution; they differ only in whether
-    /// the property needs the resolving ability. The `Token` half is the
-    /// reach-guard proving an `ObjectCount` comparison over a property-bearing
-    /// `Typed` filter really does bridge and really is evaluated at fire time.
-    ///
-    /// REVERT-TO-RED: restore the `Another`-only property check in
-    /// `filter_binding_diverges`'s `Typed` arm (or delete
-    /// `filter_prop_binding_diverges`) and the same-name half reports
-    /// `stack == 0` with `monarch == None` — the one-shot deleted by
-    /// `false_gate_consumes_one_shot` on an empty population, even though the
-    /// resolution-time gate was TRUE.
+    /// MINIMAL PAIR against the same filter carrying a leg-independent property
+    /// (`FilterProp::Token`, a printed identity): both halves count the same three creatures at
+    /// resolution, and the `Token` half is the reach-guard proving the comparison really bridges.
+    /// REVERT-TO-RED: restore the `Another`-only property check in `filter_binding_diverges`'s
+    /// `Typed` arm (or delete `filter_prop_binding_diverges`) ⇒ the same-name half reports
+    /// `stack == 0` with `monarch == None`, though the resolution-time gate was TRUE.
     #[test]
     fn resolution_scoped_filter_property_declines_the_fire_time_hoist() {
         // Unit pins for the families the property axis newly adjudicates, one

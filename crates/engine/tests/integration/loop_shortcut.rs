@@ -299,7 +299,7 @@ fn drive_collect(runner: &mut GameRunner, cap: usize) -> (Vec<GameEvent>, Waitin
 ///
 /// Why that witnesses the classification: the sampler only pushes a prior while the stack is
 /// non-empty at a `Priority` beat, and `GameState`'s `PartialEq` compares both, so a ring hit
-/// forces the §3 bridge conjuncts (engine.rs) to have held at that state — i.e.
+/// forces the reconcile bridge conjuncts (engine.rs) to have held at that state — i.e.
 /// `find_live_loop_winner` → `live_mandatory_loop_winner` ran on it. It is deliberately STRONGER
 /// than "the classifier ran": the classifier is called on every sampled beat, so a `false` here
 /// does not mean it never ran — it means the loop never recurred, which is the regime every
@@ -791,7 +791,8 @@ fn interactive_offer_separates_priority_proposer_from_predicted_winner() {
 
 /// T-3p-draw: a ≥3p MANDATORY, net-progress, no-loss, unstoppable loop draws under
 /// `Interactive` (CR 732.4). Discriminator: the SAME fixture under `Off` does NOT draw (it
-/// grinds / halts, no §b-B branch), proving the draw is the Interactive path, not a
+/// grinds / halts, never reaching the draw branch), proving the draw is the Interactive path,
+/// not a
 /// pre-existing outcome.
 #[test]
 fn interactive_3p_mandatory_no_loss_draw() {
@@ -804,7 +805,7 @@ fn interactive_3p_mandatory_no_loss_draw() {
         "Interactive: an all-mandatory, no-loss, unstoppable net-progress loop is a CR 732.4 draw"
     );
 
-    // Discriminator: under Off the same fixture never draws via §b-B (it grinds to the
+    // Discriminator: under Off the same fixture never draws via that branch (it grinds to the
     // iteration/growth backstop or keeps going — not GameOver{None} by this branch).
     let (mut orunner, okickoff) = setup_3p_draw(LoopDetectionMode::Off);
     let _ = orunner.cast(okickoff).resolve();
@@ -2574,7 +2575,7 @@ fn setup_2p_optional_drain_poison(mode: LoopDetectionMode) -> (GameRunner, Objec
 ///
 /// SCOPE (measured — do NOT overclaim): the loop's DECIDING win_kind here is `LethalDamage`
 /// (CR 704.5a life drain — classify checks opponent-life-loss before poison), so this is NOT the
-/// `win_kind == PoisonLoss` full-drive witness. That witness is WAIVED (§6 rung-3): NO
+/// `win_kind == PoisonLoss` full-drive witness. That witness is WAIVED: NO
 /// single-compound-trigger poison-DECIDING loop can drive the live sampler —
 ///   • the self-refilling PROLIFERATE form (`"...you gain 1 life, then proliferate."`) opens a
 ///     `ProliferateChoice` beat every cycle, which is neither `Priority{active}` nor
@@ -5351,8 +5352,8 @@ fn object_growth_with_bystander(bystander_oracle: &str) -> (GameRunner, ObjectId
 /// battlefield-entry-ledger observer anywhere on a functioning battlefield
 /// SUPPRESSES a CR 732.2a object-growth offer that fires without it.
 ///
-/// This asserts the SUPPRESSION as the sound behaviour. Per the plan's §0.5
-/// ruling, the engine already classifies `battlefield_entries_this_turn` as a
+/// This asserts the SUPPRESSION as the sound behaviour: the engine classifies
+/// `battlefield_entries_this_turn` as a
 /// journal a loop pumps (`project_out_resources` clears it), so `sibling: false`
 /// let the firewall hand out a false ∞ certificate while a live observer read the
 /// growing class — the one error direction `ability_scan`'s ADD-1 contract
@@ -5743,46 +5744,20 @@ const AGGREGATE_MANA_ORACLE: &str = "Flying, trample\n{T}: Add {G} for each crea
 /// unclassifiable by phase, so X2 cannot relieve it either.
 const AGGREGATE_TWO_SURFACE_ORACLE: &str = "Flying, trample\n{2}: Draw a card for each creature you control.\nWhenever this creature attacks, draw a card for each creature you control.";
 
-/// X1-2 (MIGRATED — the row's verdict moved; its recorded reasoning is carried forward
-/// rather than deleted). CR 732.2a / CR 732.2c: the DRIVER'S OWN class-reading activated
-/// ability, which the accepted shortcut proposal does NOT contain, is RELIEVED.
+/// CR 732.2a / CR 732.2c: the driver's OWN class-reading activated ability, which the
+/// accepted shortcut proposal does not contain, is RELIEVED. CR 117.1b grants only a
+/// permission, and one never exercised changes nothing at the proposed ending point: a
+/// shortcut is "a sequence of game choices, for all players" (CR 732.2a) advanced "with all
+/// game choices contained in the shortcut proposal having been taken" (CR 732.2c). This is
+/// tighter than the foreign relief, not looser — CR 732.2b gives the deviation mechanism to
+/// "each other player", never the proposer, so the driver cannot take its non-activation back.
 ///
-/// **THE RETIRED CLAIM, QUOTED VERBATIM SO A LATER READER CAN SEE WHAT MOVED.** This row
-/// used to assert the opposite, on this ground: *"The DRIVER'S OWN class-reading activated
-/// ability keeps vetoing (the driver holds priority inside its own shortcut and can
-/// activate it)."* **That sentence is still TRUE and it is not what this row now contests.**
-/// CR 117.1b is a statement about PERMISSION — *"a player may activate an activated ability
-/// any time they have priority"* — and a permission that is never exercised changes nothing
-/// about the state at the proposed ending point. CR 732.2a makes a shortcut "a sequence of
-/// game choices, FOR ALL PLAYERS", and CR 732.2c advances the game "with all game choices
-/// contained in the shortcut proposal having been taken". An activation the proposal does
-/// not contain is not among the choices taken, so it never occurs inside the window.
+/// The foreign half below is now carried by both the CR 117.1b `relieved` arm and the
+/// `not_proposed` arm, so it no longer isolates `obj.controller != driver`; that axis is
+/// guarded by `analysis::resource::foreign_relief_still_keys_on_the_controller_for_a_proposed_ability`.
 ///
-/// **This is TIGHTER for the driver's own permanent than CR 117.1b's relief is for an
-/// opponent's, not looser.** CR 732.2b gives the deviation mechanism to *"each other
-/// player, in turn order starting after the player who suggested the shortcut"* — the
-/// proposer is not among them. The foreign relief rests on an opponent never receiving
-/// priority inside the taken shortcut; this one rests on the driver having proposed not to
-/// activate, with no shortening mechanism available to take that back. So this is NOT a
-/// CR 117.1b relief and must not be read as one.
-///
-/// **M-4 — THE PAIRED POSITIVE IS NOW OVER-DETERMINED, stated rather than left silent.**
-/// The foreign half below is byte-identical to what it always was and still passes, but
-/// under the proposal-absence relief it is carried by BOTH block (2)'s CR 117.1b
-/// `relieved` arm AND its `not_proposed` arm, so **it no longer isolates the
-/// `obj.controller != driver` comparison.** The driven guard on that axis now lives at
-/// `analysis/resource.rs :: foreign_relief_still_keys_on_the_controller_for_a_proposed_ability`
-/// (row 37), which pins `not_proposed` to `false` on both halves by naming the ability in
-/// the record — the only level at which that fixture is constructible.
-///
-/// REVERT-PROBE (RE-DERIVED — the recorded one is dead). The retired probe was *"invert the
-/// `obj.controller != driver` comparison ⇒ the two halves swap ⇒ BOTH assertions FAIL"*;
-/// MEASURED under this partition, that inversion moves NEITHER half, because both are
-/// carried by `not_proposed`. The probe that discriminates is: **delete the
-/// `&& !not_proposed` conjunct at block (2)** ⇒ the driver's-own half returns to REFUSES ⇒
-/// **FAILS**, while the foreign half stays green (which is what keeps the two halves
-/// non-redundant). A restore is not verified until the artifact was REBUILT from it — a
-/// same-mtime restore lets cargo skip the rebuild and silently re-run the mutated binary.
+/// REVERT-PROBE: delete the `&& !not_proposed` conjunct at block (2) ⇒ the driver's-own
+/// half returns to REFUSES ⇒ FAILS.
 #[test]
 fn driver_own_unproposed_activated_ability_is_relieved() {
     use engine::types::ability::AbilityKind;
@@ -5802,14 +5777,12 @@ fn driver_own_unproposed_activated_ability_is_relieved() {
         foreign_runner.state().waiting_for
     );
 
-    // SUBJECT: byte-identical board, ability under the DRIVER. This is the half whose
-    // verdict this partition inverts.
+    // SUBJECT: byte-identical board, ability under the DRIVER.
     let (own_runner, bystander) =
         object_growth_with_bystander_at(Phase::PreCombatMain, P0, AGGREGATE_ACTIVATED_ORACLE);
 
     // (3) reach-guards — the RELIEF must be attributable to the ONE named ACTIVATED-ability
-    // surface (before the migration these guarded a veto; the same guards now guard the
-    // offer, and they are what M-6 below moves exactly one variable against).
+    // surface, and the anti-vacuity arm below moves exactly one variable against them.
     // `kind == Activated` is load-bearing on the very relief this row exercises — the
     // predicate short-circuits on any other kind (CR 117.1b) — and
     // `trigger_definitions.is_empty()` keeps block (1) silent so the verdict is
@@ -5840,8 +5813,8 @@ fn driver_own_unproposed_activated_ability_is_relieved() {
         obj.trigger_definitions.len()
     );
 
-    // M-1 — the MIGRATED verdict, pinned POSITIVELY at `LoopShortcut { proposer: P0 }` and
-    // never merely `!Priority`: a negative match would also be satisfied by any other
+    // Pinned POSITIVELY at `LoopShortcut { proposer: P0 }` and never merely `!Priority`:
+    // a negative match would also be satisfied by any other
     // waiting state the pipeline could wander into.
     assert!(
         matches!(own_runner.state().waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
@@ -5854,11 +5827,11 @@ fn driver_own_unproposed_activated_ability_is_relieved() {
         own_runner.state().waiting_for
     );
 
-    // M-6 — ANTI-VACUITY ARM. After M-1 both halves above are POSITIVES, and a firewall
-    // that offered on everything would pass them. This arm is the same driver-controlled
+    // ANTI-VACUITY ARM. Both halves above are POSITIVES, and a firewall that offered on
+    // everything would pass them. This arm is the same driver-controlled
     // object carrying a SECOND, non-activated surface (a trigger body with the same
-    // `ObjectCount` aggregate), which block (1) scans and which this partition does not
-    // touch — the relief is PER-ABILITY, so the board must keep REFUSING. Pinned
+    // `ObjectCount` aggregate), which block (1) scans and which block (2)'s relief does
+    // not reach — the relief is PER-ABILITY, so the board must keep REFUSING. Pinned
     // POSITIVELY at `Priority { player: P0 }`.
     let (two_surface, two_surface_bystander) =
         object_growth_with_bystander_at(Phase::PreCombatMain, P0, AGGREGATE_TWO_SURFACE_ORACLE);
@@ -5968,7 +5941,7 @@ fn foreign_mana_ability_still_vetoes() {
 /// offering is what proves half B's veto comes from the second surface and not from the
 /// object's mere presence.
 ///
-/// This is also the closure for the §I `ActivationRestriction` composition hazard at
+/// This is also the closure for the `ActivationRestriction` composition hazard at
 /// the offer level: the firewall never reads `activation_restrictions`
 /// (`game/ability_scan.rs`'s `ability_definition_axes` destructures it as `_`), so a row keyed on that field would
 /// be dominated. This row instead asserts the property the revert-probes actually flip.
@@ -7928,13 +7901,13 @@ const X1_SPROUT: ObjectId = ObjectId(64);
 /// An untapped P0 fodder Saproling to convoke for the {G}.
 const X1_FODDER: ObjectId = ObjectId(421);
 
-/// X1-1 (⛔ the §H.2-gated row). The real 4-player Witherbloom / Sprout Swarm /
+/// X1-1. The real 4-player Witherbloom / Sprout Swarm /
 /// Lumaret capture: P0 drives a Saproling object-growth loop while three opponents sit
 /// on utility lands whose activated abilities read the growing class, plus P0's own
 /// Jadar (a `{Phase, End}` observer). Pre-fix the CR 732.2a firewall vetoed and no offer
 /// surfaced.
 ///
-/// ⛔ BLOCKING PRECONDITIONS (plan §H.2), MEASURED BEFORE THIS ROW WAS WRITTEN, at the
+/// ⛔ BLOCKING PRECONDITIONS, MEASURED BEFORE THIS ROW WAS WRITTEN, at the
 /// C-2 firewall call on this exact board:
 /// * `scope.sole_driver == Some(PlayerId(0))` — the driving player. X1's own key.
 /// * `scope.phase_invariant == Some(PreCombatMain)` — the value is REPORTED here, not
@@ -7953,47 +7926,17 @@ const X1_FODDER: ObjectId = ObjectId(421);
 /// `fire_time_conditions_read_growing_class_scoped`). The offer-level assertion below is
 /// what carries this row's claim; the BASE figure is provenance, not proof.
 ///
-/// ⛔ THIS ROW'S RELIEF IS OVER-DETERMINED, AND NO SINGLE-CONJUNCT DELETION CAN REDDEN IT.
-/// Its subject is the OPPONENTS' utility lands, and block (2) relieves them on two
-/// independent grounds: the CR 117.1b `relieved` arm (`obj.controller != driver`) AND,
-/// separately, the CR 732.2a `not_proposed` arm (the accepted proposal names no activation
-/// at all on this dump — the recorded sequence is a single `Recast`). Deleting a conjunct
-/// from an `&&` chain WIDENS relief rather than moving it, so removing either arm alone
-/// hands the subject to the other. This is not a choice of the wrong conjunct; it is the
-/// shape of an over-determined relief. MEASURED, all three mutations driven on this tree:
-/// deleting `obj.controller != driver` moves ZERO rows IN THIS MODULE (116 passed / 0 failed)
-/// but is NOT inert — the SAME deletion reddens the LIB row `analysis/resource.rs ::
-/// foreign_relief_still_keys_on_the_controller_for_a_proposed_ability` (row 37), the driven
-/// guard this partition added on exactly this conjunct (X1-2's M-4 note names it), printing
-/// `left: (false, false)` against `right: (true, false)`.
-/// Deleting `&& !not_proposed` alone restores block (2) to pre-relief behaviour, where THIS
-/// row is green anyway (`ok`) — but the MODULE is NOT clean under it, because that same
-/// deletion IS the re-derived revert-probe of the migrated X1-2
-/// (`driver_own_unproposed_activated_ability_is_relieved`), which it reddens: 115 passed /
-/// 1 failed, the single failure being X1-2. The `116 passed / 0 failed` this record carried
-/// here until now was measured on the PRE-MIGRATION tree, where X1-2 asserted the opposite —
-/// so re-driving that deletion HERE is expected to leave the module red, and a red module is
-/// not evidence that this probe is broken. The MODULE figures were re-measured on this tree
-/// with `cargo test -p phase-engine --test integration loop_shortcut`, counting the 116 rows of
-/// module `loop_shortcut::` (that substring filter also matches 42 sibling-module rows); row 37
-/// with `cargo test -p phase-engine --lib
-/// foreign_relief_still_keys_on_the_controller_for_a_proposed_ability`. Name BOTH invocations,
-/// never one: an integration-only run cannot see the lib guards, and a lib-only run cannot see
-/// the live offer path this row drives.
+/// This row's relief is OVER-DETERMINED, so no single-conjunct deletion can redden it: block
+/// (2) relieves the opponents' utility lands both on the CR 117.1b `relieved` arm
+/// (`obj.controller != driver`) and, independently, on the CR 732.2a `not_proposed` arm (the
+/// accepted proposal names no activation at all on this dump — the recorded sequence is a
+/// single `Recast`). Deleting a conjunct from an `&&` chain widens relief rather than moving
+/// it, so removing either arm alone hands the subject to the other; the `obj.controller` axis
+/// is driven instead by `analysis::resource::foreign_relief_still_keys_on_the_controller_for_a_proposed_ability`.
 ///
-/// REVERT-PROBE (RE-DERIVED — the recorded single-conjunct probe was dead). **Invert
-/// `obj.controller != driver` to `==` AND delete the `&& !not_proposed` conjunct at block
-/// (2), TOGETHER** ⇒ both relief arms are gone at once ⇒ the opponents' utility-land
-/// abilities veto again ⇒ the offer disappears ⇒ **FAILS** (MEASURED: 112 passed / 4
-/// failed; the four are this row, X1-2, HF-X1-a and NW-1').
-///
-/// ⛔ BINARY PROVENANCE IS PART OF THIS PROBE, not an optional extra. It is TWO edits and
-/// TWO restores per cycle, and a restore whose mtime lands at or below the built artifact
-/// (`cp -a`, `rsync -a`, a same-blob checkout) makes cargo SKIP the rebuild, so the run
-/// re-executes the MUTATED binary — a false RED on restore, and a false GREEN when it is
-/// the mutation cargo skips. State the binary's provenance (a positive `Compiling
-/// phase-engine` line in the run's own output, or two arms whose verdicts differ), never
-/// the test result alone.
+/// REVERT-PROBE: invert `obj.controller != driver` to `==` AND delete the `&& !not_proposed`
+/// conjunct at block (2) together ⇒ both relief arms are gone at once ⇒ the opponents'
+/// utility-land abilities veto again ⇒ the offer disappears ⇒ FAILS.
 #[test]
 fn witherbloom_lumaret_4p_offers_with_opponent_utility_lands() {
     use engine::types::ability::AbilityKind;
@@ -12442,7 +12385,7 @@ fn a_zero_count_declaration_validates_over_an_empty_range_but_still_checks_cardi
 /// A SYNTHETIC harness prop, deliberately NOT named after any printing: it exists only to be
 /// the thing that makes the pinned seat illegal mid-window, and inventing a real card name for
 /// non-verbatim text is the fabrication hazard CLAUDE.md's "verify the card, not just the rule"
-/// principle warns about. Plan §12 scopes the verbatim-Oracle rule to the card under test; the
+/// principle warns about. The verbatim-Oracle rule is scoped to the card under test; the
 /// card under test here is the SANGUINE_BOND drain, whose text IS verbatim.
 const HEXPROOF_GRANT: &str = "You have hexproof.";
 
@@ -12452,7 +12395,7 @@ const P3: PlayerId = PlayerId(3);
 /// (`SANGUINE_BOND` × `BLOODTHIRSTY_CONQUEROR`), P1/P2/P3 at 1000 life so the drive never
 /// crosses lethal inside the declared window.
 ///
-/// FOUR SEATS, and that is the §6 reach-guard rather than padding: killing the pinned seat
+/// FOUR SEATS, and that is a reach-guard rather than padding: killing the pinned seat
 /// must leave **at least two** other legal seats standing. A one-element surviving set cannot
 /// witness "did not re-choose" — a retargeting engine would have exactly one place to go and
 /// a stopped engine and a retargeting engine would be indistinguishable at the seat level.
@@ -12600,8 +12543,8 @@ fn r5_probe_delta() -> i32 {
 ///
 /// # Constructed-board deviation, DISCLOSED (constructibility-first)
 ///
-/// This row is built on a constructed 4-seat board rather than on a dump fixture, which §6
-/// licenses explicitly. Two measurements forced it, and both are INLINED here rather than
+/// This row is built on a constructed 4-seat board rather than on a dump fixture. Two
+/// measurements forced it, and both are INLINED here rather than
 /// cited, because the probe archive that holds them is untracked and never ships: (i) the
 /// real `dellian_emblem_conqueror_4p` dump — the only tracked fixture whose loop targets a
 /// player — runs **309 beats to `GameOver` and raises no `LoopShortcut` at all** under the
@@ -12610,7 +12553,7 @@ fn r5_probe_delta() -> i32 {
 /// whichever fixture carries it. The construction itself is the tracked one —
 /// `declare_illegal_pin_falls_back_legal_ingests` builds its declare-seam board the same way.
 ///
-/// # The four-assertion anti-retarget set (§6), each named at its assertion below
+/// # The four-assertion anti-retarget set, each named at its assertion below
 ///
 /// 1. the drive **stops short** — zero of `N` cycles commit, and `N * delta` is what the same
 ///    board commits with the refuser absent;
@@ -12627,7 +12570,7 @@ fn r5_probe_delta() -> i32 {
 ///   firing and not a dead harness;
 /// * `player_has_hexproof(P1)` flips `false → true` across the move, so the setup cannot
 ///   silently no-op;
-/// * **the surviving legal set has `len() >= 2`** — §6's own reach-guard. A one-element set
+/// * **the surviving legal set has `len() >= 2`** — this row's own reach-guard. A one-element set
 ///   cannot witness "did not re-choose";
 /// * the declare firewall **passed** (`RespondToShortcut` opened) and the offer publishes
 ///   **no points**, so the refusal is attributable to the drive and not to `validate_pins`.
@@ -12642,7 +12585,7 @@ fn r5_probe_delta() -> i32 {
 /// are named and measured below. The enumeration is deliberately open — a fourth, the
 /// pre-drive `decision_template::resolve` re-check at the top of `materialize_fixed_shortcut`'s
 /// `'cycles` loop, exists and simply is not engaged by THIS refuser (measured: it fires in
-/// neither arm, which is exactly §6's reason for ruling hexproof over phasing).
+/// neither arm, which is exactly the reason for ruling hexproof over phasing).
 ///
 /// * **GUARD 1 — the drive's per-slot CR 608.2b target-legality rejection**
 ///   (`ability_utils::validate_selected_slots_with_specs`, its "Illegal target selected" arm),
@@ -12769,7 +12712,7 @@ fn a_declared_target_made_illegal_mid_drive_stops_short_and_never_retargets() {
         !engine::game::targeting::player_is_legal_target(runner.state(), P1, bond, P0),
         "CR 702.11c: the pinned seat must now be an ILLEGAL target of the Bond's ability"
     );
-    // §6's REACH-GUARD, asserted as a count so a shrinking board fails loudly: after the kill
+    // REACH-GUARD, asserted as a count so a shrinking board fails loudly: after the kill
     // at least TWO other seats are still legal, so a retargeting engine has somewhere to go.
     let surviving_legal: Vec<PlayerId> = [P2, P3]
         .into_iter()

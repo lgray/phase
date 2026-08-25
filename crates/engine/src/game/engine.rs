@@ -1668,8 +1668,8 @@ fn finish_action_boundary_with_lifecycle(
 thread_local! {
     /// PR-3 (Option C): set while inside a legality/search simulation probe
     /// (`ai_support::SimulationFilter`'s clone-and-apply). Loop-shortcut detection
-    /// (`reconcile_terminal_result` §3) and ring accumulation
-    /// (`pass_priority_once_with_pipeline` §2) are TOP-LEVEL-ONLY — a hypothetical
+    /// (`reconcile_terminal_result`) and ring accumulation
+    /// (`pass_priority_once_with_pipeline`) are TOP-LEVEL-ONLY — a hypothetical
     /// single-action probe is NOT a real CR 732.2a play sequence, so it must neither
     /// shortcut nor accumulate. Engine game logic is single-threaded (no rayon /
     /// par_iter / std::thread::spawn in the apply or legal_actions path), `apply()` is
@@ -1681,7 +1681,8 @@ thread_local! {
         const { std::cell::Cell::new(false) };
 }
 
-/// True while inside a `SimulationFilter` legality probe. Read by §2 and §3.
+/// True while inside a `SimulationFilter` legality probe. Read by the ring-accumulation and
+/// loop-shortcut-detection sites above.
 pub(crate) fn in_simulation_probe() -> bool {
     IN_SIMULATION_PROBE.with(|f| f.get())
 }
@@ -1729,7 +1730,7 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
     // 704.5a SBA first and this never preempts or double-fires a legitimate win — it
     // only fires when the game would otherwise grind on (high victim life, or mid-drain
     // before 0). The `!GameOver` guard makes it idempotent across the two
-    // `reconcile_terminal_result` calls in `apply` (`:326` and `:330`).
+    // `reconcile_terminal_result` calls in `apply`.
     if !matches!(state.waiting_for, WaitingFor::GameOver { .. })
         && matches!(state.waiting_for, WaitingFor::Priority { .. }) // a player would get priority (CR 704.3)
         // CR 732.2a: the mandatory-loop game-ending shortcut is gated behind the
@@ -1748,15 +1749,14 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
         && !state.stack.is_empty()
         && !state.loop_detect_ring.is_empty()
         // PR-3 Defect-2: loop-shortcut detection is TOP-LEVEL-ONLY. Inside a
-        // `SimulationFilter` legality probe the flag is set, so §3 is skipped. This
+        // `SimulationFilter` legality probe the flag is set, so detection is skipped. This
         // enforces the invariant that a hypothetical single-action probe never runs
         // game-ending shortcut logic, and guards the
-        // reconcile→§3→§9→legal_actions→SimulationFilter→reconcile path against
-        // unbounded re-entry. (In the current architecture the §9 gate's pass-state
-        // reset already makes those nested probes handoffs that do not re-resolve, so
-        // the path is bounded even without this conjunct — see the impl report's
-        // Defect-2 measurement — but the guard keeps the top-level-only invariant
-        // explicit and robust to future §9/§2 changes.)
+        // reconcile→detection→legal_actions→SimulationFilter→reconcile path against
+        // unbounded re-entry. (The priority gate's pass-state reset already makes
+        // those nested probes handoffs that do not re-resolve, so the path is bounded
+        // even without this conjunct, but the guard keeps the top-level-only
+        // invariant explicit.)
         && !in_simulation_probe()
     {
         // PR-7 Phase 3: dispatch the confirmed-loop body by mode. The `On` arm is the
@@ -3407,7 +3407,7 @@ fn entry_announces(
     // `Err` (no legal target, CR 603.3d) also yields `None` — fail-closed, matching this
     // function's contract that the schema can only ever UNDER-publish. Purity survives:
     // `build_target_slots` never reads `state.waiting_for` (its only hit in
-    // `ability_utils.rs` is a test at `:7722`).
+    // `ability_utils.rs` is a test).
     let source = object_decision_source(state, entry.source_id)?;
     // CR 603.5 + CR 732.2a: `entry.controller == proposer` above bounds who OWNS the entry;
     // it does NOT bound who the resolver ASKS, nor WHETHER it asks, nor HOW MANY TIMES.
@@ -5608,28 +5608,19 @@ fn normalize_recast_frame(
     s
 }
 
-/// CR 111.3 / CR 707.2: the content class of the reproduced fodder, and the per-cycle count `k`
-/// of members the period reproduces — the battlefield objects present in `after` but absent from
-/// `before`. `None` unless EVERY new battlefield object of the period belongs to ONE class;
-/// `Some((class, k))` with `k >= 1` otherwise. Zero new objects ⇒ `None` (not this shape).
+/// CR 111.3 / CR 707.2: the content class of the reproduced fodder, and the per-cycle count `k` of
+/// members the period reproduces — the battlefield objects in `after` but not in `before`. `None`
+/// unless EVERY new battlefield object belongs to ONE class; `Some((class, k))` with `k >= 1`
+/// otherwise, and `None` for zero new objects. CR 111.3 is the authority for a created token's
+/// copiable values, with a Saproling as its own example (CR 111.10 scopes PREDEFINED tokens).
 ///
-/// CR 111.3 (`MagicCompRules.txt:649`) is the authority for a created token's characteristics —
-/// "the spell or ability that creates a token may define the values of any number of
-/// characteristics ... they define the token's COPIABLE VALUES", with a Saproling as its own
-/// example. It is cited here in place of the CR 111.10 this doc used to carry: CR 111.10's scope
-/// is PREDEFINED tokens (Treasure, Food, ...), which does not cover the fodder class this gate
-/// derives.
-///
-/// HOMOGENEITY IS A CONJUNCTION, and the second conjunct is not optional.
-/// [`crate::analysis::resource::fodder_content_eq`] routes through `object_content_eq`
-/// (`types/game_state.rs`), whose per-id justification — "card-intrinsic fields are immutable FOR
-/// A GIVEN OBJECT ID" — does not transfer to this CROSS-id compare: it compares neither
-/// `card_types`, `color` nor `keywords`. Those three are exactly the characteristics
-/// CR 707.2 (`MagicCompRules.txt:5626`) says a copy acquires, and the boundary mint reproduces the
-/// class by copying `intrinsic_copiable_values` — so a multiset homogeneous only under
-/// `fodder_content_eq` could mint k*N copies of ONE representative while the period produced k
-/// DIFFERENT permanents. The `CopiableValues` equality closes that on exactly the axis the mint
-/// reads.
+/// HOMOGENEITY IS A CONJUNCTION, and the second conjunct is not optional:
+/// [`crate::analysis::resource::fodder_content_eq`] routes through `object_content_eq`, whose per-id
+/// justification — "card-intrinsic fields are immutable FOR A GIVEN OBJECT ID" — does not transfer
+/// to this CROSS-id compare, which reads neither `card_types`, `color` nor `keywords`, exactly the
+/// characteristics CR 707.2 says a copy acquires. The mint reproduces the class by copying
+/// `intrinsic_copiable_values`, so a multiset homogeneous only under `fodder_content_eq` could mint
+/// k*N copies of ONE representative while the period produced k DIFFERENT permanents.
 fn derived_fodder_class(
     before: &GameState,
     after: &GameState,
@@ -5857,7 +5848,7 @@ fn try_offer_object_growth_shortcut(
     // (optional) loop — every driving step must be a player-initiated cast/activation. Replaces
     // the pre-P7 `no_living_player_has_meaningful_priority_action` offer gate (HAZARD A: that
     // predicate + its leaf `is_meaningful_priority_activation` (mana_sources.rs) stay byte-identical
-    // for the MANDATORY `:431`/`:515` lethal/draw paths). A mana engine's activations are voluntary
+    // for the MANDATORY lethal/draw paths). A mana engine's activations are voluntary
     // (CR 605.3a) so it offers; a future mandatory driving variant is forced to return `false`.
     if !seq.iter().all(|c| c.action.is_voluntarily_repeatable()) {
         return None;
@@ -6034,7 +6025,7 @@ fn try_offer_object_growth_shortcut(
     // (The CR 104.4b optionality gate moved ABOVE the drive as STEP D's
     // `seq.iter().all(is_voluntarily_repeatable)` — HAZARD A: it no longer routes through
     // `no_living_player_has_meaningful_priority_action`, which stays scoped to the mandatory
-    // `:431`/`:515` lethal/draw paths.)
+    // lethal/draw paths.)
     let certificate = build_cert(&s_n1, &s_n2, &delta, caster);
     // CR 732.2a (CARRY, don't re-derive): the schema's decision list is the SAME
     // `build_recast_template` output the drive uses — `[ConvokeTaps]` when `seq[0]` is a convoke
@@ -6079,31 +6070,21 @@ fn try_offer_object_growth_shortcut(
 
 /// CR 732.2a: which materialization strategy an accepted object-growth collapse selected.
 ///
-/// A LOCAL name for a decision `materialize_object_growth_shortcut` makes and consumes in adjacent
-/// expressions. The route is never stored, returned, or read at a distance, so the type buys
-/// nothing at a distance either. What it does buy is the wildcard-free `match` below: the two
-/// registration bodies sit under one exhaustive dispatch, so WORK-QUEUE first-five item 5
-/// (segmented tally) build-breaks here rather than silently inheriting `Batched`. That is the
-/// whole justification for the type over a bare `if`/`else`, and it is a bet on an arm that does
-/// not exist yet.
-///
-/// NOT a carried value — an earlier draft's claim that the typed route had to be threaded to a
-/// later bound site rather than re-derived from the stash described the per-route iteration cap,
-/// which was withdrawn. There is no second site. The underlying fact survives and is still a
-/// reason never to re-derive a route from a registration —
-/// `LoopCollapseAxis::from_materializations` cannot tell the routes apart at all, since a
-/// `DriveSequence { collapsed_axes: [TokensCreated] }` folds to the same `LoopCollapseAxis::Tokens`
-/// the batched `Tokens(_)` item folds to — but nothing re-derives one today, so it is not a reason
-/// this type exists.
-///
-/// No `#[must_use]`: nothing returns this type, so the attribute would be inert.
+/// A LOCAL name for a decision `materialize_object_growth_shortcut` makes and consumes in
+/// adjacent expressions. The route is never stored, returned, or read at a distance, so the type
+/// buys nothing at a distance either. What it does buy is the wildcard-free `match` below: the
+/// two registration bodies sit under one exhaustive dispatch, so a future third strategy
+/// build-breaks here rather than silently inheriting `Batched`. Never re-derive a route from a
+/// registration — `LoopCollapseAxis::from_materializations` cannot tell the routes apart at all,
+/// since a `DriveSequence { collapsed_axes: [TokensCreated] }` folds to the same
+/// `LoopCollapseAxis::Tokens` the batched `Tokens(_)` item folds to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoopCollapseRoute {
     /// N x delta batched items (`Tokens` / `Counters` / `Life`). O(1) in N; no per-cycle replay.
     Batched,
-    /// `DriveSequence` — the captured period replayed through real `apply()` N times. Cubic in N
-    /// (MEASURED release curve, N=1000 at 552 s), so this arm is where a future iteration budget
-    /// would attach; there is none today, and the published ceiling stays the accepted count.
+    /// `DriveSequence` — the captured period replayed through real `apply()` N times. Cubic in N,
+    /// so this arm is where a future iteration budget would attach; there is none today, and the
+    /// published ceiling stays the accepted count.
     Replay,
 }
 
@@ -6204,7 +6185,7 @@ fn materialize_object_growth_shortcut(
     // bypasses the counter doubler pipeline). Everything else BATCHES. A pure token/mana loop grows
     // no counter/life axis (`growths`/`life` empty) → its only observer surface is token creation,
     // already vetted by the OFFER-time fodder firewall → it always batches even when the board
-    // carries an unrelated life/counter observer (plan §5 Note; the observedness firewall is
+    // carries an unrelated life/counter observer (the observedness firewall is
     // AXIS-SPECIFIC so an incidental board observer never mis-routes a disjoint-axis loop).
     let growths = current_period_counter_growth(state);
     // CR 732.2a / CR 122.1: the ∞ counter DISPLAY targets are the SAME per-object growth the
@@ -6245,38 +6226,24 @@ fn materialize_object_growth_shortcut(
         && crate::analysis::resource::board_has_functioning_etb_trigger(state);
     // CR 601.2i + CR 732.2a: a per-cycle side effect the board re-earns from the loop's own CAST
     // also belongs on the concrete replay. The conjuncts above are AXIS-shaped because the
-    // batched arm PRODUCES the ETB events it must not double-pay. The cast axis has NO such
-    // analogue: the batched collapse never casts anything, so the cast event belongs to the
+    // batched arm PRODUCES the ETB events it must not double-pay; the cast axis has no such
+    // analogue, since the batched collapse never casts anything, so the cast event belongs to the
     // ELIDED period and the batched arm re-performs it 0x. `token_profile.is_some()` is therefore
     // UNSOUND as a cast-side narrowing (a counter loop driven by a buyback recast has a cast
-    // trigger and no token profile) and the period-side alternative — "only a period that CASTS
-    // can re-fire a cast trigger" — is rejected here in TWO of its three forms only. The
-    // ACTION-SHAPE form is unsound (`LoopAction` names the DRIVING action, so excluding
-    // `Activate` batches a period whose activated ability casts during resolution); the
-    // `TapLandForMana`-ONLY form is vacuous (sound, but a mana-engine period registers nothing at
-    // all). The third, FRAME-DELTA form — diff `spells_cast_this_turn` across
-    // `drive_one_period_frames`' two returned clones — is UN-EVALUATED: the action-shape
-    // objection does not touch it, because it reads what the period actually did rather than what
-    // its driving action was named. Registered as follow-up `F-route-period-cast`, whose entry
-    // condition includes re-deriving `mana_engine_with_cast_trigger_registers_nothing`'s
-    // discrimination (that row discriminates the `!batched.is_empty()` guard ONLY because
-    // `cast_sourced` is true on its rig; a period-side conjunct makes it false and the row would
-    // pass for a different reason). Narrowing by the trigger's own matcher is a separate
-    // deferral, F-route-precision, blocked on a per-cycle matcher-invariance proof.
+    // trigger and no token profile), the ACTION-SHAPE period-side alternative is unsound too
+    // (`LoopAction` names the DRIVING action, so excluding `Activate` batches a period whose
+    // activated ability casts during resolution), and the `TapLandForMana`-ONLY form is vacuous.
     //
-    // SINGLE AUTHORITY for what the batched arm registers: the exact item list the `Batched` arm
-    // below hands to `register_pending_materialization`, built ONCE here and consumed as a VALUE
-    // by both that arm and the route's `!batched.is_empty()` conjunct. Deliberately NOT a
-    // predicate mirroring the arm's per-axis conditions — a mirrored predicate is precisely the
-    // drift this shape forecloses. A future fourth batched axis is a fourth push HERE and feeds
-    // the route guard for free, because the arm has no per-axis condition of its own left to
-    // forget to update.
     // HOISTED before the move below (`token_growth` is consumed by the `if let` in `batched`),
-    // exactly as `life_etb_sourced` reads it before the same move. `u32` is `Copy`, so this is a
-    // read, not a clone. 0 when no `Tokens` item exists — which is the only honest value there,
-    // and never 1 (a 1 would read as "one token per cycle" and switch the route guard off for a
-    // stash that does not exist).
+    // exactly as `life_etb_sourced` reads it. `u32` is `Copy`, so this is a read, not a clone. 0
+    // when no `Tokens` item exists — never 1, which would read as "one token per cycle" and
+    // switch the route guard off for a stash that does not exist.
     let token_per_cycle_delta: u32 = token_growth.as_ref().map_or(0, |(_, k)| *k);
+    // SINGLE AUTHORITY for what the batched arm registers: the exact item list this block hands
+    // to `register_pending_materialization`, built ONCE and consumed as a VALUE by both that arm
+    // and the route's `!batched.is_empty()` conjunct — deliberately NOT a predicate mirroring the
+    // arm's per-axis conditions, which is the drift this shape forecloses. A future fourth
+    // batched axis is a fourth push HERE and feeds the route guard for free.
     let batched: Vec<crate::types::game_state::PersistentAxisMaterialization> = {
         use crate::types::game_state::{PersistentAxisMaterialization, TokenGrowth};
         let mut items = Vec::new();
@@ -6307,66 +6274,35 @@ fn materialize_object_growth_shortcut(
     // predicate is already false there. Kept explicit so a future route conjunct cannot
     // reintroduce the hole.)
     let sequence = state.last_loop_action_sequence.clone();
-    // `!batched.is_empty()` is the SYMMETRY guard, and it is a conjunct of the whole disjunction
-    // rather than a narrowing bolted onto the cast leg. Its merit is INDEPENDENT of the ∞-mark
-    // bookkeeping: a replay with nothing deferred to deliver is pure cost — UNCAPPED and cubic in
-    // N (`LoopCollapseRoute::Replay`'s own doc: N=1000 measured at 552 s release; the per-route
-    // iteration budget was withdrawn by USER ruling and does not exist) — plus a spurious CR 500.5
-    // collapse prompt for a loop that has nothing to collapse (the prompt gate
-    // `next_apnap_player_with_pending_materialization` tests STASH PRESENCE only, so an empty
-    // `collapsed_axes` still prompts). A materialization out of nothing is not a materialization.
-    // Pinned by `loop_shortcut_cast_route::mana_engine_with_cast_trigger_registers_nothing`.
-    //
-    // The mark-collapse harm this guard once also covered — a cast-trigger board dragging a mana
-    // engine onto the replay and ENDING its own `Mana(_)` ∞ mark — is now closed PER AXIS at the
-    // `Replay` arm below (`ResourceAxis::unbounded_mark_kind`), not here. Do NOT replace this
-    // guard with `!accountable.is_empty()`: `growths` / `life` are derived from
-    // `current_period_counter_growth` / `current_period_life_growth` at accept time, a DIFFERENT
-    // derivation from the offer-time `proposal.unbounded`, and `derived_views`' ∞-counter-
-    // registration doc states the two can disagree in exactly the required direction ("∞ counter
-    // targets are registered for the whole beneficial-counter partition, while a `DriveSequence`
-    // collapse names only the axes its own proposal carried"). Where they disagree an
-    // accountable-set guard would route an OBSERVED counter loop to the batched arm — the exact
-    // regression `counter_observed` exists to prevent. The two guards ask different questions and
-    // both are needed.
-    //
-    // DISCLOSED (review-LOW, pre-existing, chartered to F-route-residual): a pure mana engine
-    // registers nothing, so any per-cycle side effect on a non-batched axis is re-performed 0×.
-    // Not closed here.
-    //
-    // Hoisting it is EXACTLY equivalent to narrowing the cast leg alone, because the other three
-    // disjuncts already imply it: `counter_observed` requires `!growths.is_empty()` (⇒ a `Counters`
-    // item), and `life_observed` / `life_etb_sourced` each require `!life.is_empty()` (⇒ at least
-    // one `Life` item). Stated as a whole-disjunction conjunct it says the thing that is actually
-    // true of the seam — the replay route is only ever the BETTER VERSION of a registration the
-    // batched arm would have made, never a registration out of nothing — and a future fifth
-    // disjunct inherits the guard instead of having to remember it.
     // CR 614.1a + CR 603.6a: the batched `Tokens` mint collapses k·N real creations into ONE
-    // `ProposedEvent::CreateToken` of size k·N, and RE-RUNS the replacement pipeline on it
-    // (`game::effects::token_copy`'s `replace_event` call; the key dispatch is
-    // `game::replacement::replacement_event_keys_for_event`). Faithful only if nothing re-derives
-    // a count from that event or from the entries it produces — so at k > 1 the board must be
-    // quiet on both.
-    //
-    // WHAT THE `k > 1` GATE DOES, AND WHAT IT DOES NOT CLAIM:
-    //   * k > 1 ⇒ the multiplicity came from SOMEWHERE, and the batched arm cannot tell a
-    //     replacement's factor from the period's own count. Refuse to guess: replay. Without this
-    //     the mint would propose k·N and the doubler would multiply it again — elision 2k·N
-    //     against performance k·N, a #7045 break this phase would otherwise CREATE.
-    //   * k == 1 is left EXACTLY as shipped. This is a narrowing of a NEW guard, not a claim that
-    //     the old path was exact: a rider-only `CreateToken` replacement (one carrying `execute`
-    //     but no `quantity_modification`) changes no count, so it never produces k >= 2 and the
-    //     gate switches this conjunct off — yet it fires once per EVENT, so a lump mint fires it
-    //     1x where N cycles fire it Nx. The same hole exists for a NON-TOKEN fodder class, whose
-    //     per-cycle creation never passes through `ProposedEvent::CreateToken`. Both exposures are
-    //     PRE-EXISTING (shipped has no token-axis firewall at all); phase A neither creates nor
-    //     widens them. Filed as `F-token-replacement-seat`.
-    //   * the k-gate is also what keeps every currently-green LoopShortcut row on its current
-    //     route (all are k == 1), and what makes an OPPONENT-controlled doubler a no-op: doublers
-    //     match by `token_owner_scope` (gated in `game::replacement`), so an opponent's doubler
-    //     contributes nothing to this seat's observed k.
+    // `ProposedEvent::CreateToken` of size k·N and RE-RUNS the replacement pipeline on it
+    // (`token_copy`'s `replace_event` call, keyed by
+    // `replacement::replacement_event_keys_for_event`), so it is faithful only if nothing
+    // re-derives a count from that event or its entries. At k > 1 the multiplicity came from
+    // SOMEWHERE and the batched arm cannot tell a replacement's factor from the period's own
+    // count, so it refuses to guess and replays — otherwise the mint proposes k·N and the doubler
+    // multiplies it again, elision 2k·N against performance k·N. The gate also keeps every
+    // currently-green LoopShortcut row on its route (all are k == 1) and makes an
+    // OPPONENT-controlled doubler a no-op, since doublers match by `token_owner_scope`. k == 1 is
+    // left EXACTLY as shipped, which is NOT a claim that the old path is exact: a rider-only
+    // `CreateToken` replacement changes no count, so it never produces k >= 2 and this conjunct
+    // switches off, yet it fires once per EVENT — a lump mint fires it 1x where N cycles fire it
+    // Nx. The same hole exists for a NON-TOKEN fodder class; both are PRE-EXISTING.
     let token_growth_needs_replay =
         token_per_cycle_delta > 1 && crate::analysis::resource::token_growth_is_observed(state);
+    // `!batched.is_empty()` is the SYMMETRY guard, a conjunct of the whole disjunction rather
+    // than a narrowing bolted onto the cast leg: a replay with nothing deferred to deliver is
+    // pure cost — UNCAPPED and cubic in N — plus a spurious CR 500.5 collapse prompt for a loop
+    // with nothing to collapse, since the prompt gate
+    // `next_apnap_player_with_pending_materialization` tests STASH PRESENCE only. Pinned by
+    // `loop_shortcut_cast_route::mana_engine_with_cast_trigger_registers_nothing`. Hoisting it is
+    // exactly equivalent to narrowing the cast leg alone, because the other three disjuncts
+    // already imply it, and a future fifth inherits it. Do NOT replace it with
+    // `!accountable.is_empty()`: `growths` / `life` come from `current_period_counter_growth` /
+    // `current_period_life_growth` at accept time, a DIFFERENT derivation from the offer-time
+    // `proposal.unbounded`, and the two can disagree in exactly the direction that would route an
+    // OBSERVED counter loop to the batched arm. KNOWN, NOT CLOSED HERE: a pure mana engine
+    // registers nothing, so a per-cycle side effect on a non-batched axis is re-performed 0×.
     let route = if !batched.is_empty()
         && (counter_observed
             || life_observed
@@ -6379,28 +6315,24 @@ fn materialize_object_growth_shortcut(
     } else {
         LoopCollapseRoute::Batched
     };
-    // Exhaustive, no wildcard: WORK-QUEUE first-five item 5's segmented-tally arm must build-break
-    // here rather than silently inherit one of these two registrations.
+    // Exhaustive, no wildcard: a future third strategy must build-break here rather than
+    // silently inherit one of these two registrations.
     match route {
         LoopCollapseRoute::Replay => {
             // CR 732.2a: OBSERVED batchable growth — one DriveSequence collapses the loop;
             // replaying the captured sequence recreates every per-cycle effect honoring
-            // observers. Do NOT also register batched items (the routes are exclusive per accept).
-            //
-            // `collapsed_axes` is the set this materialization is ACCOUNTABLE for — computed per
-            // axis, NEVER a wholesale copy of `proposal.unbounded`. The copy asserted that every
-            // ∞-marked axis is one this collapse ends, which is false for a STANDING capability:
-            // MEASURED at the pre-fix tip, a mana+life loop on a cast-trigger board registered
-            // `collapsed=[Mana(Colorless), Life(P0)]`, and `clear_collapsed_materializations` then
-            // dropped P0's whole `unbounded_resources` entry — ending an ∞-mana mark whose only
-            // authority is CR 500.5 + CR 106.4 (`turns::drain_pending_phase_transition_progress`,
-            // which deliberately EXCLUDES `debug_infinite_mana` seats). See
-            // `ResourceAxis::unbounded_mark_kind` for the criterion and the per-axis table.
-            //
-            // The replay drives the WHOLE period, so it delivers every DEFERRED axis regardless
-            // of whether a batched item for that axis exists yet — batchability is a separate
-            // question, owned by `LoopCollapseAxis::from_resource_axis`, and a subset-of-batchable
-            // filter here would refuse the mill board this lane exists to serve.
+            // observers. Do NOT also register batched items (the routes are exclusive per
+            // accept). `collapsed_axes` is the set this materialization is ACCOUNTABLE for —
+            // computed per axis, NEVER a wholesale copy of `proposal.unbounded`. The copy
+            // asserted that every ∞-marked axis is one this collapse ends, which is false for a
+            // STANDING capability: an ∞-mana mark whose only authority is CR 500.5 + CR 106.4
+            // (`turns::drain_pending_phase_transition_progress`, which deliberately EXCLUDES
+            // `debug_infinite_mana` seats) would be ended by the collapse. See
+            // `ResourceAxis::unbounded_mark_kind` for the criterion and the per-axis table. The
+            // replay drives the WHOLE period, so it delivers every DEFERRED axis whether or not a
+            // batched item for it exists yet — batchability is owned by
+            // `LoopCollapseAxis::from_resource_axis`, and a subset-of-batchable filter here would
+            // refuse a mill board.
             state.register_pending_materialization(
                 proposal.proposer,
                 crate::types::game_state::PersistentAxisMaterialization::DriveSequence {
@@ -6420,7 +6352,7 @@ fn materialize_object_growth_shortcut(
         LoopCollapseRoute::Batched => {
             // UNOBSERVED fast path — register each grown persistent axis for the batched N×δ
             // collapse. The payload was built ONCE above, in the same Tokens → Counters → Life
-            // order the three per-axis `if`s used to register in; this arm carries no per-axis
+            // order the per-axis pushes use; this arm carries no per-axis
             // condition of its own, so what the route's `!batched.is_empty()` guard measured and
             // what lands here cannot disagree.
             for item in batched {
@@ -7644,7 +7576,7 @@ fn pass_priority_once_with_pipeline(
     state.pending_activations.clear();
 
     let stack_was_empty = state.stack.is_empty();
-    // PR-3 (Option C) Defect-1: capture the pre-pipeline stack frame for the §2
+    // PR-3 (Option C) Defect-1: capture the pre-pipeline stack frame for the
     // loop-shortcut window maintenance below. `stack_top_before` is the resolving
     // entry's id; a real resolution this beat replaces the top with a different id
     // (every refilled trigger gets a fresh monotonic ObjectId), whereas a bare
@@ -8212,17 +8144,17 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) -> bool 
 
                             // PR-3 (Option C): the NET-PROGRESS mandatory-loop WIN
                             // shortcut is NOT duplicated here. `run_auto_pass_loop`
-                            // resolves via `pass_priority_once_with_pipeline` (:1339),
-                            // whose §2 maintenance accumulates the persisted
+                            // resolves via `pass_priority_once_with_pipeline`, whose
+                            // window maintenance accumulates the persisted
                             // `loop_detect_ring` across these internal iterations, but
-                            // `reconcile_terminal_result` (the §3 win site) is NOT called
-                            // inside this loop — only at :200 AFTER it returns. So the §3
+                            // `reconcile_terminal_result` (the win site) is NOT called
+                            // inside this loop, only after it returns. So the win
                             // shortcut does NOT accelerate this auto-pass grind: this loop
                             // runs its own net-progress drive to the natural CR 704.5a
                             // death (or the strict CR 104.4b DRAW block above) on its own.
                             // The accelerated path is the per-beat repeated
                             // `apply(PassPriority)` drive (the production frontend
-                            // default), where §3 runs after every beat. Keeping a second
+                            // default), where it runs after every beat. Keeping a second
                             // win site here would create two divergent detectors.
 
                             // CR 104.4b: a sliding window of the most recent
@@ -13906,8 +13838,8 @@ fn apply_action(
         // ONE CONSEQUENCE OF USING THE SYNCHRONIZER RATHER THAN A RAW CLONE:
         // `normalize_legacy_attach_waiting_for` can now edit `state.waiting_for` on this
         // path, so it may differ from the returned `ActionResult.waiting_for`, where the raw
-        // clone made the two exactly equal. Benign — the boundary re-normalizes at `:1171`
-        // and copies back at `:1189`, and `inject_pinned_answer` fails closed on every prompt
+        // clone made the two exactly equal. Benign — the boundary re-normalizes and copies
+        // back, and `inject_pinned_answer` fails closed on every prompt
         // kind it has no pin producer for.
         sync_waiting_for(state, &wf);
         if answering_forced_window
@@ -14963,13 +14895,11 @@ fn handle_play_land(
         super::replacement::ReplacementResult::Execute(event) => {
             if let crate::types::proposed_event::ProposedEvent::ZoneChange { object_id, .. } = event
             {
-                // Phase B (PLAN §6.2 / §7): the divergent partial copy of
-                // `deliver_replaced_zone_change` that used to live here is
-                // dissolved — the post-`replace_event` event is a
+                // The post-`replace_event` event is a
                 // `ReplacementResult::Execute` payload, sealed through the third
                 // mint path (`approve_post_replacement`) and delivered by the
                 // shared `zone_pipeline::deliver`. The land entry now gets the
-                // FULL delivery tail the copy skipped (CR 614.1c
+                // FULL delivery tail (CR 614.1c
                 // `EntersWithAdditionalCounters` statics snapshot, the CR 303.4f
                 // `attach_to` host, `entered_via_ability_source` provenance, the
                 // CR 701.24a library-shuffle arm). `drain = CallerEpilogue`: the
@@ -19954,21 +19884,19 @@ mod stage2_injector_tests {
         (producers, readers, in_test)
     }
 
-    /// R23, conjunct 3 — **the PRODUCER census, so a new producer is a COUNTED event.**
-    ///
-    /// What bounds the mint conjunct's reach is how many things PRODUCE
-    /// `WaitingFor::OptionalEffectChoice`: the conjunct is a fail-closed pre-filter on ONE of
-    /// them, and soundness over the others is discharged at the consumption point. Exactly one
-    /// of the five sits inside the CR 603.5 gate that consults the recipient authority. If a
-    /// sixth appears, this row fails and whoever added it must decide where its recipient is
-    /// bound.
+    /// **The PRODUCER census, so a new producer is a COUNTED event.** What bounds the mint
+    /// conjunct's reach is how many things PRODUCE `WaitingFor::OptionalEffectChoice`: the
+    /// conjunct is a fail-closed pre-filter on ONE of them, and soundness over the others is
+    /// discharged at the consumption point. Exactly one of the five sits inside the CR 603.5 gate
+    /// that consults the recipient authority, so if a sixth appears this row fails and whoever
+    /// added it must decide where its recipient is bound.
     ///
     /// A producer is identified by its ENCLOSING FUNCTION and the CONSTRUCTION it mints
     /// (`file::fn {fields}`, whitespace stripped), and the qualifying
     /// `.install_direct_choice_frame(` look-back is bounded by that same function. NO line
     /// coordinate is asserted, so movement above a producer is not an event and a REPLACEMENT
-    /// inside a pinned function is. The pin is a sorted MULTISET, so a sixth mint in one of
-    /// them still fails here; comment text is never a site (`source_census::code`).
+    /// inside a pinned function is. The pin is a sorted MULTISET, so a sixth mint in one of them
+    /// still fails here; comment text is never a site (`source_census::code`).
     #[test]
     fn the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event() {
         /// Every `.rs` under the crate's `src`.
@@ -20807,7 +20735,7 @@ mod stage2_injector_tests {
     /// binding lives at declare (`handle_declare_shortcut`) and at consumption
     /// (`apply_confirmed_shortcut`), one layer above this one.
     ///
-    /// ⚠ **PLAN DEVIATION, DISCLOSED:** §6 R28(b) predicts the drive seam refuses this pair
+    /// ⚠ **DISCLOSED:** an earlier design predicted the drive seam refuses this pair
     /// (*"must still `RecastAbort`"*). It does not, and cannot — the same cell's own analysis
     /// says so two sentences later (*"under the round-33 design alone it returns `Ok(())`"*).
     /// The arm ships keyed to the measurement, with (b2) supplying the refusal the row is
@@ -21178,7 +21106,7 @@ mod kilo_interruptibility_tests {
         );
     }
 
-    /// Synthetic positive/negative drive-replay reach-guard (plan §7 unit c). The SAME recorded
+    /// Synthetic positive/negative drive-replay reach-guard. The SAME recorded
     /// 2-step period is driven WITH pins (offer) and WITHOUT (abort). The `len()==2` anchor holds
     /// in BOTH variants, so the negative's None is a drive-abort at the unpinned
     /// `PayCost{TapCreatures}`, NOT a vacuous "no sequence to drive" upstream short-circuit
@@ -21648,7 +21576,7 @@ mod bounded_offer_conjunct_tests {
     /// EXEMPTION, EVEN THOUGH ITS WINDOW HAS ONE AVAILABLE.
     ///
     /// CR 732.2a + CR 608.1. Arms (a)/(b)/(a′1) prove the CONSTRUCTOR keys the subtraction to
-    /// the certificate value. This arm proves §3 D2's step 4b actually SELECTS the right
+    /// the certificate value. This arm proves the selection step actually SELECTS the right
     /// value: it is the only arm that fails on the round-39 shape (one `BoardCovered`
     /// certificate for the whole `equality || cover` disjunction), which every other arm in
     /// the row passes unchanged.
@@ -22057,7 +21985,7 @@ mod bounded_offer_conjunct_tests {
     // ───────────────────────────────────────────────────────────────────────────────────
 
     /// Symbol-anchored extent of a column-0 `fn` in THIS file, as `(head, end)` line indices —
-    /// the §6 R8 self-census extractor: signature line to the first column-0 `}`.
+    /// the self-census extractor: signature line to the first column-0 `}`.
     #[cfg(test)]
     fn engine_fn_extent(lines: &[&str], signature: &str) -> (usize, usize) {
         let head = lines

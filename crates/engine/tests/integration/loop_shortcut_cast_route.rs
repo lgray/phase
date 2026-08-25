@@ -1,70 +1,16 @@
-//! CR 732.2a phase 1 (U-route) acceptance — a board carrying a FUNCTIONING cast-mode trigger
-//! routes an accepted object-growth collapse to the concrete `DriveSequence` replay instead of the
-//! batched `Tokens`/`Counters`/`Life` items.
+//! CR 732.2a: a board carrying a FUNCTIONING cast-mode trigger routes an accepted object-growth
+//! collapse to the concrete `DriveSequence` replay instead of the batched
+//! `Tokens`/`Counters`/`Life` items. Every row runs on the REAL 4-player
+//! `sprout_witherbloom_realistic_lands_4p` dump through the production restore chokepoint and the
+//! public `apply()` boundary; grafted and ungrafted arms are ONE OBJECT apart.
 //!
 //! WHY THE ROUTE EXISTS. The batched arm never casts anything — the cast event belongs to the
 //! ELIDED period, not to the collapse — so a batched accept re-performs a cast-sourced per-cycle
-//! effect ZERO times where live play performs it once per cycle (MEASURED on the composed
-//! cast-sourced mill board: `[0,0,0,0]` at N=5 batched, `[0,N,N,N]` forced to the replay). CR
-//! 601.2i is the cast event; CR 113.6 / CR 113.6b are the zone gate that keeps a library-resident
-//! cast trigger from counting.
-//!
-//! NO ITERATION BUDGET IN THIS PHASE, AND WHY THERE ARE NO CAP ROWS. Phase 1 ships the ROUTE
-//! alone: the published collapse ceiling stays the accepted count on both routes, exactly as it
-//! was before this change. An earlier draft clamped the replay route to a lower ceiling and was
-//! withdrawn — the producer still published `MAX_SHORTCUT_CYCLES`, so the collapse prompt no
-//! longer offered the ceiling the accepted offer had published (CR 732.2c), which the R-seam row
-//! `kilo_live_offer_from_real_dump::kilo_reported_capture_offer_states_the_full_ceiling_it_publishes`
-//! measured RED on a real playtest capture. Letting a lowered ceiling coexist with `is_bounded()`
-//! needs a schema split, which is scheduled as its own later phase.
-//!
-//! So the rows this file once carried for cap behaviour — "the batched arm is never clamped", "an
-//! under-cap accept publishes its own count", "an above-cap declaration lowers the ceiling without
-//! falling back to batched" — are deleted rather than ignored. With no cap there is no
-//! cap-triggered fallback path and no clamped ceiling at all: `materialize_object_growth_shortcut`
-//! does not even take `n`, and its caller folds the accepted count with a plain `.min(n)` on both
-//! routes. The hazard those rows guarded is **structurally absent, not merely untested**. It
-//! returns as a live hazard only when the schema-split phase reintroduces a lowered ceiling, and
-//! those rows belong to that phase's plan.
-//!
-//! BASE BOARD for every row: the REAL 4-player `sprout_witherbloom_realistic_lands_4p` dump,
-//! loaded through the production restore chokepoint and driven through the public
-//! `GameRunner`/`apply()` boundary by `sprout_inalla_realistic_offer`'s own two helpers. The
-//! grafted and ungrafted arms are **one object apart**, which is what makes the pairs below
-//! discriminating rather than merely green.
-//!
-//! WHAT THIS FILE CANNOT NAME, DELIBERATELY. `LoopCollapseRoute` is private to `game/engine.rs`
-//! by charter and MUST STAY private — an integration test is an external crate and cannot name
-//! it. The route is observed through the `PersistentAxisMaterialization` discriminant
-//! (`ExpectedRoute` below is the test-crate mirror, not a copy of the decision). Widening the
-//! production enum's visibility "just for the tests" is forbidden.
-//!
-//! THE ROUTE IS PAYLOAD-GUARDED. The whole replay disjunction sits under `!batched.is_empty()` —
-//! the replay route is only ever the better version of a registration the BATCHED arm would have
-//! made, never a registration out of nothing. Without that guard the seam's two arms are
-//! asymmetric (the batched arm registers conditionally, the replay arm unconditionally), so a mana
-//! engine — which batches NOTHING — gets dragged onto the replay by any cast trigger on the board.
-//! HISTORICAL, and true when written: in the first cut that drag ALSO had its own `Mana(_)` ∞ mark
-//! collapsed at the CR 500.5 boundary — a MEASURED regression, and the reason this guard exists.
-//! That consequence is now closed PER AXIS by `ResourceAxis::unbounded_mark_kind`, not by this
-//! guard; what the guard still buys is the uncapped cubic replay cost plus a spurious CR 500.5
-//! collapse prompt for a loop with nothing to collapse.
-//! `mana_engine_with_cast_trigger_registers_nothing` below is its pin.
-//!
-//! REVERT PROBES (RUN at the final candidate tip, output captured to
-//! `/home/lgray/vibe-coding/item4-run/wba-p1-logs/` — an asserted revert probe is not a revert
-//! probe; see the gate log for the tip SHA and the per-probe output).
-//! (1) Delete the `cast_sourced` disjunct at the `engine.rs` route seam ⇒ the grafted arms
-//! register `Tokens` again ⇒ every row below that asserts `ExpectedRoute::Replay` goes RED.
-//! (2) Delete only the `!batched.is_empty()` guard ⇒ the Replay rows stay green and
-//! `mana_engine_with_cast_trigger_registers_nothing` goes RED with `[DriveSequence]`.
-//! (3) Restore `collapsed_axes: proposal.unbounded.clone()` at the `Replay` arm ⇒ the three
-//! mixed-axis rows in `combo_infinite_pile` go RED at all three levels (registration, the direct
-//! boundary clear, and the full production round-trip).
-//! (4) Classify `LibraryDelta` as `StandingCapability` ⇒ `analysis::resource`'s
-//! `unbounded_mark_kind_classifies_every_axis_by_termination_authority` goes RED.
-//! (5) Move `ResourceAxis::Mana(_)` out of `derived_views::object_growth_backing`'s `None` arm to
-//! `Some(false)` ⇒ the mixed-axis registration row's assertion (d) goes RED.
+//! effect ZERO times where live play performs it once per cycle. CR 601.2i is the cast event, and
+//! CR 113.6 / CR 113.6b are the zone gate keeping a library-resident cast trigger from counting.
+//! The whole replay disjunction sits under `!batched.is_empty()`, so the replay route is only
+//! ever the better version of a registration the batched arm would have made, never a
+//! registration out of nothing (`mana_engine_with_cast_trigger_registers_nothing` is its pin).
 
 use engine::analysis::decision_template::IterationCount;
 use engine::analysis::loop_check::ShortcutResponse;
@@ -92,8 +38,8 @@ use super::support::shared_card_db;
 const P0: PlayerId = PlayerId(0);
 /// Sprout Swarm in P0's hand in the realistic 4p dump.
 const SPROUT: ObjectId = ObjectId(405);
-/// The fodder `drive_sprout_cast` convokes for the {G}. Recorded here because R-mixed's SECOND
-/// cast must use a different one — this is a measured fixture fact, not a guess.
+/// The fodder `drive_sprout_cast` convokes for the {G}. Recorded here because the two-accept row's
+/// SECOND cast must use a different one.
 const FIRST_CONVOKE_FODDER: ObjectId = ObjectId(406);
 /// A second untapped P0 fodder Saproling (406–410, 412 are untapped in the dump).
 const SECOND_CONVOKE_FODDER: ObjectId = ObjectId(407);
@@ -105,7 +51,7 @@ const SECOND_CONVOKE_FODDER: ObjectId = ObjectId(407);
 const MAX_SHORTCUT_CYCLES_MIRROR: u32 = 1_000;
 
 /// Test-crate mirror of the engine's private `LoopCollapseRoute`. It exists because the production
-/// enum is private by charter and MUST STAY private — this is the OBSERVABLE, not a copy of the
+/// enum is private and MUST STAY private — this is the OBSERVABLE, not a copy of the
 /// decision. The mapping in [`route_of`] is the only place the proxy is defined.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExpectedRoute {
@@ -284,70 +230,57 @@ fn boundary_max(state: &GameState) -> u32 {
 }
 
 // ===========================================================================
-// R2 ∧ R2-neg — the route pair. Written as ONE test so the two arms are structurally
-// inseparable: R2 alone is satisfiable by a blanket route change, and R2-neg alone by never
+// The route pair, written as ONE test so the two arms are structurally inseparable: the grafted
+// arm alone is satisfiable by a blanket route change, and the ungrafted arm alone by never
 // wiring the disjunct.
 // ===========================================================================
 
-/// **R2 ∧ R2-neg ∧ R2-typed.** The grafted board routes to the concrete replay; the untouched
-/// shipped board, ONE OBJECT AWAY, still routes batched.
+/// **The grafted board routes to the concrete replay; the untouched shipped board, ONE OBJECT
+/// AWAY, still routes batched.**
 ///
-/// R2-neg is THE discriminator, and the board it runs on is measured NON-TRIVIAL rather than
-/// empty: the dump scans 135 active trigger definitions, of which exactly ONE passes the CR 113.6
-/// zone gate (an ETB-keyed def) while its SIX `SpellCast`-keyed defs are all library-resident with
-/// `trigger_zones` naming only Battlefield or Stack. So this arm tests the ZONE GATE — a real zero
-/// with a live same-gate control — not an absence of triggers.
+/// The ungrafted arm is THE discriminator, and its board is NON-TRIVIAL rather than empty: of the
+/// dump's active trigger definitions exactly one passes the CR 113.6 zone gate (an ETB-keyed
+/// def), while every `SpellCast`-keyed def it carries is library-resident with `trigger_zones`
+/// naming only Battlefield or Stack. So that arm tests the ZONE GATE — a real zero with a live
+/// same-gate control — not an absence of triggers.
 ///
-/// R2-typed is discharged BY CONSTRUCTION: every assertion here is written in the typed
-/// `ExpectedRoute` vocabulary against the typed production route. It cannot be written in the
-/// production enum's vocabulary at all, because `LoopCollapseRoute` is private and unnameable from
-/// an external test crate.
-///
-/// **R2-large-N** is the third arm and it is a COUNT-INDEPENDENCE pin, not a performance row: it
-/// re-runs the grafted arm at `MAX_SHORTCUT_CYCLES`, the largest count the declare authority
-/// accepts. Today this is structural — `materialize_object_growth_shortcut` never receives `n` at
-/// all, so no route decision can read it — and the arm exists to keep it that way: any future
-/// change that threads a count-dependent fallback into the route seam (the shape the withdrawn
-/// iteration budget had) must make this arm choose, rather than silently trading the concrete
-/// replay for the batched route at large N. It is also cheap, because the accept only REGISTERS a
-/// `DriveSequence`; the cycles are replayed later, at the CR 500.5 boundary this arm never drives
-/// to.
+/// The large-N arm is a COUNT-INDEPENDENCE pin, not a performance row: it re-runs the grafted arm
+/// at `MAX_SHORTCUT_CYCLES`, the largest count the declare authority accepts. Today that is
+/// structural — `materialize_object_growth_shortcut` never receives `n`, so no route decision can
+/// read it — and the arm exists to keep it that way. It is cheap: the accept only REGISTERS a
+/// `DriveSequence`, and the cycles replay later at a CR 500.5 boundary this arm never drives to.
 #[test]
 fn cast_trigger_board_routes_to_replay_untouched_board_stays_batched() {
-    // ── R2-neg (the discriminator): untouched shipped board ⇒ batched ──
+    // ── the discriminator: untouched shipped board ⇒ batched ──
     let mut ungrafted = offer_state(false);
     declare_and_accept_all(&mut ungrafted, P0, 100);
     assert_route(&ungrafted, ExpectedRoute::Batched);
 
-    // ── R2: one grafted functioning cast trigger ⇒ concrete replay ──
+    // ── one grafted functioning cast trigger ⇒ concrete replay ──
     let mut grafted = offer_state(true);
     declare_and_accept_all(&mut grafted, P0, 100);
     assert_route(&grafted, ExpectedRoute::Replay);
 
-    // ── R2-large-N: same board, the engine's maximum accepted count, same route ──
+    // ── large N: same board, the engine's maximum accepted count, same route ──
     let mut grafted_at_ceiling = offer_state(true);
     declare_and_accept_all(&mut grafted_at_ceiling, P0, MAX_SHORTCUT_CYCLES_MIRROR);
     assert_route(&grafted_at_ceiling, ExpectedRoute::Replay);
 }
 
-/// **V3 — the NON-BLANKET discriminator.** The per-axis `collapsed_axes` filter at the `Replay`
-/// arm keeps every `DeferredAccrual` axis: this already-shipped realistic dump's `DriveSequence`
+/// **The NON-BLANKET discriminator.** The per-axis `collapsed_axes` filter at the `Replay` arm
+/// keeps every `DeferredAccrual` axis: this already-shipped realistic dump's `DriveSequence`
 /// still names the loop's marked axis set EXACTLY, with nothing dropped.
 ///
-/// WHY IT EXISTS AS ITS OWN ROW. The mixed-axis rows in `combo_infinite_pile` assert that a
-/// `Mana(_)` axis is EXCLUDED. An over-aggressive implementation that empties every
-/// `collapsed_axes` — the trivial "reject `DeferredAccrual`", or "keep only `StandingCapability`"
-/// — passes their `Mana` half, and passes the function-level preservation half too. This row is
-/// what stops it: it upgrades the sibling above's DISCRIMINANT-only route assertion to an
-/// EXACT-SET assertion on the same board.
+/// It is its own row because the mixed-axis rows in `combo_infinite_pile` assert only that a
+/// `Mana(_)` axis is EXCLUDED, which an over-aggressive implementation that empties every
+/// `collapsed_axes` also satisfies. This row upgrades the sibling above's DISCRIMINANT-only route
+/// assertion to an EXACT-SET assertion on the same board. Its reach-guard is the shipped
+/// [`assert_route`] instrument on the same arm, which panics on an empty stash so a ROUTE
+/// regression cannot quietly make the exact-set assertion unreachable.
 ///
 /// REVERT PROBE: invert the filter at `game::engine::materialize_object_growth_shortcut`'s
 /// `Replay` arm (keep only `StandingCapability`, or drop `DeferredAccrual`) ⇒ `collapsed_axes`
 /// empties ⇒ RED here while the mixed-axis rows stay green.
-///
-/// REACH-GUARD: the shipped [`assert_route`] instrument on the same arm. Without it an
-/// over-aggressive filter could be masked by a ROUTE regression that makes the exact-set assertion
-/// unreachable — `assert_route` panics on an empty stash precisely so that cannot happen quietly.
 #[test]
 fn replay_collapse_names_every_deferred_axis_the_loop_marked() {
     let mut grafted = offer_state(true);
@@ -389,22 +322,18 @@ fn replay_collapse_names_every_deferred_axis_the_loop_marked() {
     );
 }
 
-/// **R-mixed** — the multi-authority hostile fixture. Two accepts by one controller in ONE phase
-/// produce TWO route decisions sharing ONE stash and ONE boundary amount.
+/// **The multi-authority hostile fixture.** Two accepts by one controller in ONE phase produce
+/// TWO route decisions sharing ONE stash and ONE boundary amount. That is what makes the route a
+/// per-ACCEPT decision rather than a per-phase one: the cast trigger is grafted BETWEEN the two
+/// accepts, so accept #1 is batched and accept #2 is replay on the same board in the same phase.
 ///
-/// This is what makes the route a per-ACCEPT decision rather than a per-phase one: the cast trigger
-/// is grafted BETWEEN the two accepts, so accept #1 is batched and accept #2 is replay on the same
-/// board in the same phase.
-///
-/// The stash-composition assertion is load-bearing and not replaceable by the bound alone: a
-/// bound-only row would pass on a board where BOTH accepts took the same route.
-///
-/// The boundary assertion is the CR 732.2c property at row scale — "the shortcut is taken; the game
-/// advances to the last proposed ending point" — so the single prompt the two accepts share must
-/// offer the count they were accepted at, on BOTH routes. It is not a cap row: there is no cap in
-/// this phase, and `boundary_max` already panics unless exactly one collapse prompt addressed to
-/// the loop's controller exists, so a route that published `MAX_SHORTCUT_CYCLES`, zero, or a second
-/// prompt fails here.
+/// The stash-composition assertion is not replaceable by the bound alone — a bound-only row would
+/// pass on a board where BOTH accepts took the same route. The boundary assertion is the CR
+/// 732.2c property at row scale ("the shortcut is taken; the game advances to the last proposed
+/// ending point"), so the single prompt the two accepts share must offer the count they were
+/// accepted at, on BOTH routes. `boundary_max` panics unless exactly one collapse prompt
+/// addressed to the loop's controller exists, so a route that published `MAX_SHORTCUT_CYCLES`,
+/// zero, or a second prompt fails here.
 #[test]
 fn two_accepts_one_phase_one_batched_one_replay_share_one_boundary() {
     let mut state = offer_state(false);
@@ -472,58 +401,28 @@ fn two_accepts_one_phase_one_batched_one_replay_share_one_boundary() {
 }
 
 // ===========================================================================
-// R-mana — the ASYMMETRY row. A board whose BATCHED arm would register NOTHING must not be
+// The ASYMMETRY row. A board whose BATCHED arm would register NOTHING must not be
 // dragged onto the replay by the cast disjunct.
 // ===========================================================================
 
-/// **R-mana.** A real Basalt Monolith + Power Artifact mana engine carrying a functioning cast
-/// trigger still registers NOTHING — the shipped unscheduled-axis shape — instead of scheduling a
-/// `DriveSequence` that would deliver nothing: uncapped cubic replay cost plus a spurious CR 500.5
-/// collapse prompt for a loop with nothing to collapse. (Post-`ResourceAxis::unbounded_mark_kind`
-/// a `DriveSequence` on this rig would name NO axis at all — `Mana(_)` is the board's only ∞ axis
-/// and it classifies `StandingCapability` — which is why the guard's merit is the cost and the
-/// prompt, not a mark collapse.)
+/// **A real Basalt Monolith + Power Artifact mana engine carrying a functioning cast trigger
+/// still registers NOTHING**, rather than scheduling a `DriveSequence` that would deliver
+/// nothing: uncapped cubic replay cost plus a spurious CR 500.5 collapse prompt for a loop with
+/// nothing to collapse. The route seam's arms are ASYMMETRIC — the batched arm registers
+/// CONDITIONALLY (token profile / counter growth / life growth, none of which a mana engine has)
+/// while the replay arm registers UNCONDITIONALLY, and `cast_sourced` is the only route disjunct
+/// with no axis-shaped conjunct. Without `!batched.is_empty()` ANY functioning cast trigger
+/// anywhere flips this rig: `functioning_board_trigger_defs` walks `state.objects.values()` with
+/// NO controller filter, so an OPPONENT's is enough.
 ///
-/// MEASURED REGRESSION, not a hypothetical. At the prior candidate `b560049f` this row is RED with
-/// `[DriveSequence]`; the `!batched.is_empty()` guard at the route seam is what makes it GREEN. The
-/// two arms of that seam are ASYMMETRIC: the batched arm registers CONDITIONALLY (token profile /
-/// counter growth / life growth — a mana engine has none of the three), while the replay arm
-/// registers a `DriveSequence` UNCONDITIONALLY. `cast_sourced` is the only route disjunct with no
-/// axis-shaped conjunct, so before the fix ANY functioning cast trigger anywhere on the board —
-/// `functioning_board_trigger_defs` walks `state.objects.values()` with NO controller filter, so an
-/// OPPONENT's Monastery Mentor is enough — flipped this board from registering nothing to
-/// scheduling a collapse. At the CR 500.5 boundary that stash raises a `PayableResource::LoopCollapse`
-/// prompt this shape has never raised — that half is unchanged, because the prompt gate
-/// `next_apnap_player_with_pending_materialization` reads STASH PRESENCE only — and, at the prior
-/// candidate, `scheduled_collapse_axes` put `Mana(_)` into `axes_to_remove`, ending the ∞ mana
-/// mark for the rest of the phase. That second harm is now closed PER AXIS by
-/// `ResourceAxis::unbounded_mark_kind`, leaving the prompt and the replay cost as this guard's
-/// remaining merit.
-///
-/// REACHABILITY, proved in-row rather than assumed, because a fixture that never reaches the
-/// disjunct would pass vacuously. `functioning_board_trigger_defs` is
-/// `objects.values()` × `active_trigger_definitions(state, obj)` × `trigger_definition_functions_in_zone(def, obj.zone)`.
-/// Guard (1) runs the first of those two authorities on THIS board and shows the grafted cast-mode
-/// def surviving it; the second is a pure `(def, zone)` function with no board input, and the same
-/// `(SpellCast-mode def, Battlefield)` pair is measured route-flipping by
-/// [`cast_trigger_board_routes_to_replay_untouched_board_stays_batched`] above, which shares this
-/// file's [`graft_cast_trigger`]. Guard (2) shows the captured period is non-empty, so the seam's
-/// other conjunct `!sequence.is_empty()` holds too. Guard (3) shows the accept genuinely reached
-/// `materialize_object_growth_shortcut` (only that path marks the axis), so the emptiness at (4) is
-/// a route decision and not "nothing happened". With (1)–(3) satisfied, `cast_sourced` is the ONLY
-/// thing between this board and the replay route — which the RED-at-`b560049f` measurement
-/// independently confirms, since the fix touches nothing else.
-///
-/// The paired POSITIVE for this row is not on this rig — a mana engine cannot be given a batched
-/// payload without ceasing to be one — it is the grafted arm of
-/// [`cast_trigger_board_routes_to_replay_untouched_board_stays_batched`], where the same graft on a
-/// board that DOES have a batched payload still routes `Replay`. Together the pair says the
-/// disjunct fires on payload and not on the trigger alone.
-///
-/// The `shared_card_db()` guard is DORMANT in a normal checkout (`integration_cards.json.gz` is
-/// tracked); it only fires in a checkout without the card-data pipeline.
+/// Guards (1)–(4) below prove reachability in-row rather than assuming it, since a fixture that
+/// never reaches the disjunct passes vacuously. The paired POSITIVE is not on this rig — a mana
+/// engine cannot be given a batched payload and stay one — it is the grafted arm of
+/// [`cast_trigger_board_routes_to_replay_untouched_board_stays_batched`].
 #[test]
 fn mana_engine_with_cast_trigger_registers_nothing() {
+    // DORMANT in a normal checkout (`integration_cards.json.gz` is tracked); it only fires in a
+    // checkout without the card-data pipeline.
     let Some(db) = shared_card_db() else { return };
     // The mana rig is built on `game::scenario::P0`; this file's `P0` must be the same seat for
     // the graft to land on the loop controller's board at all.

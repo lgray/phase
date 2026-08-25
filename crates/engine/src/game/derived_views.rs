@@ -679,30 +679,19 @@ pub struct DerivedViews {
     pub legend_candidate_identities: BTreeMap<ObjectId, LegendCandidateIdentity>,
 
     /// CR 115.1 + CR 601.2c: what the LIVE target announcement is offering the
-    /// announcing player to choose from, classified over CR 115.1's
-    /// object/player axis. Derived from
-    /// `TargetSelectionProgress::current_legal_targets` — the same array the
-    /// client turns into clickable controls, so the sentence naming the choice
-    /// and the controls answering it cannot name different populations.
+    /// announcing player, classified over CR 115.1's object/player axis. Derived
+    /// from `TargetSelectionProgress::current_legal_targets` — deliberately the
+    /// OFFERED set, not the slot's declared `legal_targets` or `TargetFilter`,
+    /// which `legal_targets_for_slot` narrows by cross-slot constraint validation
+    /// (CR 115.3) and completion feasibility; naming that superset would let the
+    /// sentence and the clickable controls describe different populations.
     ///
-    /// Deliberately the OFFERED set, not the slot's declared `legal_targets`
-    /// and not its declared `TargetFilter`. `legal_targets_for_slot` narrows
-    /// the declared set by cross-slot constraint validation (CR 115.3) and by
-    /// completion feasibility, so the declared set is a SUPERSET of what is on
-    /// screen; naming it would let the sentence and the controls describe
-    /// different populations.
-    ///
-    /// Consolidation note: `game::interaction::target_sequence_projection`
-    /// reads the same array and is the natural long-term home for this. It is
-    /// not folded there only because `TargetingOverlay` does not consume
-    /// `viewerInteraction`. If that changes, move this onto
-    /// `TargetSequenceProjection` and delete this field rather than keeping
-    /// two authorities for one classification.
-    ///
-    /// Absent unless a `TargetSelection` or `TriggerTargetSelection` prompt is
-    /// live. Where a viewer's characteristics are redacted (CR 400.2) the
-    /// classifier degrades to `Object` deliberately, rather than answering
-    /// confidently from the subset of the offer it can still resolve.
+    /// `game::interaction::target_sequence_projection` reads the same array and is
+    /// the long-term home for this; fold it there and delete this field once
+    /// `TargetingOverlay` consumes `viewerInteraction`. Absent unless a
+    /// `TargetSelection` or `TriggerTargetSelection` prompt is live; where a viewer's
+    /// characteristics are redacted (CR 400.2) it degrades to `Object` rather than
+    /// answering confidently from the subset of the offer it can still resolve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_target_kind: Option<TargetChoiceKind>,
 
@@ -1781,15 +1770,11 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
             // returns `None` for `Mana(_)` today, so the two happen to agree — an accident
             // between two functions, not an invariant either of them states.
             //
-            // AND THAT ACCIDENT NOW CARRIES MORE WEIGHT. Before
-            // `analysis::resource::ResourceAxis::unbounded_mark_kind`, a `Replay` collapse put
-            // `Mana(_)` into `accepted_collapse_axes`, so conjunct 1 was FALSE and the row was
-            // kept for that reason. Now conjunct 1 is TRUE for a mana axis and the row is kept by
-            // conjunct 2 ALONE — i.e. solely by `object_growth_backing`'s `None` arm. The
-            // projected row set is unchanged either way (verified: `None != Some(false)`), but if
-            // that arm ever moves, `Mana(_)` rows would start disappearing during the
-            // accept→boundary window. Decide it deliberately there. Pinned by
-            // `combo_infinite_pile`'s mixed-axis replay row, assertion (d).
+            // A mana axis now reaches here with `accepted_axes` HOLDING it, so its row is kept
+            // solely by `object_growth_backing`'s `None` arm. If that arm ever moves, `Mana(_)`
+            // rows start disappearing during the accept→boundary window — decide it there,
+            // deliberately. Pinned by
+            // `combo_infinite_pile::low3_mixed_axis_replay_collapses_only_the_deferred_life_axis`.
             if !accepted_axes.contains_key(&axis)
                 && object_growth_backing(state, controller, axis) == Some(false)
             {
@@ -2224,10 +2209,7 @@ fn accepted_collapse_axes(
 ///
 /// It is kept deliberately, as DEFENSE IN DEPTH: a future stash kind that scheduled a mana axis
 /// would otherwise silently start promising a bound on a pool the player is already spending
-/// without bound. That is the same posture this file uses elsewhere — a guard whose RED is a
-/// build-or-behaviour break rather than a silent widening. Deleting a documented guard because it
-/// became redundant on one path is exactly how the drift this file's own census catalogues
-/// happens. The badge still must not promise a bound the player's spendable pool never had.
+/// without bound. The badge must not promise a bound the player's spendable pool never had.
 fn scheduled_display_axes(
     accepted: &BTreeMap<ResourceAxis, CollapseCertainty>,
 ) -> BTreeMap<ResourceAxis, CollapseCertainty> {
@@ -7104,7 +7086,7 @@ mod tests {
         derive_views(state, Some(PlayerId(0))).current_target_kind
     }
 
-    /// Row 1 — the originating #7692 defect. CR 115.1's targets are "object(s)
+    /// CR 115.1's targets are "object(s)
     /// and/or player(s)"; an offer holding both must name both halves rather
     /// than collapsing to whichever half the client happens to inspect.
     #[test]
@@ -7130,8 +7112,9 @@ mod tests {
             "a mixed offer must name BOTH halves; naming only the object half is #7692 itself"
         );
 
-        // THE WIRE CONTRACT for a payload-carrying variant. Unlike row 2's
-        // payload-free pin, this one IS sensitive to the tagging mode: dropping
+        // THE WIRE CONTRACT for a payload-carrying variant. Unlike the
+        // payload-free pin on the player-only offer, this one IS sensitive to
+        // the tagging mode: dropping
         // `content = "data"` flattens the category alongside the tag and reds
         // here. The client mirror is hand-written with no generated binding to
         // force agreement, so this assertion is the only thing holding the two
@@ -7147,7 +7130,7 @@ mod tests {
         );
     }
 
-    /// Row 2 — the mixed arm must not swallow the pure-player case.
+    /// The mixed arm must not swallow the pure-player case.
     #[test]
     fn an_all_player_offer_names_players() {
         let mut state = two_player_state();
@@ -7165,15 +7148,15 @@ mod tests {
 
         // The WIRE form of the payload-free variant — a different claim from
         // the classification above: that one pins the classifier, this one pins
-        // what a player-only offer (#7692's own reported case) actually reaches
-        // the client as.
+        // what a player-only offer actually reaches the client as.
         //
         // WHAT THIS DOES NOT PIN, stated so nobody reads a guarantee into it:
         // `Players` carries no payload, so `content = "data"` has nothing to
         // wrap and its encoding is IDENTICAL under adjacent and internal
         // tagging. This assertion therefore cannot detect a change of tagging
-        // mode. The variants that can are the payload-carrying ones, and rows 1
-        // and 3 pin those.
+        // mode. The variants that can are the payload-carrying ones, pinned by
+        // `a_mixed_offer_names_both_objects_and_players` and
+        // `a_creature_offer_is_narrowed_past_nonland_permanent`.
         assert_eq!(
             serde_json::to_value(&views).expect("the derived views serialize")
                 ["current_target_kind"],
@@ -7182,7 +7165,7 @@ mod tests {
         );
     }
 
-    /// Row 3 — CR 109.1 + CR 110.4: the narrowest true category wins, so a
+    /// CR 109.1 + CR 110.4: the narrowest true category wins, so a
     /// creature-only offer is a creature and not merely a nonland permanent.
     #[test]
     fn a_creature_offer_is_narrowed_past_nonland_permanent() {
@@ -7226,7 +7209,7 @@ mod tests {
         );
     }
 
-    /// Row 4 — the same narrowing for CR 110.4's planeswalker permanent type.
+    /// The same narrowing for CR 110.4's planeswalker permanent type.
     #[test]
     fn a_planeswalker_offer_is_narrowed_past_nonland_permanent() {
         let mut state = two_player_state();
@@ -7247,7 +7230,7 @@ mod tests {
         );
     }
 
-    /// Row 5 — narrowing did not eat the NonlandPermanent arm: a permanent
+    /// Narrowing did not eat the NonlandPermanent arm: a permanent
     /// that is neither creature nor planeswalker still reaches it.
     #[test]
     fn a_nonland_noncreature_permanent_offer_stays_nonland_permanent() {
@@ -7269,7 +7252,7 @@ mod tests {
         );
     }
 
-    /// Row 6 — CR 110.4: a land in the offer widens the answer to the bare
+    /// CR 110.4: a land in the offer widens the answer to the bare
     /// permanent category, because "nonland permanent" is then false of it.
     #[test]
     fn a_land_and_creature_offer_widens_to_permanent() {
@@ -7298,7 +7281,7 @@ mod tests {
         );
     }
 
-    /// Row 7 — the mandated hostile fixture: a Land Planeswalker (the Wrenn
+    /// The hostile fixture: a Land Planeswalker (the Wrenn
     /// and One shape, `core_types = [Land, Planeswalker]`) beside an ordinary
     /// creature must widen to Permanent rather than break the lattice.
     #[test]
@@ -7328,9 +7311,9 @@ mod tests {
         );
     }
 
-    /// Row 8 — the same card offered ALONE narrows back to Planeswalker. Paired
-    /// with row 7: together they prove the lattice moves in both directions
-    /// rather than defaulting one way.
+    /// The same card offered ALONE narrows back to Planeswalker. Paired with
+    /// `a_land_planeswalker_beside_a_creature_widens_to_permanent`: together they
+    /// prove the lattice moves in both directions rather than defaulting one way.
     #[test]
     fn a_land_planeswalker_alone_is_named_a_planeswalker() {
         let mut state = two_player_state();
@@ -7352,7 +7335,7 @@ mod tests {
         );
     }
 
-    /// Row 9 — CR 110.1 + CR 115.2: a permanent is a card on the battlefield,
+    /// CR 110.1 + CR 115.2: a permanent is a card on the battlefield,
     /// and an off-battlefield object can still be a legal target. A creature
     /// card in a graveyard must not be called a permanent.
     #[test]
@@ -7376,8 +7359,9 @@ mod tests {
         );
     }
 
-    /// Row 10 — CR 112.1: a spell is a card on the stack. The paired positive
-    /// for row 11, so that row's negative cannot pass on a dead predicate.
+    /// CR 112.1: a spell is a card on the stack. The paired positive for
+    /// `an_ability_on_the_stack_is_not_called_a_spell`, so that row's negative
+    /// cannot pass on a dead predicate.
     #[test]
     fn a_spell_offer_names_a_spell() {
         let mut state = two_player_state();
@@ -7409,7 +7393,7 @@ mod tests {
         );
     }
 
-    /// Row 11 — CR 113.7a: an activated ability exists on the stack
+    /// CR 113.7a: an activated ability exists on the stack
     /// independently of its source and is NOT a spell (CR 112.1). Stack
     /// residency alone must not answer this.
     #[test]
@@ -7449,7 +7433,7 @@ mod tests {
         );
     }
 
-    /// Row 12 — CR 400.2: an offered object the projection cannot resolve
+    /// CR 400.2: an offered object the projection cannot resolve
     /// degrades the WHOLE answer, rather than being dropped so the remainder
     /// can be classified confidently. The fixture deliberately mixes a
     /// resolvable creature with an unresolvable id: a `filter_map` drop would
@@ -7481,7 +7465,7 @@ mod tests {
         );
     }
 
-    /// Row 13 — an empty offer on a LIVE prompt yields no kind. The absence of
+    /// An empty offer on a LIVE prompt yields no kind. The absence of
     /// an offer is not a kind of choice. This state is reached, not merely
     /// total: an all-optional announcement can auto-skip to completion and
     /// install a progress whose `current_legal_targets` is empty.
@@ -7519,11 +7503,11 @@ mod tests {
         );
     }
 
-    /// Row 14 — no prompt means no wire key, AND the key is genuinely present
-    /// when a prompt is live. Both halves live in one test on purpose: without
-    /// the positive half, the negative passes even if the field is never
-    /// populated at all. This is also the scope matrix's negative test — every
-    /// `WaitingFor` variant outside the two gated ones reaches the same arm.
+    /// No prompt means no wire key, AND the key is genuinely present when a
+    /// prompt is live. Both halves live in one test on purpose: without the
+    /// positive half, the negative passes even if the field is never populated
+    /// at all. It is also the negative for the whole gate — every `WaitingFor`
+    /// variant outside the two gated ones reaches the same arm.
     #[test]
     fn no_targeting_prompt_emits_no_kind() {
         let mut state = two_player_state();
@@ -7564,7 +7548,7 @@ mod tests {
         );
     }
 
-    /// Row 15 — the filtered projection agrees on a public offer. It must do so
+    /// The filtered projection agrees on a public offer. It must do so
     /// by delegating to `derive_views(filtered_state, ..)`, not by re-sourcing
     /// from authoritative state: re-sourcing would characterize an object the
     /// viewer is not entitled to characterize (CR 400.2).
@@ -7602,7 +7586,7 @@ mod tests {
         );
     }
 
-    /// Row 16 — provenance axis 1: the kind binds to the LIVE slot, not slot 0.
+    /// Provenance axis 1: the kind binds to the LIVE slot, not slot 0.
     /// The two slots classify differently on purpose, so reading
     /// `target_slots[0]` answers Permanent and reds.
     #[test]
@@ -7642,7 +7626,7 @@ mod tests {
         );
     }
 
-    /// Row 18 — BOTH gated variants are classified. Every other unit test here
+    /// BOTH gated variants are classified. Every other unit test here
     /// drives `TriggerTargetSelection`; dropping `TargetSelection` from the
     /// combined arm would leave every ordinary spell cast, activated ability
     /// and loyalty activation publishing nothing, with all of them still green.
@@ -7688,11 +7672,11 @@ mod tests {
         );
     }
 
-    /// Row 19 — CR 205.1b: an effect can make a permanent a creature while it
+    /// CR 205.1b: an effect can make a permanent a creature while it
     /// is "still a planeswalker", so both guards are true of this object. It is
     /// the ONLY input on which the guard ORDER is observable, and therefore the
     /// only fixture here that reds a swapped Creature/Planeswalker order — the
-    /// Land Planeswalker of rows 7 and 8 never makes both guards true.
+    /// Land Planeswalker fixtures never make both guards true.
     #[test]
     fn an_animated_planeswalker_is_named_a_creature_not_a_planeswalker() {
         let mut state = two_player_state();
@@ -7714,9 +7698,10 @@ mod tests {
         );
     }
 
-    /// Row 20 — provenance axis 2: the kind reads the NARROWED offer, not the
-    /// slot's declared set. Only one slot exists, so `current_slot` is 0 and
-    /// row 16 cannot catch this revert; reading
+    /// Provenance axis 2: the kind reads the NARROWED offer, not the slot's
+    /// declared set. Only one slot exists, so `current_slot` is 0 and
+    /// `the_kind_binds_to_the_live_slot_not_the_first_slot` cannot catch this
+    /// revert; reading
     /// `target_slots[current_slot].legal_targets` answers Permanent.
     #[test]
     fn the_kind_reads_the_narrowed_offer_not_the_slots_declared_set() {

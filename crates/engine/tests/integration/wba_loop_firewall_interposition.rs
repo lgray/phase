@@ -1,31 +1,17 @@
 //! CR 732.2a INTERPOSITION acceptance — the loop-shortcut firewall must not veto an offer on
-//! account of a replacement effect that is SPENT for the proposed window.
+//! account of a replacement effect that is SPENT for the proposed window. CR 732.2b already gives
+//! every other player the deviation mechanism: each may accept the proposed sequence or shorten
+//! it by naming a place where they will choose differently. Vetoing pre-emptively on a permanent
+//! that merely observes guesses at a declaration the rules assign to a player; a veto belongs
+//! only where something on the board would falsify the proposed ending state.
 //!
-//! **The posture this file serves.** CR 732.2b gives every other player a mechanism for
-//! deviating from a proposed shortcut: *"[each other player] may either accept the proposed
-//! sequence, or shorten it by naming a place where they will make a game choice that's
-//! different than what's been proposed."* A firewall that pre-emptively vetoes on a permanent
-//! that merely *observes* is guessing at a declaration the rules assign to a player. A veto
-//! belongs only where something on the board would actually falsify the proposed ending state.
-//!
-//! **What is spent, and why (CR 614.1d + CR 614.12 + CR 400.7).** An "enters tapped unless you
-//! control …" land carries a replacement definition whose only subject is its OWN entrance
-//! (CR 614.1d templates "[This permanent] enters . . ." separately from "[Objects] enter . . .";
-//! CR 614.12 makes the first apply only to that permanent). Once that land is on the
-//! battlefield and stays the same object across the window (CR 400.7), the event it watches
-//! cannot recur inside the window, so none of its surfaces runs — however loudly its condition
-//! would census the board if it ever did. That is INAPPLICABILITY, not disjointness, which is
-//! why the relief reaches lands whose census genuinely counts the growing class.
-//!
-//! **BASE BOARD.** The REAL 4-player `sprout_witherbloom_realistic_lands_4p` dump, loaded
-//! through the production restore chokepoint and driven to its CR 732.2a offer by one live
-//! Sprout Swarm buyback+convoke recast, using `sprout_inalla_realistic_offer`'s own helpers.
-//! Every arm below is ONE OBJECT away from the shipped-green board, which is what makes the
-//! pairs discriminating rather than merely green.
-//!
-//! **ORACLE TEXT IS VERBATIM**, taken from the pinned card-data export, never a paraphrase: a
-//! reworded "enters tapped unless" line can take a different parser branch and go green while
-//! the real card still vetoes.
+//! What makes the relief sound: an "enters tapped unless you control …" land's replacement has
+//! its OWN entrance as its only subject — CR 614.1d templates "[This permanent] enters . . ."
+//! separately from "[Objects] enter . . .", and CR 614.12 makes the first apply only to that
+//! permanent. Once the land is on the battlefield and stays the same object across the window (CR
+//! 400.7) the event it watches cannot recur, so none of its surfaces runs, however loudly its
+//! condition would census the board. That is INAPPLICABILITY, not disjointness, which is why the
+//! relief reaches lands whose census genuinely counts the growing class.
 
 use std::sync::Arc;
 
@@ -210,29 +196,20 @@ fn drive_and_report(state: GameState, why: &str) -> bool {
     }
 }
 
-/// **Row 14 — three REAL entry-census lands, each ALONE on the combo board, stop vetoing the
-/// CR 732.2a offer; and each returns to REFUSING the moment its definition stops being
-/// self-scoped.**
+/// **Three REAL entry-census lands, each ALONE on the combo board, stop vetoing the CR 732.2a
+/// offer, and each REFUSES again the moment its definition stops being self-scoped.** They run
+/// three DIFFERENT live censuses no disjointness argument relieves (Taiga Stadium is one
+/// `arrival_can_move_a_nonmember_match` refuses), so no per-condition arm reaches them.
 ///
-/// This is the end-to-end discharge of the spent-self-entry relief. The three lands are the
-/// engine's own measured census carriers, they run three DIFFERENT board censuses, and every one
-/// of those censuses is live and un-relievable by disjointness — Taiga Stadium in particular is
-/// one of the cards `arrival_can_move_a_nonmember_match` refuses, which is why the relief is
-/// guard-free and why no per-condition arm could ever have reached it.
-///
-/// STRUCTURE, so no arm can pass for the wrong reason:
-///  * BASELINE (positive control): the untouched dump OFFERS. Without it, a green arm below
-///    cannot be told apart from a harness that offers on everything.
-///  * ARM A (the claim): dump + the real land ⇒ OFFERS.
-///  * ARM B (the live discriminating mutation): the SAME board with `valid_card` rewritten
-///    `SelfRef` → `Typed{Land}` through `base_replacement_definitions` ⇒ REFUSES, pinned
-///    positively at `Priority{P0}`. One field is the only variable between A and B, so A's offer
-///    is attributable to CR 614.1d's self-entry scope and to nothing else — and B is the
-///    reach-guard proving block (3) genuinely SEES this definition.
+/// BASELINE (positive control): the untouched dump OFFERS, so a green arm below is not a harness
+/// that offers on everything. ARM A: dump + the real land ⇒ OFFERS. ARM B, the live
+/// discriminating mutation: `valid_card` rewritten `SelfRef` → `Typed{Land}` ⇒ REFUSES, pinned
+/// positively at `Priority{P0}`. One field is the only variable, so A's offer is attributable to
+/// CR 614.1d's self-entry scope, and B proves block (3) SEES it.
 ///
 /// REVERT / MUTATION PROBE: delete the `continue` at the head of block (3)'s walk in
 /// `analysis::resource::fire_time_conditions_read_growing_class_scoped` ⇒ all three ARM A
-/// assertions return to REFUSES ⇒ **FAILS**.
+/// assertions REFUSE ⇒ **FAILS**.
 #[test]
 fn spent_self_entry_relief_offers_on_three_real_entry_census_lands() {
     assert!(
@@ -282,27 +259,23 @@ fn spent_self_entry_relief_offers_on_three_real_entry_census_lands() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────
-// CR 732.2a PROPOSAL-ABSENCE acceptance — rows 15 and 19.
+// CR 732.2a PROPOSAL-ABSENCE acceptance. The relief above is about a replacement effect that
+// cannot APPLY inside the window; this one is about an activated ability the proposed sequence
+// never ACTIVATES. CR 732.2a defines a shortcut as "a sequence of game choices, for all players",
+// and CR 732.2c advances the game "with all game choices contained in the shortcut proposal
+// having been taken" — so an ability absent from that sequence is never activated inside the
+// window and cannot act on the growing class, HOWEVER LOUDLY IT WOULD READ THE BOARD IF IT EVER
+// RAN. That is why it reaches Abandoned Air Temple, whose "+1/+1 counter on each creature you
+// control" read is genuine and which no disjointness argument could relieve.
 //
-// **What this half adds to the file's posture.** The relief above is about a replacement
-// effect that cannot APPLY inside the window. This one is about an activated ability the
-// proposed sequence never ACTIVATES. CR 732.2a defines a shortcut as "a sequence of game
-// choices, for all players", and CR 732.2c advances the game "with all game choices contained
-// in the shortcut proposal having been taken" — so an activated ability absent from that
-// sequence is never activated inside the window and cannot act on the growing class, HOWEVER
-// LOUDLY IT WOULD READ THE BOARD IF IT EVER RAN. That is why this relief reaches Abandoned Air
-// Temple, whose "+1/+1 counter on each creature you control" read is genuine on the merits and
-// which no disjointness argument could ever relieve.
-//
-// **CONTINGENT relief, stated at the file level so nobody re-reads it as structural.** A loop
-// whose proposal DID name one of these abilities restores the veto. The unit rows
-// `loop_driving_activation_is_not_relieved` and `loop_driving_mana_activation_is_not_relieved`
-// are the intersection tests, and they cannot be driven here: the Sprout Swarm loop's only
-// recorded step is a `Recast`, which names a card being cast and never an activation.
+// CONTINGENT, not structural: a loop whose proposal DID name one of these abilities restores the
+// veto. `loop_driving_activation_is_not_relieved` and `loop_driving_mana_activation_is_not_relieved`
+// are the intersection tests; neither is drivable here — this loop's only step is a `Recast`.
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
-/// The three census lands row 15 drives, each with its VERBATIM Oracle text from the pinned
-/// card-data export. Each carries TWO activated abilities: a mana ability (`{T}: Add ..`, which
+/// The three census lands [`unactivated_ability_relief_offers_on_three_real_census_lands`] drives,
+/// each with its VERBATIM Oracle text from the pinned card-data export. Each carries TWO
+/// activated abilities: a mana ability (`{T}: Add ..`, which
 /// CR 605.3a keeps OUT of this relief) and a second, non-mana ability whose body reads the
 /// board. They are deliberately three DIFFERENT reads — a counter sweep over every creature
 /// you control, a token mint with a board-scaled cost reduction, and a targeted keyword grant —
@@ -347,8 +320,8 @@ const CHOCOBO_CAMP: (&str, &str, &[&str]) = (
 /// store on every pass.
 ///
 /// The abilities are the point of this helper — [`graft_census_land`] deliberately installs a
-/// definition and NO abilities, because row 14's attributability control needs block (3) to be
-/// the only speaker on the board. Here block (2) is the subject, so the abilities must be real.
+/// definition and NO abilities, so that its attributability control leaves block (3) as the only
+/// speaker on the board. Here block (2) is the subject, so the abilities must be real.
 fn graft_full_land(state: &mut GameState, card: (&str, &str, &[&str])) -> ObjectId {
     let (name, oracle, subtypes) = card;
     let subs: Vec<String> = subtypes.iter().map(|s| (*s).to_string()).collect();
@@ -408,9 +381,9 @@ fn nonmana_ability_index(abilities: &[engine::types::ability::AbilityDefinition]
 /// CR 117.1b's other side. A `Spell`-kind def is not reached through activation at all, so "the
 /// proposal never activated it" says nothing about it and the relief must refuse.
 ///
-/// This is row 15's live discriminating mutation AND its reach-guard: it changes ONE enum field
-/// on ONE ability, so an offer that survives every other arm but dies here is attributable to
-/// the proposal-absence relief and to nothing else on the board.
+/// This is the proposal-absence row's live discriminating mutation AND its reach-guard: it changes
+/// ONE enum field on ONE ability, so an offer that survives every other arm but dies here is
+/// attributable to the proposal-absence relief and to nothing else on the board.
 fn spellify_the_nonmana_ability(state: &mut GameState, host: ObjectId) {
     let obj = state.objects.get_mut(&host).expect("the land is live");
     let abilities = Arc::make_mut(&mut obj.abilities);
@@ -458,28 +431,20 @@ fn track_the_delayed_payload(state: &mut GameState, host: ObjectId) {
     *uses_tracked_set = true;
 }
 
-/// **Row 15 — three REAL census lands whose activated ability the proposed sequence never
-/// activates stop vetoing the CR 732.2a offer; and each returns to REFUSING the moment that
-/// ability stops being an activated one.**
+/// **Three REAL census lands whose activated ability the proposed sequence never activates stop
+/// vetoing the CR 732.2a offer, and each REFUSES again the moment that ability stops being
+/// activated.** Abandoned Air Temple's "+1/+1 counter on each creature you control" really does
+/// census the growing Saproling class, so no disjointness arm reaches it and the relief has to be
+/// inapplicability-shaped.
 ///
-/// This is the end-to-end discharge of the proposal-absence relief. Abandoned Air Temple is the
-/// one of these whose read is genuine on the merits — "put a +1/+1 counter on each creature you
-/// control" really does census the growing Saproling class — which is exactly why no
-/// disjointness arm reaches it and why this relief has to be inapplicability-shaped.
+/// BASELINE (positive control): the untouched dump OFFERS. ARM A: dump + the real land ⇒ OFFERS.
+/// ARM B, the live discriminating mutation: the second ability's `kind` rewritten `Activated` →
+/// `Spell` ⇒ REFUSES, pinned positively at `Priority{P0}`. That one enum field is the only
+/// variable, so A's offer is attributable to CR 732.2a's proposal-absence argument and B proves
+/// block (2) SEES the ability.
 ///
-/// STRUCTURE, so no arm can pass for the wrong reason:
-///  * BASELINE (positive control): the untouched dump OFFERS. Without it, a green arm below
-///    cannot be told apart from a harness that offers on everything.
-///  * ARM A (the claim): dump + the real land ⇒ OFFERS.
-///  * ARM B (the live discriminating mutation): the SAME board with the second ability's `kind`
-///    rewritten `Activated` → `Spell` ⇒ REFUSES, pinned positively at `Priority{P0}`. One enum
-///    field is the only variable between A and B, so A's offer is attributable to CR 732.2a's
-///    proposal-absence argument — and B is the reach-guard proving block (2) genuinely SEES
-///    this ability.
-///
-/// REVERT / MUTATION PROBE: delete the `&& !not_proposed` conjunct at block (2) in
-/// `analysis::resource::fire_time_conditions_read_growing_class_scoped` ⇒ all three ARM A
-/// assertions return to REFUSES ⇒ **FAILS**.
+/// REVERT / MUTATION PROBE: delete block (2)'s `&& !not_proposed` conjunct in
+/// `analysis::resource::fire_time_conditions_read_growing_class_scoped` ⇒ ARM A REFUSES ⇒ **FAILS**.
 #[test]
 fn unactivated_ability_relief_offers_on_three_real_census_lands() {
     assert!(
@@ -520,29 +485,20 @@ fn unactivated_ability_relief_offers_on_three_real_census_lands() {
     }
 }
 
-/// **Chocobo Camp OFFERS the CR 732.2a shortcut, untapped and tapped.**
-///
-/// The board is the realistic combo dump with Chocobo Camp grafted onto it as the only
-/// grafted proposal land — `graft_full_land` ADDS an object and clears nothing, so the loop
-/// the shortcut is proposed for is the dump's own.
-///
-/// Block (2) is an `any` over `obj.abilities`, so both surfaces have to clear:
-///  * `abilities[0]` (`{T}: Add {G}. When you next cast a Bird creature spell this turn, …`)
-///    is a CR 605.1a mana ability that CR 605.3a holds out of the proposal-absence relief, so
-///    its veto can only be lifted by classifying the delayed trigger's own payload.
+/// **Chocobo Camp OFFERS the CR 732.2a shortcut, untapped and tapped.** `graft_full_land` ADDS an
+/// object and clears nothing, so the loop the shortcut is proposed for is the dump's own. Block
+/// (2) is an `any` over `obj.abilities`, so both surfaces have to clear:
+///  * `abilities[0]` (`{T}: Add {G}. When you next cast a Bird creature spell this turn, …`) is a
+///    CR 605.1a mana ability that CR 605.3a holds out of the proposal-absence relief, so its veto
+///    can only be lifted by classifying the delayed trigger's own payload.
 ///  * `abilities[1]` (the token ability) is relieved by the proposal-absence argument.
 ///
-/// STRUCTURE, so no arm can pass for the wrong reason:
-///  * BASELINE (positive control): the untouched dump OFFERS, so an OFFER below is the
-///    card's and not the harness's.
-///  * PAIRED POSITIVE: a land that already offers on the same board still offers, so the
-///    question below is about this card rather than about the board.
-///  * REACH-GUARDS: two activated abilities, exactly one a mana ability; and ARM B flips
-///    `uses_tracked_set` on `abilities[0]`'s delayed payload ⇒ REFUSES, so block (2) reads it.
-///
-/// REVERT / MUTATION PROBE: restore `Effect::CreateDelayedTrigger { .. } => Axes::CONSERVATIVE`
-/// in `game::ability_scan`'s `scan_effect` ⇒ the OFFER assertion below **FAILS** while the
-/// BASELINE control above still passes, so that red is this card's and not the harness's.
+/// BASELINE (positive control): the untouched dump OFFERS. PAIRED POSITIVE: a land that already
+/// offers on the same board still offers, so the question below is about this card and not the
+/// board. REACH-GUARDS: two activated abilities, exactly one a mana ability; and ARM B flips
+/// `uses_tracked_set` on `abilities[0]`'s delayed payload ⇒ REFUSES, so block (2) reads it.
+/// REVERT / MUTATION PROBE: restore `Effect::CreateDelayedTrigger { .. } => Axes::CONSERVATIVE` in
+/// `game::ability_scan`'s `scan_effect` ⇒ the OFFER below **FAILS** while BASELINE still passes.
 #[test]
 fn chocobo_camp_offers_untapped_and_tapped() {
     assert!(

@@ -1,27 +1,17 @@
-//! CR 732.2a phase A acceptance — the object-growth gate admits a HOMOGENEOUS k-multiset and
-//! carries `k` to the boundary mint, while a period whose `k` was produced by a live `CreateToken`
-//! REPLACEMENT is routed to the concrete replay instead of being batched.
+//! CR 732.2a: the object-growth gate admits a HOMOGENEOUS k-multiset and carries `k` to the
+//! boundary mint, while a period whose `k` was produced by a live `CreateToken` REPLACEMENT is
+//! routed to the concrete replay instead of being batched.
 //!
-//! WHY THE ROUTE CONJUNCT EXISTS (#7045, elision ≡ performance). The boundary `Tokens` mint
-//! RE-RUNS the replacement pipeline (`game::effects::token_copy::drive_copy_token_batches` ->
-//! `ProposedEvent::CreateToken` -> `replacement::replace_event`; that module's own comment records
-//! that a different source's replacement — Doubling Season's — still applies). `derived_fodder_class`
-//! is a before/after board DIFF, so the `k` it measures is the OBSERVED count, which on a doubled
-//! board already includes the replacement's multiplication. Batching `k·N` would therefore let the
-//! doubler apply a second time: elision `2k·N` against performance `k·N`. The route guard
-//! (`analysis::resource::token_growth_is_observed`, gated on `k > 1`) sends exactly those periods
-//! to `DriveSequence`, where each cycle's replacement applies once, by performance.
-//!
-//! BASE BOARD: the REAL 4-player `sprout_witherbloom_realistic_lands_4p` dump, loaded through the
-//! production restore chokepoint and driven through the public `GameRunner`/`apply()` boundary by
-//! `sprout_inalla_realistic_offer`'s own helpers. Every arm below is ONE OBJECT away from the
-//! shipped-green board, which is what makes the pairs discriminating rather than merely green.
-//!
-//! DOUBLER CONSTRUCTION, exactly as the shipped #1511 regression fixture
-//! (`game::effects::token_copy`'s `copy_token_count_doubling_replacement_applies`) builds it:
-//! `.token_owner_scope(ControllerRef::You)` — matching is by the OWNER SCOPE, never by
-//! `valid_card` — and BOTH `base_replacement_definitions` AND `replacement_definitions` are
-//! written, or the layer reset drops the def and every positive silently reads `false`.
+//! WHY THE ROUTE CONJUNCT EXISTS — elision ≡ performance. The boundary `Tokens` mint RE-RUNS the
+//! replacement pipeline (`token_copy::drive_copy_token_batches` -> `ProposedEvent::CreateToken`
+//! -> `replacement::replace_event`, and a different source's replacement still applies there).
+//! `derived_fodder_class` is a before/after DIFF, so its `k` is the OBSERVED count, already
+//! including the doubler's multiplication. Batching `k·N` would apply it twice: elision `2k·N`
+//! against performance `k·N`. The route guard (`analysis::resource::token_growth_is_observed`,
+//! gated on `k > 1`) sends exactly those periods to `DriveSequence`, where each cycle's
+//! replacement applies once, by performance. Every arm runs on the REAL 4-player
+//! `sprout_witherbloom_realistic_lands_4p` dump through the production restore chokepoint and the
+//! public `GameRunner`/`apply()` boundary, ONE OBJECT away from the shipped-green board.
 
 use engine::analysis::decision_template::IterationCount;
 use engine::analysis::loop_check::ShortcutResponse;
@@ -74,7 +64,8 @@ fn graft_doubler(state: &mut GameState, seat: PlayerId) -> ObjectId {
     // CR 614.1a: a token-count doubler is a replacement effect that modifies the number of tokens
     // created. `token_owner_scope(You)` is LOAD-BEARING and asserted below: the field is
     // `Option<ControllerRef>` whose builder default is `None`, and `None` means ANY owner — a
-    // `None`-scoped doubler on P1 would match P0's creations and make row A-4b's premise false.
+    // `None`-scoped doubler on P1 would match P0's creations and falsify the opponent-doubler
+    // row's premise.
     let def = ReplacementDefinition::new(ReplacementEvent::CreateToken)
         .token_owner_scope(ControllerRef::You)
         .quantity_modification(QuantityModification::DOUBLE);
@@ -88,7 +79,8 @@ fn graft_doubler(state: &mut GameState, seat: PlayerId) -> ObjectId {
             .objects
             .get_mut(&host)
             .expect("the just-created doubler host is in `objects`");
-        // BOTH vectors, or the layer reset drops the definition (shipped fixture precedent).
+        // BOTH vectors, or the layer reset drops the definition — the shape
+        // `token_copy::copy_token_count_doubling_replacement_applies` builds.
         obj.base_replacement_definitions = std::sync::Arc::new(vec![def.clone()]);
         obj.replacement_definitions = vec![def].into();
     }
@@ -110,8 +102,8 @@ fn count_saprolings(state: &GameState, who: PlayerId) -> usize {
 }
 
 /// The `CopiableValues` of P0's fodder class, read off a real board Saproling — the profile the
-/// boundary mint copies. Used by the CONTENT assertion (M-3: the mint must reproduce the class,
-/// not merely raise the object count).
+/// boundary mint copies. Used by the CONTENT assertion: the mint must reproduce the class, not
+/// merely raise the object count.
 fn fodder_profile(state: &GameState) -> CopiableValues {
     let saproling = state
         .battlefield
@@ -132,7 +124,7 @@ fn registered(state: &GameState) -> &[PersistentAxisMaterialization] {
 
 /// The route the accept took, observed through the registered stash discriminant — the same
 /// observable `loop_shortcut_cast_route`'s `route_of` uses, because `LoopCollapseRoute` is private
-/// to `game::engine` by charter and cannot be named from an external test crate.
+/// to `game::engine` and cannot be named from an external test crate.
 fn assert_replay_route(state: &GameState, why: &str) {
     let stash = registered(state);
     assert!(
@@ -263,30 +255,26 @@ fn drive_to_collapse_boundary(state: &mut GameState) {
 }
 
 // ===========================================================================
-// A-4 / A-3 — the matched route pair
+// The matched route pair
 // ===========================================================================
 
-/// **A-4 ∧ A-3 (route half).** The new conjunct is LIVE and NARROW, written as ONE test so the two
-/// arms are structurally inseparable: A-3 alone is satisfiable by a blanket route change, and A-4
-/// alone by never wiring the conjunct at all.
+/// **The route conjunct is LIVE and NARROW**, written as ONE test so the two arms are
+/// structurally inseparable: the doubled arm alone is satisfiable by a blanket route change, the
+/// undoubled arm alone by never wiring the conjunct at all. UNDOUBLED (the discriminator): the
+/// untouched shipped board reproduces ONE Saproling per cycle (`k == 1`), so the `per_cycle_delta
+/// > 1` gate is OFF and the accept keeps the O(1) batched route — even though this dump DOES
+/// carry a functioning ETB trigger, i.e. `token_growth_is_observed` is `true` on it. That is what
+/// makes the k-gate load-bearing rather than decorative, and why every currently-green
+/// `LoopShortcut` row keeps its route. DOUBLED: grafting ONE P0 doubler makes the observed `k ==
+/// 2`, and the accept switches to the concrete replay.
 ///
-/// A-4 (the discriminator): the untouched shipped board reproduces ONE Saproling per cycle
-/// (`k == 1`), so the `per_cycle_delta > 1` gate is OFF and the accept keeps the O(1) batched
-/// route — even though this dump DOES carry a functioning ETB trigger, i.e.
-/// `token_growth_is_observed` is `true` on it. That is what makes the k-gate load-bearing rather
-/// than decorative, and it is why every currently-green `LoopShortcut` row keeps its route.
-///
-/// A-3 (route half): grafting ONE P0 doubler makes the observed `k == 2`, and the accept switches
-/// to the concrete replay.
-///
-/// REVERT PROBES:
-/// - delete the `token_growth_needs_replay` disjunct at the `game::engine` route seam ⇒ the
-///   doubled arm falls back to `Tokens` ⇒ the A-3 half reds; the A-4 half stays green.
-/// - delete the `per_cycle_delta > 1` gate ⇒ the UNDOUBLED arm routes to `Replay` through the
-///   board's ETB-trigger conjunct ⇒ the A-4 half reds; the A-3 half stays green.
+/// REVERT PROBES: delete the `token_growth_needs_replay` disjunct at the `game::engine` route
+/// seam ⇒ the doubled arm falls back to `Tokens` and reds, undoubled stays green; delete the
+/// `per_cycle_delta > 1` gate ⇒ the UNDOUBLED arm routes to `Replay` through the board's
+/// ETB-trigger conjunct and reds, doubled stays green.
 #[test]
 fn doubled_board_routes_to_replay_undoubled_board_stays_batched() {
-    // ── A-4: the untouched shipped board, k == 1 ⇒ batched ──
+    // ── UNDOUBLED: the untouched shipped board, k == 1 ⇒ batched ──
     let mut undoubled = offer_state(load_realistic_dump());
     declare_and_accept_all(&mut undoubled, 100);
     assert_batched_route(
@@ -299,7 +287,7 @@ fn doubled_board_routes_to_replay_undoubled_board_stays_batched() {
         "A-4: the undoubled board reproduces exactly one fodder member per cycle"
     );
 
-    // ── A-3 (route half): ONE grafted P0 doubler, k == 2 ⇒ concrete replay ──
+    // ── DOUBLED: ONE grafted P0 doubler, k == 2 ⇒ concrete replay ──
     let mut doubled_board = load_realistic_dump();
     graft_doubler(&mut doubled_board, P0);
     let mut doubled = offer_state(doubled_board);
@@ -311,7 +299,7 @@ fn doubled_board_routes_to_replay_undoubled_board_stays_batched() {
     );
 }
 
-/// **A-4b** (closes G-2) — an OPPONENT's doubler does not move P0's route.
+/// An OPPONENT's doubler does not move P0's route.
 ///
 /// A `CreateToken` replacement matches by `token_owner_scope` (gated in PRODUCTION at
 /// `game::replacement`'s floating and object paths, both `if let Some(ref scope) =
@@ -341,29 +329,19 @@ fn opponent_controlled_doubler_does_not_move_p0_route() {
     );
 }
 
-/// **A-3 (the #7045 fidelity half)** — elision ≡ performance on a board whose `k` is
-/// REPLACEMENT-sourced.
+/// **Elision ≡ performance on a board whose `k` is REPLACEMENT-sourced.** Arm P: four REAL
+/// cycles, declining each offer. Arm E: one real cycle, then accept and name N = 3 at the CR
+/// 500.5 boundary. Both cover 1 + 3 cycles and must land on the same board. The DISCRIMINATING
+/// QUANTITY is how many times the `Times{factor: 2}` replacement applies: once per cycle in both
+/// arms. A batched arm would propose `per_cycle_delta * N = 6` and let the doubler multiply it to
+/// 12 — the factor-of-k divergence the route conjunct prevents.
 ///
-/// Arm P (performance): four REAL cycles, declining the offer each time.
-/// Arm E (elision): one real cycle, then accept and name N = 3 at the CR 500.5 boundary.
-/// Both arms therefore cover 1 + 3 cycles and must land on the same board.
-///
-/// The DISCRIMINATING QUANTITY is the number of times the `Times{factor: 2}` replacement is
-/// applied: once per cycle in both arms. A batched arm would propose `per_cycle_delta * N = 6`
-/// and let the doubler multiply it to 12 — a factor-of-k divergence, which is exactly the fault
-/// the route conjunct exists to prevent.
-///
-/// SEED CONFOUNDER, eliminated rather than subtracted: `seed_representative_fodder` runs on BOTH
-/// routes but only when the period taps a fodder AND the live board has NO tapped fodder yet.
-/// This dump's P0 controls Saproling 411 TAPPED, asserted below as a named in-test precondition,
-/// so the seed cannot fire on either arm and cannot explain a P ≡ E agreement or disagreement.
-///
-/// CONTENT, not cardinality (M-3): every object the collapse produced is asserted to carry the
-/// fodder class's `name` AND `card_types`, so an implementation that raised the count with
-/// unrelated objects cannot pass.
+/// SEED CONFOUNDER: `seed_representative_fodder` runs on BOTH routes, but only when the period
+/// taps a fodder and the board has NO tapped fodder yet. P0 already controls a TAPPED Saproling
+/// here, asserted below as a named precondition, so it cannot fire on either arm.
 ///
 /// REVERT PROBE: delete the `token_growth_needs_replay` disjunct at the `game::engine` route seam
-/// ⇒ arm E takes the batched route ⇒ the mint proposes 2·3 = 6, the doubler re-applies, and arm E
+/// ⇒ arm E takes the batched route, the mint proposes 2·3 = 6, the doubler re-applies, and arm E
 /// lands 12 against arm P's 6 ⇒ RED by exactly a factor of k = 2.
 #[test]
 fn doubled_board_elision_equals_performance() {
@@ -435,7 +413,7 @@ fn doubled_board_elision_equals_performance() {
          cycle, not once per cycle AND once on the lump"
     );
 
-    // ── CONTENT (M-3): every object the collapse produced IS the fodder class ──
+    // ── CONTENT: every object the collapse produced IS the fodder class ──
     let produced: Vec<ObjectId> = elision
         .battlefield
         .iter()
@@ -465,10 +443,10 @@ fn doubled_board_elision_equals_performance() {
 }
 
 // ===========================================================================
-// A-3b — the arithmetic pin
+// The arithmetic pin
 // ===========================================================================
 
-/// **A-3b** — the batched mint really multiplies by the STASHED delta. A matched pair whose two
+/// The batched mint really multiplies by the STASHED delta. A matched pair whose two
 /// arms are byte-identical apart from one integer: same variant, same profile, same N.
 ///
 /// Registered through the shipped `register_pending_materialization` writer, exactly as
@@ -515,36 +493,23 @@ fn batched_mint_multiplies_by_the_stashed_per_cycle_delta() {
 }
 
 // ===========================================================================
-// A-5 — W3.17: the mint produces real ENTRIES, not merely real objects
+// The mint produces real ENTRIES, not merely real objects
 // ===========================================================================
 
-/// **A-5** (W3.17, the charter's downstream-delta form) — the boundary mint's `k·N` tokens raise
-/// `k·N` REAL CR 603.6a battlefield-entry events, measured by an entry-triggered observable rather
-/// than by object existence.
+/// **The boundary mint's `k·N` tokens raise `k·N` REAL CR 603.6a battlefield-entry events**,
+/// measured by an entry-triggered observable rather than by object existence: an implementation
+/// that inserts objects without raising entry events satisfies "2N distinct `ObjectId`s exist"
+/// while STRANDING every entry-sourced mechanism downstream. So the trigger delta is the primary
+/// assertion and the object count the secondary reach-guard.
 ///
-/// WHY THE DOWNSTREAM DELTA AND NOT AN OBJECT COUNT. An implementation that inserts objects into
-/// `battlefield`/`objects` without raising entry events satisfies "2N distinct `ObjectId`s exist"
-/// and STRANDS the entry-sourced mechanisms the later phases depend on (the Altar-of-the-Brood
-/// mill this lane's target board carries). Only an entry-sourced observable can tell the two
-/// apart, so the trigger delta is the primary assertion and the object count is the secondary
-/// reach-guard.
-///
-/// FIREWALL DEPENDENCE, STATED. A board carrying a broad matching ETB observer at OFFER time does
-/// not offer at all — `sprout_inalla_realistic_offer`'s shipped negative
-/// `sprout_broad_matching_observer_still_vetoes_offer` pins exactly that, and relief for those
-/// vetoes is chartered to **phase C**. So this row grafts the observer AFTER the accept, which is
-/// the only way to reach the mint at phase A's tip. It therefore measures the MINT (W3.17), not
-/// the offer firewall; the end-to-end "observer present from the start" form is
-/// **DEFERRED(phase C)**.
-///
-/// The arm is forced onto the BATCHED route by registering the stash directly (the same shipped
-/// `register_pending_materialization` writer row A-3b uses) — a `k > 1` board derived naturally
-/// would route to the replay, where entries are trivially real because the cycles are performed.
-/// Batched is where W3.17 can actually be violated, so that is where it is measured.
-///
-/// REVERT PROBE: make the mint insert objects without routing through
-/// `game::effects::token_copy`'s `ProposedEvent::CreateToken` pipeline ⇒ no entry events ⇒ the
-/// trigger delta reads 0 ⇒ RED, while the secondary object-count guard would still pass.
+/// A board carrying a broad matching ETB observer at OFFER time does not offer at all
+/// (`sprout_broad_matching_observer_still_vetoes_offer`), so the observer is grafted AFTER the
+/// accept: this row measures the MINT, not the offer firewall, and the "observer present from the
+/// start" form is not covered here. The stash is registered directly to force the BATCHED route,
+/// since a natural `k > 1` board takes the replay where entries are trivially real. REVERT PROBE:
+/// make the mint insert objects without routing through `game::effects::token_copy`'s
+/// `ProposedEvent::CreateToken` pipeline ⇒ no entry events ⇒ the trigger delta reads 0 ⇒ RED,
+/// while the secondary object-count guard would still pass.
 #[test]
 fn batched_mint_raises_real_entry_events_per_minted_token() {
     use engine::types::ability::{
@@ -601,7 +566,7 @@ fn batched_mint_raises_real_entry_events_per_minted_token() {
     apply(&mut state, P0, GameAction::SubmitPayAmount { amount: N })
         .expect("P0 submits the finite loop-collapse count");
 
-    // PRIMARY (W3.17): one real CR 603.6a entry event per minted token, each firing the observer.
+    // PRIMARY: one real CR 603.6a entry event per minted token, each firing the observer.
     assert_eq!(
         state.stack.len() - stack_before,
         (DELTA * N) as usize,

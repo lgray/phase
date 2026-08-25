@@ -5755,7 +5755,7 @@ pub enum BatchCompletion {
         /// must too. `None` for the kept-choice / dig paths, which emit their own
         /// `EffectResolved` before the pause (or rely on the continuation).
         emit_reveal_until_resolved: Option<ObjectId>,
-        /// CR 608.2c + CR 701.62a (#7467): a paused manifest-dread entry's
+        /// CR 608.2c + CR 701.62a: a paused manifest-dread entry's
         /// chosen object. The completion drain publishes it as the chain's
         /// fresh tracked set — only once the entry has actually finished
         /// (battlefield gate) and right before the parked consumer drains —
@@ -6297,8 +6297,7 @@ pub enum ZoneDeliveryExileTracking {
 }
 
 /// CR 614.12a + CR 616.1: Which layer drains `post_replacement_continuation`
-/// after a post-replacement zone delivery (Phase-B divergence reconciliation,
-/// PLAN §7). The replacement-choice resume path historically drained the
+/// after a post-replacement zone delivery. The replacement-choice resume path drained the
 /// continuation in its own epilogue — WITH the spell-resolution ctx and with
 /// `post_replacement_source` cleared for zone changes — while the shared
 /// delivery tail drains it ctx-less without the clear. Parameterizing the tail
@@ -10938,28 +10937,20 @@ fn migrate_legacy_turn_face_up_resume(value: &mut serde_json::Value) -> Result<(
     Ok(())
 }
 
-/// Protocol 36 / P2P 27: `WaitingFor::ChooseDungeon` carried
-/// `options: Vec<DungeonId>` and `WaitingFor::ChooseDungeonRoom` carried
-/// `options: Vec<u8>` plus `option_names: Vec<String>` before each option grew
-/// the room's printed name and room-ability text (CR 309.4b-c).
+/// Protocol 36 / P2P 27: `WaitingFor::ChooseDungeon` carried `options: Vec<DungeonId>` and
+/// `WaitingFor::ChooseDungeonRoom` carried `options: Vec<u8>` plus `option_names: Vec<String>`
+/// before each option grew the room's printed name and room-ability text (CR 309.4b-c), so a save
+/// paused at either prompt cannot deserialize into the current shape.
 ///
-/// A save paused at either prompt therefore cannot deserialize into the current
-/// shape. This migrates rather than rejects because the migration is TOTAL: the
-/// legacy payload's scalars are exactly the keys into the static dungeon table.
-/// A `DungeonId` resolves its own topmost room (CR 309.4a), and a room index
-/// resolves that room's name and text, so the rebuilt preview is identical to
-/// what the current engine would emit at that position — no saved game is lost
-/// and no field is guessed. `option_names` is dropped because `RoomPreview::name`
-/// now carries it from the same authority.
-///
-/// Rebuilt through `dungeon::dungeon_preview` / `dungeon::room_preview` rather
-/// than hand-written JSON, so this migration cannot drift from the shape the
-/// prompts actually emit.
-///
-/// Idempotent: legacy options are scalars (string / number) and current ones are
-/// objects, so a re-run over already-current state matches nothing. A `DungeonId`
-/// this engine does not know is a hard error — that is corrupt state, not a
-/// migratable shape.
+/// This migrates rather than rejects because the migration is TOTAL: the legacy scalars are
+/// exactly the keys into the static dungeon table. A `DungeonId` resolves its own topmost room
+/// (CR 309.4a) and a room index resolves that room's name and text, so the rebuilt preview equals
+/// what the engine emits at that position; `option_names` is dropped because `RoomPreview::name`
+/// carries it from the same authority. Rebuilt through `dungeon::dungeon_preview` /
+/// `dungeon::room_preview` rather than hand-written JSON, so it cannot drift from the shape the
+/// prompts emit. Idempotent: legacy options are scalars and current ones are objects, so a re-run
+/// matches nothing. An unknown `DungeonId` is a hard error — corrupt state, not a migratable
+/// shape.
 fn migrate_legacy_dungeon_choice_previews(value: &mut serde_json::Value) -> Result<(), String> {
     use crate::game::dungeon::{dungeon_preview, room_preview, DungeonId};
     use std::str::FromStr;
@@ -13792,28 +13783,19 @@ pub struct PendingLifelinkGain {
     pub amount: u32,
 }
 
-/// CR 510.2 + CR 616.1 + CR 702.15b: the unfinished tail of ONE simultaneous
-/// combat-damage batch, parked because a lifelink life-gain event met two or
-/// more co-applicable replacement effects and the gaining player must choose
-/// which applies first.
+/// CR 510.2 + CR 616.1 + CR 702.15b: the unfinished tail of ONE simultaneous combat-damage batch,
+/// parked because a lifelink life-gain event met two or more co-applicable replacement effects
+/// and the gaining player must choose which applies first. CR 510.2 forbids *casting spells and
+/// activating abilities* between combat damage being assigned and dealt — a priority window — but
+/// not a CR 616.1 choice made while the event is being applied, which opens no priority window
+/// and puts nothing on the stack. What it *does* forbid is replaying the batch: it is one event,
+/// so the damage is never re-dealt and only the unstarted tail is parked.
 ///
-/// CR 510.2 forbids *casting spells and activating abilities* between combat
-/// damage being assigned and dealt — a priority window. It does NOT forbid a
-/// CR 616.1 choice made while the event is being applied, which opens no
-/// priority window and puts nothing on the stack. The belief that it did is
-/// what dropped the gain: the choice cannot be answered inside the turn-based
-/// action, so 100% of that source's gain — and every later lifelink source in
-/// the same batch — was discarded.
-///
-/// What CR 510.2 *does* forbid is replaying the batch: it is one event. So the
-/// damage is never re-dealt; only the unstarted tail is parked.
-///
-/// The tail is parked whole, in emission order, so the completing batch's event
-/// stream is byte-identical to the un-paused one: per-source gains, then the
-/// per-player `CombatDamageDealtToPlayer` aggregate, then Phase D's prevention
-/// riders. Deferring Phase D rather than hoisting it is what makes it
-/// impossible for a rider's own continuation (CR 615.5) to run while the
-/// CR 616.1 prompt is open.
+/// The tail is parked whole, in emission order, so the completing batch's event stream is
+/// byte-identical to the un-paused one: per-source gains, then the per-player
+/// `CombatDamageDealtToPlayer` aggregate, then Phase D's prevention riders. Deferring Phase D
+/// rather than hoisting it makes it impossible for a rider's own continuation (CR 615.5) to run
+/// while the CR 616.1 prompt is open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingCombatLifelink {
     /// CR 702.15e: per-source gains still owed, in batch order — separate life
@@ -13840,25 +13822,18 @@ pub struct PendingCombatLifelink {
     /// batch prevented. A `Vec` rather than the producer's `HashMap`: an enum key
     /// is not a JSON map key, and the record is serialized.
     pub prevention_tally: Vec<(AppliedReplacementKey, i32)>,
-    /// CR 732.2a: the pre-batch life totals the loop-detection ring keys on.
+    /// CR 732.2a: the pre-batch life totals the loop-detection ring keys on. Carried here rather
+    /// than re-snapshotted at resume time, which is what buys the PAUSE-path guard call: the
+    /// pause is reached under `PassPriority`, which `apply()` exempts from its blanket ring
+    /// clear, so a pre-batch snapshot lets that call observe the CR 120.3a damage this batch
+    /// already dealt. Re-snapshotting at drain entry makes the comparison vacuous there —
+    /// `parked_batch_invalidates_the_loop_ring_against_the_pre_batch_snapshot` fails when it is.
     ///
-    /// Carried here rather than re-snapshotted at resume time. What that buys is
-    /// the PAUSE-path guard call: the pause is reached under `PassPriority`, which
-    /// `apply()` exempts from its blanket ring clear, so a pre-batch snapshot is
-    /// what lets that call observe the CR 120.3a damage this batch has already
-    /// dealt. Re-snapshotting at drain entry would make the comparison vacuous
-    /// there — `parked_batch_invalidates_the_loop_ring_against_the_pre_batch_snapshot`
-    /// is the fixture that fails when it is.
-    ///
-    /// It buys NOTHING on the resume, and this is MEASURED, not assumed:
-    /// `apply()` clears `loop_detect_ring` for every action that is neither in its
-    /// exemption list nor an answer to a `WaitingFor::is_forced_cascade_window`,
-    /// and `GameAction::ChooseReplacement` / `WaitingFor::ReplacementChoice` are in
-    /// neither set. The ring is therefore already empty before the drain is
-    /// re-entered, so the completion-path call cannot be observed to clear
-    /// anything on that path. Do not write, or rely on, a claim that this window
-    /// "observes the paused source's own gain" — arithmetically it spans it, but
-    /// no observer survives to see it.
+    /// It buys NOTHING on the resume: `apply()` clears `loop_detect_ring` for every action
+    /// neither in its exemption list nor answering a `WaitingFor::is_forced_cascade_window`, and
+    /// `ChooseReplacement` / `ReplacementChoice` are in neither set, so the ring is already empty
+    /// before the drain is re-entered. Do not claim this window "observes the paused source's own
+    /// gain" — arithmetically it spans it, but no observer survives to see it.
     pub lives_before: Vec<i32>,
     /// CR 510.4: which sub-step owns this batch. Snapshotted because
     /// `combat.first_strike_done` mutates during the resume.
@@ -14044,29 +14019,20 @@ pub enum RetargetScope {
     ForcedTo(TargetRef),
 }
 
-/// CR 103.5 / CR 104.1: who — if anyone — may act in a `WaitingFor` state.
+/// CR 103.5 / CR 104.1: who — if anyone — may act in a `WaitingFor` state. THE single authority
+/// behind [`WaitingFor::acting_player`] and [`WaitingFor::acting_players`], which are adapters
+/// over [`WaitingFor::acting_authority`], whose exhaustive per-variant match lives there and
+/// nowhere else.
 ///
-/// THE single authority behind [`WaitingFor::acting_player`] and
-/// [`WaitingFor::acting_players`]; both are adapters over
-/// [`WaitingFor::acting_authority`], and the exhaustive per-variant match lives
-/// there and nowhere else.
-///
-/// The type exists so that "nobody acts" cannot be written as a bare `None`.
-/// A state with no acting player is advanced by something OUTSIDE the action
-/// pipeline, and if that something is never called the game hangs with no
-/// player able to move it and no client rendering a prompt. Naming the
-/// advancer in the type is what makes the obligation reviewable; the census in
-/// `tests/integration/waiting_for_actor_authority_census.rs` is what makes it
-/// unskippable.
-///
-/// INVARIANT THE CENSUS ENFORCES: every arm of `acting_authority` is a bare,
-/// UNGUARDED pattern whose body is exactly one constructor call on this enum —
-/// possibly wrapped by `rustfmt` in a block whose single tail expression is
-/// that call — and the census PINS the constructor set it accepts, so a new
-/// one cannot route its arms past the adjudications while the census still
-/// reports healthy (see that file's `A4c` and `A4d`). A match guard would let
-/// an arm decide the answer somewhere the census cannot read, so guards are
-/// rejected outright — see that file's `A8`.
+/// The type exists so that "nobody acts" cannot be written as a bare `None`. A state with no
+/// acting player is advanced by something OUTSIDE the action pipeline, and if that something is
+/// never called the game hangs with no player able to move it and no client rendering a prompt.
+/// Naming the advancer in the type makes the obligation reviewable; the census in
+/// `tests/integration/waiting_for_actor_authority_census.rs` makes it unskippable. That census
+/// requires every arm of `acting_authority` to be a bare, UNGUARDED pattern whose body is exactly
+/// one constructor call on this enum, PINS the constructor set it accepts (its `A4c` / `A4d`) so a
+/// new one cannot route arms past the adjudications, and rejects guards outright (its `A8`) — a
+/// guard would let an arm decide the answer where the census cannot read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActingAuthority {
     /// Exactly one player is authorized to submit the next action.
@@ -14257,21 +14223,17 @@ impl WaitingFor {
         }
     }
 
-    /// THE single authority on who — if anyone — may act in this state.
+    /// THE single authority on who — if anyone — may act in this state. [`Self::acting_player`]
+    /// and [`Self::acting_players`] are adapters over this function; the per-variant match lives
+    /// here and nowhere else.
     ///
-    /// [`Self::acting_player`] and [`Self::acting_players`] are adapters over
-    /// this function; the per-variant match lives here and nowhere else.
-    ///
-    /// Every arm MUST be a bare, UNGUARDED pattern whose body is exactly one
-    /// [`ActingAuthority`] constructor call, from the set that type's census
-    /// pins. No `let`, no early return, no preprocessing before the `match`,
-    /// and no match guard: a guard would let an arm decide the answer
-    /// somewhere that census cannot read it. [`ActingAuthority`]'s doc names
-    /// the census by path; `source_census.rs`'s `EXEMPT` table records that
-    /// path too. If a per-arm condition seems necessary, it belongs either in
-    /// a new `WaitingFor` variant (when it changes WHO acts) or in an adapter
-    /// (when it merely narrows an authority this arm already declares,
-    /// exactly as the CR 103.5 `pending.len() == 1` test does).
+    /// Every arm MUST be a bare, UNGUARDED pattern whose body is exactly one [`ActingAuthority`]
+    /// constructor call, from the set that type's census pins. No `let`, no early return, no
+    /// preprocessing before the `match`, and no match guard: a guard would let an arm decide the
+    /// answer somewhere that census cannot read it. If a per-arm condition seems necessary it
+    /// belongs either in a new `WaitingFor` variant (when it changes WHO acts) or in an adapter
+    /// (when it merely narrows an authority this arm already declares, exactly as the CR 103.5
+    /// `pending.len() == 1` test does).
     pub fn acting_authority(&self) -> ActingAuthority {
         match self {
             WaitingFor::MulliganDecision { pending, .. } => {
@@ -16810,7 +16772,7 @@ declare_game_state! {
     /// existing CR 704.5a SBA (which already ends every realistic-life drain), so
     /// losing it across a save/load/MP-snapshot boundary only defers the shortcut by a
     /// few resolutions — never changes a winner. Snapshots are `Arc`-shared so the
-    /// frequent `GameState::clone` (AI search, §9 probes) pays O(ring.len()) refcount
+    /// frequent `GameState::clone` (AI search probes) pays O(ring.len()) refcount
     /// bumps, not deep copies. INTENTIONALLY omitted from `impl PartialEq for GameState`
     /// (derived state, like `static_source_index`/`static_gate_truth` — both
     /// `#[serde(skip)]` AND eq-excluded; NOT `public_state_dirty`/`state_revision`/
@@ -24230,7 +24192,7 @@ impl GameState {
 
     /// CR 732.2a: take (remove and return) the whole deferred materialization list for
     /// `controller`, if any. Removing on take is load-bearing for the boundary collapse
-    /// fixpoint (§7): the `LoopCollapse` submit handler must clear the stash — even on
+    /// fixpoint: the `LoopCollapse` submit handler must clear the stash — even on
     /// its error path — so the phase-transition re-drain terminates rather than
     /// re-prompting forever.
     pub fn take_pending_materialization(
@@ -24458,34 +24420,20 @@ impl GameState {
         // The axis set comes from `scheduled_collapse_axes`, so "what a stash schedules" and
         // "what is removed once applied" are one match, never two copies of it.
         let mut axes_to_remove = self.scheduled_collapse_axes(collapsed);
-        // CR 500.5 + CR 106.4: DEFENSE IN DEPTH at the consuming authority. The registration site
-        // (`game::engine::materialize_object_growth_shortcut`) already stores only `DeferredAccrual`
-        // axes, so on a stash built by THIS build this retain removes nothing. It exists because the
-        // writer-side filter is enforced at ONE site while the invariant is consumed HERE:
-        //   * WHY IT IS KEPT — the whole justification, and it stands alone: `ResourceAxis`'s
-        //     exhaustive `match` build-breaks on a new AXIS, never on a new REGISTRATION SITE. A
-        //     future second producer inherits the guarantee only if it is enforced where the value
-        //     is USED. Nothing below is load-bearing for that.
-        //   * HOW such a stash can physically ARRIVE — reachability, NOT a requirement this code
-        //     owes anyone: `pending_unbounded_materialization` is `#[serde]`-persisted, so a
-        //     `Mana(_)`-bearing stash can be grafted by a test or come from one an older build
-        //     wrote. Cross-version save compatibility is EXPRESSLY NOT a goal of this project
-        //     (alpha, no compat shims) — do not reintroduce it as a reason for anything here.
-        //     Either route lands ONLY ON A `debug_infinite_mana` SEAT:
-        //     `turns::drain_pending_phase_transition_progress` runs the CR 500.5 loop-mana clear at
-        //     true queue-empty BEFORE it raises this prompt, and that clear excludes exactly those
-        //     seats — so a NON-debug seat's `Mana(_)` is already gone by the time a stash naming it
-        //     arrives here, and stripping it removes nothing. Same scope the V2b integration row
-        //     states ("It is the only live victim today"); do not restate it more broadly here.
-        // Mirrors the DEFENSE-IN-DEPTH POSTURE of `derived_views::scheduled_display_axes` — NOT its
-        // question. That function's own doc is explicit that it answers a DIFFERENT one (what the
-        // badge may PROMISE across the accept→boundary window, versus which authority ends the
-        // axis), and the two only coincide because `Mana(_)` is today's sole `StandingCapability`.
-        // The posture is shared and the rules-bearing guard should not be the weaker of the two;
-        // the predicates are deliberately NOT unified, since coinciding answers to distinct
-        // questions is precisely what the categorical-boundary rule forbids collapsing.
-        // Deliberately NOT applied inside `scheduled_collapse_axes`, which must keep reporting
-        // faithfully what a stash stores.
+        // CR 500.5 + CR 106.4: DEFENSE IN DEPTH at the consuming authority.
+        // `game::engine::materialize_object_growth_shortcut` already stores only
+        // `DeferredAccrual` axes, so on a stash from THIS build this retain removes nothing. It
+        // is kept because `ResourceAxis`'s exhaustive `match` build-breaks on a new AXIS, never
+        // on a new REGISTRATION SITE: a future second producer inherits the guarantee only if it
+        // is enforced where the value is USED. Reachability, not an obligation:
+        // `pending_unbounded_materialization` is `#[serde]`-persisted, so a `Mana(_)`-bearing
+        // stash can be grafted by a test or written by an older build (cross-version save
+        // compatibility is EXPRESSLY NOT a goal here), and either route lands ONLY on a
+        // `debug_infinite_mana` seat — `turns::drain_pending_phase_transition_progress`' CR 500.5
+        // loop-mana clear runs before this prompt and excludes exactly those seats. Mirrors the
+        // POSTURE of `derived_views::scheduled_display_axes`, NOT its question, so the predicates
+        // are deliberately NOT unified. Not applied inside `scheduled_collapse_axes`, which must
+        // keep reporting faithfully what a stash stores.
         axes_to_remove
             .retain(|axis| axis.unbounded_mark_kind() == UnboundedMarkKind::DeferredAccrual);
         // The token pile drops exactly when the token axis collapses — true for a batched
@@ -24560,7 +24508,7 @@ impl GameState {
     /// set, drop the player key AND its `unbounded_loop_enablers` entry IN LOCKSTEP (an engine-state
     /// invariant, not a rules requirement):
     /// enablers track the PRESENCE of any unbounded axis, and the `zones.rs` defuse hook
-    /// (`apply_zone_exit_cleanup`, `:534`–`:544`) whole-clears a controller's capability when ANY
+    /// (`apply_zone_exit_cleanup`) whole-clears a controller's capability when ANY
     /// enabler leaves. Leaving enablers orphaned (no backing axis) is a landmine — a later
     /// `SetInfiniteMana` re-marks that controller, then the stale enabler leaving mis-fires
     /// `clear_unbounded_loop`, silently killing the debug toggle. If a coexisting NON-Mana axis
@@ -24615,14 +24563,14 @@ pub(crate) fn objects_content_eq(
 /// comparator for [`objects_content_eq`] and the PR-7 Phase 4a object-growth
 /// cover gate (`analysis::resource::board_covers`, the non-grown complement).
 ///
-/// The compared set is the bucket-(i) partition of §5.2c (see
-/// `_gameobject_partition_is_total`): every per-object field a MANDATORY action can
+/// The compared set is the partition `_gameobject_partition_is_total` names: every per-object
+/// field a MANDATORY action can
 /// change on a stable (same-zone) object between two loop frames. Fields omitted
 /// here are justified by write site, not doc-string — volatile layer identity
 /// (`timestamp`/`incarnation`/`transformation_count`), projected P/T, cast-fact
 /// latches co-variate of a
 /// compared field, monotone-saturating latches (`foretold`/`monstrous`/…), and
-/// layer-derived characteristics (firewall-scanned statics) — see §5.2c.
+/// layer-derived characteristics (firewall-scanned statics).
 ///
 /// Strictness here is FAIL-SAFE for the shared 2p CR 104.4b path: a stricter
 /// equality can only SUPPRESS a wrongful draw, and every compared field represents
@@ -24654,7 +24602,7 @@ pub(crate) fn object_content_eq(x: &GameObject, y: &GameObject) -> bool {
         && x.loyalty == y.loyalty
         && x.defense == y.defense
         && x.name == y.name
-        // §5.2c ADD set (v4): firewall-blind numeric/growable accumulators and
+        // Firewall-blind numeric/growable accumulators and
         // oscillating designations that a loop body can drift on a stable object.
         && x.intensity == y.intensity // Alchemy Intensify accumulator
         && x.perpetual_mods == y.perpetual_mods // perpetual-edit accumulator
@@ -24665,7 +24613,7 @@ pub(crate) fn object_content_eq(x: &GameObject, y: &GameObject) -> bool {
         && x.prepared == y.prepared // SOS prepare/unprepare toggle
         && x.prepared_copy_source == y.prepared_copy_source // CR 722.3c linked exile copy
         && x.room_unlocks == y.room_unlocks // CR 709.5c door lock/unlock
-        // §5.2c ADD set (v5, S6): firewall-blind per-iteration accumulators on
+        // Firewall-blind per-iteration accumulators on
         // live battlefield/exile objects.
         && x.chosen_attributes == y.chosen_attributes // CR 205.2 remember/choose accumulator
         && x.goaded_by == y.goaded_by // CR 701.15c goad set
@@ -24683,7 +24631,7 @@ pub(crate) fn object_content_eq(x: &GameObject, y: &GameObject) -> bool {
 /// no-`..` destructure breaks the build the instant a GameState field is added,
 /// forcing a reviewer to decide whether `PartialEq` compares it — so no future
 /// field can become a hidden per-cycle accumulator that rides a covering pair to a
-/// false CR 732.2a win. Mirror of `_gameobject_partition_is_total` (§5.2b).
+/// false CR 732.2a win. Mirror of `_gameobject_partition_is_total`.
 #[cfg(test)]
 fn _gamestate_partition_is_total(s: &GameState) {
     let GameState {
@@ -25015,7 +24963,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         //     COMPARED — upstream's PartialEq excludes it, but excluding a COUNT from the cover gate
         //     is the fail-DANGEROUS direction, so `eq_except_growable` (resource.rs) compares it
         //     explicitly. It is `None` at every sample beat (cleared whenever `waiting_for ==
-        //     Priority`, effects/mod.rs:759) or a constant direct-assigned count across a real
+        //     Priority`, in `effects/mod.rs`) or a constant direct-assigned count across a real
         //     copy-token loop, so COMPARING never suppresses a legitimate loop's detection.
         //   - `pending_discard_batch`: COMPARED (hand-written `impl PartialEq` conjunct) — a
         //     paused discard-batch interaction state, the direct sibling of
@@ -29749,7 +29697,7 @@ mod tests {
         ));
     }
 
-    /// T-loop (§4 Condition 2): the all-zone incarnation bump advances a source's
+    /// T-loop: the all-zone incarnation bump advances a source's
     /// epoch every time it changes zones, so a mandatory loop that cycles its
     /// source's zones would carry a growing `TriggerSourceContext` into loop equality
     /// and never confirm a CR 104.4b draw. `normalize_for_loop` canonicalizes source
@@ -35164,30 +35112,19 @@ mod tests {
         assert_eq!(legacy.auto_pass_baseline, None);
     }
 
-    /// **V5** — the BATCHABILITY split is load-bearing, not decorative: every axis a batched
-    /// `Tokens` / `Counters` / `Life` item can produce through [`GameState::scheduled_collapse_axes`]
-    /// is `DeferredAccrual`, and `LoopCollapseAxis::from_resource_axis` returns `Some` for exactly
-    /// those.
-    ///
-    /// WHY IT LIVES HERE AND NOT IN `analysis/resource.rs` BESIDE `unbounded_mark_kind`:
-    /// `LoopCollapseAxis::from_resource_axis` is declared with NO visibility modifier, so it is
-    /// private to this module. A row in `analysis/resource.rs` asserting over its return value
-    /// would be cross-module access to a private item ⇒ E0603, would not compile. The test moves
-    /// to the symbol; the symbol does NOT move to the test — widening `from_resource_axis` to host
-    /// a test would add production visibility surface for test convenience and weaken the
-    /// encapsulation that makes it the uncontested batchability authority. (V4, the classifier's
-    /// own table, correspondingly stays in `analysis/resource.rs` for the same reason.)
+    /// **The BATCHABILITY split is load-bearing, not decorative:** every axis a batched `Tokens`
+    /// / `Counters` / `Life` item can produce through [`GameState::scheduled_collapse_axes`] is
+    /// `DeferredAccrual`, and `LoopCollapseAxis::from_resource_axis` returns `Some` for exactly
+    /// those. It lives here rather than beside `unbounded_mark_kind` because `from_resource_axis`
+    /// has NO visibility modifier and so is private to this module: a row in
+    /// `analysis/resource.rs` asserting over its return value would be E0603, and widening it to
+    /// host a test would add production visibility surface for test convenience.
     ///
     /// REVERT PROBE: flip `TokensCreated` to `StandingCapability` in
-    /// `ResourceAxis::unbounded_mark_kind` ⇒ RED (a batched item would then produce an axis no
-    /// materialization is accountable for).
-    ///
-    /// VACUOUS-UNIVERSAL GUARD: the claim is a `∀` over the produced set, which an EMPTY produced
-    /// set satisfies trivially. The non-empty assertion below is what forbids that, and it is also
-    /// what makes this row go RED when a FOURTH batched `PersistentAxisMaterialization` variant
-    /// lands without the partition being revisited — the exhaustive `match` in
-    /// `scheduled_collapse_axes` build-breaks first, but if the new arm is written to produce an
-    /// axis, this row is what asks whether that axis is accountable.
+    /// `ResourceAxis::unbounded_mark_kind` ⇒ RED. VACUOUS-UNIVERSAL GUARD: the claim is a `∀`
+    /// over the produced set, which an EMPTY set satisfies trivially — the non-empty assertion
+    /// below forbids that, and also reds this row when a FOURTH batched variant produces an axis
+    /// no materialization is accountable for.
     #[test]
     fn every_batched_item_axis_is_deferred_accrual_and_batchable() {
         use crate::analysis::resource::UnboundedMarkKind;

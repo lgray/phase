@@ -979,8 +979,8 @@ pub(crate) fn exiled_color_options(
 ) -> Vec<ManaType> {
     let mut options: Vec<ManaType> = Vec::new();
     // The object comes back WITH the id: `linked_exiled_ids` already resolved it through
-    // `state.objects.get(&link.exiled_id)?` and drops every id it cannot resolve, so the
-    // second lookup this loop used to do had a provably unreachable `else` arm.
+    // `state.objects.get(&link.exiled_id)?` and drops every id it cannot resolve, so a
+    // second lookup here would have a provably unreachable `else` arm.
     for (_, exiled) in linked_exiled_ids(state, scope, source_id) {
         // CR 202.3d + CR 709.4b: a linked exiled card is off the stack, so a split
         // card exposes the combined colors of both halves, not just its front half.
@@ -994,32 +994,20 @@ pub(crate) fn exiled_color_options(
     options
 }
 
-/// CR 607.2a: the LINK RELATION an exiled-colour mana ability reads — "the second
-/// ability refers only to cards in the exile zone that were put there as a result of
-/// an instruction to exile them in the first ability". Yields, in `state.exile_links`
-/// order, the ids linked to `source_id` under `scope` that are STILL in exile, EACH WITH
-/// THE OBJECT IT RESOLVED TO. The object is not a convenience: this filter can only decide
-/// the `zone == Exile` conjunct by resolving `state.objects.get(&link.exiled_id)`, so every
-/// yielded id provably HAS a live entry. Yielding the bare id made every consumer re-do
-/// that lookup behind an `else` arm that could never be taken.
+/// CR 607.2a: the LINK RELATION an exiled-colour mana ability reads — "the second ability
+/// refers only to cards in the exile zone that were put there as a result of an instruction to
+/// exile them in the first ability". Yields, in `state.exile_links` order, the ids linked to
+/// `source_id` under `scope` that are STILL in exile, EACH WITH THE OBJECT IT RESOLVED TO. The
+/// object is not a convenience: deciding the `zone == Exile` conjunct already resolves
+/// `state.objects.get(&link.exiled_id)`, so every yielded id provably HAS a live entry and no
+/// consumer needs an `else` arm that can never be taken.
 ///
-/// Extracted verbatim from [`exiled_color_options`] (which now consumes it) so the
-/// resource loop firewall's `exiled_colors_provably_exclude_class` arm
-/// (`analysis/resource.rs`) can ask THE SAME link authority the mana resolver asks,
-/// instead of re-deriving the two conjuncts and drifting from it. Both conjuncts are
-/// byte-preserved from that extraction: `link.source_id == host_id`, then
-/// `exiled.zone == Zone::Exile`.
+/// The single link authority for both [`exiled_color_options`] and the resource loop firewall's
+/// `exiled_colors_provably_exclude_class` arm, so the firewall cannot drift from the resolver.
 ///
-/// ⛔ IDENTITY-PRESERVING BY CONTRACT. `exiled_color_options` has four production
-/// callers (`effects/mana.rs`, `mana_abilities.rs`, `mana_sources.rs` x2) and this
-/// extraction changes neither its signature nor its return value — including the
-/// ORDER of the returned options, which is why this yields ids in link order rather
-/// than collecting a set. The named identity guard is the pair of existing
-/// `#[cfg(test)]` assertions on that function's output
-/// (`exiled_color_options_use_combined_split_colors` here and
-/// `pit_of_offerings_*` in `mana_abilities.rs`); if a future edit needs either of
-/// them CHANGED, the extraction is no longer identity-preserving and must be
-/// re-argued rather than re-baselined.
+/// ORDER IS PART OF THE CONTRACT: link order, not a set, because [`exiled_color_options`] returns
+/// its options in it. The guards are that function's `#[cfg(test)]` assertions
+/// (`exiled_color_options_use_combined_split_colors`, `pit_of_offerings_*` in `mana_abilities.rs`).
 pub(crate) fn linked_exiled_ids(
     state: &GameState,
     scope: LinkedExileScope,
@@ -1157,23 +1145,19 @@ mod tests {
         );
     }
 
-    /// **MED-3 pin** — `linked_exiled_ids` yields link-relation ORDER, and
-    /// `exiled_color_options` preserves it into the offered option vector.
+    /// `linked_exiled_ids` yields link-relation ORDER, and `exiled_color_options` preserves it
+    /// into the offered option vector.
     ///
-    /// WHY THIS ROW EXISTS: the C2 extraction's identity contract claims the option
-    /// ORDER is preserved, and nothing measured that half. The two pre-existing guards
-    /// structurally cannot: `exiled_color_options_use_combined_split_colors` has a
-    /// SINGLE link, and the `pit_of_offerings_*` guards have three links but only one
-    /// COLORED card — so under either fixture the produced vector has one element and
-    /// every ordering agrees. This board is the smallest one on which orderings
-    /// disagree: two links, two DIFFERENT colors.
+    /// The two pre-existing guards structurally cannot measure this:
+    /// `exiled_color_options_use_combined_split_colors` has a SINGLE link, and the
+    /// `pit_of_offerings_*` guards have three links but only one COLORED card — under either the
+    /// produced vector has one element and every ordering agrees. This board is the smallest one
+    /// on which orderings disagree: two links, two DIFFERENT colors. The claim is a positional
+    /// `assert_eq!` on the whole vector, deliberately not a `contains` pair, a set comparison, or
+    /// a sorted compare — each of those is order-blind and would restate the gap, not close it.
     ///
-    /// The claim is asserted as a positional `assert_eq!` on the whole vector,
-    /// deliberately not a `contains` pair, a set comparison, or a sorted compare — each
-    /// of those is order-blind and would restate the gap rather than close it.
-    ///
-    /// REVERT / MUTATION PROBE: change `linked_exiled_ids`' `state.exile_links.iter()`
-    /// to `.iter().rev()` ⇒ **FAILS** on the `MED-3` message.
+    /// REVERT / MUTATION PROBE: change `linked_exiled_ids`' `state.exile_links.iter()` to
+    /// `.iter().rev()` ⇒ **FAILS** on the link-order assertion.
     #[test]
     fn linked_exiled_ids_preserves_link_order_into_the_offered_colors() {
         use crate::game::scenario::{GameScenario, P0};
@@ -1201,7 +1185,7 @@ mod tests {
         // Deliberately ORDER-INSENSITIVE. This guard's job is to prove BOTH links
         // survive the CR 607.2a source and CR 400.7 zone conjuncts, so the option vector
         // really has two elements and orderings can disagree. Asserting order here too
-        // would shadow the MED-3 assertion below and steal the mutation that proves it.
+        // would shadow the order assertion below and steal the mutation that proves it.
         let survivors = linked_exiled_ids(&state, LinkedExileScope::ThisObject, source)
             .map(|(id, _)| id)
             .collect::<Vec<_>>();

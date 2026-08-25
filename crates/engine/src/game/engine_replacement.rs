@@ -112,27 +112,20 @@ pub(crate) fn drain_pending_connive_reentry(
     }
 }
 
-/// CR 616.1 + CR 510.2 + CR 702.15b: the CR 616.1 round trip, plus the one
-/// turn-based action that can be parked waiting on it.
+/// CR 616.1 + CR 510.2 + CR 702.15b: the CR 616.1 round trip, plus the one turn-based
+/// action that can be parked waiting on it.
 ///
-/// A simultaneous combat-damage batch (CR 510.2) parks in
-/// `state.pending_combat_lifelink` when a lifelink life gain meets two or more
-/// co-applicable replacements. This is the only boundary that knows where THIS
-/// action's events begin, and the resumed `LifeChanged` must join the batch's own
-/// CR 603.3b trigger batch — so the anchor is captured here, as a LOCAL, and the
-/// drain lives here rather than in the generic priority-boundary resumer
-/// (`engine::resume_pending_continuation_if_priority`, which has no such anchor).
-///
-/// The anchor is deliberately not stored on the record: a persisted index into a
-/// finished action's event vector has no owner that can clear it on every exit
-/// path, and a stale one either panics or folds unrelated events into the batch.
-/// A local cannot go stale, and `action_event_start <= events.len()` holds by
-/// construction.
-///
-/// A wrapper rather than in-arm insertions: the inner handler's `Prevented` arm
-/// alone has eleven early `return Ok(..)` paths. One wrapper is a single
-/// authority covering `Execute`, `Prevented`, `NeedsChoice`, and every early
-/// return. A no-op whenever nothing is parked.
+/// A simultaneous combat-damage batch (CR 510.2) parks in `state.pending_combat_lifelink`
+/// when a lifelink life gain meets two or more co-applicable replacements. This is the only
+/// boundary that knows where THIS action's events begin, and the resumed `LifeChanged` must
+/// join the batch's own CR 603.3b trigger batch — so the anchor is a LOCAL captured here, and
+/// the drain lives here rather than in `engine::resume_pending_continuation_if_priority`,
+/// which has no such anchor. Stored on the record it would be a persisted index into a
+/// finished action's event vector with no owner to clear it on every exit path; a stale one
+/// panics or folds unrelated events into the batch, while a local cannot go stale and
+/// `action_event_start <= events.len()` holds by construction. A wrapper rather than in-arm
+/// insertions, because the inner handler returns early from many points: one authority for
+/// `Execute`, `Prevented`, `NeedsChoice`, and a no-op whenever nothing is parked.
 pub(super) fn handle_replacement_choice(
     state: &mut GameState,
     index: usize,
@@ -268,21 +261,18 @@ fn handle_replacement_choice_inner(
             let mut zone_change_object_id = None;
             let mut enters_battlefield = false;
             match event {
-                // Phase B (PLAN §6.2 / §7): the divergent partial copy of
-                // `deliver_replaced_zone_change` that used to live here is
-                // dissolved — the post-choice event is a
+                // The post-choice event is a
                 // `ReplacementResult::Execute` payload, so it is sealed through
                 // the third mint path (`approve_post_replacement`) and
                 // delivered by the shared `zone_pipeline::deliver` machinery.
-                // The resumed entry now gets the FULL delivery tail the copy
-                // skipped: the CR 614.12a devour snapshot, the CR 614.1c
+                // The resumed entry gets the FULL delivery tail: the
+                // CR 614.12a devour snapshot, the CR 614.1c
                 // `EntersWithAdditionalCounters` statics snapshot, the
                 // CR 303.4f `attach_to` host, `entered_via_ability_source`
                 // provenance (CR 603.6a, from the event's `cause`), and the
                 // CR 701.24a library-shuffle arm.
                 //
-                // Divergence reconciliation (resolved by parameterizing the
-                // shared tail instead of keeping a copy):
+                // The shared tail is parameterized rather than copied:
                 // (1) `DeliveryCtx.drain = CallerEpilogue` — the tail skips the
                 //     `post_replacement_continuation` drain; the epilogue below
                 //     keeps draining WITH the spell-resolution ctx and with
@@ -1768,7 +1758,7 @@ fn handle_persist_chosen_attribute_choice(
     // casts blocked (two_auras). Nested prompts raised during copy install /
     // entry replay still overwrite `waiting_for` and propagate below.
     //
-    // Divergence from the BecomeCopy completion tail (`:1878+`): that sibling
+    // Divergence from the BecomeCopy completion tail: that sibling
     // retires the drain *after* replay and brackets replay with
     // `capture_paused_zone_change_delivery_for_member` +
     // `drain_pending_batch_deliveries`. Those steps are for liminal / multi-
@@ -5338,13 +5328,11 @@ mod tests {
         );
     }
 
-    /// Issue #4886 (MED review finding #4): the originating token-choice applied
-    /// seed must survive a repeat-until frame drain. Pre-fix,
-    /// `drain_pending_continuation` cleared the seed BEFORE calling
-    /// `drain_active_repeat_until`; that drain re-enters `resolve_ability_chain`
-    /// (effects/mod.rs:721 / :744) and can emit further token proposals, which
-    /// then lost the inherited replacement id and re-prompted the same Jinnie
-    /// replacement. The seed must be treated as part of the originating frame
+    /// The originating token-choice applied seed must survive a repeat-until
+    /// frame drain: that drain re-enters `resolve_ability_chain`, which can emit
+    /// further token proposals, and a seed cleared first leaves them without the
+    /// inherited replacement id, re-prompting the same replacement. The seed is
+    /// part of the originating frame
     /// and cleared only once the repeat-until continuation has fully drained or
     /// stopped — i.e. only at true full-drain.
     #[test]
@@ -6339,7 +6327,7 @@ mod tests {
                     // battlefield (i.e. evaluated while the card is still
                     // on the stack) is only considered when its
                     // `valid_card` is `SelfRef`. `find_applicable_replacements`
-                    // enforces this at `replacement.rs:2058-2062`. Polymorphine
+                    // enforces this. Polymorphine
                     // is a self-replacement on the entering card, so the
                     // parser sets `SelfRef` automatically; the test must
                     // mirror that wiring.
@@ -7911,25 +7899,20 @@ mod tests {
         );
     }
 
-    /// **S6-P2b ⟨G⟩ — the post-replacement dispatch binds the REPLACEMENT SOURCE'S player,
-    /// not the active player.** This is the other half of the universe argument the block-(3)
-    /// `execute` firewall relief
-    /// (`analysis::resource::reveal_from_hand_execute_provably_excludes_class`) rests on: that
-    /// arm censuses `players[replacement_source_player(source)].hand`, and the census is only
-    /// the right pool if THIS dispatch binds the same authority. If the binding here were
-    /// `state.active_player`, the arm would census one player's hand while the effect read
-    /// another's, and the relief would be unsound on every board where the reveal land's
-    /// controller is not the active player.
+    /// The post-replacement dispatch binds the REPLACEMENT SOURCE'S player, not the active player
+    /// — the other half of the universe argument the block-(3) `execute` firewall relief
+    /// (`analysis::resource::reveal_from_hand_execute_provably_excludes_class`) rests on. That arm
+    /// censuses `players[replacement_source_player(source)].hand`, which is the right pool only if
+    /// THIS dispatch binds the same authority: bound to `state.active_player` instead, the arm
+    /// would census one player's hand while the effect read another's, and the relief would be
+    /// unsound wherever the reveal land's controller is not the active player. A
+    /// `-> source.controller` divergence is deliberately not registered as a mutation, because
+    /// `controller_or_owner()` returns `controller` for every `Zone::Battlefield` source and the
+    /// firewall walk yields only `[Battlefield, Command]` sources with non-emblem Command dropped
+    /// upstream — no input it can produce distinguishes the two.
     ///
-    /// ⛔ The `-> source.controller` divergence is deliberately NOT registered as a mutation:
-    /// `controller_or_owner()` returns `controller` for every `Zone::Battlefield` source, and
-    /// the firewall walk yields only `[Battlefield, Command]` sources with non-emblem Command
-    /// dropped upstream — so no input this walk can produce distinguishes the two, and a row
-    /// claiming otherwise would be unfalsifiable.
-    ///
-    /// REVERT / MUTATION PROBE: change `apply_post_replacement_effect`'s `controller` binding
-    /// from `replacement_source_player(obj)` to `state.active_player` ⇒ **this row FAILS**
-    /// (the prompt goes to `PlayerId(0)` offering that player's card).
+    /// REVERT / MUTATION PROBE: bind `apply_post_replacement_effect`'s `controller` to
+    /// `state.active_player` ⇒ **this row FAILS** (the prompt goes to `PlayerId(0)`).
     #[test]
     fn post_replacement_execute_binds_the_replacement_source_player() {
         use crate::types::ability::{TypeFilter, TypedFilter};

@@ -418,24 +418,20 @@ mod tests {
         );
     }
 
-    /// **S6-P2a ⟨G⟩ — the eligible set is drawn from the CONTROLLER'S HAND, and only then
-    /// filtered.** This is the seam the block-(3) `execute` firewall relief
+    /// The eligible set is drawn from the CONTROLLER'S HAND, and only then filtered — the seam
+    /// the block-(3) `execute` firewall relief
     /// (`analysis::resource::reveal_from_hand_execute_provably_excludes_class`) rests its
-    /// whole universe argument on: a growing-class member that is a battlefield object
-    /// (CR 111.7) can never be in the eligible set, WHATEVER the filter says, because the
-    /// subject pool is a hand. If `resolve` ever widened that pool to `state.objects`, the
-    /// relief would become unsound while every filter-level test stayed green — so the pool
-    /// is pinned here, at its own seam, rather than inferred at the analysis layer.
+    /// universe argument on: a growing-class member that is a battlefield object (CR 111.7) can
+    /// never be in the eligible set, WHATEVER the filter says, because the pool is a hand.
+    /// Widening it to `state.objects` would make the relief unsound while every filter-level
+    /// test stayed green, so the pool is pinned here, at its own seam.
     ///
-    /// The three decoys are the discrimination: each one MATCHES the filter (asserted below,
-    /// so the row cannot pass because they were filtered out) and each is excluded by the
-    /// POOL alone — a battlefield permanent, and a matching card in the OTHER player's hand.
-    /// The controller is `PlayerId(1)`, not the default `PlayerId(0)`, so "the controller's
-    /// hand" is distinguishable from "player zero's hand".
+    /// The three decoys discriminate: each MATCHES the filter (asserted below, so the row cannot
+    /// pass because they were filtered out) and each is excluded by the POOL alone. The controller
+    /// is `PlayerId(1)`, so "the controller's hand" is distinguishable from "player zero's hand".
     ///
-    /// REVERT / MUTATION PROBE: widen `resolve`'s universe from
-    /// `players[controller].hand` to `state.objects` in any zone ⇒ **this row FAILS** (the
-    /// prompt offers all three matches instead of the one).
+    /// REVERT / MUTATION PROBE: widen `resolve`'s universe to `state.objects` in any zone ⇒
+    /// **this row FAILS** (the prompt offers all three matches instead of the one).
     #[test]
     fn reveal_from_hand_eligible_set_is_a_subset_of_the_controllers_hand() {
         let mut state = GameState::new_two_player(42);

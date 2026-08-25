@@ -1012,9 +1012,9 @@ fn mana_engine_accept_records_no_collapse_bound() {
     );
 }
 
-/// R6a FIX-ROUND-3 (CR 500.5), now the MULTI-AXIS row: the
+/// CR 500.5, the MULTI-AXIS row: the
 /// `PersistentAxisMaterialization::DriveSequence` arm of `scheduled_collapse_axes` returns
-/// WHATEVER `collapsed_axes` the stash carries. Production now stores only the `DeferredAccrual`
+/// WHATEVER `collapsed_axes` the stash carries. Production stores only the `DeferredAccrual`
 /// subset (`engine::analysis::resource::ResourceAxis::unbounded_mark_kind`); this row's stash is
 /// grafted BROADER on purpose — see (ii) below — so ONE stash here names TWO
 /// axes — an already-materialized `Mana(Colorless)` and a deferred `Life(P0)`. Both keep their ∞
@@ -1039,7 +1039,7 @@ fn mana_engine_accept_records_no_collapse_bound() {
 /// HONEST SCOPE. Everything except one write is real: real cards through the real parser, a real
 /// two-beat Basalt+Power period, a real `DeclareShortcut`/`RespondToShortcut` accept that marks
 /// `Mana(Colorless)` and holds the pool at the cap. What is NOT reachable on this rig — and the
-/// R6a reviewer could not reach it on any production board either — is a single loop spanning
+/// no production board reaches either — is a single loop spanning
 /// BOTH a `Mana(_)` axis and an OBSERVED counter/life axis, which is what routes an accept into
 /// the `DriveSequence` arm (`game::engine::materialize_object_growth_shortcut`). So the stash is
 /// grafted through the same single-authority writers the accept path itself calls
@@ -1053,7 +1053,7 @@ fn mana_engine_accept_records_no_collapse_bound() {
 /// merely hostile. Same graft technique as
 /// `combo_infinite_pile::real_4p_observed_drive_sequence_replays_captured_period_n_times`.
 ///
-/// REVERT-PROBE (RP-1d, RUN): restore `if collapse_scheduled(controller, &axis) { continue; }` in
+/// REVERT-PROBE: restore `if collapse_scheduled(controller, &axis) { continue; }` in
 /// `derive_views`' resource-row loop ⇒ (6) FAILS — `Life(P0)` is in the `DriveSequence`'s
 /// `collapsed_axes`, so the restored guard hides its row. (5) is the paired control that keeps
 /// the probe honest: BASE also carried an `axes.retain(|a| !matches!(a, ResourceAxis::Mana(_)))`
@@ -1098,10 +1098,7 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
         .expect("opponent accepts");
 
     // (1) REACH-GUARD: the real accept marked the Mana axis in the STORE. Capture the exact
-    // axes — the graft below reuses them as `collapsed_axes`, a deliberate SUPERSET of what
-    // production writes, NOT a mirror of it: production filters `Mana(_)` out
-    // (`engine::analysis::resource::ResourceAxis::unbounded_mark_kind`), and this row grafts it
-    // back so the projection question stays reachable.
+    // axes — the graft below reuses them as the deliberate `collapsed_axes` superset.
     let mana_axes: Vec<ResourceAxis> = rig
         .runner
         .state()

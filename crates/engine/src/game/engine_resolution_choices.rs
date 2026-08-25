@@ -1872,9 +1872,9 @@ pub(super) fn handle_resolution_choice(
                             clear_markers: cards.clone(),
                             publish_tracked_set: None,
                             emit_reveal_until_resolved: None,
-                            // #7467 review round 2: the entry paused, so the
-                            // publish below never runs — the completion drain
-                            // publishes instead, once the entry completed.
+                            // The entry paused, so the publish below never
+                            // runs — the completion drain publishes instead,
+                            // once the entry has completed.
                             manifested_for_continuation: Some(manifest_id),
                             kept_delivery: Default::default(),
                             continuation_targets: Vec::new(),
@@ -1887,7 +1887,7 @@ pub(super) fn handle_resolution_choice(
                 }
             }
 
-            // CR 608.2c + CR 701.62a (#7467): the manifested creature enters
+            // CR 608.2c + CR 701.62a: the manifested creature enters
             // from THIS continuation, so its `ZoneChanged` never reaches the
             // resolver-side harvest — the chain's tracked set was published
             // EMPTY when the head parked. Re-publish it here so a chained
@@ -2700,27 +2700,20 @@ pub(super) fn handle_resolution_choice(
                         }
                         match item {
                             PersistentAxisMaterialization::Tokens(growth) => {
-                                // CR 707.2 (+ CR 111.3): mint `per_cycle_delta × N` tapped
+                                // CR 707.2 + CR 111.3: mint `per_cycle_delta × N` tapped
                                 // copy-tokens of the fodder profile — a source-less mint, so route
                                 // through `drive_copy_token_batches` (`ObjectId(0)` sentinel).
                                 //
-                                // CR 732.2a k-MULTISET INVARIANT: `per_cycle_delta` is the per-cycle
-                                // fodder count k measured by `derived_fodder_class`
-                                // (`game/engine.rs`), and `per_cycle_delta × amount` is EXACT for
-                                // two reasons, both established before this arm is reachable:
-                                //   (i) HOMOGENEITY — `derived_fodder_class` returns `None` unless
-                                //       EVERY new battlefield object of the period is equal under
-                                //       BOTH `analysis::resource::fodder_content_eq` and
-                                //       `game::printed_cards::intrinsic_copiable_values`, so this
-                                //       ONE profile faithfully represents all k members;
-                                //   (ii) NO DOUBLE-APPLY — this mint re-runs the replacement
-                                //       pipeline (`replace_event` below), so a k that already
-                                //       included a `CreateToken` replacement's multiplication would
-                                //       have it applied twice. `materialize_object_growth_shortcut`'s
-                                //       route guard sends any such period to `DriveSequence`
-                                //       instead (`analysis::resource::token_growth_is_observed`,
-                                //       gated on k > 1), so it never reaches here.
-                                // (Counters/Life carry the same `per_cycle_delta` field.)
+                                // CR 732.2a k-MULTISET INVARIANT: k is the per-cycle count from
+                                // `game::engine::derived_fodder_class`, which is `None` unless
+                                // EVERY new battlefield object of the period is equal under BOTH
+                                // `analysis::resource::fodder_content_eq` and
+                                // `game::printed_cards::intrinsic_copiable_values` — so one
+                                // profile faithfully represents all k. A period whose k already
+                                // absorbed a `CreateToken` replacement's factor is routed to
+                                // `DriveSequence` instead (`token_growth_is_observed`, gated on
+                                // k > 1), so this mint's own `replace_event` below cannot apply it
+                                // twice. Counters/Life carry the same `per_cycle_delta` field.
                                 let batch = crate::types::game_state::PendingCopyTokenBatch {
                                     owner: player,
                                     count: growth.per_cycle_delta.saturating_mul(amount),
@@ -2847,7 +2840,7 @@ pub(super) fn handle_resolution_choice(
                     // CR 732.2a: cash out ONLY the axes actually collapsed (axis-scoped) —
                     // end their ∞ status + stash + pile, PRESERVING any coexisting axis (a
                     // debug infinite-mana capability, or a finding-#4-declined axis). The ∞
-                    // display collapses to an ordinary ×N for the collapsed axes (§9).
+                    // display collapses to an ordinary ×N for the collapsed axes.
                     //
                     // FINDING #4 DECLINED-AXIS ∞ LIFECYCLE (CR 732.1b — the shortcut system
                     // determines how the loop is broken; see BoundaryHold::ObservedGrowth): a declined `Counters`/`Life`
@@ -2883,7 +2876,7 @@ pub(super) fn handle_resolution_choice(
                     // whole backing gone: the growth still lands here, and a row that vanished
                     // before it landed would be the display lying about an agreed result.
                     state.clear_collapsed_materializations(player, &collapsed);
-                    // Continue the boundary fixpoint (§7): re-draining either prompts the
+                    // Continue the boundary fixpoint: re-draining either prompts the
                     // next APNAP player with a stash or restores Priority now.
                     crate::game::turns::drain_pending_phase_transition_progress(state, events);
                     return Ok(ResolutionChoiceOutcome::WaitingFor(
@@ -8176,7 +8169,7 @@ pub(crate) fn run_batch_completion(
                     subject: None,
                 });
             }
-            // CR 608.2c + CR 701.62a (#7467): the paused manifest entry has
+            // CR 608.2c + CR 701.62a: the paused manifest entry has
             // completed by now — publish its object for the parked consumer,
             // the deferred mirror of the synchronous `ManifestDreadChoice`
             // publish (same gate, same battlefield filter).

@@ -12534,26 +12534,20 @@ fn fodder_multiset_frames(
     (before, after)
 }
 
-/// LOW-2 (CR 732.2a / CR 111.3 / CR 707.2): `derived_fodder_class` is the ONE-CLASS gate that
-/// gives the boundary `Tokens` mint its per-cycle fodder count k. It returns `Some((class, k))`
-/// for a period whose new battlefield objects are all one homogeneous class, and `None` otherwise
-/// (a heterogeneous multi-fodder shape ⇒ no `Tokens` stash ⇒ no mint from an unrepresentative
-/// profile). This is the structural proof behind the k-multiset annotation at the boundary mint
-/// and on the `PersistentAxisMaterialization::Tokens` variant.
+/// CR 732.2a / CR 111.3 / CR 707.2: `derived_fodder_class` is the ONE-CLASS gate that gives the
+/// boundary `Tokens` mint its per-cycle fodder count k. It returns `Some((class, k))` for a period
+/// whose new battlefield objects are all one homogeneous class, and `None` otherwise (a
+/// heterogeneous multi-fodder shape ⇒ no `Tokens` stash ⇒ no mint from an unrepresentative profile).
 ///
 /// HOMOGENEITY IS A CONJUNCTION and each conjunct has its own row: `fodder_content_eq` (A-2) and
 /// `intrinsic_copiable_values` (A-2b). A-1 is the positive; A-2c is the fail-closed reconciliation.
 ///
-/// REVERT-FAILING assertions, one per row:
-/// - **A-1**: restore `if new_ids.next().is_some() { return None }` ⇒ k=2 returns `None` ⇒ FAILS.
-/// - **A-2**: delete the `fodder_content_eq` conjunct ⇒ the counter-differing pair returns
-///   `Some((class, 2))` ⇒ FAILS. (`CopiableValues` carries no counters field, so the OTHER
-///   conjunct cannot red this row — that is what makes it discriminate.)
-/// - **A-2b**: delete the `intrinsic_copiable_values` conjunct ⇒ the `base_card_types`-differing
-///   pair returns `Some((class, 2))` ⇒ FAILS. (`object_content_eq` compares neither `card_types`
-///   nor `base_card_types`, asserted in-row.)
-/// - **A-2c**: delete the `.then_some` reconciliation ⇒ the torn frame returns `Some((class, 1))`
-///   ⇒ FAILS.
+/// REVERT-FAILING assertions: **A-1** restore `if new_ids.next().is_some() { return None }` ⇒ k=2
+/// returns `None`; **A-2** delete the `fodder_content_eq` conjunct ⇒ the counter-differing pair
+/// returns `Some((class, 2))` (`CopiableValues` carries no counters field, so the other conjunct
+/// cannot red it); **A-2b** delete the `intrinsic_copiable_values` conjunct ⇒ the
+/// `base_card_types`-differing pair returns `Some((class, 2))`; **A-2c** delete the `.then_some`
+/// reconciliation ⇒ the torn frame returns `Some((class, 1))`. Each ⇒ FAILS.
 #[test]
 fn derived_fodder_class_is_one_class_multiset_gate() {
     // A-1 (positive) — a homogeneous k=2 period classifies AND reports k.
@@ -12591,7 +12585,7 @@ fn derived_fodder_class_is_one_class_multiset_gate() {
 
     // A-2 (matched negative, MUTABLE axis) — a counter difference makes the multiset
     // heterogeneous under `fodder_content_eq` (`object_content_eq` compares `counters`).
-    // CR 707.2 (`MagicCompRules.txt:5626`): "Other effects …, status, counters, and stickers are
+    // CR 707.2: "Other effects …, status, counters, and stickers are
     // not copied", so `CopiableValues` has no counters field and this moves EXACTLY one conjunct.
     // `CounterType::Stun` is deliberate: `is_monotone_loop_resource()` is false for it, so
     // `project_object_for_loop`'s `retain` cannot strip it if projection is ever reordered ahead

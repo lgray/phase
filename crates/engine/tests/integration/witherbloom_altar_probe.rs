@@ -1,28 +1,17 @@
-//! PROBE (investigation only — not a shipped row). Drives the user's 4p Witherbloom /
-//! Sprout Swarm / Altar of the Brood board through the production cast boundary and records what
-//! the CR 732.2a bounded-shortcut machinery does with a mill-carrying infinite loop.
+//! PROBE (investigation only — not a shipped row): drives the user's 4p Witherbloom / Sprout
+//! Swarm / Altar of the Brood board through the production cast boundary and records what the
+//! bounded CR 732.2a shortcut machinery does with a mill-carrying infinite loop.
 //!
-//! Board (verified against the dump itself, `gameState.objects[…]`, and against Scryfall):
-//!  - obj 55 Sprout Swarm in P0's hand: `Convoke` + `Buyback {3}`, one Spell ability creating a
-//!    1/1 green Saproling.
-//!  - obj 397 Witherbloom, the Balancer: static `CastWithKeyword{Affinity{Creature}}` over
-//!    Or(Instant You, Sorcery You).
-//!  - obj 90 Altar of the Brood: `ChangesZone`→Battlefield trigger on `Typed{Permanent, You,
-//!    [Another]}` executing `Effect::Mill{Fixed 1, Controller, Graveyard}` with
-//!    `player_scope: Opponent`.
-//!  - obj 67 Doubling Season: `CreateToken` replacement, `Times{factor: 2}`.
-//!  - P0 controls 9 creatures (7 untapped, 6 of them green) → affinity zeroes the {4} generic of
-//!    {1}{G} + buyback {3} (CR 702.41 / CR 702.27), convoke pays the {G} by tapping one untapped
-//!    green creature (CR 702.51a — not a tap ability, so summoning sickness is irrelevant).
-//!
-//! Loop invariants: +2 Saprolings/cycle (Doubling Season), each opponent mills 2/cycle
-//! (CR 701.17), NO life change, P0's own library UNTOUCHED. The only bound-shaped axis in the
-//! whole cycle is the OPPONENTS' library sizes — and per CR 701.17b + CR 121.4 an empty library
-//! neither stops the mill nor ends the game, so it must not bound the loop.
-//!
-//! Prior art this mirrors exactly: `sprout_inalla_realistic_offer.rs` — the SAME Witherbloom +
-//! Sprout Swarm loop on a real 4p dump WITHOUT Altar, where ONE live cast surfaces
-//! `WaitingFor::LoopShortcut{P0}`. The only board difference here is Altar of the Brood.
+//! Board, verified against the dump itself and against Scryfall: Sprout Swarm (Convoke + Buyback
+//! {3}, one Spell ability making a 1/1 green Saproling) in P0's hand, Witherbloom the Balancer
+//! granting affinity for creatures to P0's instants and sorceries, Altar of the Brood milling
+//! each opponent whenever another permanent P0 controls enters, and Doubling Season. Affinity
+//! zeroes the {4} generic and convoke pays the {G} off an untapped green creature
+//! (CR 702.41 / CR 702.27 / CR 702.51a), so a cycle is free: +2 Saprolings, each opponent mills 2
+//! (CR 701.17), NO life change, P0's own library UNTOUCHED. The only bound-shaped axis is the
+//! OPPONENTS' library sizes, and per CR 701.17b + CR 121.4 an empty library neither stops the
+//! mill nor ends the game, so it must not bound the loop. `sprout_inalla_realistic_offer.rs` is
+//! the same loop WITHOUT Altar, where one live cast surfaces `WaitingFor::LoopShortcut{P0}`.
 
 use engine::game::scenario::GameRunner;
 use engine::types::game_state::{GameState, PersistedGameState, WaitingFor};
@@ -185,13 +174,10 @@ fn probe_c_multi_cycle_with_altar() {
     multi_cycle(load_wb(), "C");
 }
 
-/// The 2×2 factorial. HISTORICAL NOTE, kept because the arm names encode it:
-/// `game::engine::derived_fodder_class` (cited by SYMBOL — a line number here went stale once
-/// already) USED to be fail-closed at exactly one new battlefield object per period, which made
-/// Doubling Season (2 Saprolings/cycle) a suppressor INDEPENDENT of Altar. It is now a one-CLASS
-/// gate that admits a homogeneous k-multiset and reports k, so DS no longer suppresses the class
-/// derivation. What DS still does on this board is ROUTE: a k > 1 period with a live `CreateToken`
-/// replacement takes the `DriveSequence` replay instead of the batched mint
+/// The 2×2 factorial. `game::engine::derived_fodder_class` is a one-CLASS gate that admits a
+/// homogeneous k-multiset and reports k, so Doubling Season's 2 Saprolings/cycle do not suppress
+/// the class derivation. What DS does on this board is ROUTE: a k > 1 period with a live
+/// `CreateToken` replacement takes the `DriveSequence` replay instead of the batched mint
 /// (`analysis::resource::token_growth_is_observed`). Removing DS isolates the Altar/mill axis.
 fn remove(state: &mut GameState, id: ObjectId) {
     state.battlefield.retain(|x| *x != id);
@@ -226,7 +212,7 @@ fn probe_f_no_doubling_season_no_altar() {
 
 /// P3's Pyreswipe Hawk (obj 298) — its `Attacks` trigger body is
 /// `Pump{power: Aggregate{Max, ManaValue, Typed{Artifact, controller You}}}`, a ledger read the
-/// growing-class firewall vetoes on (measured: `PROBE-FW: veto @ ... obj="Pyreswipe Hawk"`).
+/// growing-class firewall vetoes on.
 const PYRESWIPE_HAWK: ObjectId = ObjectId(298);
 
 /// ARM G — Doubling Season + Pyreswipe Hawk removed, Altar KEPT. Isolates the mill: with S1 and
