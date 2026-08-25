@@ -4018,7 +4018,7 @@ fn activated_ability_is_not_a_loop_choice(
 ///     triggering event — [`node_reads_mutable_resolution_local_state`];
 ///  2. every property on every admitted `Typed` node is proven arrival-invariant —
 ///     [`prop_is_arrival_invariant`];
-///  3. every `PlayerFilter` either crossing reaches (`FilterProp::ControllerMatches` and
+///  3. every `PlayerFilter` any crossing reaches (`FilterProp::ControllerMatches`,
 ///     `TargetFilter::PlayerMatching`) is likewise — [`player_filter_is_arrival_invariant`];
 ///  4. every `TypedFilter::controller` on every admitted `Typed` node is likewise —
 ///     [`controller_ref_is_arrival_invariant`]. `type_filters` is the ONE field deliberately
@@ -4151,9 +4151,9 @@ fn other_leq_condition_provably_excludes_class(
 ///  * The local content is FOUR exhaustive, wildcard-free classifiers, none of which
 ///    re-answers the population question. [`node_reads_mutable_resolution_local_state`] is a
 ///    REFUSAL BY ENUM IDENTITY over `TargetFilter`; [`node_has_non_arrival_invariant_property`]
-///    carries the question onto EVERY PAYLOAD OF A NODE THAT IS NOT ITSELF A `TargetFilter` —
-///    every field of a `Typed` node, and the boxed `PlayerFilter` of a `PlayerMatching` node —
-///    and from there [`prop_is_arrival_invariant`], [`player_filter_is_arrival_invariant`] and
+///    carries the question onto THE PAYLOADS IT REACHES INTO — every field of a `Typed` node,
+///    and the boxed `PlayerFilter` of a `PlayerMatching` node — and from there
+///    [`prop_is_arrival_invariant`], [`player_filter_is_arrival_invariant`] and
 ///    [`controller_ref_is_arrival_invariant`] are ALLOWLISTS over the `FilterProp`,
 ///    `PlayerFilter` and `ControllerRef` layers.
 ///
@@ -4316,13 +4316,14 @@ fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::Targe
 }
 
 /// **LAYER 2 ADAPTER — carries the guard's question from the `TargetFilter` layer down onto
-/// EVERY PAYLOAD OF A NODE THAT IS NOT ITSELF A `TargetFilter`** — every field of a `Typed`
-/// node, and the boxed `PlayerFilter` of a `PlayerMatching` node. `true` means "this node
-/// carries a property, a controller reference, or a player designation whose
-/// arrival-invariance is NOT proven", so relief must be refused. It is the one place THIS
-/// guard's recursion sees a `TypedFilter`'s fields, so within the recursion it is where a new
-/// field on THAT struct is made to FAIL TO COMPILE; every payload this match reaches into is
-/// destructured to the same rule — see the no-`..` destructures in the body.
+/// THE PAYLOADS THIS MATCH REACHES INTO** — every field of a `Typed` node, and the boxed
+/// `PlayerFilter` of a `PlayerMatching` node. A node taken as `{ .. }` keeps its payload out:
+/// a nested `TargetFilter` is still reached by the caller's recursion, anything else is judged
+/// nowhere. `true` means "this node carries a property, a controller reference, or a player
+/// designation whose arrival-invariance is NOT proven", so relief must be refused. It is the
+/// one place THIS guard's recursion sees a `TypedFilter`'s fields, so within the recursion it
+/// is where a new field on THAT struct is made to FAIL TO COMPILE; every payload this match
+/// reaches into is destructured to the same rule — see the no-`..` destructures in the body.
 ///
 /// WHY THIS EXISTS AT ALL — `filter_contains` CANNOT ASK THE QUESTION. `filter.rs`'s shape
 /// walk is parameterised by a `&dyn Fn(&TargetFilter) -> bool`: the only nodes it ever hands
@@ -4376,8 +4377,8 @@ fn node_has_non_arrival_invariant_property(node: &crate::types::ability::TargetF
                     .iter()
                     .any(|prop| !prop_is_arrival_invariant(prop))
         }
-        // CR 102.1: the SECOND `TargetFilter -> PlayerFilter` crossing (the first is
-        // `FilterProp::ControllerMatches`, one layer down). Carried here for the same reason
+        // CR 102.1: a `TargetFilter -> PlayerFilter` crossing, as
+        // `FilterProp::ControllerMatches` is a layer down. Carried here for the same reason
         // `Typed`'s fields are: `player_filter_contains` recurses only into the inner
         // `TargetFilter` of `ControlsCount` / `TrackedSetPossessor` / `OpponentDealtDamage`,
         // so the `PlayerFilter` NODE — where the dependence lives — is invisible to every
@@ -4587,8 +4588,8 @@ fn prop_is_arrival_invariant(prop: &crate::types::ability::FilterProp) -> bool {
     }
 }
 
-/// **LAYER 3 — THE `PlayerFilter` ALLOWLIST**, reached through two crossings:
-/// `FilterProp::ControllerMatches` (CR 109.4 — an object's controller) and
+/// **LAYER 3 — THE `PlayerFilter` ALLOWLIST**, reached from every crossing onto the player
+/// axis: `FilterProp::ControllerMatches` (CR 109.4 — an object's controller) and
 /// `TargetFilter::PlayerMatching` (CR 102.1 — a player population). `true` means "a class
 /// member's ARRIVAL provably cannot change WHICH PLAYERS this filter designates".
 ///
@@ -27237,9 +27238,9 @@ mod tests {
     }
 
     /// REVERT / MUTATION PROBE: replace [`node_has_non_arrival_invariant_property`]'s
-    /// `PlayerMatching` arm with `=> false` and both end-to-end vetoes below FAIL, while
+    /// `PlayerMatching` arm with `=> false` and every end-to-end veto below FAILS, while
     /// moving `TargetFilter::PlayerMatching` into [`node_reads_mutable_resolution_local_state`]'s
-    /// REFUSED arm instead FAILS the matched control.
+    /// REFUSED arm instead FAILS the matched controls.
     #[test]
     fn s4_s5_player_matching_crossing_keeps_the_veto() {
         use crate::types::ability::{
