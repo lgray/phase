@@ -18346,7 +18346,7 @@ fn try_parse_compound_player_object_damage(lower: &str) -> Option<ParsedEffectCl
     })
 }
 
-/// CR 120.3 + CR 119.3a: Compound object+player damage — type-first variant.
+/// CR 120.1 + CR 120.3: Compound object+player damage — type-first variant.
 /// Detects "deals N damage to each [type-phrase] and each player" and emits a
 /// single `Effect::DamageAll` carrying both the object filter and a
 /// `player_filter: Some(PlayerFilter::All)` so the resolver damages every
@@ -19348,7 +19348,7 @@ fn try_split_damage_compound(text: &str, ctx: &mut ParseContext) -> Option<Parse
         return Some(clause);
     }
 
-    // CR 120.3 + CR 119.3a: Same shape, type-first ordering — "each creature
+    // CR 120.1 + CR 120.3: Same shape, type-first ordering — "each creature
     // [with X | without X] and each player" (Pyrohemia / Earthquake / Hurricane
     // class). Must run before the general split so the player half isn't dropped.
     if let Some(clause) = try_parse_compound_object_player_damage(&lower) {

@@ -564,7 +564,7 @@ fn detect_replacement_instead(
 
 // ── Detector B: ActivateOnlyDuring ──────────────────────────────────────
 
-/// CR 605.1c: "Activate only during X" — restricted activation timing.
+/// CR 602.5: "Activate only during X" — restricted activation timing.
 /// Must be represented as an activation constraint on the parsed ability.
 fn detect_activate_only_during(
     cleaned: &str,
@@ -3425,8 +3425,9 @@ fn detect_condition_if(
     // Strip CR-implicit "if" phrases that aren't real conditional gates
     // before scanning. These are built-in rules of their parent effect, not
     // separate conditions:
-    //   CR 701.19f: "If you search your library this way, shuffle." — search
-    //               always-shuffles is built into the search effect.
+    //   "If you search your library this way, shuffle." — no CR makes this
+    //   implicit; the engine's SearchLibrary effect auto-shuffles, so the
+    //   "if" gates nothing.
     //   CR 305.9 :  "If you don't, [it/this/this land] enters tapped." — the
     //               mana-payment alternative is encoded as a replacement
     //               with `ReplacementMode::Optional { decline: Tap(SelfRef) }`,
@@ -3704,7 +3705,8 @@ fn strip_cr_implicit_if_phrases(cleaned: &str) -> String {
         if s.is_empty() {
             continue;
         }
-        // CR 701.19f: search-shuffle implicit.
+        // Search-shuffle implicit: SearchLibrary auto-shuffles (engine
+        // convention, no CR).
         // allow-noncombinator: swallow detector phrase scan on classified text
         if s.contains("if you search your library this way") {
             continue;

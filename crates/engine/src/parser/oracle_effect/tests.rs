@@ -5421,7 +5421,7 @@ fn effect_damage_compound_creature_planeswalker_they_control() {
     }
 }
 
-/// CR 120.3 + CR 119.3a: Pyrohemia / Pestilence class — "each creature and
+/// CR 120.1 + CR 120.3: Pyrohemia / Pestilence class — "each creature and
 /// each player" must emit a unified `DamageAll` carrying both the creature
 /// filter and `player_filter: Some(PlayerFilter::All)`. Previously the
 /// "and each player" half was silently dropped.
