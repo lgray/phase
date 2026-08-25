@@ -17886,11 +17886,11 @@ mod tests {
     /// ARM (ii) ALONE WOULD PASS AGAINST A BROKEN MAP — an empty map serializes fine
     /// whatever its key type. Arm (i) is what discriminates, and both are asserted here.
     ///
-    /// ⚠ **THIS ROW IS NOT SUFFICIENT ON ITS OWN, and its green was once read as if it
-    /// were.** It uses `to_string`/`from_str` throughout, and that combination was measured
-    /// `Ok` even against an UNADAPTED `PlayerId`-keyed map. The production persistence path
-    /// degrades to `serde_json::Value` + `from_value` inside `PersistedGameState`, where
-    /// serde's `Content` buffering stringifies map keys and a `PlayerId` key breaks.
+    /// ⚠ **THIS ROW IS NOT SUFFICIENT ON ITS OWN.** It uses `to_string`/`from_str`
+    /// throughout, which returns `Ok` even against an UNADAPTED `PlayerId`-keyed map. The
+    /// production persistence path degrades to `serde_json::Value` + `from_value` inside
+    /// `PersistedGameState`, where serde's `Content` buffering stringifies map keys and a
+    /// `PlayerId` key breaks.
     /// `a_populated_per_cycle_proposal_survives_the_production_persistence_boundary` is the
     /// row that covers that; keep BOTH, they discriminate different failures.
     ///
@@ -18008,7 +18008,7 @@ mod tests {
     ///
     /// `MayPrompt ⇒ false` is asserted alongside so all three arms of the match are pinned.
     ///
-    /// REVERT-PROBE (run, recorded): delete the `if events.is_empty() { return false; }`
+    /// REVERT-PROBE: delete the `if events.is_empty() { return false; }`
     /// arm ⇒ the EMPTY case FLIPS TO `true` and this row FAILS, while the non-empty arms
     /// stay green.
     #[test]
@@ -18060,9 +18060,9 @@ mod tests {
     }
 
     /// CR 732.2a — the PRODUCTION persistence path for a proposal that carries a per-cycle
-    /// signature. The row above is NOT a substitute and its green was FALSE CONFIDENCE: it
-    /// round-trips with `to_string`/`from_str`, and that combination was measured `Ok` even
-    /// against the unadapted map. The failure needs the enclosing shape:
+    /// signature. The row above is NOT a substitute: it round-trips with
+    /// `to_string`/`from_str`, which returns `Ok` even against the unadapted map. The failure
+    /// needs the enclosing shape:
     ///
     /// * `WaitingFor` is `#[serde(tag = "type", content = "data")]`, so serde buffers the
     ///   payload through its private `Content`, which stringifies every map KEY;
@@ -18076,10 +18076,8 @@ mod tests {
     /// `PersistedGameState` boundary, with a POPULATED `PlayerId`-keyed map, which is the
     /// only combination that discriminates.
     ///
-    /// REVERT-PROBE (run, recorded): delete `#[serde(with = "map_key_pairs")]` from
-    /// `ResourceVector::life` ⇒ arms (i) and (ii) FAIL with
-    /// `invalid type: string "0", expected u8`, the exact text
-    /// `tests/integration/loop_shortcut.rs` had recorded as a standing limitation.
+    /// REVERT-PROBE: delete `#[serde(with = "map_key_pairs")]` from `ResourceVector::life`
+    /// ⇒ arms (i) and (ii) FAIL with `invalid type: string "0", expected u8`.
     /// REACH-GUARD: the map is asserted non-empty before the round trip — an empty map
     /// round-trips whatever its key type, so a populated one is what makes this row real.
     #[test]
@@ -18167,7 +18165,7 @@ mod tests {
         );
     }
 
-    // ── PR-7 Phase 5c: the DRAW verdict's paired CR 616.1 obligation ──
+    // ── The DRAW verdict's paired CR 616.1 obligation ──
 
     /// A mandatory, non-"up to" `Effect::Draw` trigger — the starved shape the
     /// `FreeUnlessReplacements(DRAW)` arm claims.
@@ -18266,12 +18264,11 @@ mod tests {
         );
 
         // (iii) CR 616.1 material ordering: two MANDATORY draw replacements compete.
-        // The second one multiplies where the first adds — measured, `Plus` and
-        // `Times` are different `CommuteClass`es, so their composition order changes
-        // the drawn count and the affected player must order them. Two `Plus` defs
-        // COMMUTE and the pipeline correctly opens no prompt for them (measured
-        // `replacement_ordering_is_material == false`), which is why this arm cannot
-        // be built from two copies of `repl(..)`.
+        // The second one multiplies where the first adds: `Plus` and `Times` are
+        // different `CommuteClass`es, so their composition order changes the drawn
+        // count and the affected player must order them. Two `Plus` defs COMMUTE and
+        // the pipeline opens no prompt for them (`replacement_ordering_is_material ==
+        // false`), which is why this arm cannot be built from two copies of `repl(..)`.
         let material_pair = {
             let mut doubler = repl(ReplacementEvent::Draw, false);
             doubler.quantity_modification =
@@ -18348,11 +18345,11 @@ mod tests {
         );
     }
 
-    // ── §6 R24: the probe resolves on `resolve_top`'s board ──
+    // ── The probe resolves on `resolve_top`'s board ──
 
     /// A drain entry whose `EventContextAmount` resolves against a batched
     /// subject count of `match_count` (CR 603.2c) rather than `churn_entry`'s
-    /// fixed `Some(1)` — a distinctive amount is what makes R24(a)'s equality
+    /// fixed `Some(1)` — a distinctive amount is what makes arm (a)'s equality
     /// non-degenerate.
     fn scoped_drain_entry(
         id: u64,
@@ -18379,8 +18376,8 @@ mod tests {
         }
     }
 
-    /// **§6 R24 — THE PROBE RESOLVES ON `resolve_top`'s BOARD: SCOPE BOUND,
-    /// ENTRY OFF THE STACK, CR 603.4 RE-CHECKED.**
+    /// **THE PROBE RESOLVES ON `resolve_top`'s BOARD: SCOPE BOUND, ENTRY OFF THE
+    /// STACK, CR 603.4 RE-CHECKED.**
     ///
     /// Three arms, each keyed to one thing the classifier gets wrong when it is
     /// handed the raw pre-resolution board instead of the one
@@ -18394,7 +18391,7 @@ mod tests {
     ///   resolution proposes, and must be non-zero. Without the lift the derived
     ///   amount is 0 — a `> 0`-gated virtual candidate is then never drawn and
     ///   the probe certifies a resolution the live pipeline would prompt on.
-    ///   REVERT-PROBE (RUN): hand `probe_resolution` the raw board (drop the
+    ///   REVERT-PROBE: hand `probe_resolution` the raw board (drop the
     ///   `bind_resolution_scope` call from `stack_entry_resolution_choice_freedom`)
     ///   ⇒ derived `0` vs live `7` ⇒ FLIPS.
     /// * **(b) CR 603.4.** The same entry with a FALSE intervening-if ⇒
@@ -18403,18 +18400,16 @@ mod tests {
     ///   over-claimed: skipping the re-check is fail-CLOSED (a superset of
     ///   events draws a superset of candidates), so (b) is a FIDELITY arm —
     ///   (a) is the fail-open closer.
-    /// * **(c) AMOUNT-INSENSITIVITY, and the zero arm RE-KEYED ON A
-    ///   MEASUREMENT.** On one board with a single in-class (Compleated,
-    ///   CR 702.150a) virtual candidate, sweeping the ability's resolved count
-    ///   over `{1, 2, 7, 99}` yields an IDENTICAL candidate set — candidate
-    ///   selection is amount-insensitive ABOVE zero. The `0` arm does NOT reach
-    ///   the zero-payload accounting guard the plan predicted: measured, a
+    /// * **(c) AMOUNT-INSENSITIVITY, AND THE ZERO ARM.** On one board with a
+    ///   single in-class (Compleated, CR 702.150a) virtual candidate, sweeping
+    ///   the ability's resolved count over `{1, 2, 7, 99}` yields an IDENTICAL
+    ///   candidate set — candidate selection is amount-insensitive ABOVE zero.
+    ///   The `0` arm does NOT reach the zero-payload accounting guard: a
     ///   zero-count resolution proposes no event at all (as do
     ///   `DealDamage { amount: 0 }` and `Draw { count: 0 }`), so the refusal is
-    ///   the `is_empty` arm and the plan's stated revert-probe for this arm
-    ///   cannot reproduce. Both facts are asserted in place, with the
-    ///   guard's own classification pinned separately on the partition. See the
-    ///   block comment at the arm.
+    ///   the `is_empty` arm. Both facts are asserted in place, with the guard's
+    ///   own classification pinned separately on the partition. See the block
+    ///   comment at the arm.
     ///
     /// REACH-GUARDS on every arm: `bind_resolution_scope` is asserted to have
     /// returned `true` and the probe to have returned `Events(..)` on each
@@ -18587,23 +18582,15 @@ mod tests {
              {candidate_sets:?}"
         );
 
-        // The `0` arm, RE-KEYED ON A MEASUREMENT that contradicts the plan's
-        // stated mechanism — recorded here rather than papered over.
-        //
-        // The plan expects a zero-count `PutCounter` to DERIVE an
-        // `AddCounter { count: 0 }` which the zero-payload guard then classifies
-        // Unaccounted (arm 4). Measured on this board: the zero-count resolution
-        // proposes NOTHING AT ALL — and so do `DealDamage { amount: 0 }` and
-        // `Draw { count: 0 }`, the other two zero-payload classes. Every counter/
-        // damage/draw resolver short-circuits above the pipeline at zero. So no
-        // zero-payload `ProposedEvent` is reachable through the six allow-listed
-        // classes, the refusal below is arm 3 (`is_empty`), and the plan's
-        // (c) revert-probe (delete the `AddCounter { count: 0 }` guard ⇒ the
-        // derivation certifies) CANNOT REPRODUCE — there is no derivation to
-        // certify. DIRECTION: fail-CLOSED either way, so this is a coverage fact,
-        // not a hole. The guards remain correct defence-in-depth for events
-        // proposed by non-allow-listed routes and are pinned directly on the
-        // partition in BOTH directions by
+        // The `0` arm. A zero-count resolution proposes NOTHING AT ALL — and so do
+        // `DealDamage { amount: 0 }` and `Draw { count: 0 }`, the other two
+        // zero-payload classes: every counter/damage/draw resolver short-circuits
+        // above the pipeline at zero. So no zero-payload `ProposedEvent` is reachable
+        // through the six allow-listed classes and the refusal below is arm 3
+        // (`is_empty`), not the zero-payload accounting guard. Fail-CLOSED either way.
+        // That guard remains correct defence-in-depth for events proposed by
+        // non-allow-listed routes and is pinned directly on the partition in BOTH
+        // directions by
         // `resolution_prompt::tests::an_unaccounted_derived_event_is_prompted_in_the_resolver`.
         let zero_entry = counter_entry(0);
         let mut zero_state = counter_state.clone();
@@ -18692,7 +18679,7 @@ mod tests {
         assert!(!starved.try_charge_one());
         assert!(starved.denied());
     }
-    // ───────────────── 5d U2 — the shape-(B) mint's relief-side rows ─────────────────
+    // ───────────────── The shape-(B) mint's relief-side rows ─────────────────
 
     /// A 3-seat board with one battlefield source, shared by the two U2 relief rows.
     fn u2_relief_board() -> (GameState, ObjectId) {
@@ -18784,8 +18771,8 @@ mod tests {
         }
     }
 
-    /// R6 — **an optional trigger carrying an additional unpublishable axis still refuses,
-    /// and the RELIEF is the layer that refuses it.**
+    /// **An optional trigger carrying an additional unpublishable axis still refuses, and
+    /// the RELIEF is the layer that refuses it.**
     ///
     /// `ability_resolution_choice_freedom` has many `MayPrompt` causes (its two producers are
     /// enumerated by symbol on `pinned_may_choice_relief`) and the offer publishes a
@@ -18794,7 +18781,7 @@ mod tests {
     /// an `unless_pay` (CR 118.12) keeps coming back `MayPrompt` and gets no relief, because
     /// no published pin specifies it.
     ///
-    /// **(a′) THE MATCHED POSITIVE (ROUND-42 M15), byte-identical except the axis.** Without
+    /// **(a′) THE MATCHED POSITIVE, byte-identical except the axis.** Without
     /// it this row is a dominated negative: `entry_publishes_pin_slots` returns `None` from
     /// four conjuncts that all sit ABOVE R6's axis (`entry.controller != proposer`, the
     /// `TriggeredAbility` let-else, and the `multi_target`/`distribution`/`target_constraints`
@@ -18910,8 +18897,8 @@ mod tests {
     /// while (a)/(a′) stay green — proving the closure rests on the scope filter and not on
     /// the fixture.
     ///
-    /// The COMPLETENESS arm ("every minted pair is scanned") ships in U3: its probe names
-    /// `touch.announced`, which does not exist until the announcement loop gains its window.
+    /// The COMPLETENESS arm ("every minted pair is scanned") is
+    /// `r31_completeness_an_announced_off_stack_pair_is_still_scanned_by_conjunct_six`.
     #[test]
     fn the_recipient_conjunct_reads_the_board_but_can_never_move_a_published_offer() {
         use crate::game::engine::entry_publishes_pin_slots;
@@ -19073,7 +19060,7 @@ mod tests {
         );
 
         let live: Vec<&GameState> = board.loop_detect_ring.iter().map(|f| &f.live).collect();
-        // The newest candidate pair, i.e. `span == 1` — the shape §3 D2's walk reaches first.
+        // The newest candidate pair, i.e. `span == 1` — the shape the walk reaches first.
         let window = &live[live.len() - 2..];
         let bound = frozen_lower_bound(window, &board);
         let proposer = board.active_player;
@@ -19174,16 +19161,11 @@ mod tests {
     /// CR 732.2a + CR 608.1. Both TRACKED dumps, driven through `apply()` to the first beat
     /// carrying a real certified window with a non-empty observed-frozen prefix.
     ///
-    /// ⚠ THE PLAN'S FIGURES FOR THIS ROW ARE HEAD-ERA AND ARE RE-MEASURED HERE, NOT COPIED.
-    /// It expects *"`conjunct6_asks()` = 2–4, `conjunct6_frozen_skips()` = 152, their sum =
-    /// `current.stack.len()` = 154–156"*. Measured on the driven tree (`dellian` beat 14,
-    /// `ring=2 stack=154 announced=2 frozen=152`): `asks=4`, `skips=152`, **sum = 156**, and
-    /// `156 = announced + stack`, NOT `stack` — post-U3 the predicate's domain is
-    /// `touch.announced ∪ (stack \ frozen)`, so the announced pairs are asks the HEAD-era
-    /// figure could not include. The SUM IDENTITY is asserted in the corrected form; it is
-    /// what fails if a future edit exempts an entry without counting it, which a bare
-    /// `asks == 2..4` would not see. (`dina` beat 10: `stack=8 announced=3 frozen=5`,
-    /// `asks=6 skips=5`, sum `11 = 3 + 8`.)
+    /// THE SUM IDENTITY IS THE ASSERTION, not a bare ask count. The predicate's domain is
+    /// `touch.announced ∪ (stack \ frozen)`, so `asks + skips == announced + stack.len()`,
+    /// NOT `stack.len()` alone — the announced pairs are asks too. The identity is what
+    /// fails if a future edit exempts an entry without counting it, which a bare
+    /// `asks == 2..4` would not see.
     ///
     /// (b-unproven): the shipped meaning of NO PROOF is `touch == None`, and it must exempt
     /// NOTHING — `skips == 0` on both dumps, and where the sweep completes, the ask count is
@@ -19299,7 +19281,7 @@ mod tests {
     /// R21 (b-placement-S) — THE FROZEN SKIP IS READ AT EXACTLY ONE SITE, AND THAT SITE IS
     /// BELOW ITEM (6)'s LOOP HEAD.
     ///
-    /// CR 732.2a. §3 D2 step 3's replacement argument for the exemption is an ITEM-ORDERING
+    /// CR 732.2a. The replacement argument for the exemption is an ITEM-ORDERING
     /// argument: items (2)/(4)/(5) are what establish the premises the skip consumes, and each
     /// of them `return false`s strictly before it. Its sole precondition is that the skip lives
     /// in item (6) and nowhere earlier — a source-level fact, asserted here rather than argued.
@@ -19307,7 +19289,7 @@ mod tests {
     /// This arm covers item (5) as well, and better than a scan count would: item (5) is inside
     /// the extent, so a skip placed there raises the count to 2.
     ///
-    /// COMMENT LINES ARE EXCLUDED, per R8's own ruling: a comment reads nothing, and counting
+    /// COMMENT LINES ARE EXCLUDED: a comment reads nothing, and counting
     /// one would make the tripwire fire on prose. (The extent carries exactly one such line —
     /// item (4)'s "`frozen_ids` is deliberately not read here".)
     ///
@@ -19318,7 +19300,7 @@ mod tests {
         let src = include_str!("resource.rs");
         let lines: Vec<&str> = src.lines().collect();
 
-        // Symbol-anchored extent, the §6 R8 self-census discipline: column-0 signature line
+        // Symbol-anchored extent: column-0 signature line
         // to the first column-0 `}`.
         let extent = |signature: &str| -> (usize, usize) {
             let head = lines
@@ -19333,7 +19315,7 @@ mod tests {
             (head, end)
         };
         // Needles ASSEMBLED at runtime so this test's own source cannot be counted by its own
-        // instrument (R13's hardening, applied here by construction).
+        // instrument.
         let frozen_token = format!("frozen{}ids", '_');
         let scan_token = format!("note{}conjunct4{}scan", '_', '_');
 
@@ -19401,20 +19383,16 @@ mod tests {
     /// CR 732.2a. The matched pair is on ONE board and ONE touch, one predicate apart, so the
     /// difference is attributable to the placement and to nothing else.
     ///
-    /// ⚠ THE PLAN'S STATED PAIR IS FALSIFIED BY MEASUREMENT AND IS RE-KEYED. It asks for
-    /// *"the mutated board is REFUSED … the unmutated board still OFFERS (B-pos, row D1's
-    /// beat)"*. Measured on the driven tree, the unmutated dellian beat-14 board does NOT
-    /// offer — the mint returns `NoCertification` (`spent=26 scans=36 cert=None`), because
-    /// item (4) already trips on a projected-resource reader at stack index 35 and basis B's
-    /// `ring_delta_signature` finds no signature at `ring=2`. A pair whose two arms both
-    /// refuse discriminates nothing. And no mutation is needed to make the point: the entry
-    /// item (4) trips on IS ITSELF a frozen one, so the unmutated board already witnesses
-    /// that item (4) does not consult the exemption.
+    /// ⚠ NO MUTATED TWIN. The unmutated dellian board does NOT offer — the mint returns
+    /// `NoCertification`, because item (4) already trips on a projected-resource reader and
+    /// basis B's `ring_delta_signature` finds no signature at that ring — so a
+    /// mutated/unmutated pair would be two refusals and discriminate nothing. None is needed:
+    /// the entry item (4) trips on IS ITSELF a frozen one, so the unmutated board already
+    /// witnesses that item (4) does not consult the exemption.
     ///
-    /// ⚠ THE WINDOW IS PRODUCTION'S, NOT `len - 2`. The old selection asserted `span == 1`
-    /// silently, and the answer-beat sampler halved the newest adjacent pair on this dump:
-    /// MEASURED, a span-1 window scans **0** entries at every beat 0..79, while production's
-    /// first item-(4) candidate is **span 2** and scans 36. Both the search and the window now
+    /// ⚠ THE WINDOW IS PRODUCTION'S, NOT `len - 2`. A hard-coded newest pair asserts
+    /// `span == 1` silently and reads a HALF PERIOD wherever the answer-beat sampler retains
+    /// extra frames, which on this dump scans nothing at all. Both the search and the window
     /// come from [`newest_item4_window`], i.e. from `game::engine::candidate_windows`.
     ///
     /// REVERT-PROBE: add a `frozen_ids` skip to item (4)'s closure ⇒ the scan can no longer
@@ -19488,7 +19466,7 @@ mod tests {
         let specified =
             stack_choices_are_all_specified(&board, proposer, &[], Some(&cover), &mut v6);
         // The guard states what it actually needs: a gate that ASKED must have COMPLETED, and no
-        // answer was denied. MEASURED on production's own span-2 window the gate returns false
+        // answer was denied. On production's own span-2 window the gate returns false
         // with `denied=false` and `conjunct6_asks=0` — a structural refusal at a pre-ask
         // conjunct, AFTER taking every one of the frozen skips. The exemption's COMPLETENESS is
         // checked by the verbatim equality below, not here. (A truncation of the skip count is
@@ -19514,8 +19492,8 @@ mod tests {
     /// R17 — ID FRESHNESS ON THE DRIVEN DUMPS, AND `normalize_for_loop` PRESERVES EVERY
     /// `StackEntry.id`.
     ///
-    /// CR 608.1 + CR 104.4b. The frozen-prefix exemption is the ONE place 5d makes the
-    /// resolution gate strictly NARROWER than HEAD, and its soundness rests on a fixture that
+    /// CR 608.1 + CR 104.4b. The frozen-prefix exemption is the ONE place that makes the
+    /// resolution gate strictly NARROWER, and its soundness rests on a fixture that
     /// is structurally unconstructible: *a window whose prefix is identity-stable across every
     /// sampled frame while an exempted entry DOES announce or resolve in the driven period*.
     /// Both disjuncts die on one fact — an entry that RESOLVED inside the window has RETIRED
@@ -19535,7 +19513,7 @@ mod tests {
     /// (arms 1/2): inject a synthetic re-push of a retired id into the observed sequence ⇒ the
     /// revival assertion FLIPS.
     ///
-    /// ⚠ SCOPE: "both dumps" is the two TRACKED dumps. F4 is untracked until §5 U5.
+    /// ⚠ SCOPE: "both dumps" is the two TRACKED dumps.
     #[test]
     fn r17_a_retired_stack_entry_id_never_returns_and_normalization_preserves_it() {
         use std::collections::HashSet;
@@ -19632,8 +19610,8 @@ mod tests {
     /// carrier is therefore the sample's `live` half, never its `normalized` half.
     ///
     /// The matched pair is the two halves of the SAME ring, one argument apart — the
-    /// `.normalized` arm is rounds 13–33's carrier, executed here as an instrument-liveness
-    /// control, so the `!= 0` assertion cannot be true for want of a board that could fail it.
+    /// `.normalized` arm is executed here as an instrument-liveness control, so the `!= 0`
+    /// assertion cannot be true for want of a board that could fail it.
     ///
     /// ⚠ WHAT THIS ARM DOES NOT COVER: the mint's own carrier CHOICE (`ring_live` in
     /// `game::engine::bounded_cycle_offer`) is pinned structurally by
@@ -19682,7 +19660,7 @@ mod tests {
                 touch.announced.len()
             );
 
-            // ── INSTRUMENT-LIVENESS CONTROL: rounds 13–33's carrier, one argument apart ──
+            // ── INSTRUMENT-LIVENESS CONTROL: the normalized carrier, one argument apart ──
             let control = certified_period_touch(
                 &norm[norm.len() - 2..],
                 &board,
@@ -19715,20 +19693,20 @@ mod tests {
     /// budget's stall-bounding job — while exhaustion at an OFFERING beat is a starved
     /// acceptance and a defect. This arm records the first half on a real driven board.
     ///
-    /// MEASURED, not predicted: at dellian beat 14 (`ring=2 stack=154 frozen=152`) the mint
-    /// spends the FULL cap and refuses `NoCertification`; the corpus's one offering beat
-    /// (dina, integration row `r16_the_offering_beats_probe_demand_is_exactly_measured`)
-    /// spends 13 and is NOT denied. Same seam, same cap, opposite sides of the budget.
+    /// On the dellian dump the mint spends the FULL cap and refuses `NoCertification`; the
+    /// corpus's one offering beat is the integration row
+    /// `r16_the_offering_beats_probe_demand_is_exactly_measured`, where the mint is NOT
+    /// denied. Same seam, same cap, opposite sides of the budget.
     ///
-    /// ⚠ THE SEARCH IS THE ROW'S OWN CONSTRUCTION REQUIREMENT, NOT `has_frozen_window`. "Mintable"
-    /// means the walk reached the METERED CLASSIFIER, i.e. `meter.spent > 0`. The old predicate
-    /// asserted `span == 1` on the newest pair and landed on the first ring-bearing beat, where
-    /// the mint spends 0 and never reaches the classifier at all. `meter.denied` was REJECTED as
-    /// a search predicate: `denied` can only latch after exhaustion, so `denied ⇒ spent == cap`
-    /// and the assertion would assert itself.
+    /// ⚠ THE SEARCH IS THE ROW'S OWN CONSTRUCTION REQUIREMENT, NOT `has_frozen_window`.
+    /// "Mintable" means the walk reached the METERED CLASSIFIER, i.e. `meter.spent > 0`; a
+    /// predicate that only asserts `span == 1` on the newest pair lands on the first
+    /// ring-bearing beat, where the mint spends 0 and never reaches the classifier at all.
+    /// `meter.denied` cannot serve as the search predicate: `denied` can only latch after
+    /// exhaustion, so `denied ⇒ spent == cap` and the assertion would assert itself.
     ///
-    /// REVERT-PROBE: raise `PROBE_BUDGET` above dellian's unexempted demand (measured 96–107
-    /// at these beats) ⇒ `denied` goes false ⇒ FLIPS. Lowering it cannot flip this arm, which
+    /// REVERT-PROBE: raise `PROBE_BUDGET` above dellian's unexempted demand ⇒ `denied` goes
+    /// false ⇒ FLIPS. Lowering it cannot flip this arm, which
     /// is exactly why the offering-beat row is a separate one. **That revert-probe is SHIPPED
     /// IN-ROW as a positive control** ([`ProbeCap::RaisedTwiceLinks`], the same board, one
     /// argument apart): the meter provably returns `(x, false)` here, so `(cap, true)` is a
@@ -19812,7 +19790,7 @@ mod tests {
     }
 
     // ───────────────────────────────────────────────────────────────────────────────────
-    // §6 U3 ROWS — R14 / R19 / R29 / R31(completeness) / R32
+    // U3 ROWS — R14 / R19 / R29 / R31(completeness) / R32
     // ───────────────────────────────────────────────────────────────────────────────────
 
     /// Shape (A): a proposer-controlled triggered ability declaring exactly ONE mandatory
@@ -19820,9 +19798,9 @@ mod tests {
     ///
     /// The announcement is load-bearing, not decoration: `optional_cleared_classification`
     /// resolves the ability on the board `resolve_top` would hand it, and an UNANNOUNCED
-    /// target derives no events at all, which `probe_resolution` classifies `Prompted`
-    /// (§6 R11). A shape-(A) fixture without announced targets therefore has residual
-    /// `MayPrompt` for every slot vector and R19's transition could never fire.
+    /// target derives no events at all, which `probe_resolution` classifies `Prompted`.
+    /// A shape-(A) fixture without announced targets therefore has residual `MayPrompt` for
+    /// every slot vector and R19's transition could never fire.
     fn u3_shape_a_entry(src: ObjectId, id: u64) -> StackEntry {
         use crate::types::ability::{
             ControllerRef, Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
@@ -19860,7 +19838,7 @@ mod tests {
         }
     }
 
-    /// §6 R7 — THE FROZEN PREFIX IS AN `(index, id)` IDENTITY, NOT A PRESENCE COUNT.
+    /// R7 — THE FROZEN PREFIX IS AN `(index, id)` IDENTITY, NOT A PRESENCE COUNT.
     ///
     /// CR 732.2a: `certified_period_touch` may exempt a `current.stack` entry from conjunct (6)
     /// only when that entry sits at the SAME INDEX carrying the SAME `ObjectId` in every window
@@ -19880,7 +19858,7 @@ mod tests {
     ///   front) ⇒ the prefix ids are no longer at their own indices ⇒ NOTHING is frozen, even
     ///   though every id is still PRESENT in that frame.
     ///
-    /// REVERT-PROBE (RUN, see the journal): weaken the identity conjunct to a presence check
+    /// REVERT-PROBE: weaken the identity conjunct to a presence check
     /// (`frame.stack.get(*index).is_some()`) ⇒ (b)'s frozen set becomes the whole prefix again
     /// ⇒ (b) FAILS. (a)/(a′) stay green under that probe, which is what makes (b) the arm the
     /// identity conjunct is answerable to.
@@ -19960,16 +19938,14 @@ mod tests {
     /// than a second authority.
     ///
     /// ⚠ THE COMPARISON IS AGAINST THE TEST'S OWN INPUT DATA, NEVER AGAINST A SECOND CALL OF
-    /// THE FUNCTION UNDER TEST. Rounds 5/6 wrote this row as
-    /// `bounded_cycle_pin_slots_for_window(&certified_period_touch(&[], state, ..), p)` vs
-    /// `bounded_cycle_pin_slots(state, p)` — post-U3 the same function body on both sides, so
-    /// the equality held by construction AND the stated revert-probe edited a dependency BOTH
-    /// sides call. Round 7's replacement (a HEAD-captured frozen point sequence) was struck in
-    /// turn: U2's shape-(B) mint publishes on beats HEAD refuses, and a per-beat sequence
-    /// embeds `ObjectId` literals that a fixture re-dump renumbers. The PROPERTY against a
-    /// CONSTRUCTED frame has neither failure mode.
+    /// THE FUNCTION UNDER TEST. `bounded_cycle_pin_slots_for_window(&certified_period_touch(
+    /// &[], state, ..), p)` vs `bounded_cycle_pin_slots(state, p)` is the same function body
+    /// on both sides, so the equality would hold by construction AND a revert-probe would edit
+    /// a dependency BOTH sides call. A captured per-beat frozen point sequence fails
+    /// differently: it embeds `ObjectId` literals that a fixture re-dump renumbers. The
+    /// PROPERTY against a CONSTRUCTED frame has neither failure mode.
     ///
-    /// REVERT-PROBE that actually flips: restore round 4's `window.len() < 2 ⇒ announced`
+    /// REVERT-PROBE that actually flips: restore a `window.len() < 2 ⇒ announced`
     /// EMPTY branch ⇒ `announced.len() == 0` while the constructed stack is non-empty ⇒ the
     /// element-for-element equality fails on the LENGTH assertion alone, and the ≥1-point
     /// reach-guard fails with it.
@@ -20057,13 +20033,13 @@ mod tests {
     ///
     /// **(a) BEHAVIOURAL.** `state` and `entry` are held FIXED and only `slots` varies, over
     /// FOUR cases — `{}`, `{target}`, `{may}`, `{target, may}`. The vector is SHAPE-DEPENDENT
-    /// and both shapes are asserted, because D3 re-expressed the gate as *"`may` pinned AND
+    /// and both shapes are asserted, because the gate reads *"`may` pinned AND
     /// (`target.is_none()` OR target pinned)"*:
     /// * **(a-A) shape (A)** — targeted AND optional ⇒ `[None, None, None, Some(residual)]`.
     /// * **(a-B) shape (B)** — may-only ⇒ `[None, None, Some(residual), Some(residual)]`.
     ///
     /// The `{may}` case is the one that DIFFERS between the shapes, and asserting BOTH is what
-    /// makes D3's `target.is_none()` disjunct load-bearing: with (a-A) alone, deleting that
+    /// makes the `target.is_none()` disjunct load-bearing: with (a-A) alone, deleting that
     /// disjunct changes nothing and the row cannot see it. The two SINGLETON cases are what
     /// make both disjuncts load-bearing, which a 0/1/2-slot sweep could not do.
     ///
@@ -20076,7 +20052,7 @@ mod tests {
     /// ERROR TO FIX.
     ///
     /// REVERT-PROBE (a): collapse the design to an id-keyed cache of the RELIEF verdict —
-    /// i.e. adopt option 1's shape with an incomplete key — ⇒ every case returns the `{}`
+    /// an incomplete key — ⇒ every case returns the `{}`
     /// verdict `None` ⇒ the fourth arm's `Some(residual)` assertion FLIPS TO FAIL. The paired
     /// positive reach-guard is mandatory and is asserted: the last case must return `Some` on
     /// the unmutated design, otherwise the leading `None`s pass over a relief that never
@@ -20206,11 +20182,11 @@ mod tests {
     ///
     /// REVERT-PROBE (a)/(a′)/(b): delete
     /// `if board.pending_trigger_entry == Some(entry.id) { return false; }` from
-    /// `entry_target_choice_is_pinned` — i.e. ship the round-35 4-arg signature, which makes
+    /// `entry_target_choice_is_pinned` — i.e. the 4-arg signature, which makes
     /// the statement unwritable — ⇒ (a) answers `true` ⇒ FLIPS, while (a′)/(b) stay green.
     /// ⚠ That revert COMPILES, which is the whole reason this row exists: the fail-open
-    /// direction leaves no type error behind and `PeriodVerdicts.frames` is private, so an
-    /// executor who drops the board has no way to notice.
+    /// direction leaves no type error behind and `PeriodVerdicts.frames` is private, so a
+    /// change that drops the board leaves nothing to notice.
     ///
     /// REVERT-PROBE (c): pass the live `current` instead of the pair's carrying frame ⇒ (c1)
     /// and (c2) BOTH FLIP, while (a)/(a′)/(b) stay green on the degenerate current-stack pair
@@ -20347,10 +20323,9 @@ mod tests {
         }
 
         // ── (c3) THE SAME CROSSING, AT THE PRODUCTION SEAM THAT WRITES THE ARGUMENT ─────
-        // (c1)/(c2) pin the PREDICATE's board-sensitivity, which is where the plan sites this
-        // row (an offer-level negative on this axis is dominated by conjunct (6)'s own
-        // refusals). But the argument the row is about is written in
-        // `stack_choices_are_all_specified`'s announcement loop, so the plan's stated
+        // (c1)/(c2) pin the PREDICATE's board-sensitivity; an offer-level negative on this
+        // axis is dominated by conjunct (6)'s own refusals. But the argument the row is
+        // about is written in `stack_choices_are_all_specified`'s announcement loop, so the
         // revert-probe — "pass the live `current` instead of the pair's carrying frame" —
         // needs a site that FLIPS. This arm is that site: the (c2) crossing driven end to
         // end, where the correct argument CERTIFIES and the reverted one REFUSES.
@@ -20404,8 +20379,8 @@ mod tests {
     /// `current`. Paired with R29, which pins the same discipline for the other disjunct:
     /// the two halves of one `||` must not read two boards.
     ///
-    /// `stack_entry_has_no_ordering_input`'s arity does NOT change under 5d, which is why
-    /// only a row can pin the decision — §7 held it under *"Reused verbatim"*. It is
+    /// `stack_entry_has_no_ordering_input`'s arity does NOT change, which is why only a row
+    /// can pin the decision. It is
     /// board-sensitive: `state.pending_trigger_entry`, then `forced_unique_targeting` →
     /// `build_target_slots` + `auto_select_targets_for_ability`, i.e. the verdict is a
     /// function of the board's legal-target POPULATION.
@@ -20553,18 +20528,17 @@ mod tests {
         );
     }
 
-    /// R31 COMPLETENESS ARM (the U3 half of a row whose arms (a)/(a′)/(b) shipped in U2).
+    /// R31 COMPLETENESS ARM — the half that quantifies over pairs NOT on `current.stack`.
     ///
-    /// U2's arms proved the closure on entries sitting on `current.stack`. This arm proves
-    /// the premise those arms silently rest on — *every minted pair is SCANNED* — for the
-    /// population U2 could not reach: a pair that ANNOUNCED inside the certified period and
-    /// has since left the stack. It ships here and not in U2 because its revert-probe names
-    /// `touch.announced`, which U3 creates: at U2 `stack_choices_are_all_specified` still
-    /// carried HEAD's 3-argument shape, so there was no `touch` to drop.
+    /// `the_recipient_conjunct_reads_the_board_but_can_never_move_a_published_offer`'s arms
+    /// prove the closure on entries sitting on `current.stack`. This arm proves the premise
+    /// those arms silently rest on — *every minted pair is SCANNED* — for the population they
+    /// cannot reach: a pair that ANNOUNCED inside the certified period and has since left the
+    /// stack. Its revert-probe names `touch.announced`, which only the windowed
+    /// `stack_choices_are_all_specified` carries.
     ///
-    /// Off-stack announced pairs are the MAJORITY population on both measured dumps
-    /// (`beats_offstack_nonzero` 157/161 F4, 19/23 dellian), so this is the common case, not
-    /// an edge one.
+    /// Off-stack announced pairs are the MAJORITY population on both tracked dumps, so this is
+    /// the common case, not an edge one.
     ///
     /// THE BOARD: the entry carries `Effect::PayCost { payer: Controller }` — a member of
     /// `effect_resolution_choice_freedom`'s fail-closed grouped arm, i.e. exactly U2 arm
@@ -20573,8 +20547,7 @@ mod tests {
     ///
     /// REVERT-PROBE: narrow the RESOLUTION loop back to `current.stack` only (drop the
     /// `touch.announced` half of `pairs`) ⇒ the pair is never classified ⇒ the predicate
-    /// returns `true` ⇒ FLIPS. That is what makes "every minted pair is scanned" a MEASURED
-    /// premise rather than a stated one.
+    /// returns `true` ⇒ FLIPS.
     #[test]
     fn r31_completeness_an_announced_off_stack_pair_is_still_scanned_by_conjunct_six() {
         use crate::game::engine::entry_publishes_pin_slots;
@@ -20661,13 +20634,12 @@ mod tests {
     ///
     /// At window offset zero the window-relative position EQUALS the absolute one
     /// (`w_pos == abs ⟺ idx == 0`) and an id-only memo key serves the same frame it would
-    /// have computed anyway, so the shipped mint and BOTH reverts AGREE. Round 15's re-key
-    /// from two ring frames to three reproduced the diagnosed defect one parameter over
-    /// precisely because a "three-frame period" taken as the WHOLE ring plus `current` is
-    /// still `idx == 0`.
+    /// have computed anyway, so the shipped mint and BOTH reverts AGREE. Re-keying from two
+    /// ring frames to three does not escape it: a "three-frame period" taken as the WHOLE
+    /// ring plus `current` is still `idx == 0`.
     ///
-    /// This test is GREEN under every probe R22 runs. That measured agreement is the whole
-    /// point: it is what a fixture at this offset can prove, which is nothing.
+    /// This test is GREEN under every probe R22 runs, and that agreement is the whole point:
+    /// it is what a fixture at this offset can prove, which is nothing.
     #[test]
     fn r22_control_at_window_offset_zero_the_two_key_arithmetics_agree() {
         let (base, src) = u2_relief_board();
@@ -20712,10 +20684,10 @@ mod tests {
     /// honestly: it is total over every `FrameIx` THIS container minted, and MINTING
     /// (`frame_ix`) is the membership question — conjunct (2′) is that half.
     ///
-    /// **(2) FRAME-CORRECTNESS — THE PIN IS THE WINDOW OFFSET, NOT THE FRAME COUNT.** Round 15
-    /// re-keyed this two frames → three and reproduced the diagnosed defect one parameter over:
+    /// **(2) FRAME-CORRECTNESS — THE PIN IS THE WINDOW OFFSET, NOT THE FRAME COUNT.** Re-keying
+    /// two frames → three reproduces the defect one parameter over:
     /// `w_pos == abs ⟺ idx == 0`, so a "three-frame period" built as the WHOLE ring plus
-    /// `current` is exactly as vacuous as the two-frame form it replaced. The construction
+    /// `current` is exactly as vacuous as the two-frame form. The construction
     /// requirement is therefore `ring.len() >= 3` **AND** the candidate window starting at
     /// `idx >= 1` — a STRICT SUFFIX of the ring plus `current` — and BOTH are carried as
     /// EXECUTABLE reach-guards, not prose. The period is built so the SAME entry id classifies
@@ -20724,7 +20696,7 @@ mod tests {
     /// the CARRYING frame's, never the window-relative position's.
     ///
     /// The `idx == 0` shape is RETAINED as this conjunct's own NEGATIVE CONTROL: there the
-    /// shipped mint and the window-relative revert AGREE, and that measured agreement is the
+    /// shipped mint and the window-relative revert AGREE, and that agreement is the
     /// VACUITY BOUNDARY — it must never be reported as coverage.
     ///
     /// **(2′) MINT-IDENTITY.** Every announced pair of a real window resolves through
@@ -20743,7 +20715,7 @@ mod tests {
     /// container that minted it. The relief's agreement guard is the second half: pins minted
     /// for A consumed under a container bound to B get `None`.
     ///
-    /// REVERT-PROBES (all three RUN, see the journal):
+    /// REVERT-PROBES:
     /// * **(1)/(2)** key the memo by `ObjectId` ALONE (drop the `FrameIx` component) ⇒ the
     ///   id-keyed blindness returns, one entry gets ONE verdict across frames ⇒ (2) FLIPS while
     ///   the `idx == 0` control stays green — which is exactly the vacuity boundary.
@@ -20884,7 +20856,7 @@ mod tests {
     /// the board certifies at all (without it the negative passes over a board that refuses for
     /// unrelated reasons), the negative differs ONLY in which frame set the memo was built over.
     ///
-    /// REVERT-PROBE (RUN): make `frame_ix` resolve unchecked — fall back to the last index
+    /// REVERT-PROBE: make `frame_ix` resolve unchecked — fall back to the last index
     /// instead of returning `None` — and the mismatched container certifies against the wrong
     /// frame set ⇒ the negative FLIPS.
     #[test]
@@ -20937,7 +20909,7 @@ mod tests {
     /// minted for A when the container is bound to B (CR 603.5: the cached `published` IS the
     /// mint's answer for the CONTAINER's proposer).
     ///
-    /// REVERT-PROBES (both RUN): hard-code the proposer inside `verdict` ⇒ the
+    /// REVERT-PROBES: hard-code the proposer inside `verdict` ⇒ the
     /// `for_period(A)`-vs-`unproven` pair collapses to one answer ⇒ FLIPS. Delete
     /// `pinned_may_choice_relief`'s agreement guard ⇒ B's container relieves A's pins ⇒ FLIPS.
     #[test]
@@ -20969,10 +20941,10 @@ mod tests {
         );
         // ── The relief half: pins minted for A, container bound to B ────────────────────────
         //
-        // ⚠ THE VACUITY THIS ARM HAD TO ESCAPE. Run against the P0-controlled `entry` above,
-        // this arm passes with the agreement guard DELETED — measured: probe P4 left it green.
-        // The mint's own `entry.controller != proposer` conjunct already answers `None` for B,
-        // so the negative was satisfied upstream of the guard it claimed to cover. The entry
+        // ⚠ THE VACUITY THIS ARM HAS TO ESCAPE. Against the P0-controlled `entry` above this
+        // arm passes with the agreement guard DELETED: the mint's own
+        // `entry.controller != proposer` conjunct already answers `None` for B, so the
+        // negative would be satisfied upstream of the guard it claims to cover. The entry
         // below is controlled by B, so B's container genuinely publishes and the guard is the
         // ONLY thing left standing between A's pins and a relief minted for another seat.
         let mut b_entry = u2_shape_b_entry(src, 9224, u2_draw_effect(), |a| {
@@ -21022,13 +20994,12 @@ mod tests {
     }
 
     // ───────────────────────────────────────────────────────────────────────────────────
-    // §6 R27 — THE `.live`-READER CONJUNCTS (a3) / (b) / (c) / (e)
+    // R27 — THE `.live`-READER CONJUNCTS (a3) / (b) / (c) / (e)
     //
     // All four need what (a1)/(a2) did not: an announced pair whose CARRYING FRAME is a
-    // RETAINED SAMPLE rather than `current`. The shared fixture below is the only thing that
-    // makes them differ from the shipped `.normalized`-blind rows — and, measured, it is what
-    // lets (b) and (c) flip BEHAVIOURALLY on the mint's own carrier line, which round 7's
-    // self-built-window rows structurally could not (probe P6).
+    // RETAINED SAMPLE rather than `current`. The shared fixture below is what lets (b) and
+    // (c) flip BEHAVIOURALLY on the mint's own carrier line, which a row that builds its own
+    // window structurally cannot.
     // ───────────────────────────────────────────────────────────────────────────────────
 
     /// A retained ring whose NEWEST sample carries stack entries neither the older samples nor
@@ -21384,10 +21355,9 @@ mod tests {
     /// the classification a `.live` carrier produces for an `Effect::Token` announcement is
     /// the classification the live board produces, event for event.
     ///
-    /// THE INSTRUMENT-LIVENESS CONTROL IS THE ARM THAT MAKES THE EQUALITY MEAN ANYTHING, and
-    /// it is MEASURED rather than predicted. The plan forecast the divergence at the
-    /// ALLOCATOR (`create_object` handing out `ObjectId(0)` over a live object); measured, the
-    /// derivation diverges one field earlier and more directly — `normalize_for_loop` runs
+    /// THE INSTRUMENT-LIVENESS CONTROL IS THE ARM THAT MAKES THE EQUALITY MEAN ANYTHING. The
+    /// derivation diverges earlier than the ALLOCATOR (`create_object` handing out
+    /// `ObjectId(0)` over a live object) and more directly — `normalize_for_loop` runs
     /// `clear_trigger_identity_recursive`, which sets `ability.source_id = ObjectId(0)`, and
     /// the resolver carries that straight into `TokenSpec.source_id`. So a normalized carrier
     /// proposes a token whose CR 111.1 source is the null object, and the two sets differ.
@@ -21395,7 +21365,7 @@ mod tests {
     /// ⚠ SCOPE, stated because a reader will ask why this arm is not an offer-level one:
     /// BOTH derivations are `event_is_accounted`, so the mint OFFERS on either carrier and
     /// (a3) alone has NO behavioural flip at the seam. The carrier axis IS flipped
-    /// behaviourally, on exactly the shared revert the plan names, by
+    /// behaviourally, on the shared carrier revert, by
     /// `r27_b_a_stored_may_auto_choice_survives_the_ring` and
     /// `r27_c_an_intervening_if_binds_with_the_retained_samples_trigger_source` below, and
     /// structurally by `game::engine`'s `the_period_touch_window_is_carried_by_the_live_half`.
@@ -21534,9 +21504,10 @@ mod tests {
     /// R27 (b) — THE ENTRY-IDENTITY AXIS: A STORED CR 603.5 AUTO-CHOICE STILL REFUSES THE MINT
     /// WHEN THE PAIR ARRIVES FROM THE RING.
     ///
-    /// CR 603.5 + CR 732.2a. R25 pinned the mint's second-authority conjunct on a board whose
-    /// entry sits on `current.stack`; this is its missing production twin — the same board
-    /// driven THROUGH the ring, so the mint is asked about a retained sample. The refusal has
+    /// CR 603.5 + CR 732.2a. The mint's second-authority conjunct is pinned elsewhere on a
+    /// board whose entry sits on `current.stack`; this is its production twin — the same
+    /// board driven THROUGH the ring, so the mint is asked about a retained sample. The
+    /// refusal has
     /// to survive that, because the announced population is where the mint's domain actually
     /// lives (`bounded_cycle_pin_slots_for_window` maps over `touch.announced`).
     ///
@@ -21545,13 +21516,12 @@ mod tests {
     /// it the mint publishes nothing, the relief has no `may` to spend, and step (6) refuses
     /// `UnspecifiedChoiceWindow`.
     ///
-    /// REVERT-PROBE (the plan's shared carrier revert, and it FLIPS — measured): point
+    /// REVERT-PROBE (the shared carrier revert): point
     /// `game::engine::bounded_cycle_offer`'s `ring_live` at `&f.normalized` ⇒ the carrying
     /// frame becomes a comparand whose `ability.source_id` is `ObjectId(0)`
     /// (`clear_trigger_identity_recursive`) ⇒ the `MayTriggerAutoChoiceKey` misses ⇒ the `may`
-    /// slot IS minted ⇒ the negative arm OFFERS. This is the flip round 7 could not obtain:
-    /// a row that builds its own window is blind to the mint's carrier, a row driven through
-    /// the mint is not.
+    /// slot IS minted ⇒ the negative arm OFFERS. A row that builds its own window is blind to
+    /// the mint's carrier; a row driven through the mint is not.
     #[test]
     fn r27_b_a_stored_may_auto_choice_survives_the_ring() {
         use crate::game::engine::{
@@ -21671,14 +21641,14 @@ mod tests {
     }
 
     // ───────────────────────────────────────────────────────────────────────────────────
-    // F2 / N0 / A5 — one CR 603.5 authority, its two consumers, and the stored answer.
+    // F2 / A5 — one CR 603.5 authority, its two consumers, and the stored answer.
     // ───────────────────────────────────────────────────────────────────────────────────
 
-    /// A5 / N0 — **A STORED `Accept` RELIEVES GATE (6). A STORED `Decline` DOES NOT.**
+    /// A5 — **A STORED `Accept` RELIEVES GATE (6). A STORED `Decline` DOES NOT.**
     ///
     /// CR 603.5 + CR 732.2a. The matched pair `r27_b` is one field short of: same board, same
     /// key, ONE value different. It is the whole content of the auto-choice relief basis, and
-    /// it is the arm the user's own MODE1 board rides on — that capture carries a stored
+    /// it is the arm a real capture rides on when that capture carries a stored
     /// "always take", so guard (b) withholds the pin slot and the ONLY thing that can specify
     /// the window is this relief.
     ///
@@ -21802,15 +21772,14 @@ mod tests {
 
     /// F2a — **ONE AUTHORITY, AND THE TWO ABILITY SHAPES THE THIRD COPY GOT WRONG.**
     ///
-    /// CR 603.5 + CR 608.2d + CR 101.4. Before adoption, three places answered *"does this
-    /// ability open one up-front optional gate?"*: production's own branch in
-    /// `resolve_chain_body`, the mint's guard (b), and this module's `auto_may_answer_for`.
-    /// The latter two asked the same four predicates and OMITTED two conjuncts production has
-    /// — `optional_for` and the CR 608.2d feasibility probe — so on two ability shapes they
-    /// called a may "already answered" where production never reads the store at all.
+    /// CR 603.5 + CR 608.2d + CR 101.4. Three places answer *"does this ability open one
+    /// up-front optional gate?"*: production's own branch in `resolve_chain_body`, the mint's
+    /// guard (b), and this module's `auto_may_answer_for`. A copy that asks only the four
+    /// shared predicates and OMITS `optional_for` and the CR 608.2d feasibility probe calls a
+    /// may "already answered" on two ability shapes where production never reads the store.
     ///
     /// This row is that divergence, asserted at the authority. Every arm seeds a stored
-    /// `Accept` under exactly the key the old copy would have built, so an omitted conjunct
+    /// `Accept` under exactly the key such a copy would build, so an omitted conjunct
     /// shows up as a WRONG ANSWER rather than as an absent one.
     ///
     /// | arm | one field different | gate | `stored_may_answer` |
@@ -21851,7 +21820,7 @@ mod tests {
                 },
             },
         };
-        // The key the OLD copy built: `optional_prompt_player` (P0 here) + source + origin.
+        // The key such a copy builds: `optional_prompt_player` (P0 here) + source + origin.
         // Seeded on every arm, so an omitted conjunct is a wrong answer and not a missing one.
         let key = MayTriggerAutoChoiceKey {
             player: PlayerId(0),
@@ -21949,7 +21918,7 @@ mod tests {
         );
 
         // `Known` is the mode production uses, and it must OVERRIDE the probe rather than
-        // re-run it — otherwise adoption A would pay the clone twice on every resolve.
+        // re-run it — otherwise the resolve path would pay the clone twice on every resolve.
         assert!(
             upfront_optional_gate(
                 &stocked,
@@ -21971,11 +21940,12 @@ mod tests {
     /// F2b — **GUARD (b) WITHHOLDS A PIN THE CR 603.5 GATE CAN NEVER SPEND.**
     ///
     /// CR 732.2a + CR 608.2d. The mint publishes a `MayChoice` slot so a declaration can pin
-    /// the ONE up-front window an entry opens. Before adoption it minted that slot for two
-    /// shapes that open no such window: an `optional_for` fan-out (an APNAP cascade of up to
-    /// one window per living player — one slot standing for N prompts is exactly the
-    /// cardinality defect group (c) already argues against) and an infeasible optional (a pin
-    /// the gate can never spend, invisible even to a fail-closed inject arm).
+    /// the ONE up-front window an entry opens. It must NOT mint that slot for two shapes that
+    /// open no such window: an `optional_for` fan-out (an APNAP cascade of up to one window
+    /// per living player — one slot standing for N prompts is the cardinality defect
+    /// `game::engine`'s `one_published_may_slot_stands_for_exactly_one_cr_603_5_prompt` argues
+    /// against) and an infeasible optional (a pin the gate can never spend, invisible even to
+    /// a fail-closed inject arm).
     ///
     /// THE FIXTURE IS UNSEEDED ON PURPOSE. Every arm carries `may_trigger_origin: None`, so
     /// guard (b)'s store conjunct is vacuously true on both the old predicate and the new one
@@ -22099,11 +22069,11 @@ mod tests {
     /// refusal the live board would never make.
     ///
     /// THE MATCHED PAIR IS THE CONTEXT ITSELF, byte-identical otherwise, so the offer's
-    /// existence is attributable to `trigger_source` and to nothing else on the board. The
-    /// plan's "must classify identically to the same entry classified against `current`" ships
-    /// as its own conjunct alongside.
+    /// existence is attributable to `trigger_source` and to nothing else on the board. "The
+    /// same entry classified against `current` must classify identically" ships as its own
+    /// conjunct alongside.
     ///
-    /// REVERT-PROBE (the shared carrier revert, and it FLIPS — measured): point
+    /// REVERT-PROBE (the shared carrier revert): point
     /// `bounded_cycle_offer`'s `ring_live` at `&f.normalized` ⇒ the POSITIVE arm stops
     /// offering and returns `UnspecifiedChoiceWindow`.
     #[test]
@@ -22250,7 +22220,7 @@ mod tests {
     ///   which is drawn as a candidate and yields NO cause ⇒ certifies. This is the control
     ///   that keeps the first arm from being "an extra object on the frame refuses".
     ///
-    /// THE DEFINITION SHAPE IS MEASURED, NOT CHOSEN. An OPTIONAL draw replacement makes
+    /// THE DEFINITION SHAPE IS FORCED BY THE SEAM. An OPTIONAL draw replacement makes
     /// `probe_resolution` itself prompt (the resolution raises a choice), so the entry is
     /// already `MayPrompt` at the PRIMARY classification and the discharge is never reached —
     /// the refusal would be real but would key on the wrong seam. A MANDATORY definition with
@@ -22258,7 +22228,7 @@ mod tests {
     /// `ReplacementPromptCause::MandatoryBodyContinuation`, which is the shape that reaches
     /// the CR 614.1 + CR 616.1 discharge tail.
     ///
-    /// REVERT-PROBE (the plan's own, and it FLIPS — measured): pass the live `state` instead
+    /// REVERT-PROBE: pass the live `state` instead
     /// of `frame` to `resolution_events_are_discharged` in `stack_choices_are_all_specified`
     /// ⇒ the frame-only definition is invisible to `find_applicable_replacements` ⇒ the pair
     /// CERTIFIES and the first arm FLIPS TO FAIL, while the both-boards and neither-board arms
@@ -22466,16 +22436,16 @@ mod tests {
     /// Widening any of them for the tests is forbidden.
     ///
     /// The board is the REAL 4p `sprout_witherbloom_realistic_lands_4p` dump inflated through the
-    /// production decoder, which is also the base board every route row in the integration file
-    /// runs on — so R1-neg and R2-neg are the same board and the same zero.
+    /// production decoder, which is also the base board every route row in the integration
+    /// file runs on, so this row's negative and the integration file's share it and the zero.
     ///
     /// WHY THE ZERO IS REAL, three independent ways rather than one:
     /// 1. **Pre-gate presence** — the board genuinely carries `SpellCast`-keyed definitions. The
     ///    predicate returning false is therefore the GATE speaking, not an absent trigger class.
     /// 2. **Same-gate positive control (M-1)** — holding the gate and inverting only the key axis
     ///    returns NON-ZERO, so the gated instrument provably sees something on this board. A raw
-    ///    pre-gate count would not have established this: measured on a sibling 4p fixture, a raw
-    ///    count reads 86 while ZERO of 162 definitions pass the gate.
+    ///    pre-gate count would not have established this: on a sibling 4p fixture a raw count
+    ///    reads non-zero while NO definition passes the gate.
     /// 3. **R1, the flip** — one battlefield-resident cast trigger, and the same predicate on the
     ///    same board returns true.
     #[test]
@@ -22538,16 +22508,15 @@ mod tests {
         );
     }
 
-    /// **V4** — `ResourceAxis::unbounded_mark_kind` VALUE-covers all 17 variants, which is what the
+    /// `ResourceAxis::unbounded_mark_kind` VALUE-covers every variant, which is what the
     /// exhaustive `match` only TYPE-covers.
     ///
-    /// THE STANDING GUARD AGAINST THE REJECTED SUBSET RULE. The rejected fix #2 for this seam was
-    /// "collapse only the axes a batched item could deliver", which amounts to classifying
-    /// `LibraryDelta` as a non-collapsed axis. `ResourceVector::unbounded_components` keeps a
-    /// NEGATIVE `LibraryDelta` by its CR 401 exemption, so the mill board this lane exists to
-    /// serve puts `LibraryDelta(_)` into `proposal.unbounded` — and a subset rule there would
-    /// refuse the replay on that very board. The `LibraryDelta` row below is what makes that
-    /// re-introduction RED under a new name.
+    /// THE STANDING GUARD AGAINST A SUBSET RULE — "collapse only the axes a batched item could
+    /// deliver", which amounts to classifying `LibraryDelta` as a non-collapsed axis.
+    /// `ResourceVector::unbounded_components` keeps a NEGATIVE `LibraryDelta` by its CR 401
+    /// exemption, so a mill board puts `LibraryDelta(_)` into `proposal.unbounded` — and a
+    /// subset rule there would refuse the replay on that very board. The `LibraryDelta` row
+    /// below is what makes that re-introduction RED under a new name.
     ///
     /// Non-vacuity, both directions: the `Mana(_)` row fails the trivial "delete the filter"
     /// regression (an all-`DeferredAccrual` implementation), and every `DeferredAccrual` row fails
@@ -22579,7 +22548,7 @@ mod tests {
         );
 
         // CR 732.2c owns every remaining axis: the accepted materialization delivers the growth,
-        // so applying it is what ends the mark. All 16 remaining variants, by name.
+        // so applying it is what ends the mark. All remaining variants, by name.
         for (axis, why) in [
             (
                 ResourceAxis::Life(p0),
@@ -22629,8 +22598,8 @@ mod tests {
         }
     }
 
-    /// **V6** — the MED-2 parameterization preserves BOTH predicates exactly, and the class
-    /// argument is really read.
+    /// The `BoardTriggerClass` parameterization preserves BOTH predicates exactly, and the
+    /// class argument is really read.
     ///
     /// REVERT PROBE: swap the two arms of `BoardTriggerClass::matches` ⇒ both halves below go RED.
     /// A parameterization that ignored `class` (returning "any functioning trigger") would pass a
@@ -22638,10 +22607,10 @@ mod tests {
     /// is `SpellCast`-mode, so `SpellCast` must be TRUE and `EnterBattlefield` must be FALSE for
     /// that same object's key set.
     ///
-    /// The shipped `board_has_functioning_cast_trigger_reads_the_zone_gate` above stays byte
-    /// unchanged — including its zero-census positive control, which is what distinguishes a real
-    /// zero from a mis-specified-predicate zero (charter row R1-neg). This row adds the
-    /// `EnterBattlefield` mirror through the same instrument rather than re-arguing it.
+    /// `board_has_functioning_cast_trigger_reads_the_zone_gate` above carries the zero-census
+    /// positive control that distinguishes a real zero from a mis-specified-predicate zero.
+    /// This row adds the `EnterBattlefield` mirror through the same instrument rather than
+    /// re-arguing it.
     #[test]
     fn board_trigger_class_matches_reads_its_class_argument() {
         use crate::types::triggers::TriggerEventKey;
@@ -22693,9 +22662,9 @@ mod tests {
         );
     }
 
-    // ───────────────────────── phase C2 — block (2), arms S2 + S3 ─────────────────────
+    // ───────────────────────── block (2), arms S2 + S3 ────────────────────────────────
     //
-    // Structure mirrors the landed block-(1b) S1 rows: every row drives the PRODUCTION
+    // Structure mirrors the block-(1b) S1 rows: every row drives the PRODUCTION
     // predicate `fire_time_conditions_read_growing_class` (or its `_scoped` sibling), not
     // the arm in isolation, so the `disjoint` conjunct's WIRING into block (2) is under
     // test too. Every negative differs from its positive on the FIELD THE RELIEF READS,
@@ -22870,14 +22839,13 @@ mod tests {
         oid
     }
 
-    /// **S2-P1 / S2-N1** — the phase-C arm `exiled_colors_provably_exclude_class` as
+    /// **S2-P1 / S2-N1** — the arm `exiled_colors_provably_exclude_class` as
     /// block (2)'s `disjoint` conjunct reaches it, on Pit of Offerings' real AST.
     ///
     /// ⛔ NON-VACUITY IS THE WHOLE POINT OF THIS FIXTURE. An EMPTY exile-link set relieves
     /// trivially — `.all()` on an empty iterator is `true` — so a Pit with no links would
-    /// pass S2-P1 while measuring nothing, the `VACUOUS-BY-FIXTURE` class exactly. This
-    /// board therefore carries a NON-EMPTY link set (measured feature count: **1** linked
-    /// still-exiled card), asserted below before any outcome, so the relief that follows
+    /// pass S2-P1 while measuring nothing. This board therefore carries a NON-EMPTY link
+    /// set, asserted below before any outcome, so the relief that follows
     /// is about MEMBERSHIP and not about an unpopulated relation.
     ///
     /// REVERT / MUTATION PROBES, each named with the arm it flips:
@@ -22932,10 +22900,10 @@ mod tests {
         );
 
         // ── (iii) the `link.source_id` conjunct, ASKED OF ITS OWN AUTHORITY ──────────
-        // This claim is about `linked_exiled_ids`, so it is asserted there. It used to be
-        // routed through the arm with `foreign_linked` as the class member, which conjunct
-        // (c) now refuses on zone (M3) — and an arm that refuses for zone reasons cannot
-        // witness a link-scoping property. Same claim, instrument that can actually see it.
+        // This claim is about `linked_exiled_ids`, so it is asserted there. Routing it
+        // through the arm with `foreign_linked` as the class member would not witness it:
+        // conjunct (c) refuses that on zone (M3), and an arm that refuses for zone reasons
+        // cannot witness a link-scoping property.
         assert!(
             !crate::game::effects::mana::linked_exiled_ids(
                 &state,
@@ -23004,14 +22972,14 @@ mod tests {
     /// **S2-C (E2)** — the exile arm reached through the PRODUCTION `class_members`
     /// constructor, on a real frame pair, instead of a hand-written `HashSet`.
     ///
-    /// WHY IT EXISTS. Every other S2 row calls the firewall with a class set the test wrote by
+    /// Every other S2 row calls the firewall with a class set the test wrote by
     /// hand, and `exiled_colors_gate_is_precise_and_fail_closed`'s (ii) arm hands it an
     /// EXILE-zone id. The production constructor cannot emit one: inside
     /// [`loop_states_cover_modulo_fodder_growth`], `class_members` is `all_fodder` filtered by
     /// `cf.objects`, and `all_fodder` is collected from `pa.battlefield.chain(pb.battlefield)`.
     /// So at the production seam conjunct (d)'s membership test is CONSTANT-TRUE — it is
-    /// defence-in-depth, and the guarantee that actually carries there is the cover. That
-    /// asymmetry was argued in prose only until this row; the two reach-guards below pin it.
+    /// defence-in-depth, and the guarantee that actually carries there is the cover. The two
+    /// reach-guards below pin that asymmetry.
     ///
     /// It also pins the ORDERING every arm's soundness rests on — `board_covers_modulo_fodder`
     /// runs BEFORE the firewall inside this predicate — by driving the whole predicate rather
@@ -23112,9 +23080,9 @@ mod tests {
     /// census still vetoes, with a proven sole driver on the board.
     ///
     /// This is the CR 605.3a shape and it pins CONSTRAINT 5: S2/S3's relief is a separate
-    /// `disjoint` local and must never be folded into `relieved`. CR 605.3a
-    /// (MagicCompRules.txt:2694) lets a mana ability be activated "whenever they are
-    /// casting a spell or activating an ability that requires a mana payment" — i.e.
+    /// `disjoint` local and must never be folded into `relieved`. CR 605.3a lets a mana
+    /// ability be activated "whenever they are casting a spell or activating an ability that
+    /// requires a mana payment" — i.e.
     /// OUTSIDE the CR 117.1b priority rule `relieved` reasons from — so `relieved` must
     /// stay `false` for every mana ability however disjoint some other ability is.
     ///
@@ -23263,12 +23231,11 @@ mod tests {
         );
 
         // ── (iv) MULTI-AUTHORITY: relief is PER-ABILITY, never per-object ─────────────
-        // MEASURED DIVERGENCE from the plan's S3-N1 wording: Stockpile's own FIRST
-        // ability (`Mana{Fixed{Red}}` + a `PutCounter` sub-ability) scores
-        // `ability_definition_reads_growing_class_for_loop == false`, so it does not
-        // veto at all and cannot serve as a "still vetoes" sibling. The per-ability
-        // claim is therefore pinned with a sibling that DOES veto and is NOT relievable —
-        // the `scope: Target` AST above — on the same object as the relievable one.
+        // Stockpile's own FIRST ability (`Mana{Fixed{Red}}` + a `PutCounter` sub-ability)
+        // scores `ability_definition_reads_growing_class_for_loop == false`, so it does not
+        // veto at all and cannot serve as a "still vetoes" sibling. The per-ability claim is
+        // therefore pinned with a sibling that DOES veto and is NOT relievable — the
+        // `scope: Target` AST above — on the same object as the relievable one.
         let (multi_state, multi_member, multi_host) =
             block2_fixture(vec![subject.clone(), target_scoped]);
         {
@@ -23311,13 +23278,10 @@ mod tests {
         );
 
         // ── (v-M3) conjunct (c): EXISTS is not enough — LIVE ON THE BATTLEFIELD ───────
-        // Sibling of the `M3` arm in `exiled_colors_gate_is_precise_and_fail_closed`, ported
-        // here because this row block had ZERO off-battlefield fixtures: the row above is the
-        // `is_some_and(..)` half and NOTHING measured the `zone` half. MEASURED: with the
-        // conjunct reverted to `state.objects.contains_key(&class_member)` the whole lib suite
-        // stayed green. See this arm's doc for why the sibling arms' population argument does
-        // NOT transfer to an identity conjunct — which is exactly why this row is needed here
-        // rather than inherited.
+        // Sibling of the `M3` arm in `exiled_colors_gate_is_precise_and_fail_closed`: the row
+        // above measures the `is_some_and(..)` half and this arm is the only one that measures
+        // the `zone` half. The sibling arms' population argument does NOT transfer to an
+        // identity conjunct, which is why this row is needed here rather than inherited.
         let mut m3_state = state.clone();
         // A GRAVEYARD TWIN of the class member: byte-identical to `member` except for `zone`
         // (and the id it has to carry to coexist with it).
@@ -23620,7 +23584,6 @@ mod tests {
     /// **MED-2 pin, arm S2** — conjuncts (0) `activation_restrictions` and (a) the
     /// `Effect::NoOp` clone-and-rescan, each isolated on Pit's real AST.
     ///
-    /// Both conjuncts were previously deletable with the whole lib suite still green.
     /// Each half below is a MATCHED CONTROL against the same board's positive relief, so
     /// deleting either conjunct flips exactly one assertion.
     ///
@@ -24820,8 +24783,7 @@ mod tests {
     ///
     /// `expected_controller` is a PARAMETER rather than a hardcoded `P2_DRIVER` because row 37
     /// scans the same definition under BOTH controllers and needs this guard on both halves.
-    /// One authority for the guard beats a near-copy (*parameterize, don't proliferate*);
-    /// rows 16-23 all pass `P2_DRIVER` and their guard is unchanged in meaning.
+    /// One authority for the guard beats a near-copy (*parameterize, don't proliferate*).
     fn p2_reach_guards(state: &GameState, index: usize, expected_controller: PlayerId, why: &str) {
         use crate::game::ability_scan as scan;
         let obj = &state.objects[&P2_HOST];
@@ -24852,13 +24814,13 @@ mod tests {
 
     /// **Row 16 (NEGATIVE — an ability the sequence DOES name keeps vetoing).**
     ///
-    /// This is the INTERSECTION test, and it is the reason §0's relief-kind label calls P2
-    /// CONTINGENT: the relief holds only because the proposal happens not to name this
-    /// ability. CR 732.2c advances the game "with all game choices contained in the shortcut
+    /// This is the INTERSECTION test, and it is why the P2 relief is CONTINGENT: it holds
+    /// only because the proposal happens not to name this ability. CR 732.2c advances the
+    /// game "with all game choices contained in the shortcut
     /// proposal having been taken" — so an ability the proposal DOES contain IS activated
     /// inside the window and does act on the growing class.
     ///
-    /// It cannot be driven on the lane's real dump: the Sprout Swarm loop's only recorded step
+    /// It cannot be driven on the target dump: the Sprout Swarm loop's only recorded step
     /// is a `Recast`, which names a card being cast and never an activation.
     ///
     /// REVERT / MUTATION PROBE: replace the `LoopAction::Activate { .. } => ..` arm's body with
@@ -25028,7 +24990,7 @@ mod tests {
     /// CR 605.3a: a mana ability may be activated "whenever they have priority, whenever they
     /// are casting a spell or activating an ability that requires a mana payment, or whenever a
     /// rule or effect asks for a mana payment, even if it's in the middle of casting or
-    /// resolving a spell". The last two clauses sit OUTSIDE the priority rule, and MEASURED:
+    /// resolving a spell". The last two clauses sit OUTSIDE the priority rule, and
     /// all three sites that append a mana step to `last_loop_action_sequence` sit under a
     /// `(WaitingFor::Priority { .. }, ..)` reducer arm — so a mana ability tapped while paying
     /// the loop's own cost is recorded NOWHERE. Absence from the record therefore does not mean
@@ -25460,12 +25422,12 @@ mod tests {
     /// **Row 37 (PAIRED — the CR 117.1b relief still keys on the OBSERVER'S CONTROLLER, on a
     /// fixture the CR 732.2a proposal-absence relief provably cannot subsume).**
     ///
-    /// This row is the REPLACEMENT for the controller-axis guard the shipped integration row
-    /// `loop_shortcut.rs :: driver_own_unproposed_activated_ability_is_relieved` (X1-2) used to
-    /// carry. Under this partition X1-2's foreign half is OVER-DETERMINED — a foreign
+    /// The integration row
+    /// `loop_shortcut.rs :: driver_own_unproposed_activated_ability_is_relieved` cannot carry
+    /// the controller-axis guard: its foreign half is OVER-DETERMINED — a foreign
     /// class-reading activated ability is relieved by BOTH block (2)'s CR 117.1b `relieved` arm
-    /// AND its CR 732.2a `not_proposed` arm — so that half no longer isolates the controller
-    /// comparison, and the same is true of X1-1's opponents' utility lands. Here the proposal
+    /// AND its CR 732.2a `not_proposed` arm — so that half does not isolate the controller
+    /// comparison, and neither do opponents' utility lands. Here the proposal
     /// NAMES the ability on both halves, which pins `not_proposed` to `false` BY CONSTRUCTION
     /// and leaves `obj.controller != driver` as the only conjunct that can move a verdict.
     ///
@@ -25485,7 +25447,7 @@ mod tests {
     /// controller, so it answers `false` on the foreign half exactly as on the driver's.
     ///
     /// UNIT-LEVEL DELIBERATELY — nobody should "upgrade" this to an integration row. On the
-    /// boards this lane drives there is no fixture in which `not_proposed` is `false` for a
+    /// driven boards there is no fixture in which `not_proposed` is `false` for a
     /// class-reading activated bystander: the recorded sequence is a single `Recast` and names
     /// no ability (row 16). Injecting an `Activate` step does not produce one either, because
     /// `drive_loop_sequence_iteration` REPLAYS every recorded step through `apply_action(..,
@@ -25495,9 +25457,7 @@ mod tests {
     ///
     /// REVERT / MUTATION PROBE: invert block (2)'s `obj.controller != driver` comparison to
     /// `obj.controller == driver` ⇒ **BOTH verdicts SWAP** and the single paired `assert_eq!`
-    /// below prints `(false, true)` against `(true, false)` ⇒ **FAILS**. (A
-    /// restore is not verified until the artifact was REBUILT from it — a same-mtime restore
-    /// lets cargo skip the rebuild and silently re-run the mutated binary.)
+    /// below prints `(false, true)` against `(true, false)` ⇒ **FAILS**.
     #[test]
     fn foreign_relief_still_keys_on_the_controller_for_a_proposed_ability() {
         use crate::types::game_state::LoopAction;
@@ -25523,10 +25483,9 @@ mod tests {
         p2_reach_guards(&own, 0, P2_DRIVER, "row 37 driver's-own half");
         p2_reach_guards(&foreign, 0, P2_FOREIGN, "row 37 foreign half");
 
-        // THE REACH-GUARD THAT MAKES THIS THE REPLACEMENT AND NOT A DUPLICATE, and it is the
-        // whole point of the row: the proposal-absence predicate is `false` on BOTH halves, so
-        // `not_proposed` cannot carry either verdict below. This is exactly the property
-        // X1-2's fixture LOST when this partition landed.
+        // THE REACH-GUARD THAT MAKES THIS ROW ISOLATE THE CONTROLLER AXIS: the
+        // proposal-absence predicate is `false` on BOTH halves, so `not_proposed` cannot
+        // carry either verdict below.
         assert_eq!(
             (
                 activated_ability_is_not_a_loop_choice(
@@ -25572,14 +25531,13 @@ mod tests {
 
     /// **S4-P1 (POSITIVE — relief fires)** — `count_matching_condition_provably_excludes_class`
     /// as block (3)'s `condition` surface reaches it, on Sunken Hollow's and Cinder Glade's
-    /// REAL parsed conditions (both are literally in this lane's target dump, `ObjectId(215)`
+    /// REAL parsed conditions (both are literally in the target dump, `ObjectId(215)`
     /// and `ObjectId(320)`).
     ///
-    /// ⛔ **ONE ASSERTION DIRECTION PER `#[test]` FN — plan errata E-8.** The positive and the
-    /// negative used to share a single fn, so "row driven RED" could not say WHICH assertion
-    /// fired, and a mis-stated recipe was recorded against the wrong one for two consecutive
-    /// rounds. Each direction is its own fn now, and each registered mutation names the fn it
-    /// reddens plus the input on which the correct and mutant designs disagree.
+    /// ⛔ **ONE ASSERTION DIRECTION PER `#[test]` FN.** A fn carrying both directions cannot
+    /// say WHICH assertion a red run fired. Each direction is its own fn, and each registered
+    /// mutation names the fn it reddens plus the input on which the correct and mutant designs
+    /// disagree.
     ///
     /// REVERT / MUTATION PROBE: delete the `&& !condition_disjoint(condition)` conjunct at
     /// block (3) ⇒ **this row FAILS**. Disagreeing input: the fixture below, whose filter
@@ -25603,14 +25561,11 @@ mod tests {
     /// **S4-N1 (NEGATIVE — veto survives)** — the twin of
     /// [`s4_arm_relieves_the_real_taplands`], with `condition.filter` as the ONLY variable.
     ///
-    /// ⛔ **RECIPE CORRECTED — plan errata E-8.** The recipe previously registered against
-    /// this row was *"drop the `matches_target_filter` conjunct from S4's mirror"*. That is
-    /// arithmetically the WRONG mutant here. The arm is
+    /// ⛔ **DROPPING `matches_target_filter` IS THE WRONG MUTANT FOR THIS ROW.** The arm is
     /// `!(member.zone == Battlefield && member.id != source.id && matches_target_filter(..))`;
     /// dropping the third conjunct leaves `!(zone == Battlefield && id != source)`, which is
     /// **`false`** for any battlefield non-source class member ⇒ no relief ⇒ the veto STANDS
-    /// ⇒ this negative keeps PASSING, while the POSITIVE row reds instead. The rows were never
-    /// vacuous; the recorded proof was pointed at the wrong assertion.
+    /// ⇒ this negative keeps PASSING, while the POSITIVE row reds instead.
     ///
     /// REVERT / MUTATION PROBE (the correct one): replace the arm's final expression with
     /// `true` — relieve on the variant's SHAPE alone ⇒ **this row FAILS**. Disagreeing input:
@@ -25718,9 +25673,9 @@ mod tests {
 
     /// **S5-P1 (POSITIVE — relief fires)** — `other_leq_condition_provably_excludes_class` as
     /// block (3)'s `condition` surface reaches it, on Blackcleave Cliffs' and Copperline
-    /// Gorge's REAL parsed conditions (`ObjectId(183)` and `ObjectId(315)` in this lane's
-    /// target dump). Split from its negative twin per plan errata E-8 — see
-    /// [`s4_arm_relieves_the_real_taplands`] for why the two directions are separate fns.
+    /// Gorge's REAL parsed conditions (`ObjectId(183)` and `ObjectId(315)` in the target
+    /// dump). See [`s4_arm_relieves_the_real_taplands`] for why the two directions are
+    /// separate fns.
     ///
     /// REVERT / MUTATION PROBE: make S5's arm return `false` (or delete the
     /// `|| other_leq_..` disjunct) ⇒ **this row FAILS**. Disagreeing input: the fixture below,
@@ -25744,8 +25699,8 @@ mod tests {
     /// **S5-N1 (NEGATIVE — veto survives)** — the twin of
     /// [`s5_arm_relieves_the_real_taplands`], with `condition.filter` as the ONLY variable.
     ///
-    /// ⛔ **RECIPE CORRECTED — plan errata E-8**, for the same arithmetic reason spelled out
-    /// on [`s4_arm_keeps_the_creature_veto`]: S5's arm is
+    /// ⛔ **DROPPING `matches_target_filter` IS THE WRONG MUTANT HERE TOO**, for the same
+    /// arithmetic reason spelled out on [`s4_arm_keeps_the_creature_veto`]: S5's arm is
     /// `!(member.zone == Battlefield && matches_target_filter(..))`, so dropping the
     /// `matches_target_filter` conjunct leaves `!(zone == Battlefield)` = `false` for a
     /// battlefield member ⇒ no relief ⇒ the veto STANDS ⇒ this negative keeps passing and the
@@ -26321,7 +26276,7 @@ mod tests {
     /// `LastCreated` / `LastRevealed` / `LastZoneChanged` resolve by membership in
     /// `state.last_created_token_ids` / `last_revealed_ids` / `last_zone_changed_ids`
     /// (`filter.rs`'s `filter_inner`), and every producer ASSIGNS those ledgers rather than
-    /// appending (`token.rs:1023`, `effects/mod.rs:8785`, `reveal.rs:54`, …). So minting a
+    /// appending (`token.rs`, `effects/mod.rs`, `reveal.rs`, …). So minting a
     /// class member EVICTS the prior occupant, and a pre-existing object that was failing
     /// `Not { LastCreated }` starts passing it — the certified-invariant count moves without
     /// any class member ever being counted, which is precisely the fail-open the arm promises
@@ -26334,7 +26289,7 @@ mod tests {
     /// REVERT / MUTATION PROBE: make `node_reads_mutable_resolution_local_state` return
     /// `false` for the three anaphor arms ⇒ **this row FAILS**. Disagreeing input: the three
     /// bare anaphors below, which `affected_filter_uses_object_population` returns `false` for
-    /// (pinned as an assertion, so the premise is measured and not recalled).
+    /// (pinned as an assertion).
     /// Deleting the `filter_contains` wrapper instead does NOT red this row — the bare leaf is
     /// still seen at the root — which is what makes this row and the nested one separable.
     #[test]
@@ -26562,7 +26517,7 @@ mod tests {
         );
     }
 
-    /// ⛔ **THE SECOND CLASS THE F1 DELEGATION NEWLY ADMITTED: a population-dependent property
+    /// ⛔ **THE SECOND CLASS THE DELEGATION NEWLY ADMITTED: a population-dependent property
     /// hidden behind a filter-bearing prop the population authority does not traverse.**
     ///
     /// `filter_prop_uses_object_population` classifies `CanEnchant` / `Targets` /
@@ -26570,9 +26525,9 @@ mod tests {
     /// `TargetFilter`. Its sibling walker in the same file DOES recurse them
     /// (`filter_prop_characteristic_reads_at`), so this is a per-walker gap, not a property of
     /// the filter language. The deleted allowlist refused these by refusing every unlisted
-    /// prop; the delegation admits them, so the gap is one this phase introduced.
+    /// prop; the delegation admits them.
     ///
-    /// Guarding it here does NOT close the gap in `filter.rs` (that surface is FU-36's) — it
+    /// Guarding it here does NOT close the gap in `filter.rs` — it
     /// removes it from THIS arm's admitted input domain, which is all the arm's invariance
     /// claim needs.
     ///
@@ -26729,12 +26684,11 @@ mod tests {
         );
     }
 
-    /// ⛔ **THE NON-ANAPHOR LEDGER LEAVES — the refused set is eleven, not three, and this row
-    /// is what makes the other eight observable.**
+    /// ⛔ **THE NON-ANAPHOR LEDGER LEAVES — the refused set is wider than the three anaphors,
+    /// and this row is what makes the rest observable.**
     ///
-    /// The finding that opened this thread named three anaphors. Censusing
-    /// `filter::filter_inner_for_object` arm-by-arm against
-    /// `affected_filter_uses_object_population`'s leaf-`false` list turned up eight more leaves
+    /// Walking `filter::filter_inner_for_object` arm-by-arm against
+    /// `affected_filter_uses_object_population`'s leaf-`false` list turns up further leaves
     /// that resolve through mutable resolution-local state and are classified `false` just the
     /// same. Three are exercised here:
     ///  * `TrackedSetFiltered` — reads `state.tracked_object_sets`, and its `TrackedSetId(0)`
@@ -26884,11 +26838,10 @@ mod tests {
         );
 
         // ── DEREF-AXIS PIN: the control must CONTAIN the phenomenon it controls for ──────
-        // Measured, not asserted: under the S4/S5 context (`trigger_source: None`) the
-        // control's verdict MOVES when `state` moves, so a relieved verdict for it cannot be
-        // re-read as "the guard admits leaves that never touch state". The identical mutation
-        // leaves `OriginalSource` — the control this row USED to carry — completely unmoved,
-        // which is the measurement that retired it.
+        // Under the S4/S5 context (`trigger_source: None`) the control's verdict MOVES when
+        // `state` moves, so a relieved verdict for it cannot be re-read as "the guard admits
+        // leaves that never touch state". The identical mutation leaves `OriginalSource`
+        // completely unmoved, which is why it cannot play this role.
         {
             let (mut deref_state, deref_member, deref_hosts) =
                 block3_fixture(vec![(900, "Sunken Hollow", sunken_hollow_def())]);
@@ -26974,12 +26927,12 @@ mod tests {
     }
 
     /// ⛔ **LAYER 3: A LIVE BOARD CENSUS ON THE PLAYER AXIS, BEHIND
-    /// `FilterProp::ControllerMatches`.** This is the shape review round 4 found still
-    /// admitted after round 3 closed the `TargetFilter` layer:
+    /// `FilterProp::ControllerMatches`.** The shape still admitted once the `TargetFilter`
+    /// layer is closed:
     /// `Typed{ Land, [ControllerMatches{ ControlsCount{ Typed{Creature}, GE, 1 } }] }` —
     /// "a Land whose controller controls one or more creatures".
     ///
-    /// **WHY EVERY PRE-EXISTING GUARD ADMITTED IT, measured by the three pins below.**
+    /// **WHY EVERY PRE-EXISTING GUARD ADMITS IT, pinned three ways below.**
     /// `filter_prop_uses_object_population` classifies `ControllerMatches` leaf-`false`, so
     /// the canonical population authority answers `false` for the whole filter.
     /// `filter_contains` DOES descend `ControllerMatches -> player_filter_contains ->
@@ -27311,32 +27264,30 @@ mod tests {
         );
     }
 
-    /// ⛔ **LAYER 4: `TypedFilter::controller` — THE AXIS NO LAYER READ AT ALL.** Review round
-    /// 5's finding, and the only one of the five whose defect was STRUCTURAL rather than
-    /// classificatory: `node_has_non_arrival_invariant_property` reached the node by FIELD
-    /// ACCESS (`typed.properties`) and `filter.rs`'s two walkers reach it as
+    /// ⛔ **LAYER 4: `TypedFilter::controller` — THE AXIS NO LAYER READ AT ALL.** The only
+    /// defect on these axes that is STRUCTURAL rather than classificatory:
+    /// `node_has_non_arrival_invariant_property` reached the node by FIELD ACCESS
+    /// (`typed.properties`) and `filter.rs`'s two walkers reach it as
     /// `TypedFilter { properties, .. }`, so `controller` was dropped before any classifier
-    /// could see it. Measured: all 14 `ControllerRef` variants produced a verdict
-    /// byte-identical to `controller: None`, while the same node's `properties` axis moved it.
+    /// could see it: every `ControllerRef` variant produced a verdict byte-identical to
+    /// `controller: None`, while the same node's `properties` axis moved it.
     ///
     /// ⛔ **THIS ROW IS A BACKSTOP ROW AND SAYS SO — IT DOES NOT CLAIM A LIVE MOVER.** No arm
     /// of `filter::controller_ref_player` counts battlefield population, so nothing here
     /// asserts that an arrival flips a controller constraint today. What it asserts is the
     /// property the ⇒ sentence on `count_matching_condition_provably_excludes_class` SELLS: an
     /// unrecognised node is REFUSED, so a new enum variant is a compile error and not a silent
-    /// admit. Before round 5 a new `ControllerRef` variant compiled and was silently ADMITTED
-    /// on this axis, which is why the severity is the backstop and not the reach. The corpus
-    /// exposure is total: 41/41 admitted productions carry `controller: Some(_)`.
+    /// admit. Under a field-access form a new `ControllerRef` variant compiles and is silently
+    /// ADMITTED on this axis. Every admitted corpus production carries `controller: Some(_)`.
     ///
     /// REVERT / MUTATION PROBE: move `ControllerRef::ActivePlayer` into
     /// [`controller_ref_is_arrival_invariant`]'s ADMITTED arm ⇒ **this row FAILS** (at the
-    /// end-to-end assertion, not only at a pin — measured by re-running the mutant with the
-    /// pins neutralised) while every other `s4_s5_` row stays GREEN. Two COMPILE-TIME
-    /// mutations back the structural half, because a backstop claim that is not itself
-    /// mutant-tested is the defect this row is about: deleting one `ControllerRef` arm from
-    /// that match gives **E0004**, and deleting the `type_filters: _` field name from the
-    /// no-`..` destructure in `node_has_non_arrival_invariant_property` gives **E0027**. The
-    /// pre-round-5 field-access form compiled under both.
+    /// end-to-end assertion, not only at a pin) while every other `s4_s5_` row stays GREEN.
+    /// Two COMPILE-TIME mutations back the structural half, because a backstop claim that is
+    /// not itself mutant-tested is the defect this row is about: deleting one `ControllerRef`
+    /// arm from that match gives **E0004**, and deleting the `type_filters: _` field name from
+    /// the no-`..` destructure in `node_has_non_arrival_invariant_property` gives **E0027**.
+    /// A field-access form compiles under both.
     #[test]
     fn s4_s5_controller_axis_keeps_the_veto() {
         use crate::types::ability::{
@@ -27443,8 +27394,8 @@ mod tests {
         // ── MATCHED CONTROLS: identical node, ONLY the controller arm varies ──────────────
         // Holds fixed: type_filters, the empty property list, the position, both arms. Varies:
         // exactly one enum arm. So the vetoes above cannot be re-read as "the guard refuses a
-        // `Typed` node that constrains its controller at all" — and `Some(You)` is the arm 36
-        // of the 41 corpus productions carry, so the control contains the phenomenon.
+        // `Typed` node that constrains its controller at all" — and `Some(You)` is the arm
+        // most corpus productions carry, so the control contains the phenomenon.
         let relieving = |t: TypedFilter| {
             let (s4s, s4m, _) = block3_fixture(vec![(
                 900,
@@ -27487,8 +27438,8 @@ mod tests {
         );
     }
 
-    /// ⛔ **LAYER 2: RELATIONAL PROPERTIES AN ARRIVING OBJECT MOVES — F1's blast radius, not
-    /// just its headline example.** Each of these is classified population-INDEPENDENT by
+    /// ⛔ **LAYER 2: RELATIONAL PROPERTIES AN ARRIVING OBJECT MOVES.** Each of these is
+    /// classified population-INDEPENDENT by
     /// `filter_prop_uses_object_population` and each is moved by a class member ARRIVING:
     ///  * `Unpaired` — CR 702.95a: soulbond's second triggered ability is "Whenever another
     ///    creature you control enters ... you may pair THAT creature with this creature", so
@@ -27627,10 +27578,10 @@ mod tests {
     }
 
     /// **S4 with `ControllerRef::Opponent` (POSITIVE — relief fires)** — the Turbulent land
-    /// cycle, whose condition is the corpus's EIGHTH distinct S4 filter
-    /// (`{type_filters: [Land], controller: Opponent, properties: []}`) and the only one that
-    /// is not `ControllerRef::You`. It is relieved through S4 in production today, so before
-    /// this row the shape had no fixture at all.
+    /// cycle, whose condition
+    /// (`{type_filters: [Land], controller: Opponent, properties: []}`) is the corpus's only
+    /// S4 filter that is not `ControllerRef::You`. It is relieved through S4 in production
+    /// today.
     ///
     /// REVERT / MUTATION PROBE: delete the `&& !condition_disjoint(condition)` conjunct at
     /// block (3) ⇒ **this row FAILS**. Disagreeing input: the real Turbulent Fen condition
@@ -27698,9 +27649,9 @@ mod tests {
     // C3b-2 — S6 (`Effect::RevealFromHand`) relief at block (3)'s `def.execute` surface.
     // ─────────────────────────────────────────────────────────────────────────────────
 
-    /// Parse a real reveal-land's VERBATIM Oracle text (MTGJSON-derived `card-data.json`,
-    /// md5 `39c353b4e0cc4395925a12ad30b590aa`) and hand back the replacement definition whose
-    /// `execute` body is the `Effect::RevealFromHand` block (3) walks. Never a paraphrase: a
+    /// Parse a real reveal-land's VERBATIM Oracle text (MTGJSON-derived `card-data.json`) and
+    /// hand back the replacement definition whose `execute` body is the
+    /// `Effect::RevealFromHand` block (3) walks. Never a paraphrase: a
     /// reworded "you may reveal" line can take a different parser branch and go green while
     /// the real card still vetoes. Mirrors [`tapland_replacement`]'s rule for C3b-1.
     ///
@@ -28077,7 +28028,7 @@ mod tests {
             }),
         ));
 
-        // The 3 axes the DELETED `(a)` conjunct genuinely saw, re-homed onto `(0)`.
+        // The 3 nested-ability axes, re-homed onto `(0)`.
         for (axis, install) in [
             ("sub_ability=hostile", 0u8),
             ("else_ability=hostile", 1),
@@ -28252,10 +28203,10 @@ mod tests {
 
     /// **S6-A1 ⟨G⟩ (POSITIVE — relief fires on the dump's REAL Necroblossom Snarl).**
     ///
-    /// Arm level only: the WBA dump is measured NOT decisive at firewall level for this arm
-    /// (`whole_firewall_with_arm == whole_firewall_without_arm`), so a dump-driven
-    /// firewall-level assertion could not fail. That is the same ruling
-    /// [`pump_aggregate_relieves_real_pyreswipe_hawk_on_wba_dump`] writes into its own doc.
+    /// Arm level only: on the WBA dump `whole_firewall_with_arm == whole_firewall_without_arm`
+    /// for this arm, so a dump-driven firewall-level assertion could not fail. That is the
+    /// same scope [`pump_aggregate_relieves_real_pyreswipe_hawk_on_wba_dump`] states in its
+    /// own doc.
     ///
     /// REVERT / MUTATION PROBE: replace the arm's final expression with `false` ⇒ **this row
     /// FAILS**. Disagreeing input: the dump's real Snarl def against its real Saproling class.
@@ -28365,7 +28316,7 @@ mod tests {
     /// condition that censuses the board live. It is the ONLY difference from the relieved
     /// control: Snarl prints the bare *"If you don't, this land enters tapped."*
     ///
-    /// ⛔ **THIS VETO IS INTERIM, AND IT IS A CONSERVATIVE APPROXIMATION — NOT A MEASURED
+    /// ⛔ **THIS VETO IS INTERIM, AND IT IS A CONSERVATIVE APPROXIMATION — NOT A DEMONSTRATED
     /// COUPLING TO THE GROWING CLASS.** `(b-d)` refuses any decline branch whose condition
     /// reads the board, WITHOUT checking whether that census intersects the class this loop
     /// grows. On this fixture it demonstrably does not: the census reads **Soldier**, and the
@@ -28379,9 +28330,8 @@ mod tests {
     ///
     /// **The named later relief shape:** the block-(1b)
     /// `execute_ledger_condition_provably_excludes_class` form, which proves the `on_decline`
-    /// condition's OWN census excludes the class. Until that lands the measured ceiling is
-    /// **19 of 21 corpus faces relieved, 2 fail closed** — these two, and they fail closed
-    /// only because they carry a non-null `on_decline.condition`.
+    /// condition's OWN census excludes the class. Until that lands this face and its sibling
+    /// fail closed, and only because they carry a non-null `on_decline.condition`.
     ///
     /// ⛔ ATTRIBUTION: this row pins the `(b-d)` gate as a DISJUNCTION, **not** check 1. Both
     /// check 1 and check 2 refuse this branch (asserted in-fn), so no single-check deletion
@@ -28400,9 +28350,8 @@ mod tests {
     /// control a Dragon**"*. Same attribution, same registered mutation — and the same
     /// **INTERIM** status: the census reads **Dragon** while the growing class is
     /// **Saproling** tokens, so `(b-d)` refuses without the two ever intersecting. See S6-A3's
-    /// doc for the full statement, the block-(1b)
-    /// `execute_ledger_condition_provably_excludes_class` relief shape that replaces it, and
-    /// the measured 19/21 ceiling.
+    /// doc for the full statement and the block-(1b)
+    /// `execute_ledger_condition_provably_excludes_class` relief shape that replaces it.
     ///
     /// REVERT / MUTATION PROBE: delete `(b-d)` as a whole ⇒ **this row FAILS**.
     #[test]
@@ -28587,8 +28536,8 @@ mod tests {
     ///
     /// The one input on which the `let-else` and the negated `!find(..).is_some_and(..)` form
     /// disagree, and the negated form yields RELIEF there: `None.is_some_and(_)` is `false`
-    /// and the leading `!` flips it to `true`. Both values are computed and asserted in-fn, so
-    /// the divergence is measured rather than argued. Matched control: the present player.
+    /// and the leading `!` flips it to `true`. Both values are computed and asserted in-fn.
+    /// Matched control: the present player.
     ///
     /// REVERT / MUTATION PROBE: rewrite `(d)` as `!state.players.iter().find(..)
     /// .is_some_and(|p| p.hand.contains(&class_member))` ⇒ **this row FAILS**.
@@ -28643,9 +28592,9 @@ mod tests {
     ///
     /// `(b)`'s `let-else` closes the whole nested-ability mechanism BY CONSTRUCTION. Predicate
     /// DIRECT: an `Effect` variant with ≥1 field whose declared type mentions
-    /// `AbilityDefinition` — 8 of 232 variants. Predicate TRANSITIVE: a variant with a
-    /// `Box<Effect>` field, which can hold any of the 8 — +2. This row drives 5 of them: 3
-    /// direct and BOTH transitive. Attribution asserted per carrier: `(0)` ADMITS each (the
+    /// `AbilityDefinition`. Predicate TRANSITIVE: a variant with a `Box<Effect>` field, which
+    /// can hold any direct carrier. This row drives five: three direct and BOTH transitive.
+    /// Attribution asserted per carrier: `(0)` ADMITS each (the
     /// carrier lives in `effect`, which the totality check reproduces), so `(b)` is the
     /// refuser.
     ///
@@ -28830,20 +28779,15 @@ mod tests {
     /// **C3-N6 ⟨G⟩ — no relief-by-`continue`.** The relief is scoped to block (3)'s `execute`
     /// surface; a definition whose `execute` is provably disjoint may still carry a
     /// still-vetoing `condition`, and THAT surface must keep its own veto. This is the exact
-    /// mirror of the landed
+    /// mirror of
     /// [`block3_condition_relief_does_not_carry_the_execute_surface`].
     ///
-    /// The grafted condition is CLASS-OBSERVING, which is what plan §8.2 registers: it
+    /// The grafted condition is CLASS-OBSERVING: it
     /// censuses creatures **you control**, and the growing class is a green Creature —
     /// Saproling token controlled by the source's controller, so the member is IN the
     /// counted population. `count_matching_condition_provably_excludes_class` therefore
     /// refuses ON THE MERITS — at its final `matches_target_filter` expression, past both its
-    /// shape gate and its population guard, both asserted below. An earlier version grafted
-    /// `And { <Sunken Hollow basic-land census>, UnlessYourTurn }`, whose census the Saproling
-    /// class cannot move; that veto survived only through the C3b-1 arms' TOP-LEVEL-ONLY
-    /// match, which is already [`s4_s5_compound_condition_keeps_the_veto`]'s property with its
-    /// own registered mutation, and it would have gone spuriously red the day FU-36 widens the
-    /// `(b-f)`/`(b-d)` arrival conjuncts.
+    /// shape gate and its population guard, both asserted below.
     ///
     /// REVERT / MUTATION PROBE: turn the execute relief into a `continue` over the whole
     /// definition ⇒ **this row FAILS** (and it is the only block-(3) row that does).
@@ -28854,8 +28798,8 @@ mod tests {
     /// `execute` block it mutates — it is unreachable for this fixture: the condition veto has
     /// already returned, so the def never reaches the mutated line at all. The row then PASSES
     /// on the condition surface's veto, which is what it asserts anyway, and the pass is
-    /// attributable to the fixture rather than to relief being surface-scoped. MEASURED both
-    /// ways this round. Recognise the false green by its reach: if the mutated line cannot be
+    /// attributable to the fixture rather than to relief being surface-scoped. Recognise the
+    /// false green by its reach: if the mutated line cannot be
     /// reached on this fixture, a green says nothing about the mutation.
     #[test]
     fn block3_execute_relief_does_not_carry_the_condition_surface() {
@@ -28872,10 +28816,9 @@ mod tests {
         // "you control two or more creatures" census is the graft the CLASS MOVES: the
         // Saproling member is a Creature this source's controller controls, so S4 reaches its
         // final expression and refuses there. CONSTRUCTED rather than parsed from a card
-        // because the corpus has none: all 30 `UnlessControlsCountMatching` occurrences in
-        // `replacements[]` (`data/card-data.json`, md5 `39c353b4e0cc4395925a12ad30b590aa`) are
-        // land-typed — 8 distinct filters, every one `Land` or a basic-land subtype — so no
-        // printed card carries a condition this class observes.
+        // because the corpus has none: every `UnlessControlsCountMatching` occurrence in
+        // `replacements[]` (`data/card-data.json`) is land-typed — `Land` or a basic-land
+        // subtype — so no printed card carries a condition this class observes.
         let observing_condition = ReplacementCondition::UnlessControlsCountMatching {
             minimum: 2,
             filter: crate::types::ability::TargetFilter::Typed(
