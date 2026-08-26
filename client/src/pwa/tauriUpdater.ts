@@ -188,7 +188,11 @@ export function checkForTauriUpdate(): boolean {
  * `registerServiceWorker()` in `main.tsx`.
  */
 export function registerTauriUpdater(): void {
-  if (initialized || !isDesktopTauri()) return;
+  // Skipped in dev for the same reason `registerServiceWorker` skips there: a
+  // dev build carries the app version rather than the shell release version, so
+  // every check resolves an update, and installing it overwrites the cargo
+  // binary with the released bundle and relaunches out of the dev build.
+  if (initialized || import.meta.env.DEV || !isDesktopTauri()) return;
   initialized = true;
   pushUpdateDebug("Registering Tauri updater.");
 
