@@ -3169,21 +3169,15 @@ fn object_growth_51st_sprout_swarm_covers_and_offers() {
 /// so `fire_time_conditions_read_growing_class` flags it IF it is scanned.
 const KODAMA_TRIGGER_ORACLE: &str = "Whenever another permanent you control enters, if it wasn't put onto the battlefield with this ability, you may put a permanent card with equal or lesser mana value from your hand onto the battlefield.";
 
-/// REGRESSION (user 2026-07-18): a growing-class-reading trigger sitting in a zone
-/// where it CANNOT function (here P0's LIBRARY) must NOT suppress the loop-shortcut
-/// offer. This reproduces the real 4-player game where Witherbloom + Sprout Swarm
-/// failed to prompt because Kodama of the East Tree — a deck card in the library —
-/// was scanned by the object-growth cover's `fire_time_conditions_read_growing_class`
-/// firewall as if it were a live observer (CR 603.4 / CR 113.6: a permanent trigger
-/// functions only on the battlefield). The board is otherwise the passing 51st
-/// fixture, so the ONLY variable is the inert library observer.
-///
-/// DISCRIMINATING (revert-probe verified): reverting the block-(1) zone gate in
-/// `fire_time_conditions_read_growing_class` flips this to NO offer — Kodama's
-/// library trigger is re-scanned, `cover_ok` goes false, and `final_waiting_for`
-/// stays `Priority`. So this fails without the fix.
-#[test]
-fn object_growth_library_observer_does_not_suppress_offer() {
+/// The 51st fixture with Kodama relocated into `zone`, where its "another permanent you
+/// control enters" trigger cannot function: CR 113.6 puts a permanent's abilities on the
+/// battlefield unless the ability declares otherwise (CR 113.6b), and this one declares
+/// nothing. Kodama parses ON the battlefield, so the definition is a real parse before it is
+/// moved. Everything else is the passing fixture, so the ONLY variable either row below
+/// carries is the inert observer's zone.
+fn growing_class_observer_outside_the_battlefield(
+    zone: engine::types::zones::Zone,
+) -> (GameRunner, ObjectId, ObjectId, Vec<ObjectId>) {
     use engine::types::zones::Zone;
 
     let mut scenario = GameScenario::new();
@@ -3195,8 +3189,8 @@ fn object_growth_library_observer_does_not_suppress_offer() {
         5,
         WITHERBLOOM_AFFINITY_ORACLE,
     );
-    // Kodama parses ON the battlefield (so its trigger is a real parsed def), then we
-    // relocate it into the library below — where it cannot function.
+    // Kodama parses ON the battlefield, so its trigger is a real parsed def before the
+    // relocation below.
     let kodama = scenario
         .add_creature_from_oracle(P0, "Kodama of the East Tree", 6, 6, KODAMA_TRIGGER_ORACLE)
         .id();
@@ -3220,22 +3214,25 @@ fn object_growth_library_observer_does_not_suppress_offer() {
         for &id in &fodder {
             st.objects.get_mut(&id).unwrap().color = vec![ManaColor::Green];
         }
-        // Move Kodama from the battlefield into P0's LIBRARY (CR 603.4: its
-        // "another permanent enters" trigger no longer functions there).
         st.battlefield.retain(|&id| id != kodama);
         let obj = st.objects.get_mut(&kodama).unwrap();
-        obj.zone = Zone::Library;
+        obj.zone = zone;
         let p0 = st.players.iter_mut().find(|p| p.id == P0).unwrap();
-        p0.library.insert(0, kodama);
+        match zone {
+            Zone::Library => p0.library.insert(0, kodama),
+            Zone::Graveyard => p0.graveyard.push_back(kodama),
+            other => panic!(
+                "this fixture places the observer in a library or a graveyard, not {other:?}"
+            ),
+        }
     }
 
-    // Sanity: Kodama really is in the library (not the battlefield), so any offer
-    // must come from correctly IGNORING it, not from it having been removed.
+    // The observer really sits where the caller asked, so an offer must come from correctly
+    // IGNORING it and not from its having been removed.
     let kodama_obj = &runner.state().objects[&kodama];
     assert_eq!(
-        kodama_obj.zone,
-        Zone::Library,
-        "the growing-class observer must sit in the library for this to discriminate",
+        kodama_obj.zone, zone,
+        "the growing-class observer must sit in {zone:?} for the row to discriminate",
     );
     assert_eq!(
         kodama_obj.trigger_definitions.len(),
@@ -3245,6 +3242,17 @@ fn object_growth_library_observer_does_not_suppress_offer() {
         kodama_obj.trigger_definitions.len()
     );
 
+    (runner, sprout, kodama, fodder)
+}
+
+/// Drive the fixture's one Sprout Swarm cycle and assert the CR 732.2a offer surfaces naming
+/// the token-growth axis — the loop genuinely detected, not an unrelated fall-through.
+fn assert_growing_class_observer_is_ignored(
+    mut runner: GameRunner,
+    sprout: ObjectId,
+    fodder: &[ObjectId],
+    why: &str,
+) {
     let outcome = runner
         .cast(sprout)
         .accept_optional()
@@ -3257,18 +3265,75 @@ fn object_growth_library_observer_does_not_suppress_offer() {
             outcome.final_waiting_for(),
             WaitingFor::LoopShortcut { proposer, .. } if *proposer == P0
         ),
-        "a growing-class trigger in the LIBRARY must not suppress the offer, got {:?}",
+        "{why}, got {:?}",
         outcome.final_waiting_for()
     );
-    // The offer still names the token-growth axis (the loop is genuinely detected,
-    // not an unrelated fall-through).
     let WaitingFor::LoopShortcut { certificate, .. } = outcome.final_waiting_for() else {
         unreachable!()
     };
     assert!(
         certificate.unbounded.contains(&ResourceAxis::TokensCreated),
-        "the detected loop's unbounded axis must be TokensCreated, got {:?}",
+        "{why}: the detected loop's unbounded axis must be TokensCreated, got {:?}",
         certificate.unbounded
+    );
+}
+
+/// REGRESSION (user 2026-07-18): a growing-class-reading trigger sitting in a zone where it
+/// CANNOT function must NOT suppress the loop-shortcut offer. This reproduces the real
+/// 4-player game where Witherbloom + Sprout Swarm failed to prompt because Kodama of the East
+/// Tree — a deck card in the library — was scanned by the object-growth cover's
+/// `fire_time_conditions_read_growing_class` firewall as if it were a live observer.
+///
+/// NOT DISCRIMINATING FOR THE ZONE GATE ANY MORE, and deliberately kept for the shape it
+/// reproduces. CR 400.2 makes a library a hidden zone, so the detection drive now reads P0's
+/// library through the proposer's own hidden view and this Kodama arrives at the firewall
+/// already blanked — reverting block (1)'s zone gate no longer flips this row, because there
+/// is no longer a definition for the re-scan to find.
+/// [`object_growth_public_zone_observer_does_not_suppress_offer`] is the sibling that carries
+/// the original regression's meaning forward.
+#[test]
+fn object_growth_library_observer_does_not_suppress_offer() {
+    use engine::types::zones::Zone;
+
+    let (runner, sprout, _kodama, fodder) =
+        growing_class_observer_outside_the_battlefield(Zone::Library);
+    assert_growing_class_observer_is_ignored(
+        runner,
+        sprout,
+        &fodder,
+        "a growing-class trigger in the LIBRARY must not suppress the offer",
+    );
+}
+
+/// The zone-of-function gate's DISCRIMINATING row: the same observer in P0's GRAVEYARD.
+///
+/// CR 404.2 entitles every player to examine a graveyard, so no hidden-zone redaction touches
+/// this object and its parsed definition reaches the firewall intact — asserted below. What
+/// refuses it is block (1)'s zone gate alone: with `trigger_zones` empty, CR 113.6 makes the
+/// trigger function only on the battlefield.
+///
+/// DISCRIMINATING: delete the `trigger_definition_functions_in_zone` `continue` at the head of
+/// block (1) in `analysis::resource::fire_time_conditions_read_growing_class_scoped` ⇒ Kodama's
+/// graveyard trigger is scanned as a live observer, the cover goes false, and this row's
+/// `LoopShortcut` assertion reddens at `Priority{P0}`.
+#[test]
+fn object_growth_public_zone_observer_does_not_suppress_offer() {
+    use engine::types::zones::Zone;
+
+    let (runner, sprout, kodama, fodder) =
+        growing_class_observer_outside_the_battlefield(Zone::Graveyard);
+    assert_eq!(
+        runner.state().objects[&kodama].trigger_definitions.len(),
+        1,
+        "reach-guard, and the whole reason this row replaces the library one as the gate's \
+         discriminator: a graveyard is public (CR 404.2), so the definition survives to the \
+         firewall and the zone gate is the only thing that can refuse it"
+    );
+    assert_growing_class_observer_is_ignored(
+        runner,
+        sprout,
+        &fodder,
+        "a growing-class trigger in a PUBLIC non-battlefield zone must not suppress the offer",
     );
 }
 

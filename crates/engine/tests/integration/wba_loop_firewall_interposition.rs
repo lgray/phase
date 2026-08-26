@@ -680,3 +680,639 @@ fn check_lands_still_offer_with_the_subtype_arm_repaired() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// CR 701.17 INSTRUCTED-MILL acceptance, and the shapes that must still veto.
+//
+// The arms above are about a loop whose period touches only the battlefield. This half adds
+// the mill: `mill_base` is the same combo board plus a real parsed Altar of the Brood, so each
+// period also declines every opponent's library. `certify_instructed_opponent_library_departure`
+// establishes that decline by exclusion and the cover's four growth obligations consume it;
+// C2 is the public-information veto that keeps the certificate honest, and every row below is
+// the base plus ONE object that either reaches C2 or provably does not.
+//
+// CR 400.2 scopes the relief: the detection drive reads the board through the proposer's own
+// hidden view, so an observer the proposer may not see cannot carry a veto, while the same
+// observer in the proposer's OWN hand still does. That trio is what attributes the hand
+// collection, and the interposer/descend rows at the end are the library one.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+use engine::types::ability::{PlayerFilter, TriggerDefinition};
+use engine::types::triggers::TriggerMode;
+
+use super::witherbloom_altar_probe::graft_altar;
+
+const P1: PlayerId = PlayerId(1);
+
+/// Narcomoeba, VERBATIM Oracle text from the pinned `client/public/card-data.json` export.
+/// Its library→graveyard trigger is the interposer row's whole subject.
+const NARCOMOEBA: (&str, &str, &[&str]) = (
+    "Narcomoeba",
+    "Flying\nWhen this card is put into your graveyard from your library, you may put it onto \
+     the battlefield.",
+    &["Illusion"],
+);
+
+/// The shared mill base: this module's own combo board plus a real Altar of the Brood, so the
+/// loop's period mills every opponent. ONE object away from `load_realistic_dump()`, which is
+/// why a hostile row built on it is one object away from an offering board and its silence has
+/// exactly one cause.
+fn mill_base() -> GameState {
+    let mut state = load_realistic_dump();
+    graft_altar(&mut state, P0);
+    state
+}
+
+/// Graft a battlefield permanent under `seat` carrying `def` and nothing else — the
+/// attributability control every trigger-shaped row below rests on.
+///
+/// `push_printed_trigger` is the single authority that keeps `base_trigger_definitions` and the
+/// live list in lockstep; a bare `objects.insert` leaves the definition out of the base store,
+/// `game/layers.rs`'s per-pass reset drops the live entry, and the arm reads an empty store.
+fn graft_observer(
+    state: &mut GameState,
+    seat: PlayerId,
+    zone: Zone,
+    def: TriggerDefinition,
+) -> ObjectId {
+    let card_id = CardId(state.next_object_id);
+    let host = create_object(state, card_id, seat, "Departure Observer".to_string(), zone);
+    let obj = state
+        .objects
+        .get_mut(&host)
+        .expect("the just-created observer is in `objects`");
+    obj.card_types.core_types = vec![CoreType::Artifact];
+    obj.push_printed_trigger(def);
+    host
+}
+
+/// A second Altar of the Brood on P0's battlefield with `mutate` applied to the mill it
+/// executes. The rows that use it flip exactly one field, so the pair separates on that field
+/// and not on the extra permanent.
+fn graft_mutated_altar(
+    state: &mut GameState,
+    mutate: impl FnOnce(&mut engine::types::ability::AbilityDefinition),
+) -> ObjectId {
+    let host = graft_altar(state, P0);
+    let obj = state
+        .objects
+        .get_mut(&host)
+        .expect("the second Altar is live");
+    let base = Arc::make_mut(&mut obj.base_trigger_definitions);
+    assert_eq!(
+        base.len(),
+        1,
+        "reach-guard: exactly one grafted trigger to rewrite"
+    );
+    let execute = base[0]
+        .execute
+        .as_mut()
+        .expect("reach-guard: Altar's trigger carries the mill it executes");
+    mutate(execute);
+    let rewritten = base[0].clone();
+    obj.trigger_definitions.clear();
+    obj.base_trigger_definitions = Arc::new(Vec::new());
+    obj.push_printed_trigger(rewritten);
+    host
+}
+
+/// Every non-caster library card rewritten NON-PERMANENT and surface-free.
+///
+/// On this board a milled card can neither flip `descended_this_turn` (CR 700.11 counts only a
+/// permanent card) nor open a window nor carry a definition C2 could read, and it satisfies the
+/// cover's own inertness obligation WITHOUT the proposer view having to blank it. That is what
+/// makes each row below one live channel with the other provably absent: the pinned control
+/// keeps offering when the redaction is taken away, so a row that reddens there reddens on its
+/// own object.
+fn pinned_mill_base() -> GameState {
+    let mut state = mill_base();
+    let pinned: Vec<ObjectId> = state
+        .players
+        .iter()
+        .filter(|p| p.id != P0)
+        .flat_map(|p| p.library.iter().copied())
+        .collect();
+    assert!(
+        !pinned.is_empty(),
+        "reach-guard: the non-caster libraries are non-empty, so the pin below is a rewrite \
+         and not an empty walk"
+    );
+    for id in pinned {
+        let obj = state.objects.get_mut(&id).expect("library card is keyed");
+        obj.card_types.core_types = vec![CoreType::Instant];
+        obj.card_types.supertypes.clear();
+        obj.card_types.subtypes.clear();
+        obj.trigger_definitions.clear();
+        obj.base_trigger_definitions = Arc::new(Vec::new());
+        obj.replacement_definitions.clear();
+        obj.base_replacement_definitions = Arc::new(Vec::new());
+        obj.static_definitions.clear();
+        obj.base_static_definitions = Arc::new(Vec::new());
+        obj.abilities = Arc::new(Vec::new());
+        obj.base_abilities = Arc::new(Vec::new());
+        obj.keywords.clear();
+        obj.counters.clear();
+    }
+    state
+}
+
+/// The id at `depth` of `victim`'s library AS IT STANDS AFTER the loop-priming cast.
+///
+/// MEASURED LAW: that cast mills the top of every victim library before the detection drive
+/// runs, so a card the drive must mill is placed by the POST-cast order, never the pre-cast
+/// one — at pre-cast depth it is consumed by the priming cast and the row asserts against a
+/// board that no longer holds the thing it checks. Driving a throwaway copy of the same cast
+/// is what says which id that is; its own decline is this helper's reach-guard.
+fn post_cast_library_anchor(base: &GameState, victim: PlayerId, depth: usize) -> ObjectId {
+    let before = library_ids(base, victim).len();
+    let outcome = drive_sprout_cast(base.clone());
+    let after = library_ids(outcome.state(), victim);
+    assert!(
+        after.len() < before,
+        "reach-guard: the priming cast must decline {victim:?}'s library, or 'post-cast depth' \
+         names the same card as 'pre-cast depth' and the law this helper encodes is untested"
+    );
+    *after
+        .get(depth)
+        .expect("the post-cast library is deeper than the requested depth")
+}
+
+fn library_ids(state: &GameState, who: PlayerId) -> Vec<ObjectId> {
+    state
+        .players
+        .iter()
+        .find(|p| p.id == who)
+        .expect("seat exists")
+        .library
+        .iter()
+        .copied()
+        .collect()
+}
+
+/// Move `card` to sit immediately before `anchor` in `victim`'s library.
+fn place_before(state: &mut GameState, victim: PlayerId, anchor: ObjectId, card: ObjectId) {
+    let player = state
+        .players
+        .iter_mut()
+        .find(|p| p.id == victim)
+        .expect("seat exists");
+    let from = player
+        .library
+        .iter()
+        .position(|id| *id == card)
+        .expect("the card was created into this library");
+    player.library.remove(from);
+    let at = player
+        .library
+        .iter()
+        .position(|id| *id == anchor)
+        .expect("the anchor is still in this library");
+    player.library.insert(at, card);
+}
+
+/// Put a real parsed Narcomoeba into `victim`'s library immediately before `anchor`.
+fn graft_narcomoeba(state: &mut GameState, victim: PlayerId, anchor: ObjectId) -> ObjectId {
+    let (name, oracle, subtypes) = NARCOMOEBA;
+    let subs: Vec<String> = subtypes.iter().map(|s| (*s).to_string()).collect();
+    let parsed =
+        engine::parser::parse_oracle_text(oracle, name, &[], &["Creature".to_string()], &subs);
+    assert_eq!(
+        parsed.triggers.len(),
+        1,
+        "fixture pin: Narcomoeba parses to exactly ONE trigger — the library→graveyard window \
+         this row is about; a parser change that splits or drops it un-points the row"
+    );
+    let card_id = CardId(state.next_object_id);
+    let host = create_object(state, card_id, victim, name.to_string(), Zone::Library);
+    {
+        let obj = state
+            .objects
+            .get_mut(&host)
+            .expect("the just-created Narcomoeba is in `objects`");
+        obj.card_types.core_types = vec![CoreType::Creature];
+        obj.push_printed_trigger(parsed.triggers[0].clone());
+    }
+    place_before(state, victim, anchor, host);
+    host
+}
+
+/// One row: what it adds to its base, and whether the base's offer survives it.
+struct MillRow {
+    what: &'static str,
+    board: fn() -> GameState,
+    expect_offer: bool,
+}
+
+/// Drive EVERY row before asserting, so one disagreeing row does not hide the verdicts of the
+/// rows after it — the control and its paired hostile arms are only evidence together.
+fn run_rows(rows: &[MillRow]) {
+    let observed: Vec<(&str, bool, bool)> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.what,
+                row.expect_offer,
+                drive_and_report((row.board)(), row.what),
+            )
+        })
+        .collect();
+    let disagreed: Vec<String> = observed
+        .iter()
+        .filter(|(_, expected, actual)| expected != actual)
+        .map(|(what, expected, actual)| {
+            format!("  offer expected {expected}, got {actual} — {what}")
+        })
+        .collect();
+    assert!(
+        disagreed.is_empty(),
+        "{} of {} rows disagreed with their expectation:\n{}",
+        disagreed.len(),
+        observed.len(),
+        disagreed.join("\n")
+    );
+}
+
+// ── Board suppliers: each is one row's ONE object ──
+
+fn milled_mode_observer() -> GameState {
+    let mut state = mill_base();
+    graft_observer(
+        &mut state,
+        P1,
+        Zone::Battlefield,
+        TriggerDefinition::new(TriggerMode::Milled),
+    );
+    state
+}
+
+fn from_anywhere_graveyard_observer() -> GameState {
+    let mut state = mill_base();
+    graft_observer(
+        &mut state,
+        P1,
+        Zone::Battlefield,
+        TriggerDefinition::new(TriggerMode::ChangesZone).destination(Zone::Graveyard),
+    );
+    state
+}
+
+fn battlefield_origin_with_library_in_origin_zones() -> GameState {
+    let mut state = mill_base();
+    let mut def = TriggerDefinition::new(TriggerMode::ChangesZone).origin(Zone::Battlefield);
+    def.origin_zones = vec![Zone::Library, Zone::Battlefield];
+    graft_observer(&mut state, P1, Zone::Battlefield, def);
+    state
+}
+
+fn battlefield_origin_alone() -> GameState {
+    let mut state = mill_base();
+    graft_observer(
+        &mut state,
+        P1,
+        Zone::Battlefield,
+        TriggerDefinition::new(TriggerMode::ChangesZone).origin(Zone::Battlefield),
+    );
+    state
+}
+
+fn hand_mill_observer(seat: PlayerId, functions_in: Zone) -> GameState {
+    let mut state = mill_base();
+    graft_observer(
+        &mut state,
+        seat,
+        Zone::Hand,
+        TriggerDefinition::new(TriggerMode::Milled).trigger_zones(vec![functions_in]),
+    );
+    state
+}
+fn mill_observer_in_an_opponents_hand() -> GameState {
+    hand_mill_observer(P1, Zone::Hand)
+}
+fn mill_observer_in_the_proposers_own_hand() -> GameState {
+    hand_mill_observer(P0, Zone::Hand)
+}
+fn battlefield_scoped_mill_observer_in_the_proposers_own_hand() -> GameState {
+    hand_mill_observer(P0, Zone::Battlefield)
+}
+
+fn graveyard_diverting_replacement() -> GameState {
+    let mut state = mill_base();
+    let def = ReplacementDefinition::new(ReplacementEvent::Moved).destination_zone(Zone::Graveyard);
+    graft_census_land(&mut state, "Graveyard Diverter", def);
+    state
+}
+
+fn real_tapland_self_entry() -> GameState {
+    let mut state = mill_base();
+    let (name, oracle, subtypes) = CENSUS_LANDS[0];
+    let def = census_land_def(
+        name,
+        oracle,
+        subtypes,
+        ReplacementCondition::UnlessControlsMatching {
+            filter: TargetFilter::None,
+        },
+    );
+    graft_census_land(&mut state, name, def);
+    state
+}
+
+fn second_altar_opponent_facing() -> GameState {
+    let mut state = mill_base();
+    graft_mutated_altar(&mut state, |_| {});
+    state
+}
+fn second_altar_each_player() -> GameState {
+    let mut state = mill_base();
+    graft_mutated_altar(&mut state, |execute| {
+        execute.player_scope = Some(PlayerFilter::All);
+    });
+    state
+}
+fn second_altar_may_mill() -> GameState {
+    let mut state = mill_base();
+    graft_mutated_altar(&mut state, |execute| {
+        execute.optional = true;
+    });
+    state
+}
+
+fn pinned_with_narcomoeba() -> GameState {
+    let mut state = pinned_mill_base();
+    let anchor = post_cast_library_anchor(&state, P1, 1);
+    graft_narcomoeba(&mut state, P1, anchor);
+    state
+}
+
+fn pinned_with_vanilla_permanent_at_depth_one() -> GameState {
+    let mut state = pinned_mill_base();
+    let anchor = post_cast_library_anchor(&state, P1, 1);
+    let obj = state
+        .objects
+        .get_mut(&anchor)
+        .expect("the anchored library card is keyed");
+    assert!(
+        obj.trigger_definitions.is_empty() && obj.base_trigger_definitions.is_empty(),
+        "reach-guard: the pin left this card definition-free, so the ONLY variable this row \
+         adds is its permanent type"
+    );
+    obj.card_types.core_types = vec![CoreType::Creature];
+    state
+}
+
+/// Every seat's library size after one driven cycle — the reading that separates the two
+/// silent rows below from the offering control they are each one field away from.
+fn library_sizes_after_one_cycle(state: GameState) -> Vec<(PlayerId, usize)> {
+    drive_sprout_cast(state)
+        .state()
+        .players
+        .iter()
+        .map(|p| (p.id, p.library.len()))
+        .collect()
+}
+
+/// **The mill base OFFERS.** The positive control every row below rests on: one real Altar of
+/// the Brood away from the module's own combo board, the loop's period now declines every
+/// opponent's library, and `certify_instructed_opponent_library_departure` establishes that
+/// decline so the cover's growth obligations can account it.
+///
+/// REVERT / MUTATION PROBE: make `certify_instructed_opponent_library_departure` return `None`
+/// unconditionally ⇒ this **FAILS** while the module's Altar-free rows above stay green.
+#[test]
+fn mill_base_offers_the_shortcut() {
+    assert!(
+        drive_and_report(load_realistic_dump(), "baseline"),
+        "BASELINE positive control: the untouched combo board OFFERS, so a failure below is \
+         about the Altar and not about the harness"
+    );
+    assert!(
+        drive_and_report(mill_base(), "mill base"),
+        "CR 701.17a + CR 701.17b: a period that mills each opponent is still an unbounded \
+         object-growth loop — an empty library neither stops the mill nor ends the game — so \
+         the certified departure must let the cover account the decline and the offer stand"
+    );
+}
+
+/// **A functioning observer of the certified departure keeps the veto.** C2 is the certificate's
+/// public-information conjunct: the proposal may not promise a library decline that something on
+/// the board would act on. Each row is the mill base plus ONE battlefield permanent carrying ONE
+/// trigger definition and nothing else, so the verdict is that definition's.
+///
+/// The last pair is the fail-closed one: `origin: Battlefield` alone PROVES exclusion (a
+/// certified id left a LIBRARY), but a non-empty `origin_zones` makes the matcher ignore
+/// `origin` entirely and require `from_zone` to be in that set instead — so the same pin stops
+/// proving anything and the veto must return. Its paired positive is the same definition with
+/// `origin_zones` empty.
+///
+/// REVERT / MUTATION PROBE: delete the `!def.origin_zones.is_empty()` fail-closed conjunct in
+/// `game::triggers::departure_observer_provably_excludes` ⇒ the third row OFFERS ⇒ **FAILS**.
+#[test]
+fn departure_observing_triggers_keep_the_veto() {
+    run_rows(&[
+        MillRow {
+            what: "PAIRED POSITIVE: the mill base with nothing added OFFERS",
+            board: mill_base,
+            expect_offer: true,
+        },
+        MillRow {
+            what: "CR 701.17a: a TriggerMode::Milled permanent fires on the certified mill by \
+                   definition, so C2 must refuse",
+            board: milled_mode_observer,
+            expect_offer: false,
+        },
+        MillRow {
+            what: "a 'from anywhere' ChangesZone trigger with destination Graveyard pins no \
+                   origin and lands in the zone CR 701.17a puts a milled card in, so neither \
+                   half of C2's exclusion holds",
+            board: from_anywhere_graveyard_observer,
+            expect_offer: false,
+        },
+        MillRow {
+            what: "origin: Battlefield with a non-empty origin_zones including Library — the \
+                   matcher ignores `origin`, so the origin pin proves nothing and C2 fails \
+                   closed",
+            board: battlefield_origin_with_library_in_origin_zones,
+            expect_offer: false,
+        },
+        MillRow {
+            what: "PAIRED POSITIVE for the row above: the SAME definition with origin_zones \
+                   EMPTY provably cannot match a library departure, so the offer stands",
+            board: battlefield_origin_alone,
+            expect_offer: true,
+        },
+    ]);
+}
+
+/// **The hidden-zone relief is scoped to what the proposer may not see.** CR 400.2 makes an
+/// opponent's hand a hidden zone, so the detection drive reads it through the proposer's own
+/// hidden view and a `Milled` observer sitting there carries no veto — the proposer could not
+/// have known about it at proposal time (CR 732.2a), and CR 732.2b gives its controller the
+/// deviation point where that information re-enters. The SAME definition in the PROPOSER'S own
+/// hand is information the proposer does hold, so it still vetoes.
+///
+/// One field separates each row from the next — the seat that owns the hand, then the zone the
+/// definition declares (CR 113.6b) — so the relief is attributed to the hand collection of the
+/// proposer-view redaction and to nothing else. The middle row is also the outer two's
+/// reach-guard: C2 demonstrably walks hand-functioning definitions, so their offers are the
+/// redaction and the zone-of-function gate rather than a scan that never looked.
+#[test]
+fn a_hand_mill_observer_vetoes_only_in_the_proposers_own_hand() {
+    run_rows(&[
+        MillRow {
+            what: "a hand-functioning Milled observer in an OPPONENT'S hand is outside the \
+                   proposer's information and must not veto",
+            board: mill_observer_in_an_opponents_hand,
+            expect_offer: true,
+        },
+        MillRow {
+            what: "the SAME definition in the PROPOSER'S OWN hand is information the proposer \
+                   holds, so C2 must refuse",
+            board: mill_observer_in_the_proposers_own_hand,
+            expect_offer: false,
+        },
+        MillRow {
+            what: "PAIRED POSITIVE for the row above: the same card in the same hand carrying \
+                   the same Milled definition DECLARED to function on the battlefield instead \
+                   (CR 113.6b) still OFFERS — so what refuses above is the definition \
+                   functioning where the proposer can see it, not an extra card in P0's hand",
+            board: battlefield_scoped_mill_observer_in_the_proposers_own_hand,
+            expect_offer: true,
+        },
+    ]);
+}
+
+/// **A replacement that could divert the certified departure keeps the veto, and an ordinary
+/// tapland does not.** CR 614.6 lets a replacement send a card that would go to a graveyard
+/// somewhere else, so a `Moved` definition pinned to Graveyard — or pinned nowhere — observes
+/// the very move the certificate promises. The `destination_zone` narrowing is what keeps the
+/// measured corpus signature `(Moved, SelfRef, Battlefield)` from vetoing every real board, and
+/// the paired row is a REAL card carrying exactly that triple.
+#[test]
+fn a_graveyard_diverting_replacement_vetoes_and_a_real_tapland_does_not() {
+    run_rows(&[
+        MillRow {
+            what: "CR 614.6: a Moved replacement pinned to the graveyard could divert the \
+                   certified departure, so the certificate must refuse",
+            board: graveyard_diverting_replacement,
+            expect_offer: false,
+        },
+        MillRow {
+            what: "PAIRED POSITIVE: a real entry-census tapland's own CR 614.1d self-entry \
+                   replacement is pinned to Battlefield and observes no departure",
+            board: real_tapland_self_entry,
+            expect_offer: true,
+        },
+    ]);
+}
+
+/// **A caster-side mill is not certified, and neither is a mill the proposer may decline.**
+/// Both rows are a SECOND Altar of the Brood with exactly one field of its executed mill
+/// rewritten, so each separates from the unmutated second Altar on that field alone.
+///
+/// `player_scope: All` makes the caster's own library decline too. That movement is not a
+/// candidate — the certificate ranges over NON-caster libraries — so C1b's residual finds it
+/// unaccounted and refuses. `optional: true` is CR 603.5's "you may", a choice made as the
+/// ability resolves and therefore a choice the proposed sequence would have to contain. The
+/// library reading in the row below is what tells the two apart, and it is what makes the
+/// second one isolated: its period declines exactly the libraries the offering control's does.
+#[test]
+fn caster_side_and_declinable_mills_are_not_certified() {
+    run_rows(&[
+        MillRow {
+            what: "PAIRED POSITIVE: a second, unmutated opponent-facing Altar still OFFERS, so \
+                   the two rows below separate on the rewritten field and not on the permanent",
+            board: second_altar_opponent_facing,
+            expect_offer: true,
+        },
+        MillRow {
+            what: "an 'each player mills' period leaves the CASTER's own library decline \
+                   unaccounted, and C1b's residual refuses it",
+            board: second_altar_each_player,
+            expect_offer: false,
+        },
+        MillRow {
+            what: "CR 603.5: a 'may' mill is a resolution-time choice, so the proposed \
+                   sequence would have to contain an answer the proposer never gave",
+            board: second_altar_may_mill,
+            expect_offer: false,
+        },
+    ]);
+}
+
+/// The mechanism behind the two silent rows above, read off the boards rather than asserted by
+/// name — and the may-mill row's isolation is total: it produces the SAME library outcome as
+/// the offering control, so nothing about what the period does to any library can explain why
+/// one offers and the other does not.
+#[test]
+fn the_each_player_mill_declines_the_casters_library_and_the_may_mill_declines_nothing_extra() {
+    let offering = library_sizes_after_one_cycle(second_altar_opponent_facing());
+    assert_ne!(
+        offering,
+        library_sizes_after_one_cycle(mill_base()),
+        "REACH-GUARD: the second Altar really mills — its board's libraries differ from the \
+         one-Altar base, so the two rows below are not comparing a permanent that does nothing"
+    );
+    assert_eq!(
+        library_sizes_after_one_cycle(second_altar_may_mill()),
+        offering,
+        "the may-mill row's period declines exactly the libraries the OFFERING control's does, \
+         so its refusal is the declinability itself (CR 603.5) and not anything the mill did"
+    );
+
+    let each_player = library_sizes_after_one_cycle(second_altar_each_player());
+    let caster_of = |sizes: &[(PlayerId, usize)]| {
+        sizes
+            .iter()
+            .find(|(id, _)| *id == P0)
+            .expect("the caster has a seat")
+            .1
+    };
+    assert!(
+        caster_of(&each_player) < caster_of(&offering),
+        "the each-player row's refusal IS a caster-side decline: only there does P0's own \
+         library shrink, and that movement is what C1b's residual finds unaccounted"
+    );
+}
+
+/// **The two channels a milled card can reach the drive through, one live per row, the other
+/// pinned dead.** Both rows OFFER, and each agrees with the bare pinned control it is measured
+/// against, so what they assert is that the proposer-view redaction has taken that channel out
+/// of the detection drive before it can act.
+///
+/// On the pinned base every non-caster library card is non-permanent and definition-free, so a
+/// milled card can neither flip `descended_this_turn` (CR 700.11) nor open a window. The
+/// interposer row adds ONE real parsed Narcomoeba at post-cast depth 1 of a victim's library —
+/// its own library→graveyard window is the live channel. The descend row instead rewrites the
+/// card already at that depth to a vanilla PERMANENT carrying no definitions — no window
+/// anywhere, so the live channel is the arriving card's permanent type alone.
+///
+/// REVERT / MUTATION PROBE, RUN rather than reasoned: make
+/// `game::visibility::proposer_hidden_view` return its clone unprojected, so the drive reads
+/// unredacted library cards ⇒ the pinned control still OFFERS and BOTH rows go silent ⇒ both
+/// **FAIL**. The control holding is what makes each failure the row's own object; which
+/// conjunct refuses it is not this row's claim.
+#[test]
+fn a_milled_cards_own_window_and_permanent_type_reach_the_drive_through_neither_channel() {
+    run_rows(&[
+        MillRow {
+            what: "PAIRED CONTROL: the bare pinned mill base OFFERS, so both rows below are \
+                   measured against a board whose only difference is their own object",
+            board: pinned_mill_base,
+            expect_offer: true,
+        },
+        MillRow {
+            what: "INTERPOSER: a real Narcomoeba the drive mills carries its own \
+                   library→graveyard window, which the proposer cannot see and the drive \
+                   therefore never opens",
+            board: pinned_with_narcomoeba,
+            expect_offer: true,
+        },
+        MillRow {
+            what: "DESCEND: a vanilla permanent card the drive mills would flip CR 700.11's \
+                   descended_this_turn on its owner, a Player field no certified-departure \
+                   relief reaches",
+            board: pinned_with_vanilla_permanent_at_depth_one,
+            expect_offer: true,
+        },
+    ]);
+}

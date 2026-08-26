@@ -1,23 +1,38 @@
-//! PROBE (investigation only — not a shipped row): drives the user's 4p Witherbloom / Sprout
-//! Swarm / Altar of the Brood board through the production cast boundary and records what the
-//! bounded CR 732.2a shortcut machinery does with a mill-carrying infinite loop.
+//! CR 732.2a acceptance on BOTH gate boards — a Sprout Swarm object-growth loop whose period
+//! ALSO mills every opponent must offer the shortcut, and the offer must NAME the mill.
 //!
-//! Board, verified against the dump itself and against Scryfall: Sprout Swarm (Convoke + Buyback
-//! {3}, one Spell ability making a 1/1 green Saproling) in P0's hand, Witherbloom the Balancer
-//! granting affinity for creatures to P0's instants and sorceries, Altar of the Brood milling
-//! each opponent whenever another permanent P0 controls enters, and Doubling Season. Affinity
-//! zeroes the {4} generic and convoke pays the {G} off an untapped green creature
-//! (CR 702.41 / CR 702.27 / CR 702.51a), so a cycle is free: +2 Saprolings, each opponent mills 2
-//! (CR 701.17), NO life change, P0's own library UNTOUCHED. The only bound-shaped axis is the
-//! OPPONENTS' library sizes, and per CR 701.17b + CR 121.4 an empty library neither stops the
-//! mill nor ends the game, so it must not bound the loop. `sprout_inalla_realistic_offer.rs` is
-//! the same loop WITHOUT Altar, where one live cast surfaces `WaitingFor::LoopShortcut{P0}`.
+//! Loop shape (Oracle text verbatim from the pinned export): Sprout Swarm (Convoke + Buyback
+//! {3}) in P0's hand, Witherbloom the Balancer granting affinity for creatures, Altar of the
+//! Brood milling each opponent whenever another permanent P0 controls enters. Affinity zeroes
+//! the generic and convoke pays the {G} off an untapped Saproling (CR 702.51a / CR 702.27 /
+//! CR 702.41), so a cycle is free: +1 or +2 Saprolings, each opponent mills, NO life change,
+//! P0's own library untouched. Per CR 701.17b + CR 121.4 an empty library neither stops the
+//! mill nor ends the game, so the opponents' library sizes must not bound the loop.
+//!
+//! THE MODULE SPLITS ON ONE AXIS. Every arm asserts an offer whose `unbounded` carries
+//! `TokensCreated` — both kinds of board produce the token growth, so that is the shared
+//! conjunct and marks neither side. The split is `ResourceAxis::LibraryDelta`: every
+//! Altar-BEARING arm asserts one per victim, every Altar-ABSENT arm asserts none. The victim
+//! set is derived from the live cast's own library decline rather than pinned, so the two
+//! halves are read by the same instrument.
+//!
+//! Neither board substitutes for the other. `witherbloom_altar_sprout_swarm_4p` is the owner's
+//! dumped board — a viewer projection whose library and hand objects are already typeless
+//! placeholders, so redaction cannot move it; it is the ship gate. `sprout_witherbloom_
+//! realistic_lands_4p` plus a grafted Altar is an authoritative capture whose libraries hold
+//! real cards, so it is the only dump that exercises the proposer-view redaction end to end.
 
+use engine::analysis::loop_check::WinKind;
+use engine::analysis::resource::ResourceAxis;
 use engine::game::scenario::GameRunner;
+use engine::game::zones::create_object;
+use engine::types::card_type::CoreType;
 use engine::types::game_state::{GameState, PersistedGameState, WaitingFor};
-use engine::types::identifiers::ObjectId;
+use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
+
+use super::sprout_inalla_realistic_offer::{drive_sprout_cast, load_realistic_dump};
 
 const P0: PlayerId = PlayerId(0);
 const SPROUT: ObjectId = ObjectId(55);
@@ -25,6 +40,15 @@ const ALTAR: ObjectId = ObjectId(90);
 const DOUBLING_SEASON: ObjectId = ObjectId(67);
 /// An untapped P0 green Saproling to convoke for the {G} (417, 422, 432, 436, 437 are untapped).
 const FODDER: ObjectId = ObjectId(417);
+/// P3's Pyreswipe Hawk — its `Attacks` body is a `Pump` off a board aggregate, a ledger read
+/// the growing-class firewall vetoes on when it is scanned.
+const PYRESWIPE_HAWK: ObjectId = ObjectId(298);
+const PIT_OF_OFFERINGS: ObjectId = ObjectId(9);
+
+/// Altar of the Brood, VERBATIM Oracle text from the pinned `client/public/card-data.json`
+/// export — the graft the authoritative capture needs to carry this loop's mill.
+pub(super) const ALTAR_ORACLE: &str =
+    "Whenever another permanent you control enters, each opponent mills a card.";
 
 fn gunzip(gz: &[u8]) -> String {
     use std::io::Read;
@@ -47,6 +71,49 @@ fn load_wb() -> GameState {
         .into_game_state()
 }
 
+/// Put a real parsed Altar of the Brood on `seat`'s battlefield.
+///
+/// `create_object` plus `push_printed_trigger`, never `objects.insert` +
+/// `battlefield.push_back`: the latter leaves the definition out of `base_trigger_definitions`,
+/// `game/layers.rs`'s per-pass reset then drops the live entry, and the board behaves as though
+/// the permanent were absent — a green arm for the wrong reason. Same law
+/// `wba_fodder_multiset::graft_doubler` records on the replacement side.
+pub(super) fn graft_altar(state: &mut GameState, seat: PlayerId) -> ObjectId {
+    let parsed = engine::parser::parse_oracle_text(
+        ALTAR_ORACLE,
+        "Altar of the Brood",
+        &[],
+        &["Artifact".to_string()],
+        &[],
+    );
+    assert_eq!(
+        parsed.triggers.len(),
+        1,
+        "fixture pin: Altar of the Brood parses to exactly ONE trigger definition — the \
+         CR 603.6a entry observer whose body is the mill every arm here is about"
+    );
+    assert!(
+        parsed.abilities.is_empty() && parsed.statics.is_empty() && parsed.replacements.is_empty(),
+        "fixture pin: Altar of the Brood carries no activated, static or replacement surface, \
+         so the grafted object's only new speaker is that one trigger"
+    );
+    let card_id = CardId(state.next_object_id);
+    let host = create_object(
+        state,
+        card_id,
+        seat,
+        "Altar of the Brood".to_string(),
+        Zone::Battlefield,
+    );
+    let obj = state
+        .objects
+        .get_mut(&host)
+        .expect("the just-created Altar is in `objects`");
+    obj.card_types.core_types = vec![CoreType::Artifact];
+    obj.push_printed_trigger(parsed.triggers[0].clone());
+    host
+}
+
 fn count_saprolings(state: &GameState, who: PlayerId) -> usize {
     state
         .battlefield
@@ -60,60 +127,337 @@ fn count_saprolings(state: &GameState, who: PlayerId) -> usize {
         .count()
 }
 
-fn libs(state: &GameState) -> Vec<usize> {
-    state.players.iter().map(|p| p.library.len()).collect()
-}
-fn gys(state: &GameState) -> Vec<usize> {
-    state.players.iter().map(|p| p.graveyard.len()).collect()
-}
-fn lives(state: &GameState) -> Vec<i32> {
-    state.players.iter().map(|p| p.life).collect()
+fn library_sizes(state: &GameState) -> Vec<(PlayerId, usize)> {
+    state
+        .players
+        .iter()
+        .map(|p| (p.id, p.library.len()))
+        .collect()
 }
 
-/// One live Sprout Swarm cycle through the public boundary: accept Buyback, convoke `fodder`
-/// for the {G}, commit, resolve.
-fn drive_sprout_cast(state: GameState, fodder: ObjectId) -> engine::game::scenario::Outcome {
+/// The players whose libraries actually declined across the driven cast — the loop's own
+/// victims, read off the board instead of pinned, so the two halves of the split below are
+/// measured by ONE instrument.
+fn victims(before: &GameState, after: &GameState) -> Vec<PlayerId> {
+    let after_sizes = library_sizes(after);
+    library_sizes(before)
+        .into_iter()
+        .zip(after_sizes)
+        .filter(|((_, was), (_, now))| now < was)
+        .map(|((id, _), _)| id)
+        .collect()
+}
+
+/// The players named by a `LibraryDelta` axis in `unbounded`.
+fn library_delta_players(unbounded: &[ResourceAxis]) -> Vec<PlayerId> {
+    unbounded
+        .iter()
+        .filter_map(|axis| match axis {
+            ResourceAxis::LibraryDelta(player) => Some(*player),
+            _ => None,
+        })
+        .collect()
+}
+
+fn remove(state: &mut GameState, id: ObjectId) {
+    state.battlefield.retain(|x| *x != id);
+    state.objects.remove(&id);
+}
+
+/// One live Sprout Swarm cycle on the dumped board: accept Buyback, convoke `fodder` for the
+/// {G}, commit, resolve.
+fn cast_wb(state: GameState, fodder: ObjectId) -> GameState {
     GameRunner::from_state(state)
         .cast(SPROUT)
         .accept_optional()
         .convoke_with(&[fodder])
         .commit()
         .resolve()
+        .state()
+        .clone()
 }
 
-fn report(label: &str, state: &GameState) {
-    eprintln!(
-        "[{label}] wf={:?}",
-        std::format!("{:?}", state.waiting_for)
-            .chars()
-            .take(220)
-            .collect::<String>()
+// ── Board suppliers: each is one arm's (loader, mutations) half ──
+
+fn wb_dumped() -> GameState {
+    load_wb()
+}
+fn wb_no_altar() -> GameState {
+    let mut state = load_wb();
+    remove(&mut state, ALTAR);
+    state
+}
+fn wb_no_doubling_season() -> GameState {
+    let mut state = load_wb();
+    remove(&mut state, DOUBLING_SEASON);
+    state
+}
+fn wb_no_doubling_season_no_altar() -> GameState {
+    let mut state = wb_no_doubling_season();
+    remove(&mut state, ALTAR);
+    state
+}
+fn wb_mill_isolated() -> GameState {
+    let mut state = wb_no_doubling_season();
+    remove(&mut state, PYRESWIPE_HAWK);
+    state
+}
+fn wb_mill_isolated_no_altar() -> GameState {
+    let mut state = wb_mill_isolated();
+    remove(&mut state, ALTAR);
+    state
+}
+fn wb_peeled_no_altar() -> GameState {
+    let mut state = load_wb();
+    for id in [DOUBLING_SEASON, ALTAR, PYRESWIPE_HAWK, PIT_OF_OFFERINGS] {
+        remove(&mut state, id);
+    }
+    state
+}
+fn capture_with_altar() -> GameState {
+    let mut state = load_realistic_dump();
+    graft_altar(&mut state, P0);
+    state
+}
+
+// ── Drivers: one per board, since each dump has its own Sprout and fodder ids ──
+
+fn drive_wb_one_cycle(state: GameState) -> GameState {
+    cast_wb(state, FODDER)
+}
+
+/// Drive Sprout Swarm cycles until the offer is up or the untapped fodder runs out, so an arm
+/// whose board needed more history than one cycle still reports the offer it eventually forms
+/// rather than reading as silence.
+fn drive_wb_until_offer(mut state: GameState) -> GameState {
+    for _ in 0..5 {
+        if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
+            return state;
+        }
+        let pick = state
+            .battlefield
+            .iter()
+            .find(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .is_some_and(|o| o.controller == P0 && o.name == "Saproling" && !o.tapped)
+            })
+            .copied()
+            .expect("multi-cycle arm: an untapped P0 Saproling to convoke");
+        state = cast_wb(state, pick);
+    }
+    state
+}
+
+fn drive_capture_one_cycle(state: GameState) -> GameState {
+    drive_sprout_cast(state).state().clone()
+}
+
+/// What an arm asserts about `ResourceAxis::LibraryDelta` — the one axis this module splits on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MillAxis {
+    /// Altar-BEARING: one axis per victim, and no axis for a non-victim.
+    OnePerVictim,
+    /// Altar-ABSENT: none at all. Asserting the ABSENT axis is what stops the module passing
+    /// on a change that made every board publish a mill.
+    None,
+}
+
+/// One arm: a board supplier (loader + mutations), the live cast that drives it, and the
+/// expected mill axis.
+struct GateArm {
+    what: &'static str,
+    board: fn() -> GameState,
+    drive: fn(GameState) -> GameState,
+    expect: MillAxis,
+}
+
+/// Drive one arm and report every way it disagrees with its expectation, rather than stopping
+/// at the first — the split below is only evidence when BOTH halves have been read.
+fn run(arm: &GateArm) -> Vec<String> {
+    let what = arm.what;
+    let before = (arm.board)();
+    let saprolings_before = count_saprolings(&before, P0);
+    let before_snapshot = before.clone();
+    let after = (arm.drive)(before);
+
+    // Reach-guards that hold on BOTH sides of the split, so a reported axis disagreement is
+    // never "the harness drove nothing".
+    assert!(
+        count_saprolings(&after, P0) > saprolings_before,
+        "{what} reach-guard: the driven cycle must create at least one Saproling"
     );
-    eprintln!(
-        "[{label}] libs={:?} gy={:?} life={:?} saprolings={} seq_len={}",
-        libs(state),
-        gys(state),
-        lives(state),
-        count_saprolings(state, P0),
-        state.last_loop_action_sequence.len(),
+    assert!(
+        after
+            .objects
+            .values()
+            .any(|o| o.name == "Sprout Swarm" && o.controller == P0 && o.zone == Zone::Hand),
+        "{what} reach-guard: CR 702.27a buyback must return Sprout Swarm to P0's hand, i.e. \
+         the cast really resolved and the loop is recastable"
     );
-    if let WaitingFor::LoopShortcut {
+
+    let WaitingFor::LoopShortcut {
         proposer,
         certificate,
-        schema,
         ..
-    } = &state.waiting_for
-    {
-        eprintln!("[{label}] *** OFFER *** proposer={proposer:?}");
-        eprintln!("[{label}] CERT={certificate:#?}");
-        eprintln!("[{label}] SCHEMA={schema:#?}");
+    } = &after.waiting_for
+    else {
+        return vec![format!(
+            "{what}: the CR 732.2a object-growth shortcut must be OFFERED, got {:?}",
+            after.waiting_for
+        )];
+    };
+
+    let mut wrong = Vec::new();
+    if *proposer != P0 {
+        wrong.push(format!(
+            "{what}: the loop's controller must be the proposer, got {proposer:?}"
+        ));
     }
+    if certificate.win_kind != WinKind::Advantage {
+        wrong.push(format!(
+            "{what}: an unbounded mill an empty library neither stops (CR 701.17b) nor ends \
+             the game on (CR 121.4) is an ADVANTAGE loop, not a win the collapse can deliver; \
+             got {:?}",
+            certificate.win_kind
+        ));
+    }
+    if !certificate.unbounded.contains(&ResourceAxis::TokensCreated) {
+        wrong.push(format!(
+            "{what}: the shared conjunct — both kinds of board grow the Saproling class, got \
+             {:?}",
+            certificate.unbounded
+        ));
+    }
+
+    let milled = victims(&before_snapshot, &after);
+    let published = library_delta_players(&certificate.unbounded);
+    match arm.expect {
+        MillAxis::OnePerVictim => {
+            assert!(
+                !milled.is_empty(),
+                "{what} paired reach-guard: an Altar-bearing board's own cast must decline at \
+                 least one opponent library, or the axis reading below is vacuous"
+            );
+            if published != milled {
+                wrong.push(format!(
+                    "{what}: CR 701.17a — the certificate must publish one LibraryDelta per \
+                     victim {milled:?} and none for a non-victim, got {published:?}"
+                ));
+            }
+        }
+        MillAxis::None => {
+            assert!(
+                milled.is_empty(),
+                "{what} paired reach-guard: an Altar-absent board's cast must mill nobody, so \
+                 the empty axis reading below is about the certificate and not the board"
+            );
+            if !published.is_empty() {
+                wrong.push(format!(
+                    "{what}: with no mill in the period the certificate must publish NO \
+                     LibraryDelta axis, got {published:?}"
+                ));
+            }
+        }
+    }
+    wrong
 }
 
-/// ARM A — the board exactly as the user dumped it (Altar of the Brood present).
+/// Walk every arm before asserting, so one disagreeing arm does not hide the rest.
+fn run_all(arms: &[GateArm]) {
+    let wrong: Vec<String> = arms.iter().flat_map(run).collect();
+    assert!(
+        wrong.is_empty(),
+        "{} of {} arms disagreed:\n  {}",
+        wrong.len(),
+        arms.len(),
+        wrong.join("\n  ")
+    );
+}
+
+/// The Altar-BEARING half of the split. Arm 0 is the ship gate; the rest vary cycle count,
+/// token doubling and the two firewall-adjacent permanents around it, so the published mill
+/// axis is a property of the Altar and not of one board configuration.
+const BEARING: [GateArm; 5] = [
+    GateArm {
+        what: "SHIP GATE — the owner's dumped board, unmutated",
+        board: wb_dumped,
+        drive: drive_wb_one_cycle,
+        expect: MillAxis::OnePerVictim,
+    },
+    GateArm {
+        what: "the authoritative capture plus a grafted Altar",
+        board: capture_with_altar,
+        drive: drive_capture_one_cycle,
+        expect: MillAxis::OnePerVictim,
+    },
+    GateArm {
+        what: "the dumped board driven until the offer forms",
+        board: wb_dumped,
+        drive: drive_wb_until_offer,
+        expect: MillAxis::OnePerVictim,
+    },
+    GateArm {
+        what: "the dumped board with Doubling Season removed (one token per cycle)",
+        board: wb_no_doubling_season,
+        drive: drive_wb_one_cycle,
+        expect: MillAxis::OnePerVictim,
+    },
+    GateArm {
+        what: "the dumped board with Doubling Season and Pyreswipe Hawk removed",
+        board: wb_mill_isolated,
+        drive: drive_wb_one_cycle,
+        expect: MillAxis::OnePerVictim,
+    },
+];
+
+/// The Altar-ABSENT half: the same boards with the mill's only source removed. Matched one for
+/// one against [`BEARING`] except for the peel arm, which removes three further permanents to
+/// show the empty axis is not one board's accident.
+const ABSENT: [GateArm; 6] = [
+    GateArm {
+        what: "the owner's dumped board with Altar removed",
+        board: wb_no_altar,
+        drive: drive_wb_one_cycle,
+        expect: MillAxis::None,
+    },
+    GateArm {
+        what: "the authoritative capture, ungrafted",
+        board: load_realistic_dump,
+        drive: drive_capture_one_cycle,
+        expect: MillAxis::None,
+    },
+    GateArm {
+        what: "the dumped board with Altar removed, driven until the offer forms",
+        board: wb_no_altar,
+        drive: drive_wb_until_offer,
+        expect: MillAxis::None,
+    },
+    GateArm {
+        what: "the dumped board with Doubling Season and Altar removed",
+        board: wb_no_doubling_season_no_altar,
+        drive: drive_wb_one_cycle,
+        expect: MillAxis::None,
+    },
+    GateArm {
+        what: "the dumped board with Doubling Season, Pyreswipe Hawk and Altar removed",
+        board: wb_mill_isolated_no_altar,
+        drive: drive_wb_one_cycle,
+        expect: MillAxis::None,
+    },
+    GateArm {
+        what: "the dumped board peeled to Doubling Season, Altar, Pyreswipe Hawk and Pit of \
+               Offerings removed",
+        board: wb_peeled_no_altar,
+        drive: drive_wb_one_cycle,
+        expect: MillAxis::None,
+    },
+];
+
+/// Preconditions on the dumped board, asserted once so the arms below need not restate them.
 #[test]
-#[ignore = "probe"]
-fn probe_a_with_altar() {
+fn dumped_gate_board_is_the_configuration_the_arms_assume() {
     let state = load_wb();
     assert!(
         matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0),
@@ -125,174 +469,43 @@ fn probe_a_with_altar() {
             .objects
             .get(&SPROUT)
             .map(|o| (o.name.as_str(), o.zone)),
-        Some(("Sprout Swarm", Zone::Hand))
+        Some(("Sprout Swarm", Zone::Hand)),
+        "fixture precondition: Sprout Swarm is in P0's hand"
     );
     assert_eq!(
         state.objects.get(&ALTAR).map(|o| o.name.as_str()),
-        Some("Altar of the Brood")
+        Some("Altar of the Brood"),
+        "fixture precondition: the mill's source is on the board"
     );
-    let f = state.objects.get(&FODDER).expect("fodder present");
-    assert!(f.name == "Saproling" && f.controller == P0 && !f.tapped);
-    report("A0", &state);
-
-    let out = drive_sprout_cast(state, FODDER);
-    report("A1", out.state());
-    eprintln!("[A1] sprout zone = {:?}", out.zone_of(SPROUT));
+    let fodder = state.objects.get(&FODDER).expect("fodder present");
+    assert!(
+        fodder.name == "Saproling" && fodder.controller == P0 && !fodder.tapped,
+        "fixture precondition: {FODDER:?} is an untapped P0 fodder Saproling"
+    );
 }
 
-/// ARM B — the SAME board with Altar of the Brood surgically removed before the drive. The A/B
-/// differential: if the offer appears here and not in ARM A, the mill trigger is the suppressor.
+/// **THE SHIP GATE, and its variations.** Every Altar-bearing board offers the CR 732.2a
+/// shortcut and the certificate names one `LibraryDelta` per victim beside `TokensCreated`.
+///
+/// DISCRIMINATING, MEASURED over these arms: restore `class_members` to the growth set
+/// unrestricted by the scanned frame's battlefield residency
+/// (`analysis::resource::loop_states_cover_modulo_fodder_growth`) ⇒ the firewall vetoes on the
+/// certified graveyard-resident ids and all four DUMPED-board arms redden at `Priority{P0}`,
+/// while [`altar_absent_boards_publish_no_library_delta`] stays green. The authoritative
+/// capture's arm is invariant under it — that board carries no consulting site the dropped ids
+/// move — which is why the dumped board and not the capture is what pins the restriction.
 #[test]
-#[ignore = "probe"]
-fn probe_b_without_altar() {
-    let mut state = load_wb();
-    state.battlefield.retain(|id| *id != ALTAR);
-    state.objects.remove(&ALTAR);
-    report("B0", &state);
-
-    let out = drive_sprout_cast(state, FODDER);
-    report("B1", out.state());
-    eprintln!("[B1] sprout zone = {:?}", out.zone_of(SPROUT));
+fn altar_bearing_boards_offer_and_publish_one_library_delta_per_victim() {
+    run_all(&BEARING);
 }
 
-/// ARM D — multi-cycle WITHOUT Altar. The matched multi-cycle partner of ARM C: if C never
-/// offers and D does, Altar is the suppressor at multi-cycle depth too.
+/// The paired positive for the row above, on the SAME instrument: with the mill's only source
+/// gone the same boards still offer, and the certificate publishes NO `LibraryDelta`.
+///
+/// DISCRIMINATING: drop `certify_instructed_opponent_library_departure`'s C1c empty-set guard
+/// so a period with no departure still yields a certificate ⇒ these arms publish a mill axis
+/// for a board that mills nobody ⇒ **FAILS**.
 #[test]
-#[ignore = "probe"]
-fn probe_d_multi_cycle_without_altar() {
-    let mut state = load_wb();
-    state.battlefield.retain(|id| *id != ALTAR);
-    state.objects.remove(&ALTAR);
-    multi_cycle(state, "D");
-}
-
-/// ARM C — the user's board, driven for SEVERAL cycles, in case one cycle is not enough history
-/// for the detector on this board. Each cycle convokes a different untapped fodder Saproling.
-#[test]
-#[ignore = "probe"]
-fn probe_c_multi_cycle_with_altar() {
-    multi_cycle(load_wb(), "C");
-}
-
-/// The 2×2 factorial. `game::engine::derived_fodder_class` is a one-CLASS gate that admits a
-/// homogeneous k-multiset and reports k, so Doubling Season's 2 Saprolings/cycle do not suppress
-/// the class derivation. What DS does on this board is ROUTE: a k > 1 period with a live
-/// `CreateToken` replacement takes the `DriveSequence` replay instead of the batched mint
-/// (`analysis::resource::token_growth_is_observed`). Removing DS isolates the Altar/mill axis.
-fn remove(state: &mut GameState, id: ObjectId) {
-    state.battlefield.retain(|x| *x != id);
-    state.objects.remove(&id);
-}
-
-/// ARM E — Doubling Season removed, Altar KEPT. One token/cycle ⇒ the fodder class derives; the
-/// only remaining deviation from the shipped-green sibling board is the mill.
-#[test]
-#[ignore = "probe"]
-fn probe_e_no_doubling_season_with_altar() {
-    let mut state = load_wb();
-    remove(&mut state, DOUBLING_SEASON);
-    report("E0", &state);
-    let out = drive_sprout_cast(state, FODDER);
-    report("E1", out.state());
-}
-
-/// ARM F — Doubling Season AND Altar removed. The matched control for ARM E: this board should
-/// reproduce the shipped `sprout_inalla_realistic_offer_fires` shape and OFFER. If F offers and
-/// E does not, the mill is the isolated suppressor.
-#[test]
-#[ignore = "probe"]
-fn probe_f_no_doubling_season_no_altar() {
-    let mut state = load_wb();
-    remove(&mut state, DOUBLING_SEASON);
-    remove(&mut state, ALTAR);
-    report("F0", &state);
-    let out = drive_sprout_cast(state, FODDER);
-    report("F1", out.state());
-}
-
-/// P3's Pyreswipe Hawk (obj 298) — its `Attacks` trigger body is
-/// `Pump{power: Aggregate{Max, ManaValue, Typed{Artifact, controller You}}}`, a ledger read the
-/// growing-class firewall vetoes on.
-const PYRESWIPE_HAWK: ObjectId = ObjectId(298);
-
-/// ARM G — Doubling Season + Pyreswipe Hawk removed, Altar KEPT. Isolates the mill: with S1 and
-/// S3 neutralized the ONLY remaining deviation is Altar's mill.
-#[test]
-#[ignore = "probe"]
-fn probe_g_isolate_mill() {
-    let mut state = load_wb();
-    remove(&mut state, DOUBLING_SEASON);
-    remove(&mut state, PYRESWIPE_HAWK);
-    report("G0", &state);
-    let out = drive_sprout_cast(state, FODDER);
-    report("G1", out.state());
-}
-
-/// ARM H — Doubling Season + Pyreswipe Hawk + Altar removed. The matched positive endpoint: if H
-/// OFFERS and G does not, the mill is proven to be the isolated suppressor on the user's own board.
-#[test]
-#[ignore = "probe"]
-fn probe_h_isolate_mill_control() {
-    let mut state = load_wb();
-    remove(&mut state, DOUBLING_SEASON);
-    remove(&mut state, PYRESWIPE_HAWK);
-    remove(&mut state, ALTAR);
-    report("H0", &state);
-    let out = drive_sprout_cast(state, FODDER);
-    report("H1", out.state());
-}
-
-const PIT_OF_OFFERINGS: ObjectId = ObjectId(9);
-
-/// ARM I — peel one more layer: DS + Altar + Pyreswipe Hawk + Pit of Offerings removed. Measures
-/// how DEEP the firewall's false-positive stack goes on a realistic 4p board.
-#[test]
-#[ignore = "probe"]
-fn probe_i_peel_two() {
-    let mut state = load_wb();
-    for id in [DOUBLING_SEASON, ALTAR, PYRESWIPE_HAWK, PIT_OF_OFFERINGS] {
-        remove(&mut state, id);
-    }
-    report("I0", &state);
-    let out = drive_sprout_cast(state, FODDER);
-    report("I1", out.state());
-}
-
-fn multi_cycle(mut state: GameState, prefix: &str) {
-    report(&format!("{prefix}0"), &state);
-    for (i, fodder) in [422u64, 432, 436, 437, 417].into_iter().enumerate() {
-        if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
-            eprintln!("[{prefix}{i}] offer already up; stopping");
-            break;
-        }
-        // Re-aim at any untapped P0 Saproling if the scripted one is already tapped.
-        let pick = if state
-            .objects
-            .get(&ObjectId(fodder))
-            .is_some_and(|o| !o.tapped && o.controller == P0)
-        {
-            ObjectId(fodder)
-        } else {
-            let found = state
-                .battlefield
-                .iter()
-                .find(|id| {
-                    state
-                        .objects
-                        .get(id)
-                        .is_some_and(|o| o.controller == P0 && o.name == "Saproling" && !o.tapped)
-                })
-                .copied();
-            match found {
-                Some(id) => id,
-                None => {
-                    eprintln!("[{prefix}{i}] no untapped fodder left; stopping");
-                    break;
-                }
-            }
-        };
-        let out = drive_sprout_cast(state, pick);
-        state = out.state().clone();
-        report(&format!("{prefix}{}", i + 1), &state);
-    }
+fn altar_absent_boards_publish_no_library_delta() {
+    run_all(&ABSENT);
 }
