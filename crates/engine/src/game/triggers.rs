@@ -2840,24 +2840,29 @@ pub(crate) fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone
 ///
 /// SOUNDNESS + ORDERING (load-bearing — do not reorder the callers): such a trigger never
 /// fires on the loop's per-cycle token creation because two invariants, checked IN ORDER inside
-/// `analysis::resource::loop_states_cover_modulo_fodder_growth`, guarantee the fodder is the ONLY
-/// class that changes across the covered cycle:
+/// `analysis::resource::loop_states_cover_modulo_fodder_growth`, guarantee that every object
+/// difference between the frames is either a fodder-class member or an id the period's
+/// instructed-departure certificate accounts:
 ///
-/// 1. the FIRST accept-time frame pair's ONE-CLASS entry set is guaranteed by
-///    `game::engine::derived_fodder_class` (it returns `None` unless EVERY object that entered the
-///    battlefield that cycle is the same class under BOTH
+/// 1. the FIRST accept-time frame pair's ONE-CLASS MINTED set is guaranteed by
+///    `game::engine::derived_fodder_class` (it returns `None` unless EVERY object the cycle
+///    MINTED onto the battlefield is the same class under BOTH
 ///    `analysis::resource::fodder_content_eq` AND
 ///    `game::printed_cards::intrinsic_copiable_values`, so a `Some` fodder class means the k >= 1
-///    entrants were all fodder and nothing else entered. The invariant needs "one class", not
+///    minted entrants were all fodder. The invariant needs "one class", not
 ///    "one object", and content equality delivers it. `derived_fodder_class` also has a second,
 ///    display-only caller — the soundness-bearing one is inside the fodder-cover arm); and
-/// 2. the SECOND cover frame pair's "only the fodder partition grows" is guaranteed SOLELY by
+/// 2. the SECOND cover frame pair's "only the growing set differs" is guaranteed SOLELY by
 ///    `analysis::resource::board_covers_modulo_fodder`, whose all-zones
 ///    stable-partition content-equality is enforced by its own return value at its ONLY call
 ///    site — which PRECEDES the firewall call in the same function. A reader/refactor
 ///    must not reorder the
 ///    `board_covers_modulo_fodder` gate after the firewall: the disjointness argument here
-///    relies on it having already proven that nothing but the fodder entered.
+///    relies on it having already proven that nothing outside that set differs.
+///
+/// The premise is stated over the CERTIFIED set rather than over what can never enter the
+/// battlefield, so it stays true however the certificate later WIDENS — and it never rests on
+/// what the proposer may or may not see.
 ///
 /// Therefore a matcher that provably excludes the fodder does not observe the loop and must not
 /// veto the CR 732.2a offer.
@@ -2896,6 +2901,105 @@ pub(crate) fn etb_observer_provably_excludes_class(
                 &source_context,
             )
         }
+}
+
+/// CR 701.17a: a mill puts a card from the top of a library into a graveyard; CR 614.6
+/// lets a replacement send it elsewhere instead, so the shapes a certified id can have
+/// taken are its own landing zone and the graveyard — and only a matcher that excludes
+/// ALL of them provably cannot fire on one. Returns `true` iff so.
+///
+/// The departure-event sibling of [`etb_observer_provably_excludes_class`], under the
+/// same fail-closed discipline: every axis this predicate cannot classify keeps the
+/// caller's conservative veto.
+///
+/// `destinations` is the caller's own certified set's landing zones plus
+/// `Zone::Graveyard`. Taking it as a PARAMETER is what keeps the admitted set and this
+/// proof obligation from drifting apart: one is computed from the other, so a widening of
+/// the admission widens the obligation with no second edit and no second zone list here.
+/// It is also why the obligation is not `Library -> *` — that scope proves nothing about
+/// a destination pin, so every unpinned-origin battlefield-entry definition survives it
+/// un-excluded and vetoes, including the entry trigger a token loop is built around.
+///
+/// `class_event_keys` is the other side of the delegation arm's intersection: the UNION,
+/// over the whole certified set, of `trigger_index::keys_from_event` for a
+/// `ZoneChanged { from: Library, to }` per landing zone in the same `destinations`. A
+/// union is required rather than one call on a representative id — for a battlefield
+/// landing that deriver emits one key per core type read from the object, so a single
+/// supplying id narrows the set, and a narrower set is disjoint MORE often, which is the
+/// direction that wrongly excludes a real observer.
+///
+/// RESIDUAL, in the sibling's idiom: a certified id that passed through some THIRD zone
+/// which is neither the graveyard nor where it ended is not quantified over, and an
+/// observer of only that hop is not vetoed.
+pub(crate) fn departure_observer_provably_excludes(
+    def: &TriggerDefinition,
+    destinations: &std::collections::BTreeSet<Zone>,
+    class_event_keys: &[crate::types::triggers::TriggerEventKey],
+) -> bool {
+    match def.mode {
+        // CR 701.17a: these fire on the mill by definition. This arm is UNCONDITIONAL and
+        // runs FIRST, which is why the caller carries no separate
+        // `TriggerEventKey::Milled` conjunct: `trigger_index::keys_from_trigger_def`
+        // sources that key from exactly these three modes, so no definition carrying it
+        // reaches the delegation arm at all — and the verdict here is invariant under
+        // which EVENT ends up carrying the mill key.
+        TriggerMode::Milled | TriggerMode::MilledOnce | TriggerMode::MilledAll => false,
+        TriggerMode::ChangesZone | TriggerMode::ChangesZoneAll => {
+            // Fail closed on the fields that make an `origin`/`destination`-based proof
+            // invalid: a disjunctive clause list, a non-empty `origin_zones` (when it is
+            // non-empty the matcher requires `from_zone` to be in THAT set and `origin` is
+            // ignored entirely), and any `destination_constraint` other than `Any`.
+            if !def.zone_change_clauses.is_empty()
+                || !def.origin_zones.is_empty()
+                || def.destination_constraint != crate::types::ability::DestinationConstraint::Any
+            {
+                return false;
+            }
+            // The connective is OR: a matcher provably cannot match any member if it pins
+            // an origin other than `Library`, OR pins a destination outside the set the
+            // certified ids can have landed in.
+            let origin_excludes = def.origin.is_some_and(|origin| origin != Zone::Library);
+            let destination_excludes = def
+                .destination
+                .is_some_and(|destination| !destinations.contains(&destination));
+            origin_excludes || destination_excludes
+        }
+        // CR 702.29c: "'When you cycle this card' means 'When you discard this card to pay
+        // an activation cost of a cycling ability.'" The event is a discard to pay a cost,
+        // never a library-to-graveyard movement. Do NOT anchor this on CR 702.29a/b —
+        // 702.29b says the cycling ability continues to exist in all zones, so 702.29a
+        // does not support the exclusion. The arm covers the whole cycling family, a
+        // routine graveyard resident in any real deck; the index routes these to
+        // unclassified for dispatch cost alone, which the delegation arm below would read
+        // as a refusal.
+        TriggerMode::Cycled | TriggerMode::CycledOrDiscarded => true,
+        _ => {
+            // Delegate to the shipped derivers on BOTH sides of the intersection, so a
+            // definition mode or an event key added later flows through both. A
+            // hand-written `Milled`-only test is not interchangeable with this:
+            // `TriggerMode::Exiled` pushes `TriggerEventKey::Exiled` and reaches HERE,
+            // while `keys_from_event` emits `Exiled` for any object landing in exile
+            // regardless of origin, so such a test would wrongly exclude an observer of a
+            // certified id that landed in exile.
+            //
+            // The `!keys.is_empty()` guard is load-bearing and is the one fail-DANGEROUS
+            // reading if dropped: the index deliberately returns an EMPTY, non-unclassified
+            // result for a CR 603.8 state trigger and for `Unknown`, and treating that as
+            // proof of exclusion would relieve an observer that really fires.
+            //
+            // This arm BORROWS an invariant maintained for a different consumer.
+            // `keys_from_trigger_def` over-approximates what a definition can match, but
+            // its only producer, `TriggerIndex::rebuild_from_battlefield`, reads
+            // `state.battlefield` alone, while the caller feeds it definitions from every
+            // zone. RETIREMENT CONDITION: if that deriver ever narrows a key set using
+            // anything only a battlefield-resident definition guarantees, this arm must
+            // stop delegating.
+            let (keys, unclassified) = crate::game::trigger_index::keys_from_trigger_def(def);
+            !unclassified
+                && !keys.is_empty()
+                && !keys.iter().any(|key| class_event_keys.contains(key))
+        }
+    }
 }
 
 /// CR 510.2 / CR 506.1 (+ CR 500.1 for the phase list): can this trigger's event occur

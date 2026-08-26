@@ -13985,7 +13985,7 @@ impl LoopCollapseAxis {
     /// only the three materializable axes carry a label; every non-materializable axis
     /// maps to `None` explicitly, so a future materializable axis build-breaks here and
     /// forces a conscious classification.
-    fn from_resource_axis(axis: ResourceAxis) -> Option<LoopCollapseAxis> {
+    pub(crate) fn from_resource_axis(axis: ResourceAxis) -> Option<LoopCollapseAxis> {
         match axis {
             ResourceAxis::TokensCreated => Some(LoopCollapseAxis::Tokens),
             // Real value on the observed-growth path is `Counter(Other, Other)`; both

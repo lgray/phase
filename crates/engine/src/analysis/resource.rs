@@ -1051,6 +1051,38 @@ impl ResourceVector {
         }
         out
     }
+
+    /// CR 701.17b: this delta with a certified instructed top-of-library departure added
+    /// back into [`Self::library_delta`], so a consumer that must not read the departure as a
+    /// LOSS axis reads it out of one.
+    ///
+    /// WHAT THE CERTIFICATE MAY PROMISE, and nothing beyond it: a per-owner COUNT of
+    /// instructed top-of-library departures and a direction of advantage. Never a final
+    /// library or graveyard SIZE — a shuffle-back or a CR 614.6 destination-redirecting
+    /// replacement falsifies that while leaving the departure count intact — and never that
+    /// any particular departure was a mill.
+    ///
+    /// THE WIN-KIND COROLLARY. An instructed departure names no CR 704 threshold: CR 121.4 /
+    /// CR 104.3c lose a player for DRAWING from an empty library, not for milling one, and
+    /// CR 701.17b clamps an instructed mill to "as many as possible" so a replay outrunning a
+    /// finite library removes zero for the remaining cycles. A delta reduced by it therefore
+    /// cannot be a `Decking` win, and the engine may not claim one it cannot prove.
+    ///
+    /// THE HONESTY COST, accepted here rather than hidden. Publishing `LibraryDelta` as
+    /// UNBOUNDED while refusing to predict termination renders an infinity marker on a
+    /// resource the engine can see is finite. That is a display claim, not a rules one, and it
+    /// is the price of not predicting.
+    pub(crate) fn without_certified_departure(&self, certified: &BTreeMap<PlayerId, i64>) -> Self {
+        let mut out = self.clone();
+        for (player, magnitude) in certified {
+            let entry = out.library_delta.entry(*player).or_insert(0);
+            *entry += magnitude;
+            if *entry == 0 {
+                out.library_delta.remove(player);
+            }
+        }
+        out
+    }
 }
 
 /// Whether a resource axis is *consumed* (spendable inside a loop) or purely
@@ -2504,15 +2536,22 @@ fn board_covers_modulo_fodder(
     prior: &GameState,
     current: &GameState,
     fodder_class: &GameObject,
+    growing: &HashSet<ObjectId>,
 ) -> bool {
-    // STABLE-ENGINE partition: strip fodder from BOTH frames, require id-keyed content
-    // equality on the remainder (all zones). Sole authority for stable content drift.
+    // STABLE-ENGINE partition: strip the whole GROWING set — the fodder class plus every id
+    // the caller's certificate accounts — from BOTH frames, require id-keyed content equality
+    // on the remainder (all zones). Sole authority for stable content drift.
+    //
+    // An accounted id must come out of BOTH sides, not one: an id-preserving arrival is keyed
+    // in both partitions and unequal on `object_content_eq`'s `zone` conjunct, so a one-sided
+    // strip would leave it refusing exactly the departures the certificate exists to admit.
+    // An id the certificate does NOT name stays here and is refused as before.
     let stable =
         |state: &GameState| -> im::HashMap<ObjectId, GameObject, rustc_hash::FxBuildHasher> {
             state
                 .objects
                 .iter()
-                .filter(|(_, o)| !fodder_content_eq(o, fodder_class))
+                .filter(|(id, o)| !growing.contains(id) && !fodder_content_eq(o, fodder_class))
                 .map(|(id, o)| (*id, o.clone()))
                 .collect()
         };
@@ -2546,6 +2585,259 @@ fn board_covers_modulo_fodder(
     current_total > prior_total
 }
 
+/// CR 701.17a + CR 400.1: what one period's INSTRUCTED, choiceless, non-caster
+/// top-of-library departures amount to — which objects left, and by how much each
+/// VICTIM's library declined.
+///
+/// Named fields rather than a tuple because different guards consume different halves and
+/// must not confuse them positionally: the id set feeds the cover's growth obligations,
+/// the per-victim magnitudes feed the producer's sign check.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CertifiedInstructedDeparture {
+    /// The departed objects, wherever they now sit. `HashSet` to match the cover's growth
+    /// set at the seam it unions into.
+    pub(crate) departed: HashSet<ObjectId>,
+    /// CR 400.1: keyed by OWNER, not controller — each player has their own library and
+    /// graveyard. Magnitudes are POSITIVE (the count departed), so a consumer adds rather
+    /// than subtracting a sign it has to remember. `BTreeMap<PlayerId, i64>` to match
+    /// `ResourceVector::library_delta` at the seam it is added back into.
+    pub(crate) per_victim: BTreeMap<PlayerId, i64>,
+}
+
+/// CR 701.17b: "If instructed to do so, they mill as many as possible." The certificate
+/// this returns establishes membership in the class *a period in which one or more
+/// non-caster libraries decline by an instructed, choiceless top-of-library departure*, by
+/// EXCLUDING the actions it can tell apart — so what it publishes is the magnitude and the
+/// direction of advantage the whole class shares, never the word *mill*.
+///
+/// `None` is "nothing certified", which is today's behaviour, so the fail-closed default is
+/// the type's default path.
+///
+/// THIS PREDICATE SCANS NO LIBRARY AND NO HAND, and does not need to: its caller has already
+/// made the frames it compares the proposer's own information set
+/// (`game::visibility::proposer_hidden_view`). The action conjunct does not breach that
+/// either — it reads a journal of `ObjectId`s, never a card, and the identity leaves rewrite
+/// object identity without touching any `GameState` journal, so what it reads is the same on
+/// a redacted frame as on an unredacted one.
+///
+/// There is deliberately NO DESTINATION CLAUSE, and the ground is arithmetic rather than a
+/// rules reading: `library_delta` is a library SIZE, a card leaving the top of a library
+/// depletes it by one wherever it lands, and CR 614.6's modified event moves the card
+/// somewhere else without changing that. A destination clause would also be the wrong
+/// instrument for the harder half — CR 121.1's draw puts the top card of a library into its
+/// owner's HAND, so a draw depletes a library identically and endpoints separate the two
+/// actions only by accident.
+///
+/// WHAT IS EXCLUDED, and by what:
+/// * The CASTER's own decline — by the `owner != caster` filter, which is the SOLE authority
+///   for that asymmetry. CR 121.4 / CR 104.3c / CR 704.5b make a caster whose own library
+///   declines a real loss axis, and the producer's sign check keeps seeing it unreduced.
+///   There is deliberately no second caster clause: two clauses guarding one property leave
+///   neither able to discriminate.
+/// * A DRAW (CR 121.1) — by C1a's action conjunct, positively, against the engine's own
+///   per-card record of the action. The polarity matters: the engine writes a per-card record
+///   for the DRAW into `GameState` and writes nothing into `GameState` naming an action
+///   *mill*, so the conjunct refuses an id the engine recorded as drawn and admits every id
+///   it did not — never on where the card landed.
+/// * A CHOSEN mill (CR 701.17b) and a library SEARCH — structurally, one layer up: a choice
+///   window opened during a driven period reaches the drive's terminal abort arm and there is
+///   no period to certify.
+/// * A COST mill (CR 701.17b) — structurally: `GameState::loop_period_controller` returns
+///   `Some` only when every step of the period shares one controller and the caller requires
+///   that controller to be the proposer, so no non-caster pays a cost inside a certified
+///   period. This is the one constraint of CR 701.17b that is deliberately not relieved.
+///
+/// RESIDUAL, stated rather than left to be discovered. The engine records the DRAW action per
+/// card. It records no ACTION for the mill anywhere in `GameState`: what a mill leaves behind
+/// is the movement's endpoints in `zone_changes_this_turn`, which name a `from_zone` and a
+/// `to_zone` and not what performed the move — the endpoint inference this conjunct exists to
+/// avoid, and one the cover's own projection clears anyway. So what survives every exclusion
+/// above is an instructed, choiceless, non-caster top-of-library departure that is not a
+/// mill. It publishes the same magnitude and the same direction of advantage as a mill, and
+/// this certificate publishes nothing else, so the relief is sound for it; what is not earned
+/// is the WORD, which is why this function does not use it. RETIREMENT CONDITION: the drive's
+/// `apply_action` results are discarded at every call site; delivering them turns this into a
+/// POSITIVE per-id tie once the mill has a per-card action event that survives a CR 614.6
+/// destination redirect.
+///
+/// SECOND RESIDUAL — why there is no pool-read conjunct. A public-zone object whose ability
+/// surfaces read a graveyard/library card-pool COUNT is not vetoed here, and the narrow shape
+/// that survives is: a public `GraveyardSize` / `ZoneCardCount{Graveyard|Library}` /
+/// `TargetZoneCardCount{Graveyard|Library}` reader that GATES an effect landing ONLY in the
+/// set `project_out_player_consumables` zeroes AND only in the beneficial direction (life
+/// gain, mana, energy, player-counters, the per-turn journals). Every other landing site is
+/// already caught: a life loss or poison gain by the producer's sign check; a decrease in any
+/// projected consumable by `driving_resources_non_decreasing`; a battlefield entry by guard
+/// 1's stable-partition compare; a cost or legality change by the drive aborting on the second
+/// cycle. The failure mode is an UNDER-stated bonus, not an over-stated promise.
+pub(crate) fn certify_instructed_opponent_library_departure(
+    prior: &GameState,
+    current: &GameState,
+    caster: PlayerId,
+) -> Option<CertifiedInstructedDeparture> {
+    // C1a, action conjunct. `record_drawn_card` PUSHES, so within one turn each player's
+    // vector is append-only and the period's slice is exactly the suffix appended between
+    // the two frames — an id drawn in an EARLIER period of the same turn, returned to a
+    // library and departed later, sits in the PREFIX and is correctly admitted.
+    //
+    // The one thing that shrinks a vector is `turns::start_next_turn`, which clears the map.
+    // A frame pair straddling that boundary has no period slice at all, so a NON-EXTENSION
+    // refuses the period outright, for either owner and in either direction. The obvious
+    // clamp (`current[prior_len.min(len)..]`) yields an EMPTY slice there and would admit
+    // every draw, which is the exact fail-open this shape forecloses.
+    let mut drawn_this_period: HashSet<ObjectId> = HashSet::new();
+    let journal_owners: BTreeSet<PlayerId> = prior
+        .cards_drawn_this_turn
+        .keys()
+        .chain(current.cards_drawn_this_turn.keys())
+        .copied()
+        .collect();
+    for owner in journal_owners {
+        let prior_drawn: &[ObjectId] = prior
+            .cards_drawn_this_turn
+            .get(&owner)
+            .map_or(&[][..], |v| v.as_slice());
+        let current_drawn: &[ObjectId] = current
+            .cards_drawn_this_turn
+            .get(&owner)
+            .map_or(&[][..], |v| v.as_slice());
+        drawn_this_period.extend(current_drawn.strip_prefix(prior_drawn)?.iter().copied());
+    }
+
+    // C1a, candidate set. Present in BOTH frames (CR 400.7 makes the departed card a new
+    // object at the rules level; it does not make it a new `ObjectId` here, and nothing
+    // below latches one across pairs), left a non-caster library, and otherwise unchanged.
+    // The content compare survives the caller's redaction because the drive mutates the
+    // REDACTED clone, so a card that departs inside the drive is blank in BOTH frames and
+    // differs only in `zone`.
+    let mut departed: HashSet<ObjectId> = HashSet::new();
+    let mut per_victim: BTreeMap<PlayerId, i64> = BTreeMap::new();
+    for (id, prior_obj) in prior.objects.iter() {
+        if prior_obj.zone != Zone::Library || prior_obj.owner == caster {
+            continue;
+        }
+        let Some(current_obj) = current.objects.get(id) else {
+            continue;
+        };
+        // A card departed and then returned to a library is not a candidate — its
+        // `current.zone` is still `Library` — so whatever it did to that library's id
+        // vector is unaccounted and C1b refuses.
+        if current_obj.zone == Zone::Library || drawn_this_period.contains(id) {
+            continue;
+        }
+        // Content-equal MODULO `zone`, on a clone of the prior object with `zone` set to
+        // the current one — the clone-one-field idiom `fodder_content_eq` uses for `tapped`.
+        let mut normalized = prior_obj.clone();
+        normalized.zone = current_obj.zone;
+        if !crate::types::game_state::object_content_eq(&normalized, current_obj) {
+            continue;
+        }
+        departed.insert(*id);
+        *per_victim.entry(prior_obj.owner).or_insert(0) += 1;
+    }
+
+    // C1b, residual. With the candidate set removed, every player's `library` and
+    // `graveyard` id vectors compare equal pairwise across the frames. A caster-side mill
+    // fails HERE — its card is not a candidate, so its movement is unaccounted — and
+    // deleting C1a is what flips it. Scoped to those two vectors even though a candidate may
+    // now land elsewhere: what this guards is the certificate's own promise, a library
+    // decline with no unaccounted library or graveyard movement beside it. Where a candidate
+    // LANDED is the cover's question, and it asks that about every zone.
+    if prior.players.len() != current.players.len() {
+        return None;
+    }
+    let residual = |vector: &im::Vector<ObjectId>| -> Vec<ObjectId> {
+        vector
+            .iter()
+            .copied()
+            .filter(|id| !departed.contains(id))
+            .collect()
+    };
+    for (prior_player, current_player) in prior.players.iter().zip(current.players.iter()) {
+        if prior_player.id != current_player.id
+            || residual(&prior_player.library) != residual(&current_player.library)
+            || residual(&prior_player.graveyard) != residual(&current_player.graveyard)
+        {
+            return None;
+        }
+    }
+
+    // C1c. An empty set is `None`, never an empty `Some`: an empty certificate must not make
+    // a downstream `.all()` vacuously true, and a vacuous relief flips no offer.
+    if departed.is_empty() {
+        return None;
+    }
+
+    // C2, the PUBLIC-information interposition veto. CR 701.17a puts a departed card in a
+    // graveyard and CR 614.6 lets a replacement send it elsewhere, so the obligation ranges
+    // over the certified ids' own landing zones plus the graveyard — read directly off the
+    // frames, which is not the action inference C1a repairs.
+    let destinations: BTreeSet<Zone> = departed
+        .iter()
+        .filter_map(|id| current.objects.get(id).map(|obj| obj.zone))
+        .chain(std::iter::once(Zone::Graveyard))
+        .collect();
+    // The event side of the delegation arm's intersection: a UNION over the whole certified
+    // set, one event per landing zone, each carrying THAT id and the CURRENT frame's own
+    // `snapshot_for_zone_change` for it.
+    let mut class_event_keys: Vec<crate::types::triggers::TriggerEventKey> = Vec::new();
+    for id in &departed {
+        let Some(obj) = current.objects.get(id) else {
+            continue;
+        };
+        for destination in &destinations {
+            let event = crate::types::events::GameEvent::ZoneChanged {
+                object_id: *id,
+                from: Some(Zone::Library),
+                to: *destination,
+                record: Box::new(obj.snapshot_for_zone_change(
+                    *id,
+                    Some(Zone::Library),
+                    *destination,
+                )),
+            };
+            for key in crate::game::trigger_index::keys_from_event(&event, current) {
+                if !class_event_keys.contains(&key) {
+                    class_event_keys.push(key);
+                }
+            }
+        }
+    }
+    // The shipped walk, unwidened and unnarrowed. It already applies
+    // `trigger_definition_functions_in_zone` (CR 113.6 / CR 113.6b), so C2 inherits a
+    // zone-of-FUNCTION gate and ships no residence test of its own. It needs no public-zone
+    // list either: the caller's redaction has already removed every definition the proposer
+    // may not see, while a hand-functioning observer in the proposer's OWN hand legitimately
+    // still vetoes.
+    if !functioning_board_trigger_defs(current).all(|def| {
+        crate::game::triggers::departure_observer_provably_excludes(
+            def,
+            &destinations,
+            &class_event_keys,
+        )
+    }) {
+        return None;
+    }
+    // CR 614.6: a replacement that could divert the departure into a graveyard, or into an
+    // unpinned destination, observes the very move certified. The `destination_zone`
+    // narrowing is what keeps ordinary tapland self-entries — the measured corpus signature
+    // `replacement_is_spent_self_entry` pins, `(Moved, SelfRef, destination_zone
+    // Battlefield)` — from vetoing every real board.
+    if loop_window_replacement_defs(current).any(|(_source, _idx, def)| {
+        matches!(
+            def.event,
+            ReplacementEvent::ChangeZone | ReplacementEvent::Moved
+        ) && matches!(def.destination_zone, None | Some(Zone::Graveyard))
+    }) {
+        return None;
+    }
+
+    Some(CertifiedInstructedDeparture {
+        departed,
+        per_victim,
+    })
+}
+
 /// CR 732.2a fodder-axis cover: does `current` cover `prior` by pure inert, unobserved
 /// tapped-fodder growth (the convoke/affinity Sprout-Swarm shape)? A near-clone of
 /// [`loop_states_cover_modulo_object_growth`], swapping the board sub-predicate for the
@@ -2564,6 +2856,7 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     prior: &GameState,
     current: &GameState,
     fodder_class: &GameObject,
+    caster: PlayerId,
 ) -> bool {
     let pf = flush_clone(prior);
     let cf = flush_clone(current);
@@ -2572,42 +2865,88 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     pa.stack.clear();
     pb.stack.clear();
 
-    // Excluded set = ALL fodder ids in BOTH projected frames (the drifting/growing
-    // pile). Unlike the object-growth `bf_current − bf_prior` add-set, an existing
-    // untapped fodder member keeps its id but flips `tapped`, so it must be excluded
-    // from strict eq and handled by the multiset compare.
-    let all_fodder: HashSet<ObjectId> = pa
+    // CR 701.17b: an instructed, choiceless, non-caster top-of-library departure this period
+    // performed, certified once and consumed by every growth obligation below. Without one
+    // authority each obligation would re-derive the set from its own frames and the four could
+    // drift, which is the same reason `project_out_player_consumables` and
+    // `projected_player_axes` exist as a pair.
+    let certified = certify_instructed_opponent_library_departure(&pa, &pb, caster);
+
+    // The GROWING set = ALL fodder ids in BOTH projected frames (the drifting/growing pile)
+    // UNIONED with every id the certificate accounts. Unlike the object-growth
+    // `bf_current − bf_prior` add-set, an existing untapped fodder member keeps its id but
+    // flips `tapped`, so it must be excluded from strict eq and handled by the multiset
+    // compare. An accounted departure or id-preserving arrival is in the same position for a
+    // different reason: it is keyed in BOTH frames and differs only in `zone`.
+    //
+    // The name is not `all_fodder`: it stops being all-fodder the moment it holds an accounted
+    // id, and every one of the four obligations below reads THIS set.
+    let mut growing: HashSet<ObjectId> = pa
         .battlefield
         .iter()
         .chain(pb.battlefield.iter())
         .copied()
         .filter(|id| is_fodder(&pa, id, fodder_class) || is_fodder(&pb, id, fodder_class))
         .collect();
+    if let Some(certified) = certified.as_ref() {
+        growing.extend(certified.departed.iter().copied());
+    }
 
-    // Tapped-split multiset cover on the fodder partition (B1 + strict growth).
-    if !board_covers_modulo_fodder(&pa, &pb, fodder_class) {
+    // Tapped-split multiset cover on the fodder partition (B1 + strict growth), with the
+    // growing set out of the stable partition on both sides.
+    if !board_covers_modulo_fodder(&pa, &pb, fodder_class, &growing) {
         return false;
     }
 
-    // Every fodder member is churn-inert (single inertness authority; scanned on the
-    // FLUSHED current so layer-derived P/T / abilities / keywords are realized).
-    if !grown_objects_are_inert(&cf, &all_fodder) {
+    // Every grown object is churn-inert (single inertness authority; scanned on the
+    // FLUSHED current so layer-derived P/T / abilities / keywords are realized). An accounted
+    // id inherits this obligation rather than being waved past it, which is what keeps the
+    // accounting from being a blanket accept: an ability-bearing arrival is still refused here.
+    if !grown_objects_are_inert(&cf, &growing) {
         return false;
     }
 
-    // No live off-stack / on-stack observer reads the growing class. Pass the WHOLE proven
-    // fodder class so the firewall's block(1) can skip an ETB observer whose matcher provably
-    // excludes EVERY member of it (CR 603.6a). There is deliberately no representative to
-    // choose: relief is universally quantified over the class, so no member-selection rule
-    // (and no CR 110.5b tiebreak) is needed or sound here. The member-quantified predicates
-    // are pure state reads, so `HashSet` iteration order moves only the short-circuit point,
-    // never the verdict; an empty set never relieves (the `!is_empty()` guards).
+    // No live off-stack / on-stack observer reads the growing class. Pass the growing set —
+    // fodder members and accounted ids alike — restricted to the ids the scanned frame keys
+    // ON THE BATTLEFIELD, so the firewall's block(1) can skip an ETB observer whose matcher
+    // provably excludes EVERY member of what it is handed (CR 603.6a). There is deliberately
+    // no representative to choose: relief is universally quantified over that set, so no
+    // member-selection rule is needed or sound here. The
+    // member-quantified predicates are pure state reads, so `HashSet` iteration order moves
+    // only the short-circuit point, never the verdict; an empty set never relieves (the
+    // `!is_empty()` guards).
+    //
+    // THE KEEP TEST is load-bearing for the relief predicates whose member conjunct requires
+    // battlefield residency in the scanned frame: handed an id they cannot place on the
+    // battlefield each returns its fail-closed default rather than a rules verdict — prover
+    // incomplete here. Dropping such an id is relief the rules owe rather than a proof the
+    // firewall failed to find: a member the scanned frame keys off the battlefield can only
+    // be touched by a player who has priority, and every window in which priority arrives
+    // belongs to the offer protocol (CR 732.2a proposes from the current state and ends at a
+    // priority window; CR 732.2b is where a player names their deviation). What this call
+    // site holds and no predicate can see is the cover's cross-frame result —
+    // `board_covers_modulo_fodder`'s all-zones stable-partition equality, which has already
+    // run above.
+    //
+    // CR 400.1 fixes the seven zones; the `match` is wildcard-free so an eighth is a compile
+    // error here, which makes the next reader place it against the relief predicates' axes
+    // instead of silently defaulting it to dropped.
     // ponytail: O(observers x |G|), short-circuiting on the first non-excluding member. If |G|
     // ever measures hot, hoist the member-independent conjuncts out of the per-member loop.
-    let class_members: HashSet<ObjectId> = all_fodder
+    let class_members: HashSet<ObjectId> = growing
         .iter()
         .copied()
-        .filter(|id| cf.objects.contains_key(id))
+        .filter(|id| {
+            cf.objects.get(id).is_some_and(|obj| match obj.zone {
+                Zone::Battlefield => true,
+                Zone::Library
+                | Zone::Hand
+                | Zone::Graveyard
+                | Zone::Stack
+                | Zone::Exile
+                | Zone::Command => false,
+            })
+        })
         .collect();
     // CR 400.7: bound before the call so NLL keeps the borrow live across it, same reason
     // as `cast_ids` in `loop_states_cover_modulo_growth_scoped`.
@@ -2627,7 +2966,7 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     // object COUNT, grown pile stripped. NOTE: `GameState::PartialEq` compares only
     // `objects.len()`, so stable-engine object CONTENT is covered by
     // `board_covers_modulo_fodder`'s `objects_content_eq` above, not here.
-    if !eq_except_growable(&pa, &pb, &all_fodder) {
+    if !eq_except_growable(&pa, &pb, &growing) {
         return false;
     }
 
@@ -2964,6 +3303,19 @@ fn grown_objects_are_inert(current: &GameState, grown: &HashSet<ObjectId>) -> bo
 fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>) -> bool {
     let mut a = pa.clone();
     let mut b = pb.clone();
+    // CR 400.1: each grown id must also leave the per-player zone COLLECTION its own `zone`
+    // names, or a departed card stays in the prior frame's `library` vector and every real
+    // depletion compares unequal. Each frame reads ITS OWN `(zone, owner)` for the id, BEFORE
+    // that frame's `objects` removal — the two frames disagree about where the id sits, and
+    // that disagreement is the whole point, so a single-frame reading is wrong on one side.
+    let sites = |state: &GameState| -> Vec<(ObjectId, Zone, PlayerId)> {
+        grown
+            .iter()
+            .filter_map(|id| state.objects.get(id).map(|o| (*id, o.zone, o.owner)))
+            .collect()
+    };
+    let a_sites = sites(pa);
+    let b_sites = sites(pb);
     for id in grown {
         a.objects.remove(id);
         b.objects.remove(id);
@@ -2972,6 +3324,20 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
     b.battlefield.clear(); // allow-raw-zone: clears a discarded comparison CLONE for loop-cover equality (fn takes &GameState, mutates a local clone) - not a gameplay zone event
     a.stack.clear();
     b.stack.clear();
+    // AFTER the battlefield/stack clears, which makes those two arms no-ops by construction —
+    // the fodder half of `grown` lives there and needs nothing further. `zones::remove_from_zone`
+    // is the shipped single authority for the operation and is exhaustive over `Zone`, so no
+    // hand-written zone list here can fall behind a new one. One consequence of running it AFTER
+    // the `objects` removal: its `Zone::Command` arm reads `state.objects` to choose between the
+    // attraction, contraption and command collections, so a Command-zone id now goes to the
+    // command collection. That is fail-closed — a residual id left in a supplementary deck makes
+    // `players` compare unequal.
+    for (id, zone, owner) in a_sites {
+        crate::game::zones::remove_from_zone(&mut a, id, zone, owner); // allow-raw-zone: strips an accounted id from a discarded comparison CLONE (fn takes &GameState, mutates a local clone) - not a gameplay zone event
+    }
+    for (id, zone, owner) in b_sites {
+        crate::game::zones::remove_from_zone(&mut b, id, zone, owner); // allow-raw-zone: strips an accounted id from a discarded comparison CLONE (fn takes &GameState, mutates a local clone) - not a gameplay zone event
+    }
     // ONE-SIDED SAFETY: compare `post_replacement_token_substitution_count` here even though
     // `impl PartialEq for GameState` excludes it. Excluding a COUNT from the cover gate is the
     // fail-DANGEROUS direction (a growing count could let two cycles compare EQUAL → false
@@ -2998,10 +3364,12 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
 /// across the loop's growth and the observer does not observe the loop.
 ///
 /// SOUNDNESS rests on the same ordered pair of invariants as
-/// `etb_observer_provably_excludes_class`: the fodder is the only class that changes across
-/// the covered cycle, guaranteed IN ORDER by `game::engine::derived_fodder_class`'s ONE-CLASS
-/// rule (it returns `None` unless every new battlefield object of the cycle is the same class
-/// under BOTH `fodder_content_eq` AND `game::printed_cards::intrinsic_copiable_values`), then
+/// `etb_observer_provably_excludes_class`: every object difference between the frames is
+/// either a fodder-class member or an id the period's instructed-departure certificate
+/// accounts, guaranteed IN ORDER by `game::engine::derived_fodder_class`'s ONE-CLASS
+/// rule over the MINTED set (it returns `None` unless every battlefield object the cycle
+/// minted is the same class under BOTH `fodder_content_eq` AND
+/// `game::printed_cards::intrinsic_copiable_values`), then
 /// by `board_covers_modulo_fodder` at its ONLY call site, which PRECEDES this call. Do not
 /// reorder that gate after the firewall.
 ///
@@ -3089,8 +3457,8 @@ fn execute_ledger_condition_provably_excludes_class(
     // The `std::iter::once` is LOAD-BEARING: it guarantees the iterator is never empty,
     // so `.all()` cannot be vacuously `true` — the classic fail-open shape for an
     // `.all()` guard. Do not "optimise" it away when a real record exists. Both
-    // authorities are required because the class member is chosen from `all_fodder` and
-    // can be a pre-existing object that never went through `record_battlefield_entry`
+    // authorities are required because the class member is chosen from the caller's growth
+    // set and can be a pre-existing object that never went through `record_battlefield_entry`
     // (so real-records-only would be inert), while a Layer-4 type change can make the
     // live object differ from its genuine entry-time snapshot (so synthesized-only would
     // ignore the real record).
@@ -3412,9 +3780,11 @@ fn pt_value_aggregate_provably_excludes_class(
 ///       `contains_key` ANY battlefield-absent member is excluded from an Exile-only link set
 ///       by construction and relieved on no evidence at all.
 ///   (d) MEMBER-QUANTIFIED exclusion against that link authority. It is DEFENCE-IN-DEPTH, not
-///       the fail-closed mechanism: the sole production caller builds `class_members` from
-///       `pa.battlefield.chain(pb.battlefield)` and `linked_exiled_ids` yields only
-///       `zone == Zone::Exile` ids, so the two populations cannot intersect and (d) is
+///       the fail-closed mechanism: the sole production caller hands over its growth set
+///       restricted to the ids the scanned frame keys ON THE BATTLEFIELD — the keep set,
+///       which holds no exile resident whatever the certificate accounts — and
+///       `linked_exiled_ids` yields only `zone == Zone::Exile` ids, so the two populations
+///       cannot intersect and (d) is
 ///       CONSTANT-TRUE on every input production can construct — the guarantee that carries
 ///       there is the cover above. (d) earns its place by keeping the arm sound for a future
 ///       caller that hands it a differently-built class set.
@@ -3649,8 +4019,8 @@ fn reveal_from_hand_decline_branch_is_arrival_invariant(
 ///  * CR 614.1d (continuous "[This permanent] enters …" effects are replacement effects) —
 ///    the object-attached store the board half of `loop_window_replacement_defs` walks.
 ///  * CR 111.7 ("A token that's in a zone other than the battlefield ceases to exist") — the
-///    universe argument's floor: the growing class is battlefield-resident, so a TOKEN class
-///    member cannot simultaneously be a card in a hand.
+///    universe argument's floor: what production supplies is battlefield-resident, so a TOKEN
+///    class member cannot simultaneously be a card in a hand.
 ///  * CR 109.4 + CR 108.4a (only stack/battlefield objects have a controller; otherwise use
 ///    the owner) — what `replacement_source_player` implements at conjunct (d).
 ///  * CR 611.2 ("A continuous effect may be generated by the resolution of a spell or
@@ -3661,8 +4031,8 @@ fn reveal_from_hand_decline_branch_is_arrival_invariant(
 ///
 /// THE UNIVERSE ARGUMENT — this arm's whole basis, and it is not a census.
 /// `reveal_from_hand::resolve` draws its subjects from `players[controller].hand` and only
-/// THEN filters them, while the growing class is battlefield objects. A class member absent
-/// from that hand can therefore never be in the eligible set, whatever the filter says.
+/// THEN filters them, while what production supplies is battlefield objects. A class member
+/// absent from that hand can therefore never be in the eligible set, whatever the filter says.
 ///
 /// WHY AN ARM AND NOT A SCANNER RELAXATION. The blanket being relieved is
 /// `Effect::RevealFromHand { .. } => Axes::CONSERVATIVE` in `ability_scan::scan_effect`, whose
@@ -3675,8 +4045,19 @@ fn reveal_from_hand_decline_branch_is_arrival_invariant(
 ///     controller's hand. `scan_effect(&Effect, ScanMode) -> Axes` takes no `GameState` and no
 ///     `ObjectId`, and `Axes` is three bools with nowhere to record "relative to WHICH
 ///     member", so no scanner arm can return both. `(c)` and `(d)` are where that relativity
-///     lives, and `(c)` deliberately does NOT narrow to `Zone::Battlefield`, so the in-hand
-///     member is a REACHABLE input.
+///     lives, and `(c)` deliberately does NOT narrow to `Zone::Battlefield`. What PRODUCTION
+///     supplies is now narrower than what `(c)` admits: the sole production caller hands over
+///     its growth set restricted to the scanned frame's BATTLEFIELD residents, so the in-hand
+///     member arrives only from this arm's own `#[cfg(test)]` consult
+///     (`s6_arm_keeps_the_veto_when_a_member_is_in_the_controllers_hand`).
+///
+///     WHAT THAT COSTS THE ARM: `(d)`'s member-dependent half can no longer refuse a
+///     PRODUCTION member. A player's hand vector gains ids only through `zones::add_to_zone`'s
+///     `Zone::Hand` arm and loses them through `remove_from_zone`'s (raw writes are gated by
+///     `scripts/zone_authority_census.py`), and `move_to_zone_with_entry_flags` runs the
+///     removal against the object's OLD zone, read before it assigns the new one — so an id
+///     the frame keys on the battlefield sits in no hand. `(d)`'s SOURCE-dependent half, the
+///     fail-closed player lookup, is untouched: it reads the SOURCE, not the member.
 ///  2. DESCENDING WOULD IMPORT THE FAIL-OPEN AUTHORITY. `scan_target_filter`'s
 ///     `TargetFilter::LastCreated => Axes::NONE` arm disagrees with
 ///     `arrival_can_move_a_nonmember_match` on exactly that leaf (minting a token ASSIGNS
@@ -4756,11 +5137,12 @@ fn fire_time_conditions_read_growing_class_scoped(
             // CR 603.2 / CR 603.6a: an enters-the-battlefield observer whose entry matcher
             // PROVABLY excludes EVERY member of `class_members` never fires on the loop's
             // per-cycle token creation, so it does not observe the loop — skip rather than
-            // veto. ORDERING IS LOAD-BEARING: this holds only because the fodder is the ONLY
-            // class that changed across the covered cycle, guaranteed in order by (a)
-            // `game::engine::derived_fodder_class`'s ONE-CLASS rule on the FIRST accept-time
-            // frame pair (`None` unless EVERY new battlefield object of that cycle is the same
-            // class under BOTH `fodder_content_eq` AND
+            // veto. ORDERING IS LOAD-BEARING: this holds only because every object difference
+            // between the covered frames is either a fodder-class member or an id the period's
+            // instructed-departure certificate accounts, guaranteed in order by (a)
+            // `game::engine::derived_fodder_class`'s ONE-CLASS rule over the MINTED set on the
+            // FIRST accept-time frame pair (`None` unless EVERY battlefield object that cycle
+            // minted is the same class under BOTH `fodder_content_eq` AND
             // `game::printed_cards::intrinsic_copiable_values`) and (b)
             // `board_covers_modulo_fodder`'s all-zones stable-partition content equality at its
             // ONLY call site, on the SECOND cover frame pair, which PRECEDES this call. Do not
@@ -4774,11 +5156,16 @@ fn fire_time_conditions_read_growing_class_scoped(
             // via a `valid_card` matcher, so gating them would be unsound.
             if let Some(members) = class_members {
                 // CR 603.6a: relief requires the entry matcher to provably exclude EVERY
-                // member of the growing class, not one representative. The
-                // one-representative test was unsound in the ACCEPTING direction: fodder
-                // equivalence (`object_content_eq`) does NOT compare `card_types`, `color` or
-                // `keywords`, so two members can differ on exactly the axes a `valid_card`
-                // matcher reads. `!is_empty()` is LOAD-BEARING: an empty set must not make
+                // member of the set the CALLER supplies. That set is a subset of the growing
+                // class, and the narrowing is sound rather than a weakening: an
+                // enters-the-battlefield ability triggers only when a permanent ENTERS the
+                // battlefield, and an id the caller drops is not a battlefield resident of the
+                // scanned frame, so it made no entry across the covered cycle and no ETB
+                // observer could have fired on it. Quantifying over one representative instead
+                // is still unsound in the ACCEPTING direction: fodder equivalence
+                // (`object_content_eq`) does NOT compare `card_types`, `color` or `keywords`,
+                // so two members can differ on exactly the axes a `valid_card` matcher
+                // reads. `!is_empty()` is LOAD-BEARING: an empty set must not make
                 // `.all()` vacuously true, and because the def-kind test lives INSIDE the
                 // closure (`etb_observer_provably_excludes_class` opens with
                 // `matches!(def.mode, ChangesZone | ChangesZoneAll)`) while `Iterator::all`
@@ -12915,7 +13302,7 @@ mod tests {
     }
 
     fn fodder_cover(prior: &GameState, current: &GameState) -> bool {
-        loop_states_cover_modulo_fodder_growth(prior, current, &saproling_class())
+        loop_states_cover_modulo_fodder_growth(prior, current, &saproling_class(), PlayerId(0))
     }
 
     /// F+ base: an inert engine (800) + 4 untapped + 1 tapped Saproling (prior);
@@ -22975,8 +23362,9 @@ mod tests {
     /// Every other S2 row calls the firewall with a class set the test wrote by
     /// hand, and `exiled_colors_gate_is_precise_and_fail_closed`'s (ii) arm hands it an
     /// EXILE-zone id. The production constructor cannot emit one: inside
-    /// [`loop_states_cover_modulo_fodder_growth`], `class_members` is `all_fodder` filtered by
-    /// `cf.objects`, and `all_fodder` is collected from `pa.battlefield.chain(pb.battlefield)`.
+    /// [`loop_states_cover_modulo_fodder_growth`], `class_members` is the growth set kept down
+    /// to the ids the scanned frame keys on the BATTLEFIELD, and `Zone::Exile` is one of the
+    /// arms that keep test drops.
     /// So at the production seam conjunct (d)'s membership test is CONSTANT-TRUE — it is
     /// defence-in-depth, and the guarantee that actually carries there is the cover. The two
     /// reach-guards below pin that asymmetry.
@@ -22997,7 +23385,7 @@ mod tests {
         use std::sync::Arc;
 
         // A frame pair whose ONLY difference is one more Saproling. `class_members` is
-        // therefore built by production from these two battlefields, not by this test.
+        // therefore built by production from these two boards, not by this test.
         let frames = |ability: crate::types::ability::AbilityDefinition| {
             let mut prior = GameState::new_two_player(7);
             prior.phase = Phase::PreCombatMain;
@@ -23037,9 +23425,9 @@ mod tests {
         // ── THE E2 PIN: the linked card cannot BE a class member here ─────────────────
         assert!(
             !prior.battlefield.contains(&linked) && !current.battlefield.contains(&linked),
-            "E2: `all_fodder` is collected from `pa.battlefield.chain(pb.battlefield)`, so an id \
-             in NEITHER battlefield can never reach `class_members`. This is what makes \
-             conjunct (d) constant-true at the production seam — if a future constructor admits \
+            "E2: the constructor keeps only ids the scanned frame keys on the BATTLEFIELD, so an \
+             id in NEITHER battlefield can never reach `class_members`. This is what makes \
+             conjunct (d) constant-true at the production seam — if a future keep test admits \
              off-battlefield ids, this row must go red and (d)'s doc has to be re-argued"
         );
         assert_eq!(
@@ -28937,6 +29325,1160 @@ mod tests {
              a veto neither relief arm discharges. Relief is per SURFACE, never per \
              definition — turning the execute relief into a `continue` over the whole def \
              makes this FAIL"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // CR 701.17b — the public-information instructed-departure certificate.
+    //
+    // Every row below asserts the RETURN VALUE of
+    // `certify_instructed_opponent_library_departure`, never a downstream offer verdict: a
+    // conjunct whose deletion flips nothing at predicate level does not ship, and an
+    // end-to-end row cannot say which conjunct spoke.
+    // ─────────────────────────────────────────────────────────────────────────────────────
+
+    const CERT_CASTER: PlayerId = PlayerId(0);
+    const CERT_VICTIM: PlayerId = PlayerId(1);
+
+    /// A card sitting in `owner`'s library, keyed by `id` in `objects` and in that player's
+    /// library vector — the shape `zones::create_object` leaves behind for a library card.
+    fn cert_library_card(state: &mut GameState, id: u64, owner: PlayerId) -> ObjectId {
+        let oid = ObjectId(id);
+        let object = GameObject::new(oid, CardId(id), owner, "Library Card".into(), Zone::Library);
+        state.objects.insert(oid, object);
+        state
+            .players
+            .iter_mut()
+            .find(|p| p.id == owner)
+            .expect("owner exists")
+            .library
+            .push_back(oid);
+        oid
+    }
+
+    /// Move `id` out of its owner's library into `to` with its `ObjectId` PRESERVED — the
+    /// shape `zones::move_to_zone` produces, and the shape CR 400.7 makes a new object at the
+    /// rules level without making a new id here.
+    fn cert_depart(state: &mut GameState, id: ObjectId, to: Zone) {
+        let owner = state.objects[&id].owner;
+        state
+            .objects
+            .get_mut(&id)
+            .expect("the departing object is live")
+            .zone = to;
+        {
+            let player = state
+                .players
+                .iter_mut()
+                .find(|p| p.id == owner)
+                .expect("owner exists");
+            player.library.retain(|x| *x != id);
+            match to {
+                Zone::Graveyard => player.graveyard.push_back(id),
+                Zone::Hand => player.hand.push_back(id),
+                _ => {}
+            }
+        }
+        match to {
+            Zone::Exile => state.exile.push_back(id),
+            Zone::Battlefield => state.battlefield.push_back(id),
+            _ => {}
+        }
+    }
+
+    /// `prior` carries one non-caster library card; `current` is `prior` with that card
+    /// departed to `to`. Nothing else differs.
+    fn cert_pair(to: Zone) -> (GameState, GameState, ObjectId) {
+        let mut prior = GameState::new_two_player(7);
+        let victim_card = cert_library_card(&mut prior, 900, CERT_VICTIM);
+        let mut current = prior.clone();
+        cert_depart(&mut current, victim_card, to);
+        (prior, current, victim_card)
+    }
+
+    fn certify(prior: &GameState, current: &GameState) -> Option<CertifiedInstructedDeparture> {
+        certify_instructed_opponent_library_departure(prior, current, CERT_CASTER)
+    }
+
+    /// Put one battlefield permanent carrying exactly `def` on `current`, so the C2 walk has
+    /// one functioning observer and nothing else to say.
+    fn cert_with_observer(
+        current: &mut GameState,
+        def: crate::types::ability::TriggerDefinition,
+    ) -> ObjectId {
+        let host = bf_object(current, 100);
+        current
+            .objects
+            .get_mut(&host)
+            .expect("just-created board object")
+            .trigger_definitions = vec![def].into();
+        host
+    }
+
+    /// **A period whose only library movement is one non-caster departure certifies it, and
+    /// names its victim once per card.**
+    ///
+    /// PAIRED NEGATIVE in the same row: the pair with no movement at all returns `None`, so
+    /// the instrument can refuse. That is what makes every `Some` below a decision.
+    #[test]
+    fn certificate_names_the_departed_id_and_its_victim() {
+        let (prior, current, departed) = cert_pair(Zone::Graveyard);
+        let certified = certify(&prior, &current).expect("a bare non-caster departure certifies");
+        assert_eq!(certified.departed, HashSet::from([departed]));
+        assert_eq!(certified.per_victim, BTreeMap::from([(CERT_VICTIM, 1)]));
+
+        assert!(
+            certify(&prior, &prior).is_none(),
+            "C1c: a period with no zone movement returns None, never an empty Some — an empty \
+             certificate would make a downstream `.all()` vacuously true"
+        );
+    }
+
+    /// **There is no destination clause: a departure certifies wherever it lands.**
+    ///
+    /// `library_delta` is a library SIZE, and a card leaving the top of a library depletes it
+    /// by one wherever it goes, so the axis the certificate publishes does not read the
+    /// destination at all. The exile arm is the row that says out loud what membership means —
+    /// an instructed, choiceless, non-caster `Library -> Exile` departure no card in the corpus
+    /// calls a mill publishes the same magnitude and direction of advantage.
+    #[test]
+    fn every_landing_zone_certifies_because_the_axis_is_a_library_size() {
+        for to in [Zone::Graveyard, Zone::Exile, Zone::Hand, Zone::Battlefield] {
+            let (prior, current, departed) = cert_pair(to);
+            let certified = certify(&prior, &current)
+                .unwrap_or_else(|| panic!("a non-caster departure to {to:?} certifies"));
+            assert_eq!(
+                certified.departed,
+                HashSet::from([departed]),
+                "landing {to:?}"
+            );
+        }
+    }
+
+    /// **C1's `owner != caster` filter is the SOLE authority for the caster-side asymmetry.**
+    ///
+    /// CR 121.4 / CR 104.3c / CR 704.5b put the loss on the caster's own decline, and the
+    /// producer's sign check must keep seeing it. The caster's card is not a candidate, so its
+    /// movement is unaccounted and C1b refuses the whole period — including the opponent half
+    /// that would otherwise certify. There is deliberately no second caster clause: two clauses
+    /// guarding one property leave neither able to discriminate.
+    #[test]
+    fn a_caster_side_decline_is_never_certified() {
+        let mut prior = GameState::new_two_player(7);
+        let caster_card = cert_library_card(&mut prior, 901, CERT_CASTER);
+        let mut current = prior.clone();
+        cert_depart(&mut current, caster_card, Zone::Graveyard);
+        assert!(
+            certify(&prior, &current).is_none(),
+            "a caster-side library decline is not certifiable"
+        );
+
+        // The same period with an opponent departure BESIDE it: still None, and the opponent
+        // half alone is the paired positive proving the refusal is the caster's card.
+        let mut prior_both = GameState::new_two_player(7);
+        let caster_card = cert_library_card(&mut prior_both, 901, CERT_CASTER);
+        let victim_card = cert_library_card(&mut prior_both, 902, CERT_VICTIM);
+        let mut both = prior_both.clone();
+        cert_depart(&mut both, caster_card, Zone::Graveyard);
+        cert_depart(&mut both, victim_card, Zone::Graveyard);
+        assert!(
+            certify(&prior_both, &both).is_none(),
+            "an 'each player mills' period is refused: the caster's card is not a candidate, so \
+             its movement is unaccounted and C1b refuses"
+        );
+        let mut opponent_only = prior_both.clone();
+        cert_depart(&mut opponent_only, victim_card, Zone::Graveyard);
+        assert_eq!(
+            certify(&prior_both, &opponent_only).map(|c| c.per_victim),
+            Some(BTreeMap::from([(CERT_VICTIM, 1)])),
+            "PAIRED POSITIVE: the opponent-side half of the same board certifies on its own"
+        );
+    }
+
+    /// **C1b refuses an unaccounted library or graveyard movement beside the departure.**
+    ///
+    /// The sibling is a graveyard that grows from a BATTLEFIELD death rather than from the
+    /// departure: the dying permanent is not a candidate (it never sat in a library), so its
+    /// arrival in the graveyard is unaccounted and the residual compare refuses.
+    #[test]
+    fn an_unaccounted_graveyard_arrival_refuses_the_period() {
+        let (prior, mut current, _) = cert_pair(Zone::Graveyard);
+        assert!(
+            certify(&prior, &current).is_some(),
+            "reach-guard: this pair certifies before the unaccounted arrival is added"
+        );
+        let dying = bf_object_owned_by(&mut current, 700, CERT_VICTIM);
+        current.battlefield.retain(|id| *id != dying);
+        current.objects.get_mut(&dying).expect("live").zone = Zone::Graveyard;
+        current
+            .players
+            .iter_mut()
+            .find(|p| p.id == CERT_VICTIM)
+            .expect("victim exists")
+            .graveyard
+            .push_back(dying);
+        assert!(
+            certify(&prior, &current).is_none(),
+            "C1b: a graveyard that also grew from a battlefield death carries an unaccounted \
+             movement beside the departure"
+        );
+    }
+
+    /// **A DRAW is refused, and refused on the engine's record of the ACTION rather than on
+    /// where the card landed.**
+    ///
+    /// CR 121.1 puts the drawn card into its owner's HAND, and CR 701.17a puts a milled card
+    /// into a graveyard — but CR 614.6 can redirect either, so endpoints separate the two
+    /// actions only by accident. The decisive sibling is the pair whose DRAWN card was moved
+    /// to a GRAVEYARD, which the action conjunct still refuses; a destination clause would
+    /// refuse the wrong pairs and admit that one.
+    #[test]
+    fn a_draw_is_refused_on_the_action_record_not_the_destination() {
+        for destination in [Zone::Hand, Zone::Graveyard] {
+            let (prior, mut current, drawn) = cert_pair(destination);
+            current
+                .cards_drawn_this_turn
+                .entry(CERT_VICTIM)
+                .or_default()
+                .push(drawn);
+            assert!(
+                certify(&prior, &current).is_none(),
+                "a card the engine recorded as DRAWN is dropped from the candidate set, so its \
+                 library movement to {destination:?} is unaccounted and C1b refuses"
+            );
+        }
+
+        // PAIRED POSITIVE — the same pair with the draw record ABSENT certifies, so the row
+        // cannot pass by the certificate refusing everything.
+        let (prior, current, _) = cert_pair(Zone::Hand);
+        assert!(
+            certify(&prior, &current).is_some(),
+            "PAIRED POSITIVE: without the draw record the same Library -> Hand pair certifies"
+        );
+
+        // Siblings that pin the axis to the ACTION and not to the destination.
+        for destination in [Zone::Exile, Zone::Battlefield] {
+            let (prior, current, _) = cert_pair(destination);
+            assert!(
+                certify(&prior, &current).is_some(),
+                "a departure to {destination:?} with no draw record certifies"
+            );
+        }
+
+        // An id drawn in an EARLIER period of the same turn sits in the PREFIX, so it is
+        // admitted: the conjunct reads the period's SLICE, not the whole turn's journal.
+        let (mut prior, mut current, departed) = cert_pair(Zone::Graveyard);
+        prior
+            .cards_drawn_this_turn
+            .entry(CERT_VICTIM)
+            .or_default()
+            .push(departed);
+        current
+            .cards_drawn_this_turn
+            .entry(CERT_VICTIM)
+            .or_default()
+            .push(departed);
+        assert!(
+            certify(&prior, &current).is_some(),
+            "an id drawn in an earlier period of the same turn is in the prefix and is admitted"
+        );
+    }
+
+    /// **A period slice that is not an EXTENSION is refused, never treated as empty.**
+    ///
+    /// `turns::start_next_turn` CLEARS `cards_drawn_this_turn`, so a frame pair straddling that
+    /// boundary has no period slice at all. The obvious clamp
+    /// (`current[prior_len.min(len)..]`) yields an EMPTY slice there and admits every draw;
+    /// `strip_prefix` refuses the period instead, in either direction and for either owner.
+    #[test]
+    fn a_non_extension_of_the_draw_journal_refuses_the_period() {
+        let (mut prior, current, _) = cert_pair(Zone::Graveyard);
+        prior
+            .cards_drawn_this_turn
+            .entry(CERT_VICTIM)
+            .or_default()
+            .push(ObjectId(999));
+        assert!(
+            certify(&prior, &current).is_none(),
+            "a CLEARED victim journal is not an extension of the prior one, so the period is \
+             not certifiable"
+        );
+
+        // PAIRED POSITIVE: the same pair with the vector EXTENDED instead of cleared.
+        let (mut prior, mut current, _) = cert_pair(Zone::Graveyard);
+        prior
+            .cards_drawn_this_turn
+            .entry(CERT_VICTIM)
+            .or_default()
+            .push(ObjectId(999));
+        current
+            .cards_drawn_this_turn
+            .insert(CERT_VICTIM, vec![ObjectId(999), ObjectId(998)]);
+        assert!(
+            certify(&prior, &current).is_some(),
+            "PAIRED POSITIVE: an extended journal certifies, so the row above is a refusal and \
+             not a certificate that refuses everything"
+        );
+
+        // The guard is PER-OWNER and reads both owners: a non-extension on the CASTER's vector
+        // refuses too, while the victim's extends normally.
+        let (mut prior, current, _) = cert_pair(Zone::Graveyard);
+        prior
+            .cards_drawn_this_turn
+            .entry(CERT_CASTER)
+            .or_default()
+            .push(ObjectId(997));
+        assert!(
+            certify(&prior, &current).is_none(),
+            "a non-extension on the CASTER's vector refuses the period as well"
+        );
+    }
+
+    /// **A departure that ends back in its own library is not certified.**
+    ///
+    /// Its `current.zone` is still `Library`, so it is no candidate at all, and whatever it did
+    /// to that library's id vector is unaccounted — C1b refuses. This is the shape that makes
+    /// the certificate's promise a per-owner COUNT of departures rather than a final library
+    /// SIZE, which a shuffle-back falsifies while leaving the count intact.
+    #[test]
+    fn a_departure_that_ends_back_in_its_library_is_not_certified() {
+        let mut prior = GameState::new_two_player(7);
+        let a = cert_library_card(&mut prior, 900, CERT_VICTIM);
+        let b = cert_library_card(&mut prior, 901, CERT_VICTIM);
+
+        let mut shuffled_back = prior.clone();
+        {
+            let victim = shuffled_back
+                .players
+                .iter_mut()
+                .find(|p| p.id == CERT_VICTIM)
+                .expect("victim exists");
+            victim.library.clear();
+            victim.library.push_back(b);
+            victim.library.push_back(a);
+        }
+        assert!(
+            certify(&prior, &shuffled_back).is_none(),
+            "a card that left and returned is no candidate, so the library vector it churned is \
+             unaccounted"
+        );
+
+        let mut really_departed = prior.clone();
+        cert_depart(&mut really_departed, a, Zone::Graveyard);
+        assert_eq!(
+            certify(&prior, &really_departed).map(|c| c.departed),
+            Some(HashSet::from([a])),
+            "PAIRED POSITIVE: the same two-card library with `a` genuinely departed certifies"
+        );
+    }
+
+    /// **C2 refuses a functioning `Milled` observer, INDEPENDENTLY of the delegation arm.**
+    ///
+    /// The arm is unconditional and runs FIRST. To show that is not the delegation arm's
+    /// verdict wearing its name, the pair's certified id lands in EXILE, where the derived
+    /// event key set holds the exile key alone and the delegation arm WOULD have excluded a
+    /// `Milled` definition as disjoint. C2 carries no separate `TriggerEventKey::Milled`
+    /// conjunct because `keys_from_trigger_def` sources that key from exactly these three
+    /// modes, so such a conjunct would flip nothing.
+    #[test]
+    fn c2_refuses_a_functioning_milled_observer_on_its_own_arm() {
+        for mode in [
+            TriggerMode::Milled,
+            TriggerMode::MilledOnce,
+            TriggerMode::MilledAll,
+        ] {
+            let (prior, mut current, _) = cert_pair(Zone::Exile);
+            cert_with_observer(
+                &mut current,
+                crate::types::ability::TriggerDefinition::new(mode.clone()),
+            );
+            assert!(
+                certify(&prior, &current).is_none(),
+                "{mode:?} fires on the departure by definition"
+            );
+        }
+
+        // PAIRED POSITIVE: a `Dies` observer on the same board still certifies, so the row is
+        // not "any battlefield permanent refuses".
+        let (prior, mut current, _) = cert_pair(Zone::Exile);
+        let mut dies = crate::types::ability::TriggerDefinition::new(TriggerMode::ChangesZone);
+        dies.origin = Some(Zone::Battlefield);
+        dies.destination = Some(Zone::Graveyard);
+        cert_with_observer(&mut current, dies);
+        assert!(
+            certify(&prior, &current).is_some(),
+            "PAIRED POSITIVE: a battlefield-origin dies trigger is provably excluded by its \
+             origin leg and does not veto"
+        );
+    }
+
+    /// **C2's shape arm refuses a "from anywhere into a graveyard" observer, and the
+    /// obligation ranges over the SAME set C1a admitted.**
+    ///
+    /// The connective is OR: an origin pinned away from `Library` proves exclusion on its own,
+    /// and so does a destination outside the certified ids' own landing zones plus the
+    /// graveyard. The destination half is why the obligation is not `Library -> *`: that scope
+    /// proves nothing about a destination pin, so an unpinned-origin battlefield-entry observer
+    /// would survive it and veto every real board.
+    #[test]
+    fn c2_shape_arm_refuses_only_what_can_reach_the_certified_landing_zones() {
+        let from_anywhere_to_graveyard = || {
+            let mut def = crate::types::ability::TriggerDefinition::new(TriggerMode::ChangesZone);
+            def.destination = Some(Zone::Graveyard);
+            def
+        };
+        let (prior, mut current, _) = cert_pair(Zone::Graveyard);
+        cert_with_observer(&mut current, from_anywhere_to_graveyard());
+        assert!(
+            certify(&prior, &current).is_none(),
+            "a (origin: None, destination: Graveyard) observer can fire on the certified move"
+        );
+
+        // The destination half, both ways. A `destination: Battlefield` observer vetoes a pair
+        // whose certified id LANDED on the battlefield and does not veto one that landed in a
+        // graveyard — which is exactly the difference a `Library -> *` obligation could not see.
+        let entry_observer = || {
+            let mut def = crate::types::ability::TriggerDefinition::new(TriggerMode::ChangesZone);
+            def.destination = Some(Zone::Battlefield);
+            def
+        };
+        let (prior, mut current, _) = cert_pair(Zone::Battlefield);
+        cert_with_observer(&mut current, entry_observer());
+        assert!(
+            certify(&prior, &current).is_none(),
+            "the certified id landed on the battlefield, so an unpinned-origin entry observer \
+             can fire on the very move certified"
+        );
+        let (prior, mut current, _) = cert_pair(Zone::Graveyard);
+        cert_with_observer(&mut current, entry_observer());
+        assert!(
+            certify(&prior, &current).is_some(),
+            "PAIRED POSITIVE: the same observer against a graveyard-landing pair is excluded by \
+             its destination pin"
+        );
+    }
+
+    /// **The shape arm fails closed on the fields it cannot read.**
+    ///
+    /// A non-empty `origin_zones` makes the matcher require `from_zone` to be in THAT set and
+    /// IGNORE `origin`, so an `origin`-based proof is invalid; a `destination_constraint` other
+    /// than `Any` and a non-empty `zone_change_clauses` are the other two.
+    #[test]
+    fn c2_shape_arm_fails_closed_on_the_fields_it_cannot_read() {
+        let base = || {
+            let mut def = crate::types::ability::TriggerDefinition::new(TriggerMode::ChangesZone);
+            def.origin = Some(Zone::Battlefield);
+            def.destination = Some(Zone::Graveyard);
+            def
+        };
+        let (prior, mut current, _) = cert_pair(Zone::Graveyard);
+        cert_with_observer(&mut current, base());
+        assert!(
+            certify(&prior, &current).is_some(),
+            "PAIRED POSITIVE: with `origin_zones` EMPTY the battlefield origin pin proves the \
+             exclusion and the board certifies"
+        );
+
+        let mut with_origin_zones = base();
+        with_origin_zones.origin_zones = vec![Zone::Library, Zone::Battlefield];
+        let (prior, mut current, _) = cert_pair(Zone::Graveyard);
+        cert_with_observer(&mut current, with_origin_zones);
+        assert!(
+            certify(&prior, &current).is_none(),
+            "a non-empty `origin_zones` including Library makes the `origin: Battlefield` pin \
+             unreadable, so the proof is invalid and the veto stands"
+        );
+
+        let mut constrained = base();
+        constrained.destination_constraint =
+            crate::types::ability::DestinationConstraint::NotEquals(Zone::Exile);
+        let (prior, mut current, _) = cert_pair(Zone::Graveyard);
+        cert_with_observer(&mut current, constrained);
+        assert!(
+            certify(&prior, &current).is_none(),
+            "a `destination_constraint` other than `Any` is unreadable here, so the veto stands"
+        );
+    }
+
+    /// **The mode arm fails closed on an unclassifiable mode, and the `!keys.is_empty()` guard
+    /// is what does it.**
+    ///
+    /// The trigger index deliberately returns an EMPTY, non-unclassified key set for a
+    /// CR 603.8 state trigger and for `Unknown`. Reading that as proof of exclusion is the one
+    /// fail-DANGEROUS reading available in this predicate.
+    #[test]
+    fn c2_mode_arm_fails_closed_on_an_unclassifiable_mode() {
+        for mode in [TriggerMode::StateCondition, TriggerMode::Always] {
+            let (prior, mut current, _) = cert_pair(Zone::Graveyard);
+            cert_with_observer(
+                &mut current,
+                crate::types::ability::TriggerDefinition::new(mode.clone()),
+            );
+            assert!(
+                certify(&prior, &current).is_none(),
+                "{mode:?} carries no usable key set, so it keeps the veto"
+            );
+        }
+
+        // PAIRED POSITIVE: a `LeavesBattlefield` observer IS excluded — its key set is
+        // non-empty and disjoint from the keys a Library departure can emit.
+        let (prior, mut current, _) = cert_pair(Zone::Graveyard);
+        let mut leaves = crate::types::ability::TriggerDefinition::new(TriggerMode::ChangesZone);
+        leaves.origin = Some(Zone::Battlefield);
+        leaves.destination = Some(Zone::Exile);
+        cert_with_observer(&mut current, leaves);
+        assert!(
+            certify(&prior, &current).is_some(),
+            "PAIRED POSITIVE: a battlefield-origin observer is excluded and does not veto"
+        );
+    }
+
+    /// **The `Cycled` arm is load-bearing.**
+    ///
+    /// CR 702.29c: "'When you cycle this card' means 'When you discard this card to pay an
+    /// activation cost of a cycling ability.'" The event is a discard to pay a cost, never a
+    /// library-to-graveyard movement. Deleting the arm routes cycling to the delegation arm,
+    /// which sees unclassified routing and an empty key set and fails closed on every cycling
+    /// card in a graveyard.
+    #[test]
+    fn the_cycled_arm_is_load_bearing() {
+        for mode in [TriggerMode::Cycled, TriggerMode::CycledOrDiscarded] {
+            let (prior, mut current, _) = cert_pair(Zone::Graveyard);
+            cert_with_observer(
+                &mut current,
+                crate::types::ability::TriggerDefinition::new(mode.clone()),
+            );
+            assert!(
+                certify(&prior, &current).is_some(),
+                "{mode:?} fires on a discard to pay a cycling cost, not on a library departure"
+            );
+            // The delegation arm's verdict on the SAME definition, measured rather than
+            // argued: it is what the row would get if the arm were deleted.
+            let (keys, unclassified) = crate::game::trigger_index::keys_from_trigger_def(
+                &crate::types::ability::TriggerDefinition::new(mode.clone()),
+            );
+            assert!(
+                unclassified || keys.is_empty(),
+                "{mode:?} reaches the delegation arm as unclassified-or-keyless, which fails \
+                 closed — so the dedicated arm is the only thing that can relieve it"
+            );
+        }
+    }
+
+    /// **C2 refuses a graveyard-admitting replacement, and the `destination_zone` narrowing is
+    /// what keeps ordinary self-entry lands from vetoing every real board.**
+    ///
+    /// The measured corpus signature `replacement_is_spent_self_entry` pins is
+    /// `(Moved, SelfRef, destination_zone Battlefield)`; narrowing on `destination_zone` rather
+    /// than on `event` alone is what lets that shape through.
+    #[test]
+    fn c2_refuses_a_graveyard_admitting_replacement_but_not_a_self_entry_land() {
+        use crate::types::ability::ReplacementDefinition;
+        let with_replacement = |def: ReplacementDefinition, landing: Zone| {
+            let (prior, mut current, _) = cert_pair(landing);
+            let host = bf_object(&mut current, 100);
+            let obj = current
+                .objects
+                .get_mut(&host)
+                .expect("just-created board object");
+            obj.base_replacement_definitions = std::sync::Arc::new(vec![def.clone()]);
+            obj.replacement_definitions = vec![def].into();
+            certify(&prior, &current).is_some()
+        };
+
+        assert!(
+            !with_replacement(
+                ReplacementDefinition::new(ReplacementEvent::Moved)
+                    .destination_zone(Zone::Graveyard),
+                Zone::Graveyard,
+            ),
+            "a `Moved` definition admitting a GRAVEYARD destination can divert the very move \
+             certified"
+        );
+        assert!(
+            !with_replacement(
+                ReplacementDefinition::new(ReplacementEvent::ChangeZone),
+                Zone::Graveyard,
+            ),
+            "a `ChangeZone` definition with NO destination pin is unpinned and keeps the veto"
+        );
+        assert!(
+            with_replacement(
+                ReplacementDefinition::new(ReplacementEvent::Moved)
+                    .valid_card(TargetFilter::SelfRef)
+                    .destination_zone(Zone::Battlefield),
+                Zone::Graveyard,
+            ),
+            "PAIRED POSITIVE: the corpus's own tapland self-entry triple does NOT veto — \
+             without this the conjunct would refuse every real board"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // CR 701.17b — the certificate's three consumers inside the fodder cover
+    // (`board_covers_modulo_fodder`'s stable partition, `grown_objects_are_inert`,
+    // `eq_except_growable`'s zone-collection strip) and the producer-side sign reduction
+    // (`ResourceVector::without_certified_departure`).
+    // ─────────────────────────────────────────────────────────────────────────────────────
+
+    /// A card in `owner`'s library, keyed in `objects` and in that player's library vector.
+    /// Deliberately NOT fodder-content-eq to the Saproling class (different name), so it
+    /// partitions as stable-engine and every verdict below is the accounting speaking.
+    fn cover_library_card(state: &mut GameState, id: u64, owner: PlayerId) -> ObjectId {
+        let oid = ObjectId(id);
+        let object = GameObject::new(oid, CardId(id), owner, "Library Card".into(), Zone::Library);
+        state.objects.insert(oid, object);
+        state
+            .players
+            .iter_mut()
+            .find(|p| p.id == owner)
+            .expect("owner exists")
+            .library
+            .push_back(oid);
+        oid
+    }
+
+    /// Move `id` out of its owner's library into `to`, `ObjectId` PRESERVED — the shape
+    /// `zones::move_to_zone` leaves behind (CR 400.7 makes a new object at the rules level
+    /// without minting a new id here).
+    fn cover_depart(state: &mut GameState, id: ObjectId, to: Zone) {
+        let owner = state.objects[&id].owner;
+        state
+            .objects
+            .get_mut(&id)
+            .expect("the departing object is live")
+            .zone = to;
+        let player = state
+            .players
+            .iter_mut()
+            .find(|p| p.id == owner)
+            .expect("owner exists");
+        player.library.retain(|x| *x != id);
+        match to {
+            Zone::Graveyard => player.graveyard.push_back(id),
+            Zone::Hand => player.hand.push_back(id),
+            _ => {}
+        }
+        if to == Zone::Battlefield {
+            state.battlefield.push_back(id);
+        }
+    }
+
+    /// The shipped fodder pair with one extra library card belonging to `owner`, present in
+    /// BOTH frames and departed to `to` in `current` only.
+    fn fodder_cover_with_departure(owner: PlayerId, to: Zone) -> (GameState, GameState) {
+        let (mut prior, mut current) = fodder_cover_base();
+        cover_library_card(&mut prior, 900, owner);
+        cover_library_card(&mut current, 900, owner);
+        cover_depart(&mut current, ObjectId(900), to);
+        (prior, current)
+    }
+
+    /// **The cover admits a certified departure and ONLY a certified one.**
+    ///
+    /// The departed card is keyed in BOTH frames and differs only in `zone`, so without the
+    /// certificate it sits in `board_covers_modulo_fodder`'s stable partition and
+    /// `objects_content_eq` refuses on the `zone` conjunct. The caster-owned control moves
+    /// the SAME card the SAME way and is refused — which is what makes the positive a
+    /// decision about ownership rather than a blanket accept of library movement.
+    #[test]
+    fn the_cover_admits_a_certified_departure_and_only_a_certified_one() {
+        let (base_prior, base_current) = fodder_cover_base();
+        assert!(
+            fodder_cover(&base_prior, &base_current),
+            "reach-guard: the shipped fodder pair covers, so every verdict below is the \
+             library card speaking and not some unrelated gate"
+        );
+
+        let (prior, current) = fodder_cover_with_departure(PlayerId(1), Zone::Graveyard);
+        assert!(
+            fodder_cover(&prior, &current),
+            "a non-caster library departure is certified and the cover admits it"
+        );
+
+        // The certificate names the OPPONENT's library; the caster's own is a decline the
+        // proposer must not sell as advantage.
+        let (prior, current) = fodder_cover_with_departure(PlayerId(0), Zone::Graveyard);
+        assert!(
+            !fodder_cover(&prior, &current),
+            "the identical movement of a CASTER-owned card certifies nothing and is refused"
+        );
+    }
+
+    /// **An id-preserving `Library -> Battlefield` arrival is admitted when accounted and
+    /// refused when not.**
+    ///
+    /// The arrival is the shape the object-growth add-set cannot see: `zones::move_to_zone`
+    /// carries the existing `ObjectId`, so the id is keyed in BOTH frames' `objects` and is
+    /// never a MINTED member. Both arms move the same card to the same zone; only ownership
+    /// differs.
+    #[test]
+    fn an_id_preserving_library_to_battlefield_arrival_is_admitted_only_when_accounted() {
+        let (prior, current) = fodder_cover_with_departure(PlayerId(1), Zone::Battlefield);
+        assert!(
+            fodder_cover(&prior, &current),
+            "an accounted id-preserving arrival covers"
+        );
+
+        let (prior, current) = fodder_cover_with_departure(PlayerId(0), Zone::Battlefield);
+        assert!(
+            !fodder_cover(&prior, &current),
+            "the same arrival owned by the caster is unaccounted and refused"
+        );
+    }
+
+    /// **An accounted id inherits the inertness obligation instead of being waved past it.**
+    ///
+    /// The counter is the non-inertness lever chosen deliberately: it is invisible to the
+    /// certificate's C2 observer walk (which reads trigger and replacement definitions), so
+    /// the refusal can only be `grown_objects_are_inert` speaking. CR 704.5: a +1/+1 counter
+    /// feeds an SBA and a P/T, so a pile of them is not churn-inert.
+    #[test]
+    fn an_accounted_arrival_is_still_refused_when_it_is_not_inert() {
+        let (prior, mut current) = fodder_cover_with_departure(PlayerId(1), Zone::Battlefield);
+        assert!(
+            fodder_cover(&prior, &current),
+            "reach-guard: the inert form of this exact arrival covers"
+        );
+
+        current
+            .objects
+            .get_mut(&ObjectId(900))
+            .expect("the arrived card is live")
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        assert!(
+            !fodder_cover(&prior, &current),
+            "an accounted arrival carrying a counter is refused by the inertness obligation"
+        );
+    }
+
+    /// **The accounting is id-scoped: a stable card that drifts is still refused in the
+    /// presence of a certificate.**
+    ///
+    /// Card 900 departs and is accounted; card 901 stays in the same library in both frames
+    /// and merely gains a STUN counter — non-monotone, so `project_object_for_loop` preserves it
+    /// into the frames the stable partition compares. If the certificate relieved that
+    /// partition wholesale rather than by named id, 901's drift would ride through.
+    #[test]
+    fn a_certificate_relieves_only_the_ids_it_names() {
+        let (mut prior, mut current) = fodder_cover_with_departure(PlayerId(1), Zone::Graveyard);
+        cover_library_card(&mut prior, 901, PlayerId(1));
+        cover_library_card(&mut current, 901, PlayerId(1));
+        assert!(
+            fodder_cover(&prior, &current),
+            "reach-guard: a second, motionless library card does not disturb the cover"
+        );
+
+        current
+            .objects
+            .get_mut(&ObjectId(901))
+            .expect("the motionless card is live")
+            .counters
+            .insert(CounterType::Stun, 1);
+        assert!(
+            !fodder_cover(&prior, &current),
+            "an unnamed card's drift is refused even though a certificate exists for 900"
+        );
+    }
+
+    /// **`eq_except_growable` strips an accounted id from the per-player zone COLLECTION its
+    /// own frame's `zone` names, not just from `objects`.**
+    ///
+    /// This is the one obligation the `objects`-only strip cannot discharge: a departed card
+    /// leaves the prior frame's `library` vector and enters the current frame's `graveyard`,
+    /// and `GameState::PartialEq` compares `players`. The `grown = {}` control is the revert:
+    /// it is the same call with the id unaccounted and it must return `false`, which is what
+    /// proves the strip (and not some vacuous equality) produced the `true`.
+    #[test]
+    fn eq_except_growable_strips_the_accounted_id_from_its_zone_collection() {
+        let mut prior = GameState::new_two_player(7);
+        cover_library_card(&mut prior, 900, PlayerId(1));
+        let mut current = prior.clone();
+        cover_depart(&mut current, ObjectId(900), Zone::Graveyard);
+
+        assert!(
+            !eq_except_growable(&prior, &current, &HashSet::new()),
+            "control: unaccounted, the library/graveyard vectors compare unequal"
+        );
+        assert!(
+            eq_except_growable(&prior, &current, &HashSet::from([ObjectId(900)])),
+            "accounted, the id leaves BOTH frames' zone collections and the rest compares equal"
+        );
+
+        // The strip is not a blanket accept of `players`: an unrelated drift on the same
+        // player still refuses.
+        let mut drifted = current.clone();
+        drifted
+            .players
+            .iter_mut()
+            .find(|p| p.id == PlayerId(1))
+            .expect("victim exists")
+            .life -= 1;
+        assert!(
+            !eq_except_growable(&prior, &drifted, &HashSet::from([ObjectId(900)])),
+            "stripping the id does not excuse an unrelated `players` drift"
+        );
+    }
+
+    /// **`without_certified_departure` adds the certified magnitude back into
+    /// `library_delta`, and only that much.**
+    ///
+    /// CR 701.17b: what the certificate promises is a per-owner COUNT, so the reduction is
+    /// arithmetic, not erasure — a decline LARGER than the certified count keeps its residual
+    /// and stays a loss axis for the sign check to refuse.
+    #[test]
+    fn without_certified_departure_reduces_by_the_certified_count_and_no_further() {
+        let mut delta = ResourceVector::default();
+        delta.library_delta.insert(PlayerId(1), -3);
+        delta.library_delta.insert(PlayerId(2), -5);
+
+        let certified = BTreeMap::from([(PlayerId(1), 3i64), (PlayerId(2), 3i64)]);
+        let reduced = delta.without_certified_departure(&certified);
+
+        assert!(
+            !reduced.library_delta.contains_key(&PlayerId(1)),
+            "an exactly-accounted decline leaves no axis behind"
+        );
+        assert_eq!(
+            reduced.library_delta.get(&PlayerId(2)),
+            Some(&-2),
+            "an under-accounted decline keeps its residual and stays a loss axis"
+        );
+        assert_eq!(
+            delta.library_delta.get(&PlayerId(1)),
+            Some(&-3),
+            "the reduction is a projection: the FULL delta the certificate badges is untouched"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // CR 603.6a / CR 732.2a — THE KEEP TEST. The `class_members` argument
+    // `loop_states_cover_modulo_fodder_growth` hands the firewall is the growth set
+    // restricted to the ids the SCANNED frame keys on the BATTLEFIELD.
+    //
+    // Only the FIRST row moves when the keep `match` does; it drives the production
+    // constructor end to end. The second also drives the constructor but pins the direction
+    // the restriction must NOT move. The remaining three characterise the relief surface the
+    // restriction acts on, one branch per row, under both membership sets, on class sets the
+    // test writes by hand — their verdicts are properties of the predicates and cannot move
+    // with the constructor.
+    // ─────────────────────────────────────────────────────────────────────────────────────
+
+    /// A NONTOKEN card keyed in `zone`, and in `owner`'s vector where that zone has one.
+    /// Gives a growth set an off-battlefield member without moving anything.
+    fn off_battlefield_member(
+        state: &mut GameState,
+        id: u64,
+        owner: PlayerId,
+        zone: Zone,
+        name: &str,
+    ) -> ObjectId {
+        let oid = ObjectId(id);
+        let object = GameObject::new(oid, CardId(id), owner, name.to_string(), zone);
+        state.objects.insert(oid, object);
+        let player = state
+            .players
+            .iter_mut()
+            .find(|p| p.id == owner)
+            .expect("owner exists");
+        match zone {
+            Zone::Hand => player.hand.push_back(oid),
+            Zone::Graveyard => player.graveyard.push_back(oid),
+            Zone::Library => player.library.push_back(oid),
+            Zone::Battlefield | Zone::Stack | Zone::Exile | Zone::Command => {}
+        }
+        oid
+    }
+
+    /// The shipped fodder pair — optionally carrying an accounted departure to `to` — plus a
+    /// battlefield host bearing Pit of Offerings' real exiled-colour mana ability and its
+    /// linked exile pile. That host's only relief is
+    /// `exiled_colors_provably_exclude_class`, whose conjunct (c) requires battlefield
+    /// residency in the SCANNED frame, so the host is the surface the keep test speaks at.
+    fn keep_test_pit_board(departure: Option<Zone>) -> (GameState, GameState) {
+        use std::sync::Arc;
+        let (mut prior, mut current) = match departure {
+            Some(to) => fodder_cover_with_departure(PlayerId(1), to),
+            None => fodder_cover_base(),
+        };
+        for state in [&mut prior, &mut current] {
+            let host = inert_token(state, 810, 0, "Block2 Mana Host");
+            state
+                .objects
+                .get_mut(&host)
+                .expect("just-created board object")
+                .abilities = Arc::new(vec![pit_exiled_color_ability()]);
+            exile_linked_to(state, 820, host, "Linked Exiled Mountain");
+        }
+        (prior, current)
+    }
+
+    /// **The keep test drops an accounted id the scanned frame keys off the battlefield, and
+    /// that is what lets the cover offer.**
+    ///
+    /// The certified card sits in a GRAVEYARD in the scanned frame. `exiled_colors_provably_
+    /// exclude_class`'s conjunct (c) cannot place it on the battlefield, so handed it the arm
+    /// returns its fail-closed default rather than a rules verdict. Dropping it leaves the
+    /// battlefield fodder, which (c) clears and (d) excludes from the Exile-only link set, so
+    /// block (2) skips the host instead of vetoing.
+    ///
+    /// MUTATION PROBES — this row reds under BOTH directions of the keep `match`:
+    /// * `Zone::Graveyard => true`, or reverting the filter to a bare
+    ///   `cf.objects.contains_key`, keeps the certified id; conjunct (c) refuses it and the
+    ///   veto returns.
+    /// * `Zone::Battlefield => false` empties the set and `!members.is_empty()` restores the
+    ///   unconditional veto, which reds the PAIRED POSITIVE below — the direction the
+    ///   restriction fails in is the conservative one.
+    ///
+    /// The two reach-guards are what make the third assertion attributable: each holds the
+    /// certificate and the host constant in turn, so only the keep test can explain the
+    /// remaining verdict.
+    #[test]
+    fn the_keep_test_drops_an_accounted_off_battlefield_departure() {
+        let (bare_prior, bare_current) = fodder_cover_with_departure(PlayerId(1), Zone::Graveyard);
+        assert!(
+            fodder_cover(&bare_prior, &bare_current),
+            "reach-guard: without the host this pair covers, so the certificate fired and \
+             every gate before the firewall passed"
+        );
+
+        let (clean_prior, clean_current) = keep_test_pit_board(None);
+        assert!(
+            fodder_cover(&clean_prior, &clean_current),
+            "PAIRED POSITIVE: with no off-battlefield accounted id the keep set and the bare \
+             presence set are the SAME set, and the same host is relieved — so the row below \
+             cannot pass by the restriction covering everything"
+        );
+
+        let (prior, current) = keep_test_pit_board(Some(Zone::Graveyard));
+        assert_eq!(
+            current.objects[&ObjectId(900)].zone,
+            Zone::Graveyard,
+            "reach-guard: the accounted id is keyed OFF the battlefield in the scanned frame"
+        );
+        assert!(
+            fodder_cover(&prior, &current),
+            "the keep test drops the graveyard-resident accounted id, so the block-(2) host \
+             is relieved over the battlefield fodder alone and the pair covers"
+        );
+    }
+
+    /// **The keep test relieves nothing on its own: a battlefield permanent that genuinely
+    /// reads the growing class still vetoes.**
+    ///
+    /// `scan_quantity_ref` classifies `QuantityRef::DistinctCardTypes` `Axes::CONSERVATIVE`,
+    /// so no relief arm can reach it whatever the membership is. Same frames, same
+    /// certificate, one field of the host's ability different from the row above.
+    ///
+    /// This row deliberately does NOT move with the keep `match` — that is its content. It
+    /// reds if the firewall's block (2) stops scanning `abilities`, or if a relief arm is
+    /// widened to admit an unclassifiable quantity read.
+    #[test]
+    fn the_keep_test_does_not_relieve_a_genuine_battlefield_class_reader() {
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, CardTypeSetSource, Effect, PtValue, QuantityExpr,
+            QuantityRef, TargetFilter, TypedFilter,
+        };
+        use std::sync::Arc;
+
+        let (mut prior, mut current) = fodder_cover_with_departure(PlayerId(1), Zone::Graveyard);
+        for state in [&mut prior, &mut current] {
+            let host = inert_token(state, 810, 0, "Block2 Census Host");
+            state
+                .objects
+                .get_mut(&host)
+                .expect("just-created board object")
+                .abilities = Arc::new(vec![AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Pump {
+                    power: PtValue::Quantity(QuantityExpr::Ref {
+                        qty: QuantityRef::DistinctCardTypes {
+                            source: CardTypeSetSource::Objects {
+                                filter: TargetFilter::Typed(TypedFilter::creature()),
+                            },
+                        },
+                    }),
+                    toughness: PtValue::Fixed(0),
+                    target: TargetFilter::SelfRef,
+                },
+            )]);
+        }
+        assert!(
+            !fodder_cover(&prior, &current),
+            "a census over battlefield creatures counts the fodder itself, so the veto stands \
+             under the keep set exactly as it does under the bare presence set"
+        );
+    }
+
+    /// **(ii) A member conjunct that is INERT off the battlefield: the restriction does not
+    /// move the site's verdict.**
+    ///
+    /// `count_matching_condition_provably_excludes_class` closes on
+    /// `!(member.zone == Zone::Battlefield && …)`, whose first term an id outside the
+    /// battlefield falsifies whatever zone it sits in — so the extra member is relieved and
+    /// dropping it changes nothing. Instantiated with the member in a HAND deliberately: a
+    /// graveyard instantiation cannot separate a zone-inert predicate from one that merely
+    /// answers `true` in that one zone.
+    #[test]
+    fn the_restriction_is_inert_on_a_predicate_with_no_battlefield_axis() {
+        let (mut state, member, _) = block3_fixture(vec![
+            (900, "Sunken Hollow", sunken_hollow_def()),
+            (901, "Cinder Glade", cinder_glade_def()),
+        ]);
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "reach-guard: under the KEEP set this board is relieved, so the row below is a \
+             live site and not an unreached one"
+        );
+
+        let in_hand = off_battlefield_member(&mut state, 950, PlayerId(0), Zone::Hand, "Swamp");
+        assert!(
+            !fire_time_conditions_read_growing_class(
+                &state,
+                Some(&HashSet::from([member, in_hand]))
+            ),
+            "the PRESENCE set carries a hand resident and the verdict does not move: the \
+             tapland census is satisfied by every non-battlefield member alike"
+        );
+    }
+
+    /// **(ii-h) The hand-quantified arm MOVES, and the move is the intended outcome.**
+    ///
+    /// `reveal_from_hand_execute_provably_excludes_class` carries no member-zone conjunct:
+    /// its (d) asks whether the SOURCE CONTROLLER's hand holds the member, so it answers
+    /// `false` for a resident of that hand and `true` for every other off-battlefield id.
+    /// Under the bare presence set the site therefore vetoes; under the keep set it relieves.
+    /// That relief is owed rather than lost: the hand resident can only be touched by a
+    /// player who has priority, and every window in which priority arrives belongs to the
+    /// offer protocol (CR 732.2a / CR 732.2b).
+    ///
+    /// The growth set also holds a GRAVEYARD resident, so the keep set is a proper
+    /// restriction of the presence set and not the same set twice.
+    ///
+    /// Both sets are written by hand here, so this row pins the SURFACE the keep test acts
+    /// on, not the constructor. REVERT / MUTATION PROBES: replacing `(d)`'s final expression
+    /// with `true` relieves the hand resident and reds the presence-set veto; replacing it
+    /// with `false` reds the keep-set relief together with its reach-guard.
+    #[test]
+    fn the_hand_quantified_arm_moves_from_veto_to_relief_under_the_keep_set() {
+        let (mut state, member, hosts) =
+            r2_block3_execute_fixture(vec![(900, "Necroblossom Snarl", necroblossom_snarl_def())]);
+        let source = state.objects[&hosts[0]].clone();
+
+        let in_hand = off_battlefield_member(&mut state, 950, PlayerId(0), Zone::Hand, "Swamp");
+        let in_graveyard =
+            off_battlefield_member(&mut state, 951, PlayerId(0), Zone::Graveyard, "Forest");
+        let presence = HashSet::from([member, in_hand, in_graveyard]);
+        let keep = HashSet::from([member]);
+
+        assert!(
+            s6_arm(&necroblossom_snarl_def(), &state, member, &source),
+            "reach-guard: the arm relieves the BATTLEFIELD member, so the veto below is the \
+             hand resident speaking"
+        );
+        assert!(
+            count_matching_condition_provably_excludes_class(
+                &sunken_hollow_def()
+                    .condition
+                    .clone()
+                    .expect("fixture pin: the tapland carries a parsed condition"),
+                &state,
+                in_hand,
+                &source,
+            ),
+            "control: a predicate whose axis is BATTLEFIELD RESIDENCY relieves the IDENTICAL \
+             hand resident, so this row reports THIS arm's hand axis and not 'off the \
+             battlefield'"
+        );
+
+        assert!(
+            fire_time_conditions_read_growing_class(&state, Some(&presence)),
+            "under the bare presence set the hand resident is in the reveal's own eligible \
+             pool, (d) answers false, and the site vetoes"
+        );
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&keep)),
+            "under the keep set the site relieves — the intended move, and the relief the \
+             offer protocol owns"
+        );
+    }
+
+    /// **(iii) An ETB observer whose matcher MATCHES an off-battlefield id moves too, and the
+    /// reason is the EVENT.**
+    ///
+    /// `etb_observer_provably_excludes_class` quantifies over the MEMBER'S CHARACTERISTICS,
+    /// with no member-zone conjunct, so a matcher disjoint from the fodder can still match a
+    /// graveyard resident. CR 603.6a triggers an enters-the-battlefield ability only when a
+    /// permanent ENTERS the battlefield, and an id the scanned frame keys off the battlefield
+    /// made no entry across the covered cycle — so the observer's surface cannot move with
+    /// it, and the veto the presence set produces is not one the rules owe.
+    #[test]
+    fn an_etb_observer_matching_an_off_battlefield_id_moves_under_the_keep_set() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind};
+
+        let mut state = GameState::new_two_player(7);
+        let member = inert_token(&mut state, 900, 0, "Saproling");
+        {
+            let o = state.objects.get_mut(&member).expect("just-created token");
+            o.card_types.core_types = vec![CoreType::Creature];
+            o.card_types.subtypes = vec!["Saproling".to_string()];
+            o.is_token = true;
+        }
+        let observer = inert_token(&mut state, 910, 1, "Eminence Observer");
+        // "another nontoken Wizard you control" — Inalla's matcher, disjoint from the P0
+        // Saproling token on subtype, controller AND tokenness.
+        let disjoint = TargetFilter::Typed(
+            TypedFilter::creature()
+                .subtype("Wizard".to_string())
+                .controller(ControllerRef::You)
+                .properties(vec![FilterProp::NonToken, FilterProp::Another]),
+        );
+        state
+            .objects
+            .get_mut(&observer)
+            .expect("just-created observer")
+            .trigger_definitions
+            .push(
+                TriggerDefinition::new(TriggerMode::ChangesZone)
+                    .destination(Zone::Battlefield)
+                    .valid_card(disjoint)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        class_reading_pump_effect(),
+                    )),
+            );
+
+        // The one id the matcher DOES match, and it sits in a graveyard.
+        let in_graveyard = off_battlefield_member(
+            &mut state,
+            950,
+            PlayerId(1),
+            Zone::Graveyard,
+            "Ghitu Lavarunner",
+        );
+        {
+            let o = state
+                .objects
+                .get_mut(&in_graveyard)
+                .expect("just-created graveyard card");
+            o.card_types.core_types = vec![CoreType::Creature];
+            o.card_types.subtypes = vec!["Wizard".to_string()];
+        }
+
+        assert!(
+            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            "reach-guard: under the KEEP set the disjoint observer is skipped, so the veto \
+             below is the graveyard resident speaking"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class(
+                &state,
+                Some(&HashSet::from([member, in_graveyard]))
+            ),
+            "under the bare presence set the matcher matches the graveyard resident, the \
+             `.all()` fails, and the observer keeps a veto CR 603.6a cannot justify — no \
+             permanent entered the battlefield for it to have fired on"
         );
     }
 }
