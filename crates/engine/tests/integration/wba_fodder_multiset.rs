@@ -261,12 +261,12 @@ fn drive_to_collapse_boundary(state: &mut GameState) {
 /// **The route conjunct is LIVE and NARROW**, written as ONE test so the two arms are
 /// structurally inseparable: the doubled arm alone is satisfiable by a blanket route change, the
 /// undoubled arm alone by never wiring the conjunct at all. UNDOUBLED (the discriminator): the
-/// untouched shipped board reproduces ONE Saproling per cycle (`k == 1`), so the `per_cycle_delta
-/// > 1` gate is OFF and the accept keeps the O(1) batched route — even though this dump DOES
-/// carry a functioning ETB trigger, i.e. `token_growth_is_observed` is `true` on it. That is what
-/// makes the k-gate load-bearing rather than decorative, and why every currently-green
-/// `LoopShortcut` row keeps its route. DOUBLED: grafting ONE P0 doubler makes the observed `k ==
-/// 2`, and the accept switches to the concrete replay.
+/// untouched shipped board reproduces ONE Saproling per cycle (`k == 1`), so the
+/// `per_cycle_delta > 1` gate is OFF and the accept keeps the O(1) batched route — even though
+/// this dump DOES carry a functioning ETB trigger, i.e. `token_growth_is_observed` is `true` on
+/// it. That is what makes the k-gate load-bearing rather than decorative, and why every
+/// currently-green `LoopShortcut` row keeps its route. DOUBLED: grafting ONE P0 doubler makes
+/// the observed `k == 2`, and the accept switches to the concrete replay.
 ///
 /// REVERT PROBES: delete the `token_growth_needs_replay` disjunct at the `game::engine` route
 /// seam ⇒ the doubled arm falls back to `Tokens` and reds, undoubled stays green; delete the
