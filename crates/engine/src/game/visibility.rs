@@ -4554,11 +4554,13 @@ mod tests {
         assert_eq!(filtered.scheme_deck, im::vector![scheme_id]);
     }
 
-    /// CR 717.2 + CR 103.3a: an Attraction deck is a supplementary deck shuffled into a
-    /// random order, so an unrevealed member's identity is not public. The paired
-    /// revealed card is the discriminator: only the `revealed_cards` exclusion separates
-    /// the two, so a projection that dropped the Attraction collection reddens the first
-    /// assertion while a projection that hid the whole collection reddens the second.
+    /// Modelling decision: CR 400.2 makes the command zone public except for cards some rule
+    /// allows to be face down, and CR 701.51b turns an Attraction face up only as it leaves
+    /// the deck. The engine reads deck members as hidden until revealed, mirroring the
+    /// library. The paired revealed card is the discriminator: only the `revealed_cards`
+    /// exclusion separates the two, so a projection that dropped the Attraction collection
+    /// reddens the first assertion while a projection that hid the whole collection reddens
+    /// the second.
     #[test]
     fn attraction_deck_cards_are_hidden_unless_revealed() {
         let mut state = GameState::new_two_player(42);

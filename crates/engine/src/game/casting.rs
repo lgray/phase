@@ -3262,7 +3262,9 @@ fn exile_object_can_enter_cast_path(obj: &GameObject) -> bool {
 /// instead.
 ///
 /// This is the single DRY admission predicate for the three object-tagged
-/// `PlayFromExile` consult sites (legal-actions surface, `prepare_spell_cast`).
+/// `PlayFromExile` consult sites: `graveyard_spell_objects_available_to_cast` and
+/// `exile_object_castable_by_permission` at the legal-actions surface, and
+/// `castable_from_current_zone` at the cast-admission gate.
 /// It does NOT touch the battlefield-static path, which stays exile-only via
 /// [`exile_object_can_enter_cast_path`].
 fn play_from_exile_object_in_cast_path(obj: &GameObject) -> bool {
@@ -3367,16 +3369,16 @@ pub(crate) fn cast_permissions_name_their_grantee(obj: &GameObject) -> bool {
 /// single test for whether that move is legal from the zone the object currently
 /// occupies.
 ///
-/// A hoist, not a new rule: this is [`prepare_spell_cast_with_variant_override_inner`]'s
-/// `castable_zone` expression, named, with the gate itself as its first reader. The
-/// second is `game::visibility`, whose viewer projection builds its hiding exemption on
-/// this verdict — NARROWING it through [`cast_permissions_name_their_grantee`] and a
+/// Two production readers: [`prepare_spell_cast_with_variant_override_inner`], which gates
+/// announcement on it, and `game::visibility`, whose viewer projection builds its hiding
+/// exemption on this verdict — NARROWING it through [`cast_permissions_name_their_grantee`]
+/// and a
 /// private-access scope, never restating it. Two implementations of the ADMISSION would
 /// diverge, and a projection that blanked an object this gate still admits would hide a
 /// card from the player entitled to move it to the stack. Every narrowing therefore
 /// rides on the caller's own conjuncts; none of it belongs in here.
 ///
-/// `variant_override` is taken because the shipped expression consumes it: madness is
+/// `variant_override` is taken because the announcement path consumes it: madness is
 /// announced, never standing, and the face-down {3} cast is admitted only by a
 /// normal-cost authority (CR 118.9a + CR 601.2b). A caller passing `None` is asking
 /// about an ORDINARY announcement.
@@ -6562,13 +6564,6 @@ fn prepare_spell_cast_with_variant_override_inner(
     // cost seams must derive fusion from this override. If a future change ever
     // infers Fuse elsewhere, this discriminator must be revisited.
     let is_fuse_variant = variant_override == Some(CastingVariant::Fuse);
-    // CR 715.3d + CR 701.17d: Cards carrying an object-tagged play/cast
-    // permission. Exile sources cover AdventureCreature / ExileWithAltCost /
-    // impulse `PlayFromExile`; the graveyard branch covers a milled card whose
-    // `PlayFromExile` was granted by a "you may play that card" mill effect
-    // (CR 701.17d — the permission lands on the card in the graveyard). Lands
-    // are excluded in both zones (CR 305.1) via
-    // `play_from_exile_object_in_cast_path`.
     // CR 702.34 / CR 702.81 / CR 702.138 / CR 702.180: Cards in graveyard with
     // graveyard-cast keywords.
     let has_escape = obj.zone == Zone::Graveyard
@@ -22179,12 +22174,12 @@ mod castable_zone_authority_tests {
         );
     }
 
-    /// **The graveyard alt-cost disjunct admits a card the object-tagged play/cast
-    /// disjunct beside it excludes.** CR 118.9: an alternative cost may be applied to an
-    /// object by another effect. `play_from_exile_object_in_cast_path` drops lands
-    /// (CR 305.1), so a LAND in the owner's graveyard carrying the same granted
-    /// permission is the only shape reaching `has_graveyard_timed_alt_cost_permission`
-    /// alone — the two arms differ in `granted_to` only.
+    /// Isolates `has_graveyard_timed_alt_cost_permission` inside `castable_from_current_zone`.
+    /// CR 118.9: an alternative cost may be applied to an object by another effect. The
+    /// object-tagged sibling disjunct drops lands (CR 305.1) via
+    /// `play_from_exile_object_in_cast_path`, so a land in the owner's graveyard carrying the
+    /// grant reaches this disjunct without it — a shape for probing the predicate, not a
+    /// castable spell: `prepare_spell_cast` rejects lands after consulting this gate.
     #[test]
     fn the_graveyard_alt_cost_disjunct_admits_a_land_the_exile_cast_path_excludes() {
         let mut state = GameState::new_two_player(7);

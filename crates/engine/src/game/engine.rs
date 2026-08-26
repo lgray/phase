@@ -6400,25 +6400,15 @@ fn materialize_object_growth_shortcut(
     // `proposal.unbounded`, and the two can disagree in exactly the direction that would route an
     // OBSERVED counter loop to the batched arm.
     //
-    // `unbatchable_deferred` sits OUTSIDE that guard, and both costs the guard was buying are
-    // answered rather than one. The spurious CR 500.5 prompt is answered because such a period
-    // genuinely has something to collapse. The second cost is ACCEPTED: a period whose only
-    // growth is an unbatchable deferred axis has an EMPTY `batched`, so it now takes the
-    // uncapped, cubic-in-N replay at N up to `MAX_SHORTCUT_CYCLES`. That is the price of
-    // delivering an axis with no batched item — the alternative is registering nothing at all,
-    // which moves zero cards and leaves the ∞ marks standing permanently — and the `Replay`
-    // arm's own doc already records where a future iteration budget would attach.
-    //
-    // A SECOND population pays that same cost, and is named here because the disjunct's
-    // position is what recruits it: a period that grows a batchable axis AND carries an
-    // unbatchable deferred one — tokens, counters or life alongside a library delta, the
-    // shipped mill board being exactly that — has a NON-EMPTY `batched` and would have taken
-    // the O(1) mint whenever the other four disjuncts were all false. It now replays. Accepted
-    // for the same reason and by the same rule: CR 732.2c admits no partial delivery, so a
-    // route that mints the tokens while dropping the library decline would accept a promise it
-    // does not keep. Narrowing this to an empty `batched` is therefore not available; the
-    // iteration budget the `Replay` arm names is where this population's cost gets bounded
-    // too. Pinned by `wba_loop_firewall_interposition`'s Altar / Altar-free route pair.
+    // `unbatchable_deferred` sits OUTSIDE that guard: such an axis routes to Replay whatever
+    // `batched` holds. CR 732.2c admits no partial delivery, so neither population may take the
+    // O(1) mint and drop the deferred axis — not a period whose only growth is that axis (EMPTY
+    // `batched`), nor one that grows a batchable axis alongside it (NON-EMPTY `batched`: tokens,
+    // counters or life plus a library delta, the shipped mill board). Both therefore pay the
+    // uncapped, cubic-in-N replay at N up to `MAX_SHORTCUT_CYCLES`, which the `Replay` arm's own
+    // doc records as where a future iteration budget attaches. The guard's other cost, a spurious
+    // CR 500.5 prompt, does not arise: such a period genuinely has something to collapse. Pinned
+    // by `wba_loop_firewall_interposition`'s Altar / Altar-free route pair.
     //
     // RESIDUAL: with `sequence.is_empty()` a deferred axis cannot be delivered by either route.
     // This producer never publishes one there, because its own drive produced the sequence.
