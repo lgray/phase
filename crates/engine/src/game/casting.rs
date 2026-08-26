@@ -3458,7 +3458,22 @@ pub(crate) fn castable_from_current_zone(
                 // permission (Realmwalker, Future Sight, Bolas's Citadel, etc.). The card
                 // must be the current top of `player`'s library AND match the static's
                 // `affected` filter.
+                //
+                // The `library.front()` test reproduces
+                // `top_of_library_permission_source`'s own first two steps, against the
+                // same `player` rather than the object's owner. It is verdict-identical:
+                // that callee binds its returned `top_id` from this same `front()`, so a
+                // non-top object could never satisfy the `top_id == obj.id` comparison
+                // below, and an absent player or an empty library makes callee and test
+                // answer no alike. It skips only a call whose answer that comparison
+                // discards.
                 || (obj.zone == Zone::Library
+                    && state
+                        .players
+                        .iter()
+                        .find(|p| p.id == player)
+                        .and_then(|p| p.library.front())
+                        == Some(&obj.id)
                     && top_of_library_permission_source(state, player, Some(CardPlayMode::Cast))
                         .is_some_and(|(top_id, _, _, _)| top_id == obj.id))))
 }
@@ -22086,5 +22101,126 @@ mod castable_zone_authority_tests {
             PlayerId(0),
             None
         ));
+    }
+
+    /// **The commander disjunct admits an owner's commander in the command zone, and
+    /// needs all three of its conjuncts.** CR 903.8: a player may cast a commander they
+    /// own from the command zone. Four arms on one object: the admitting board, then each
+    /// conjunct removed in turn.
+    #[test]
+    fn the_commander_disjunct_needs_the_format_the_zone_and_the_commander_flag() {
+        let mut state = GameState::new_two_player(7);
+        state.format_config.command_zone = true;
+        let id = card(&mut state, 1, PlayerId(0), Zone::Command);
+        state
+            .objects
+            .get_mut(&id)
+            .expect("just inserted")
+            .is_commander = true;
+        let obj = state.objects[&id].clone();
+
+        assert!(castable_from_current_zone(&state, &obj, PlayerId(0), None));
+        assert!(
+            !castable_from_current_zone(&state, &obj, PlayerId(1), None),
+            "CR 903.8 names the commander's OWNER, so the other seat is refused on the \
+             same board"
+        );
+
+        let mut not_commander = obj.clone();
+        not_commander.is_commander = false;
+        assert!(
+            !castable_from_current_zone(&state, &not_commander, PlayerId(0), None),
+            "a non-commander card in the command zone carries no CR 903.8 permission"
+        );
+
+        state.format_config.command_zone = false;
+        assert!(
+            !castable_from_current_zone(&state, &obj, PlayerId(0), None),
+            "the format gate is a conjunct, not decoration"
+        );
+    }
+
+    /// **A mayhem card is castable from its owner's graveyard exactly while it was
+    /// discarded this turn.** CR 702.187b: "As long as you discarded this card this turn,
+    /// you may cast it from your graveyard by paying [cost] rather than paying its mana
+    /// cost." The two arms differ in `discarded_turn` alone.
+    ///
+    /// This row guards the BEHAVIOUR, not one disjunct: `castable_from_current_zone`
+    /// reaches it through two — `mayhem_castable_from_graveyard` and the mayhem clause
+    /// inside `has_effective_graveyard_cast_keyword` — whose conjunctions coincide, so no
+    /// fixture separates them and the row reddens only if both are lost.
+    #[test]
+    fn a_mayhem_card_is_castable_from_its_owners_graveyard_only_when_discarded_this_turn() {
+        let mut state = GameState::new_two_player(7);
+        state.turn_number = 5;
+        let id = card(&mut state, 1, PlayerId(0), Zone::Graveyard);
+        {
+            let obj = state.objects.get_mut(&id).expect("just inserted");
+            obj.base_keywords = vec![crate::types::keywords::Keyword::Mayhem(ManaCost::default())];
+            obj.discarded_turn = Some(5);
+        }
+        let discarded_this_turn = state.objects[&id].clone();
+        assert!(castable_from_current_zone(
+            &state,
+            &discarded_this_turn,
+            PlayerId(0),
+            None
+        ));
+        assert!(
+            !castable_from_current_zone(&state, &discarded_this_turn, PlayerId(1), None),
+            "mayhem names the card's own graveyard, so the other seat is refused"
+        );
+
+        state.objects.get_mut(&id).expect("present").discarded_turn = Some(4);
+        let discarded_earlier = state.objects[&id].clone();
+        assert!(
+            !castable_from_current_zone(&state, &discarded_earlier, PlayerId(0), None),
+            "PAIRED NEGATIVE: the same mayhem card discarded on an EARLIER turn is refused"
+        );
+    }
+
+    /// **The graveyard alt-cost disjunct admits a card the object-tagged play/cast
+    /// disjunct beside it excludes.** CR 118.9: an alternative cost may be applied to an
+    /// object by another effect. `play_from_exile_object_in_cast_path` drops lands
+    /// (CR 305.1), so a LAND in the owner's graveyard carrying the same granted
+    /// permission is the only shape reaching `has_graveyard_timed_alt_cost_permission`
+    /// alone — the two arms differ in `granted_to` only.
+    #[test]
+    fn the_graveyard_alt_cost_disjunct_admits_a_land_the_exile_cast_path_excludes() {
+        let mut state = GameState::new_two_player(7);
+        let permission = |granted_to: PlayerId| CastingPermission::ExileWithAltCost {
+            cost: ManaCost::default(),
+            cast_transformed: false,
+            constraint: None,
+            granted_to: Some(granted_to),
+            resolution_cleanup: None,
+            duration: None,
+            graveyard_replacement: None,
+            enters_with_counter: None,
+            enters_with_modifications: Vec::new(),
+            mana_spend_permission: None,
+        };
+        let id = card(&mut state, 1, PlayerId(0), Zone::Graveyard);
+        {
+            let obj = state.objects.get_mut(&id).expect("just inserted");
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Land);
+            obj.casting_permissions = vec![permission(PlayerId(0))];
+        }
+        let granted_to_owner = state.objects[&id].clone();
+        assert!(castable_from_current_zone(
+            &state,
+            &granted_to_owner,
+            PlayerId(0),
+            None
+        ));
+
+        let mut granted_elsewhere = granted_to_owner.clone();
+        granted_elsewhere.casting_permissions = vec![permission(PlayerId(1))];
+        assert!(
+            !castable_from_current_zone(&state, &granted_elsewhere, PlayerId(0), None),
+            "PAIRED NEGATIVE: the permission names a grantee and P0 is not it"
+        );
     }
 }

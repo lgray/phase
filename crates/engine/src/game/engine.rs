@@ -6409,6 +6409,17 @@ fn materialize_object_growth_shortcut(
     // which moves zero cards and leaves the ∞ marks standing permanently — and the `Replay`
     // arm's own doc already records where a future iteration budget would attach.
     //
+    // A SECOND population pays that same cost, and is named here because the disjunct's
+    // position is what recruits it: a period that grows a batchable axis AND carries an
+    // unbatchable deferred one — tokens, counters or life alongside a library delta, the
+    // shipped mill board being exactly that — has a NON-EMPTY `batched` and would have taken
+    // the O(1) mint whenever the other four disjuncts were all false. It now replays. Accepted
+    // for the same reason and by the same rule: CR 732.2c admits no partial delivery, so a
+    // route that mints the tokens while dropping the library decline would accept a promise it
+    // does not keep. Narrowing this to an empty `batched` is therefore not available; the
+    // iteration budget the `Replay` arm names is where this population's cost gets bounded
+    // too. Pinned by `wba_loop_firewall_interposition`'s Altar / Altar-free route pair.
+    //
     // RESIDUAL: with `sequence.is_empty()` a deferred axis cannot be delivered by either route.
     // This producer never publishes one there, because its own drive produced the sequence.
     let route = if !sequence.is_empty()

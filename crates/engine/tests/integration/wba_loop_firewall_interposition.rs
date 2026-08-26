@@ -1316,3 +1316,222 @@ fn a_milled_cards_own_window_and_permanent_type_reach_the_drive_through_neither_
         },
     ]);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// THE ACCEPT PATH
+//
+// Every row above stops at the OFFER. These two go past it: the route the mill period takes
+// once accepted, and what the collapse at the CR 500.5 boundary actually delivers.
+//
+// The iteration count an accepted mill shortcut DELIVERS is DEFERRED(phase 2) and is asserted
+// nowhere below — these rows read a DIRECTION (cards moved, marks gone), never a magnitude.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+use engine::analysis::decision_template::IterationCount;
+use engine::analysis::loop_check::ShortcutResponse;
+use engine::analysis::resource::ResourceAxis;
+use engine::game::engine::apply;
+use engine::types::actions::GameAction;
+use engine::types::game_state::{PayableResource, PersistentAxisMaterialization};
+
+/// Everything P0's accept registered. The stash discriminant is the only observable of the
+/// route from outside the engine crate — `LoopCollapseRoute` is private to `game::engine`.
+fn registered(state: &GameState) -> &[PersistentAxisMaterialization] {
+    state
+        .pending_unbounded_materialization
+        .get(&P0)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// Whether P0's accept took the concrete replay. Panics rather than answering on an EMPTY
+/// stash, so "not the replay" can never be satisfied by an accept that registered nothing.
+fn took_the_replay(state: &GameState, why: &str) -> bool {
+    let stash = registered(state);
+    assert!(
+        !stash.is_empty(),
+        "{why}: P0's accept registered NOTHING — any route claim about it is vacuous"
+    );
+    stash
+        .iter()
+        .all(|m| matches!(m, PersistentAxisMaterialization::DriveSequence { .. }))
+}
+
+/// The board driven by one real buyback+convoke recast to its CR 732.2a offer.
+fn offer_state(state: GameState) -> GameState {
+    let state = drive_sprout_cast(state).state().clone();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
+        "reach-guard: the live recast must surface P0's offer, got {:?}",
+        state.waiting_for
+    );
+    state
+}
+
+/// P0 declares `Fixed(n)`; every living opponent accepts in APNAP order.
+fn declare_and_accept_all(state: &mut GameState, n: u32) {
+    apply(
+        state,
+        P0,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(n),
+            template: None,
+        },
+    )
+    .expect("the proposer declares the object-growth shortcut");
+    while let WaitingFor::RespondToShortcut { player, .. } = state.waiting_for.clone() {
+        apply(
+            state,
+            player,
+            GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            },
+        )
+        .expect("each living opponent accepts");
+    }
+}
+
+/// Pass priority through the production path until the CR 500.5 boundary raises the collapse
+/// prompt. Bounded so a wedge fails loudly instead of hanging.
+fn drive_to_collapse_boundary(state: &mut GameState) {
+    for _ in 0..64 {
+        if matches!(
+            state.waiting_for,
+            WaitingFor::PayAmountChoice {
+                resource: PayableResource::LoopCollapse { .. },
+                ..
+            }
+        ) {
+            return;
+        }
+        let WaitingFor::Priority { player } = state.waiting_for.clone() else {
+            panic!("unexpected non-Priority prompt {:?}", state.waiting_for)
+        };
+        apply(state, player, GameAction::PassPriority)
+            .expect("pass priority toward the CR 500.5 boundary");
+    }
+    panic!("no collapse prompt within 64 passes");
+}
+
+/// Every seat's library size, in seat order.
+fn library_sizes(state: &GameState) -> Vec<(PlayerId, usize)> {
+    state
+        .players
+        .iter()
+        .map(|p| (p.id, p.library.len()))
+        .collect()
+}
+
+/// **Adding the mill flips the accepted route to the concrete replay, on a board whose
+/// batched payload is NOT empty.** Written as ONE test so the arms are inseparable: the
+/// Altar arm alone is satisfiable by a blanket route change, the Altar-free arm alone by
+/// never wiring the mill conjunct at all.
+///
+/// ALTAR-FREE (the discriminator): the untouched combo board grows only Saprolings, so its
+/// accept keeps the O(1) batched mint. ALTAR: the same board plus one real Altar of the Brood
+/// publishes a `LibraryDelta` axis for which no batched item exists, and the accept switches
+/// to the replay — while STILL registering a token axis on the batched arm, which is what
+/// makes this the non-empty-`batched` population rather than the pure-mill one.
+///
+/// REVERT PROBE: delete the `unbatchable_deferred` disjunct at the `game::engine` route seam
+/// ⇒ the Altar arm falls back to the batched mint and reds; the Altar-free arm stays green.
+#[test]
+fn the_mill_flips_a_non_empty_batched_period_onto_the_replay() {
+    let mut altar_free = offer_state(load_realistic_dump());
+    declare_and_accept_all(&mut altar_free, 2);
+    assert!(
+        !took_the_replay(&altar_free, "altar-free"),
+        "the Altar-free board's only growth is batchable, so its accept keeps the batched mint"
+    );
+    assert!(
+        registered(&altar_free)
+            .iter()
+            .any(|m| matches!(m, PersistentAxisMaterialization::Tokens(_))),
+        "reach-guard: the batched payload carries a token axis, so the Altar arm below \
+         differs from this one by the MILL and not by an empty payload"
+    );
+
+    let mut milling = offer_state(mill_base());
+    declare_and_accept_all(&mut milling, 2);
+    assert!(
+        took_the_replay(&milling, "altar"),
+        "CR 732.2c: the accepted proposal promises a library decline no batched item can \
+         deliver, so the same period — token growth included — must route to the replay"
+    );
+}
+
+/// **An accepted mill collapse MOVES cards and RETIRES its marks.** The first row in this
+/// module that goes past the offer, and the one the offer rows cannot substitute for: a
+/// Replay arm that failed to deliver the `LibraryDelta` would move zero cards and leave a
+/// permanent infinity badge, and every assertion above would still pass.
+///
+/// Direction only — a NONZERO decline per victim and an absent mark. The delivered iteration
+/// COUNT is DEFERRED(phase 2) and is deliberately not asserted.
+///
+/// REVERT PROBE: delete the `unbatchable_deferred` disjunct at the `game::engine` route seam
+/// ⇒ the accept routes to the batched mint, which carries no `LibraryDelta`, so no opponent
+/// library declines and P0 keeps its `LibraryDelta` marks ⇒ **FAILS**.
+#[test]
+fn an_accepted_mill_collapse_moves_cards_and_retires_its_marks() {
+    const N: u32 = 3;
+
+    let mut state = offer_state(mill_base());
+    let before = library_sizes(&state);
+    let victims: Vec<PlayerId> = state
+        .players
+        .iter()
+        .map(|p| p.id)
+        .filter(|&id| id != P0)
+        .collect();
+    assert!(
+        !victims.is_empty(),
+        "reach-guard: the dump seats opponents for the Altar to mill"
+    );
+
+    declare_and_accept_all(&mut state, N);
+    let marked_axes = state
+        .unbounded_resources
+        .get(&P0)
+        .cloned()
+        .unwrap_or_default();
+    for victim in &victims {
+        assert!(
+            marked_axes.contains(&ResourceAxis::LibraryDelta(*victim)),
+            "reach-guard: the accepted proposal carries {victim:?}'s library axis, so its \
+             retirement below is a decision rather than an absence that was never there"
+        );
+    }
+
+    drive_to_collapse_boundary(&mut state);
+    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: N })
+        .expect("P0 submits the finite loop-collapse count");
+
+    let after = library_sizes(&state);
+    for victim in &victims {
+        let lookup = |sizes: &[(PlayerId, usize)]| {
+            sizes
+                .iter()
+                .find(|(id, _)| id == victim)
+                .map(|(_, n)| *n)
+                .expect("every seat is in both readings")
+        };
+        assert!(
+            lookup(&after) < lookup(&before),
+            "CR 701.17a: the collapse must actually mill {victim:?} — library went {} -> {}",
+            lookup(&before),
+            lookup(&after)
+        );
+    }
+
+    let surviving = state
+        .unbounded_resources
+        .get(&P0)
+        .cloned()
+        .unwrap_or_default();
+    for victim in &victims {
+        assert!(
+            !surviving.contains(&ResourceAxis::LibraryDelta(*victim)),
+            "CR 732.2c: the collapse DELIVERED {victim:?}'s library decline, so it ends that \
+             axis's ∞ mark instead of leaving an infinite-mill badge standing"
+        );
+    }
+}

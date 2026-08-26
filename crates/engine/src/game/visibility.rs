@@ -328,9 +328,11 @@ pub(crate) enum IdentityProjection {
 /// one player outside turn control, so the gate is asked once per candidate rather than
 /// once per seat. One cost is named rather than discovered: `filter_state_for_viewer`
 /// runs on every state update and `castable_from_current_zone` performs a
-/// battlefield-static scan for every OWN-library object. If that measures hot the
-/// remedy is to hoist the scan's per-viewer result out of the loop exactly as the
-/// shipped top-of-library visible set already does — never to narrow the rule.
+/// battlefield-static scan for the TOP card of each own library — its own
+/// `library.front()` guard keeps the rest of the library off that path. If that residue
+/// measures hot the remedy is to hoist the scan's per-viewer result out of the loop
+/// exactly as the shipped top-of-library visible set already does — never to narrow the
+/// rule.
 fn exempt_from_hiding(
     state: &GameState,
     obj: &crate::game::game_object::GameObject,
@@ -540,7 +542,7 @@ pub(crate) fn identity_projection_for_viewer(
             // Heist (and any ChooseFromZoneChoice over a hidden zone) — see
             // `choose_from_zone_hidden_visible` above.
             || choose_from_zone_hidden_visible.contains(&obj_id)
-            // CR 701.20b: Revealed cards are visible to all players. For reveal-digs
+            // CR 701.20a: revealing shows the card to all players. For reveal-digs
             // ("reveal the top N"), dig cards are also in revealed_cards and must remain
             // public during DigChoice. For private digs ("look at"), revealed_cards won't
             // contain dig cards, so the exclusion still applies.
@@ -4550,6 +4552,85 @@ mod tests {
         );
         assert_eq!(filtered.planar_deck, im::vector![plane_id]);
         assert_eq!(filtered.scheme_deck, im::vector![scheme_id]);
+    }
+
+    /// CR 717.2 + CR 103.3a: an Attraction deck is a supplementary deck shuffled into a
+    /// random order, so an unrevealed member's identity is not public. The paired
+    /// revealed card is the discriminator: only the `revealed_cards` exclusion separates
+    /// the two, so a projection that dropped the Attraction collection reddens the first
+    /// assertion while a projection that hid the whole collection reddens the second.
+    #[test]
+    fn attraction_deck_cards_are_hidden_unless_revealed() {
+        let mut state = GameState::new_two_player(42);
+        let hidden = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Costume Shop".to_string(),
+            Zone::Command,
+        );
+        let revealed = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Balloon Stand".to_string(),
+            Zone::Command,
+        );
+        state.players[0].attraction_deck.push_back(hidden);
+        state.players[0].attraction_deck.push_back(revealed);
+        state.revealed_cards.insert(revealed);
+
+        let filtered = filter_state_for_viewer(&state, PlayerId(0));
+
+        assert_eq!(
+            filtered.objects.get(&hidden).map(|obj| obj.name.as_str()),
+            Some(HIDDEN_CARD_NAME),
+            "the owner's own unrevealed Attraction card is redacted for every viewer"
+        );
+        assert_eq!(
+            filtered.objects.get(&revealed).map(|obj| obj.name.as_str()),
+            Some("Balloon Stand"),
+            "CR 701.20a: a revealed Attraction card keeps its identity"
+        );
+    }
+
+    /// Contraptions are an Unstable mechanic the Comprehensive Rules expressly exclude
+    /// (CR 701.45a), so the engine models the deck on the Attraction deck's hidden-order
+    /// shape rather than under a rule. The row pins that modelling decision the same way:
+    /// unrevealed member redacted, revealed member intact.
+    #[test]
+    fn contraption_deck_cards_are_hidden_unless_revealed() {
+        let mut state = GameState::new_two_player(42);
+        let hidden = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Hard Hat Area".to_string(),
+            Zone::Command,
+        );
+        let revealed = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Bee-Bee Gun".to_string(),
+            Zone::Command,
+        );
+        state.players[0].contraption_deck.push_back(hidden);
+        state.players[0].contraption_deck.push_back(revealed);
+        state.revealed_cards.insert(revealed);
+
+        let filtered = filter_state_for_viewer(&state, PlayerId(0));
+
+        assert_eq!(
+            filtered.objects.get(&hidden).map(|obj| obj.name.as_str()),
+            Some(HIDDEN_CARD_NAME),
+            "the owner's own unrevealed Contraption card is redacted for every viewer"
+        );
+        assert_eq!(
+            filtered.objects.get(&revealed).map(|obj| obj.name.as_str()),
+            Some("Bee-Bee Gun"),
+            "a revealed Contraption card keeps its identity"
+        );
     }
 
     // CR 601.2 + CR 408: A spell being cast is on the stack and is public information —
