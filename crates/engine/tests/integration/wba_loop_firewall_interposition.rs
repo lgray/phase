@@ -1729,8 +1729,8 @@ fn step_to_decision(runner: &mut GameRunner, why: &str) -> WaitingFor {
 }
 
 /// Build the interposed collapse board every interposition row below shares, accept `n`, and
-/// run the collapse — returning the collapsed state, the grafted interposer's `ObjectId`, and
-/// the PRE-ACCEPT `library_sizes` reading.
+/// drive to the CR 500.5 boundary — returning the board STANDING ON the collapse prompt, the
+/// grafted interposer's `ObjectId`, and the PRE-ACCEPT `library_sizes` reading.
 ///
 /// The third value is not a convenience: it is read on the offer state, after the priming cast
 /// and before the accept, so it is unrecoverable from the post-collapse state the rows measure
@@ -1741,7 +1741,7 @@ fn step_to_decision(runner: &mut GameRunner, why: &str) -> WaitingFor {
 /// interposer and the replay commits `depth` whole periods before reaching it.
 ///
 /// The graft is a parameter because the rows separate on the interposer, not on the board.
-fn collapse_with_interposer(
+fn boundary_with_interposer(
     n: u32,
     depth: usize,
     graft: fn(&mut GameState, PlayerId, ObjectId) -> ObjectId,
@@ -1776,8 +1776,25 @@ fn collapse_with_interposer(
     );
 
     drive_to_collapse_boundary(&mut state);
-    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: n })
+    (state, interposer, before)
+}
+
+/// Answer the boundary's collapse prompt with the accepted count. Single-sourced so a row that
+/// reads the board on both sides of this submit is reading ONE action apart.
+fn submit_collapse(state: &mut GameState, n: u32) {
+    apply(state, P0, GameAction::SubmitPayAmount { amount: n })
         .expect("P0 submits the finite loop-collapse count");
+}
+
+/// [`boundary_with_interposer`] with its prompt answered — the collapsed state every row that
+/// measures the delivered prefix reads.
+fn collapse_with_interposer(
+    n: u32,
+    depth: usize,
+    graft: fn(&mut GameState, PlayerId, ObjectId) -> ObjectId,
+) -> (GameState, ObjectId, Vec<(PlayerId, usize)>) {
+    let (mut state, interposer, before) = boundary_with_interposer(n, depth, graft);
+    submit_collapse(&mut state, n);
     (state, interposer, before)
 }
 
@@ -1887,7 +1904,17 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
         };
 
     // ── depth 0: the empty prefix ──
-    let (empty, narcomoeba, before) = truncated_by_interposer(N, 0);
+    // Read the boundary BEFORE the submit: `empty` is this very board one `SubmitPayAmount`
+    // later, which is what lets the empty-surface leg below be attributed to the wedge instead
+    // of to the prompt kind.
+    let (mut empty, narcomoeba, before) = boundary_with_interposer(N, 0, graft_narcomoeba);
+    let boundary_beat = empty.waiting_for.clone();
+    let armed: Vec<(PlayerId, usize)> = empty
+        .players
+        .iter()
+        .map(|p| (p.id, legal_actions_for_viewer(&empty, p.id).0.len()))
+        .collect();
+    submit_collapse(&mut empty, N);
     let zero = declines(&before, &library_sizes(&empty));
     assert!(
         !zero.is_empty(),
@@ -1931,12 +1958,25 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
          that is not a priority window"
     );
     // Stronger than one action refusing: the engine's OWN legal-action surface is empty for every
-    // seat, so the wedge is a property of the board and not of the amount submitted above.
+    // seat, so the wedge is a property of the board and not of the amount submitted above. Its
+    // control is `armed`, read on the SAME beat one submit earlier — equal by value here, so both
+    // readings take one dispatch path through `legal_actions_full` and only the wedge separates
+    // them. A `Priority`-board control could not say that: it takes the other path.
+    assert_eq!(
+        empty.waiting_for, boundary_beat,
+        "the zero-delivery beat is the boundary beat left untouched, got {:?}",
+        empty.waiting_for
+    );
     let stuck: Vec<(PlayerId, usize)> = empty
         .players
         .iter()
         .map(|p| (p.id, legal_actions_for_viewer(&empty, p.id).0.len()))
         .collect();
+    assert!(
+        armed.iter().any(|(_, n)| *n > 0),
+        "control: the same beat one submit earlier DID admit a move, so the empty-surface leg \
+         below can red on this branch, got {armed:?}"
+    );
     assert!(
         stuck.iter().all(|(_, n)| *n == 0),
         "CR 732.2a: the zero-delivery beat leaves EVERY seat without a legal action, got {stuck:?}"
