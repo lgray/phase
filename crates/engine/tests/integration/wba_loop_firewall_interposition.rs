@@ -1961,7 +1961,7 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
     // seat, so the wedge is a property of the board and not of the amount submitted above. Its
     // control is `armed`, read on the SAME beat one submit earlier — equal by value here, so both
     // readings take one dispatch path through `legal_actions_full` and only the wedge separates
-    // them. A `Priority`-board control could not say that: it takes the other path.
+    // them.
     assert_eq!(
         empty.waiting_for, boundary_beat,
         "the zero-delivery beat is the boundary beat left untouched, got {:?}",
