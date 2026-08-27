@@ -6508,11 +6508,13 @@ fn materialize_object_growth_shortcut(
 ///
 /// The delivered prefix is a value in `[0, n]`, and the table already consented to every value in
 /// that range — see the L3 prefix-consent statement at `game::turns`' `PayableResource::LoopCollapse`
-/// prompt, which is the licence and is not restated here. An engine-chosen prefix k is therefore
-/// observationally identical to the controller naming k at that same prompt, which the prompt's
-/// `min: 0` explicitly permits. That identity is why the collapse stays `Committed` rather than
-/// becoming conditional: nothing was delivered that a legal answer at the prompt could not have
-/// produced.
+/// prompt, which is the licence and is not restated here. That block is cited for prefix consent
+/// ALONE: its adjacent claim that a narrow range could not wedge the boundary, and that 0 is never
+/// a hidden win-denial, are both falsified by the measurement below and are not endorsed here.
+/// An engine-chosen prefix k is therefore observationally identical to the controller naming k at
+/// that same prompt, which the prompt's `min: 0` explicitly permits. That identity is why the
+/// collapse stays `Committed` rather than becoming conditional: nothing was delivered that a
+/// legal answer at the prompt could not have produced.
 ///
 /// Two `waiting_for` shapes survive this function: an untouched `PayAmountChoice` when the drive
 /// aborts on iteration zero, and a `Priority` beat otherwise. The second is not observable — the
@@ -6522,6 +6524,13 @@ fn materialize_object_growth_shortcut(
 /// the only action that prompt admits, refuses at every amount and no seat can advance the board.
 /// That is a CR 732.2a defect, since the ending point of a taken shortcut must be a place where a
 /// player has priority. `the_delivered_prefix_tracks_the_interposers_depth` pins it at `depth = 0`.
+///
+/// The abort is not the trigger, only one way to reach it. The same wedged beat follows any zero
+/// delivery: an interposer-free board wedges when the controller simply answers `0`, the value the
+/// prompt's own `min: 0` advertises and the submit handler accepts, and the batched route reaches
+/// it without entering this function at all. Measured there, `ai_support::legal_actions_for_viewer`
+/// is empty for EVERY seat. Bounded to opt-in boards: no offer exists unless `loop_detection` was
+/// turned on at match creation, and it defaults `Off`.
 pub(crate) fn drive_persistent_axis_collapse(
     state: &mut GameState,
     seq: &[crate::types::game_state::LoopActionContext],

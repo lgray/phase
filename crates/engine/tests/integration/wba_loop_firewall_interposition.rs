@@ -1360,6 +1360,7 @@ fn a_milled_cards_own_window_and_permanent_type_reach_the_drive_through_neither_
 // that could interpose, so a decline shorter than the accepted count has exactly one cause.
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
+use engine::ai_support::legal_actions_for_viewer;
 use engine::analysis::decision_template::IterationCount;
 use engine::analysis::loop_check::ShortcutResponse;
 use engine::analysis::resource::ResourceAxis;
@@ -1929,6 +1930,17 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
         "CR 732.2a: no action advances the zero-delivery beat, so the board is stuck on a prompt \
          that is not a priority window"
     );
+    // Stronger than one action refusing: the engine's OWN legal-action surface is empty for every
+    // seat, so the wedge is a property of the board and not of the amount submitted above.
+    let stuck: Vec<(PlayerId, usize)> = empty
+        .players
+        .iter()
+        .map(|p| (p.id, legal_actions_for_viewer(&empty, p.id).0.len()))
+        .collect();
+    assert!(
+        stuck.iter().all(|(_, n)| *n == 0),
+        "CR 732.2a: the zero-delivery beat leaves EVERY seat without a legal action, got {stuck:?}"
+    );
     assert!(
         !empty
             .unbounded_resources
@@ -1959,6 +1971,18 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
         matches!(one.waiting_for, WaitingFor::Priority { .. }),
         "CR 732.2a: a NON-empty prefix does end at a priority window, got {:?}",
         one.waiting_for
+    );
+    // Live control for the depth-0 arm's empty-surface leg — same accessor, same seat population,
+    // non-empty once the collapse reaches a priority window.
+    let live: Vec<(PlayerId, usize)> = one
+        .players
+        .iter()
+        .map(|p| (p.id, legal_actions_for_viewer(&one, p.id).0.len()))
+        .collect();
+    assert!(
+        live.iter().any(|(_, n)| *n > 0),
+        "control: a priority beat leaves someone a move, so the empty-surface leg above can red, \
+         got {live:?}"
     );
 }
 
