@@ -4554,13 +4554,17 @@ mod tests {
         assert_eq!(filtered.scheme_deck, im::vector![scheme_id]);
     }
 
-    /// Modelling decision: CR 400.2 makes the command zone public except for cards some rule
-    /// allows to be face down, and CR 701.51b turns an Attraction face up only as it leaves
-    /// the deck. The engine reads deck members as hidden until revealed, mirroring the
-    /// library. The paired revealed card is the discriminator: only the `revealed_cards`
-    /// exclusion separates the two, so a projection that dropped the Attraction collection
-    /// reddens the first assertion while a projection that hid the whole collection reddens
-    /// the second.
+    /// CR 400.2 makes the command zone public "except for those cards that some rule or
+    /// effect specifically allow to be face down". No rule states outright that an
+    /// Attraction deck is face down; three ENTAIL it. CR 701.51b opens one by turning the
+    /// card face up, which presupposes it was not. CR 717.6a contrasts the junkyard as "a
+    /// single face-up pile separate from any player's Attraction deck". CR 729.5a turns a
+    /// supplementary-deck card face down — at subgame cleanup only, reaching Attraction
+    /// decks because CR 717.2 + CR 100.2d make one a supplementary deck. Deck members are
+    /// therefore hidden until revealed, mirroring the library. The paired revealed card is
+    /// the discriminator: only the `revealed_cards` exclusion separates the two, so a
+    /// projection that dropped the Attraction collection reddens the first assertion while
+    /// a projection that hid the whole collection reddens the second.
     #[test]
     fn attraction_deck_cards_are_hidden_unless_revealed() {
         let mut state = GameState::new_two_player(42);
@@ -7630,6 +7634,193 @@ mod tests {
             proj(&state, PlayerId(1), top),
             Some(IdentityProjection::Hidden),
             "an opponent holds no private access to P0 and gets no exemption"
+        );
+    }
+
+    /// The OBJECT-CARRIED permission route into the exemption. Every row above takes the
+    /// `player`-parameterised static route, where the object holds no `CastingPermission` and
+    /// the grantee predicate is vacuously true. P1 ownership is what lets the gate's
+    /// `obj.owner != player` exile disjunct admit P0; `face_down` is what makes the exile
+    /// collection walk the card at all.
+    fn face_down_exile_under_alt_cost_grant(granted_to: Option<PlayerId>) -> (GameState, ObjectId) {
+        use crate::types::ability::{AbilityCost, CastingPermission};
+        let mut state = GameState::new_two_player(7);
+        let card = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Exiled Card".into(),
+            Zone::Exile,
+        );
+        let obj = state.objects.get_mut(&card).expect("just created");
+        obj.face_down = true;
+        obj.casting_permissions = vec![CastingPermission::ExileWithAltAbilityCost {
+            cost: AbilityCost::Mana {
+                cost: crate::types::mana::ManaCost::zero(),
+            },
+            constraint: None,
+            granted_to,
+        }];
+        (state, card)
+    }
+
+    /// **CR 406.3b: the exemption fires only where the grant NAMES its grantee.**
+    ///
+    /// `casting::exile_alt_cost_permission_grants_to_player` reads an absent `granted_to` as
+    /// granting to EVERY player, so the gate admits a seat no effect named. An exemption
+    /// inheriting that reading un-redacts a face-down exiled card on the wire for that seat;
+    /// `casting::cast_permissions_name_their_grantee` is what refuses. The `Some` arm is the
+    /// paired positive on the same board, so the row cannot pass by an exemption that refuses
+    /// everything.
+    #[test]
+    fn the_cast_exemption_refuses_a_grant_that_names_no_grantee() {
+        let (unnamed, card) = face_down_exile_under_alt_cost_grant(None);
+        assert!(
+            crate::game::casting::castable_from_current_zone(
+                &unnamed,
+                unnamed.objects.get(&card).expect("live"),
+                PlayerId(0),
+                None,
+            ),
+            "reach guard: the gate ADMITS the unnamed seat, so the exemption is what refuses"
+        );
+        assert_eq!(
+            proj(&unnamed, PlayerId(0), card),
+            Some(IdentityProjection::Hidden),
+            "an absent `granted_to` names no subject, so the card stays hidden for that seat"
+        );
+
+        let (named, card) = face_down_exile_under_alt_cost_grant(Some(PlayerId(0)));
+        assert_eq!(
+            proj(&named, PlayerId(0), card),
+            None,
+            "PAIRED POSITIVE: the same grant naming the viewer exempts the same card"
+        );
+        assert_eq!(
+            proj(&named, PlayerId(1), card),
+            Some(IdentityProjection::Hidden),
+            "and it names ONE seat: the card's own owner is not the grantee and stays hidden"
+        );
+    }
+
+    /// **The exemption asks about an ORDINARY announcement — the `variant_override: None`
+    /// scope.**
+    ///
+    /// CR 702.35a: a madness card is exiled on discard and its owner "may cast it by paying
+    /// [cost] rather than paying its mana cost" — an announcement, never a standing one — and
+    /// the exemption passes `None`, so the card keeps its `Hidden` entry. The two gate calls
+    /// are the in-row reach guard: the same card on the same board is admitted under
+    /// `Some(Madness)` and refused under `None`, so the entry is the override scope speaking
+    /// and not a card the gate refuses outright.
+    #[test]
+    fn the_cast_exemption_asks_about_an_ordinary_announcement_not_a_madness_one() {
+        use crate::game::casting::castable_from_current_zone;
+        use crate::types::game_state::CastingVariant;
+        use crate::types::keywords::Keyword;
+
+        let mut state = GameState::new_two_player(7);
+        let card = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Madness Card".into(),
+            Zone::Exile,
+        );
+        {
+            let obj = state.objects.get_mut(&card).expect("just created");
+            obj.face_down = true;
+            obj.keywords = vec![Keyword::Madness(crate::types::mana::ManaCost::zero())];
+        }
+
+        let live = state.objects.get(&card).expect("live");
+        assert!(
+            castable_from_current_zone(&state, live, PlayerId(0), Some(CastingVariant::Madness)),
+            "reach guard: the madness announcement DOES admit this card from exile"
+        );
+        assert!(
+            !castable_from_current_zone(&state, live, PlayerId(0), None),
+            "and an ordinary announcement does not — the two verdicts differ on this board"
+        );
+        assert_eq!(
+            proj(&state, PlayerId(0), card),
+            Some(IdentityProjection::Hidden),
+            "so the card a madness cast would move stays hidden under the exemption's scope"
+        );
+    }
+
+    /// **CR 708.5: the exemption does not reach the two-sided face-down pair.**
+    ///
+    /// `has_during_resolution_alt_cost_permission` is the gate's one disjunct with no zone
+    /// test, so a BATTLEFIELD object carrying that grant is admitted — and the pair still
+    /// keeps its explicit entry, because the face-down leaf is what writes the redacted name
+    /// and dropping the entry would publish the hidden card's own name instead. Both arms are
+    /// the same permanent under the same grant; only the controller differs.
+    #[test]
+    fn the_cast_exemption_leaves_the_two_sided_face_down_pair_alone() {
+        use crate::types::ability::{
+            CastingPermission, ResolutionCastCleanup, ResolutionMvRejectAction,
+        };
+
+        let build = |controller: PlayerId| -> (GameState, ObjectId) {
+            let mut state = GameState::new_two_player(7);
+            let id = create_object(
+                &mut state,
+                CardId(1),
+                controller,
+                "Face Down".into(),
+                Zone::Battlefield,
+            );
+            let obj = state.objects.get_mut(&id).expect("just created");
+            obj.face_down = true;
+            obj.back_face = Some(snapshot_object_face(&GameObject::new(
+                ObjectId(999),
+                CardId(42),
+                controller,
+                "Grizzly Bears".into(),
+                Zone::Battlefield,
+            )));
+            obj.casting_permissions = vec![CastingPermission::ExileWithAltCost {
+                cost: crate::types::mana::ManaCost::zero(),
+                cast_transformed: false,
+                constraint: None,
+                granted_to: Some(PlayerId(0)),
+                resolution_cleanup: Some(ResolutionCastCleanup {
+                    source_id: ObjectId(998),
+                    exiled_misses: Vec::new(),
+                    reject_action: ResolutionMvRejectAction::BottomWithMisses,
+                    success_action: Default::default(),
+                }),
+                duration: None,
+                graveyard_replacement: None,
+                enters_with_counter: None,
+                enters_with_modifications: Vec::new(),
+                mana_spend_permission: None,
+            }];
+            (state, id)
+        };
+
+        let (observed, id) = build(PlayerId(1));
+        assert!(
+            crate::game::casting::castable_from_current_zone(
+                &observed,
+                observed.objects.get(&id).expect("live"),
+                PlayerId(0),
+                None,
+            ),
+            "reach guard: the zone-test-free disjunct ADMITS P0 for a battlefield object"
+        );
+        assert_eq!(
+            proj(&observed, PlayerId(0), id),
+            Some(IdentityProjection::FaceDownRedacted),
+            "the admitted non-controller still gets the redaction entry, never absence"
+        );
+
+        let (controlled, id) = build(PlayerId(0));
+        assert_eq!(
+            proj(&controlled, PlayerId(0), id),
+            Some(IdentityProjection::FaceDownRevealed),
+            "PAIRED POSITIVE: the same permanent under the same grant, controlled by the \
+             viewer, takes the other leaf of the same pair"
         );
     }
 

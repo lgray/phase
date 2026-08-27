@@ -3163,6 +3163,94 @@ fn object_growth_51st_sprout_swarm_covers_and_offers() {
     );
 }
 
+/// **CR 708.2a + CR 732.2a: a face-down permanent moves neither the offer verdict nor either
+/// projection leaf's job.**
+///
+/// The offering board with ONE grafted face-down permanent still reaches `LoopShortcut` under
+/// either controller, which is what licenses `proposer_hidden_view`'s `FaceDownRevealed` no-op
+/// arm as a rules decision rather than a verdict-moving one — the driven clone may carry no
+/// name (CR 708.2a) and the verdict does not depend on which name it carries. The ungrafted
+/// arm is the control: the graft is not what produces the offer. The wire projection is the
+/// reach guard — in the SAME run the controller's copy carries the back-face name and the
+/// other seat's carries the hidden-card name, so the two-sided pair keeps BOTH its entries and
+/// the CR 601.2a cast exemption reaches neither side.
+#[test]
+fn object_growth_offer_survives_a_face_down_permanent_under_either_controller() {
+    use engine::game::game_object::BackFaceData;
+    use engine::game::visibility::filter_state_for_viewer;
+    use engine::game::zones::create_object;
+    use engine::types::identifiers::CardId;
+    use engine::types::zones::Zone;
+
+    // A typeless inert permanent: the face-down leaves key on `face_down && back_face`, and
+    // giving it no card types keeps it out of both the fodder class and every SBA.
+    let run = |grafted_controller: Option<PlayerId>| -> (GameRunner, Option<ObjectId>) {
+        let (mut runner, sprout, fodder) = sprout_swarm_scenario(4);
+        let grafted = grafted_controller.map(|controller| {
+            let id = create_object(
+                runner.state_mut(),
+                CardId(900),
+                controller,
+                "Grafted Permanent".into(),
+                Zone::Battlefield,
+            );
+            let obj = runner
+                .state_mut()
+                .objects
+                .get_mut(&id)
+                .expect("just created");
+            obj.face_down = true;
+            obj.back_face = Some(BackFaceData {
+                name: "Grizzly Bears".to_string(),
+                power: Some(2),
+                toughness: Some(2),
+                ..Default::default()
+            });
+            id
+        });
+        let outcome = runner
+            .cast(sprout)
+            .accept_optional()
+            .convoke_with(&[fodder[0]])
+            .commit()
+            .resolve();
+        assert!(
+            matches!(
+                outcome.final_waiting_for(),
+                WaitingFor::LoopShortcut { proposer, .. } if *proposer == P0
+            ),
+            "expected a LoopShortcut offer to P0 (grafted controller {grafted_controller:?}), \
+             got {:?}",
+            outcome.final_waiting_for()
+        );
+        (runner, grafted)
+    };
+
+    // CONTROL: the same board with no face-down permanent offers.
+    run(None);
+
+    for controller in [P0, P1] {
+        let (runner, grafted) = run(Some(controller));
+        let id = grafted.expect("the grafted arm builds a permanent");
+        let observer = if controller == P0 { P1 } else { P0 };
+
+        let to_controller = filter_state_for_viewer(runner.state(), controller);
+        assert_eq!(
+            to_controller.objects.get(&id).map(|o| o.name.as_str()),
+            Some("Grizzly Bears"),
+            "CR 708.5: the controller's wire copy carries the back-face name"
+        );
+
+        let to_observer = filter_state_for_viewer(runner.state(), observer);
+        assert_eq!(
+            to_observer.objects.get(&id).map(|o| o.name.as_str()),
+            Some("Hidden Card"),
+            "and the other seat's carries the hidden-card name in the SAME run, so neither \
+             side's entry was dropped by an exemption"
+        );
+    }
+}
+
 /// Kodama of the East Tree's growing-class-reading trigger (Scryfall / card-data).
 /// Its body puts a permanent "with equal or lesser mana value" from hand onto the
 /// battlefield — a `ChangeZone` whose target filter reads a mutable board aggregate,
@@ -3284,13 +3372,12 @@ fn assert_growing_class_observer_is_ignored(
 /// Tree — a deck card in the library — was scanned by the object-growth cover's
 /// `fire_time_conditions_read_growing_class` firewall as if it were a live observer.
 ///
-/// NOT DISCRIMINATING FOR THE ZONE GATE ANY MORE, and deliberately kept for the shape it
-/// reproduces. CR 400.2 makes a library a hidden zone, so the detection drive now reads P0's
-/// library through the proposer's own hidden view and this Kodama arrives at the firewall
-/// already blanked — reverting block (1)'s zone gate no longer flips this row, because there
-/// is no longer a definition for the re-scan to find.
-/// [`object_growth_public_zone_observer_does_not_suppress_offer`] is the sibling that carries
-/// the original regression's meaning forward.
+/// This row pins the SHAPE, not the zone gate. CR 400.2 makes a library a hidden zone, so
+/// the detection drive reads P0's library through the proposer's own hidden view and this
+/// Kodama reaches the firewall already blanked — block (1)'s zone gate has no definition to
+/// re-scan here, so its revert does not flip this row.
+/// [`object_growth_public_zone_observer_does_not_suppress_offer`] is the sibling that
+/// discriminates the gate.
 #[test]
 fn object_growth_library_observer_does_not_suppress_offer() {
     use engine::types::zones::Zone;
