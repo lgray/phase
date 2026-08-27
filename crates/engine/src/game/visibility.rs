@@ -7758,7 +7758,8 @@ mod tests {
     #[test]
     fn the_cast_exemption_leaves_the_two_sided_face_down_pair_alone() {
         use crate::types::ability::{
-            CastingPermission, ResolutionCastCleanup, ResolutionMvRejectAction,
+            CastingPermission, ExileGrantCostProvenance, ResolutionCastCleanup,
+            ResolutionMvRejectAction,
         };
 
         let build = |controller: PlayerId| -> (GameState, ObjectId) {
@@ -7781,6 +7782,7 @@ mod tests {
             )));
             obj.casting_permissions = vec![CastingPermission::ExileWithAltCost {
                 cost: crate::types::mana::ManaCost::zero(),
+                cost_provenance: ExileGrantCostProvenance::Alternative,
                 cast_transformed: false,
                 constraint: None,
                 granted_to: Some(PlayerId(0)),
