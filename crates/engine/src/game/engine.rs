@@ -6515,8 +6515,13 @@ fn materialize_object_growth_shortcut(
 /// produced.
 ///
 /// Two `waiting_for` shapes survive this function: an untouched `PayAmountChoice` when the drive
-/// aborts on iteration zero, and a `Priority` beat otherwise. Neither is observable, because the
-/// caller re-drains the boundary before returning.
+/// aborts on iteration zero, and a `Priority` beat otherwise. The second is not observable — the
+/// caller's re-drain replaces it. **The first is.** Measured on a zero-delivery collapse: the
+/// boundary's own `LoopCollapse` prompt is still the beat after the caller returns, byte-identical
+/// to the one just answered, while the stash it reads has already been taken — so `SubmitPayAmount`,
+/// the only action that prompt admits, refuses at every amount and no seat can advance the board.
+/// That is a CR 732.2a defect, since the ending point of a taken shortcut must be a place where a
+/// player has priority. `the_delivered_prefix_tracks_the_interposers_depth` pins it at `depth = 0`.
 pub(crate) fn drive_persistent_axis_collapse(
     state: &mut GameState,
     seq: &[crate::types::game_state::LoopActionContext],

@@ -713,6 +713,17 @@ const NARCOMOEBA: (&str, &str, &[&str]) = (
     &["Illusion"],
 );
 
+/// Gaea's Blessing, VERBATIM Oracle text from the same export. Its library→graveyard trigger is
+/// MANDATORY and choice-free — `optional: false`, a `ChangeZoneAll` execute with no target
+/// selection and no mode — which is what makes it the non-prompting half of the interposer pair.
+const GAEAS_BLESSING: (&str, &str, &[&str]) = (
+    "Gaea's Blessing",
+    "Target player shuffles up to three target cards from their graveyard into their library.\n\
+     Draw a card.\nWhen this card is put into your graveyard from your library, shuffle your \
+     graveyard into your library.",
+    &[],
+);
+
 /// The shared mill base: this module's own combo board plus a real Altar of the Brood, so the
 /// loop's period mills every opponent. ONE object away from `load_realistic_dump()`, which is
 /// why a hostile row built on it is one object away from an offering board and its silence has
@@ -870,16 +881,27 @@ fn place_before(state: &mut GameState, victim: PlayerId, anchor: ObjectId, card:
     player.library.insert(at, card);
 }
 
-/// Put a real parsed Narcomoeba into `victim`'s library immediately before `anchor`.
-fn graft_narcomoeba(state: &mut GameState, victim: PlayerId, anchor: ObjectId) -> ObjectId {
-    let (name, oracle, subtypes) = NARCOMOEBA;
+/// Put a real parsed library→graveyard card into `victim`'s library immediately before
+/// `anchor`, carrying its own parsed trigger and its own core type.
+///
+/// Parameterized on the card because the interposition rows separate on WHICH card is milled
+/// mid-collapse — one that asks its controller a question, one that does not — and every other
+/// variable has to stay fixed for that separation to attribute. `core` feeds the parse as well
+/// as the object: `CoreType`'s `Display` is exactly the word the parser takes.
+fn graft_milled_card(
+    state: &mut GameState,
+    victim: PlayerId,
+    anchor: ObjectId,
+    card: (&str, &str, &[&str]),
+    core: CoreType,
+) -> ObjectId {
+    let (name, oracle, subtypes) = card;
     let subs: Vec<String> = subtypes.iter().map(|s| (*s).to_string()).collect();
-    let parsed =
-        engine::parser::parse_oracle_text(oracle, name, &[], &["Creature".to_string()], &subs);
+    let parsed = engine::parser::parse_oracle_text(oracle, name, &[], &[core.to_string()], &subs);
     assert_eq!(
         parsed.triggers.len(),
         1,
-        "fixture pin: Narcomoeba parses to exactly ONE trigger — the library→graveyard window \
+        "fixture pin: {name} parses to exactly ONE trigger — the library→graveyard window \
          this row is about; a parser change that splits or drops it un-points the row"
     );
     let card_id = CardId(state.next_object_id);
@@ -888,12 +910,23 @@ fn graft_narcomoeba(state: &mut GameState, victim: PlayerId, anchor: ObjectId) -
         let obj = state
             .objects
             .get_mut(&host)
-            .expect("the just-created Narcomoeba is in `objects`");
-        obj.card_types.core_types = vec![CoreType::Creature];
+            .expect("the just-created interposer is in `objects`");
+        obj.card_types.core_types = vec![core];
         obj.push_printed_trigger(parsed.triggers[0].clone());
     }
     place_before(state, victim, anchor, host);
     host
+}
+
+/// Put a real parsed Narcomoeba into `victim`'s library immediately before `anchor`.
+fn graft_narcomoeba(state: &mut GameState, victim: PlayerId, anchor: ObjectId) -> ObjectId {
+    graft_milled_card(state, victim, anchor, NARCOMOEBA, CoreType::Creature)
+}
+
+/// Put a real parsed Gaea's Blessing into `victim`'s library immediately before `anchor` — the
+/// interposer whose milled trigger is mandatory and choice-free.
+fn graft_gaeas_blessing(state: &mut GameState, victim: PlayerId, anchor: ObjectId) -> ObjectId {
+    graft_milled_card(state, victim, anchor, GAEAS_BLESSING, CoreType::Sorcery)
 }
 
 /// One row: what it adds to its base, and whether the base's offer survives it.
@@ -1331,6 +1364,7 @@ use engine::analysis::decision_template::IterationCount;
 use engine::analysis::loop_check::ShortcutResponse;
 use engine::analysis::resource::ResourceAxis;
 use engine::game::engine::apply;
+use engine::game::scenario::GameRunner;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{PayableResource, PersistentAxisMaterialization};
 
@@ -1613,31 +1647,114 @@ fn an_interposer_free_mill_collapse_declines_in_proportion_to_the_accepted_count
     }
 }
 
-/// **An interposer the replay reaches truncates the collapse to a WHOLE-PERIOD PREFIX, rolls
-/// the aborted iteration back entire, and leaves no stale ∞ mark.**
-///
-/// CR 732.2a: a shortcut proposal may not "include conditional actions, where the outcome of a
-/// game event determines the next action a player takes", and its ending point "must be a place
-/// where a player has priority". A real Narcomoeba grafted into a victim's library is such a
-/// point: its library→graveyard trigger asks its controller a question the accepted proposal
-/// never contained, so the sequence was legal only up to it.
-///
-/// The graft sits at POST-cast depth 1, so the replay reaches it only after one complete
-/// period — which is what makes the delivered prefix strictly interior to `[0, N]` rather than
-/// the degenerate 0 that a depth-0 interposer would produce.
-#[test]
-fn an_interposer_truncates_the_collapse_to_a_whole_period_prefix() {
-    const N: u32 = 3;
+/// The beat budget every hand-stepped drive below runs under. Exhausting it is reported as
+/// exhaustion — naming the bound and the last beat — so "the decision never arrived" can never be
+/// read off a drive that simply ran out of steps.
+const BEAT_BUDGET: usize = 64;
 
+/// Cast ONE real Sprout Swarm recast — buyback accepted, one untapped Saproling convoked for the
+/// `{G}`. Both objects are found BY SCAN because the collapse taps and mints fodder, so a pinned
+/// `ObjectId` names a different object every period.
+fn cast_one_sprout(runner: &mut GameRunner, why: &str) {
+    let (sprout, fodder) = {
+        let state = runner.state();
+        let sprout = state
+            .players
+            .iter()
+            .find(|p| p.id == P0)
+            .expect("the proposer is seated")
+            .hand
+            .iter()
+            .copied()
+            .find(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .is_some_and(|o| o.name == "Sprout Swarm")
+            })
+            .unwrap_or_else(|| {
+                panic!("{why}: reach-guard — a Sprout Swarm in P0's hand to recast")
+            });
+        let fodder: Vec<ObjectId> = state
+            .battlefield
+            .iter()
+            .copied()
+            .filter(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .is_some_and(|o| o.controller == P0 && o.name == "Saproling" && !o.tapped)
+            })
+            .take(1)
+            .collect();
+        assert!(
+            !fodder.is_empty(),
+            "{why}: reach-guard — an untapped P0 Saproling to convoke for the {{G}}"
+        );
+        (sprout, fodder)
+    };
+    let _commit = runner
+        .cast(sprout)
+        .accept_optional()
+        .convoke_with(&fodder)
+        .commit();
+}
+
+/// Hand-step priority until the drive reaches a beat that is not a priority pass, or until the
+/// period settles at an empty-stack `Priority`. Returns that beat.
+///
+/// NEVER `.resolve()`: `game::scenario::drive_resolution`'s CR 608.2d arm answers
+/// `OptionalEffectChoice` on its own, so an assertion layered on it cannot fail in the direction
+/// it guards. Because this stepper stops at the FIRST such beat, a prompt raised anywhere inside
+/// the period is the value it returns — which is what lets a caller assert a period raised none.
+fn step_to_decision(runner: &mut GameRunner, why: &str) -> WaitingFor {
+    for _ in 0..BEAT_BUDGET {
+        let beat = runner.state().waiting_for.clone();
+        match beat {
+            WaitingFor::Priority { .. } if runner.state().stack.is_empty() => return beat,
+            WaitingFor::Priority { .. } => {
+                if let Err(e) = runner.act(GameAction::PassPriority) {
+                    panic!("{why}: passing toward the next decision was refused — {e:?}");
+                }
+            }
+            other => return other,
+        }
+    }
+    panic!(
+        "{why}: {BEAT_BUDGET} beats exhausted before any decision — the BOUND ran out, which is \
+         not the same as the decision never arriving; last beat {:?}",
+        runner.state().waiting_for
+    )
+}
+
+/// Build the interposed collapse board every interposition row below shares, accept `n`, and
+/// run the collapse — returning the collapsed state, the grafted interposer's `ObjectId`, and
+/// the PRE-ACCEPT `library_sizes` reading.
+///
+/// The third value is not a convenience: it is read on the offer state, after the priming cast
+/// and before the accept, so it is unrecoverable from the post-collapse state the rows measure
+/// against it.
+///
+/// `depth` IS the committed prefix. `post_cast_library_anchor` returns the id AT post-cast index
+/// `depth` and `place_before` inserts the graft AT that index, so `depth` cards sit above the
+/// interposer and the replay commits `depth` whole periods before reaching it.
+///
+/// The graft is a parameter because the rows separate on the interposer, not on the board.
+fn collapse_with_interposer(
+    n: u32,
+    depth: usize,
+    graft: fn(&mut GameState, PlayerId, ObjectId) -> ObjectId,
+) -> (GameState, ObjectId, Vec<(PlayerId, usize)>) {
     let mut base = pinned_mill_base();
-    let anchor = post_cast_library_anchor(&base, P1, 1);
-    let narcomoeba = graft_narcomoeba(&mut base, P1, anchor);
+    let anchor = post_cast_library_anchor(&base, P1, depth);
+    let interposer = graft(&mut base, P1, anchor);
 
     let mut state = offer_state(base);
     let before = library_sizes(&state);
-    declare_and_accept_all(&mut state, N);
+    declare_and_accept_all(&mut state, n);
 
-    // Reach-guards, both directions, BEFORE the collapse.
+    // Reach-guards, both directions, BEFORE the collapse. Every one of them fires before a
+    // single iteration runs, so they hold at every `depth` including 0.
     assert!(
         took_the_replay(&state, "interposed"),
         "reach-guard: the accepted period took the REPLAY, so a short decline below is a \
@@ -1658,8 +1775,33 @@ fn an_interposer_truncates_the_collapse_to_a_whole_period_prefix() {
     );
 
     drive_to_collapse_boundary(&mut state);
-    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: N })
+    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: n })
         .expect("P0 submits the finite loop-collapse count");
+    (state, interposer, before)
+}
+
+/// [`collapse_with_interposer`] with the PROMPTING interposer — the one that truncates.
+fn truncated_by_interposer(n: u32, depth: usize) -> (GameState, ObjectId, Vec<(PlayerId, usize)>) {
+    collapse_with_interposer(n, depth, graft_narcomoeba)
+}
+
+/// **An interposer the replay reaches truncates the collapse to a WHOLE-PERIOD PREFIX, rolls
+/// the aborted iteration back entire, and leaves no stale ∞ mark.**
+///
+/// CR 732.2a: a shortcut proposal may not "include conditional actions, where the outcome of a
+/// game event determines the next action a player takes", and its ending point "must be a place
+/// where a player has priority". A real Narcomoeba grafted into a victim's library is such a
+/// point: its library→graveyard trigger asks its controller a question the accepted proposal
+/// never contained, so the sequence was legal only up to it.
+///
+/// The graft sits at POST-cast depth 1, so the replay reaches it only after one complete
+/// period — which is what makes the delivered prefix strictly interior to `[0, N]` rather than
+/// the degenerate 0 that a depth-0 interposer would produce.
+#[test]
+fn an_interposer_truncates_the_collapse_to_a_whole_period_prefix() {
+    const N: u32 = 3;
+
+    let (state, narcomoeba, before) = truncated_by_interposer(N, 1);
 
     // The delivered prefix is strictly interior to [0, N] and identical on every victim,
     // because the drive commits WHOLE periods and the mill is one period-wide event.
@@ -1712,5 +1854,366 @@ fn an_interposer_truncates_the_collapse_to_a_whole_period_prefix() {
             .is_some_and(|axes| axes.contains(&ResourceAxis::LibraryDelta(P1))),
         "the truncated collapse is a DRIVEN materialization, so it retires {P1:?}'s library \
          axis rather than leaving an infinite-mill badge standing"
+    );
+}
+
+/// **The delivered prefix tracks the interposer's DEPTH.** Written as one row with two arms so
+/// neither is green alone: a drive that never ran makes both declines zero and reds the
+/// `depth = 1` arm; a drive that ignores interposers makes them equal and reds the `depth = 0`
+/// arm. Both prefixes are legal answers under the collapse prompt's `min: 0` floor.
+///
+/// **The `depth = 0` arm pins a CR 732.2a DEFECT, deliberately.** CR 732.2a requires a taken
+/// shortcut's ending point to "be a place where a player has priority". At zero delivery the
+/// board is left on the boundary's own `LoopCollapse` prompt — the untouched one, byte-identical
+/// to the beat that was just answered — and the stash that prompt reads was already taken, so
+/// `SubmitPayAmount` is the only action the prompt admits and it refuses at every amount. The row
+/// asserts what the engine does today rather than what the rule requires, so a repair has to come
+/// through here and say so.
+#[test]
+fn the_delivered_prefix_tracks_the_interposers_depth() {
+    const N: u32 = 3;
+
+    // Signed, because a `usize` decline PANICS where an assertion should RED, and the sign is
+    // not guaranteed on a seat whose interposer rewrites its own library.
+    let declines =
+        |before: &[(PlayerId, usize)], after: &[(PlayerId, usize)]| -> Vec<(PlayerId, i64)> {
+            before
+                .iter()
+                .zip(after.iter())
+                .filter(|((id, _), _)| *id != P0)
+                .map(|((id, b), (_, a))| (*id, *b as i64 - *a as i64))
+                .collect()
+        };
+
+    // ── depth 0: the empty prefix ──
+    let (empty, narcomoeba, before) = truncated_by_interposer(N, 0);
+    let zero = declines(&before, &library_sizes(&empty));
+    assert!(
+        !zero.is_empty(),
+        "reach-guard: the dump seats opponents for the Altar to mill"
+    );
+    for (victim, decline) in &zero {
+        assert_eq!(
+            *decline, 0,
+            "CR 732.2a: an interposer on TOP aborts before the first iteration commits, so \
+             {victim:?} declines nothing"
+        );
+    }
+    assert!(
+        library_ids(&empty, P1).contains(&narcomoeba),
+        "the aborted iteration is rolled back whole, so the interposer is still in P1's own \
+         library, by ObjectId"
+    );
+    // CR 732.2a is VIOLATED here and the assertion pins the violation, not the rule.
+    assert!(
+        matches!(
+            empty.waiting_for,
+            WaitingFor::PayAmountChoice {
+                player,
+                resource: PayableResource::LoopCollapse { .. },
+                accumulated: 0,
+                ..
+            } if player == P0
+        ),
+        "measured: a zero-delivery collapse leaves the untouched LoopCollapse prompt standing, \
+         which is NOT a place where a player has priority, got {:?}",
+        empty.waiting_for
+    );
+    // And it does not merely LOOK wrong: it does not advance. The stash this prompt reads was
+    // taken by the submit that produced it, so the one action the beat admits leaves the board
+    // exactly where it stands — asserted on the state, not on the refusal's shape.
+    let mut retry = empty.clone();
+    let _ = apply(&mut retry, P0, GameAction::SubmitPayAmount { amount: 0 });
+    assert_eq!(
+        retry.waiting_for, empty.waiting_for,
+        "CR 732.2a: no action advances the zero-delivery beat, so the board is stuck on a prompt \
+         that is not a priority window"
+    );
+    assert!(
+        !empty
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|axes| axes.contains(&ResourceAxis::LibraryDelta(P1))),
+        "zero delivery still RETIRES the axis: the materialization is driven either way, so no \
+         infinite-mill badge is left standing behind an empty prefix"
+    );
+
+    // ── depth 1: a strictly larger prefix, still strictly under N ──
+    let (one, _, before_one) = truncated_by_interposer(N, 1);
+    let prefix = declines(&before_one, &library_sizes(&one));
+    let first = prefix[0].1;
+    for (victim, decline) in &prefix {
+        assert!(
+            *decline > zero[0].1 && *decline < i64::from(N),
+            "CR 732.2a: the sequence was legal up to the interposer, so {victim:?}'s decline is \
+             strictly between the depth-0 arm's {} and {N}, got {decline}",
+            zero[0].1
+        );
+        assert_eq!(
+            *decline, first,
+            "the drive commits WHOLE periods, so every victim declines by the same prefix: \
+             {prefix:?}"
+        );
+    }
+    assert!(
+        matches!(one.waiting_for, WaitingFor::Priority { .. }),
+        "CR 732.2a: a NON-empty prefix does end at a priority window, got {:?}",
+        one.waiting_for
+    );
+}
+
+/// **A MANDATORY, CHOICE-FREE interposer does not truncate: the collapse still delivers its full
+/// `N`.** This is the class statement's pin — what aborts the replay is an unscripted PROMPT, not
+/// a trigger, and not the fact that a non-proposer's ability spoke. Gaea's Blessing's milled
+/// trigger fires, shuffles its controller's graveyard back into its library mid-drive, and asks
+/// nobody anything.
+///
+/// The one-variable pairing is [`an_interposer_truncates_the_collapse_to_a_whole_period_prefix`]:
+/// the same helper, the same `depth`, the same `N`, prompting interposer against non-prompting.
+/// Neither leg is green alone — a drive that aborts on any interposer reds the `N`-decline legs,
+/// and a fixture whose interposer never fired reds the short-decline leg.
+///
+/// Every decline is written as an ADDITION: the interposer's own seat ends net-unchanged, so a
+/// `usize` subtraction there panics where an assertion should red. No terminal-beat leg: both
+/// twins leave `Priority` after `SubmitPayAmount`, so a beat here discriminates nothing and
+/// [`an_interposer_truncates_the_collapse_to_a_whole_period_prefix`] owns the CR 732.2a ending
+/// point. The graft's final zone is deliberately not asserted — its own trigger shuffles it into
+/// a randomized library.
+#[test]
+fn a_mandatory_choice_free_interposer_delivers_the_whole_count() {
+    const N: u32 = 3;
+
+    let (state, graft, before) = collapse_with_interposer(N, 1, graft_gaeas_blessing);
+    let after = library_sizes(&state);
+    let lookup = |sizes: &[(PlayerId, usize)], who: PlayerId| {
+        sizes
+            .iter()
+            .find(|(id, _)| *id == who)
+            .map(|(_, n)| *n)
+            .expect("every seat is in both readings")
+    };
+
+    let host = state
+        .objects
+        .get(&graft)
+        .map(|o| o.owner)
+        .expect("the grafted interposer is keyed");
+    let untouched: Vec<PlayerId> = state
+        .players
+        .iter()
+        .map(|p| p.id)
+        .filter(|id| *id != P0 && *id != host)
+        .collect();
+    assert!(
+        !untouched.is_empty(),
+        "reach-guard: the dump seats victims the interposer's trigger does not touch"
+    );
+
+    for victim in &untouched {
+        assert_eq!(
+            lookup(&after, *victim) + N as usize,
+            lookup(&before, *victim),
+            "CR 732.2c: a trigger that asks nothing does not stop the replay, so {victim:?} \
+             takes the whole accepted count"
+        );
+    }
+    // The graft's own seat is the reach-guard: its trigger really fired and really rewrote its
+    // library, which is what keeps the full-count legs above from being an inert fixture.
+    assert!(
+        lookup(&after, host) + N as usize > lookup(&before, host),
+        "reach-guard: {host:?}'s milled trigger shuffled its graveyard back, so its library is \
+         SHORT of a full {N}-card decline — without that the graft never spoke"
+    );
+}
+
+/// **The interposition reaches the milled player, and the offer re-arms behind it.** Beats 3 and
+/// 4 of the truncation pair: after the collapse stops at the interposer, one real driving period
+/// opens that interposer's window, the window is the VICTIM's, answering it is honoured, and the
+/// detector re-offers the remainder on the post-trigger board.
+///
+/// CR 603.3a + CR 108.4a: the loop's controller is P0 while the milled card's controller is its
+/// owner P1, so the row pins the prompt's `player` and `source_id` and a window opened to the
+/// wrong seat reds it.
+///
+/// **A recast, not a priority pass** — on this board the mill is Altar of the Brood's ENTRY
+/// trigger, so nothing is milled unless a permanent enters and a loop of bare passes opens no
+/// window at all. Both objects are found by scan: the collapse taps and mints fodder, so a pinned
+/// `ObjectId` names a different object every period.
+///
+/// **The negative arm is an arm of this row, not a second row**, so neither is green alone: the
+/// positive arm alone is satisfiable by a harness that prompts on everything, the negative arm
+/// alone by one that prompts on nothing. It asserts the VARIANT, never "no optional prompt" — the
+/// period's own optional prompt is P0's buyback `OptionalCostChoice`, which the driver answers,
+/// so a variant-blind assertion would be false on a correct engine. It is deliberately NOT scoped
+/// by `source_id`: that board holds no interposer, and such a scope would make the arm vacuous.
+#[test]
+fn the_interposers_window_reaches_the_milled_player_and_the_offer_re_arms() {
+    const N: u32 = 3;
+    /// Measured: the offer returns after ONE further period. The bound is headroom, and
+    /// exhausting it is reported as exhaustion rather than as "no re-offer".
+    const FURTHER_PERIODS: usize = 4;
+
+    let lookup = |sizes: &[(PlayerId, usize)], who: PlayerId| {
+        sizes
+            .iter()
+            .find(|(id, _)| *id == who)
+            .map(|(_, n)| *n as i64)
+            .expect("every seat is in both readings")
+    };
+
+    // ── Beat 3: the window, its seat, and its answer ──
+    let (state, narcomoeba, _) = truncated_by_interposer(N, 1);
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "the truncation beat carries NO offer — that is the absent half of the re-arm pair, \
+         got {:?}",
+        state.waiting_for
+    );
+    let victims: Vec<PlayerId> = state
+        .players
+        .iter()
+        .map(|p| p.id)
+        .filter(|id| *id != P0)
+        .collect();
+    let before = library_sizes(&state);
+
+    let mut runner = GameRunner::from_state(state);
+    cast_one_sprout(&mut runner, "the interposer's window");
+    let window = step_to_decision(&mut runner, "the interposer's window");
+
+    let WaitingFor::OptionalEffectChoice {
+        player, source_id, ..
+    } = window
+    else {
+        panic!("CR 603.3a: one real period must open the interposer's window, got {window:?}")
+    };
+    assert_eq!(
+        (player, source_id),
+        (P1, narcomoeba),
+        "CR 108.4a: the window belongs to the MILLED player and to the grafted interposer, \
+         not to the loop's proposer"
+    );
+    let opened = library_sizes(runner.state());
+    assert!(
+        lookup(&opened, P1) < lookup(&before, P1),
+        "reach-guard: the period actually milled {P1:?} ({} -> {}), so a window that opened is \
+         a decision and not an artefact of a board where nothing was milled",
+        lookup(&before, P1),
+        lookup(&opened, P1)
+    );
+    assert!(
+        runner
+            .state()
+            .players
+            .iter()
+            .any(|p| p.id == P1 && p.graveyard.contains(&narcomoeba)),
+        "the interposer is in ITS OWN controller's graveyard at the beat its window opens, \
+         by ObjectId"
+    );
+    runner
+        .act(GameAction::DecideOptionalEffect { accept: true })
+        .expect("the milled player answers its own may-trigger");
+    assert!(
+        runner.state().battlefield.contains(&narcomoeba),
+        "CR 608.2d: the answer is HONOURED — an accepted 'you may put it onto the battlefield' \
+         puts the card there, which is what separates a live decision from an inert prompt"
+    );
+
+    // ── Beat 4: absent, then earned ──
+    let settled = step_to_decision(&mut runner, "the period that consumes the interposer");
+    assert!(
+        matches!(settled, WaitingFor::Priority { .. }) && runner.state().stack.is_empty(),
+        "the period that CONSUMES the interposer still ends with no offer, at an empty-stack \
+         priority beat — the second absent half of the pair, got {settled:?}"
+    );
+    let consumed = library_sizes(runner.state());
+    let per_period: Vec<(PlayerId, i64)> = victims
+        .iter()
+        .map(|v| (*v, lookup(&before, *v) - lookup(&consumed, *v)))
+        .collect();
+    for (victim, per) in &per_period {
+        assert!(
+            *per > 0,
+            "reach-guard: the driven period mills {victim:?}, so the relation the second \
+             collapse is measured against is not zero"
+        );
+    }
+
+    let mut offer = None;
+    for _ in 0..FURTHER_PERIODS {
+        cast_one_sprout(&mut runner, "the re-arm drive");
+        match step_to_decision(&mut runner, "the re-arm drive") {
+            WaitingFor::LoopShortcut { certificate, .. } => {
+                offer = Some(certificate);
+                break;
+            }
+            WaitingFor::Priority { .. } => continue,
+            other => panic!("the re-arm drive stopped at an unscripted beat: {other:?}"),
+        }
+    }
+    let Some(certificate) = offer else {
+        panic!(
+            "the offer did not re-arm within {FURTHER_PERIODS} driven periods — exhaustion, \
+             NOT an absent re-offer; last beat {:?}",
+            runner.state().waiting_for
+        )
+    };
+    assert!(
+        certificate
+            .unbounded
+            .contains(&ResourceAxis::LibraryDelta(P1)),
+        "CR 732.2a: the truncation left a RESUMABLE loop, so the re-offer's certificate carries \
+         {P1:?}'s library axis again, got {:?}",
+        certificate.unbounded
+    );
+
+    let before_second = library_sizes(runner.state());
+    declare_and_accept_all(runner.state_mut(), N);
+    assert!(
+        runner
+            .state()
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|axes| axes.contains(&ResourceAxis::LibraryDelta(P1))),
+        "the ∞ mark is minted when the re-offer is ACCEPTED — the present half of the pair"
+    );
+    drive_to_collapse_boundary(runner.state_mut());
+    apply(
+        runner.state_mut(),
+        P0,
+        GameAction::SubmitPayAmount { amount: N },
+    )
+    .expect("P0 submits the finite loop-collapse count for the resumed loop");
+    let after_second = library_sizes(runner.state());
+    for (victim, per) in &per_period {
+        assert_eq!(
+            lookup(&after_second, *victim) + i64::from(N) * per,
+            lookup(&before_second, *victim),
+            "the resumed collapse delivers all {N} periods at the per-period rate this row \
+             measured for {victim:?}, so the truncation left a loop that can finish"
+        );
+    }
+
+    // ── Negative arm: the identical driver, on a board with no interposer ──
+    let mut clean = offer_state(pinned_mill_base());
+    declare_and_accept_all(&mut clean, N);
+    assert!(
+        took_the_replay(&clean, "interposer-free"),
+        "reach-guard: the interposer-free accept takes the SAME replay route, so the arms differ \
+         only by the graft"
+    );
+    drive_to_collapse_boundary(&mut clean);
+    apply(&mut clean, P0, GameAction::SubmitPayAmount { amount: N })
+        .expect("P0 submits the finite loop-collapse count");
+    let mut runner = GameRunner::from_state(clean);
+    cast_one_sprout(&mut runner, "the interposer-free period");
+    let end = step_to_decision(&mut runner, "the interposer-free period");
+    assert!(
+        matches!(end, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0)
+            && runner.state().stack.is_empty(),
+        "the interposer-free period raises no OptionalEffectChoice at ANY beat — the stepper \
+         stops at the first beat that is neither a pass nor a trigger ordering, so a prompt \
+         anywhere would land here — and finishes a whole period into a fresh empty-stack offer, \
+         got {end:?}"
     );
 }
