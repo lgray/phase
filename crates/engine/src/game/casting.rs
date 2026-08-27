@@ -1330,13 +1330,13 @@ pub fn spell_objects_available_to_cast(state: &GameState, player: PlayerId) -> V
     if let Some((top_id, _src, _freq, _alt)) =
         top_of_library_permission_source(state, player, Some(CardPlayMode::Cast))
     {
-        // Only non-land cards reach the cast path; lands flow through the
+        // CR 305.9: only non-land cards reach the cast path; lands flow through the
         // play-land action (`top_of_library_land_playable_by_permission`).
-        if state.objects.get(&top_id).is_some_and(|o| {
-            !o.card_types
-                .core_types
-                .contains(&crate::types::card_type::CoreType::Land)
-        }) {
+        if state
+            .objects
+            .get(&top_id)
+            .is_some_and(object_may_enter_cast_path)
+        {
             objects.push(top_id);
         }
     }
@@ -1441,11 +1441,8 @@ fn graveyard_object_castable_by_permission_sources(
     obj: &crate::game::game_object::GameObject,
     sources: &[GraveyardPermissionSource<'_>],
 ) -> bool {
-    if obj
-        .card_types
-        .core_types
-        .contains(&crate::types::card_type::CoreType::Land)
-    {
+    // CR 305.9: a land is played, never cast, whatever the permission says.
+    if !object_may_enter_cast_path(obj) {
         return false;
     }
 
@@ -3234,7 +3231,22 @@ fn has_exile_cast_permission(
         }
 }
 
-/// CR 305.1 + CR 601.2a: Lands in exile may be played by permissions that say
+/// CR 305.9 + CR 300.2a: an object that is both a land and another card type can be
+/// played only as a land — it can't be cast as a spell. CR 305.1 states the same
+/// conclusion for a land carrying no other card type ("it is never a spell"). This is
+/// the single home for that rule: the zone-scoped predicates below, the admission gate
+/// and the analysis-layer branches all delegate here instead of restating the test.
+///
+/// CR 715.3a bounds the subject — "When casting an adventurer card as an Adventure, only
+/// the alternative characteristics are evaluated to see if it can be cast" — so this asks
+/// about the FACE BEING CAST. A caller holding an unswapped object must not consult it.
+fn object_may_enter_cast_path(obj: &GameObject) -> bool {
+    !obj.card_types
+        .core_types
+        .contains(&crate::types::card_type::CoreType::Land)
+}
+
+/// CR 305.9 + CR 601.2a: Lands in exile may be played by permissions that say
 /// "play", but they never enter the spell-cast path.
 ///
 /// EXILE-ONLY BY RULE: this predicate gates the battlefield-static
@@ -3245,19 +3257,15 @@ fn has_exile_cast_permission(
 /// widen this to other zones; the object-tagged `PlayFromExile` path uses
 /// [`play_from_exile_object_in_cast_path`] instead.
 fn exile_object_can_enter_cast_path(obj: &GameObject) -> bool {
-    obj.zone == Zone::Exile
-        && !obj
-            .card_types
-            .core_types
-            .contains(&crate::types::card_type::CoreType::Land)
+    obj.zone == Zone::Exile && object_may_enter_cast_path(obj)
 }
 
-/// CR 701.17d + CR 305.1 + CR 601.2a: A card carrying an object-tagged
+/// CR 701.17d + CR 305.9 + CR 601.2a: A card carrying an object-tagged
 /// [`CastingPermission::PlayFromExile`] may enter the spell-cast path from
 /// exile (impulse draw) OR from the graveyard (a mill effect that grants
 /// permission to play "that card" — CR 701.17d — attaches the permission to the
 /// milled card in the graveyard). Lands are excluded from the cast path in both
-/// zones (CR 305.1: lands are *played*, not cast); a milled land flows through
+/// zones via [`object_may_enter_cast_path`]; a milled land flows through
 /// [`graveyard_lands_playable_by_permission`] / [`exile_lands_playable_by_permission`]
 /// instead.
 ///
@@ -3268,11 +3276,7 @@ fn exile_object_can_enter_cast_path(obj: &GameObject) -> bool {
 /// It does NOT touch the battlefield-static path, which stays exile-only via
 /// [`exile_object_can_enter_cast_path`].
 fn play_from_exile_object_in_cast_path(obj: &GameObject) -> bool {
-    matches!(obj.zone, Zone::Exile | Zone::Graveyard)
-        && !obj
-            .card_types
-            .core_types
-            .contains(&crate::types::card_type::CoreType::Land)
+    matches!(obj.zone, Zone::Exile | Zone::Graveyard) && object_may_enter_cast_path(obj)
 }
 
 fn exile_object_castable_by_permission(
@@ -3382,6 +3386,12 @@ pub(crate) fn cast_permissions_name_their_grantee(obj: &GameObject) -> bool {
 /// announced, never standing, and the face-down {3} cast is admitted only by a
 /// normal-cost authority (CR 118.9a + CR 601.2b). A caller passing `None` is asking
 /// about an ORDINARY announcement.
+///
+/// Admission is TYPE-GATED FIRST: CR 305.9 refuses a land before any zone or permission
+/// disjunct is consulted, via [`object_may_enter_cast_path`]. CR 715.3a bounds what that
+/// gate is asked about — the FACE BEING CAST — and this authority only ever sees that
+/// face, because every alternative-face route (`castable_alternative_spell_face_verdict`,
+/// `prepare_casting_variant`) swaps onto a clone before re-entering here.
 pub(crate) fn castable_from_current_zone(
     state: &GameState,
     obj: &GameObject,
@@ -3401,12 +3411,14 @@ pub(crate) fn castable_from_current_zone(
     let face_down_variant = variant_override == Some(CastingVariant::FaceDown);
     let normal_cost_route =
         || !face_down_variant || normal_cost_grant_supports_cast(state, obj, player);
-    // CR 601.2a + CR 611.2a: CastFromZone effects grant ExileWithAltCost on
-    // opponent's cards. When the grant carries a `granted_to: Some(p)`
-    // binding, only player `p` may consume it — see
-    // `spell_objects_available_to_cast` for the parallel filter used at the
-    // legal-actions surface.
-    (obj.zone == Zone::Exile
+    object_may_enter_cast_path(obj)
+        && (
+            // CR 601.2a + CR 611.2a: CastFromZone effects grant ExileWithAltCost on
+            // opponent's cards. When the grant carries a `granted_to: Some(p)`
+            // binding, only player `p` may consume it — see
+            // `spell_objects_available_to_cast` for the parallel filter used at the
+            // legal-actions surface.
+            (obj.zone == Zone::Exile
         && obj.owner != player
         && has_alt_cost_permission_for(obj, state, player)
         && normal_cost_route())
@@ -3414,10 +3426,8 @@ pub(crate) fn castable_from_current_zone(
         // permission. Exile sources cover AdventureCreature / ExileWithAltCost /
         // impulse `PlayFromExile`; the graveyard branch covers a milled card whose
         // `PlayFromExile` was granted by a "you may play that card" mill effect
-        // (CR 701.17d — the permission lands on the card in the graveyard). Lands
-        // are excluded in both zones (CR 305.1) via
-        // `play_from_exile_object_in_cast_path`. The variant is passed on: this arm
-        // does its own per-permission face-down election.
+        // (CR 701.17d — the permission lands on the card in the graveyard). The variant
+        // is passed on: this arm does its own per-permission face-down election.
         || (play_from_exile_object_in_cast_path(obj)
             && has_exile_cast_permission(
                 state,
@@ -3449,7 +3459,6 @@ pub(crate) fn castable_from_current_zone(
                 // with graveyard-cast keywords.
                 || (((obj.zone == Zone::Graveyard
                     && has_effective_graveyard_cast_keyword(state, obj.id, obj))
-                    || mayhem_castable_from_graveyard(state, player, obj.id)
                     || has_graveyard_timed_alt_cost_permission(state, obj, player))
                     && normal_cost_route())
                 // CR 601.2a + CR 117.1c: Graveyard cast via static permission (Lurrus, etc.).
@@ -3478,6 +3487,7 @@ pub(crate) fn castable_from_current_zone(
                         == Some(&obj.id)
                     && top_of_library_permission_source(state, player, Some(CardPlayMode::Cast))
                         .is_some_and(|(top_id, _, _, _)| top_id == obj.id))))
+        )
 }
 
 /// CR 601.2a + CR 118.9: Whether an `ExileWithAltCost` permission carries the
@@ -4373,12 +4383,19 @@ fn has_alt_cost_permission_for(
 
 /// CR 601.2a: Object-level timed alt-cost grants that allow casting from the
 /// graveyard without exiling first (Emry, Lurker in the Loch).
+///
+/// CR 305.9: the grant's target filter may admit a card that is both a land and another
+/// card type (an artifact land under "target artifact card in your graveyard"), and such
+/// a card can only be played as a land. The type test therefore runs here, at the branch
+/// this predicate feeds in `graveyard_spell_objects_available_to_cast`, so the analysis
+/// layer's report agrees with the admission gate.
 fn has_graveyard_timed_alt_cost_permission(
     state: &GameState,
     obj: &crate::game::game_object::GameObject,
     player: PlayerId,
 ) -> bool {
-    obj.zone == Zone::Graveyard
+    object_may_enter_cast_path(obj)
+        && obj.zone == Zone::Graveyard
         && obj.casting_permissions.iter().any(|permission| {
             exile_alt_cost_permission_supports_cast(state, obj, player, permission, None)
         })
@@ -5030,11 +5047,12 @@ fn graveyard_permission_source(
     player: PlayerId,
     object_id: ObjectId,
 ) -> Option<GraveyardPermissionSource<'_>> {
-    if state.objects.get(&object_id).is_some_and(|obj| {
-        obj.card_types
-            .core_types
-            .contains(&crate::types::card_type::CoreType::Land)
-    }) {
+    // CR 305.9: a land is played, never cast, whatever the permission says.
+    if state
+        .objects
+        .get(&object_id)
+        .is_some_and(|obj| !object_may_enter_cast_path(obj))
+    {
         return None;
     }
     graveyard_permission_sources(state, player, Some(CardPlayMode::Cast))
@@ -6637,6 +6655,15 @@ fn prepare_spell_cast_with_variant_override_inner(
         None
     };
 
+    // CR 305.9: refused BEFORE the admission gate, which now type-gates on the same
+    // predicate. Running it here keeps the specific message a land earns from every zone
+    // rather than the gate's generic "not in a castable zone".
+    if !object_may_enter_cast_path(obj) {
+        return Err(EngineError::ActionNotAllowed(
+            "Lands are played, not cast".to_string(),
+        ));
+    }
+
     // The ADMISSION decision itself lives in `castable_from_current_zone`; the bindings
     // above are kept because the cost paths below consume them, so those predicates are
     // evaluated twice and the decision exists once.
@@ -6697,16 +6724,6 @@ fn prepare_spell_cast_with_variant_override_inner(
     if mode == CastingMode::Actual && is_blocked_by_prohibit_play_from_zone(state, obj, player) {
         return Err(EngineError::ActionNotAllowed(
             "A temporary effect prevents playing cards from this zone".to_string(),
-        ));
-    }
-
-    if obj
-        .card_types
-        .core_types
-        .contains(&crate::types::card_type::CoreType::Land)
-    {
-        return Err(EngineError::ActionNotAllowed(
-            "Lands are played, not cast".to_string(),
         ));
     }
 
@@ -22140,10 +22157,9 @@ mod castable_zone_authority_tests {
     /// you may cast it from your graveyard by paying [cost] rather than paying its mana
     /// cost." The two arms differ in `discarded_turn` alone.
     ///
-    /// This row guards the BEHAVIOUR, not one disjunct: `castable_from_current_zone`
-    /// reaches it through two — `mayhem_castable_from_graveyard` and the mayhem clause
-    /// inside `has_effective_graveyard_cast_keyword` — whose conjunctions coincide, so no
-    /// fixture separates them and the row reddens only if both are lost.
+    /// `castable_from_current_zone` reaches this through the mayhem clause inside
+    /// `has_effective_graveyard_cast_keyword`, which is its only remaining route to the
+    /// behaviour, so the row reddens if that clause is lost.
     #[test]
     fn a_mayhem_card_is_castable_from_its_owners_graveyard_only_when_discarded_this_turn() {
         let mut state = GameState::new_two_player(7);
@@ -22174,17 +22190,21 @@ mod castable_zone_authority_tests {
         );
     }
 
-    /// Isolates `has_graveyard_timed_alt_cost_permission` inside `castable_from_current_zone`.
-    /// CR 118.9: an alternative cost may be applied to an object by another effect. The
-    /// object-tagged sibling disjunct drops lands (CR 305.1) via
-    /// `play_from_exile_object_in_cast_path`, so a land in the owner's graveyard carrying the
-    /// grant reaches this disjunct without it — a shape for probing the predicate, not a
-    /// castable spell: `prepare_spell_cast` rejects lands after consulting this gate.
+    /// **A timed alt-cost grant never admits a land, and still admits a non-land.**
+    ///
+    /// CR 305.9: an object that is both a land and another card type can be played only as
+    /// a land — it can't be cast as a spell. CR 118.9 lets an effect apply an alternative
+    /// cost to an object, but the grant cannot make a land a spell, so
+    /// `castable_from_current_zone` refuses it whatever the permission says.
+    ///
+    /// The grantee gate is a SEPARATE conjunct and is tested on a non-land: on a land the
+    /// wrong-grantee arm would pass through the type gate and stop testing grantee at all.
     #[test]
-    fn the_graveyard_alt_cost_disjunct_admits_a_land_the_exile_cast_path_excludes() {
+    fn the_graveyard_alt_cost_disjunct_refuses_a_land_and_admits_a_non_land() {
         let mut state = GameState::new_two_player(7);
         let permission = |granted_to: PlayerId| CastingPermission::ExileWithAltCost {
             cost: ManaCost::default(),
+            cost_provenance: crate::types::ability::ExileGrantCostProvenance::Alternative,
             cast_transformed: false,
             constraint: None,
             granted_to: Some(granted_to),
@@ -22195,27 +22215,170 @@ mod castable_zone_authority_tests {
             enters_with_modifications: Vec::new(),
             mana_spend_permission: None,
         };
-        let id = card(&mut state, 1, PlayerId(0), Zone::Graveyard);
+
+        let land_id = card(&mut state, 1, PlayerId(0), Zone::Graveyard);
         {
-            let obj = state.objects.get_mut(&id).expect("just inserted");
+            let obj = state.objects.get_mut(&land_id).expect("just inserted");
             obj.card_types
                 .core_types
                 .push(crate::types::card_type::CoreType::Land);
             obj.casting_permissions = vec![permission(PlayerId(0))];
         }
-        let granted_to_owner = state.objects[&id].clone();
+        let land = state.objects[&land_id].clone();
+        assert!(
+            !castable_from_current_zone(&state, &land, PlayerId(0), None),
+            "CR 305.9: a land in its owner's graveyard carrying the grant is refused"
+        );
+
+        // PAIRED POSITIVE on the same board: the identical grant on a NON-land is admitted,
+        // so the refusal above is the type gate deciding rather than the grant having died.
+        let spell_id = card(&mut state, 2, PlayerId(0), Zone::Graveyard);
+        {
+            let obj = state.objects.get_mut(&spell_id).expect("just inserted");
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Instant);
+            obj.casting_permissions = vec![permission(PlayerId(0))];
+        }
+        let spell = state.objects[&spell_id].clone();
         assert!(castable_from_current_zone(
             &state,
-            &granted_to_owner,
+            &spell,
             PlayerId(0),
             None
         ));
 
-        let mut granted_elsewhere = granted_to_owner.clone();
+        // The grantee conjunct, tested on the NON-land so the type gate cannot satisfy it.
+        let mut granted_elsewhere = spell.clone();
         granted_elsewhere.casting_permissions = vec![permission(PlayerId(1))];
         assert!(
             !castable_from_current_zone(&state, &granted_elsewhere, PlayerId(0), None),
             "PAIRED NEGATIVE: the permission names a grantee and P0 is not it"
+        );
+    }
+
+    /// **The admission gate refuses a land on every route a land can reach it by.**
+    ///
+    /// CR 305.9: "If an object is both a land and another card type, it can be played only
+    /// as a land. It can't be cast as a spell." One conjunct at the head of
+    /// `castable_from_current_zone` dominates the whole disjunction, so each route is
+    /// exercised as a pair: the non-land IS admitted (proving the fixture reaches that
+    /// route at all) and its `CoreType::Land` twin is refused.
+    #[test]
+    fn the_admission_gate_refuses_a_land_on_every_route() {
+        use crate::types::keywords::{FlashbackCost, Keyword};
+
+        // Each leg returns (state, non-land object, land twin) for one route.
+        #[allow(clippy::type_complexity)]
+        let legs: Vec<(&str, fn() -> (GameState, GameObject, GameObject))> = vec![
+            ("mayhem in own graveyard", || {
+                let mut state = GameState::new_two_player(7);
+                state.turn_number = 5;
+                let id = card(&mut state, 1, PlayerId(0), Zone::Graveyard);
+                {
+                    let obj = state.objects.get_mut(&id).expect("just inserted");
+                    obj.base_keywords = vec![Keyword::Mayhem(ManaCost::default())];
+                    obj.discarded_turn = Some(5);
+                }
+                let non_land = state.objects[&id].clone();
+                let mut land = non_land.clone();
+                land.card_types
+                    .core_types
+                    .push(crate::types::card_type::CoreType::Land);
+                (state, non_land, land)
+            }),
+            ("flashback in own graveyard", || {
+                let mut state = GameState::new_two_player(7);
+                let id = card(&mut state, 1, PlayerId(0), Zone::Graveyard);
+                {
+                    let obj = state.objects.get_mut(&id).expect("just inserted");
+                    obj.base_keywords =
+                        vec![Keyword::Flashback(FlashbackCost::Mana(ManaCost::default()))];
+                }
+                let non_land = state.objects[&id].clone();
+                let mut land = non_land.clone();
+                land.card_types
+                    .core_types
+                    .push(crate::types::card_type::CoreType::Land);
+                (state, non_land, land)
+            }),
+            ("top of own library under a cast static", || {
+                let mut state = GameState::new_two_player(7);
+                let top = card(&mut state, 1, PlayerId(0), Zone::Library);
+                let source = ObjectId(3);
+                state.objects.insert(
+                    source,
+                    GameObject::new(
+                        source,
+                        CardId(3),
+                        PlayerId(0),
+                        "Realmwalker".into(),
+                        Zone::Battlefield,
+                    ),
+                );
+                state.battlefield.push_back(source);
+                state
+                    .objects
+                    .get_mut(&source)
+                    .expect("just inserted")
+                    .static_definitions = vec![top_of_library_static()].into();
+                let non_land = state.objects[&top].clone();
+                let mut land = non_land.clone();
+                land.card_types
+                    .core_types
+                    .push(crate::types::card_type::CoreType::Land);
+                (state, non_land, land)
+            }),
+            ("opponent-owned exile under an alt-cost grant", || {
+                let mut state = GameState::new_two_player(7);
+                let id = card(&mut state, 1, PlayerId(1), Zone::Exile);
+                {
+                    let obj = state.objects.get_mut(&id).expect("just inserted");
+                    obj.casting_permissions = vec![CastingPermission::ExileWithAltCost {
+                        cost: ManaCost::default(),
+                        cost_provenance:
+                            crate::types::ability::ExileGrantCostProvenance::Alternative,
+                        cast_transformed: false,
+                        constraint: None,
+                        granted_to: Some(PlayerId(0)),
+                        resolution_cleanup: None,
+                        duration: None,
+                        graveyard_replacement: None,
+                        enters_with_counter: None,
+                        enters_with_modifications: Vec::new(),
+                        mana_spend_permission: None,
+                    }];
+                }
+                let non_land = state.objects[&id].clone();
+                let mut land = non_land.clone();
+                land.card_types
+                    .core_types
+                    .push(crate::types::card_type::CoreType::Land);
+                (state, non_land, land)
+            }),
+        ];
+
+        // Every leg is evaluated before asserting, so one broken route reports as one
+        // route rather than masking the verdicts of the legs behind it.
+        let mut unreached = Vec::new();
+        let mut admitted_lands = Vec::new();
+        for (route, build) in legs {
+            let (state, non_land, land) = build();
+            if !castable_from_current_zone(&state, &non_land, PlayerId(0), None) {
+                unreached.push(route);
+            }
+            if castable_from_current_zone(&state, &land, PlayerId(0), None) {
+                admitted_lands.push(route);
+            }
+        }
+        assert!(
+            unreached.is_empty(),
+            "REACH GUARD: these routes did not admit their non-land twin, so their land \
+             refusal would be satisfied by a fixture that reaches no route: {unreached:?}"
+        );
+        assert!(
+            admitted_lands.is_empty(),
+            "CR 305.9: these routes admitted a CoreType::Land object: {admitted_lands:?}"
         );
     }
 }

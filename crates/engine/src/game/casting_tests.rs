@@ -19581,6 +19581,121 @@ fn graveyard_timed_alt_cost_grant_is_castable_in_place() {
         .expect("bauble must be castable from graveyard");
 }
 
+/// CR 305.9: an object that is both a land and another card type "can be played only as a
+/// land. It can't be cast as a spell." An Emry-class grant ("target artifact card in your
+/// graveyard — you may cast that card this turn") admits artifact lands through its target
+/// filter, so the type gate has to run at the analysis layer too: the enumeration must not
+/// report a cast the admission gate refuses.
+///
+/// This asserts the PREDICATE'S REPORT, not the downstream cast outcome — `prepare_spell_cast`
+/// already refused the land before this change and would pass unfixed.
+#[test]
+fn graveyard_timed_alt_cost_grant_omits_an_artifact_land_but_keeps_its_land_play_route() {
+    use crate::game::effects::cast_from_zone;
+    use crate::types::ability::{CardPlayMode, Effect, ResolvedAbility, TargetRef};
+    use crate::types::statics::CastFrequency;
+
+    let mut state = setup_game_at_main_phase();
+
+    // Same fixture as `graveyard_timed_alt_cost_grant_is_castable_in_place`, with the
+    // graveyard object given CR 300.2a's artifact-land type line.
+    let citadel = create_object(
+        &mut state,
+        CardId(2028),
+        PlayerId(0),
+        "Darksteel Citadel".to_string(),
+        Zone::Graveyard,
+    );
+    {
+        let obj = state.objects.get_mut(&citadel).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.mana_cost = ManaCost::zero();
+        // CR 701.17d: the land keeps its OWN play route, granted independently of the
+        // cast grant. Without this the land-play assertion below would compare two empty
+        // vectors and could not fail in the direction it guards.
+        obj.casting_permissions
+            .push(CastingPermission::PlayFromExile {
+                duration: Duration::Permanent,
+                granted_to: PlayerId(0),
+                frequency: CastFrequency::Unlimited,
+                source_id: None,
+                invalidation: None,
+                exiled_by_ability_controller: None,
+                mana_spend_permission: None,
+                card_filter: None,
+                single_use_group: None,
+                single_use: false,
+                cast_cost_raise: None,
+                land_enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                provenance: crate::types::ability::PlayFromExileProvenance::Impulse,
+            });
+    }
+
+    // Paired positive: the same grant on a NON-land artifact must stay listed.
+    let bauble = create_object(
+        &mut state,
+        CardId(2029),
+        PlayerId(0),
+        "Mishra's Bauble".to_string(),
+        Zone::Graveyard,
+    );
+    {
+        let obj = state.objects.get_mut(&bauble).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.mana_cost = ManaCost::zero();
+    }
+
+    let grant = |target: ObjectId, source: ObjectId| {
+        ResolvedAbility::new(
+            Effect::CastFromZone {
+                target: TargetFilter::ParentTarget,
+                without_paying_mana_cost: false,
+                mode: CardPlayMode::Cast,
+                cast_transformed: false,
+                alt_ability_cost: None,
+                constraint: None,
+                duration: Some(Duration::UntilEndOfTurn),
+                mana_spend_permission: None,
+                driver: crate::types::ability::CastFromZoneDriver::LingeringPermission,
+            },
+            vec![TargetRef::Object(target)],
+            source,
+            PlayerId(0),
+        )
+    };
+    cast_from_zone::resolve(&mut state, &grant(citadel, ObjectId(9001)), &mut Vec::new()).unwrap();
+    cast_from_zone::resolve(&mut state, &grant(bauble, ObjectId(9002)), &mut Vec::new()).unwrap();
+
+    // REACH GUARD: the real `cast_from_zone::resolve` driver actually attached the grant,
+    // so "not listed" below cannot be satisfied by a grant that never landed.
+    assert!(
+        state.objects[&citadel]
+            .casting_permissions
+            .iter()
+            .any(|p| matches!(p, CastingPermission::ExileWithAltCost { .. })),
+        "the LingeringPermission driver must have stamped the alt-cost grant on the land"
+    );
+
+    let castable = spell_objects_available_to_cast(&state, PlayerId(0));
+    assert!(
+        !castable.contains(&citadel),
+        "CR 305.9: an artifact land carrying the grant must not be reported as castable"
+    );
+    assert!(
+        castable.contains(&bauble),
+        "PAIRED POSITIVE: the non-land artifact with the same grant is still reported"
+    );
+
+    // The gate must not steal the land's own route (CR 305.9 sends it there, not away).
+    assert!(
+        graveyard_lands_playable_by_permission(&state, PlayerId(0))
+            .iter()
+            .any(|(id, _)| *id == citadel),
+        "the land-play route for the same object must be unmoved"
+    );
+}
+
 /// Regression (Sunforger infinite recast): a `CastFromZone` "cast it
 /// without paying its mana cost" grant attached *in place* to a card the
 /// effect routed through the hand (Sunforger: search → to hand → cast from

@@ -1320,11 +1320,11 @@ fn a_milled_cards_own_window_and_permanent_type_reach_the_drive_through_neither_
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // THE ACCEPT PATH
 //
-// Every row above stops at the OFFER. These two go past it: the route the mill period takes
-// once accepted, and what the collapse at the CR 500.5 boundary actually delivers.
+// Every row above stops at the OFFER. These go past it: the route the mill period takes once
+// accepted, what the collapse at the CR 500.5 boundary delivers, and how much of it.
 //
-// The iteration count an accepted mill shortcut DELIVERS is DEFERRED(phase 2) and is asserted
-// nowhere below — these rows read a DIRECTION (cards moved, marks gone), never a magnitude.
+// Magnitude is pinned on `pinned_mill_base()`, whose non-caster libraries carry no definition
+// that could interpose, so a decline shorter than the accepted count has exactly one cause.
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
 use engine::analysis::decision_template::IterationCount;
@@ -1464,8 +1464,11 @@ fn the_mill_flips_a_non_empty_batched_period_onto_the_replay() {
 /// Replay arm that failed to deliver the `LibraryDelta` would move zero cards and leave a
 /// permanent infinity badge, and every assertion above would still pass.
 ///
-/// Direction only — a NONZERO decline per victim and an absent mark. The delivered iteration
-/// COUNT is DEFERRED(phase 2) and is deliberately not asserted.
+/// Direction only — a NONZERO decline per victim and an absent mark. This row stays
+/// direction-only BY DESIGN: it runs on `mill_base()`, whose library cards keep their real
+/// definitions, so a magnitude asserted here would be asserting the absence of an interposer
+/// nobody enumerated. Magnitude is pinned on the interposer-free `pinned_mill_base()` by
+/// `an_interposer_free_mill_collapse_declines_in_proportion_to_the_accepted_count`.
 ///
 /// REVERT PROBE: delete the `unbatchable_deferred` disjunct at the `game::engine` route seam
 /// ⇒ the accept routes to the batched mint, which carries no `LibraryDelta`, so no opponent
@@ -1534,4 +1537,180 @@ fn an_accepted_mill_collapse_moves_cards_and_retires_its_marks() {
              axis's ∞ mark instead of leaving an infinite-mill badge standing"
         );
     }
+}
+
+/// **An interposer-free mill collapse declines IN PROPORTION to the accepted count.** The
+/// magnitude row the direction-only row above cannot substitute for: a drive that truncated at
+/// a fixed prefix, or one that silently fell back to the O(1) batched mint, moves cards and
+/// retires marks exactly as that row asserts.
+///
+/// No magic constant: the same board is run at two counts and the declines are compared to each
+/// other. A fixed-prefix truncation makes the two declines EQUAL; a batched fallback makes both
+/// ZERO; only a drive that replays the accepted number of periods makes the larger run decline
+/// strictly more, in the ratio of the counts.
+///
+/// `pinned_mill_base()` is the right base and `mill_base()` is not — the pin rewrites every
+/// non-caster library card to a definition-free Instant, so the only thing that could shorten a
+/// decline here is the drive itself.
+#[test]
+fn an_interposer_free_mill_collapse_declines_in_proportion_to_the_accepted_count() {
+    const SMALL: u32 = 2;
+    const LARGE: u32 = 4;
+
+    // One (count -> per-victim decline) reading on a fresh copy of the pinned board.
+    let run = |n: u32| -> Vec<(PlayerId, usize)> {
+        let mut state = offer_state(pinned_mill_base());
+        let before = library_sizes(&state);
+        declare_and_accept_all(&mut state, n);
+        assert!(
+            took_the_replay(&state, "pinned magnitude"),
+            "reach-guard: the accepted period must take the REPLAY, or a decline of zero is \
+             the batched mint's silence rather than a delivered count"
+        );
+        drive_to_collapse_boundary(&mut state);
+        apply(&mut state, P0, GameAction::SubmitPayAmount { amount: n })
+            .expect("P0 submits the finite loop-collapse count");
+        let after = library_sizes(&state);
+        for (id, size) in &after {
+            if *id != P0 {
+                assert!(
+                    *size > 0,
+                    "stated precondition: {id:?}'s library is still NON-EMPTY after {n} \
+                     cycles, so the decline measured a delivered count and not an exhausted \
+                     library"
+                );
+            }
+        }
+        before
+            .iter()
+            .zip(after.iter())
+            .filter(|((id, _), _)| *id != P0)
+            .map(|((id, b), (_, a))| (*id, b - a))
+            .collect()
+    };
+
+    let small = run(SMALL);
+    let large = run(LARGE);
+    assert!(
+        !small.is_empty(),
+        "reach-guard: the dump seats opponents for the Altar to mill"
+    );
+
+    for ((victim, small_decline), (_, large_decline)) in small.iter().zip(large.iter()) {
+        assert!(
+            *small_decline > 0,
+            "CR 701.17a: {victim:?} must actually be milled at the smaller count"
+        );
+        // CR 732.2c: the shortcut advances with every choice the proposal contained, so an
+        // interposer-free replay delivers the count it was given — the decline scales with it.
+        assert_eq!(
+            large_decline * (SMALL as usize),
+            small_decline * (LARGE as usize),
+            "{victim:?}: declines must be in the ratio of the accepted counts \
+             ({SMALL} -> {small_decline}, {LARGE} -> {large_decline}); equal declines mean a \
+             fixed-prefix truncation"
+        );
+    }
+}
+
+/// **An interposer the replay reaches truncates the collapse to a WHOLE-PERIOD PREFIX, rolls
+/// the aborted iteration back entire, and leaves no stale ∞ mark.**
+///
+/// CR 732.2a: a shortcut proposal may not "include conditional actions, where the outcome of a
+/// game event determines the next action a player takes", and its ending point "must be a place
+/// where a player has priority". A real Narcomoeba grafted into a victim's library is such a
+/// point: its library→graveyard trigger asks its controller a question the accepted proposal
+/// never contained, so the sequence was legal only up to it.
+///
+/// The graft sits at POST-cast depth 1, so the replay reaches it only after one complete
+/// period — which is what makes the delivered prefix strictly interior to `[0, N]` rather than
+/// the degenerate 0 that a depth-0 interposer would produce.
+#[test]
+fn an_interposer_truncates_the_collapse_to_a_whole_period_prefix() {
+    const N: u32 = 3;
+
+    let mut base = pinned_mill_base();
+    let anchor = post_cast_library_anchor(&base, P1, 1);
+    let narcomoeba = graft_narcomoeba(&mut base, P1, anchor);
+
+    let mut state = offer_state(base);
+    let before = library_sizes(&state);
+    declare_and_accept_all(&mut state, N);
+
+    // Reach-guards, both directions, BEFORE the collapse.
+    assert!(
+        took_the_replay(&state, "interposed"),
+        "reach-guard: the accepted period took the REPLAY, so a short decline below is a \
+         truncation rather than the batched mint never milling at all"
+    );
+    assert!(
+        state
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|axes| axes.contains(&ResourceAxis::LibraryDelta(P1))),
+        "reach-guard: {P1:?}'s library axis IS marked right after accept, so its absence \
+         after the collapse is a retirement rather than a mark that never existed"
+    );
+    assert!(
+        state.may_trigger_auto_choices.is_empty(),
+        "reach-guard: no recorded auto-answer stands in for the interposer's decision — the \
+         abort below is the undetermined choice, not a replayed one"
+    );
+
+    drive_to_collapse_boundary(&mut state);
+    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: N })
+        .expect("P0 submits the finite loop-collapse count");
+
+    // The delivered prefix is strictly interior to [0, N] and identical on every victim,
+    // because the drive commits WHOLE periods and the mill is one period-wide event.
+    let after = library_sizes(&state);
+    let declines: Vec<(PlayerId, usize)> = before
+        .iter()
+        .zip(after.iter())
+        .filter(|((id, _), _)| *id != P0)
+        .map(|((id, b), (_, a))| (*id, b - a))
+        .collect();
+    for (victim, decline) in &declines {
+        assert!(
+            *decline > 0 && (*decline as u32) < N,
+            "CR 732.2a: the accepted sequence was legal only up to the interposer, so \
+             {victim:?}'s decline must be strictly between 0 and {N}, got {decline}"
+        );
+    }
+    let first = declines[0].1;
+    assert!(
+        declines.iter().all(|(_, d)| *d == first),
+        "the drive commits WHOLE periods, so every victim declines by the same prefix: \
+         {declines:?}"
+    );
+
+    // The aborted iteration is rolled back ENTIRE: same object, same zone, by id.
+    assert_eq!(
+        state.objects.get(&narcomoeba).map(|o| o.zone),
+        Some(Zone::Library),
+        "the iteration that reached the interposer is rolled back whole, so the Narcomoeba is \
+         still in a library"
+    );
+    assert!(
+        library_ids(&state, P1).contains(&narcomoeba),
+        "rolled back to ITS OWN library, identified by ObjectId — the drive works on a clone, \
+         so identity is preserved by construction rather than by a re-find"
+    );
+
+    // CR 732.2a: the ending point is a place where a player has priority.
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "CR 732.2a: the truncated collapse ends at a priority window, got {:?}",
+        state.waiting_for
+    );
+
+    // A truncated collapse still RETIRES the axis it partly delivered — no stale ∞ badge.
+    assert!(
+        !state
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|axes| axes.contains(&ResourceAxis::LibraryDelta(P1))),
+        "the truncated collapse is a DRIVEN materialization, so it retires {P1:?}'s library \
+         axis rather than leaving an infinite-mill badge standing"
+    );
 }

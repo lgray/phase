@@ -6401,7 +6401,11 @@ fn materialize_object_growth_shortcut(
     // OBSERVED counter loop to the batched arm.
     //
     // `unbatchable_deferred` sits OUTSIDE that guard: such an axis routes to Replay whatever
-    // `batched` holds. CR 732.2c admits no partial delivery, so neither population may take the
+    // `batched` holds. CR 732.2c advances the game "with all game choices contained in the
+    // shortcut proposal having been taken", so no route may DROP AN AXIS the proposal covered —
+    // which is this comment's subject. It says nothing about how many iterations are delivered:
+    // the drive below commits whole-period prefixes under CR 732.2a, and that is not a partial
+    // delivery in 732.2c's sense. Neither population may take the
     // O(1) mint and drop the deferred axis — not a period whose only growth is that axis (EMPTY
     // `batched`), nor one that grows a batchable axis alongside it (NON-EMPTY `batched`: tokens,
     // counters or life plus a library delta, the shipped mill board). Both therefore pay the
@@ -6492,6 +6496,27 @@ fn materialize_object_growth_shortcut(
 /// re-introduction of the removed accept-time drive (commit 6d9344af1), bounded to observed loops
 /// at the boundary; the private `drive_loop_sequence_iteration` / `loop_action_expected_def` /
 /// `RecastAbort` cannot be named from `engine_resolution_choices`, so the drive lives here.
+///
+/// **What the abort implements, beyond the machinery departure above.** CR 732.2a bounds a
+/// proposal to choices "that may be legally taken based on the current game state and the
+/// predictable results of the sequence of choices", forbids "conditional actions, where the
+/// outcome of a game event determines the next action a player takes", and requires the ending
+/// point to "be a place where a player has priority". An interposing player's undetermined choice
+/// is exactly such a point, so the accepted sequence was legal only UP TO it — truncating there is
+/// the rule, not a degradation of it. Each iteration commits whole, so the ending point the drive
+/// leaves is a priority window, as CR 732.2a requires.
+///
+/// The delivered prefix is a value in `[0, n]`, and the table already consented to every value in
+/// that range — see the L3 prefix-consent statement at `game::turns`' `PayableResource::LoopCollapse`
+/// prompt, which is the licence and is not restated here. An engine-chosen prefix k is therefore
+/// observationally identical to the controller naming k at that same prompt, which the prompt's
+/// `min: 0` explicitly permits. That identity is why the collapse stays `Committed` rather than
+/// becoming conditional: nothing was delivered that a legal answer at the prompt could not have
+/// produced.
+///
+/// Two `waiting_for` shapes survive this function: an untouched `PayAmountChoice` when the drive
+/// aborts on iteration zero, and a `Priority` beat otherwise. Neither is observable, because the
+/// caller re-drains the boundary before returning.
 pub(crate) fn drive_persistent_axis_collapse(
     state: &mut GameState,
     seq: &[crate::types::game_state::LoopActionContext],
