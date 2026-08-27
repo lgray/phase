@@ -3172,8 +3172,7 @@ fn object_growth_51st_sprout_swarm_covers_and_offers() {
 /// name (CR 708.2a) and the verdict does not depend on which name it carries. The ungrafted
 /// arm is the control: the graft is not what produces the offer. The wire projection is the
 /// reach guard — in the SAME run the controller's copy carries the back-face name and the
-/// other seat's carries the hidden-card name, so the two-sided pair keeps BOTH its entries and
-/// the CR 601.2a cast exemption reaches neither side.
+/// other seat's carries the hidden-card name, so the two-sided pair keeps BOTH its entries.
 #[test]
 fn object_growth_offer_survives_a_face_down_permanent_under_either_controller() {
     use engine::game::game_object::BackFaceData;
@@ -3245,8 +3244,8 @@ fn object_growth_offer_survives_a_face_down_permanent_under_either_controller() 
         assert_eq!(
             to_observer.objects.get(&id).map(|o| o.name.as_str()),
             Some("Hidden Card"),
-            "and the other seat's carries the hidden-card name in the SAME run, so neither \
-             side's entry was dropped by an exemption"
+            "and the other seat's carries the hidden-card name in the SAME run — the \
+             observer-side face-down redaction leaf is what writes this entry"
         );
     }
 }
