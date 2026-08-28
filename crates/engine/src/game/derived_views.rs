@@ -2781,6 +2781,26 @@ fn trigger_event_display(state: &GameState, event: &GameEvent) -> Option<Trigger
             object_id: Some(*object_id),
             player: Some(record.controller),
         }),
+        // CR 701.17a: an action-worded mill trigger's event slot holds only
+        // `Milled`, so this is the arm the stack tooltip reads. `fallback` is
+        // deliberately empty: `visible_zone_change_object_name` returns the live
+        // object's name when present and otherwise "Hidden Card" whenever `from`
+        // or `to` is hidden — and `from` is the library on every `Milled` event
+        // by construction, so the label never degrades to empty.
+        GameEvent::Milled {
+            player_id,
+            object_id,
+            to,
+        } => Some(TriggerContextDisplay {
+            label: format!(
+                "{} milled {} to {}",
+                player_label(state, *player_id),
+                visible_zone_change_object_name(state, *object_id, "", Some(Zone::Library), *to),
+                zone_label(Some(*to))
+            ),
+            object_id: Some(*object_id),
+            player: Some(*player_id),
+        }),
         GameEvent::CardsRevealed {
             player, card_ids, ..
         } => Some(TriggerContextDisplay {
@@ -2910,6 +2930,62 @@ mod tests {
     use crate::types::statics::ActivationExemption;
     use crate::types::zones::Zone;
     use std::collections::HashMap;
+
+    /// CR 701.17a: after the mill re-key, a `TriggerMode::Milled*` trigger's
+    /// event slot holds only `Milled`, so `trigger_event_display` must answer for
+    /// it or the stack tooltip disappears (`trigger_event_display` ends in
+    /// `_ => None`, which the compiler never asks about).
+    #[test]
+    fn trigger_event_display_labels_a_milled_event() {
+        let mut state = GameState::new_two_player(42);
+        let card = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Milled Card".to_string(),
+            Zone::Graveyard,
+        );
+
+        let display = trigger_event_display(
+            &state,
+            &GameEvent::Milled {
+                player_id: PlayerId(1),
+                object_id: card,
+                to: Zone::Graveyard,
+            },
+        )
+        .expect("a mill trigger's context must render");
+        assert_eq!(display.object_id, Some(card));
+        assert_eq!(display.player, Some(PlayerId(1)));
+        assert!(display.label.contains("Milled Card"));
+
+        // Live control: the zone-change surface this arm inherits from still
+        // renders, and an explicit abstain still abstains — so a blanket `Some`
+        // cannot pass this row.
+        assert!(trigger_event_display(
+            &state,
+            &GameEvent::ZoneChanged {
+                object_id: card,
+                from: Some(Zone::Library),
+                to: Zone::Graveyard,
+                record: Box::new(ZoneChangeRecord::test_minimal(
+                    card,
+                    Some(Zone::Library),
+                    Zone::Graveyard,
+                )),
+            },
+        )
+        .is_some());
+        assert!(trigger_event_display(
+            &state,
+            &GameEvent::HiddenSearchViewed {
+                searcher: PlayerId(1),
+                cards: Vec::new(),
+                audience: Vec::new(),
+            },
+        )
+        .is_none());
+    }
 
     fn setup_commander_game(num_players: u8) -> GameState {
         let mut state = GameState::new(FormatConfig::commander(), num_players, 42);

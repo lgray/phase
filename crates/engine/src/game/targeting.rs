@@ -1276,6 +1276,14 @@ pub(crate) fn resolve_event_context_target_for_event_or_state(
                 {
                     Some(TargetRef::Object(*object_id))
                 }
+                // CR 701.17c + CR 603.2: "that card" on a mill trigger is the
+                // milled card, when it is not the trigger source itself (the
+                // source keeps its chosen target).
+                crate::types::events::GameEvent::Milled { object_id, .. }
+                    if *object_id != source_id =>
+                {
+                    Some(TargetRef::Object(*object_id))
+                }
                 _ => None,
             }
         }
@@ -1651,6 +1659,9 @@ pub(crate) fn extract_source_from_event(
             ..
         } => Some(*object_id),
         GameEvent::Discarded { object_id, .. } => Some(*object_id),
+        // CR 701.17c: "that card" / "a milled card" is the milled card, and an
+        // effect can find it in the zone it moved to from the library.
+        GameEvent::Milled { object_id, .. } => Some(*object_id),
         GameEvent::Transformed { object_id } => Some(*object_id),
         // CR 710.4: the flipped permanent is the event's subject.
         GameEvent::Flipped { object_id } => Some(*object_id),
@@ -1759,6 +1770,11 @@ pub(crate) fn extract_player_from_event(
         GameEvent::CardsDrawn { player_id, .. } => Some(*player_id),
         GameEvent::CardDrawn { player_id, .. } => Some(*player_id),
         GameEvent::Discarded { player_id, .. } => Some(*player_id),
+        // CR 701.17a: "that player" is the player whose library the card left.
+        // CR 400.3 + CR 401.1: a library holds its owner's cards, so for a
+        // library-resident card owner, controller and milling player coincide —
+        // the same seat the `ZoneChanged` arm's `record.controller` answered.
+        GameEvent::Milled { player_id, .. } => Some(*player_id),
         GameEvent::LandPlayed { player_id, .. } => Some(*player_id),
         GameEvent::SpellCast { controller, .. } => Some(*controller),
         // CR 602.2a: "Its controller is the player who activated the ability."
@@ -1842,6 +1858,8 @@ pub(crate) fn extract_amount_from_event(event: &crate::types::events::GameEvent)
         GameEvent::CounterAdded { count, .. } => Some(*count as i32),
         GameEvent::CounterRemoved { count, .. } => Some(*count as i32),
         GameEvent::Discarded { .. } => Some(1),
+        // CR 603.2c: one milled card per event.
+        GameEvent::Milled { .. } => Some(1),
         // CR 508.1m + CR 603.2c: Batched attack-trigger context stores the
         // attackers that satisfied the trigger subject, so "that many" reads
         // the size of that contextual attack event.
@@ -2745,6 +2763,98 @@ mod tests {
     use crate::types::mana::ManaColor;
     use crate::types::statics::StaticMode;
     use crate::types::zones::Zone;
+
+    /// V15 — CR 701.17a + CR 701.17c + CR 603.2c: the three event-subject
+    /// projections answer for the mill action event instead of abstaining.
+    /// No shipped card reaches the player/amount arms yet, and none of the three
+    /// is compiler-forced, so this row is what keeps them from silently
+    /// answering `None` when the first printing arrives.
+    #[test]
+    fn milled_projects_its_card_its_player_and_one() {
+        let state = GameState::new_two_player(42);
+        let milled = GameEvent::Milled {
+            player_id: PlayerId(1),
+            object_id: ObjectId(7),
+            to: Zone::Exile,
+        };
+        let zone_changed = GameEvent::ZoneChanged {
+            object_id: ObjectId(7),
+            from: Some(Zone::Library),
+            to: Zone::Graveyard,
+            record: Box::new(crate::types::game_state::ZoneChangeRecord::test_minimal(
+                ObjectId(7),
+                Some(Zone::Library),
+                Zone::Graveyard,
+            )),
+        };
+        // An event none of these functions has an object/amount arm for.
+        let tapped = GameEvent::PermanentTapped {
+            object_id: ObjectId(9),
+            caused_by: None,
+        };
+
+        assert_eq!(extract_source_from_event(&milled), Some(ObjectId(7)));
+
+        // CR 400.3 + CR 401.1: the milling player is the seat the `ZoneChanged`
+        // arm's `record.controller` answered for a library-resident card. The
+        // `ZoneChanged` leg is this function's live positive control; `tapped` is
+        // the negative that refuses a blanket `Some`.
+        assert_eq!(
+            extract_player_from_event(&milled, &state),
+            Some(PlayerId(1))
+        );
+        assert!(extract_player_from_event(&zone_changed, &state).is_some());
+        assert_eq!(extract_player_from_event(&tapped, &state), None);
+
+        // `extract_amount_from_event` has no `ZoneChanged` arm, so its live
+        // positive is the answer this arm copies: `Discarded` -> 1.
+        assert_eq!(extract_amount_from_event(&milled), Some(1));
+        assert_eq!(
+            extract_amount_from_event(&GameEvent::Discarded {
+                player_id: PlayerId(1),
+                object_id: ObjectId(7),
+                source_id: None,
+            }),
+            Some(1)
+        );
+        assert_eq!(extract_amount_from_event(&tapped), None);
+    }
+
+    /// V15 — CR 701.17c + CR 603.2: the resolution-time half of the "that card"
+    /// anaphor. The milled card is the referent unless it IS the trigger source,
+    /// in which case the source keeps its chosen target.
+    #[test]
+    fn parent_target_binds_the_milled_card_but_never_the_trigger_source() {
+        let state = GameState::new_two_player(42);
+        let source = ObjectId(3);
+        let resolve = |event: &GameEvent| {
+            resolve_event_context_target_for_event_or_state(
+                &state,
+                &TargetFilter::ParentTarget,
+                source,
+                Some(event),
+            )
+        };
+
+        let milled = |object_id| GameEvent::Milled {
+            player_id: PlayerId(1),
+            object_id,
+            to: Zone::Graveyard,
+        };
+        assert_eq!(
+            resolve(&milled(ObjectId(7))),
+            Some(TargetRef::Object(ObjectId(7)))
+        );
+        assert_eq!(resolve(&milled(source)), None);
+        // Live control: an event with no `ParentTarget` arm still abstains.
+        assert_eq!(
+            resolve(&GameEvent::PermanentTapped {
+                object_id: ObjectId(9),
+                caused_by: None,
+            }),
+            None
+        );
+    }
 
     #[test]
     fn extract_amount_from_combat_damage_dealt_to_player_returns_total_damage() {

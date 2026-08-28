@@ -7552,6 +7552,12 @@ pub(crate) fn seed_event_context_parent_targets(
         GameEvent::Stationed { creature_id, .. } => (Some(*creature_id), None),
         GameEvent::VehicleCrewed { vehicle_id, .. } => (Some(*vehicle_id), None),
         GameEvent::Saddled { mount_id, .. } => (Some(*mount_id), None),
+        // CR 701.17c: "that card" on a mill trigger is the milled card. Seeded
+        // pinless, like the three arms above: `Milled` carries no
+        // `ZoneChangeRecord`, and duplicating one onto it would be invisible to
+        // the save-load rebinder that finds persisted records by the
+        // `ZoneChanged` tag, so the pin would reload stale.
+        GameEvent::Milled { object_id, .. } => (Some(*object_id), None),
         _ => (None, None),
     };
     if let Some(id) = parent_id {
@@ -16460,6 +16466,56 @@ pub mod tests {
             Some(state.waiting_for.clone()),
             "the orphaned trigger's prompt must be surfaced, not silently dropped"
         );
+    }
+
+    /// V15 — CR 701.17c: the placement-time half of the "that card" anaphor.
+    /// `seed_event_context_parent_targets` ends in `_ => (None, None)`, so the
+    /// compiler never asks for this arm; without it a mill trigger's
+    /// `ParentTarget` effect goes on the stack unseeded.
+    #[test]
+    fn seed_event_context_parent_targets_binds_a_milled_card() {
+        use crate::types::ability::PerpetualModification;
+
+        let source = ObjectId(1);
+        let milled = ObjectId(2);
+        let make_ability = || {
+            ResolvedAbility::new(
+                Effect::ApplyPerpetual {
+                    target: TargetFilter::ParentTarget,
+                    modification: PerpetualModification::GrantKeywords {
+                        keywords: vec![Keyword::Deathtouch],
+                    },
+                },
+                vec![TargetRef::Object(source)],
+                source,
+                PlayerId(0),
+            )
+        };
+
+        let mut ability = make_ability();
+        seed_event_context_parent_targets(
+            &mut ability,
+            Some(&GameEvent::Milled {
+                player_id: PlayerId(1),
+                object_id: milled,
+                to: Zone::Exile,
+            }),
+            EventContextSeedTiming::StackPush,
+        );
+        assert_eq!(ability.targets, vec![TargetRef::Object(milled)]);
+
+        // Live control in the same invocation: an event with no seeding arm
+        // leaves the pre-existing targets alone, so a blanket overwrite fails.
+        let mut untouched = make_ability();
+        seed_event_context_parent_targets(
+            &mut untouched,
+            Some(&GameEvent::PermanentTapped {
+                object_id: milled,
+                caused_by: None,
+            }),
+            EventContextSeedTiming::StackPush,
+        );
+        assert_eq!(untouched.targets, vec![TargetRef::Object(source)]);
     }
 
     #[test]

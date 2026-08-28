@@ -2061,7 +2061,28 @@ fn event_visible_to_viewer(event: &GameEvent, state: &GameState, viewer: PlayerI
             viewer,
             *object_id,
             *to,
-            record,
+            record.owner,
+            &can_view_private_for_player,
+        ),
+        // CR 701.17c + CR 400.2: a milled card can be found "as long as that
+        // zone is a public zone". Gate the action event with the SAME
+        // predicate as the library departure beside it, so the two wire
+        // channels can never disagree about one departure. CR 400.3 +
+        // CR 401.1: a library holds its owner's cards, so `player_id` is the
+        // owner when the object has already left `state.objects`.
+        GameEvent::Milled {
+            player_id,
+            object_id,
+            to,
+        } => library_zone_change_visible_to_viewer(
+            state,
+            viewer,
+            *object_id,
+            *to,
+            state
+                .objects
+                .get(object_id)
+                .map_or(*player_id, |obj| obj.owner),
             &can_view_private_for_player,
         ),
         // CR 400.2: A mulligan moves cards from one hidden zone to another.
@@ -2105,11 +2126,11 @@ fn library_zone_change_visible_to_viewer(
     viewer: PlayerId,
     object_id: ObjectId,
     to: Zone,
-    record: &crate::types::game_state::ZoneChangeRecord,
+    owner: PlayerId,
     can_view_private_for_player: &impl Fn(PlayerId) -> bool,
 ) -> bool {
     if matches!(to, Zone::Hand | Zone::Library) {
-        return viewer_has_private_access_to_player(state, viewer, record.owner);
+        return viewer_has_private_access_to_player(state, viewer, owner);
     }
 
     let Some(obj) = state.objects.get(&object_id) else {
@@ -2418,6 +2439,43 @@ mod tests {
     use crate::types::resolution::OptionalEffectFrame;
     use crate::types::zones::{ExileCostSourceZone, Zone};
     use rand::RngCore;
+
+    /// CR 701.17c + CR 400.2: an effect can find a milled card only when the
+    /// zone it moved to from the library is a PUBLIC zone. The action event
+    /// carries an `ObjectId` handle to the departed card, so a viewer without
+    /// private access must not receive one whose destination is hidden — the
+    /// same predicate that already gates the paired library-origin `ZoneChanged`.
+    #[test]
+    fn milled_event_is_gated_on_a_public_destination() {
+        let mut state = GameState::new_two_player(42);
+        let card = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Milled Card".to_string(),
+            Zone::Library,
+        );
+        let milled = |to: Zone| GameEvent::Milled {
+            player_id: PlayerId(1),
+            object_id: card,
+            to,
+        };
+        let events = vec![milled(Zone::Library), milled(Zone::Graveyard)];
+
+        // The opponent (no private access to P1's library) sees only the
+        // public-destination mill. The surviving graveyard event is the live
+        // control: a filter that dropped everything, or never ran, fails here.
+        assert_eq!(
+            filter_events_for_viewer(&events, &state, PlayerId(0)),
+            vec![milled(Zone::Graveyard)]
+        );
+
+        // The owner receives both.
+        assert_eq!(
+            filter_events_for_viewer(&events, &state, PlayerId(1)),
+            events
+        );
+    }
 
     #[test]
     fn choose_one_prompt_redacts_runtime_continuation_for_every_viewer() {
