@@ -4672,6 +4672,13 @@ fn node_reads_mutable_resolution_local_state(node: &crate::types::ability::Targe
         | TargetFilter::OriginalController
         | TargetFilter::OriginalSource
         | TargetFilter::ParentTarget
+        // CR 701.47c + CR 608.2c: `AmassedArmy` resolves through
+        // `ResolvedAbility.amassed_army_object` — a concrete captured-object snapshot on the
+        // resolving ability, not a `GameState` ledger any resolution reassigns. That is the
+        // difference from `LastCreated` above: a class member's arrival cannot write another
+        // ability's snapshot, so no pre-existing object's verdict flips. Admitted with the
+        // fixed-object family, not with the mutable slots.
+        | TargetFilter::AmassedArmy
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
         | TargetFilter::ParentTargetOwner
@@ -4797,6 +4804,7 @@ fn node_has_non_arrival_invariant_property(node: &crate::types::ability::TargetF
         | TargetFilter::OriginalController
         | TargetFilter::OriginalSource
         | TargetFilter::ParentTarget
+        | TargetFilter::AmassedArmy
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
         | TargetFilter::ParentTargetOwner
