@@ -35115,10 +35115,7 @@ mod tests {
     /// **The BATCHABILITY split is load-bearing, not decorative:** every axis a batched `Tokens`
     /// / `Counters` / `Life` item can produce through [`GameState::scheduled_collapse_axes`] is
     /// `DeferredAccrual`, and `LoopCollapseAxis::from_resource_axis` returns `Some` for exactly
-    /// those. It lives here rather than beside `unbounded_mark_kind` because `from_resource_axis`
-    /// has NO visibility modifier and so is private to this module: a row in
-    /// `analysis/resource.rs` asserting over its return value would be E0603, and widening it to
-    /// host a test would add production visibility surface for test convenience.
+    /// those.
     ///
     /// REVERT PROBE: flip `TokensCreated` to `StandingCapability` in
     /// `ResourceAxis::unbounded_mark_kind` ⇒ RED. VACUOUS-UNIVERSAL GUARD: the claim is a `∀`

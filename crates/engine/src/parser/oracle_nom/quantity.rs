@@ -10005,7 +10005,7 @@ mod tests {
         assert_eq!(q, QuantityRef::EventContextAmount);
         assert_eq!(rest, "");
 
-        // CR 120.1: bare "the damage dealt" form maps to EventContextAmount.
+        // CR 608.2h: bare "the damage dealt" form maps to EventContextAmount.
         let (rest, q) = parse_quantity_ref("the damage dealt").unwrap();
         assert_eq!(q, QuantityRef::EventContextAmount);
         assert_eq!(rest, "");
