@@ -3440,11 +3440,12 @@ pub(crate) fn castable_from_current_zone(
         // during-resolution free-cast (Memory Plunder) may drive a cast on a card
         // still in its real origin zone — the one disjunct carrying no zone test.
         || (has_during_resolution_alt_cost_permission(state, obj, player) && normal_cost_route())
-        // CR 601.2a: a hand-origin alternative-cost grant binds to the GRANTEE, not to the
-        // card's owner, so it cannot ride the owner/hand route below — an opponent-owned card
-        // in hand is refused before cost selection ever sees the grant. The predicate carries
-        // its own `Zone::Hand` test, and `exile_alt_cost_permission_supports_cast` enforces the
-        // permission's `granted_to` binding, so this admits the grantee and no one else.
+        // CR 109.5: the would-be caster of a hand-origin alternative-cost grant is the player
+        // the permission NAMES, not the card's owner, so the grant cannot ride the owner/hand
+        // route below — an opponent-owned card in hand is refused before cost selection ever
+        // sees it. (CR 601.2a governs the casting PROCEDURE that follows admission, not who is
+        // entitled to it.) `hand_alt_cost_permission_names_caster` resolves the entitlement:
+        // a named grantee must be this player, and an unnamed one falls back to the owner.
         || (has_hand_alt_cost_permission(state, obj, player) && normal_cost_route())
         || (obj.owner == player
             && (obj.zone == Zone::Hand
@@ -4409,6 +4410,27 @@ fn has_graveyard_timed_alt_cost_permission(
 
 /// CR 601.2a: Object-level alt-cost grants that allow casting a chosen card
 /// from hand without moving it first (Electrodominance).
+/// CR 109.5: the permission names its would-be caster. `granted_to: Some(p)` binds the cast
+/// to `p`. `None` is the serialized contract's LEGACY OWNER FALLBACK, not "anyone" — the
+/// classes that leave it unset (Discover, Cascade, Suspend, Airbending) exile from the
+/// caster's OWN zones, so owner and grantee coincide there and `has_exile_cast_permission`
+/// reads it as `obj.owner == player`. A hand-origin grant reaches cards the caster does not
+/// own, where that coincidence fails, so `None` must resolve to the owner here as well.
+/// Reading it as "every player" would let any seat cast out of an opponent's hand.
+fn hand_alt_cost_permission_names_caster(
+    obj: &crate::game::game_object::GameObject,
+    player: PlayerId,
+    permission: &crate::types::ability::CastingPermission,
+) -> bool {
+    match permission {
+        crate::types::ability::CastingPermission::ExileWithAltCost { granted_to, .. }
+        | crate::types::ability::CastingPermission::ExileWithAltAbilityCost {
+            granted_to, ..
+        } => granted_to.map_or(obj.owner == player, |grantee| grantee == player),
+        _ => false,
+    }
+}
+
 fn has_hand_alt_cost_permission(
     state: &GameState,
     obj: &crate::game::game_object::GameObject,
@@ -4416,7 +4438,8 @@ fn has_hand_alt_cost_permission(
 ) -> bool {
     obj.zone == Zone::Hand
         && obj.casting_permissions.iter().any(|permission| {
-            exile_alt_cost_permission_supports_cast(state, obj, player, permission, None)
+            hand_alt_cost_permission_names_caster(obj, player, permission)
+                && exile_alt_cost_permission_supports_cast(state, obj, player, permission, None)
         })
 }
 
@@ -22087,6 +22110,21 @@ mod castable_zone_authority_tests {
             !castable_from_current_zone(&state, &granted_elsewhere, PlayerId(0), None),
             "the same permission naming a DIFFERENT grantee must not admit P0: the disjunct \
              keys on the grantee binding, not on the mere presence of a grant"
+        );
+
+        let mut ungranteed = bare.clone();
+        ungranteed.casting_permissions = vec![permission(None)];
+        assert!(
+            !castable_from_current_zone(&state, &ungranteed, PlayerId(0), None),
+            "CR 109.5: an unnamed grantee is the serialized contract's legacy OWNER \
+             fallback, not \"anyone\" — P0 does not own this card, so an unnamed grant \
+             must not open an opponent's hand to them"
+        );
+        assert!(
+            castable_from_current_zone(&state, &ungranteed, PlayerId(1), None),
+            "PAIRED POSITIVE: the same unnamed grant resolves to the OWNER, who is \
+             admitted — so the arm above refuses for the grantee reason, not because the \
+             permission was ignored outright"
         );
 
         assert!(
