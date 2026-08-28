@@ -2728,6 +2728,7 @@ pub(crate) fn certify_instructed_opponent_library_departure(
         // Content-equal MODULO `zone`, on a clone of the prior object with `zone` set to
         // the current one — the clone-one-field idiom `fodder_content_eq` uses for `tapped`.
         let mut normalized = prior_obj.clone();
+        // allow-raw-zone: local clone compared modulo `zone`; no game object moves.
         normalized.zone = current_obj.zone;
         if !crate::types::game_state::object_content_eq(&normalized, current_obj) {
             continue;
@@ -6508,6 +6509,13 @@ fn board_has_keyed_trigger(
 /// one permanent; `(obj, idx, def)` can. It has NO production reader today — every non-test
 /// consumer binds `_idx` — so the argument for carrying it is the capability-deletion law
 /// above and not a current caller.
+/// CR 614.5: a replacement gets one opportunity to apply, so a consumed one-shot is spent and
+/// can never observe the growing class again. The single authority both replacement stores ask,
+/// so the two can never drift apart on what "live" means.
+fn replacement_def_is_live(def: &crate::types::ability::ReplacementDefinition) -> bool {
+    !def.is_consumed
+}
+
 fn functioning_board_replacement_defs(
     state: &GameState,
 ) -> impl Iterator<
@@ -6518,7 +6526,9 @@ fn functioning_board_replacement_defs(
     ),
 > {
     crate::game::functioning_abilities::active_replacements(state)
-        .filter(|(_, obj, _)| matches!(obj.zone, Zone::Battlefield | Zone::Command))
+        .filter(|(_, obj, def)| {
+            matches!(obj.zone, Zone::Battlefield | Zone::Command) && replacement_def_is_live(def)
+        })
         .map(|(idx, obj, def)| (obj, idx, def))
 }
 
@@ -6575,7 +6585,7 @@ fn live_floating_replacement_defs(
         .pending_damage_replacements
         .iter()
         .enumerate()
-        .filter(|(_, def)| !def.is_consumed)
+        .filter(|(_, def)| replacement_def_is_live(def))
 }
 
 /// CR 614.1 / CR 611.3 + CR 611.2: every replacement definition that can apply inside a loop
@@ -17383,7 +17393,8 @@ mod tests {
     ///   the mutated pairing, so the two vectors diverge before the host loop runs. It is
     ///   therefore not a witness for the host assertion;
     /// * filter the floating half before enumerating it (renumbers Mill from 2 to 1);
-    /// * drop the board half's zone filter, or the floating half's `!is_consumed` filter;
+    /// * drop the board half's zone filter, or EITHER half's liveness filter (both now route
+    ///   through `replacement_def_is_live`) — the consumed def then appears in `observed`;
     /// * narrow the board half's zone filter to `Zone::Battlefield` alone (i.e. delete
     ///   `| Zone::Command`) — the command emblem then disappears from `observed` only.
     ///
@@ -17408,8 +17419,15 @@ mod tests {
         // that cannot be wrong proves nothing. This is also the exact case the 2-tuple could not
         // express: `(obj, def)` cannot tell def[0] from def[1] on the same permanent.
         let host_701 = bf_object(&mut state, 701);
+        // live, CONSUMED, live — the board half's mirror of the floating fixture below. The
+        // consumed def is what makes the liveness filter in
+        // [`functioning_board_replacement_defs`] deletable-and-caught, and it pins the board
+        // index to the STORE SLOT: Moved stays 2 rather than renumbering to 1.
+        let mut consumed_701 = ReplacementDefinition::new(ReplacementEvent::Tap);
+        consumed_701.is_consumed = true;
         let defs_701 = vec![
             ReplacementDefinition::new(ReplacementEvent::AddCounter),
+            consumed_701,
             ReplacementDefinition::new(ReplacementEvent::Moved),
         ];
         let obj_701 = state
@@ -17466,8 +17484,8 @@ mod tests {
         // not two empty vectors agreeing.
         assert_eq!(
             crate::game::functioning_abilities::active_replacements(&state).count(),
-            5,
-            "reach-guard: five FUNCTIONING object-attached defs exist (700 x1 and 701 x2 on the \
+            6,
+            "reach-guard: six FUNCTIONING object-attached defs exist (700 x1 and 701 x3 on the \
              battlefield, one command-zone emblem, one graveyard) — the zone control is inside \
              the walk this filters, not outside it. If this drops by one the emblem was refused \
              by `object_functions` and the `| Zone::Command` disjunct is unprobed again"
@@ -17490,7 +17508,9 @@ mod tests {
                 // PRODUCTION'S EXACT GATE, character-for-character — see
                 // [`functioning_board_replacement_defs`]. A narrower oracle (`== Battlefield`)
                 // makes the row blind to the `| Zone::Command` disjunct being deleted.
-                .filter(|(_, obj, _)| matches!(obj.zone, Zone::Battlefield | Zone::Command))
+                .filter(|(_, obj, def)| {
+                    matches!(obj.zone, Zone::Battlefield | Zone::Command) && !def.is_consumed
+                })
                 .map(|(idx, obj, def)| (Some(obj.id), idx, def.event.clone()))
                 .chain(
                     state
@@ -17537,7 +17557,7 @@ mod tests {
             [
                 (700, 0, ReplacementEvent::CreateToken),
                 (701, 0, ReplacementEvent::AddCounter),
-                (701, 1, ReplacementEvent::Moved),
+                (701, 2, ReplacementEvent::Moved),
                 (703, 0, ReplacementEvent::DamageDone)
             ]
             .into_iter()
