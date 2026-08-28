@@ -2296,10 +2296,10 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
     // current-stack entry — the extrapolation models future resolutions the window never
     // observed (grown kinds) and re-runs observed kinds in states that differ on projected
     // axes, where a resolver's choice surface (proliferate eligibility over player counters,
-    // CR 701.34a) can open a prompt the AST-level item-4 scan cannot see. Verdicts come from
+    // CR 701.34a) can open a prompt the AST-level on-stack read scan cannot see. Verdicts come from
     // the ability_scan classifier (pure fact-producers — rejection is decided ONLY here);
     // `FreeUnlessReplacements` additionally requires the CR 616.1 environmental guard below.
-    // THIS block is the single gate seam for resolution-choice rejection; item 3 gates a
+    // THIS block is the single gate seam for resolution-choice rejection; grown places gate a
     // different fact (announcement-time ordering input).
     //
     // EXTENSION POINT — pinned fixed choices (CR 732.2a): a proposal MAY pre-specify choices in
@@ -5933,7 +5933,7 @@ fn normalized_stack_entries(state: &GameState) -> Vec<(StackEntry, Option<Trigge
         .collect()
 }
 
-/// Stack coverability (item 2): `prior` is an order-preserving bottom-up
+/// Stack coverability: `prior` is an order-preserving bottom-up
 /// SUBSEQUENCE of `current` (2a), at least one normalized kind strictly grew, and
 /// EVERY kind that grew already occurs in `prior` with count ≥ 1 (2b — a
 /// never-before-seen 0→1 entry is rejected outright, its resolution behavior never
@@ -5988,7 +5988,7 @@ fn stack_covers(
 ///
 /// Contract boundary: this gate owns only ANNOUNCEMENT-time ordering input (targets,
 /// divide/distribute, cross-target constraints). Resolution-time choices (CR 608.2d —
-/// proliferate/populate/sacrifice-choice/optional/…) are owned by item 6
+/// proliferate/populate/sacrifice-choice/optional/…) are owned by the resolution-choice gate
 /// (`stack_entry_resolution_choice_freedom`), applied to every current-stack entry, not just
 /// grown ones.
 fn stack_entry_has_no_ordering_input(state: &GameState, entry: &StackEntry) -> bool {
@@ -6055,7 +6055,7 @@ pub(crate) fn forced_unique_targeting(
     }
 }
 
-/// Item 4: does this stack entry's AST read ANY still-projected axis (the
+/// Does this stack entry's AST read ANY still-projected axis (the
 /// narrowed set: player-level monotone resources/tallies + the journal/count block)?
 /// Delegates to the scan walker's third axis over the embedded ability (which itself
 /// recurses `sub_ability`/`else_ability` and the ability-level `AbilityCondition`),
@@ -6093,7 +6093,7 @@ fn stack_entry_reads_projected_resource(entry: &StackEntry) -> bool {
     }
 }
 
-/// Item 6: can resolving this stack entry offer a resolution-time player
+/// Can resolving this stack entry offer a resolution-time player
 /// choice (a non-priority `WaitingFor` the C2/no-ordering-input gate cannot see)?
 /// Delegates to the ability_scan choice classifier over the embedded ability.
 /// Exhaustive over all four `StackEntryKind`s (no wildcard): only a
@@ -6151,11 +6151,11 @@ fn stack_entry_resolution_choice_freedom(
     }
 }
 
-/// Item 5, the second scan surface: does ANY live off-stack fire-time condition read a
+/// The second scan surface: does ANY live off-stack fire-time condition read a
 /// still-projected resource? A dormant intervening-if / replacement / condition-gated static
 /// that reads a projected axis (CR 603.4 / CR 614.1 / CR 604.1 / CR 613.1 / CR 101.2) produces
-/// NO stack entry on either compared frame, so item 4 cannot see it — yet it arms
-/// mid-extrapolation and breaks the replay. Run once on `current` (item-1 board equality makes
+/// NO stack entry on either compared frame, so the on-stack scan cannot see it — yet it arms
+/// mid-extrapolation and breaks the replay. Run once on `current` (board equality makes
 /// the definition sets identical). Fail-closed: any surface the scan cannot classify ⇒ reject.
 ///
 /// Keyword-synthesized granted triggers ARE scanned here — loop (iv), via
@@ -6164,14 +6164,14 @@ fn stack_entry_resolution_choice_freedom(
 /// and (for off-zone grants, and in any state where layer 6 has not reinstalled them) never
 /// land on `obj.trigger_definitions`, so loop (i) cannot be relied on to reach them.
 ///
-/// Of the four granted-keyword conditions the item-5 classifier flags as projected-reading,
+/// Of the four granted-keyword conditions this scan flags as projected-reading,
 /// only Dethrone is a GENUINE projected read: CR 702.105a compares the defending player's
 /// `LifeTotal` to the max among all players (CR 119 life is a PROJECTED axis this pass zeroes).
 /// Increment / Soulbond / Training are fail-closed false positives (`ManaSpentToCast` /
 /// control-filter / co-attacker-power reads the `Axes::CONSERVATIVE` walk cannot descend, all
 /// of them cast/combat/object state gate (1) strict-compares). Because loop (iv) scans the
 /// synthesized defs, a runtime-GRANTED Dethrone whose dormant condition would arm
-/// mid-extrapolation is caught, which makes item 5 structurally complete for granted keywords
+/// mid-extrapolation is caught, which makes this scan structurally complete for granted keywords
 /// rather than a hand-list. `game::triggers`'
 /// `granted_keyword_trigger_conditions_projected_reads_are_exactly_known_gaps` pins the
 /// flagged set so a NEW projected-reading granted-keyword condition surfaces as a signal.
@@ -8849,8 +8849,8 @@ mod tests {
     }
 
     // ===================================================================
-    // Forced-unique targeted-cover discriminators. Grown entries pass item-4
-    // (pure-controller Typed) so item-3 is the sole decider. Verbatim
+    // Forced-unique targeted-cover discriminators. Grown entries pass the on-stack
+    // read scan (pure-controller Typed) so the ordering-input gate is the sole decider. Verbatim
     // Vito/Sanguine drain shape.
     // ===================================================================
 
@@ -8887,7 +8887,7 @@ mod tests {
 
     /// POSITIVE: 2p growing targeted drain `[D,D]→[D,D,D]`. Both fixes ⇒ cover TRUE
     /// (item-4: pure-controller Typed not projected; item-3: the single opponent is
-    /// forced-unique). REVERT-PROBES: undo item-3
+    /// forced-unique). REVERT-PROBES: undo the ordering-input gate
     /// (`targets.is_empty()`) → FALSE; undo item-4 (`Typed=>CONSERVATIVE`) → FALSE.
     #[test]
     fn n1_forced_unique_targeted_cover_true() {
@@ -8920,7 +8920,7 @@ mod tests {
         current.stack.push_back(drain_entry(21, vec![]));
         current.stack.push_back(drain_entry(22, vec![]));
 
-        // Reach-guard: item-4 PASSES so the FALSE below is
+        // Reach-guard: the on-stack read scan PASSES so the FALSE below is
         // attributable to item-3's ≥2-legal rejection, not an upstream projected read.
         let ability = current.stack[2].ability().unwrap();
         assert!(
@@ -10658,7 +10658,7 @@ mod tests {
         current.stack.push_back(drain_prolif(21));
         current.stack.push_back(drain_prolif(22));
 
-        // Reach-guard: item-3 AND item-4 PASS for this entry,
+        // Reach-guard: the ordering-input gate AND the on-stack read scan PASS for this entry,
         // so the FALSE below is ATTRIBUTABLE to item-6's Proliferate veto — not an
         // upstream conjunct short-circuiting first.
         let ability = current.stack[2].ability().unwrap();
@@ -11789,7 +11789,7 @@ mod tests {
     }
 
     /// A NON-grown battlefield permanent carries an ability whose
-    /// effect reads the sibling (board-aggregate) axis — the firewall (item 2)
+    /// effect reads the sibling (board-aggregate) axis — the firewall
     /// rejects even though the permanent is content-equal (abilities uncompared).
     #[test]
     fn object_growth_r_f_sibling_reading_ability_rejects() {
@@ -17215,7 +17215,7 @@ mod tests {
 
     #[test]
     fn floating_life_doubler_must_be_observed() {
-        // E-3 item 4: the cover's rejection of floating LIFE defs is a life-class gate in
+        // The cover's rejection of floating LIFE defs is a life-class gate in
         // game/replacement.rs, NOT the firewall. This row measures the FIREWALL on the life axis.
         let quiet = two_player_board_with_one_bare_permanent();
         assert_only_the_life_replacement_half_can_speak(&quiet);
