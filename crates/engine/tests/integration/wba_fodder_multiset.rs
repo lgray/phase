@@ -546,8 +546,7 @@ fn batched_mint_raises_real_entry_events_per_minted_token() {
         .objects
         .get_mut(&observer)
         .expect("the just-created observer host is in `objects`")
-        .trigger_definitions
-        .push(
+        .push_printed_trigger(
             TriggerDefinition::new(TriggerMode::ChangesZone)
                 .destination(Zone::Battlefield)
                 .execute(AbilityDefinition::new(
