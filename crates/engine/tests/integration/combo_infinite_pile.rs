@@ -2483,6 +2483,330 @@ fn loop_collapse_prompt_labels_multi_axis_mixed() {
     );
 }
 
+// ─────────── CR 732.2a: the collapse boundary's terminal beat, per axis ───────────
+
+/// The real 4p boundary with `axis`'s stash grafted in place of the dump's own, accepted at
+/// `bound`. Clearing first is what ISOLATES the axis: the dump's natural `Tokens` stash writes a
+/// beat on its way through and would rescue the ending point incidentally. `register_pending_-
+/// materialization` is the same single-authority writer the accept path uses.
+///
+/// Returns the boundary state and the Saproling that bears the counter axes.
+fn census_boundary(axis: LoopCollapseAxis, bound: u32) -> (GameState, ObjectId) {
+    use engine::types::counter::CounterType;
+    use engine::types::game_state::CounterGrowth;
+
+    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
+        .expect("the real 4p offer dump must deserialize into the current GameState");
+    drive_all_accept_n(&mut state, bound);
+    let creature = *p0_saproling_ids(&state)
+        .iter()
+        .next()
+        .expect("P0 controls at least one Saproling to bear a counter axis");
+    let counters = || {
+        PersistentAxisMaterialization::Counters(vec![CounterGrowth {
+            object: creature,
+            counter: CounterType::Plus1Plus1,
+            per_cycle_delta: CENSUS_PER_CYCLE_DELTA,
+        }])
+    };
+    let life = || PersistentAxisMaterialization::Life {
+        player: P0,
+        per_cycle_delta: CENSUS_PER_CYCLE_DELTA,
+    };
+    state.pending_unbounded_materialization.clear();
+    match axis {
+        LoopCollapseAxis::Counters => state.register_pending_materialization(P0, counters()),
+        LoopCollapseAxis::Life => state.register_pending_materialization(P0, life()),
+        LoopCollapseAxis::Mixed => {
+            state.register_pending_materialization(P0, counters());
+            state.register_pending_materialization(P0, life());
+        }
+        LoopCollapseAxis::Tokens => panic!("the Tokens axis is the dump's own stash, not a graft"),
+    }
+    // Reach-guard: the graft is the stash the boundary will read.
+    assert!(
+        state
+            .pending_unbounded_materialization
+            .get(&P0)
+            .is_some_and(|items| !items.is_empty()),
+        "reach-guard: {axis:?} must leave P0 a non-empty stash for the boundary to prompt on"
+    );
+    assert_eq!(
+        collapse_axis_at_boundary(&mut state),
+        axis,
+        "reach-guard: the boundary prompt must label the grafted axis, or this row measures a \
+         different stash than it names"
+    );
+    (state, creature)
+}
+
+/// Per-cycle delta every grafted census axis carries, so a delivered count is `delta x amount`
+/// rather than a bare echo of the amount submitted.
+const CENSUS_PER_CYCLE_DELTA: u32 = 2;
+
+/// **The `Counters` and `Life` sibling axes end where a seat can act, at BOTH ends of the
+/// delivered range.** Their applied items write no `waiting_for` at any amount, so unlike the
+/// token mint neither is rescued incidentally — which is why the wedge they used to reach was not
+/// a property of "zero delivery" but of "no applied item wrote a beat" (issue #7975).
+///
+/// The `Mixed` two-axis row is the sibling that shows the property is not an axis identity, and
+/// the shipped `real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_life`
+/// is the negative: its stash RETAINS the dump's beat-writing `Tokens` axis and stays green
+/// unchanged.
+///
+/// The counter delivery is asserted (this board does not observe the counter class, so the batched
+/// apply lands); life delivery deliberately is NOT, because the same board DOES observe the life
+/// class and the boundary declines that axis — the sibling row above is what pins that decline.
+#[test]
+fn per_axis_collapse_ends_where_a_seat_can_act_at_both_ends() {
+    use engine::types::counter::CounterType;
+
+    const BOUND: u32 = 3;
+
+    for (axis, amount) in [
+        (LoopCollapseAxis::Counters, 0),
+        (LoopCollapseAxis::Counters, BOUND),
+        (LoopCollapseAxis::Life, 0),
+        (LoopCollapseAxis::Life, BOUND),
+        (LoopCollapseAxis::Mixed, 0),
+        (LoopCollapseAxis::Mixed, BOUND),
+    ] {
+        let (mut state, creature) = census_boundary(axis, BOUND);
+        let boundary_beat = state.waiting_for.clone();
+        let armed: Vec<(PlayerId, usize)> = state
+            .players
+            .iter()
+            .map(|p| {
+                (
+                    p.id,
+                    engine::ai_support::legal_actions_for_viewer(&state, p.id)
+                        .0
+                        .len(),
+                )
+            })
+            .collect();
+        assert!(
+            armed.iter().any(|(_, n)| *n > 0),
+            "control: the boundary prompt admits a move, so the terminal-beat surface below reads \
+             a live instrument ({axis:?} @ {amount}), got {armed:?}"
+        );
+        let counters_before = state.objects[&creature]
+            .counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0);
+
+        apply(&mut state, P0, GameAction::SubmitPayAmount { amount })
+            .expect("P0 submits the finite loop-collapse count");
+
+        if matches!(axis, LoopCollapseAxis::Counters | LoopCollapseAxis::Mixed) {
+            let delivered = state.objects[&creature]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied()
+                .unwrap_or(0)
+                - counters_before;
+            assert_eq!(
+                delivered,
+                CENSUS_PER_CYCLE_DELTA * amount,
+                "{axis:?} @ {amount}: the batched counter axis delivers delta x amount"
+            );
+        }
+        assert_ne!(
+            state.waiting_for, boundary_beat,
+            "CR 732.2a ({axis:?} @ {amount}): the ending point is the turn interpreter's beat, not \
+             the boundary prompt left untouched"
+        );
+        super::wba_loop_firewall_interposition::answer_terminal_beat(
+            &state,
+            &format!("CR 732.2a: {axis:?} axis at amount {amount}"),
+        );
+    }
+}
+
+/// **MULTI-AUTHORITY: a second seat holding its own stash is still prompted, and the exit does not
+/// overwrite that prompt.** The first controller's submit re-drains, the drain finds the next APNAP
+/// seat with a stash and raises ITS collapse prompt while leaving the typed phase cursor standing —
+/// so the exit's cursor conjunct is FALSE and it propagates rather than asking `auto_advance` for a
+/// beat. This is the branch the single-stash rows never take.
+#[test]
+fn a_second_stash_holding_seat_is_prompted_after_the_first_collapses() {
+    let (mut state, _) = census_boundary(LoopCollapseAxis::Life, 3);
+    // Give a SECOND seat its own stash, through the same single-authority writer.
+    state.register_pending_materialization(
+        P1,
+        PersistentAxisMaterialization::Life {
+            player: P1,
+            per_cycle_delta: 1,
+        },
+    );
+    let second_before = state
+        .pending_unbounded_materialization
+        .get(&P1)
+        .map_or(0, Vec::len);
+    assert_eq!(
+        second_before, 1,
+        "reach-guard: the second seat holds exactly the stash this row grafted"
+    );
+
+    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: 3 })
+        .expect("the FIRST controller submits its finite loop-collapse count");
+
+    assert!(
+        matches!(
+            state.waiting_for,
+            WaitingFor::PayAmountChoice {
+                player,
+                resource: PayableResource::LoopCollapse { .. },
+                ..
+            } if player == P1
+        ),
+        "the re-drain must raise the SECOND seat's collapse prompt, got {:?}",
+        state.waiting_for
+    );
+    assert!(
+        state.pending_phase_transition_progress.is_some(),
+        "the typed phase cursor stays standing while a seat still owes a collapse count — \
+         nulling it would strand the prompt"
+    );
+    assert_eq!(
+        state
+            .pending_unbounded_materialization
+            .get(&P1)
+            .map_or(0, Vec::len),
+        second_before,
+        "the first seat's submit consumes only its OWN stash"
+    );
+}
+
+/// **The exit's second conjunct, discriminating: an applier that leaves a live PROMPT keeps it.**
+/// A copy-token minted from an Aura profile with a legal host on the board is given a host choice
+/// by its controller as it enters (CR 303.4f: an Aura entering by any means other than resolving
+/// as an Aura spell, with no host specified by the effect). The mint's seam writes
+/// `ReturnAsAuraTarget` and parks its continuation BELOW the child boundary, so the top-only
+/// `active_copy_token()` pause guard never fires and that live prompt reaches the arm's exit.
+///
+/// An exit conditioned on the phase cursor ALONE overwrites it with `Priority` and destroys the
+/// host choice; the shipped two-conjunct exit sees a standing beat that is no longer the collapse
+/// prompt and defers to it. That is what this row pins, and it is why the conjunct is not
+/// decoration on the cursor read.
+///
+/// The UNGRAFTED board runs the identical assertion as the paired control: there the applier writes
+/// a `Priority` beat, so `ReturnAsAuraTarget` must NOT be standing — a graft that silently did
+/// nothing would make both arms report the same thing.
+#[test]
+fn an_applier_prompt_at_the_collapse_exit_is_not_overwritten() {
+    use engine::game::printed_cards::intrinsic_copiable_values;
+    use engine::types::ability::{TargetFilter, TypeFilter, TypedFilter};
+    use engine::types::game_state::TokenGrowth;
+    use engine::types::keywords::Keyword;
+
+    // (grafted, expects_aura_prompt)
+    for grafted in [true, false] {
+        let mut state: GameState = serde_json::from_str(&OFFER_STATE)
+            .expect("the real 4p offer dump must deserialize into the current GameState");
+        drive_all_accept_n(&mut state, 2);
+        let fodder = *p0_saproling_ids(&state)
+            .iter()
+            .next()
+            .expect("P0 controls at least one Saproling to lift a copiable profile from");
+        let base = intrinsic_copiable_values(&state.objects[&fodder]);
+
+        if grafted {
+            let mut profile = base.clone();
+            profile.name = "Grafted Aura".to_string();
+            profile.card_types.core_types = vec![CoreType::Enchantment];
+            profile.card_types.subtypes = vec!["Aura".to_string()];
+            profile.power = None;
+            profile.toughness = None;
+            profile
+                .keywords
+                .push(Keyword::Enchant(TargetFilter::Typed(TypedFilter::new(
+                    TypeFilter::Creature,
+                ))));
+            // Graft reach-guard: the base profile's own inputs read beside the grafted ones, so a
+            // graft that did not take is visible rather than silent.
+            let enchant_kws = |p: &engine::types::ability::CopiableValues| {
+                p.keywords
+                    .iter()
+                    .filter(|k| matches!(k, Keyword::Enchant(_)))
+                    .count()
+            };
+            assert_eq!(
+                (
+                    base.card_types.core_types.clone(),
+                    base.card_types.subtypes.clone(),
+                    enchant_kws(&base)
+                ),
+                (vec![CoreType::Creature], vec!["Saproling".to_string()], 0),
+                "graft control: the fodder's PRINTED profile is a plain Saproling creature"
+            );
+            assert_eq!(
+                (
+                    profile.card_types.core_types.clone(),
+                    profile.card_types.subtypes.clone(),
+                    enchant_kws(&profile)
+                ),
+                (vec![CoreType::Enchantment], vec!["Aura".to_string()], 1),
+                "graft control: the grafted profile is an Aura enchantment that enchants creatures"
+            );
+            state.pending_unbounded_materialization.clear();
+            state.register_pending_materialization(
+                P0,
+                PersistentAxisMaterialization::Tokens(Box::new(TokenGrowth {
+                    profile: Box::new(profile),
+                    per_cycle_delta: 1,
+                })),
+            );
+        }
+
+        drive_priority_to_next_boundary(&mut state);
+        assert!(
+            matches!(
+                state.waiting_for,
+                WaitingFor::PayAmountChoice {
+                    resource: PayableResource::LoopCollapse { .. },
+                    ..
+                }
+            ),
+            "reach-guard (grafted={grafted}): at the collapse prompt, got {:?}",
+            state.waiting_for
+        );
+
+        apply(&mut state, P0, GameAction::SubmitPayAmount { amount: 2 })
+            .expect("P0 submits the finite loop-collapse count");
+
+        match &state.waiting_for {
+            WaitingFor::ReturnAsAuraTarget {
+                player,
+                legal_targets,
+                ..
+            } => {
+                assert!(
+                    grafted,
+                    "control: the ungrafted token mint writes a Priority beat, so no host choice \
+                     can be standing at the exit"
+                );
+                assert!(
+                    !legal_targets.is_empty(),
+                    "CR 303.4f: the preserved host choice must offer the controller a host"
+                );
+                assert!(
+                    !engine::ai_support::legal_actions_for_viewer(&state, *player)
+                        .0
+                        .is_empty(),
+                    "the chooser can answer the preserved host choice"
+                );
+            }
+            other => assert!(
+                !grafted,
+                "CR 303.4f: the Aura mint's host choice must survive the collapse exit, got \
+                 {other:?}"
+            ),
+        }
+    }
+}
+
 /// UNIT (CR 732.2a): `LoopCollapseAxis::from_materializations` maps each stash shape to its
 /// label — including the LOAD-BEARING observed-growth `DriveSequence → axis` path (the Kilo
 /// combo pushes a single `DriveSequence` with `Counter(Other, Other)`, NOT a batched
@@ -3017,6 +3341,81 @@ fn low3_unobserved_life_growth_accept_registers_batched_life() {
             .is_some_and(|axes| axes.contains(&ResourceAxis::Life(P0))),
         "the accepted loop marks the Life axis ∞ for P0"
     );
+}
+
+/// **CLASS END (b): an axis whose applied items NEVER write a beat, at FULL delivery.** The
+/// production `Lifedynamo` rig routes its own batched `Life` stash — nothing is grafted — and a
+/// batched life gain writes no `waiting_for`, so at the accepted bound the arm's exit is the only
+/// thing that can produce an ending point (CR 732.2a). Both arms run: at the bound the life moves
+/// by exactly the accepted count AND a seat can act; at `0` no life moves and a seat can still act.
+///
+/// Neither arm is green alone, and each refuses a different wrong repair. A repair keyed on
+/// `amount == 0` never fires at the bound, so the full-delivery arm reds. A repair conditioned on
+/// something having been delivered passes the full-delivery arm and reds the `0` arm.
+#[test]
+fn low3_batched_life_collapse_ends_where_a_seat_can_act_at_both_ends() {
+    for amount in [1u32, 0] {
+        let mut runner = low3_life_engine_accepted(Low3BoardEtbTrigger::Absent);
+
+        // Reach-guard: the stash under test is the PRODUCTION batched `Life` item, not a graft and
+        // not the beat-writing replay route.
+        let stash = runner
+            .state()
+            .pending_unbounded_materialization
+            .get(&P0)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            stash.iter().any(
+                |m| matches!(m, PersistentAxisMaterialization::Life { player, .. } if *player == P0)
+            ),
+            "reach-guard: the accept must route a batched Life stash for P0, got {stash:?}"
+        );
+        assert!(
+            !stash
+                .iter()
+                .any(|m| matches!(m, PersistentAxisMaterialization::DriveSequence { .. })),
+            "reach-guard: a DriveSequence would rescue the beat incidentally, defeating the arm"
+        );
+
+        let state = runner.state_mut();
+        drive_priority_to_next_boundary(state);
+        let WaitingFor::PayAmountChoice {
+            resource: PayableResource::LoopCollapse { .. },
+            max,
+            ..
+        } = &state.waiting_for
+        else {
+            panic!(
+                "reach-guard: the CR 500.5 boundary must prompt the collapse count, got {:?}",
+                state.waiting_for
+            )
+        };
+        assert_eq!(
+            *max, 1,
+            "CR 732.2c: the prompt is bounded by the accepted count, so amount 1 IS full delivery"
+        );
+        let boundary_beat = state.waiting_for.clone();
+        let life_before = life_of(state, P0);
+
+        apply(state, P0, GameAction::SubmitPayAmount { amount })
+            .expect("P0 submits the finite loop-collapse count");
+
+        assert_eq!(
+            life_of(state, P0) - life_before,
+            amount as i32,
+            "the batched Life axis delivers per_cycle_delta x {amount}"
+        );
+        assert_ne!(
+            state.waiting_for, boundary_beat,
+            "CR 732.2a: the ending point is the turn interpreter's beat, not the boundary prompt \
+             left untouched (amount {amount})"
+        );
+        super::wba_loop_firewall_interposition::answer_terminal_beat(
+            state,
+            &format!("CR 732.2a: production batched Life at amount {amount}"),
+        );
+    }
 }
 
 /// Which FUNCTIONING board trigger (if any) [`low3_life_engine_accepted`] installs before the loop

@@ -1803,6 +1803,50 @@ fn truncated_by_interposer(n: u32, depth: usize) -> (GameState, ObjectId, Vec<(P
     collapse_with_interposer(n, depth, graft_narcomoeba)
 }
 
+/// The uniform CR 732.2a terminal-beat assertion every `LoopCollapse` collapse row shares: some
+/// seat's production legal-action surface is non-empty at the beat the submit arm returned, that
+/// seat's FIRST candidate is accepted through `apply()`, and the game is at `Priority` afterwards.
+///
+/// Shape-agnostic deliberately. The entered phase's CR 703.1 turn-based action can stand ahead of
+/// the CR 117.3a priority grant — CR 508.1's declare-attackers does, on the r6a witherbloom board
+/// — so a `Priority` matcher on the returned beat itself would red there while CR 732.2a is
+/// satisfied.
+///
+/// Driven on a CLONE and the post-action clone is returned, so a caller can assert further
+/// without re-driving.
+pub fn answer_terminal_beat(state: &GameState, why: &str) -> GameState {
+    let surface: Vec<(PlayerId, usize)> = state
+        .players
+        .iter()
+        .map(|p| (p.id, legal_actions_for_viewer(state, p.id).0.len()))
+        .collect();
+    let (seat, actions) = state
+        .players
+        .iter()
+        .map(|p| (p.id, legal_actions_for_viewer(state, p.id).0))
+        .find(|(_, acts)| !acts.is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "{why}: CR 732.2a — no seat can act at the terminal beat {:?}, surface {surface:?}",
+                state.waiting_for
+            )
+        });
+    let mut answered = state.clone();
+    apply(&mut answered, seat, actions[0].clone()).unwrap_or_else(|e| {
+        panic!(
+            "{why}: {seat:?}'s first production candidate {:?} must be accepted at the terminal \
+             beat {:?}, got {e:?}",
+            actions[0], state.waiting_for
+        )
+    });
+    assert!(
+        matches!(answered.waiting_for, WaitingFor::Priority { .. }),
+        "{why}: CR 732.2a — answering the terminal beat reaches a priority window, got {:?}",
+        answered.waiting_for
+    );
+    answered
+}
+
 /// **An interposer the replay reaches truncates the collapse to a WHOLE-PERIOD PREFIX, rolls
 /// the aborted iteration back entire, and leaves no stale ∞ mark.**
 ///
@@ -1880,13 +1924,15 @@ fn an_interposer_truncates_the_collapse_to_a_whole_period_prefix() {
 /// `depth = 1` arm; a drive that ignores interposers makes them equal and reds the `depth = 0`
 /// arm. Both prefixes are legal answers under the collapse prompt's `min: 0` floor.
 ///
-/// **The `depth = 0` arm pins a CR 732.2a DEFECT, deliberately.** CR 732.2a requires a taken
-/// shortcut's ending point to "be a place where a player has priority". At zero delivery the
-/// board is left on the boundary's own `LoopCollapse` prompt — the untouched one, byte-identical
-/// to the beat that was just answered — and the stash that prompt reads was already taken, so
-/// `SubmitPayAmount` is the only action the prompt admits and it refuses at every amount. The row
-/// asserts what the engine does today rather than what the rule requires, so a repair has to come
-/// through here and say so.
+/// **The `depth = 0` arm pins CR 732.2a's ending point at ZERO delivery** — the reachability that
+/// needs no applied item at all. CR 732.2a requires a taken shortcut's ending point to "be a place
+/// where a player has priority"; zero delivery leaves no applier to write a beat, so the beat is
+/// the submit arm's own exit asking `turns::auto_advance` for one. Its four legs read that beat:
+/// it is no longer the `LoopCollapse` prompt, it is no longer the boundary beat left untouched,
+/// the granted seat has a legal action, and drawing that seat's first candidate is accepted and
+/// moves the beat. Each leg carried the opposite polarity while the boundary wedged (issue #7975)
+/// and is INVERTED rather than dropped, so the per-seat surface reading that caught the wedge is
+/// still what this arm measures.
 #[test]
 fn the_delivered_prefix_tracks_the_interposers_depth() {
     const N: u32 = 3;
@@ -1932,9 +1978,9 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
         "the aborted iteration is rolled back whole, so the interposer is still in P1's own \
          library, by ObjectId"
     );
-    // CR 732.2a is VIOLATED here and the assertion pins the violation, not the rule.
+    // CR 732.2a: the beat the exit returned is no longer the prompt that was just answered.
     assert!(
-        matches!(
+        !matches!(
             empty.waiting_for,
             WaitingFor::PayAmountChoice {
                 player,
@@ -1943,30 +1989,28 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
                 ..
             } if player == P0
         ),
-        "measured: a zero-delivery collapse leaves the untouched LoopCollapse prompt standing, \
-         which is NOT a place where a player has priority, got {:?}",
+        "CR 732.2a: a zero-delivery collapse must not leave its own LoopCollapse prompt standing \
+         as the ending point, got {:?}",
         empty.waiting_for
     );
-    // And it does not merely LOOK wrong: it does not advance. The stash this prompt reads was
-    // taken by the submit that produced it, so the one action the beat admits leaves the board
-    // exactly where it stands — asserted on the state, not on the refusal's shape.
-    let mut retry = empty.clone();
-    let _ = apply(&mut retry, P0, GameAction::SubmitPayAmount { amount: 0 });
-    assert_eq!(
-        retry.waiting_for, empty.waiting_for,
-        "CR 732.2a: no action advances the zero-delivery beat, so the board is stuck on a prompt \
-         that is not a priority window"
+    // Not a beat that merely LOOKS different: it is answerable. Drawing the first candidate off
+    // the live surface — the action the wedge had no seat to offer at all — is accepted and moves
+    // the beat.
+    let answered = answer_terminal_beat(&empty, "CR 732.2a zero-delivery ending point");
+    assert_ne!(
+        answered.waiting_for, empty.waiting_for,
+        "CR 732.2a: answering the zero-delivery beat ADVANCES it; a beat that survives its own \
+         answer is the wedge wearing a new shape"
     );
-    // Stronger than one action refusing: the engine's OWN legal-action surface is empty for every
-    // seat, so the wedge is a property of the board and not of the amount submitted above. Its
-    // control is `armed`, read on the SAME beat one submit earlier — equal by value here, so both
-    // readings take one dispatch path through `legal_actions_full` and only the wedge separates
-    // them.
-    assert_eq!(
+    // The per-seat surface reading, the strongest thing this arm measures. Its control is `armed`,
+    // read on the SAME beat one submit earlier — both readings take one dispatch path through
+    // `legal_actions_full`, so only the exit separates them.
+    assert_ne!(
         empty.waiting_for, boundary_beat,
-        "the zero-delivery beat is the boundary beat left untouched, got {:?}",
-        empty.waiting_for
+        "CR 732.2a: the zero-delivery ending point is the turn interpreter's beat, not the \
+         boundary beat left untouched"
     );
+    let granted = empty.priority_player;
     let stuck: Vec<(PlayerId, usize)> = empty
         .players
         .iter()
@@ -1974,12 +2018,13 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
         .collect();
     assert!(
         armed.iter().any(|(_, n)| *n > 0),
-        "control: the same beat one submit earlier DID admit a move, so the empty-surface leg \
-         below can red on this branch, got {armed:?}"
+        "control: the same beat one submit earlier DID admit a move, so the surface leg below \
+         reads a live instrument, got {armed:?}"
     );
     assert!(
-        stuck.iter().all(|(_, n)| *n == 0),
-        "CR 732.2a: the zero-delivery beat leaves EVERY seat without a legal action, got {stuck:?}"
+        stuck.iter().any(|(seat, n)| *seat == granted && *n > 0),
+        "CR 732.2a: the zero-delivery beat leaves the granted seat {granted:?} a legal action, \
+         got {stuck:?}"
     );
     assert!(
         !empty
@@ -2024,6 +2069,76 @@ fn the_delivered_prefix_tracks_the_interposers_depth() {
         "control: a priority beat leaves someone a move, so the empty-surface leg above can red, \
          got {live:?}"
     );
+}
+
+/// **The wedge needs no interposer: an UNTOUCHED mill board answering `0` ends where a seat can
+/// act.** The paired sibling is [`the_delivered_prefix_tracks_the_interposers_depth`]'s
+/// `depth = 0` arm, which reaches zero delivery by TRUNCATION on a grafted board. This row
+/// reaches it the way the prompt's own `min: 0` advertises — the controller simply names 0 on a
+/// board with nothing grafted into it — so a repair keyed on an interposer-truncated abort passes
+/// that arm and reds here.
+#[test]
+fn an_interposer_free_zero_delivery_collapse_ends_where_a_seat_can_act() {
+    const N: u32 = 3;
+
+    let mut state = offer_state(pinned_mill_base());
+    let before = library_sizes(&state);
+    declare_and_accept_all(&mut state, N);
+    assert!(
+        took_the_replay(&state, "interposer-free zero delivery"),
+        "reach-guard: the accepted period takes the REPLAY, the route that reaches zero delivery \
+         without an interposer"
+    );
+    // Reach-guard, and the reading that identifies this board as the mill board: the accept marks
+    // the library axis the sibling rows measure declines on.
+    assert!(
+        state
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|axes| axes.contains(&ResourceAxis::LibraryDelta(P1))),
+        "reach-guard: the accepted mill loop marks {P1:?}'s LibraryDelta axis, so this is the \
+         board whose declines the sibling rows read"
+    );
+
+    drive_to_collapse_boundary(&mut state);
+    let boundary_beat = state.waiting_for.clone();
+    let armed: Vec<(PlayerId, usize)> = state
+        .players
+        .iter()
+        .map(|p| (p.id, legal_actions_for_viewer(&state, p.id).0.len()))
+        .collect();
+    assert!(
+        armed.iter().any(|(_, n)| *n > 0),
+        "control: the boundary prompt itself admits a move, so the surface leg below reads a live \
+         instrument, got {armed:?}"
+    );
+
+    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: 0 })
+        .expect("CR 732.2a: 0 is the value the prompt's own `min: 0` advertises");
+
+    // Zero delivery, on the same accessor the sibling rows use: nothing was milled.
+    let after = library_sizes(&state);
+    let declines: Vec<(PlayerId, i64)> = before
+        .iter()
+        .zip(after.iter())
+        .filter(|((id, _), _)| *id != P0)
+        .map(|((id, b), (_, a))| (*id, *b as i64 - *a as i64))
+        .collect();
+    assert!(
+        !declines.is_empty(),
+        "reach-guard: the dump seats opponents for the Altar to mill"
+    );
+    assert!(
+        declines.iter().all(|(_, d)| *d == 0),
+        "a 0 collapse delivers nothing, so no victim is milled: {declines:?}"
+    );
+
+    assert_ne!(
+        state.waiting_for, boundary_beat,
+        "CR 732.2a: the ending point is the turn interpreter's beat, not the boundary prompt left \
+         untouched"
+    );
+    answer_terminal_beat(&state, "CR 732.2a interposer-free zero delivery");
 }
 
 /// **A MANDATORY, CHOICE-FREE interposer does not truncate: the collapse still delivers its full

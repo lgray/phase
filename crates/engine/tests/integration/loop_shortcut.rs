@@ -9261,6 +9261,28 @@ fn ai_collapse_candidate_is_clamped_to_the_accepted_bound() {
     // a restatement of the generator.
     apply(&mut state, P0, candidates[0].clone())
         .expect("the AI's generated candidate must be accepted by the reducer");
+
+    // (5) CR 732.2a: the submit lands on an ending point a seat can act at. Asserted in the
+    // uniform shape rather than with a `Priority` matcher, because this board's entered phase owes
+    // CR 508.1's declare-attackers turn-based action before the CR 117.3a grant — a `Priority`
+    // matcher would red on a beat the rule is satisfied by.
+    super::wba_loop_firewall_interposition::answer_terminal_beat(
+        &state,
+        "CR 732.2a: the Fixed(0) accept's ending point",
+    );
+
+    // (6) And on THIS row's own instrument — the production candidate generator, not the viewer
+    // surface — an AI-seated controller has somewhere to go. A collapse that hands back a beat no
+    // generator can answer strands exactly the seat (3) exists to keep playing.
+    let next = engine::ai_support::legal_actions(&state);
+    assert!(
+        !next.is_empty(),
+        "CR 732.2a: the generator must offer the AI a candidate at the collapse's ending point, \
+         got [] at {:?}",
+        state.waiting_for
+    );
+    apply(&mut state, P0, next[0].clone())
+        .expect("the generator's candidate at the ending point must be accepted by the reducer");
 }
 
 // ===========================================================================

@@ -6503,34 +6503,33 @@ fn materialize_object_growth_shortcut(
 /// outcome of a game event determines the next action a player takes", and requires the ending
 /// point to "be a place where a player has priority". An interposing player's undetermined choice
 /// is exactly such a point, so the accepted sequence was legal only UP TO it — truncating there is
-/// the rule, not a degradation of it. Each iteration commits whole, so the ending point the drive
-/// leaves is a priority window, as CR 732.2a requires.
+/// the rule, not a degradation of it. Each iteration commits whole, so what the drive hands back is
+/// a committed whole-period prefix; the CR 732.2a ending point is the caller's exit, not this
+/// function's.
 ///
 /// The delivered prefix is a value in `[0, n]`, and the table already consented to every value in
 /// that range — see the L3 prefix-consent statement at `game::turns`' `PayableResource::LoopCollapse`
 /// prompt, which is the licence and is not restated here. That block is cited for prefix consent
-/// ALONE: its adjacent claim that a narrow range could not wedge the boundary, and that 0 is never
-/// a hidden win-denial, are both falsified by the measurement below and are not endorsed here.
+/// ALONE.
 /// An engine-chosen prefix k is therefore observationally identical to the controller naming k at
 /// that same prompt, which the prompt's `min: 0` explicitly permits. That identity is why the
 /// collapse stays `Committed` rather than becoming conditional: nothing was delivered that a
 /// legal answer at the prompt could not have produced.
 ///
 /// Two `waiting_for` shapes survive this function: an untouched `PayAmountChoice` when the drive
-/// aborts on iteration zero, and a `Priority` beat otherwise. The second is not observable — the
-/// caller's re-drain replaces it. **The first is.** Measured on a zero-delivery collapse: the
-/// boundary's own `LoopCollapse` prompt is still the beat after the caller returns, byte-identical
-/// to the one just answered, while the stash it reads has already been taken — so `SubmitPayAmount`,
-/// the only action that prompt admits, refuses at every amount and no seat can advance the board.
-/// That is a CR 732.2a defect, since the ending point of a taken shortcut must be a place where a
-/// player has priority. `the_delivered_prefix_tracks_the_interposers_depth` pins it at `depth = 0`.
+/// aborts on iteration zero, and a `Priority` beat otherwise. NEITHER is the terminal beat. The
+/// caller — the `PayableResource::LoopCollapse` submit arm in `game::engine_resolution_choices` —
+/// re-drains and then decides the beat for both: on the untouched prompt its two conjuncts hold and
+/// it takes `turns::auto_advance`'s beat, while on the `Priority` beat this drive wrote, the second
+/// conjunct is false and the exit defers to what the applier left. So the abort is not observable
+/// as a terminal state, and the CR 732.2a ending point is the turn interpreter's.
+/// `the_delivered_prefix_tracks_the_interposers_depth` pins the `depth = 0` arm.
 ///
-/// The abort is not the trigger, only one way to reach it. The same wedged beat follows any zero
-/// delivery: an interposer-free board wedges when the controller simply answers `0`, the value the
-/// prompt's own `min: 0` advertises and the submit handler accepts, and the batched route reaches
-/// it without entering this function at all. Measured there, `ai_support::legal_actions_for_viewer`
-/// is empty for EVERY seat. Bounded to opt-in boards: no offer exists unless `loop_detection` was
-/// turned on at match creation, and it defaults `Off`.
+/// The abort is only one route to zero delivery. An interposer-free board reaches it when the
+/// controller simply answers `0`, the value the prompt's own `min: 0` advertises and the submit
+/// handler accepts, and the batched route reaches it without entering this function at all — every
+/// one of them ends at that same caller exit. Bounded to opt-in boards: no offer exists unless
+/// `loop_detection` was turned on at match creation, and it defaults `Off`.
 pub(crate) fn drive_persistent_axis_collapse(
     state: &mut GameState,
     seq: &[crate::types::game_state::LoopActionContext],

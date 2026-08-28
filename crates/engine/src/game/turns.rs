@@ -602,13 +602,10 @@ pub(super) fn drain_pending_phase_transition_progress(
                     // performing the actions — the offer gate admits only voluntarily-repeatable
                     // periods (L1), so stopping early is always available unelided.
                     // `min: 0` is unchanged from BASE and kept as a deliberate NEVER-OVER-
-                    // DELIVER fail-safe, not as wedge-avoidance — `min == max == N` is already
-                    // a single legal answer, so a narrow range could not wedge the boundary.
-                    // What 0 buys is a floor the engine can always honor: collapsing to
-                    // nothing is strictly less than what the table agreed to, so no batching
-                    // or replay imprecision below it can ever materialize growth nobody
-                    // accepted. Tapped tokens carry no lethal driver, so 0 is also never a
-                    // hidden win-denial.
+                    // DELIVER fail-safe. What 0 buys is a floor the engine can always honor:
+                    // collapsing to nothing is strictly less than what the table agreed to,
+                    // so no batching or replay imprecision below it can ever materialize
+                    // growth nobody accepted.
                     min: 0,
                     // CR 732.2c: the shortcut was TAKEN at the count every player
                     // accepted, so the collapse may not exceed it — re-asking with the
@@ -629,11 +626,13 @@ pub(super) fn drain_pending_phase_transition_progress(
                     pending_mana_ability: None,
                 };
                 // Leave the (now-empty) `pending_phase_transition_progress` INTACT
-                // (do NOT null it): the `SubmitPayAmount` handler re-drains after the
-                // mint, re-enters this queue-empty branch, and calls
-                // `finish_enter_phase`, restoring Priority in the same action. Nulling
-                // here would strand a stale `LoopCollapse` `waiting_for` until the
-                // next boundary. PAUSE — resumed by the `LoopCollapse` submit handler.
+                // (do NOT null it): nulling here would strand a stale `LoopCollapse`
+                // `waiting_for` until the next boundary. The `SubmitPayAmount` handler
+                // re-drains for every axis, re-enters this queue-empty branch and
+                // completes the phase entry through `finish_enter_phase`, which grants
+                // `priority_player` and writes no beat — the beat is then the submit
+                // arm's own exit, which asks `auto_advance` for it. PAUSE — resumed by
+                // the `LoopCollapse` submit handler.
                 return;
             }
             // Stash empty AND queue empty → complete the phase entry.

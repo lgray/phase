@@ -2876,12 +2876,46 @@ pub(super) fn handle_resolution_choice(
                     // whole backing gone: the growth still lands here, and a row that vanished
                     // before it landed would be the display lying about an agreed result.
                     state.clear_collapsed_materializations(player, &collapsed);
-                    // Continue the boundary fixpoint: re-draining either prompts the
-                    // next APNAP player with a stash or restores Priority now.
+                    // Re-drain the boundary: it either raises a prompt of its own — the
+                    // next APNAP controller's collapse count, or a CR 616.1 ordering
+                    // choice — or completes the phase entry.
                     crate::game::turns::drain_pending_phase_transition_progress(state, events);
-                    return Ok(ResolutionChoiceOutcome::WaitingFor(
-                        state.waiting_for.clone(),
-                    ));
+                    // A completed phase entry leaves `priority_player` granted (CR 117.3a,
+                    // written by `turns::finish_enter_phase`) but NO beat, so this exit is
+                    // what asks `turns::auto_advance` for one. CR 703.1: the entered
+                    // phase's turn-based actions happen automatically as it begins, so the
+                    // interpreter may owe one first (CR 508.1's declare-attackers). CR
+                    // 732.2a: the taken shortcut's ending point is therefore the first
+                    // priority the turn interpreter grants — this beat, or the one
+                    // immediately after that turn-based action is dealt with. CR 732.2c:
+                    // the shortcut is taken with the proposal's game choices having been
+                    // taken; its second sentence binds only IF the shortcut was shortened,
+                    // and then the player who now has priority MUST make a different game
+                    // choice than the one originally proposed for them.
+                    //
+                    // Both conjuncts are read BEFORE `auto_advance`, which writes
+                    // `state.waiting_for` on two of its own branches: the phase cursor is
+                    // gone, and the prompt this arm answered is still the standing beat.
+                    // If either fails, the drain raised its own prompt or an applier wrote
+                    // a beat of its own, and this exit must not overwrite it.
+                    let answered_prompt_still_stands = matches!(
+                        state.waiting_for,
+                        WaitingFor::PayAmountChoice {
+                            resource: PayableResource::LoopCollapse { .. },
+                            ..
+                        }
+                    );
+                    let waiting_for = if state.pending_phase_transition_progress.is_none()
+                        && answered_prompt_still_stands
+                    {
+                        // The entry is complete on this branch, so `stack.rs`'s quiescence
+                        // predicate must see the latch clear; `auto_advance` never reads it.
+                        state.deferred_step_trigger_resume = None;
+                        crate::game::turns::auto_advance(state, events)
+                    } else {
+                        state.waiting_for.clone()
+                    };
+                    return Ok(ResolutionChoiceOutcome::WaitingFor(waiting_for));
                 }
                 PayableResource::Energy => {
                     // CR 107.14: Remove N energy counters from the player.
