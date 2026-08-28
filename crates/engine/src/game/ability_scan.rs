@@ -7115,7 +7115,7 @@ mod tests {
     /// Pyreswipe Hawk's REAL attack pump, parsed from the card's VERBATIM Oracle text
     /// (MTGJSON `AtomicCards.json`) — never a paraphrase and never a hand-built `Pump`,
     /// either of which can take a different parser branch than the card the relief exists
-    /// for. Its `power` is a `QuantityRef::Aggregate` over `Typed{Artifact, You}`, which
+    /// for. Its `power` is a `PropertyAggregate` over `Objects{Typed{Artifact, You}}`, which
     /// `scan_quantity_ref` marks `sibling` before it even walks the filter — so this is the
     /// PAIRED POSITIVE that stops a blanket relief from satisfying row 25.
     ///
@@ -7156,12 +7156,12 @@ mod tests {
                 &effect,
                 Effect::Pump {
                     power: PtValue::Quantity(QuantityExpr::Ref {
-                        qty: QuantityRef::Aggregate { .. }
+                        qty: QuantityRef::PropertyAggregate(_)
                     }),
                     ..
                 }
             ),
-            "fixture pin: the attack pump's `power` must be a `QuantityRef::Aggregate` \
+            "fixture pin: the attack pump's `power` must be a `QuantityRef::PropertyAggregate` \
              (\"the greatest mana value among artifacts you control\"), else the paired \
              positive below reads nothing and row 25 is satisfiable by a blanket relief"
         );
@@ -7227,7 +7227,7 @@ mod tests {
              larger board — which is precisely what makes the sequence's results \
              unpredictable under CR 732.2a. It must still read the sibling axis. A descent that relieved this too would be a blanket relief \
              wearing the descent's clothes. `event` is `true` for a reason this arm does \
-             NOT own and must not be \"fixed\": `QuantityRef::Aggregate` walks its filter \
+             NOT own and must not be \"fixed\": an `Objects`-sourced `PropertyAggregate` walks its filter \
              under `FilterReadContext::LiveBoardCensus`, and `scan_target_filter`'s \
              `TargetFilter::Typed` arm sets `event: true` unconditionally (byte-preserved). \
              The blanket used to mask that; the descent exposes it unchanged. `projected` \
@@ -7451,7 +7451,7 @@ mod tests {
     /// level: three defs differing ONLY in `target`. The read-free `PtValue::Fixed`
     /// halves are not a convenience — they make `target` the SOLE possible source of a
     /// sibling read, which a Pyreswipe Hawk fixture could not do (its `power` is a
-    /// `QuantityRef::Aggregate`, and `scan_quantity_ref` sets `sibling: true` for that
+    /// `PropertyAggregate` over `Objects`, and `scan_quantity_ref` sets `sibling: true` for that
     /// variant BEFORE walking the filter). ALL THREE verdicts are asserted, so a
     /// descent that dropped the target leg reddens arm C and one that vetoed on any
     /// target reddens arms A and B.

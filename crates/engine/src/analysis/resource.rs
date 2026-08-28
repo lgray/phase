@@ -3490,7 +3490,7 @@ fn execute_ledger_condition_provably_excludes_class(
 /// WHY AN ARM AND NOT A SCANNER RELAXATION: `ability_scan::scan_effect`'s `Effect::Pump` arm
 /// descends under `ScanMode::LoopFirewall` into both `PtValue` halves and the target, so a
 /// read-free pump no longer reaches this consult at all. That descent is as far as a scanner
-/// can go: `scan_quantity_ref` gives `QuantityRef::Aggregate` a `sibling: true` BEFORE it
+/// can go: `scan_quantity_ref` gives an `Objects`-sourced `PropertyAggregate` a `sibling: true` BEFORE it
 /// walks the filter, because no scanner change can distinguish a class-reading aggregate from
 /// a class-disjoint one without knowing the class.
 ///
@@ -3508,7 +3508,7 @@ fn execute_ledger_condition_provably_excludes_class(
 ///
 /// ARG-EQUIVALENCE. Conjunct (d) calls
 /// `game::quantity::object_count_matching_ids(state, filter, &ctx, source.id)` — literally the
-/// call the `QuantityRef::Aggregate` resolver arm makes — so this predicate asks THE SAME
+/// call the `QuantityRef::PropertyAggregate` resolver arm makes — so this predicate asks THE SAME
 /// id-population authority the resolver will ask, about the NEW class member.
 /// `aggregate_property_over` is deliberately NOT called: it aggregates over exactly those ids,
 /// so an id population that excludes the member makes its value invariant whatever the
@@ -3566,7 +3566,7 @@ fn execute_ledger_condition_provably_excludes_class(
 ///   (b-t) the bound `target` must contribute NO growing-class read: (d) proves only that the
 ///       P/T AGGREGATE cannot count the class and says nothing about the target. A def
 ///       reaching this arm did so because its aggregate half set `sibling` — which
-///       `scan_quantity_ref` does unconditionally for `QuantityRef::Aggregate` — so the target
+///       `scan_quantity_ref` does for an `Objects`-sourced `PropertyAggregate` — so the target
 ///       has NOT been separately cleared, and relieving without (b-t) would relieve a
 ///       board-reading target on evidence that never examined it. `Effect::Pump` cannot state
 ///       that as a pattern (its `target` is a `TargetFilter`, not an `Option<_>`), so it is a
@@ -3649,20 +3649,23 @@ fn pt_value_aggregate_provably_excludes_class(
     ctx: &crate::game::filter::FilterContext<'_>,
 ) -> bool {
     use crate::types::ability::{
-        ControllerRef, PtValue, QuantityExpr, QuantityRef, TargetFilter, TypedFilter,
+        CardTypeSetSource, ControllerRef, PtValue, QuantityExpr, QuantityRef, TargetFilter,
+        TypedFilter,
     };
 
     let filter = match pt {
         // A literal reads nothing, so it is invariant under growth by construction.
         PtValue::Fixed(_) => return true,
         PtValue::Quantity(QuantityExpr::Ref {
-            qty:
-                QuantityRef::Aggregate {
-                    function: _,
-                    property: _,
-                    filter,
-                },
-        }) => filter,
+            qty: QuantityRef::PropertyAggregate(aggregate),
+        }) => match aggregate.source() {
+            // The old `Aggregate { filter }` is now `Objects { filter }` — the same shape
+            // under a parameterized source. Every other source shape was a separate
+            // `QuantityRef` variant before and kept the veto through the fallthrough below,
+            // so it keeps it here.
+            CardTypeSetSource::Objects { filter } => filter,
+            _ => return false,
+        },
         // `PtValue::Variable` (an announced X, resolved from the ability's own record) and
         // every other `QuantityExpr` / `QuantityRef` fall through and KEEP the veto.
         _ => return false,
@@ -11363,11 +11366,16 @@ mod tests {
         };
         Effect::Pump {
             power: PtValue::Quantity(QuantityExpr::Ref {
-                qty: QuantityRef::Aggregate {
-                    function: AggregateFunction::Max,
-                    property: ObjectProperty::ManaValue,
-                    filter: TargetFilter::Typed(TypedFilter::creature()),
-                },
+                qty: QuantityRef::PropertyAggregate(
+                    crate::types::ability::PropertyAggregate::new(
+                        AggregateFunction::Max,
+                        ObjectProperty::ManaValue,
+                        crate::types::ability::CardTypeSetSource::Objects {
+                            filter: TargetFilter::Typed(TypedFilter::creature()),
+                        },
+                    )
+                    .expect("fixture: a creature-typed ManaValue aggregate is constructible"),
+                ),
             }),
             toughness: PtValue::Fixed(0),
             target: TargetFilter::SelfRef,
@@ -12717,7 +12725,7 @@ mod tests {
     /// (which no disjunct can) still vetoes at block (1b).
     ///
     /// The consult does not discriminate here and is not claimed to: `scan_quantity_ref`
-    /// sets `sibling: true` for `QuantityRef::Aggregate` before it walks the filter, so this
+    /// sets `sibling: true` for an `Objects`-sourced `PropertyAggregate` before it walks, so this
     /// def answers `true` at the consult under either reader. Conjunct (a) is what
     /// discriminates — it blanks `effect`, and the projected `sub_ability.condition` survives
     /// the blank.
@@ -15632,15 +15640,25 @@ mod tests {
         let Effect::Pump { power, .. } = base.effect.as_ref() else {
             panic!("fixture: the Hawk def[0] execute body must be an `Effect::Pump`");
         };
-        let mut power = power.clone();
+        let power = power.clone();
         let PtValue::Quantity(QuantityExpr::Ref {
-            qty: QuantityRef::Aggregate { filter: slot, .. },
-        }) = &mut power
+            qty: QuantityRef::PropertyAggregate(aggregate),
+        }) = &power
         else {
             panic!("fixture: Hawk's `power` must be an aggregate quantity");
         };
-        *slot = filter;
-        power
+        // `PropertyAggregate` owns its fields privately, so the swap rebuilds through the
+        // constructor rather than writing into a slot.
+        PtValue::Quantity(QuantityExpr::Ref {
+            qty: QuantityRef::PropertyAggregate(
+                crate::types::ability::PropertyAggregate::new(
+                    aggregate.function(),
+                    aggregate.property(),
+                    crate::types::ability::CardTypeSetSource::Objects { filter },
+                )
+                .expect("fixture: swapping the filter keeps the aggregate constructible"),
+            ),
+        })
     }
 
     /// Hawk's own `Typed{["Artifact"], You, []}` aggregate filter, so a negative can be built
@@ -15650,14 +15668,16 @@ mod tests {
         let Effect::Pump {
             power:
                 PtValue::Quantity(QuantityExpr::Ref {
-                    qty:
-                        QuantityRef::Aggregate {
-                            filter: TargetFilter::Typed(typed),
-                            ..
-                        },
+                    qty: QuantityRef::PropertyAggregate(aggregate),
                 }),
             ..
         } = base.effect.as_ref()
+        else {
+            panic!("fixture: Hawk's `power` must be an aggregate quantity");
+        };
+        let crate::types::ability::CardTypeSetSource::Objects {
+            filter: TargetFilter::Typed(typed),
+        } = aggregate.source()
         else {
             panic!("fixture: Hawk's aggregate filter must be `TargetFilter::Typed`");
         };
@@ -15743,7 +15763,7 @@ mod tests {
              proves anything. Since `scan_effect`'s `Effect::Pump` arm descends under \
              `ScanMode::LoopFirewall`, the read has to come from the PAYLOAD, by one of \
              exactly two routes: an aggregate-bearing `power` sets `sibling` directly \
-             (`scan_quantity_ref` sets it for `QuantityRef::Aggregate` unconditionally), and \
+             (`scan_quantity_ref` sets it for an `Objects`-sourced `PropertyAggregate`), and \
              a PROJECTED-reading payload is seen because this guard asks \
              `ability_definition_reads_growing_class_for_loop`, whose `projected` half the \
              arm reports precisely. A read-free pump can no longer reach \
@@ -15915,7 +15935,7 @@ mod tests {
         let (n1_state, n1_member, ..) = pump_firewall_fixture(n1);
         assert!(
             fire_time_conditions_read_growing_class(&n1_state, Some(&HashSet::from([n1_member]))),
-            "S1-N1: same `Effect::Pump`, same `PtValue::Quantity`, same `QuantityRef::Aggregate` \
+            "S1-N1: same `Effect::Pump`, same `PtValue::Quantity`, same `QuantityRef::PropertyAggregate` \
              — only `filter.type_filters` differs, and a `Typed{{Creature, You}}` aggregate DOES \
              count the P0 Saproling member, so the def genuinely observes the loop and the veto \
              must survive. Widening the relief to 'any aggregate' makes this FAIL"
@@ -16306,7 +16326,7 @@ mod tests {
         assert!(
             crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&execs[0]),
             "reach-guard: the attack pump must be a live veto surface (its `power` is an \
-             aggregate, and `scan_quantity_ref` sets `sibling` for `QuantityRef::Aggregate` \
+             aggregate, and `scan_quantity_ref` sets `sibling` for an `Objects`-sourced aggregate \
              unconditionally); if it were not, S1 would be relieving a def that never vetoed \
              and this row would prove nothing"
         );
