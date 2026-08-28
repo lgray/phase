@@ -3440,6 +3440,12 @@ pub(crate) fn castable_from_current_zone(
         // during-resolution free-cast (Memory Plunder) may drive a cast on a card
         // still in its real origin zone — the one disjunct carrying no zone test.
         || (has_during_resolution_alt_cost_permission(state, obj, player) && normal_cost_route())
+        // CR 601.2a: a hand-origin alternative-cost grant binds to the GRANTEE, not to the
+        // card's owner, so it cannot ride the owner/hand route below — an opponent-owned card
+        // in hand is refused before cost selection ever sees the grant. The predicate carries
+        // its own `Zone::Hand` test, and `exile_alt_cost_permission_supports_cast` enforces the
+        // permission's `granted_to` binding, so this admits the grantee and no one else.
+        || (has_hand_alt_cost_permission(state, obj, player) && normal_cost_route())
         || (obj.owner == player
             && (obj.zone == Zone::Hand
                 || (state.format_config.command_zone
@@ -22029,7 +22035,63 @@ mod castable_zone_authority_tests {
         assert!(castable_from_current_zone(&state, &obj, PlayerId(0), None));
         assert!(
             !castable_from_current_zone(&state, &obj, PlayerId(1), None),
-            "a hand card is castable by its owner alone"
+            "a hand card carrying no grant is castable by its owner alone"
+        );
+    }
+
+    /// **A hand alt-cost grant admits its GRANTEE.** CR 601.2a: the permission binds to the
+    /// player it names, not to the card's owner, so the owner-hand disjunct above can never
+    /// carry it — an opponent-owned card in hand is refused by that route by construction.
+    ///
+    /// Four arms on one card, each differing from a neighbour in exactly one fact: no grant,
+    /// a grant naming the asked player, a grant naming someone else, and the owner's own
+    /// route left untouched.
+    #[test]
+    fn the_hand_alt_cost_disjunct_admits_its_grantee_and_not_a_bystander() {
+        let mut state = GameState::new_two_player(7);
+        // Owned by P1 and sitting in hand; P0 is the grantee. "You may cast that card" on an
+        // opponent's card is exactly the shape the owner-hand disjunct refuses.
+        let id = card(&mut state, 1, PlayerId(1), Zone::Hand);
+        let bare = state.objects[&id].clone();
+
+        let permission = |granted_to: Option<PlayerId>| CastingPermission::ExileWithAltCost {
+            cost: ManaCost::default(),
+            cost_provenance: ExileGrantCostProvenance::Alternative,
+            cast_transformed: false,
+            constraint: None,
+            granted_to,
+            resolution_cleanup: None,
+            duration: None,
+            graveyard_replacement: None,
+            enters_with_counter: None,
+            enters_with_modifications: Vec::new(),
+            mana_spend_permission: None,
+        };
+
+        assert!(
+            !castable_from_current_zone(&state, &bare, PlayerId(0), None),
+            "NEGATIVE: with no permission on the card, an opponent-owned hand card is refused"
+        );
+
+        let mut granted = bare.clone();
+        granted.casting_permissions = vec![permission(Some(PlayerId(0)))];
+        assert!(
+            castable_from_current_zone(&state, &granted, PlayerId(0), None),
+            "the grantee is admitted — the grant is in hand and names P0 (CR 601.2a). This \
+             arm differs from the one above by the permission alone"
+        );
+
+        let mut granted_elsewhere = bare.clone();
+        granted_elsewhere.casting_permissions = vec![permission(Some(PlayerId(1)))];
+        assert!(
+            !castable_from_current_zone(&state, &granted_elsewhere, PlayerId(0), None),
+            "the same permission naming a DIFFERENT grantee must not admit P0: the disjunct \
+             keys on the grantee binding, not on the mere presence of a grant"
+        );
+
+        assert!(
+            castable_from_current_zone(&state, &bare, PlayerId(1), None),
+            "CONTROL: the ordinary owner/hand route is untouched by the new disjunct"
         );
     }
 
