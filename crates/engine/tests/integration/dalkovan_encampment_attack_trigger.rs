@@ -34,7 +34,7 @@ const DALKOVAN_ATTACK_ABILITY: &str =
      Warrior creature tokens that are tapped and attacking. Sacrifice \
      them at the beginning of the next end step.";
 
-/// CR 508.1 + CR 603.7b: activating Dalkovan Encampment's ability creates a
+/// CR 508.1 + CR 603.7a + CR 603.7b: activating Dalkovan Encampment's ability creates a
 /// "Whenever you attack this turn" delayed trigger; declaring an attacker fires
 /// it and creates two 1/1 red Warrior tokens that are tapped and attacking.
 #[test]

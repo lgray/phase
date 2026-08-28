@@ -421,7 +421,7 @@ mod tests {
     /// The eligible set is drawn from the CONTROLLER'S HAND, and only then filtered — the seam
     /// the block-(3) `execute` firewall relief
     /// (`analysis::resource::reveal_from_hand_execute_provably_excludes_class`) rests its
-    /// universe argument on: a growing-class member that is a battlefield object (CR 111.7) can
+    /// universe argument on: a growing-class member that is a battlefield object (CR 110.1) can
     /// never be in the eligible set, WHATEVER the filter says, because the pool is a hand.
     /// Widening it to `state.objects` would make the relief unsound while every filter-level
     /// test stayed green, so the pool is pinned here, at its own seam.

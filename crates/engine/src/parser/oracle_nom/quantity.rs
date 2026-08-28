@@ -4096,9 +4096,11 @@ pub fn parse_that_much_or_many(input: &str) -> OracleResult<'_, QuantityRef> {
 
 /// Parse event-context quantity references.
 ///
-/// CR 608.2k: "that {noun}" in a triggered ability refers to the object or
-/// value from the triggering event. The source-object variants resolve via
-/// `extract_source_from_event` → live object or LKI cache.
+/// Two referent kinds under two different rules. CR 608.2h governs the VALUE forms
+/// ("that much", "the damage dealt"): information from the game is determined once, when the
+/// effect applies. CR 608.2k governs the OBJECT forms ("that creature's power"): a specific
+/// untargeted object previously referred to by the trigger condition. The source-object
+/// variants resolve via `extract_source_from_event` → live object or LKI cache.
 fn parse_event_context_refs(input: &str) -> OracleResult<'_, QuantityRef> {
     alt((
         // CR 608.2h: bare demonstrative amount — delegate to the shared
