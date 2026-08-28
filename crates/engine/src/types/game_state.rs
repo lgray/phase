@@ -5900,6 +5900,19 @@ pub enum BatchCompletion {
     /// second physical card has completed its independently replaceable move,
     /// carrying the originating event's applied-set through every pause.
     MeldRedirect { source_id: ObjectId },
+    /// CR 701.17a + CR 603.2c + CR 616.1: a mill batch settled. One `Milled`
+    /// event is emitted per card that actually left the library, after the whole
+    /// batch has been delivered. A CR 616.1 per-card ordering choice parks the
+    /// undelivered tail and the resume path drains it with a fresh event vector,
+    /// so no single synchronous event window spans the pause — the milling
+    /// context has to ride the batch instead.
+    MilledDeliveryComplete {
+        player_id: PlayerId,
+        /// The cards this instruction asked to mill. Each is emitted only if it
+        /// actually departed the library, so the set is a candidate list rather
+        /// than a result.
+        cards: Vec<ObjectId>,
+    },
 }
 
 /// CR 603.3b + CR 608.2g: terminal settlement that must wait until the

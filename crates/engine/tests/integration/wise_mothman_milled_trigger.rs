@@ -302,6 +302,90 @@ fn milled_trigger_fires_under_a_graveyard_diverting_replacement() {
     );
 }
 
+/// CR 616.1 + CR 603.2c + CR 701.17a: TWO graveyard-diverting replacements apply to every
+/// milled card, so each delivery parks on a CR 616.1 ordering prompt instead of settling
+/// synchronously. The cards still leave the library, so their milled triggers must still
+/// fire. A card that departs on the RESUMED tail and never produces a `Milled` event is a
+/// mill whose trigger silently vanished — the delivery succeeded and the trigger did not.
+///
+/// This is the paused-delivery counterpart of
+/// [`milled_trigger_fires_under_a_graveyard_diverting_replacement`], which has exactly one
+/// applicable replacement and therefore never pauses.
+#[test]
+fn milled_trigger_fires_across_a_replacement_ordering_pause() {
+    let Some(db) = load_db() else {
+        return;
+    };
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 20);
+    scenario.add_real_card(P0, "Glowing One", Zone::Battlefield, db);
+    // Rest in Peace ("a card would be put into a graveyard from anywhere") and Leyline of
+    // the Void ("into an OPPONENT'S graveyard from anywhere") BOTH apply to P1's milled
+    // cards. Two applicable replacements on one event is what forces the CR 616.1 ordering
+    // choice that a single divert never raises.
+    scenario.add_real_card(P0, "Rest in Peace", Zone::Battlefield, db);
+    scenario.add_real_card(P0, "Leyline of the Void", Zone::Battlefield, db);
+    let tome_scour = scenario.add_real_card(P0, "Tome Scour", Zone::Hand, db);
+    for _ in 0..9 {
+        scenario.add_real_card(P1, "Grizzly Bears", Zone::Library, db);
+    }
+
+    let mut runner = scenario.build();
+    engine::game::rehydrate_game_from_card_db(runner.state_mut(), db);
+    add_blue_mana(&mut runner);
+
+    let life_before = runner.life(P0);
+    let library_before = runner.state().players[1].library.len();
+    cast_tome_scour(&mut runner, tome_scour, P1);
+
+    let mut ordering_prompts = 0usize;
+    for _ in 0..128 {
+        if matches!(
+            runner.state().waiting_for,
+            WaitingFor::ReplacementChoice { .. }
+        ) {
+            ordering_prompts += 1;
+            runner
+                .act(GameAction::ChooseReplacement { index: 0 })
+                .expect("the CR 616.1 ordering prompt must accept a choice");
+            continue;
+        }
+        if matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }) {
+            engine::game::triggers::drain_order_triggers_with_identity(runner.state_mut());
+            continue;
+        }
+        if runner.state().stack.is_empty()
+            && matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
+        {
+            break;
+        }
+        if runner.act(GameAction::PassPriority).is_err() {
+            break;
+        }
+    }
+
+    // REACH GUARD: with no pause this row degenerates into the synchronous case the sibling
+    // rows already cover, and the life assertion below would pass for the wrong reason.
+    assert!(
+        ordering_prompts > 0,
+        "reach guard: two applicable graveyard diverts must raise at least one CR 616.1 \
+         ordering prompt, else the paused-delivery path is never exercised"
+    );
+    assert_eq!(
+        runner.state().players[1].library.len(),
+        library_before - 5,
+        "five cards really left P1's library"
+    );
+    assert_eq!(
+        runner.life(P0),
+        life_before + 5,
+        "Glowing One's milled trigger must fire once per milled card even though every \
+         delivery parked on a CR 616.1 ordering choice and finished on the resumed tail"
+    );
+}
+
 /// V2 — the same board with the replacement removed. The action-worded delta is
 /// identical (so a matcher that stopped firing everywhere cannot pass V1), and
 /// the endpoint-worded delta is nonzero (the reach-guard proving Undead

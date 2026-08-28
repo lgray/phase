@@ -7744,6 +7744,9 @@ pub(crate) fn run_batch_completion(
 ) -> crate::game::zone_pipeline::BatchMoveResult {
     use crate::types::game_state::BatchCompletion;
     match completion {
+        BatchCompletion::MilledDeliveryComplete { player_id, cards } => {
+            effects::mill::complete_mill_delivery(state, player_id, cards, events)
+        }
         BatchCompletion::ReturnAsAuraNoTargetComplete { source_id } => {
             effects::return_as_aura::complete_no_target_delivery(source_id, events)
         }

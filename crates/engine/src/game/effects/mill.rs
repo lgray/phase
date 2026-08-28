@@ -150,57 +150,63 @@ pub fn apply_mill_after_replacement(
         .iter()
         .map(|&obj_id| ZoneMoveRequest::effect(obj_id, destination, obj_id))
         .collect();
-    let mark = events.len();
-    let delivered = matches!(
-        zone_pipeline::move_objects_simultaneously(state, reqs, events),
-        BatchMoveResult::Done
-    );
-
     // CR 701.17a: milling is a move *toward the graveyard* — "that player puts
     // that many cards from the top of their library into their graveyard".
     // `Effect::Mill` with any other declared destination is the shared
     // top-of-library move building block and is not a mill, so it emits nothing.
     // `effects::this_way_cause_for_effect` is the sibling authority on the same
     // predicate and is kept in step with this conjunct.
-    if destination == Zone::Graveyard {
-        // CR 701.17a + CR 614.6 + CR 701.17c: the card must actually have LEFT
-        // the library. CR 614.6 makes the modified event the one that occurred,
-        // so a graveyard-diverting replacement that redirects back into the
-        // library moved no card out of it, and CR 701.17c's "the zone it moved
-        // to from the library" has no referent. Reading the delivered
-        // `ZoneChanged` window rather than `cards_to_mill` is self-limiting in
-        // the way CR 614.6 and CR 616.1 require: a prevented move emits no
-        // `ZoneChanged`, and a tail parked by a CR 616.1 per-card ordering
-        // choice has not been delivered yet, so neither yields a `Milled`.
-        // CR 603.2c: one event per milled card. The window is not closed over
-        // this invocation's cards — `apply_zone_delivery_tail` drains a stashed
-        // post-replacement continuation inside `move_objects_simultaneously`,
-        // so a redirect carrying a mill rider lands other invocations'
-        // departures here.
-        let milled: Vec<(ObjectId, Zone)> = events[mark..]
-            .iter()
-            .filter_map(|event| match event {
-                GameEvent::ZoneChanged {
-                    object_id,
-                    from: Some(Zone::Library),
-                    to,
-                    ..
-                } if *to != Zone::Library && cards_to_mill.contains(object_id) => {
-                    Some((*object_id, *to))
-                }
-                _ => None,
-            })
-            .collect();
-        for (object_id, to) in milled {
-            events.push(GameEvent::Milled {
-                player_id,
-                object_id,
-                to,
-            });
+    //
+    // CR 603.2c + CR 616.1: the `Milled` events ride the batch completion rather
+    // than a synchronous event window. A per-card ordering choice (two graveyard
+    // redirects colliding) parks the undelivered tail, and the resume path drains
+    // it with a FRESH event vector — so a window read here would omit every card
+    // delivered after the pause, and those cards leave the library without ever
+    // firing a milled trigger. The completion runs exactly once after the whole
+    // batch settles, on the synchronous and the resumed path alike.
+    let completion = (destination == Zone::Graveyard).then(|| {
+        crate::types::game_state::BatchCompletion::MilledDeliveryComplete {
+            player_id,
+            cards: cards_to_mill.clone(),
         }
-    }
+    });
+    let delivered = matches!(
+        zone_pipeline::move_objects_simultaneously_then(state, reqs, completion, events),
+        BatchMoveResult::Done
+    );
 
     Ok(delivered)
+}
+
+/// CR 701.17a + CR 603.2c: emit one `Milled` per card that actually left the
+/// library, once the whole mill batch has settled.
+///
+/// CR 614.6 makes the modified event the one that occurred, so a graveyard-diverting
+/// replacement that redirects a card back into its library moved no card out of it and
+/// yields no `Milled`. The settled zone is read from `state` rather than from an event
+/// window — the same authority the other delivery completions use — because a tail
+/// parked by a CR 616.1 ordering choice resumes with a fresh event vector and no window
+/// spans the pause.
+pub(crate) fn complete_mill_delivery(
+    state: &mut GameState,
+    player_id: crate::types::player::PlayerId,
+    cards: Vec<ObjectId>,
+    events: &mut Vec<GameEvent>,
+) -> BatchMoveResult {
+    for object_id in cards {
+        let Some(zone) = state.objects.get(&object_id).map(|object| object.zone) else {
+            continue;
+        };
+        if zone == Zone::Library {
+            continue;
+        }
+        events.push(GameEvent::Milled {
+            player_id,
+            object_id,
+            to: zone,
+        });
+    }
+    BatchMoveResult::Done
 }
 
 #[cfg(test)]
