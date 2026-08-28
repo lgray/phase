@@ -1278,9 +1278,14 @@ pub(crate) fn resolve_event_context_target_for_event_or_state(
                 }
                 // CR 701.17c + CR 603.2: "that card" on a mill trigger is the
                 // milled card, when it is not the trigger source itself (the
-                // source keeps its chosen target).
-                crate::types::events::GameEvent::Milled { object_id, .. }
-                    if *object_id != source_id =>
+                // source keeps its chosen target). CR 701.17c admits the reference
+                // only while the card's destination is a PUBLIC zone — "can find
+                // that card in the zone it moved to from the library, as long as
+                // that zone is a public zone". A replacement that diverts the card
+                // to hand or library leaves nothing this effect may find, so the
+                // reference resolves to no object rather than to a hidden one.
+                crate::types::events::GameEvent::Milled { object_id, to, .. }
+                    if *object_id != source_id && to.is_public() =>
                 {
                     Some(TargetRef::Object(*object_id))
                 }
@@ -1660,8 +1665,10 @@ pub(crate) fn extract_source_from_event(
         } => Some(*object_id),
         GameEvent::Discarded { object_id, .. } => Some(*object_id),
         // CR 701.17c: "that card" / "a milled card" is the milled card, and an
-        // effect can find it in the zone it moved to from the library.
-        GameEvent::Milled { object_id, .. } => Some(*object_id),
+        // effect can find it in the zone it moved to from the library — "as long
+        // as that zone is a public zone". A card diverted to hand or library is
+        // not findable, so it is not projected as the event's subject.
+        GameEvent::Milled { object_id, to, .. } if to.is_public() => Some(*object_id),
         GameEvent::Transformed { object_id } => Some(*object_id),
         // CR 710.4: the flipped permanent is the event's subject.
         GameEvent::Flipped { object_id } => Some(*object_id),
@@ -2854,6 +2861,56 @@ mod tests {
             }),
             None
         );
+    }
+
+    /// CR 701.17c — the destination gate on BOTH milled-card projections. An effect
+    /// referring to a milled card can find it "in the zone it moved to from the
+    /// library, as long as that zone is a public zone", so a card a replacement
+    /// diverted to hand or library is findable by nothing and must be projected by
+    /// neither seam. Each pair differs in `to` alone.
+    #[test]
+    fn a_milled_card_is_projected_only_from_a_public_destination() {
+        let state = GameState::new_two_player(42);
+        let source = ObjectId(1);
+        let milled_to = |to| GameEvent::Milled {
+            player_id: PlayerId(1),
+            object_id: ObjectId(7),
+            to,
+        };
+        let resolve = |event: &GameEvent| {
+            resolve_event_context_target_for_event_or_state(
+                &state,
+                &TargetFilter::ParentTarget,
+                source,
+                Some(event),
+            )
+        };
+
+        for public in [Zone::Graveyard, Zone::Exile] {
+            assert_eq!(
+                resolve(&milled_to(public)),
+                Some(TargetRef::Object(ObjectId(7))),
+                "a public destination stays findable: {public:?}"
+            );
+            assert_eq!(
+                extract_source_from_event(&milled_to(public)),
+                Some(ObjectId(7)),
+                "public destination projects as the event subject: {public:?}"
+            );
+        }
+
+        for private in [Zone::Hand, Zone::Library] {
+            assert_eq!(
+                resolve(&milled_to(private)),
+                None,
+                "a card diverted to a hidden zone is findable by no effect: {private:?}"
+            );
+            assert_eq!(
+                extract_source_from_event(&milled_to(private)),
+                None,
+                "and is not projected as the event subject either: {private:?}"
+            );
+        }
     }
 
     #[test]

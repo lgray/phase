@@ -7557,7 +7557,10 @@ pub(crate) fn seed_event_context_parent_targets(
         // `ZoneChangeRecord`, and duplicating one onto it would be invisible to
         // the save-load rebinder that finds persisted records by the
         // `ZoneChanged` tag, so the pin would reload stale.
-        GameEvent::Milled { object_id, .. } => (Some(*object_id), None),
+        // CR 701.17c: the milled card is findable only while its destination is a
+        // PUBLIC zone, so a card diverted to hand or library seeds no parent target
+        // rather than binding the trigger to an object no effect may find.
+        GameEvent::Milled { object_id, to, .. } if to.is_public() => (Some(*object_id), None),
         _ => (None, None),
     };
     if let Some(id) = parent_id {
@@ -16503,6 +16506,27 @@ pub mod tests {
             EventContextSeedTiming::StackPush,
         );
         assert_eq!(ability.targets, vec![TargetRef::Object(milled)]);
+
+        // CR 701.17c: the SAME card, diverted to a PRIVATE zone, is findable by no
+        // effect — "as long as that zone is a public zone". The destination, not the
+        // event kind, is what admits the reference, so this arm must seed nothing and
+        // leave the pre-existing targets alone. It differs from the arm above in `to`
+        // and in nothing else.
+        let mut hidden = make_ability();
+        seed_event_context_parent_targets(
+            &mut hidden,
+            Some(&GameEvent::Milled {
+                player_id: PlayerId(1),
+                object_id: milled,
+                to: Zone::Hand,
+            }),
+            EventContextSeedTiming::StackPush,
+        );
+        assert_eq!(
+            hidden.targets,
+            vec![TargetRef::Object(source)],
+            "a milled card diverted to a hidden zone must seed no parent target"
+        );
 
         // Live control in the same invocation: an event with no seeding arm
         // leaves the pre-existing targets alone, so a blanket overwrite fails.
