@@ -2627,8 +2627,8 @@ fn per_axis_collapse_ends_where_a_seat_can_act_at_both_ends() {
 /// **MULTI-AUTHORITY: a second seat holding its own stash is still prompted, and the exit does not
 /// overwrite that prompt.** The first controller's submit re-drains, the drain finds the next APNAP
 /// seat with a stash and raises ITS collapse prompt while leaving the typed phase cursor standing —
-/// so the exit's cursor conjunct is FALSE and it propagates rather than asking `auto_advance` for a
-/// beat. This is the branch the single-stash rows never take.
+/// so the exit's cursor read finds the entry unfinished and it propagates rather than asking
+/// `auto_advance` for a beat. This is the branch the single-stash rows never take.
 #[test]
 fn a_second_stash_holding_seat_is_prompted_after_the_first_collapses() {
     let (mut state, _) = census_boundary(LoopCollapseAxis::Life, 3);
@@ -2679,7 +2679,90 @@ fn a_second_stash_holding_seat_is_prompted_after_the_first_collapses() {
     );
 }
 
-/// **The exit's second conjunct, discriminating: an applier that leaves a live PROMPT keeps it.**
+/// **CR 117.3a on the branch where an APPLIER wrote the beat: the entered phase's
+/// beginning-of-phase abilities are put on the stack.** The dump's own `Tokens` stash mints
+/// through `token_copy.rs`, which writes a `Priority` beat on its way through, so this board
+/// reaches the arm's exit with a beat already standing and never takes the branch the
+/// collapse-prompt rows measure.
+///
+/// CR 117.3a grants priority only after the phase's turn-based actions have been dealt with AND
+/// the abilities that trigger at the beginning of that phase have been put on the stack. An
+/// applier's `Priority` is that grant with those abilities still owed:
+/// `turns::process_phase_triggers` is what stacks them, and it runs on no path but
+/// `turns::auto_advance`'s phase arms. An exit that propagates the applier's beat verbatim loses
+/// them permanently, because `apply()` does not re-enter `auto_advance` after a
+/// `ResolutionChoiceOutcome::WaitingFor`.
+///
+/// The trigger is grafted for the phase the boundary actually entered, read off the board rather
+/// than named, so the row measures the phase this dump reaches instead of one it never enters. Its
+/// paired control is the pre-submit stack reading on the same accessor.
+#[test]
+fn an_applier_written_beat_still_stacks_the_entered_phases_triggers() {
+    use engine::types::ability::{AbilityDefinition, AbilityKind, QuantityExpr, TargetFilter};
+    use engine::types::triggers::TriggerMode;
+
+    const N: u32 = 3;
+    const GAIN: i32 = 7;
+
+    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
+        .expect("the real 4p offer dump must deserialize into the current GameState");
+    drive_all_accept_n(&mut state, N);
+    assert_eq!(
+        collapse_axis_at_boundary(&mut state),
+        LoopCollapseAxis::Tokens,
+        "reach-guard: this row needs the dump's OWN production Tokens stash — the one axis whose \
+         applier writes the beat — not a graft"
+    );
+
+    let entered = state.phase;
+    let host = create_life_gainer(&mut state, P0, "Phase Trigger Host");
+    graft_trigger(
+        &mut state,
+        host,
+        TriggerDefinition::new(TriggerMode::Phase)
+            .phase(entered)
+            .trigger_zones(vec![Zone::Battlefield])
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: GAIN },
+                    player: TargetFilter::Controller,
+                },
+            )),
+    );
+
+    let life_before = life_of(&state, P0);
+    assert!(
+        state.stack.is_empty(),
+        "control: the boundary prompt stands over an EMPTY stack on the same accessor, so the \
+         reading after the submit is the collapse's own, got {:?}",
+        state.stack
+    );
+
+    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: N })
+        .expect("P0 submits the finite loop-collapse count");
+
+    assert_eq!(
+        state.stack.len(),
+        1,
+        "CR 117.3a: the {entered:?} beginning-of-phase ability must be on the stack at the \
+         collapse's ending point; propagating the applier's own beat leaves it unstacked, beat \
+         {:?}",
+        state.waiting_for
+    );
+    drain_stack(&mut state);
+    assert_eq!(
+        life_of(&state, P0) - life_before,
+        GAIN,
+        "CR 117.3a: the stacked {entered:?} trigger resolves, so its life gain lands"
+    );
+    super::wba_loop_firewall_interposition::answer_terminal_beat(
+        &state,
+        "CR 117.3a: after the entered phase's own triggers resolve",
+    );
+}
+
+/// **The exit's beat read, discriminating: an applier that leaves a live PROMPT keeps it.**
 /// A copy-token minted from an Aura profile with a legal host on the board is given a host choice
 /// by its controller as it enters (CR 303.4f: an Aura entering by any means other than resolving
 /// as an Aura spell, with no host specified by the effect). The mint's seam writes
@@ -2687,8 +2770,8 @@ fn a_second_stash_holding_seat_is_prompted_after_the_first_collapses() {
 /// `active_copy_token()` pause guard never fires and that live prompt reaches the arm's exit.
 ///
 /// An exit conditioned on the phase cursor ALONE overwrites it with `Priority` and destroys the
-/// host choice; the shipped two-conjunct exit sees a standing beat that is no longer the collapse
-/// prompt and defers to it. That is what this row pins, and it is why the conjunct is not
+/// host choice; the shipped exit sees a standing beat that is neither the collapse prompt nor a
+/// `Priority` and defers to it. That is what this row pins, and it is why the beat read is not
 /// decoration on the cursor read.
 ///
 /// The UNGRAFTED board runs the identical assertion as the paired control: there the applier writes

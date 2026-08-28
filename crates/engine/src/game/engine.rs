@@ -6519,9 +6519,9 @@ fn materialize_object_growth_shortcut(
 /// Two `waiting_for` shapes survive this function: an untouched `PayAmountChoice` when the drive
 /// aborts on iteration zero, and a `Priority` beat otherwise. NEITHER is the terminal beat. The
 /// caller — the `PayableResource::LoopCollapse` submit arm in `game::engine_resolution_choices` —
-/// re-drains and then decides the beat for both: on the untouched prompt its two conjuncts hold and
-/// it takes `turns::auto_advance`'s beat, while on the `Priority` beat this drive wrote, the second
-/// conjunct is false and the exit defers to what the applier left. So the abort is not observable
+/// re-drains and, once that completes the phase entry, hands BOTH shapes to `turns::auto_advance`:
+/// a `Priority` this function wrote is the CR 117.3a grant with the entered phase's own triggers
+/// still owed, so it is no more terminal than the untouched prompt. So the abort is not observable
 /// as a terminal state, and the CR 732.2a ending point is the turn interpreter's.
 /// `the_delivered_prefix_tracks_the_interposers_depth` pins the `depth = 0` arm.
 ///

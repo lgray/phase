@@ -630,9 +630,8 @@ pub(super) fn drain_pending_phase_transition_progress(
                 // `waiting_for` until the next boundary. The `SubmitPayAmount` handler
                 // re-drains for every axis, re-enters this queue-empty branch and
                 // completes the phase entry through `finish_enter_phase`, which grants
-                // `priority_player` and writes no beat — the beat is then the submit
-                // arm's own exit, which asks `auto_advance` for it. PAUSE — resumed by
-                // the `LoopCollapse` submit handler.
+                // `priority_player` and writes no beat — the beat is then that handler's
+                // own exit. PAUSE — resumed by the `LoopCollapse` submit handler.
                 return;
             }
             // Stash empty AND queue empty → complete the phase entry.

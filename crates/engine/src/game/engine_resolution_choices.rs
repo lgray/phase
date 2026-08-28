@@ -2880,40 +2880,55 @@ pub(super) fn handle_resolution_choice(
                     // next APNAP controller's collapse count, or a CR 616.1 ordering
                     // choice — or completes the phase entry.
                     crate::game::turns::drain_pending_phase_transition_progress(state, events);
-                    // A completed phase entry leaves `priority_player` granted (CR 117.3a,
-                    // written by `turns::finish_enter_phase`) but NO beat, so this exit is
-                    // what asks `turns::auto_advance` for one. CR 703.1: the entered
-                    // phase's turn-based actions happen automatically as it begins, so the
-                    // interpreter may owe one first (CR 508.1's declare-attackers). CR
-                    // 732.2a: the taken shortcut's ending point is therefore the first
-                    // priority the turn interpreter grants — this beat, or the one
-                    // immediately after that turn-based action is dealt with. CR 732.2c:
-                    // the shortcut is taken with the proposal's game choices having been
-                    // taken; its second sentence binds only IF the shortcut was shortened,
-                    // and then the player who now has priority MUST make a different game
-                    // choice than the one originally proposed for them.
-                    //
-                    // Both conjuncts are read BEFORE `auto_advance`, which writes
-                    // `state.waiting_for` on two of its own branches: the phase cursor is
-                    // gone, and the prompt this arm answered is still the standing beat.
-                    // If either fails, the drain raised its own prompt or an applier wrote
-                    // a beat of its own, and this exit must not overwrite it.
-                    let answered_prompt_still_stands = matches!(
-                        state.waiting_for,
-                        WaitingFor::PayAmountChoice {
-                            resource: PayableResource::LoopCollapse { .. },
-                            ..
-                        }
-                    );
-                    let waiting_for = if state.pending_phase_transition_progress.is_none()
-                        && answered_prompt_still_stands
-                    {
-                        // The entry is complete on this branch, so `stack.rs`'s quiescence
-                        // predicate must see the latch clear; `auto_advance` never reads it.
-                        state.deferred_step_trigger_resume = None;
-                        crate::game::turns::auto_advance(state, events)
-                    } else {
+                    // The phase cursor says which of those two the re-drain did, and it is
+                    // this arm's own result rather than an invariant of the call below.
+                    // Still standing ⇒ the drain paused with the entry unfinished, so the
+                    // beat belongs to whoever finishes it and the deferred-trigger latch
+                    // stays set for them.
+                    let waiting_for = if state.pending_phase_transition_progress.is_some() {
                         state.waiting_for.clone()
+                    } else {
+                        // Entry complete. `turns::finish_enter_phase` granted
+                        // `priority_player` but wrote no beat and put none of the phase's
+                        // beginning-of-phase abilities on the stack, and CR 117.3a places
+                        // the grant after BOTH the phase's turn-based actions and those
+                        // abilities. `turns::process_phase_triggers` is what stacks them
+                        // and it runs on no path but `turns::auto_advance`'s phase arms.
+                        //
+                        // Both branches below therefore owe the latch a clear: the entry is
+                        // complete on each, `stack.rs`'s quiescence predicate requires it
+                        // clear, `auto_advance` never reads it, and the tree's only other
+                        // clear (the `EmptyManaPool` resume) needs a live cursor it will
+                        // never see here.
+                        state.deferred_step_trigger_resume = None;
+                        // CR 732.2a: the taken shortcut's ending point is the first
+                        // priority the turn interpreter grants — the beat below, or the one
+                        // behind the entered phase's CR 703.1 turn-based action (CR 508.1's
+                        // declare-attackers is the reachable instance). CR 732.2c: the
+                        // shortcut is taken with the proposal's game choices having been
+                        // taken; its shortened-proposal sentence binds only IF the proposal
+                        // was shortened, and then the player who now has priority MUST make
+                        // a different game choice than the one originally proposed.
+                        //
+                        // Read before the call, because `auto_advance` overwrites
+                        // `state.waiting_for`. Both shapes below go back through the
+                        // interpreter: the stale collapse prompt this arm answered, and a
+                        // `Priority` an applier wrote on its way through — that one still
+                        // owes the phase's triggers, so it is not the grant CR 117.3a
+                        // describes. Anything else standing here is an applier's LIVE
+                        // prompt, a mint's CR 303.4f host choice among them, and this exit
+                        // defers to it.
+                        if matches!(
+                            state.waiting_for,
+                            WaitingFor::PayAmountChoice {
+                                resource: PayableResource::LoopCollapse { .. },
+                                ..
+                            } | WaitingFor::Priority { .. }
+                        ) {
+                            crate::game::turns::auto_advance(state, events)
+                        } else {
+                            state.waiting_for.clone()
+                        }
                     };
                     return Ok(ResolutionChoiceOutcome::WaitingFor(waiting_for));
                 }
