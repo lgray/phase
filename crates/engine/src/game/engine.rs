@@ -7381,6 +7381,16 @@ pub(super) fn resume_pending_continuation_if_priority(
                 CostMoveDrainBoundary::PriorityBoundary,
             )?;
         }
+        // CR 117.3a: LAST, once every continuation above has drained back to an ordinary
+        // priority boundary. A phase entry that completed while a paused prompt owned the beat
+        // still owes the entered phase's turn-based actions and its beginning-of-phase
+        // abilities; `turns::resume_deferred_step_triggers` is the single authority that pays
+        // that debt, and it is inert unless one is recorded.
+        if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+            if let Some(resumed) = turns::resume_deferred_step_triggers(state, events) {
+                state.waiting_for = resumed;
+            }
+        }
     }
     settle_resolving_stack_entry_after_continuation_resume(state);
     Ok(())

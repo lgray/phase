@@ -752,6 +752,33 @@ pub(super) fn drain_pending_phase_transition_progress(
     }
 }
 
+/// CR 117.3a: the active player receives priority at the beginning of a step or phase only
+/// "after any turn-based actions ... have been dealt with and abilities that trigger at the
+/// beginning of that phase or step have been put on the stack". [`finish_enter_phase`] performs
+/// neither: it grants `priority_player` and writes no beat, and [`process_phase_triggers`] runs on
+/// no path but [`auto_advance`]'s phase arms. So a phase entry that completed while an interactive
+/// substitute owned the beat still owes both, and [`auto_advance_once`] records that debt in
+/// `deferred_step_trigger_resume` when it bails on a standing cursor.
+///
+/// This is the SINGLE authority that settles the debt. A resume path that reaches an ordinary
+/// priority boundary calls it and adopts the returned beat; `None` means nothing was owed and the
+/// caller keeps its own. The latch is dropped either way — a cleared cursor ends the debt whether
+/// or not the beat was eligible to go back through the interpreter, and `stack.rs`'s quiescence
+/// predicate requires it clear.
+pub(crate) fn resume_deferred_step_triggers(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+) -> Option<WaitingFor> {
+    // A standing cursor means the entry is still unfinished, so the debt belongs to whoever
+    // finishes it, not to this boundary.
+    if state.pending_phase_transition_progress.is_some() {
+        return None;
+    }
+    let owed = state.deferred_step_trigger_resume.take().is_some();
+    (owed && matches!(state.waiting_for, WaitingFor::Priority { .. }))
+        .then(|| auto_advance(state, events))
+}
+
 /// CR 703.4q + CR 616.1 + CR 611.2b: Scan active step-end mana handlers for
 /// `player_id`. Combines printed statics on battlefield permanents and
 /// spell-installed riders via `transient_continuous_effects` keyed on

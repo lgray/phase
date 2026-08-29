@@ -2774,15 +2774,26 @@ fn an_applier_written_beat_still_stacks_the_entered_phases_triggers() {
 /// `Priority` and defers to it. That is what this row pins, and it is why the beat read is not
 /// decoration on the cursor read.
 ///
+/// CR 117.3a: deferring to that prompt does not discharge the entered phase's beginning-of-phase
+/// abilities, which `finish_enter_phase` never stacks. Both arms therefore read the entered phase's
+/// own trigger after the beat is answered — the grafted arm through the preserved host choice, the
+/// ungrafted arm through the `Priority` the mint wrote. An exit that retires the deferred-trigger
+/// latch on the prompt path leaves the grafted arm's stack empty.
+///
 /// The UNGRAFTED board runs the identical assertion as the paired control: there the applier writes
 /// a `Priority` beat, so `ReturnAsAuraTarget` must NOT be standing — a graft that silently did
 /// nothing would make both arms report the same thing.
 #[test]
 fn an_applier_prompt_at_the_collapse_exit_is_not_overwritten() {
     use engine::game::printed_cards::intrinsic_copiable_values;
-    use engine::types::ability::{TargetFilter, TypeFilter, TypedFilter};
+    use engine::types::ability::{
+        AbilityDefinition, AbilityKind, QuantityExpr, TargetFilter, TypeFilter, TypedFilter,
+    };
     use engine::types::game_state::TokenGrowth;
     use engine::types::keywords::Keyword;
+    use engine::types::triggers::TriggerMode;
+
+    const GAIN: i32 = 7;
 
     // (grafted, expects_aura_prompt)
     for grafted in [true, false] {
@@ -2856,6 +2867,32 @@ fn an_applier_prompt_at_the_collapse_exit_is_not_overwritten() {
             state.waiting_for
         );
 
+        // The entered phase's own beginning-of-phase ability, grafted at the boundary so
+        // `state.phase` is already the phase whose entry the collapse must finish.
+        let entered = state.phase;
+        let trigger_host = create_life_gainer(&mut state, P0, "Phase Trigger Host");
+        graft_trigger(
+            &mut state,
+            trigger_host,
+            TriggerDefinition::new(TriggerMode::Phase)
+                .phase(entered)
+                .trigger_zones(vec![Zone::Battlefield])
+                .execute(AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::GainLife {
+                        amount: QuantityExpr::Fixed { value: GAIN },
+                        player: TargetFilter::Controller,
+                    },
+                )),
+        );
+        let life_before = life_of(&state, P0);
+        assert!(
+            state.stack.is_empty(),
+            "control (grafted={grafted}): the boundary prompt stands over an EMPTY stack, so the \
+             reading after the submit is the collapse's own, got {:?}",
+            state.stack
+        );
+
         apply(&mut state, P0, GameAction::SubmitPayAmount { amount: 2 })
             .expect("P0 submits the finite loop-collapse count");
 
@@ -2887,6 +2924,55 @@ fn an_applier_prompt_at_the_collapse_exit_is_not_overwritten() {
                  {other:?}"
             ),
         }
+
+        // CR 303.4f: the collapse mints one Aura per cycle and EACH entering Aura asks its
+        // controller for a host, so the batch is not finished — and the phase's CR 117.3a debt
+        // not yet collectible — until every host choice is answered. Answering one and reading
+        // the stack measures the batch's midpoint, not the collapse's ending point.
+        let mut hosts_answered = 0usize;
+        while let WaitingFor::ReturnAsAuraTarget {
+            player,
+            legal_targets,
+            ..
+        } = &state.waiting_for
+        {
+            let (chooser, host) = (*player, legal_targets[0].clone());
+            apply(
+                &mut state,
+                chooser,
+                GameAction::ChooseTarget { target: Some(host) },
+            )
+            .expect("the chooser answers the preserved CR 303.4f host choice");
+            hosts_answered += 1;
+            assert!(
+                hosts_answered <= 8,
+                "the host-choice batch must drain, not re-raise forever"
+            );
+        }
+        assert_eq!(
+            hosts_answered > 0,
+            grafted,
+            "control: only the grafted Aura profile raises host choices at the exit; the \
+             ungrafted arm reaches the same assertion through the exit's `auto_advance` branch"
+        );
+
+        // DISCRIMINATOR on the grafted arm; the ungrafted arm is the paired live control, which
+        // reaches the same assertion through the exit's `auto_advance` branch. Retiring the
+        // deferred-trigger latch on the prompt path leaves the grafted stack empty here.
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "CR 117.3a (grafted={grafted}): the {entered:?} beginning-of-phase ability must be on \
+             the stack once the collapse's ending point is reached, beat {:?}",
+            state.waiting_for
+        );
+        drain_stack(&mut state);
+        assert_eq!(
+            life_of(&state, P0) - life_before,
+            GAIN,
+            "CR 117.3a (grafted={grafted}): the stacked {entered:?} trigger resolves, so its life \
+             gain lands"
+        );
     }
 }
 

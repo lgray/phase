@@ -2895,12 +2895,12 @@ pub(super) fn handle_resolution_choice(
                         // abilities. `turns::process_phase_triggers` is what stacks them
                         // and it runs on no path but `turns::auto_advance`'s phase arms.
                         //
-                        // Both branches below therefore owe the latch a clear: the entry is
-                        // complete on each, `stack.rs`'s quiescence predicate requires it
-                        // clear, `auto_advance` never reads it, and the tree's only other
-                        // clear (the `EmptyManaPool` resume) needs a live cursor it will
-                        // never see here.
-                        state.deferred_step_trigger_resume = None;
+                        // So the latch is cleared on the ONE branch below that goes back
+                        // through the interpreter in this action, and only there: an exit
+                        // that deferred to a live prompt has not paid CR 117.3a yet, and
+                        // clearing the latch would retire the debt with nothing having
+                        // stacked. `turns::resume_deferred_step_triggers` collects it at the
+                        // priority boundary the deferred-to prompt returns through.
                         // CR 732.2a: the taken shortcut's ending point is the first
                         // priority the turn interpreter grants — the beat below, or the one
                         // behind the entered phase's CR 703.1 turn-based action (CR 508.1's
@@ -2916,8 +2916,11 @@ pub(super) fn handle_resolution_choice(
                         // `Priority` an applier wrote on its way through — that one still
                         // owes the phase's triggers, so it is not the grant CR 117.3a
                         // describes. Anything else standing here is an applier's LIVE
-                        // prompt, a mint's CR 303.4f host choice among them, and this exit
-                        // defers to it.
+                        // prompt — a mint's CR 303.4f host choice is the reachable one,
+                        // because `token_copy`'s pause parks its continuation BELOW the
+                        // child boundary and the `active_copy_token()` guard above reads
+                        // only the top frame. Overwriting it would destroy the choice, so
+                        // this exit defers to it and leaves the latch owed instead.
                         if matches!(
                             state.waiting_for,
                             WaitingFor::PayAmountChoice {
@@ -2925,6 +2928,7 @@ pub(super) fn handle_resolution_choice(
                                 ..
                             } | WaitingFor::Priority { .. }
                         ) {
+                            state.deferred_step_trigger_resume = None;
                             crate::game::turns::auto_advance(state, events)
                         } else {
                             state.waiting_for.clone()
