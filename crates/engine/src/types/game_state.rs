@@ -15621,7 +15621,6 @@ impl CastingVariant {
             | CastingVariant::MoreThanMeetsTheEye
             | CastingVariant::Disturb
             | CastingVariant::Impending
-            | CastingVariant::Prototype
             // CR 702.140a: Mutate replaces the spell's mana cost with the mutate
             // cost — an alternative cost, so only one may apply (CR 118.9a).
             | CastingVariant::Mutate
@@ -15639,6 +15638,12 @@ impl CastingVariant {
             | CastingVariant::Omen
             | CastingVariant::Retrace
             | CastingVariant::Aftermath
+            // CR 718.2 + CR 718.3b: Prototype swaps in an alternative SET OF
+            // CHARACTERISTICS — the prototyped mana cost IS the spell's mana
+            // cost, not an alternative cost (CR 118.9). A prototyped cast can
+            // therefore still combine with one alternative cost (a free-cast
+            // grant or rider).
+            | CastingVariant::Prototype
             // CR 702.133a: Jump-start discards a card as an *additional* cost on
             // top of the normal mana cost — not an alternative cost (CR 118.9a).
             | CastingVariant::JumpStart
@@ -15646,6 +15651,75 @@ impl CastingVariant {
             // cost of both halves — not an alternative cost.
             | CastingVariant::Fuse
             | CastingVariant::GraveyardPermission { .. }
+            | CastingVariant::ExilePermission { .. } => false,
+        }
+    }
+
+    /// CR 118.9a + CR 601.2b: does this variant elect an alternative cost of
+    /// the CARD's own — a keyword rider (Evoke, Bestow, Overload, …) or the
+    /// fixed face-down {3} — INDEPENDENT of whatever zone authority admits
+    /// the cast? Such a rider may only ride a normal-cost route: an
+    /// alternative-cost grant underneath it would be a second alternative
+    /// cost on the same cast.
+    ///
+    /// Distinct from [`CastingVariant::uses_alternative_cost`]: a variant
+    /// whose alternative cost IS its admitting permission's cost (Madness,
+    /// Suspend, Plot, Foretell, the permission elections, the graveyard
+    /// keyword routes) forms ONE casting method with its route — it applies
+    /// one alternative cost total, never a second — so it is `false` here
+    /// while `true` there.
+    pub fn is_independent_alternative_cost_rider(self) -> bool {
+        match self {
+            CastingVariant::Miracle
+            | CastingVariant::Evoke
+            | CastingVariant::Emerge
+            | CastingVariant::Dash
+            | CastingVariant::Blitz
+            | CastingVariant::Spectacle
+            | CastingVariant::Overload
+            | CastingVariant::Bestow
+            | CastingVariant::Awaken
+            | CastingVariant::Cleave
+            | CastingVariant::MoreThanMeetsTheEye
+            | CastingVariant::Impending
+            | CastingVariant::Mutate
+            | CastingVariant::Freerunning
+            | CastingVariant::Prowl
+            | CastingVariant::Surge
+            // CR 702.185a: the warp cost is the HAND-side alternative cost;
+            // the exile return cast is its own `WarpExile` route and never
+            // elects this variant.
+            | CastingVariant::Warp
+            | CastingVariant::Sneak { .. }
+            | CastingVariant::WebSlinging { .. }
+            // CR 601.2b + CR 702.37c / CR 702.168b: the fixed face-down {3}.
+            | CastingVariant::FaceDown => true,
+            CastingVariant::Normal
+            | CastingVariant::Adventure
+            | CastingVariant::Omen
+            // CR 718.2 + CR 718.3b: alternative CHARACTERISTICS, not an
+            // alternative cost — a free grant stacks with the prototype
+            // election (see `uses_alternative_cost`).
+            | CastingVariant::Prototype
+            // CR 702.81a / CR 702.133a / CR 702.102c: additional or combined
+            // printed costs, no alternative cost anywhere.
+            | CastingVariant::Retrace
+            | CastingVariant::JumpStart
+            | CastingVariant::Fuse
+            | CastingVariant::Aftermath
+            // Route-coupled: the variant's alternative cost IS its admitting
+            // permission's or keyword-route's cost — one method (CR 118.9a).
+            | CastingVariant::Madness
+            | CastingVariant::Suspend
+            | CastingVariant::Plot
+            | CastingVariant::Foretell
+            | CastingVariant::Escape
+            | CastingVariant::Flashback
+            | CastingVariant::Harmonize
+            | CastingVariant::Mayhem
+            | CastingVariant::Disturb
+            | CastingVariant::GraveyardPermission { .. }
+            | CastingVariant::HandPermission { .. }
             | CastingVariant::ExilePermission { .. } => false,
         }
     }

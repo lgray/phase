@@ -12,10 +12,10 @@ use crate::types::ability::{
     CopyRetargetPermission, CountScope, DamageAmountScope, DamageAmountThreshold, DamageChannel,
     DamageModification, DamageSource, DelayedTriggerCondition, DiscardSelfScope, Duration, Effect,
     EffectScope, FilterProp, ManaContribution, ManaProduction, ManaSpendPermission, ModalChoice,
-    ObjectScope, PerpetualModification, PlayerFilter, PlayerScope, PropertyAggregate, PtStat,
-    PtValue, PtValueScope, QuantityExpr, QuantityRef, SeatDirection, SharedQuality,
-    SiblingCondition, SubAbilityLink, TapStateChange, TargetFilter, TriggerCondition,
-    TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
+    ObjectProperty, ObjectScope, PerpetualModification, PlayerFilter, PlayerScope,
+    PropertyAggregate, PtStat, PtValue, PtValueScope, QuantityExpr, QuantityRef, SeatDirection,
+    SharedQuality, SiblingCondition, SubAbilityLink, TapStateChange, TargetFilter,
+    TriggerCondition, TriggerDefinition, TurnJournalKind, TypeFilter, TypedFilter, ZoneRef,
 };
 use crate::types::card_type::Supertype;
 use crate::types::counter::{CounterMatch, CounterType};
@@ -10514,6 +10514,76 @@ fn trigger_leonin_vanguard_control_creature_count() {
             ..
         }
     ));
+}
+
+#[test]
+fn parse_greatest_mana_value_among_instant_and_sorcery_spells_cast_this_turn() {
+    let oracle = "At the beginning of combat on your turn, if you've cast an instant or sorcery spell this turn, create an X/X blue and red Elemental creature token with flying and haste, where X is the greatest mana value among instant and sorcery spells you've cast this turn.";
+    let def = parse_trigger_line(oracle, "Rootha, Mastering the Moment");
+    assert_eq!(def.mode, TriggerMode::Phase);
+    assert_eq!(def.phase, Some(Phase::BeginCombat));
+    assert_eq!(def.constraint, Some(TriggerConstraint::OnlyDuringYourTurn));
+    assert!(matches!(
+        def.condition,
+        Some(TriggerCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::SpellsCastThisTurn {
+                    filter: Some(_),
+                    ..
+                },
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 1 },
+        })
+    ));
+
+    let execute = def.execute.as_deref().expect("Rootha token effect");
+    let Effect::Token {
+        name,
+        power,
+        toughness,
+        colors,
+        keywords,
+        ..
+    } = execute.effect.as_ref()
+    else {
+        panic!("expected Rootha token effect, got {:#?}", execute.effect);
+    };
+    assert_eq!(name, "Elemental");
+    assert_eq!(colors, &vec![ManaColor::Blue, ManaColor::Red]);
+    assert!(keywords.contains(&Keyword::Flying));
+    assert!(keywords.contains(&Keyword::Haste));
+    let PtValue::Quantity(QuantityExpr::Ref {
+        qty: QuantityRef::PropertyAggregate(aggregate),
+    }) = power
+    else {
+        panic!("expected property-sized token power, got {power:?}");
+    };
+    assert_eq!(toughness, power);
+    assert_eq!(aggregate.function(), AggregateFunction::Max);
+    assert_eq!(aggregate.property(), ObjectProperty::ManaValue);
+    assert!(matches!(
+        aggregate.source(),
+        CardTypeSetSource::TurnJournal {
+            journal: TurnJournalKind::SpellsCast,
+            scope: CountScope::Controller,
+            filter: Some(filter),
+        } if !filter.contains_other_than_trigger_object()
+    ));
+
+    // The typed Token and PropertyAggregate assertions above are the positive
+    // reach guard. Change only the aggregate's unsupported spell filter; the
+    // trigger condition and token clause remain byte-identical.
+    let near_miss_oracle = oracle.replacen(
+        "greatest mana value among instant and sorcery spells",
+        "greatest mana value among creature spells",
+        1,
+    );
+    let near_miss = parse_trigger_line(&near_miss_oracle, "Near Miss");
+    assert!(near_miss
+        .execute
+        .as_deref()
+        .is_some_and(|ability| matches!(ability.effect.as_ref(), Effect::Unimplemented { .. })));
 }
 
 #[test]

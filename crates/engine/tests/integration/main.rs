@@ -86,6 +86,7 @@ mod bring_the_ending_corrupted_instead_branch_5683;
 mod bring_to_light_free_cast_2880;
 mod calamity_of_the_titans_reveal_cost;
 mod call_damage_control_modal_return;
+mod call_forth_tempest_and_rootha;
 mod captain_america_throw;
 mod captain_marvel_apex_avenger;
 mod cascade_intervening_if_pipeline;
