@@ -30719,10 +30719,12 @@ mod tests {
     ///
     /// # Discrimination
     ///
-    /// (b) reds if the total term is dropped; (c) and (d) if the residue term is; (e) if the
-    /// residue's life map is compared by KEY SET rather than by value; (f) if the token axis is
-    /// dropped from the residue comparison — every other leg here leaves `tokens_created` equal,
-    /// so that rival survives all of them; and (a) if the two disjuncts are joined by `&&`.
+    /// (b) and (g) red if the total term is dropped, and they take opposite directions — (b)
+    /// OVER-charges and (g) UNDER-charges — so a total relaxed to a ceiling either way reds one
+    /// of them; (c) and (d) red if the residue term is dropped; (e) if the residue's life map is
+    /// compared by KEY SET rather than by value; (f) if the token axis is dropped from the
+    /// residue comparison — every other leg here leaves `tokens_created` equal, so that rival
+    /// survives all of them; and (a) if the two disjuncts are joined by `&&`.
     /// (a) is the positive control on the same instrument: a predicate that refuses everything
     /// fails it.
     #[test]
@@ -30784,6 +30786,14 @@ mod tests {
             "CR 111.1: a cycle that minted an extra token diverged from the published period, \
              and the token axis is part of the residue that says so"
         );
+
+        // (g) THE UNDER-CHARGE, with both residues empty so only the total separates them. (b)
+        // is the over-charge; a total read as a ceiling survives (b) and reds only here.
+        assert!(
+            !expected.conforms(&victim_life(&[(2, -2)]), &pins),
+            "the lifted charge is compared for EQUALITY, so a slot charging LESS than the \
+             published magnitude is a divergence as squarely as one charging more"
+        );
     }
 
     /// **T5** — the subtraction is inert unless the declaration pinned a charged slot with a
@@ -30794,18 +30804,19 @@ mod tests {
     /// decision point, so no pin can exist and `validate_pins` confines nothing. Where nothing
     /// is confined the predicate must fall back to exact equality.
     ///
-    /// ONE delta pair throughout — differing only in the life SEAT — run against different
+    /// Legs (i)–(v) run ONE delta pair — differing only in the life SEAT — against different
     /// `(victim_slot, pins)` shapes, so an always-true or always-false predicate fails one of
-    /// these legs.
+    /// them.
     ///
     /// # Discrimination
     ///
     /// (i) reds if `slots == 0` stops being the identity, or if the count is taken over `pins`
-    /// instead of over `victim_slot`; (iii) if the pins are ignored, if any non-empty pin list
-    /// sizes the lift, or if the slot match is weakened to its SUB-INDEX alone; (iv) if the
-    /// pin-KIND match is dropped; (v) if the slot match is weakened to its SOURCE alone — every
-    /// other leg separates "different slot" by changing the SOURCE, so that rival survives all
-    /// of them.
+    /// unfiltered; (vi) if it is taken over the pins that name a charged slot, which sizes the
+    /// lift at TWO where `victim_slot` sizes it at one; (iii) if the pins are ignored, if any
+    /// non-empty pin list sizes the lift, or if the slot match is weakened to its SUB-INDEX
+    /// alone; (iv) if the pin-KIND match is dropped; (v) if the slot match is weakened to its
+    /// SOURCE alone — every other leg separates "different slot" by changing the SOURCE, so
+    /// that rival survives all of them.
     #[test]
     fn conforms_lifts_nothing_without_a_targets_pin_on_a_charged_slot() {
         use crate::analysis::decision_template::{MayChoiceOption, PinnedDecision};
@@ -30866,6 +30877,19 @@ mod tests {
             !charged_sig.conforms(&observed, &[aimed_pin(DecisionSlot::may(source))]),
             "a `Targets` pin on ANOTHER SUB-INDEX of the charged slot's source names a different \
              slot and must not size the lift"
+        );
+
+        // (vi) TWO PINS NAMING ONE CHARGED SLOT — `validate_pins` carries no duplicate-slot
+        // rejection, so a pin-side count sizes the lift at two and takes the smaller seat off
+        // both sides; a `victim_slot`-side count leaves it in the residue, where it separates.
+        let two_seat = charged_signature(victim_life(&[(1, -5), (2, -1)]), &[(charged.clone(), 5)]);
+        assert!(
+            !two_seat.conforms(
+                &victim_life(&[(3, -5), (4, -1)]),
+                &[aimed_pin(charged.clone()), aimed_pin(charged)]
+            ),
+            "one charged slot is one lifted entry however many pins name it, so the second \
+             losing seat stays in the residue and its relocation is refused"
         );
     }
 
