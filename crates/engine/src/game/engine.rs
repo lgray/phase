@@ -2830,7 +2830,6 @@ fn certified_bounded_cycle_offer<'a>(
         certified_period_touch, PeriodCertification, PeriodTouch, PeriodicDelta, ResourceVector,
     };
 
-    let cur = ResourceVector::snapshot(state);
     // Written as an explicit newest-first walk rather than `find_map` because the candidate
     // body now threads `&mut verdicts` and carries an owned per-candidate `PeriodTouch` out.
     let mut basis_a: Option<(
@@ -2853,7 +2852,10 @@ fn certified_bounded_cycle_offer<'a>(
         // over the CERTIFIED PERIOD's announced pairs rather than over the offer-beat stack.
         let points = bounded_cycle_pin_slots_for_window(&touch_cover, proposer);
         let slots: Vec<DecisionSlot> = points.iter().map(|p| p.slot.clone()).collect();
-        let delta = ResourceVector::delta(&ResourceVector::snapshot(prior), &cur);
+        // `period` re-snapshots `state` once per candidate — accepted: the walk is bounded by
+        // the ring's length, and a hoisted snapshot cannot be handed to the single authority
+        // without splitting it back into the two-snapshot form it exists to remove.
+        let delta = ResourceVector::period(prior, state);
         // The existing disjunction, written as an `if / else if` that RECORDS the matching
         // disjunct instead of discarding it. Semantics are byte-for-byte the `||` it
         // replaces: the equality arm is still evaluated first and `_pinned` still runs only
@@ -5151,13 +5153,18 @@ fn materialize_fixed_shortcut(
                 // remaining repetitions could carry a seat past a threshold inside the
                 // proposal. Measured before commit, on the same axes the bound reads, and
                 // fail-closed: a divergent cycle is dropped whole and the drive hands back
-                // to manual play with the last conforming cycle intact.
+                // to manual play with the last conforming cycle intact. The comparison is
+                // victim-INVARIANT rather than exact: CR 601.2c lets one declaration aim an
+                // announced slot at a different seat each iteration, and `conforms` states
+                // both what that licenses and what it still refuses.
                 if let Some(pd) = per_cycle {
-                    let actual = crate::analysis::resource::ResourceVector::delta(
-                        &crate::analysis::resource::ResourceVector::snapshot(&committed),
-                        &crate::analysis::resource::ResourceVector::snapshot(&s),
-                    );
-                    if actual != pd.delta {
+                    let pins = template
+                        .as_ref()
+                        .map_or(&[][..], |t| t.decisions.as_slice());
+                    if !pd.conforms(
+                        &crate::analysis::resource::ResourceVector::period(&committed, &s),
+                        pins,
+                    ) {
                         break 'cycles;
                     }
                 }
@@ -5941,7 +5948,7 @@ fn normalize_recast_frame(
 ///
 /// ONE test, TWO readers: the class derivation and the producer's token-axis feed, which must
 /// publish the count the boundary mint will reproduce.
-fn minted_battlefield_ids(before: &GameState, after: &GameState) -> Vec<ObjectId> {
+pub(crate) fn minted_battlefield_ids(before: &GameState, after: &GameState) -> Vec<ObjectId> {
     after
         .battlefield
         .iter()

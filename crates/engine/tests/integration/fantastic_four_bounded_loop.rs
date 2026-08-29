@@ -58,6 +58,8 @@ use engine::types::replacements::ReplacementEvent;
 
 const P0: PlayerId = PlayerId(0);
 const P1: PlayerId = PlayerId(1);
+const P2: PlayerId = PlayerId(2);
+const P3: PlayerId = PlayerId(3);
 
 /// The four F4 permanents, by their **comma printings** — verified verbatim against the card
 /// faces in the dump itself (`objects[401..404].name`). The plain names ("Mister Fantastic",
@@ -4152,5 +4154,603 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
          because the firewall inspects an unresolved `None` and passes it. Post-repair the \
          resolved foreign-owner declaration meets the firewall and is refused. A row asserting \
          only R4b/A would miss that the repair WIDENS what the firewall inspects"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// U1 / U2 — the per-cycle accounting is victim-invariant and carries the token axis
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// [`f4_pin_template`] with its single announced `Targets` pin re-aimed by a SCHEDULE. Every
+/// other pin the board publishes is left exactly as the conformant template builds it, so the
+/// only axis these rows vary is WHICH SEAT the announced slot names at each iteration
+/// (CR 601.2c + CR 732.2a: the choice is fixed by the declaration, not made per iteration).
+fn f4_scheduled_template(
+    schema: &engine::analysis::decision_template::ShortcutDecisionSchema,
+    owner: PlayerId,
+    count: u32,
+    segments: &[(u32, PlayerId)],
+) -> engine::analysis::decision_template::DecisionTemplate {
+    use engine::analysis::decision_template::{
+        AnnouncementSubject, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+    };
+    let mut template = f4_pin_template(schema, owner, count);
+    let mut aimed = 0;
+    for pin in &mut template.decisions {
+        if let PinnedDecision::Targets { targets, .. } = pin {
+            *targets = vec![TargetPin::Scheduled(TargetSchedule::Piecewise(
+                segments
+                    .iter()
+                    .map(|(start, seat)| (*start, Ranking::one(AnnouncementSubject::Seat(*seat))))
+                    .collect(),
+            ))];
+            aimed += 1;
+        }
+    }
+    assert_eq!(
+        aimed, 1,
+        "the schedule these rows vary belongs to the board's ONE announced target slot; \
+         re-aiming zero pins would leave the declaration identical to the conformant one and \
+         re-aiming several would make the seat attribution below ambiguous"
+    );
+    template
+}
+
+/// Per-seat life, read by SEAT ID rather than positionally — these rows declare seats by name
+/// and a positional read would silently follow a re-dump's player ordering instead.
+fn life_by_seat(state: &GameState) -> Vec<(PlayerId, i64)> {
+    state
+        .players
+        .iter()
+        .map(|p| (p.id, p.life as i64))
+        .collect()
+}
+
+fn life_of(snapshot: &[(PlayerId, i64)], seat: PlayerId) -> i64 {
+    snapshot
+        .iter()
+        .find(|(id, _)| *id == seat)
+        .map(|(_, life)| *life)
+        .unwrap_or_else(|| panic!("{seat:?} is not seated on this board"))
+}
+
+/// The board-side total of ONE published counter class, read through the very
+/// [`ResourceVector::snapshot`] projection the certificate's per-cycle counter entry is a rate
+/// for — so the growth measured below and the rate it is compared against cannot be different
+/// quantities.
+fn counter_class_total(
+    state: &GameState,
+    key: &(
+        engine::analysis::resource::CounterClass,
+        engine::analysis::resource::ObjectClass,
+    ),
+) -> i64 {
+    ResourceVector::snapshot(state)
+        .counters
+        .get(key)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// **T1** — a VICTIM-CHANGING declaration commits its whole count, charges only the seats it
+/// declared, and moves the board by the published per-cycle magnitude.
+///
+/// CR 732.2a lets one declaration specify a sequence of choices that aims an announced target
+/// slot at a different seat in different iterations. At BASE the drive compared each committed
+/// cycle against the published signature by exact equality, so the first cycle whose life
+/// landed on a different seat than the certified period's diverged and the drive truncated
+/// there. `PeriodicDelta::conforms` lifts the pinned slot's charge off both sides before
+/// comparing, so the re-aim conforms and the declared count commits in full.
+///
+/// # Discrimination
+///
+/// Revert `conforms` to `self.delta == *observed`: the drive truncates at the first segment
+/// boundary, so (a) fails, (b) fails on the two later seats, and (e) fails because the counter
+/// growth is the published rate times the TRUNCATED count.
+///
+/// Both magnitude relations are `rate * count` with the rate READ OFF the certificate, never
+/// pinned. The counter leg is the non-degenerate one and its guard demands a published rate
+/// STRICTLY ABOVE 1 — a rate-1 axis reduces `rate * n` to the bare committed count and could
+/// not tell a per-period magnitude from a degenerate one. A board that publishes rate 1 must
+/// RED this row rather than satisfy it.
+#[test]
+fn t1_a_victim_changing_declaration_commits_its_whole_count_on_the_seats_it_declared() {
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, certificate, schema) = offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let schema = schema.clone();
+    let n = schema.max_iterations;
+
+    let life_rate = -per_cycle.delta.life.values().copied().min().unwrap_or(0);
+    assert!(
+        life_rate > 0,
+        "ANTI-VACUITY: the published per-cycle life LOSS must be strictly positive, else the \
+         sum relation below degenerates to `0 == 0 * {n}`. published life={:?}",
+        per_cycle.delta.life
+    );
+    assert_eq!(
+        per_cycle.delta.counters.len(),
+        1,
+        "with more than one published counter class the board-side total is no longer that \
+         class's own projection, and this row must RED rather than guess which entry the \
+         growth belongs to. published counters={:?}",
+        per_cycle.delta.counters
+    );
+    let (counter_key, counter_rate) = per_cycle
+        .delta
+        .counters
+        .iter()
+        .map(|(key, rate)| (*key, *rate))
+        .next()
+        .expect("the length assertion above already established the single entry");
+    assert!(
+        counter_rate > 1,
+        "ANTI-DEGENERACY: this is the only axis whose published rate can separate a per-period \
+         MAGNITUDE from the bare committed count, so it must exceed 1. published \
+         {counter_key:?}={counter_rate}"
+    );
+
+    // Three segments, one declared seat each, with the boundaries derived from the published
+    // count — nothing here pins a figure.
+    let declared = [P1, P2, P3];
+    let segments: Vec<(u32, PlayerId)> = declared
+        .iter()
+        .enumerate()
+        .map(|(i, seat)| (i as u32 * n / 3, *seat))
+        .collect();
+    assert!(
+        segments.windows(2).all(|w| w[0].0 < w[1].0),
+        "the published count {n} must be large enough for three DISTINCT segment starts, else \
+         a declared seat absorbs no iteration and (b) below reds for a fixture reason. \
+         derived starts={:?}",
+        segments.iter().map(|(start, _)| *start).collect::<Vec<_>>()
+    );
+    let template = f4_scheduled_template(&schema, proposer, n, &segments);
+
+    let life_before = life_by_seat(&state);
+    let counters_before = counter_class_total(&state, &counter_key);
+
+    apply(
+        &mut state,
+        proposer,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(n),
+            template: Some(template),
+        },
+    )
+    .expect("the declaration is dispatched");
+    // THE DISCRIMINATOR between "declare refused it" and "the drive aborted": a refused
+    // declaration hands priority straight back and never opens the APNAP window.
+    assert!(
+        matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "the victim-changing declaration must be ACCEPTED and open the CR 732.2b APNAP window \
+         — a `Priority` here would mean the shortfall below is a declare-time refusal rather \
+         than the drive's behaviour. got {:?}",
+        state.waiting_for
+    );
+    assert!(
+        accept_all_opponents(&mut state) > 0,
+        "the CR 732.2c window must actually take responses"
+    );
+
+    let life_after = life_by_seat(&state);
+    let counters_after = counter_class_total(&state, &counter_key);
+    let loss = |seat: PlayerId| life_of(&life_before, seat) - life_of(&life_after, seat);
+    let declared_losses: Vec<i64> = declared.iter().map(|seat| loss(*seat)).collect();
+
+    // (a) CR 732.2a: the whole declared count commits, spread across the declared seats.
+    assert_eq!(
+        declared_losses.iter().sum::<i64>(),
+        life_rate * i64::from(n),
+        "the declared seats {declared:?} must absorb the published per-cycle life rate \
+         {life_rate} times the full declared count {n}. per-seat losses={declared_losses:?}, \
+         life {life_before:?} -> {life_after:?}"
+    );
+    // (b) every declared seat is actually reached — a drive that truncated at the first
+    // boundary leaves the later seats untouched while (a) could still be met by one seat.
+    assert!(
+        declared_losses.iter().all(|l| *l > 0),
+        "every declared seat must strictly decrease; a zero belongs to a seat the drive never \
+         reached. losses={declared_losses:?} for {declared:?}"
+    );
+    // (c) the lift may not relocate a charge onto a seat the declaration never named.
+    for (seat, before) in &life_before {
+        if !declared.contains(seat) {
+            assert!(
+                life_of(&life_after, *seat) >= *before,
+                "{seat:?} was never declared and must not lose life: {before} -> {}",
+                life_of(&life_after, *seat)
+            );
+        }
+    }
+    // (d) the split is NOT uniform, and the cause is a fact of this board rather than a defect:
+    // the first driven cycle resolves the target announced BEFORE the drive begins, so every
+    // segment boundary lands one iteration late. Do not "correct" the split back into equal
+    // parts — that would make this assertion the thing being worked around.
+    assert!(
+        declared_losses.windows(2).any(|w| w[0] != w[1]),
+        "the segment boundaries land one iteration late because cycle 0 resolves the \
+         pre-announced target, so the declared seats CANNOT absorb equal shares. an equal \
+         split here means the index map moved. losses={declared_losses:?}"
+    );
+    // (e) THE COUNTER LEG — the drive moved the BOARD by the published magnitude, not merely
+    // the life axis. An implementation that commits the full count on life while the board
+    // stops advancing passes (a) and fails here.
+    assert_eq!(
+        counters_after - counters_before,
+        counter_rate * i64::from(n),
+        "{counter_key:?} must grow by the published per-cycle rate {counter_rate} times the \
+         declared count {n}: {counters_before} -> {counters_after}"
+    );
+}
+
+/// **T2** — the same-seat control: the SCHEDULE SHAPE is not what was broken.
+///
+/// A two-segment `Piecewise` naming ONE seat commits its whole count. This row PASSES AT BASE
+/// BY DESIGN and is a REACH-GUARD for [`t1_a_victim_changing_declaration_commits_its_whole_count_on_the_seats_it_declared`],
+/// not evidence for the phase: it holds the schedule shape fixed and varies only whether the
+/// declaration changes victim, so a T1 failure cannot be blamed on `Piecewise` itself. There is
+/// no revert that reds it, and the phase must not ACQUIRE its pass.
+#[test]
+fn t2_reach_guard_a_same_seat_schedule_shape_already_commits_its_whole_count() {
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, certificate, schema) = offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let schema = schema.clone();
+    let n = schema.max_iterations;
+
+    let life_rate = -per_cycle.delta.life.values().copied().min().unwrap_or(0);
+    assert!(
+        life_rate > 0,
+        "ANTI-VACUITY: the published per-cycle life LOSS must be strictly positive. published \
+         life={:?}",
+        per_cycle.delta.life
+    );
+
+    let segments = [(0, P1), (n / 3, P1)];
+    assert!(
+        segments[0].0 < segments[1].0,
+        "the two segment starts must differ, else this is a `Constant` schedule wearing a \
+         `Piecewise` name and controls nothing. derived={segments:?}"
+    );
+    let template = f4_scheduled_template(&schema, proposer, n, &segments);
+
+    let life_before = life_by_seat(&state);
+    apply(
+        &mut state,
+        proposer,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(n),
+            template: Some(template),
+        },
+    )
+    .expect("the declaration is dispatched");
+    assert!(
+        matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "the same-seat declaration must be ACCEPTED and open the APNAP window, got {:?}",
+        state.waiting_for
+    );
+    assert!(
+        accept_all_opponents(&mut state) > 0,
+        "the CR 732.2c window must actually take responses"
+    );
+
+    let life_after = life_by_seat(&state);
+    assert_eq!(
+        life_of(&life_before, P1) - life_of(&life_after, P1),
+        life_rate * i64::from(n),
+        "the one declared seat absorbs the whole count: life {life_before:?} -> {life_after:?}"
+    );
+    for (seat, before) in &life_before {
+        if *seat != P1 {
+            assert_eq!(
+                life_of(&life_after, *seat),
+                *before,
+                "{seat:?} is not declared by this schedule and must not move"
+            );
+        }
+    }
+}
+
+/// **T3** — the token axis is PUBLISHED and DELIVERED, and the two are coupled.
+///
+/// CR 111.1: a token creation is an event, so the snapshot pair the per-period signature used
+/// to be measured with reported zero on this axis while the board really minted a token every
+/// cycle. `ResourceVector::period` derives the axis from the board pair, so the offer's
+/// preview states the token product and the accepted drive delivers it.
+///
+/// The preview is read through the whole published projection
+/// (`bind_interaction_authority` + `derive_viewer_interaction`), on a CLONE so nothing here
+/// perturbs the drive that (b) then measures.
+///
+/// # Discrimination
+///
+/// (i) drop the token term from `period` ⇒ the rate guard and (a) red; (ii) point the
+/// conformance site back at the raw snapshot pair while leaving the mint fed ⇒ zero cycles
+/// commit, so (b) reds while (a) still passes — that coupling is the assertion; (iii) revert
+/// `ring_delta_signature`'s `per_period` binding ⇒ this board certifies on the
+/// resource-signature basis, the published rate returns to zero and the guard reds.
+#[test]
+fn t3_the_published_token_rate_is_delivered_by_the_accepted_drive() {
+    use engine::game::interaction::{bind_interaction_authority, derive_viewer_interaction};
+    use engine::game::visibility::filter_state_for_viewer;
+    use engine::types::interaction::{
+        InteractionOpportunityResponse, InteractionResponseSpec, InteractionSessionId,
+        InteractionShortcutPreviewFamily,
+    };
+
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, certificate, schema) = offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let schema = schema.clone();
+
+    let token_rate = per_cycle.delta.tokens_created;
+    assert!(
+        token_rate > 0,
+        "the published per-cycle token rate must be strictly positive — a ZERO rate FAILS this \
+         row rather than satisfying it, because a zero-token preview is exactly the unfed axis \
+         under test. published delta={:?}",
+        per_cycle.delta
+    );
+    let life_rate = -per_cycle.delta.life.values().copied().min().unwrap_or(0);
+    assert!(
+        life_rate > 0,
+        "ANTI-VACUITY: (b) re-derives the committed count as `total life loss / life_rate`, \
+         which needs a strictly positive rate. published life={:?}",
+        per_cycle.delta.life
+    );
+
+    // ── (a) THE PUBLISHED SIDE, read through the real viewer projection on a clone.
+    let mut probe = state.clone();
+    bind_interaction_authority(
+        &mut probe,
+        InteractionSessionId("t3-token-preview".to_string()),
+    )
+    .expect("bind the interaction authority over the live offer");
+    let filtered = filter_state_for_viewer(&probe, proposer);
+    let view = derive_viewer_interaction(&probe, &filtered, proposer);
+    let opportunity = view
+        .opportunities
+        .first()
+        .expect("the live offer publishes an interaction opportunity");
+    let InteractionOpportunityResponse::Schema {
+        spec: InteractionResponseSpec::Shortcut { preview, .. },
+        ..
+    } = &opportunity.response
+    else {
+        panic!(
+            "the live offer publishes a Shortcut response schema, got {:?}",
+            opportunity.response
+        );
+    };
+    let preview = preview
+        .as_ref()
+        .expect("a bounded offer with a per-period signature publishes a preview");
+    let tokens: Vec<i32> = preview
+        .entries
+        .iter()
+        .filter(|entry| entry.family == InteractionShortcutPreviewFamily::Tokens)
+        .map(|entry| entry.amount)
+        .collect();
+    assert_eq!(
+        tokens.len(),
+        1,
+        "the preview must carry exactly ONE Tokens entry — none means the axis is unfed, \
+         several means the projection stopped folding it. entries={:?}",
+        preview.entries
+    );
+    assert_eq!(
+        i64::from(tokens[0]),
+        token_rate * i64::from(preview.count),
+        "the preview states the token product for the count it travels with \
+         ({}), at the published rate {token_rate}",
+        preview.count
+    );
+
+    // ── (b) THE DELIVERED SIDE: the same count, driven, on the untouched board.
+    let count = preview.count;
+    let template = f4_pin_template(&schema, proposer, count);
+    let (_, _, _, tokens_before) = commit_axes(&state);
+    let life_before = life_by_seat(&state);
+
+    apply(
+        &mut state,
+        proposer,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(count),
+            template: Some(template),
+        },
+    )
+    .expect("the declaration is dispatched");
+    assert!(
+        matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "the declaration of the previewed count must be ACCEPTED, got {:?}",
+        state.waiting_for
+    );
+    assert!(
+        accept_all_opponents(&mut state) > 0,
+        "the CR 732.2c window must actually take responses"
+    );
+
+    let (_, _, _, tokens_after) = commit_axes(&state);
+    let life_after = life_by_seat(&state);
+    let total_life_loss: i64 = life_before
+        .iter()
+        .map(|(seat, before)| (*before - life_of(&life_after, *seat)).max(0))
+        .sum();
+    let committed = total_life_loss / life_rate;
+    // The REACH-GUARD on (b): a drive that committed nothing would satisfy a bare
+    // "tokens grew by rate times committed" with 0 == 0.
+    assert_eq!(
+        committed,
+        i64::from(count),
+        "the accepted drive must commit the very count the preview stated: life \
+         {life_before:?} -> {life_after:?} at rate {life_rate}"
+    );
+    assert_eq!(
+        (tokens_after - tokens_before) as i64,
+        token_rate * committed,
+        "the board must mint the published per-cycle token rate {token_rate} on each of the \
+         {committed} committed cycles: {tokens_before} -> {tokens_after} battlefield tokens"
+    );
+}
+
+/// **T8** — the enumerated consumer MOVES, its channel stays CLOSED, and the admissible-action
+/// set at the offer beat is PINNED by driving rather than asserted.
+///
+/// (a) is U2's: feeding the token axis puts `TokensCreated` into `LoopCertificate.unbounded`,
+/// which is the consumption site the period-delta rewiring has to account for. (b) and (c)
+/// PASS AT BASE BY DESIGN and are REACH-GUARDS — (b) is the containment this phase must not
+/// break (a bounded offer publishes nothing to the unbounded-resource channel), and (c) is the
+/// reducer property that containment argument quantifies over.
+///
+/// `GameState::loop_period_controller` — the predicate guarding the only mark route this
+/// phase's new axis could reach — is `pub(crate)` and unnameable here, so (b) asserts its
+/// INPUT: `last_loop_action_sequence` is EMPTY, which makes that function's leading
+/// `first()?` return `None` outright.
+///
+/// # Discrimination
+///
+/// (a) reds if the token term is dropped from `ResourceVector::period`. (b) reds if the
+/// accept-side route stops testing the controller predicate.
+#[test]
+fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_closed() {
+    use engine::analysis::resource::ResourceAxis;
+
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, certificate, schema) = offer_parts(&state);
+    let unbounded = certificate.unbounded.clone();
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let schema = schema.clone();
+    let n = schema.max_iterations;
+
+    // ── (a) the enumerated consumer moves.
+    assert!(
+        unbounded.contains(&ResourceAxis::TokensCreated),
+        "a bounded offer whose period MINTS tokens carries the token axis into the \
+         certificate's unbounded set. published axes={unbounded:?}"
+    );
+
+    // ── (c) THE FIREWALL LEG, taken first because it must be measured on the OFFER beat.
+    let torch = resolve_by_name(&state, TORCH);
+    assert!(
+        state.battlefield.contains(&torch),
+        "the refused action needs a LIVE battlefield source, else the refusal could be about \
+         the source rather than about the wait"
+    );
+    let sequence_at_offer = state.last_loop_action_sequence.clone();
+    let mut firewall = state.clone();
+    let refusal = apply(
+        &mut firewall,
+        proposer,
+        GameAction::ActivateAbility {
+            source_id: torch,
+            ability_index: 0,
+        },
+    );
+    assert!(
+        matches!(
+            refusal,
+            Err(engine::game::engine::EngineError::ActionNotAllowed(_))
+        ),
+        "an action outside the offer beat's admissible set is refused as ActionNotAllowed, \
+         got {refusal:?}"
+    );
+    assert_eq!(
+        firewall.last_loop_action_sequence, sequence_at_offer,
+        "the refused action must not mint a loop-action step — that sequence is the input to \
+         the very predicate guarding the mark route (b) asserts closed"
+    );
+    assert!(
+        matches!(firewall.waiting_for, WaitingFor::LoopShortcut { .. }),
+        "the refusal leaves the offer standing, got {:?}",
+        firewall.waiting_for
+    );
+
+    // ── (b) the guard's input is unset at the offer beat, with its own positive control.
+    assert!(
+        sequence_at_offer.is_empty(),
+        "no seat owns a driving period at the offer beat, so the object-growth mark route is \
+         not live for anyone. sequence={sequence_at_offer:?}"
+    );
+    assert!(
+        state.unbounded_resources.is_empty(),
+        "the bounded offer publishes nothing to the unbounded-resource channel. got {:?}",
+        state.unbounded_resources
+    );
+    let mut marked = state.clone();
+    marked.mark_unbounded_loop(proposer, &[ResourceAxis::TokensCreated]);
+    assert!(
+        !marked.unbounded_resources.is_empty(),
+        "POSITIVE CONTROL: the same reader returns non-empty on a hand-marked state, so the \
+         empty result above is a real negative and not a dead instrument"
+    );
+
+    // ── (c) PAIRED POSITIVE + (b) across the whole window: the SAME beat accepts a
+    //    declaration, which then commits its whole count with the channel still closed.
+    let life_rate = -per_cycle.delta.life.values().copied().min().unwrap_or(0);
+    assert!(
+        life_rate > 0,
+        "ANTI-VACUITY: the committed count below is re-derived from the life relation. \
+         published life={:?}",
+        per_cycle.delta.life
+    );
+    let template = f4_pin_template(&schema, proposer, n);
+    let life_before = life_by_seat(&state);
+    apply(
+        &mut state,
+        proposer,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(n),
+            template: Some(template),
+        },
+    )
+    .expect("the declaration is dispatched");
+    assert!(
+        matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "PAIRED POSITIVE for the firewall: `DeclareShortcut` on the SAME beat is ADMITTED and \
+         moves the wait, so an Err-on-everything reducer cannot satisfy the refusal above. got \
+         {:?}",
+        state.waiting_for
+    );
+    assert!(
+        accept_all_opponents(&mut state) > 0,
+        "the CR 732.2c window must actually take responses"
+    );
+
+    let life_after = life_by_seat(&state);
+    let committed: i64 = life_before
+        .iter()
+        .map(|(seat, before)| (*before - life_of(&life_after, *seat)).max(0))
+        .sum::<i64>()
+        / life_rate;
+    assert_eq!(
+        committed,
+        i64::from(n),
+        "the accepted declaration commits its whole count, so the channel assertion below is \
+         about a drive that actually ran: life {life_before:?} -> {life_after:?}"
+    );
+    assert!(
+        state.last_loop_action_sequence.is_empty() && state.unbounded_resources.is_empty(),
+        "after the bounded drive the object-growth route is STILL not live and nothing was \
+         published to the unbounded-resource channel. sequence={:?} marks={:?}",
+        state.last_loop_action_sequence,
+        state.unbounded_resources
     );
 }

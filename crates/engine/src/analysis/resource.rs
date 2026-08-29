@@ -482,7 +482,9 @@ pub struct ResourceVector {
     #[serde(with = "map_key_pairs")]
     pub poison: BTreeMap<PlayerId, i64>,
 
-    /// CR 111: tokens created this analysis window. **Event-fed.**
+    /// CR 111: tokens created this analysis window. **Event-fed**, and additionally derived
+    /// from a board pair by [`ResourceVector::period`] — the per-period producers hold no
+    /// event stream, so a snapshot pair alone would report zero on an axis the offer publishes.
     pub tokens_created: i64,
 
     /// CR 121: cards drawn this analysis window. **Event-fed.**
@@ -614,6 +616,96 @@ pub struct PeriodicDelta {
     pub victim_slot: Vec<(DecisionSlot, i64)>,
 }
 
+impl PeriodicDelta {
+    /// CR 732.2a: whether one committed repetition matches this signature closely enough that
+    /// the bound divided out of it still describes the drive.
+    ///
+    /// The comparison is by TOTAL rather than per seat — this predicate reads no seat set.
+    /// That shape is CR 732.2a plus an engine choice, not a CR 704 consequence: the rule fixes
+    /// the SEQUENCE OF CHOICES, and this type carries no per-slot victim identity a seat-aware
+    /// check could be written against. Two conjuncts license it:
+    ///
+    /// * MAGNITUDE. Every [`PeriodicDelta::victim_slot`] entry carries the same magnitude
+    ///   ([`ResourceVector::worst_seat_life_loss`]). CR 704.5a: a player at 0 or less life
+    ///   loses the game, so [`ResourceVector::elimination_bounds`] RESERVED `victim_slot.len()`
+    ///   times that maximum on every DECLARABLE VICTIM. The lift takes at most that many
+    ///   entries and requires equal totals, so no conforming observation charges a DECLARABLE
+    ///   VICTIM above what was already reserved for it. The conclusion stops where the
+    ///   reservation does: a seat that is not a declarable victim takes `elimination_bounds`'
+    ///   `else` arm and reserves nothing, and this conjunct says nothing about it — see the
+    ///   admission below.
+    /// * SEAT. Sized by `pins`, not by `victim_slot.len()`. CR 732.2a specifies a sequence of
+    ///   CHOICES, and `victim_slot` is ANNOUNCED rather than published — a CR 601.2c target
+    ///   another player announces is charged but publishes no decision point, so no pin exists
+    ///   and `decision_template::validate_pins` confines nothing there. Where a pin does exist
+    ///   that function confines its resolved target, at every driven index, to the published
+    ///   point's `legal_targets` ⊆ `declarable_victims` (the union argument is on
+    ///   `game::engine::bounded_cycle_charged_targets_for_window`). Only a `Targets` pin
+    ///   counts: `validate_pins` is what makes a pin mean a confined seat, and it enforces that
+    ///   only for a pin whose kind matches its published point's.
+    ///
+    /// Admitted: the same total on a different seat. The declared re-aim is the licensed route;
+    /// a relocation of the lifted entry with another cause is admitted too, since telling them
+    /// apart needs per-slot victim identity this type does not carry. That admission INCLUDES a
+    /// relocation onto a seat no bound reserved for — a seat outside `declarable_victims` — so
+    /// neither conjunct above excludes it; closing it needs the per-slot victim identity, not a
+    /// narrower comparison. With no counted slot the lift is the identity and this is plain
+    /// equality.
+    pub(crate) fn conforms(
+        &self,
+        observed: &ResourceVector,
+        pins: &[crate::analysis::decision_template::PinnedDecision],
+    ) -> bool {
+        use crate::analysis::decision_template::PinnedDecision;
+        let slots = self
+            .victim_slot
+            .iter()
+            .filter(|(slot, _)| {
+                pins.iter().any(
+                    |p| matches!(p, PinnedDecision::Targets { slot: pinned, .. } if pinned == slot),
+                )
+            })
+            .count();
+        // The leading equality is not an optimization: it is what keeps a byte-identical cycle
+        // conforming when the lift is undefined, so a period whose two seats simply lose the
+        // same amount is not aborted for the tie alone.
+        self.delta == *observed
+            || slot_charged_life(&self.delta, slots)
+                .zip(slot_charged_life(observed, slots))
+                .is_some_and(|(a, b)| a == b)
+    }
+}
+
+/// The delta with up to `slots` per-seat life LOSSES — the largest first — lifted off, and their
+/// total. Fewer losses than `slots` lifts only what is there; a non-loss is never lifted, so a
+/// period that only GAINS life has an empty lift and compares as plain equality; `slots == 0` is
+/// the identity.
+///
+/// `None` when the selection is NOT FORCED: if the `slots`-th largest loss ties the next, which
+/// entry is removed is decided by the tie-break rather than by the board, and a relocation between
+/// the tied seats would leave the residue unmoved. The caller refuses on `None`, so the drive
+/// truncates rather than commit a divergence it cannot see.
+fn slot_charged_life(delta: &ResourceVector, slots: usize) -> Option<(ResourceVector, i64)> {
+    let mut losses: Vec<(PlayerId, i64)> = delta
+        .life
+        .iter()
+        .filter(|&(_, magnitude)| *magnitude < 0)
+        .map(|(seat, magnitude)| (*seat, *magnitude))
+        .collect();
+    // Most negative first; the seat key only states the intent the tie refusal below supplies.
+    losses.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    if slots > 0 && losses.len() > slots && losses[slots - 1].1 == losses[slots].1 {
+        return None;
+    }
+    let mut residue = delta.clone();
+    let mut charged = 0i64;
+    for (seat, magnitude) in losses.into_iter().take(slots) {
+        residue.life.remove(&seat);
+        charged += -magnitude;
+    }
+    Some((residue, charged))
+}
+
 impl ResourceVector {
     /// Snapshot the **state-readable** resource levels directly out of a
     /// `GameState`: floating mana, per-player life, per-player library size, and
@@ -712,6 +804,27 @@ impl ResourceVector {
             counters: map_delta(&before.counters, &after.counters),
             generic_triggers: map_delta(&before.generic_triggers, &after.generic_triggers),
         }
+    }
+
+    /// CR 732.2a: one repetition's resource change, measured the one way every producer of a
+    /// per-period signature and the drive's per-cycle conformance check read it — so the
+    /// magnitude the offer publishes and the magnitude a committed cycle is checked against
+    /// cannot be measured differently.
+    ///
+    /// CR 111.1: `tokens_created` counts the battlefield objects `after` MINTED that are
+    /// tokens. A snapshot reads levels and a token creation is an event, so a snapshot pair
+    /// alone reports zero on an axis the preview publishes and the drive really moves. The
+    /// board-pair term is used because it is the only one expressible at all three call sites:
+    /// both mints compare two `LoopDetectSample` frames and hold no event stream. A token
+    /// created and destroyed inside the period is not counted — an under-report, which
+    /// understates the preview and leaves the conformance comparison symmetric.
+    pub(crate) fn period(before: &GameState, after: &GameState) -> ResourceVector {
+        let mut v = Self::delta(&Self::snapshot(before), &Self::snapshot(after));
+        v.tokens_created = crate::game::engine::minted_battlefield_ids(before, after)
+            .into_iter()
+            .filter(|id| after.objects.get(id).is_some_and(|o| o.is_token))
+            .count() as i64;
+        v
     }
 
     /// Iterate every scalar component of this vector as a signed value, paired
@@ -1274,7 +1387,15 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
         if recent[..k] != recent[k..] {
             continue;
         }
-        let per_period = ResourceVector::delta(&snaps[frames - 1 - k], &snaps[frames - 1]);
+        // The PUBLISHED measurement, and the one a committed cycle is checked against, so it
+        // goes through the single authority rather than through this function's own snapshot
+        // pair — which reads zero on the event-fed token axis. The `snaps.windows(2)`
+        // periodicity search above is deliberately left alone: it decides WHETHER a period
+        // exists, and keeping it on the snapshot pair keeps the offer set exactly as it was.
+        let per_period = ResourceVector::period(
+            &state.loop_detect_ring[frames - 1 - k].normalized,
+            &state.loop_detect_ring[frames - 1].normalized,
+        );
         // A cycle that moves no resource states no CR 704 threshold to bound, so it
         // supplies no per-period magnitude and is refused.
         //
@@ -30531,6 +30652,419 @@ mod tests {
             "under the bare presence set the matcher matches the graveyard resident, the \
              `.all()` fails, and the observer keeps a veto CR 603.6a cannot justify — no \
              permanent entered the battlefield for it to have fired on"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // PeriodicDelta::conforms / slot_charged_life / ResourceVector::period
+    // -----------------------------------------------------------------------
+
+    /// A distinct announced decision SOURCE. The rows below separate slots by their SOURCE half
+    /// and by their SUB-INDEX half independently, so the two must be varied one at a time.
+    fn charged_source(tag: u64) -> crate::types::game_state::YieldTarget {
+        crate::types::game_state::YieldTarget::AllCopies {
+            card_id: CardId(9_000 + tag),
+            trigger_description: None,
+        }
+    }
+
+    /// A period delta carrying the SIGNED life entries given — a loss is negative, a gain
+    /// positive — and nothing else.
+    fn victim_life(entries: &[(u8, i64)]) -> ResourceVector {
+        let mut v = ResourceVector::default();
+        for &(seat, signed) in entries {
+            v.life.insert(PlayerId(seat), signed);
+        }
+        v
+    }
+
+    fn charged_signature(
+        delta: ResourceVector,
+        victim_slot: &[(DecisionSlot, i64)],
+    ) -> PeriodicDelta {
+        PeriodicDelta {
+            frames_per_period: 1,
+            delta,
+            victim_slot: victim_slot.to_vec(),
+        }
+    }
+
+    /// CR 601.2c: a `Targets` pin naming `slot` — the only pin kind `validate_pins` confines a
+    /// resolved seat for, and so the only kind that may size the lift.
+    fn aimed_pin(slot: DecisionSlot) -> crate::analysis::decision_template::PinnedDecision {
+        use crate::analysis::decision_template::{
+            AnnouncementSubject, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+        };
+        PinnedDecision::Targets {
+            slot,
+            targets: vec![TargetPin::Scheduled(TargetSchedule::Constant(
+                Ranking::one(AnnouncementSubject::Seat(PlayerId(1))),
+            ))],
+        }
+    }
+
+    /// A battlefield permanent, optionally a CR 111.1 token.
+    fn token_on_battlefield(state: &mut GameState, id: u64, is_token: bool) -> ObjectId {
+        let oid = battlefield_creature(state, id, 0);
+        state.objects.get_mut(&oid).expect("just inserted").is_token = is_token;
+        oid
+    }
+
+    /// **T4** — the predicate refuses everything the bound did not reserve.
+    ///
+    /// CR 732.2a licenses lifting the pinned slot's charge off both sides before comparing,
+    /// because the declaration fixes which seat that slot names. Everything the lift does NOT
+    /// cover is still compared exactly: the residue on every axis, and the lifted charge as a
+    /// total.
+    ///
+    /// # Discrimination
+    ///
+    /// (b) reds if the total term is dropped; (c) and (d) if the residue term is; (e) if the
+    /// residue's life map is compared by KEY SET rather than by value; (f) if the token axis is
+    /// dropped from the residue comparison — every other leg here leaves `tokens_created` equal,
+    /// so that rival survives all of them; and (a) if the two disjuncts are joined by `&&`.
+    /// (a) is the positive control on the same instrument: a predicate that refuses everything
+    /// fails it.
+    #[test]
+    fn conforms_refuses_everything_the_bound_did_not_reserve() {
+        let charged = DecisionSlot::target(charged_source(0));
+        let pins = [aimed_pin(charged.clone())];
+        let expected = charged_signature(victim_life(&[(1, -3)]), &[(charged.clone(), 3)]);
+
+        // (a) THE LICENCE'S ADMITTED CLASS — the same total on a DIFFERENT seat.
+        assert!(
+            expected.conforms(&victim_life(&[(2, -3)]), &pins),
+            "CR 601.2c: the declaration may aim the announced slot at another seat, so the same \
+             charge landing elsewhere is the re-aim this predicate exists to admit"
+        );
+        // (b) the right seat, the WRONG magnitude.
+        assert!(
+            !expected.conforms(&victim_life(&[(1, -4)]), &pins),
+            "the lifted charge is compared as a TOTAL, so a slot charging more than the bound \
+             reserved is refused"
+        );
+        // (c) an EXTRA losing seat beside the charged one.
+        assert!(
+            !expected.conforms(&victim_life(&[(1, -3), (2, -1)]), &pins),
+            "only the pinned slot's charge is lifted; a second losing seat stays in the residue \
+             and the residues differ"
+        );
+        // (d) a non-life axis diverging while life is identical, on two different axes.
+        let mut extra_counter = expected.delta.clone();
+        extra_counter
+            .counters
+            .insert((CounterClass::Plus1Plus1, ObjectClass::Creature), 1);
+        assert!(
+            !expected.conforms(&extra_counter, &pins),
+            "the residue is compared on EVERY axis, not on life alone"
+        );
+        let mut extra_mill = expected.delta.clone();
+        extra_mill.library_delta.insert(PlayerId(2), -1);
+        assert!(
+            !expected.conforms(&extra_mill, &pins),
+            "a diverging library axis is refused with life identical"
+        );
+
+        // (e) AN UNLIFTED SEAT'S MAGNITUDE CHANGES while the lifted total is unchanged. Both
+        // residues carry the SAME KEY SET, so only a value comparison separates them.
+        let two_seat = charged_signature(victim_life(&[(1, -5), (2, -1)]), &[(charged.clone(), 5)]);
+        assert!(
+            !two_seat.conforms(&victim_life(&[(3, -5), (2, -2)]), &pins),
+            "the larger loss relocates (that is the lift) while the SMALLER, unlifted seat also \
+             changes magnitude — a residue compared by key set alone would accept this"
+        );
+
+        // (f) ONE EXTRA MINTED TOKEN, life identical — the axis this phase adds, varied inside
+        // the predicate. A residue comparison with the token axis dropped accepts every other
+        // leg above, because every other leg leaves `tokens_created` equal.
+        let mut extra_token = expected.delta.clone();
+        extra_token.tokens_created += 1;
+        assert!(
+            !expected.conforms(&extra_token, &pins),
+            "CR 111.1: a cycle that minted an extra token diverged from the published period, \
+             and the token axis is part of the residue that says so"
+        );
+    }
+
+    /// **T5** — the subtraction is inert unless the declaration pinned a charged slot with a
+    /// `Targets` pin.
+    ///
+    /// CR 732.2a specifies a sequence of CHOICES, and `victim_slot` is ANNOUNCED rather than
+    /// published: a CR 601.2c target another player announces is charged but publishes no
+    /// decision point, so no pin can exist and `validate_pins` confines nothing. Where nothing
+    /// is confined the predicate must fall back to exact equality.
+    ///
+    /// ONE delta pair throughout — differing only in the life SEAT — run against different
+    /// `(victim_slot, pins)` shapes, so an always-true or always-false predicate fails one of
+    /// these legs.
+    ///
+    /// # Discrimination
+    ///
+    /// (i) reds if `slots == 0` stops being the identity, or if the count is taken over `pins`
+    /// instead of over `victim_slot`; (iii) if the pins are ignored, if any non-empty pin list
+    /// sizes the lift, or if the slot match is weakened to its SUB-INDEX alone; (iv) if the
+    /// pin-KIND match is dropped; (v) if the slot match is weakened to its SOURCE alone — every
+    /// other leg separates "different slot" by changing the SOURCE, so that rival survives all
+    /// of them.
+    #[test]
+    fn conforms_lifts_nothing_without_a_targets_pin_on_a_charged_slot() {
+        use crate::analysis::decision_template::{MayChoiceOption, PinnedDecision};
+
+        let source = charged_source(0);
+        let charged = DecisionSlot::target(source.clone());
+        let observed = victim_life(&[(2, -3)]);
+        let delta = victim_life(&[(1, -3)]);
+
+        // (i) THE UNTARGETED CLASS: no charged slot, so nothing may be lifted however the
+        // declaration is pinned — those victims are already seat-keyed in `delta.life`.
+        let untargeted = charged_signature(delta.clone(), &[]);
+        assert!(
+            !untargeted.conforms(&observed, &[aimed_pin(charged.clone())]),
+            "an EMPTY `victim_slot` sizes the lift at zero whatever the pins say"
+        );
+
+        // (ii) THE POSITIVE for every negative below, on the same delta pair.
+        let charged_sig = charged_signature(delta.clone(), &[(charged.clone(), 3)]);
+        assert!(
+            charged_sig.conforms(&observed, &[aimed_pin(charged.clone())]),
+            "a charged slot pinned by a `Targets` pin naming it is exactly the confined re-aim"
+        );
+
+        // (iii) THE UNANNOUNCED-SLOT ROW: a charged slot nothing publishes a point for can carry
+        // no pin, so the predicate is BASE's exact equality.
+        assert!(
+            !charged_sig.conforms(&observed, &[]),
+            "with no pins at all the lift is the identity"
+        );
+        assert!(
+            !charged_sig.conforms(
+                &observed,
+                &[aimed_pin(DecisionSlot::target(charged_source(1)))]
+            ),
+            "a pin on a slot of a DIFFERENT SOURCE confines a different decision and must not \
+             size this lift"
+        );
+
+        // (iv) THE WRONG KIND at a matching slot. `validate_pins` enforces confinement only for
+        // a pin whose kind matches its published point's, so another kind is not the licence.
+        assert!(
+            !charged_sig.conforms(
+                &observed,
+                &[PinnedDecision::MayChoice {
+                    slot: charged.clone(),
+                    take: MayChoiceOption::Take,
+                }]
+            ),
+            "a `MayChoice` pin naming the charged slot itself is not the CR 601.2c confinement"
+        );
+
+        // (v) THE SUB-INDEX SEPARATOR: the right KIND on the SAME SOURCE, one sub-index over.
+        // `DecisionSlot::target` is sub-index 0 and `::may` is sub-index 1 on one source, so a
+        // filter comparing only `pinned.source == slot.source` would size the lift from a pin
+        // that confines a different decision of the same source.
+        assert!(
+            !charged_sig.conforms(&observed, &[aimed_pin(DecisionSlot::may(source))]),
+            "a `Targets` pin on ANOTHER SUB-INDEX of the charged slot's source names a different \
+             slot and must not size the lift"
+        );
+    }
+
+    /// **T6** — the token term is MINTED tokens, not battlefield growth.
+    ///
+    /// CR 111.1: `ResourceVector::period` derives the token axis from a board pair because both
+    /// per-period producers hold two boards and no event stream. What it must count is what the
+    /// period CREATED, not what merely arrived on the battlefield or what was already there.
+    ///
+    /// The positive leg mints TWO tokens in one pair precisely so a COUNT and a FLAG cannot both
+    /// satisfy it — the only tracked board's per-cycle token rate is 1, so the driven rows cannot
+    /// carry that obligation.
+    ///
+    /// # Discrimination
+    ///
+    /// Drop the `is_token` filter ⇒ (b) fails. Replace the minted predicate with a raw
+    /// battlefield population count ⇒ (c-arrival) fails. Set the term to `minted > 0` ⇒ (a) fails.
+    #[test]
+    fn period_counts_minted_tokens_not_battlefield_growth() {
+        // (a) TWO tokens minted in one pair — an EXACT count, not a nonzero flag.
+        let before = bound_board(&[40, 40]);
+        let mut after = before.clone();
+        token_on_battlefield(&mut after, 8_001, true);
+        token_on_battlefield(&mut after, 8_002, true);
+        assert_eq!(
+            ResourceVector::period(&before, &after).tokens_created,
+            2,
+            "CR 111.1: the axis states HOW MANY tokens the period created"
+        );
+
+        // (b) a minted permanent that is NOT a token.
+        let mut non_token = before.clone();
+        token_on_battlefield(&mut non_token, 8_003, false);
+        assert_eq!(
+            ResourceVector::period(&before, &non_token).tokens_created,
+            0,
+            "CR 111.1: a token is a marker for a permanent not represented by a card; a minted \
+             nontoken permanent is not one"
+        );
+
+        // (c) a token already on both boards' battlefields.
+        let mut resident = bound_board(&[40, 40]);
+        token_on_battlefield(&mut resident, 8_004, true);
+        assert_eq!(
+            ResourceVector::period(&resident, &resident.clone()).tokens_created,
+            0,
+            "a token the period did not create is not a creation"
+        );
+
+        // (c-arrival) a token that ARRIVES on the battlefield from another zone. This is the
+        // mint-vs-arrival branch: the object is keyed in BOTH frames' `objects` maps, so the
+        // battlefield population grew without anything being created.
+        let mut arriving_before = bound_board(&[40, 40]);
+        let arrival = token_on_battlefield(&mut arriving_before, 8_005, true);
+        arriving_before.battlefield.retain(|id| *id != arrival);
+        let mut arriving_after = arriving_before.clone();
+        arriving_after.battlefield.push_back(arrival);
+        assert_eq!(
+            ResourceVector::period(&arriving_before, &arriving_after).tokens_created,
+            0,
+            "an ARRIVAL grows the battlefield without minting; publishing the raw population \
+             delta would promise a per-cycle count the period never produced"
+        );
+    }
+
+    /// **T7** — multi-slot semantics are pinned, not left open.
+    ///
+    /// CR 704.5a: `elimination_bounds` reserved `victim_slot.len()` times the per-slot magnitude
+    /// on every declarable victim, so two slots' charges landing on ONE seat are inside the
+    /// reservation and must conform. A different TOTAL is not.
+    ///
+    /// The tracked boards publish either an empty `victim_slot` or a single entry, so this
+    /// two-slot branch is reachable only at the building-block level.
+    ///
+    /// # Discrimination
+    ///
+    /// The accepted leg reds if the lifted charge is compared as a magnitude LIST rather than a
+    /// sum, if a side with FEWER losses than `slots` is refused instead of lifting what is
+    /// there, or if `slots` is clamped below its given value; the refused leg reds if the total
+    /// term is dropped.
+    #[test]
+    fn conforms_compares_two_pinned_slots_as_one_total() {
+        let first = DecisionSlot::target(charged_source(0));
+        let second = DecisionSlot::target(charged_source(1));
+        let pins = [aimed_pin(first.clone()), aimed_pin(second.clone())];
+        let expected = charged_signature(
+            victim_life(&[(1, -2), (2, -2)]),
+            &[(first.clone(), 2), (second.clone(), 2)],
+        );
+
+        assert!(
+            expected.conforms(&victim_life(&[(3, -4)]), &pins),
+            "both declared slots aimed at ONE seat charge that seat the total the bound already \
+             reserved for it, so the two-entry lift and the one-entry lift compare equal"
+        );
+        assert!(
+            !expected.conforms(&victim_life(&[(3, -5)]), &pins),
+            "a different TOTAL is outside the reservation whatever the seats"
+        );
+    }
+
+    /// **T9** — the lift's selection rule: bounded by the slot count, ordered by magnitude,
+    /// losses only, undefined at a tie.
+    ///
+    /// # The ambiguous cut, stated as a property
+    ///
+    /// Legs (e-A) and (e-B) are both two seats at the same maximum with a third, unlifted seat
+    /// unchanged, and both are refused. What separates them is WHICH tied member the tie-break
+    /// selects: in (e-A) the seat that MOVES is the tied member the tie-break does NOT select,
+    /// so a lift without the `None` still sees different residues and refuses anyway; in (e-B)
+    /// the seat that moves is the one it DOES select and the move is absorbed on both sides, so
+    /// only the `None` refuses. Exactly one of the two discriminates a `None`-free lift, and
+    /// which one is decided by the tie-break's orientation — reverse it and the roles swap. A
+    /// single leg would therefore stop discriminating the moment the tie-break is edited, which
+    /// is why both ship.
+    ///
+    /// # Discrimination
+    ///
+    /// (a) and (e) red if the `take(slots)` bound is widened to every maximal entry; (c), (d)
+    /// and (e-B) if the magnitude sort is dropped for the map's own key order; (b) if the
+    /// byte-identity disjunct is deleted; (e) — whichever leg the tie-break's orientation makes
+    /// the discriminating one — if the `None` at an ambiguous cut is deleted; (g) if the
+    /// strictly-negative filter is deleted.
+    #[test]
+    fn slot_charged_life_is_bounded_ordered_losses_only_and_undefined_at_a_tie() {
+        let charged = DecisionSlot::target(charged_source(0));
+        let pins = [aimed_pin(charged.clone())];
+        let sign = |entries: &[(u8, i64)]| {
+            charged_signature(victim_life(entries), &[(charged.clone(), 3)])
+        };
+
+        // (a) two seats at the same maximum, one re-aimed to a third seat.
+        assert!(
+            !sign(&[(1, -3), (2, -3)]).conforms(&victim_life(&[(3, -3), (2, -3)]), &pins),
+            "with one slot and two seats at the maximum, WHICH entry the lift removes is decided \
+             by the tie-break rather than by the board, so the lift is undefined and the drive \
+             must truncate rather than commit a divergence it cannot see"
+        );
+        // (b) THE SAME delta against ITSELF — the tie must not be a blanket refusal.
+        let tied = sign(&[(1, -3), (2, -3)]);
+        assert!(
+            tied.conforms(&tied.delta.clone(), &pins),
+            "a loop whose two seats simply lose the same amount every cycle must still drive"
+        );
+
+        // (c) two losing seats of UNEQUAL magnitude, the LARGER re-aimed — the legitimate
+        //     in-bound re-aim, and the direction this predicate exists to admit.
+        let uneven = sign(&[(1, -5), (2, -1)]);
+        assert!(
+            uneven.conforms(&victim_life(&[(3, -5), (2, -1)]), &pins),
+            "the pinned slot carries the larger charge, so the lift takes it by MAGNITUDE and \
+             the residue is untouched"
+        );
+        // (d) the SMALLER, unlifted loss moves instead.
+        assert!(
+            !uneven.conforms(&victim_life(&[(1, -5), (3, -1)]), &pins),
+            "a move of the loss the lift did NOT cover is a residue divergence"
+        );
+
+        // (e) THE AMBIGUOUS CUT — both legs, per the property in this row's doc.
+        let cut = sign(&[(1, -4), (2, -4), (3, -1)]);
+        assert!(
+            !cut.conforms(&victim_life(&[(1, -4), (4, -4), (3, -1)]), &pins),
+            "(e-A) the moving seat is the tied member the tie-break does not select"
+        );
+        assert!(
+            !cut.conforms(&victim_life(&[(0, -4), (2, -4), (3, -1)]), &pins),
+            "(e-B) the moving seat is the tied member the tie-break selects, so a lift without \
+             the undefined-at-a-tie refusal absorbs the move on BOTH sides and accepts"
+        );
+
+        // (f) THE ADMITTED MEMBER, shipped rather than claimed away: the UNIQUE maximal loss
+        // belongs to a seat the declaration did not name, the pinned slot's smaller charge sits
+        // in the residue, and that maximal seat CHANGES. Neither licence conjunct covers it —
+        // the receiving seat need not be a declarable victim, and the reservation the magnitude
+        // conjunct appeals to is quantified over declarable victims — and a victim-INVARIANT
+        // predicate cannot tell it from the licensed re-aim. Closing it needs the per-slot
+        // victim identity `victim_slot` does not carry, which is the per-victim allocation
+        // carrier a later phase lands; nothing here asserts a refusal.
+        let undeclared_max =
+            charged_signature(victim_life(&[(1, -7), (2, -2)]), &[(charged.clone(), 2)]);
+        assert!(
+            undeclared_max.conforms(&victim_life(&[(4, -7), (2, -2)]), &pins),
+            "ADMITTED: the lift takes the unique maximum, which here belongs to a seat the \
+             declaration never named, so relocating it leaves both residue and total unmoved"
+        );
+
+        // (g) a life-GAIN-only period. With any loss present the ascending sort picks the same
+        // entry either way, so a mixed gain/loss period does not separate the filter.
+        let gain_only = sign(&[(1, 3)]);
+        assert!(
+            !gain_only.conforms(&victim_life(&[(2, 3)]), &pins),
+            "a non-loss is never lifted, so relocating a life GAIN with no declared cause is a \
+             residue divergence"
+        );
+        assert!(
+            gain_only.conforms(&gain_only.delta.clone(), &pins),
+            "PAIRED POSITIVE: the same gain-only period against itself still conforms, so the \
+             leg above cannot be satisfied by an always-refusing predicate"
         );
     }
 }
