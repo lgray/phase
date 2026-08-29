@@ -6972,11 +6972,14 @@ fn handle_declare_shortcut(
     // once at declare suffices: the board is frozen through Accept (apply_confirmed_shortcut
     // doc), and the drive's per-iteration `resolve` (CR 608.2b) is the runtime backstop.
     //
-    // A CHOICE-FREE offer (empty schema — a non-targeted drain) exposes no decisions to
-    // validate: its win derivation is pin-independent (the E1 measure is the authority), and
-    // any template the caller supplies is inert for the drive (the loop raises no target
-    // prompt). This preserves the established `Fixed(N)` drain behavior (the resolve-firewall
-    // materialize tests drive a synthetic pin against the empty drain schema).
+    // A CHOICE-FREE offer (empty schema — a non-targeted drain) exposes no decision to pin, so
+    // the only declaration it admits is one that pins nothing: its win derivation is
+    // pin-independent (the E1 measure is the authority), and a template that pinned a choice
+    // would fix one this offer never stated. That refusal needs no test of its own here —
+    // `declaration_conforms` already rejects a pin naming a slot no published point matches,
+    // whatever the schema's size — and it is what keeps a client-supplied pin out of
+    // `proposal.template`, which the drive's per-cycle conformance check reads. The established
+    // `Fixed(N)` drain behavior is untouched: its declaration carries no pins.
     // ⚠ ORDER IS LOAD-BEARING: the count cap runs BEFORE the pin validation below, because
     // `shortcut_validated_range` derives the validated range FROM the declared count and so
     // must not be handed an unchecked one — a `Fixed(4_000_000_000)` would otherwise become
@@ -7091,54 +7094,59 @@ fn handle_declare_shortcut(
         reject_shortcut_declaration(state, &mut result);
         return Ok(result);
     }
-    if !offer.schema.points.is_empty() {
-        match &template {
-            Some(t) => {
-                // CR 732.2a: validate over the range the ACCEPTED COUNT will drive, not
-                // over the schedule's own period. `shortcut_drive_period` answers a
-                // different question (how many cycles one measurement must aggregate), and
-                // using it here both ACCEPTED a pin whose driven image leaves the published
-                // set at an index the count reaches, and REFUSED conforming declarations
-                // whose count is shorter than the schedule.
-                let validated_range = shortcut_validated_range(&count, Some(t));
-                // Coverage + value legality via the shared authority, so the predicate this
-                // handler ACCEPTS under is the same one `build_bounded_declaration` PUBLISHES
-                // under and the human ingress EMITS under. The range is this site's own.
-                if !crate::analysis::decision_template::declaration_conforms(
-                    offer.schema,
-                    t,
-                    validated_range,
-                    state,
-                ) {
-                    reject_shortcut_declaration(state, &mut result);
-                    return Ok(result);
-                }
-            }
-            // CR 732.2a: a `template: None` declaration against a NON-EMPTY schema skips the
-            // validation above entirely — the pins the offer published are never checked. That
-            // is legitimate for exactly one drive shape: the object-growth route, which
-            // re-derives its template from `state.last_loop_action_sequence` (the same routing
-            // discriminant `materialize` dispatches on) and never reads `proposal.template`.
-            // With nothing this proposer can re-derive from, a pin-consuming drive would run with
-            // no pins at all — fail closed into the same manual-play handback the validation
-            // failure above uses. Both conjuncts are required: keying on `template.is_none()`
-            // alone breaks the shipped object-growth declarations.
-            //
-            // SITE F (CR 732.2a) — THE STRICTEST LOCKSTEP CONSTRAINT ON SITE B, because it is the
-            // one direction in which relaxing (1b) would make the engine LESS safe than before.
-            // "Re-derivable" means the period is THIS offer's proposer's own — the same test
-            // `materialize` dispatches on. A merely non-empty test would let a FOREIGN period take
-            // the sibling `None => {}` arm, which performs ZERO pin validation, and open the APNAP
-            // window on a client-supplied declaration against a schema with published points. So
-            // this arm must reject unless the period is the proposer's, not merely unless one
-            // exists. `None` from a heterogeneous run also rejects, which is the fail-closed
-            // direction: nothing can be re-derived from a period that is nobody's.
-            None if state.loop_period_controller() != Some(offer.proposer) => {
+    // CR 732.2a: a declaration cannot pin choices the offer published none of. Every
+    // `Some(t)` meets `declaration_conforms` whatever the schema published — its
+    // `PinValidation::UnexposedSlot` arm is exactly that refusal, so a points-empty offer
+    // needs no second predicate here. Only the `None` arm's re-derivation test is conditioned
+    // on the schema having points: an offer publishing none exposes nothing to re-derive.
+    match &template {
+        Some(t) => {
+            // CR 732.2a: validate over the range the ACCEPTED COUNT will drive, not
+            // over the schedule's own period. `shortcut_drive_period` answers a
+            // different question (how many cycles one measurement must aggregate), and
+            // using it here both ACCEPTED a pin whose driven image leaves the published
+            // set at an index the count reaches, and REFUSED conforming declarations
+            // whose count is shorter than the schedule.
+            let validated_range = shortcut_validated_range(&count, Some(t));
+            // Coverage + value legality via the shared authority, so the predicate this
+            // handler ACCEPTS under is the same one `build_bounded_declaration` PUBLISHES
+            // under and the human ingress EMITS under. The range is this site's own.
+            if !crate::analysis::decision_template::declaration_conforms(
+                offer.schema,
+                t,
+                validated_range,
+                state,
+            ) {
                 reject_shortcut_declaration(state, &mut result);
                 return Ok(result);
             }
-            None => {}
         }
+        // CR 732.2a: a `template: None` declaration against a NON-EMPTY schema skips the
+        // validation above entirely — the pins the offer published are never checked. That
+        // is legitimate for exactly one drive shape: the object-growth route, which
+        // re-derives its template from `state.last_loop_action_sequence` (the same routing
+        // discriminant `materialize` dispatches on) and never reads `proposal.template`.
+        // With nothing this proposer can re-derive from, a pin-consuming drive would run with
+        // no pins at all — fail closed into the same manual-play handback the validation
+        // failure above uses. Every conjunct is required: keying on `template.is_none()`
+        // alone breaks the shipped object-growth declarations.
+        //
+        // SITE F (CR 732.2a) — THE STRICTEST LOCKSTEP CONSTRAINT ON SITE B, because it is the
+        // one direction in which relaxing (1b) would make the engine LESS safe than before.
+        // "Re-derivable" means the period is THIS offer's proposer's own — the same test
+        // `materialize` dispatches on. A merely non-empty test would let a FOREIGN period take
+        // the sibling `None => {}` arm, which performs ZERO pin validation, and open the APNAP
+        // window on a client-supplied declaration against a schema with published points. So
+        // this arm must reject unless the period is the proposer's, not merely unless one
+        // exists. `None` from a heterogeneous run also rejects, which is the fail-closed
+        // direction: nothing can be re-derived from a period that is nobody's.
+        None if !offer.schema.points.is_empty()
+            && state.loop_period_controller() != Some(offer.proposer) =>
+        {
+            reject_shortcut_declaration(state, &mut result);
+            return Ok(result);
+        }
+        None => {}
     }
     let proposal = crate::analysis::loop_check::ShortcutProposal {
         proposer: offer.proposer,
@@ -18188,9 +18196,11 @@ mod bounded_declaration_tests {
 
     /// **Row D4 — an empty schema publishes NO declaration.**
     ///
-    /// LOAD-BEARING, not tidiness: `predictability_gate` and `validate_pins` both live inside
-    /// `handle_declare_shortcut`'s `if !offer.schema.points.is_empty()` block, so a declaration
-    /// minted against an empty schema would travel the one declare path that runs NEITHER gate.
+    /// LOAD-BEARING, not tidiness: an empty schema exposes no slot, so a declaration minted
+    /// against one that pinned any choice would be refused by the handler that has to accept it
+    /// — `validate_pins` matches every pin to a published point. Publishing one would make
+    /// `declaration.is_some()`, the predicate `ai_support::candidates` gates its declare
+    /// candidate on, mean the opposite of what it says.
     /// The invariant is also staged at fixture level by
     /// `tests/integration/loop_shortcut.rs::r28_empty_schema_offer`, which passes
     /// `declaration: None` for this reason.
@@ -21304,9 +21314,16 @@ mod stage2_injector_tests {
         }
     }
 
-    /// A live `LoopShortcut` offer with an EMPTY schema, proposed by P0 on `state`.
-    fn u4_park_on_offer(state: &mut GameState) {
-        use crate::analysis::decision_template::ShortcutDecisionSchema;
+    /// A live `LoopShortcut` offer proposed by P0 on `state`, publishing the one CR 603.5
+    /// `MayChoice` point [`u4_may_template`] pins.
+    ///
+    /// CR 732.2a: a declaration may pin only choices the offer published, so an offer exposing
+    /// no point refuses every pinned template — which would take the `owner` axis out of the
+    /// measurement below rather than isolate it.
+    fn u4_park_on_offer(state: &mut GameState, src: ObjectId) {
+        use crate::analysis::decision_template::{
+            DecisionPoint, DecisionPointKind, ShortcutDecisionSchema,
+        };
         use crate::analysis::loop_check::{LoopCertificate, WinKind};
         use crate::analysis::resource::BoardDelta;
         state.waiting_for = WaitingFor::LoopShortcut {
@@ -21319,7 +21336,16 @@ mod stage2_injector_tests {
                 residual_board_delta: BoardDelta::default(),
                 per_cycle: None,
             },
-            schema: ShortcutDecisionSchema::default(),
+            schema: ShortcutDecisionSchema {
+                points: vec![DecisionPoint {
+                    slot: DecisionSlot {
+                        source: this_object(src),
+                        index: 1,
+                    },
+                    kind: DecisionPointKind::MayChoice,
+                }],
+                ..ShortcutDecisionSchema::default()
+            },
             declaration: None,
         };
     }
@@ -21384,7 +21410,7 @@ mod stage2_injector_tests {
         for owner in [P1, P0] {
             let (mut state, offer_src) = u4_may_board(P0);
             assert_eq!(offer_src, src, "one fixture feeds both halves");
-            u4_park_on_offer(&mut state);
+            u4_park_on_offer(&mut state, offer_src);
             apply_action(
                 &mut state,
                 P0,

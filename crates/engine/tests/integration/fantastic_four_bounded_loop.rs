@@ -4039,10 +4039,9 @@ fn r3_placement_a_restored_foreign_owner_declaration_is_refused() {
 
 /// **Rows R4b + R5 — the points-EMPTY offer, where the owner firewall is the only gate.**
 ///
-/// `handle_declare_shortcut` runs the pin block only under `!offer.schema.points.is_empty()`, so
-/// on a point-free offer neither `declaration_conforms` nor site F ever runs and the resolved
-/// template meets the firewall alone. Three arms on one F4-derived fixture, `schema.points`
-/// emptied:
+/// On a point-free offer site F never runs and `declaration_conforms` is vacuous for a pin-free
+/// declaration, so the resolved template meets the firewall alone. Three arms on one F4-derived
+/// fixture, `schema.points` emptied and the declaration's pins stripped with them:
 ///
 /// | arm | offer `declaration` | expected |
 /// |---|---|---|
@@ -4067,11 +4066,11 @@ fn r3_placement_a_restored_foreign_owner_declaration_is_refused() {
 /// # The capability R4b/B does not create, recorded because it looks like one
 ///
 /// A points-empty offer carrying a restored declaration is reachable only through the restore
-/// ingress — no production mint emits that pair. The `or_else` is deliberately NOT guarded with
-/// `!points.is_empty()`: a live client can already send `template: Some(anything owned by the
-/// proposer)` against a points-empty offer today and reach `proposal.template` with the pin
-/// block skipped, so the firewall is the only gate on this shape both before and after. A guard
-/// for an unreachable case is a special case; the behaviour is pinned here instead.
+/// ingress — no production mint emits that pair. The `or_else` needs no `!points.is_empty()`
+/// guard of its own, because the RESOLVED template is validated either way: CR 732.2a lets a
+/// declaration pin only choices the offer published, so a pinned template against an
+/// exposed-nothing offer is refused on that axis whatever its owner, and a pin-free one leaves
+/// the owner as the single remaining gate — which is what these arms vary.
 #[test]
 fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
     let mut state = load_f4();
@@ -4087,6 +4086,9 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
         offer_declaration(&state).expect("the untampered offer publishes a declaration");
 
     // One F4 offer, `schema.points` emptied, `declaration` set per arm. Nothing else differs.
+    // The declaration is stripped of its pins with the points: CR 732.2a lets a declaration pin
+    // only choices the offer published, so a pinned template against an exposed-nothing offer is
+    // refused on the PIN axis and the owner axis this row varies would never be reached.
     let point_free_offer = |declaration: Option<PlayerId>| {
         let mut probe = state.clone();
         match &mut probe.waiting_for {
@@ -4098,6 +4100,7 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
                 schema.points.clear();
                 *decl = declaration.map(|owner| {
                     let mut d = published.clone();
+                    d.decisions.clear();
                     d.owner = owner;
                     d
                 });
@@ -4106,11 +4109,21 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
         }
         assert!(
             match &probe.waiting_for {
-                WaitingFor::LoopShortcut { schema, .. } => schema.points.is_empty(),
+                WaitingFor::LoopShortcut {
+                    schema,
+                    declaration: Some(d),
+                    ..
+                } => schema.points.is_empty() && d.decisions.is_empty(),
+                WaitingFor::LoopShortcut {
+                    schema,
+                    declaration: None,
+                    ..
+                } => schema.points.is_empty(),
                 _ => false,
             },
-            "REACH-GUARD: the row is about the SKIPPED pin block, so the point set must really \
-             be empty — otherwise `declaration_conforms` runs and the firewall is not alone"
+            "REACH-GUARD: an empty point set with a pin-free declaration is what leaves \
+             `declaration_conforms` vacuous, so the owner firewall is the only gate the arms \
+             below can be measuring"
         );
         probe
     };
@@ -4154,6 +4167,162 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
          because the firewall inspects an unresolved `None` and passes it. Post-repair the \
          resolved foreign-owner declaration meets the firewall and is refused. A row asserting \
          only R4b/A would miss that the repair WIDENS what the firewall inspects"
+    );
+}
+
+/// **A declaration may pin only choices the offer published — measured on the shape where the
+/// published set is EMPTY and the charged set is not.**
+///
+/// CR 732.2a: a shortcut proposal describes a sequence of choices that may legally be taken.
+/// An offer publishing no decision point states no such choice, so a template naming one is not
+/// a legal answer to it.
+///
+/// The two sets diverge by construction and legitimately so: `victim_slot` is derived from the
+/// period's ANNOUNCED targets, which CR 704.5a charges whoever announces them, while
+/// `schema.points` publishes only the proposer's own CR 601.2c choices. A period whose announced
+/// target is nobody's published choice therefore mints a charged slot with no point beside it,
+/// and a fabricated pin naming that slot is what the per-cycle conformance check would size its
+/// comparison by.
+///
+/// Three arms on one staged offer, one axis apart — the declaration's `decisions`:
+///
+/// | arm | `decisions` | expected |
+/// |---|---|---|
+/// | **matched positive** | empty | `RespondToShortcut` — the staged offer accepts |
+/// | **charged slot** | a `Targets` pin naming a `victim_slot` entry | `Priority` |
+/// | **unknown slot** | a `Targets` pin naming neither a point nor a charged slot | `Priority` |
+///
+/// The positive is asserted FIRST and is what makes the two refusals attributable to the pin
+/// rather than to the staged offer refusing everything. The second refusal is the class end the
+/// first does not reach: the guard is keyed to what the offer PUBLISHED, not to what the
+/// certificate CHARGES, so a pin naming neither is refused by the same predicate.
+///
+/// REVERT-PROBE: skip `declaration_conforms` when `offer.schema.points.is_empty()` ⇒ both
+/// refusals open APNAP and carry the fabricated pin into `proposal.template`.
+#[test]
+fn a_declaration_pinning_a_slot_the_offer_never_published_is_refused() {
+    use engine::analysis::decision_template::{
+        AnnouncementSubject, DecisionGroupKey, DecisionSlot, DecisionTemplate, PinnedDecision,
+        Ranking, ReplayMode, TargetPin, TargetSchedule,
+    };
+
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, certificate, _schema) = offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let (charged_slot, magnitude) = per_cycle.victim_slot.first().cloned().expect(
+        "REACH-GUARD: the fabricated pin must name a slot the certificate really charges, else \
+         it would be inert at the per-cycle check and the refusal below would be about nothing",
+    );
+    assert!(
+        magnitude > 0,
+        "REACH-GUARD: the charged slot must carry a strictly positive CR 704.5a magnitude; \
+         got {magnitude} from {:?}",
+        per_cycle.victim_slot
+    );
+    let aimed = state
+        .players
+        .iter()
+        .find(|p| p.id != proposer && !p.is_eliminated)
+        .map(|p| p.id)
+        .expect("REACH-GUARD: a living seat other than the proposer must exist on a 4p board");
+
+    // The staged offer: the F4 offer with its published point set emptied. Nothing else moves —
+    // the certificate keeps the `victim_slot` entry the fabricated pin names.
+    let mut staged = state.clone();
+    match &mut staged.waiting_for {
+        WaitingFor::LoopShortcut {
+            schema,
+            declaration,
+            ..
+        } => {
+            schema.points.clear();
+            *declaration = None;
+        }
+        other => panic!("expected the CR 732.2a bounded offer, got {other:?}"),
+    }
+    let (staged_proposer, staged_certificate, staged_schema) = offer_parts(&staged);
+    assert!(
+        staged_schema.points.is_empty() && staged_proposer == proposer,
+        "REACH-GUARD: the staged offer must publish nothing while keeping the live proposer, \
+         else the arms below measure the owner firewall instead"
+    );
+    assert!(
+        staged_certificate
+            .per_cycle
+            .as_ref()
+            .is_some_and(|pc| pc.victim_slot.iter().any(|(s, _)| *s == charged_slot)),
+        "REACH-GUARD: emptying the published set must leave the CHARGED set intact — that \
+         divergence is the shape this row is about"
+    );
+
+    let declare = |decisions: Vec<PinnedDecision>| {
+        let mut probe = staged.clone();
+        apply(
+            &mut probe,
+            proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(1),
+                template: Some(DecisionTemplate {
+                    owner: proposer,
+                    decisions,
+                    replay: ReplayMode::Scheduled {
+                        count: IterationCount::Fixed(1),
+                    },
+                    key: DecisionGroupKey::from_sources(
+                        std::slice::from_ref(&charged_slot.source),
+                        DecisionKind::LoopChoice,
+                    ),
+                }),
+            },
+        )
+        .expect("dispatched — a refusal is a HANDBACK, not an error");
+        probe
+    };
+    let aimed_at = |slot: DecisionSlot| {
+        vec![PinnedDecision::Targets {
+            slot,
+            targets: vec![TargetPin::Scheduled(TargetSchedule::Constant(
+                Ranking::one(AnnouncementSubject::Seat(aimed)),
+            ))],
+        }]
+    };
+
+    assert_eq!(
+        declare(vec![]).waiting_for.variant_name(),
+        "RespondToShortcut",
+        "MATCHED POSITIVE: a declaration that pins nothing is a legal answer to an offer that \
+         published nothing, so the refusals below are keyed to the PIN and not to the staged \
+         offer refusing every declaration"
+    );
+
+    assert_eq!(
+        declare(aimed_at(charged_slot.clone()))
+            .waiting_for
+            .variant_name(),
+        "Priority",
+        "CR 732.2a: a pin naming a slot the offer published no point for is not a legal answer \
+         — the declaration hands back to manual play and no `ShortcutProposal` is built, so \
+         nothing carries the fabricated pin into the drive"
+    );
+
+    let unknown = DecisionSlot {
+        source: charged_slot.source.clone(),
+        index: charged_slot.index.wrapping_add(1),
+    };
+    assert!(
+        !per_cycle.victim_slot.iter().any(|(s, _)| *s == unknown),
+        "REACH-GUARD: the second arm's slot must be absent from the charged set too, else it \
+         is the first arm again"
+    );
+    assert_eq!(
+        declare(aimed_at(unknown)).waiting_for.variant_name(),
+        "Priority",
+        "the refusal is keyed to what the offer PUBLISHED, so a pin the certificate does not \
+         charge either is refused by the same predicate"
     );
 }
 
