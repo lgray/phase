@@ -3193,10 +3193,10 @@ fn certified_bounded_cycle_offer<'a>(
 ///
 /// FAIL-CLOSED on every uncertainty, because a wrong pin is worse than no offer:
 ///
-/// * an empty point set publishes no declaration at all — a declaration against an empty
-///   schema would be the one shape `handle_declare_shortcut` validates neither
-///   `predictability_gate` nor `validate_pins` against (both live inside its
-///   `if !offer.schema.points.is_empty()` block);
+/// * an empty point set publishes no declaration at all — `handle_declare_shortcut` validates
+///   every declaration it resolves, whatever the schema published, so one minted against an
+///   exposed-nothing schema is refused on any slot-addressing pin it carries and states nothing
+///   without one; either way `declaration.is_some()` would stop meaning "the handler takes this";
 /// * `None` (that seat never answered this slot) and [`LoopAnswer::Conflicted`] (it answered
 ///   two ways — see that type: an engine-capability refusal, NOT a CR 732.2a mandate) are the
 ///   SAME disposition here, because neither names a single answer to pin;
@@ -6973,7 +6973,7 @@ fn handle_declare_shortcut(
     // doc), and the drive's per-iteration `resolve` (CR 608.2b) is the runtime backstop.
     //
     // A CHOICE-FREE offer (empty schema — a non-targeted drain) exposes no decision to pin, so
-    // the only declaration it admits is one that pins nothing: its win derivation is
+    // a declaration against it may address no slot: its win derivation is
     // pin-independent (the E1 measure is the authority), and a template that pinned a choice
     // would fix one this offer never stated. That refusal needs no test of its own here —
     // `declaration_conforms` already rejects a pin naming a slot no published point matches,
@@ -7081,11 +7081,10 @@ fn handle_declare_shortcut(
     // compares an attacker-chosen value against itself. `offer.proposer` is engine state,
     // copied from `WaitingFor::LoopShortcut { proposer }`.
     //
-    // PLACEMENT IS LOAD-BEARING: this sits OUTSIDE the `!offer.schema.points.is_empty()`
-    // block below, so it is reached for every declaration regardless of schema emptiness —
-    // an empty-schema offer skips `predictability_gate` / `validate_pins` entirely and would
-    // otherwise reach the proposal with an unvalidated owner. It is the SIXTH sibling of the
-    // five refusal arms and lands on their single authority (`reject_shortcut_declaration`),
+    // Runs on EVERY resolved declaration, whatever the schema published, and it is the SOLE
+    // refuser of a foreign owner: `declaration_conforms` below reads no `owner` at all, so no
+    // arm of the match can catch one. It is the SIXTH sibling of the five refusal arms and
+    // lands on their single authority (`reject_shortcut_declaration`),
     // so no row can observe which refusal fired first — the "sixth reject path added later"
     // that authority's doc anticipates. Defence in depth for the RESTORE ingress (a persisted
     // `WaitingFor::RespondToShortcut` never runs this handler) lives on
@@ -7096,9 +7095,14 @@ fn handle_declare_shortcut(
     }
     // CR 732.2a: a declaration cannot pin choices the offer published none of. Every
     // `Some(t)` meets `declaration_conforms` whatever the schema published — its
-    // `PinValidation::UnexposedSlot` arm is exactly that refusal, so a points-empty offer
-    // needs no second predicate here. Only the `None` arm's re-derivation test is conditioned
-    // on the schema having points: an offer publishing none exposes nothing to re-derive.
+    // `PinValidation::UnexposedSlot` arm is that refusal for every SLOT-ADDRESSING pin, so a
+    // points-empty offer needs no second predicate for those. NOT closed for the rest:
+    // `validate_pins`' `PinnedDecision::Order` arm returns without reaching `UnexposedSlot`, so
+    // an ORDER-ONLY template pins a CR 603.3b trigger ordering the offer published none of and
+    // is admitted. Closing that needs an ordering decision point in the schema, not another
+    // predicate here. Only the `None` arm's
+    // re-derivation test is conditioned on the schema having points: an offer publishing none
+    // exposes nothing to re-derive.
     match &template {
         Some(t) => {
             // CR 732.2a: validate over the range the ACCEPTED COUNT will drive, not

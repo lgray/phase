@@ -3015,8 +3015,9 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
 /// scenario built to reach the guard. The matched pair differs in exactly one field.
 ///
 /// Reach-guards: the published pin set is non-empty, so `predictability_gate` and
-/// `validate_pins` really run and the accepting arm proves they PASS (a refusal on both arms
-/// would otherwise be reported as a firewall hit); and the hostile owner names a LIVING seat
+/// `validate_pins` have something to check and the accepting arm proves they PASS (against an
+/// exposed-nothing schema they run but decide nothing, and a refusal on both arms would then be
+/// reported as a firewall hit); and the hostile owner names a LIVING seat
 /// that is not the proposer, which is the only shape the guard can distinguish.
 ///
 /// REVERT-PROBE (shared with `r28_a`, and recorded as shared): delete
@@ -3031,8 +3032,8 @@ fn u6_the_declare_owner_firewall_holds_on_the_real_f4_offer() {
 
     assert!(
         !schema.points.is_empty(),
-        "reach-guard: a non-empty schema means `predictability_gate` / `validate_pins` really \
-         run, so the accepting arm below proves the pair is keyed to `owner`"
+        "reach-guard: a non-empty schema is what gives `predictability_gate` / `validate_pins` \
+         something to decide, so the accepting arm below proves the pair is keyed to `owner`"
     );
     let hostile = state
         .players
@@ -3869,8 +3870,9 @@ fn declare_template_free(state: &GameState, proposer: PlayerId, k: u32) -> GameS
 ///
 /// # Reach-guards, asserted BEFORE the claim
 ///
-/// The schema publishes points (else the pin block is skipped and the row measures the empty
-/// path — that is [`c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone`]'s
+/// The schema publishes points (else `declaration_conforms` decides nothing about a pin-free
+/// declaration and the row measures the empty path — that is
+/// [`c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone`]'s
 /// subject), the schema is bounded, the offer really published a declaration (else the
 /// `or_else` has nothing to resolve against and every arm would be measuring site F), and the
 /// window is wide enough that `k = 5` is genuinely interior. The bound is read from the schema
@@ -3888,8 +3890,8 @@ fn c2_r1_the_browsers_template_free_declaration_reaches_the_accepted_declaration
 
     assert!(
         points > 0,
-        "REACH-GUARD: with an empty point set `handle_declare_shortcut` skips the pin block \
-         entirely and this row would measure the owner firewall instead of the repair"
+        "REACH-GUARD: with an empty point set `declaration_conforms` has no published slot to \
+         check and this row would measure the owner firewall instead of the repair"
     );
     assert!(
         bounded,
@@ -4068,8 +4070,8 @@ fn r3_placement_a_restored_foreign_owner_declaration_is_refused() {
 /// A points-empty offer carrying a restored declaration is reachable only through the restore
 /// ingress — no production mint emits that pair. The `or_else` needs no `!points.is_empty()`
 /// guard of its own, because the RESOLVED template is validated either way: CR 732.2a lets a
-/// declaration pin only choices the offer published, so a pinned template against an
-/// exposed-nothing offer is refused on that axis whatever its owner, and a pin-free one leaves
+/// declaration pin only choices the offer published, so a template addressing an unexposed slot
+/// is refused on that axis whatever its owner, and a pin-free one leaves
 /// the owner as the single remaining gate — which is what these arms vary.
 #[test]
 fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
@@ -4087,8 +4089,8 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
 
     // One F4 offer, `schema.points` emptied, `declaration` set per arm. Nothing else differs.
     // The declaration is stripped of its pins with the points: CR 732.2a lets a declaration pin
-    // only choices the offer published, so a pinned template against an exposed-nothing offer is
-    // refused on the PIN axis and the owner axis this row varies would never be reached.
+    // only choices the offer published, so a template addressing an unexposed slot is refused on
+    // the PIN axis and the owner axis this row varies would not be the operative one.
     let point_free_offer = |declaration: Option<PlayerId>| {
         let mut probe = state.clone();
         match &mut probe.waiting_for {

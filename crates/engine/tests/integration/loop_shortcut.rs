@@ -2382,8 +2382,10 @@ fn b3_firewall_abort_incarnation_guard() {
 /// `Piecewise` schedule pins DRAIN_CLERIC for cycles `[0, k)` then switches to a
 /// never-resolvable object at cycle `k` — "the enabler leaves the game" stated entirely from
 /// the schedule. `validate_pins` re-resolves every pin at every index the DECLARED COUNT will
-/// drive, so a break at `k < N` is a choice that cannot legally be taken and the proposal is
-/// refused before a single cycle commits: zero drain, priority handback, no `ShortcutProposal`.
+/// drive, so a break at `k < N` is a choice that cannot legally be taken and the declaration is
+/// refused into a priority handback. That handback carries the claim: declare is pre-drive on
+/// BOTH verdicts, so life is unmoved whichever way this goes and only `waiting_for`
+/// discriminates.
 ///
 /// The pair is one axis apart — WHERE the switch point sits relative to the driven range. With
 /// it past N the same schedule shape resolves at every driven index, so the declaration is
@@ -2452,7 +2454,7 @@ fn b3_declare_refuses_a_schedule_breaking_inside_the_declared_count() {
     assert_eq!(
         life(&runner, P1),
         l0,
-        "the refused declaration drives nothing: not one cycle's drain may commit"
+        "declare is pre-drive on both verdicts: nothing may commit before the handback"
     );
     assert!(!is_eliminated(&runner, P1));
     assert_eq!(
@@ -7481,9 +7483,9 @@ fn dump_c_still_crowns_at_one_living_opponent_after_pause_retention() {
 ///   blanket "reject every `template: None`", which would break every shipped object-growth
 ///   declaration.
 ///
-/// REVERT-PROBE: delete the `None if state.last_loop_action_sequence.is_empty()` arm ⇒ the first
-/// half opens `RespondToShortcut` and FAILS. Drop the sequence conjunct instead (reject on
-/// `template.is_none()` alone) ⇒ the second half FAILS.
+/// REVERT-PROBE: delete the guarded `None` arm ⇒ the first half opens `RespondToShortcut` and
+/// FAILS. Drop its period conjunct instead (reject on `template.is_none()` against a published
+/// point set alone) ⇒ the second half FAILS.
 #[test]
 fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
     use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
@@ -11204,10 +11206,10 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
 /// lands on.
 ///
 /// **SITE F IS NOT ON THIS PATH, and that is asserted rather than assumed** — dina's bounded offer
-/// publishes an EMPTY point set, so `handle_declare_shortcut`'s
-/// `if !offer.schema.points.is_empty()` block is skipped whole and the `template: None`
-/// declaration this row makes never reaches the declare-seam arm. Site F's own row lives on the
-/// F4 fixture for exactly the complementary reason.
+/// publishes an EMPTY point set, which falsifies site F's own leading conjunct, so the
+/// `template: None` declaration this row makes falls to the admitting `None` arm and never
+/// reaches the declare-seam period test. Site F's own row lives on the F4 fixture for exactly
+/// the complementary reason.
 ///
 /// **THE PROPERTY**: the committed life delta is exactly `n ×` the published per-period delta —
 /// i.e. the drain materializer ran. Positive control on the same fixture and same helper:
@@ -12195,7 +12197,7 @@ fn bounded_fixed_drive_rolls_back_a_partial_crossing_cycle() {
 /// zero-delta observation would be indistinguishable from "the offer never fired" or "the drive
 /// aborts on this fixture anyway" — which is precisely the shape the HEAD defect had.
 ///
-/// REVERT-PROBE: delete the `if actual != pd.delta { break 'cycles; }` block in
+/// REVERT-PROBE: delete the `if !pd.conforms(..) { break 'cycles; }` block in
 /// `materialize_fixed_shortcut` ⇒ ⓑ commits `n × (real δ)` like ⓐ ⇒ ⓑ's zero-delta assertion
 /// FAILS while ⓐ stays green.
 #[test]
@@ -12838,7 +12840,7 @@ fn r5_probe_delta() -> i32 {
 ///   `pinned_submit_ok=false` ⇒ `RecastAbort` ⇒ `CycleOutcome::Abort` ⇒ `break 'cycles` at
 ///   `i=0`. This is the layer this row claims to exercise, and it is provably reached.
 /// * **GUARD 2 — the CR 732.2a per-cycle conformance check** in `materialize_fixed_shortcut`
-///   (`actual != per_cycle.delta` ⇒ `break 'cycles`).
+///   (`!per_cycle.conforms(..)` ⇒ `break 'cycles`).
 /// * **GUARD 3 — `inject_pinned_answer`'s fail-closed catch-all** (CR 732.2a "no conditional
 ///   actions": any prompt kind with no Stage-2 pin producer ⇒ `RecastAbort` ⇒
 ///   `CycleOutcome::Abort`).
@@ -13142,8 +13144,8 @@ fn a_recorded_loop_detect_sample_keeps_a_live_half_normalization_would_have_eras
 
 // ─────────── 5d U2 / R28 — the declared template's `owner` is ENGINE-BOUND ───────────
 
-/// CR 732.2a: stage the live offer with an EMPTY point set, so arm (a″) can reach the
-/// `!offer.schema.points.is_empty()` block's SKIPPED path. Counterpart to
+/// CR 732.2a: stage the live offer with an EMPTY point set, so arm (a″) runs the declare gates
+/// on an offer that exposed no slot for them to decide. Counterpart to
 /// [`r28_nonempty_schema_offer`]; `offer.proposer` still comes from the live
 /// `WaitingFor::LoopShortcut`, which is the firewall's engine-issued comparand.
 fn r28_empty_schema_offer(runner: &mut GameRunner) {
@@ -13314,15 +13316,18 @@ fn r28_a_declared_template_owning_another_seat_is_refused_at_declare() {
     }
 }
 
-/// R28 arm (a″) — **the firewall's PLACEMENT, which no other arm can see.**
+/// R28 arm (a″) — **an empty-schema offer is NOT short-circuited past the declare gates.**
 ///
-/// The firewall sits ABOVE the arm that validates a declared template, so it runs on an offer
-/// that published no decision point at all. Arms (a)/(a′) run on a non-empty schema and
-/// therefore pass wherever the firewall sits.
+/// The gates run on every declaration the handler resolves, whatever the schema published, so
+/// an offer exposing no decision point is still gated. Arms (a)/(a′) run on a non-empty schema
+/// and so cannot see a short-circuit keyed to an empty one. The firewall's PLACEMENT is NOT
+/// this row's subject and no arm here measures it: `declaration_conforms` reads no `owner`, so
+/// the firewall refuses the same declarations anywhere between the `or_else` that resolves the
+/// template and the end of the match.
 ///
 /// Both declarations here are PIN-FREE. CR 732.2a lets a declaration pin only choices the offer
-/// published, so a pinned template against an exposed-nothing offer is refused on the PIN axis
-/// and the owner axis would never be reached.
+/// published, so a template addressing an unexposed slot is refused on the PIN axis and the
+/// owner axis this row varies would not be the operative one.
 ///
 /// ⚠ **DISCLOSED REACHABILITY DOWNGRADE.** This arm used to run on the R5 offer's OWN empty
 /// schema — the empty-schema path was reached NATURALLY. It no longer is: the answer-beat
@@ -13336,11 +13341,12 @@ fn r28_a_declared_template_owning_another_seat_is_refused_at_declare() {
 /// this path on its own. Treat that as unproven here until a fixture whose live offer publishes
 /// nothing is added.
 ///
-/// REVERT-PROBE: delete the `template.owner != offer.proposer` firewall ⇒ the wrong-owner
-/// declaration pins nothing, conforms vacuously and opens APNAP ⇒ **(a″) FLIPS TO FAIL** while
-/// (a)/(a′) stay green.
+/// REVERT-PROBE: short-circuit the handler on an exposed-nothing offer — build the proposal
+/// directly when `offer.schema.points.is_empty()`, skipping both the owner firewall and the
+/// `match &template` ⇒ the wrong-owner declaration opens APNAP ⇒ **(a″) FLIPS TO FAIL** while
+/// (a)/(a′), which run on a non-empty schema, stay green.
 #[test]
-fn r28_a_the_owner_firewall_is_reached_on_an_empty_schema_offer_too() {
+fn r28_a_an_empty_schema_offer_is_not_short_circuited_past_the_declare_gates() {
     // matched positive first: the empty-schema path DOES accept an honest declaration.
     let (mut runner, slot, _bond, _h, _l) = r5_reach_offer();
     r28_empty_schema_offer(&mut runner);
@@ -13369,8 +13375,8 @@ fn r28_a_the_owner_firewall_is_reached_on_an_empty_schema_offer_too() {
         .expect("dispatched");
     assert!(
         matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
-        "(a″) the firewall runs ABOVE the template-validation arm, so an offer publishing no \
-         point is covered too, got {:?}",
+        "(a″) an offer publishing no point still runs the declare gates, so the foreign owner \
+         is refused here too, got {:?}",
         runner.state().waiting_for
     );
     assert!(result.events.is_empty(), "(a″) no events on the handback");

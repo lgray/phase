@@ -485,6 +485,13 @@ pub struct ResourceVector {
     /// CR 111: tokens created this analysis window. **Event-fed**, and additionally derived
     /// from a board pair by [`ResourceVector::period`] — the per-period producers hold no
     /// event stream, so a snapshot pair alone would report zero on an axis the offer publishes.
+    ///
+    /// A THIRD writer measures a DIFFERENT subject: the object-growth producer in `game::engine`
+    /// adds `minted_battlefield_ids(..).len()` — the same mint set WITHOUT `period`'s `is_token`
+    /// filter — so there the axis counts minted BATTLEFIELD OBJECTS, not tokens. The two never
+    /// meet on one signature today (that producer's certificate carries `per_cycle: None`), so
+    /// the divergence is latent; it is named because unifying the writers without reconciling
+    /// the filter would silently change what the axis means at one of them.
     pub tokens_created: i64,
 
     /// CR 121: cards drawn this analysis window. **Event-fed.**
