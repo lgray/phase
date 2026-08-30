@@ -4345,7 +4345,9 @@ fn a_slot_addressing_pin_naming_a_slot_the_offer_never_published_is_refused() {
         "CR 603.3b: MEASURED, NOT ENDORSED — `validate_pins`' `Order` arm returns before \
          `UnexposedSlot`, so an ordering pin naming a slot the offer published no point for is \
          ADMITTED. This is the member the title's SLOT-ADDRESSING qualifier excludes; the \
-         disclosure on `handle_declare_shortcut`'s pin block states what closing it takes"
+         disclosure on `handle_declare_shortcut`'s pin block states what closing it takes. \
+         When that ordering decision point lands this arm goes red: re-key it onto the \
+         refusal, do not delete it"
     );
 }
 

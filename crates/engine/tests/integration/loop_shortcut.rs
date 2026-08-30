@@ -2381,12 +2381,13 @@ fn b3_firewall_abort_incarnation_guard() {
 /// B3-declare-refuses-a-schedule-that-breaks-inside-the-count (CR 732.2a + CR 608.2b): a
 /// `Piecewise` schedule pins DRAIN_CLERIC for cycles `[0, k)` then switches to a
 /// never-resolvable object at cycle `k` — "the enabler leaves the game" stated entirely from
-/// the schedule. `validate_pins` re-resolves every pin at every index the DECLARED COUNT will
-/// drive, so a break at `k < N` is a choice that cannot legally be taken and the declaration is
-/// refused into a priority handback. This board seats a LIVING opponent, so declare opens APNAP
-/// rather than driving on either verdict — life is unmoved whichever way this goes and only
-/// `waiting_for` discriminates. (`handle_declare_shortcut`'s no-living-opponents branch takes
-/// the shortcut immediately; declare IS the drive there, and that is not this fixture.)
+/// the schedule. `validate_pins` re-resolves every `Targets` pin at every index the DECLARED
+/// COUNT will drive, so a break at `k < N` is a choice that cannot legally be taken and the
+/// declaration is refused into a priority handback. This board seats a LIVING opponent, so
+/// declare opens APNAP rather than driving on either verdict — life is unmoved whichever way
+/// this goes and only `waiting_for` discriminates. (`handle_declare_shortcut`'s
+/// no-living-opponents branch takes the shortcut immediately; declare IS the drive there,
+/// and that is not this fixture.)
 ///
 /// The pair is one axis apart — WHERE the switch point sits relative to the driven range. With
 /// it past N the same schedule shape resolves at every driven index, so the declaration is

@@ -1398,7 +1398,8 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
         // goes through the single authority rather than through this function's own snapshot
         // pair — which reads zero on the event-fed token axis. The `snaps.windows(2)`
         // periodicity search above is deliberately left alone: it decides WHETHER a period
-        // exists, and keeping it on the snapshot pair keeps the offer set exactly as it was.
+        // exists and is unchanged; the zero-vector refusal below is what now also sees the
+        // token term.
         let per_period = ResourceVector::period(
             &state.loop_detect_ring[frames - 1 - k].normalized,
             &state.loop_detect_ring[frames - 1].normalized,

@@ -6973,13 +6973,14 @@ fn handle_declare_shortcut(
     // doc), and the drive's per-iteration `resolve` (CR 608.2b) is the runtime backstop.
     //
     // A CHOICE-FREE offer (empty schema — a non-targeted drain) exposes no decision to pin, so
-    // a declaration against it may address no slot: its win derivation is
+    // a declaration against it may carry no SLOT-ADDRESSING pin: its win derivation is
     // pin-independent (the E1 measure is the authority), and a template that pinned a choice
     // would fix one this offer never stated. That refusal needs no test of its own here —
-    // `declaration_conforms` already rejects a pin naming a slot no published point matches,
-    // whatever the schema's size — and it is what keeps a client-supplied pin out of
-    // `proposal.template`, which the drive's per-cycle conformance check reads. The established
-    // `Fixed(N)` drain behavior is untouched: its declaration carries no pins.
+    // `declaration_conforms` already rejects a SLOT-ADDRESSING pin naming a slot no published
+    // point matches, whatever the schema's size — and for those kinds it is what keeps a
+    // client-supplied pin out of `proposal.template`, which the drive's per-cycle conformance
+    // check reads. The established `Fixed(N)` drain behavior is untouched: its declaration
+    // carries no pins.
     // ⚠ ORDER IS LOAD-BEARING: the count cap runs BEFORE the pin validation below, because
     // `shortcut_validated_range` derives the validated range FROM the declared count and so
     // must not be handed an unchecked one — a `Fixed(4_000_000_000)` would otherwise become
@@ -7097,6 +7098,12 @@ fn handle_declare_shortcut(
     // `Some(t)` meets `declaration_conforms` whatever the schema published — its
     // `PinValidation::UnexposedSlot` arm is that refusal for every SLOT-ADDRESSING pin, so a
     // points-empty offer needs no second predicate for those.
+    //
+    // SLOT-ADDRESSING is this path's term throughout, in `pin_slot`'s own sense: a pin that
+    // CARRIES an explicit `DecisionSlot` (`Targets` / `Mode` / `MayChoice` / `UnlessBreak` /
+    // `ManaColor` / `ConvokeTaps`) and is therefore looked up against `schema.points`. It does
+    // NOT mean "resolves to a slot" — `pin_slot` synthesizes one for `Order` too, which is
+    // precisely the hole disclosed below.
     //
     // ⚠ NOT CLOSED FOR `PinnedDecision::Order`, AND THE HOLE IS NOT CONFINED TO AN
     // EXPOSED-NOTHING OFFER. Two measured facts compose. (1) `validate_pins`' `Order` arm
