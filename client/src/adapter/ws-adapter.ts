@@ -203,6 +203,23 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 59 — InteractionResponseSpec.shortcut.preview changed from a single optional
+ *      InteractionShortcutPreview to an Array<InteractionShortcutPreview>, one
+ *      element per offerable count, and each element gained an allocation list
+ *      stating the declaration's shape over that element's count. The retype is
+ *      the break; the added list is not — it is default and skip-if-empty and
+ *      parses in both directions. A PARSE bump like 23, 36 and 42, not a
+ *      capability bump like 24, and asymmetric: a v58 peer always emits the
+ *      preview key (null or an object) and neither deserializes into a list, so
+ *      v58 → v59 fails on every shortcut offer; v59 → v58 fails only when a
+ *      preview is actually carried, because an empty list omits the key and a
+ *      v57 peer reads that as absent. No shim ships.
+ *      MIN_SUPPORTED_SERVER_PROTOCOL below and MIN_SUPPORTED_PROTOCOL in
+ *      crates/server-core/src/protocol.rs are each equal to their own
+ *      PROTOCOL_VERSION, so the pairing is refused at the handshake — which
+ *      matters here because this client parses server frames with JSON.parse and
+ *      would otherwise read the new shape silently. See PROTOCOL_VERSION in
+ *      crates/lobby-broker/src/protocol.rs for the full entry.
  * 58 — `DraftPlayerView::commanders_required` publishes the procedure-owned
  *      commander designation count. The client renders designation controls
  *      from this required field rather than inferring them from `DraftKind`.
@@ -399,7 +416,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      into a MulliganDecisionPhase::BottomCards sub-phase on
  *      WaitingFor::MulliganDecision.
  */
-export const PROTOCOL_VERSION = 58;
+export const PROTOCOL_VERSION = 59;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

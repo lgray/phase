@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const EXPECTED_PROTOCOL_VERSION = 58;
+const EXPECTED_PROTOCOL_VERSION = 59;
 // The LOBBY message-set version. Deliberately separate from the full-game
 // number above and deliberately NOT derived from it: a GameState-only bump must
 // not move the lobby's compatibility window. See the assertions at the bottom.
@@ -14,7 +14,7 @@ const EXPECTED_LOBBY_PROTOCOL_VERSION = 4;
 // here, so a full-game bump could ship with an unbumped P2P version and CI
 // stayed green — a v(n-1) host and a v(n) guest would then complete a
 // handshake and only fail when the incompatible payload arrived.
-const EXPECTED_WIRE_PROTOCOL_VERSION = 42;
+const EXPECTED_WIRE_PROTOCOL_VERSION = 43;
 
 function extractVersion(source, pattern, label) {
   const match = source.match(pattern);
@@ -26,7 +26,13 @@ function extractVersion(source, pattern, label) {
 
 function requirePattern(source, pattern, label) {
   if (!pattern.test(source)) {
-    throw new Error(`Protocol floor does not match expectation in ${label}`);
+    throw new Error(`Required protocol form not found in ${label}`);
+  }
+}
+
+function refusePattern(source, pattern, label) {
+  if (pattern.test(source)) {
+    throw new Error(`Superseded protocol version still named in ${label}`);
   }
 }
 
@@ -48,6 +54,14 @@ const workerHelloGateSource = readFileSync(
 );
 const p2pProtocolSource = readFileSync(
   resolve(root, "client/src/network/protocol.ts"),
+  "utf8",
+);
+const p2pProtocolTestSource = readFileSync(
+  resolve(root, "client/src/network/__tests__/protocol.test.ts"),
+  "utf8",
+);
+const p2pAdapterTestSource = readFileSync(
+  resolve(root, "client/src/adapter/__tests__/p2p-adapter-multiplayer.test.ts"),
   "utf8",
 );
 
@@ -82,6 +96,66 @@ requirePattern(
   /const\s+legacyMin\s*=\s*Math\.max\(0,\s*policy\.serverProtocolVersion\s*-\s*1\)\s*;/,
   "lobby-worker/src/hello-gate.ts",
 );
+
+// ── Authored vs derived: which constants may carry a bare integer ──────────
+//
+// The `requirePattern` calls above pin the FORM of one named formula each.
+// This block closes the class those are members of: every protocol constant
+// declared in the four files below is classified, and only the names listed
+// here may carry an integer. A derived constant replaced by its correct
+// current value passes every value comparison here and every relational
+// assertion in the Rust and vitest suites, and only reds at the NEXT bump — on
+// a change that has nothing to do with it. This catches it at the edit that
+// introduces it, and an unlisted name with an integer right-hand side fails
+// whether or not it existed when the list was written. Three ceilings: a
+// right-hand side that is constant but not a decimal integer (hex, arithmetic,
+// a block expression) reads as derived, and so does a decimal integer whose
+// type suffix falls outside INTEGER_RHS's `[iu]<digits>` alphabet — `47usize`,
+// `47isize` and TypeScript's `47n`; the name filter below lets a helper named
+// neither PROTOCOL nor MIN_SUPPORTED hold the literal while a protocol
+// constant derives from it; and the declaration regex sees one binding per
+// `const` and ends the right-hand side at the first `;`, comment or not.
+const AUTHORED_LITERALS = [
+  [rustSource, "crates/lobby-broker/src/protocol.rs", [
+    "LOBBY_PROTOCOL_VERSION",
+    "MIN_SUPPORTED_LOBBY_PROTOCOL",
+    "PROTOCOL_VERSION",
+  ]],
+  [serverCoreSource, "crates/server-core/src/protocol.rs", []],
+  [clientSource, "client/src/adapter/ws-adapter.ts", [
+    "LOBBY_PROTOCOL_VERSION",
+    "MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL",
+    "PROTOCOL_VERSION",
+  ]],
+  [p2pProtocolSource, "client/src/network/protocol.ts", [
+    "WIRE_PROTOCOL_VERSION",
+  ]],
+];
+
+// Binding keyword, visibility, type annotation, digit separators and a cast
+// are optional or free-form, so a literalization cannot hide behind `static`,
+// `pub(crate)`, `: std::primitive::u32`, `4_7`, `47 as u32`, or a comment.
+const CONST_DECL =
+  /(?:pub(?:\([^)]+\))?\s+|export\s+)?(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*(?::\s*[^=;]+)?\s*=\s*([^;]+);/g;
+const INTEGER_RHS = /^\d[\d_]*(_?[iu]\d+)?(\s+(as|satisfies)\s+[^=;]+)?$/;
+
+for (const [source, label, authored] of AUTHORED_LITERALS) {
+  const found = [...source.matchAll(CONST_DECL)]
+    .filter(([, name]) => /PROTOCOL|MIN_SUPPORTED/.test(name))
+    .filter(([, , rhs]) =>
+      INTEGER_RHS.test(rhs.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ").trim()),
+    )
+    .map(([, name]) => name)
+    .sort();
+  const expected = [...authored].sort();
+  if (found.join(" ") !== expected.join(" ")) {
+    console.error(
+      `Protocol constants with a bare-integer right-hand side in ${label} must be exactly [${expected.join(", ")}], found [${found.join(", ")}]. ` +
+        `Every other protocol constant there derives from one of these and must stay an expression.`,
+    );
+    process.exit(1);
+  }
+}
 
 if (rustVersion !== clientVersion) {
   console.error(
@@ -237,3 +311,53 @@ if (rustDirectoryVersion !== EXPECTED_DIRECTORY_VERSION) {
   );
   process.exit(1);
 }
+// ── Names that embed a version number ─────────────────────────────────────
+//
+// A name carrying a version goes stale silently: `assert_eq!(PROTOCOL_VERSION,
+// 48)` under `fn protocol_version_is_47` is green, and so is a handshake pair
+// whose title still advertises the version before last. Each site requires the
+// CURRENT number and refuses the SUPERSEDED one, both derived from the
+// EXPECTED_* constants above, so a later bump edits the sources and not this
+// file. Ceiling: the refuse leg catches leftover text from the previous
+// version, which is the defect a bump produces. Prose rewritten to some other
+// wrong number is not a bump leftover and is not guarded here.
+const P = EXPECTED_PROTOCOL_VERSION;
+const W = EXPECTED_WIRE_PROTOCOL_VERSION;
+
+requirePattern(serverCoreSource, new RegExp(`protocol_version_is_${P}(?![0-9])`),
+  `crates/server-core/src/protocol.rs protocol_version_is_${P}`);
+refusePattern(serverCoreSource, new RegExp(`protocol_version_is_${P - 1}(?![0-9])`),
+  "crates/server-core/src/protocol.rs");
+
+requirePattern(p2pProtocolTestSource, new RegExp(`\\bv${W}\\b`),
+  `client/src/network/__tests__/protocol.test.ts v${W}`);
+refusePattern(p2pProtocolTestSource, new RegExp(`\\bv${W - 1}\\b`),
+  "client/src/network/__tests__/protocol.test.ts");
+
+// The handshake pair stamps LITERALS on purpose — a frame built from
+// WIRE_PROTOCOL_VERSION cannot tell a bumped client from an unbumped one — so
+// the refused and the admitted number both live in this block, in the frames,
+// in the title, and in the comment explaining the choice. Ceiling: the slice
+// below runs to EOF rather than to the block's closing brace, so text appended
+// after this `describe` also falls under the refuse leg.
+const P2P_GATE = 'describe("P2P wire-protocol version gate"';
+const gateAt = p2pAdapterTestSource.indexOf(P2P_GATE);
+if (gateAt < 0) {
+  console.error(
+    `Could not find ${P2P_GATE} in client/src/adapter/__tests__/p2p-adapter-multiplayer.test.ts: ` +
+      "that block holds the only instrument that tells a bumped client from an unbumped one.",
+  );
+  process.exit(1);
+}
+const p2pGateBlock = p2pAdapterTestSource.slice(gateAt);
+const gateLabel = "client/src/adapter/__tests__/p2p-adapter-multiplayer.test.ts";
+for (const n of [W - 1, W]) {
+  requirePattern(p2pGateBlock, new RegExp(`setupFrameAt\\(${n}\\)`),
+    `${gateLabel} setupFrameAt(${n})`);
+}
+// Bare as well as `v`-prefixed: the comment writes the pair as "Revert 37 → 36",
+// so a leftover names the superseded number with no `v` in front of it. The
+// delimiter class excludes identifier characters and a decimal point so a
+// number that is part of a name or a version string is not matched.
+refusePattern(p2pGateBlock, new RegExp(`(^|[^0-9A-Za-z_.])v?${W - 2}([^0-9A-Za-z_.]|$)`),
+  gateLabel);

@@ -96,6 +96,18 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  43 — LegalActionsWire.viewerInteraction's shortcut preview changed from a
+ *       single optional InteractionShortcutPreview to an
+ *       Array<InteractionShortcutPreview>, one element per offerable count,
+ *       each element also carrying an allocation list for the declaration's
+ *       shape over that count. Both peers on this track are browsers, so
+ *       neither validates the shape: a v42 guest paired with a v43 host would
+ *       read a list where its type says object and render the offer wrong, with
+ *       no decode error anywhere. First-contact version equality is the only
+ *       place the skew is refusable, and no shim ships. Bumped in lockstep with
+ *       PROTOCOL_VERSION 59 in crates/lobby-broker/src/protocol.rs, which the
+ *       same retype breaks — on that track it IS a parse break, because
+ *       ServerMessage carries viewer_interaction as a required field.
  *  42 — New guest → host `state_ack` frame, carrying the highest state
  *       revision the guest has actually APPLIED — the fact a host ledger that
  *       records TRANSMISSION cannot observe, since a send resolving true only
@@ -276,7 +288,7 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *       sub-phase on WaitingFor::MulliganDecision; the MulliganBottomCards
  *       variant was removed
  */
-export const WIRE_PROTOCOL_VERSION = 42 as const;
+export const WIRE_PROTOCOL_VERSION = 43 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

@@ -4169,7 +4169,7 @@ describe("P2P wire-protocol version gate", () => {
   it("refuses the previous wire protocol (v41) and admits its own (v42)", async () => {
     const refusing = makeGuest();
     await refusing.adapter.initialize();
-    await refusing.conn.simulateData(setupFrameAt(41));
+    await refusing.conn.simulateData(setupFrameAt(42));
 
     await expect(refusing.adapter.initializeGame()).rejects.toMatchObject({
       code: "P2P_REJECTED",
@@ -4181,7 +4181,7 @@ describe("P2P wire-protocol version gate", () => {
 
     const admitting = makeGuest();
     await admitting.adapter.initialize();
-    await admitting.conn.simulateData(setupFrameAt(42));
+    await admitting.conn.simulateData(setupFrameAt(43));
 
     await expect(admitting.adapter.initializeGame()).resolves.toBeDefined();
     expect(admitting.emitted).not.toHaveBeenCalledWith(
