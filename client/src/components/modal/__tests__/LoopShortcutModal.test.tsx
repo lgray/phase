@@ -37,7 +37,7 @@ function shortcutInteraction(
     count: { type: "fixed", data: { min: 1, max: 5, suggested: 5 } },
     points: [],
     allowDecline: true,
-    preview: null,
+    preview: [],
     confirm: "explicit",
     ...overrides,
   };
@@ -356,23 +356,32 @@ describe("LoopShortcutModal", () => {
     expect(screen.getByRole("button", { name: "Take the shortcut" })).toBeInTheDocument();
   });
 
-  // C4 render path: the preview's magnitudes are the ENGINE's, already multiplied and signed, and
-  // headed by the count they describe. The recompute-guard is the discriminator: moving the picker
-  // to 2 must leave every number untouched — a component that rescaled the preview to the picked
-  // count (or that recomputed it at all) fails here.
-  it("renders the engine preview verbatim and never rescales it (C4 render)", () => {
+  // The engine publishes one element per count, and the modal renders the one whose count the
+  // player picked — verbatim, never rescaled. The two elements below are DELIBERATELY
+  // non-proportional to their counts: a component that rescaled the count-4 element to 2 would
+  // show -20, and one that ignored the picker would still show -40.
+  it("renders the element matching the picked count and never rescales it", () => {
     seed(
       buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 4 } } }),
       {},
       shortcutInteraction({
         count: { type: "fixed", data: { min: 1, max: 4, suggested: 4 } },
-        preview: {
-          count: 4,
-          entries: [
-            { family: "life", player: 1, amount: -40 },
-            { family: "mana", player: null, amount: 12 },
-          ],
-        },
+        preview: [
+          {
+            count: 2,
+            entries: [
+              { family: "life", player: 1, amount: -7 },
+              { family: "mana", player: null, amount: 3 },
+            ],
+          },
+          {
+            count: 4,
+            entries: [
+              { family: "life", player: 1, amount: -40 },
+              { family: "mana", player: null, amount: 12 },
+            ],
+          },
+        ],
       }),
     );
     render(<DeclareShortcutModal />);
@@ -382,9 +391,60 @@ describe("LoopShortcutModal", () => {
     expect(screen.getByText("12 mana")).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "2" } });
-    expect(screen.getByText("Repeating 4 times produces:")).toBeInTheDocument();
+    expect(screen.getByText("Repeating 2 times produces:")).toBeInTheDocument();
+    expect(screen.getByText("-7 life — P2")).toBeInTheDocument();
+    expect(screen.getByText("3 mana")).toBeInTheDocument();
+    expect(screen.queryByText("-40 life — P2")).toBeNull();
+    expect(screen.queryByText("-20 life — P2")).toBeNull();
+  });
+
+  // The engine samples the count window, so a count inside it may carry no element. The match is
+  // exact: neither neighbour's magnitudes may leak in, and nothing may be interpolated between
+  // them. The paired positive is the same spec at a count that IS published.
+  it("renders no preview lines for a picked count the engine did not publish", () => {
+    seed(
+      buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 4 } } }),
+      {},
+      shortcutInteraction({
+        count: { type: "fixed", data: { min: 1, max: 4, suggested: 4 } },
+        preview: [
+          { count: 1, entries: [{ family: "life", player: 1, amount: -5 }] },
+          { count: 4, entries: [{ family: "life", player: 1, amount: -40 }] },
+        ],
+      }),
+    );
+    render(<DeclareShortcutModal />);
+
+    // Paired positive: the suggested count IS published and renders.
     expect(screen.getByText("-40 life — P2")).toBeInTheDocument();
-    expect(screen.getByText("12 mana")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "3" } });
+    expect(screen.queryByText(/produces:/)).toBeNull();
+    expect(screen.queryByText("-5 life — P2")).toBeNull();
+    expect(screen.queryByText("-40 life — P2")).toBeNull();
+    expect(screen.queryByText("-15 life — P2")).toBeNull();
+  });
+
+  // An offer that publishes no magnitudes at all renders no preview block, paired against the
+  // same seed carrying one element.
+  it("renders no preview block when the engine published no elements", () => {
+    const offer = (preview: ShortcutSpec["preview"]) =>
+      shortcutInteraction({
+        count: { type: "fixed", data: { min: 1, max: 4, suggested: 4 } },
+        preview,
+      });
+    seed(buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 4 } } }), {}, offer([]));
+    render(<DeclareShortcutModal />);
+    expect(screen.queryByText(/produces:/)).toBeNull();
+
+    cleanup();
+    seed(
+      buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 4 } } }),
+      {},
+      offer([{ count: 4, entries: [{ family: "life", player: 1, amount: -40 }] }]),
+    );
+    render(<DeclareShortcutModal />);
+    expect(screen.getByText("-40 life — P2")).toBeInTheDocument();
   });
 
   // T4: the respond window renders the proposal and Accept dispatches Accept.

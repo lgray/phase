@@ -191,6 +191,11 @@ function DeclareShortcutOffer({
   // than clamping, so a count the engine did not offer can never be declared.
   const chosen = countSpec === null ? null : parseAmount(raw, countSpec.min, countSpec.max);
   const confirmDisabled = countSpec !== null && chosen === null;
+  // CR 732.2a: each published element's `count` travels with its own magnitudes, so the match
+  // is EXACT — no nearest-match, no interpolation, and nothing rendered for a count the engine
+  // stated no magnitudes for. The engine always publishes the window's endpoints, so the
+  // suggested count the box opens on always has an element.
+  const previewed = chosen === null ? undefined : spec?.preview?.find((e) => e.count === chosen);
 
   const handleConfirm = useCallback(() => {
     // `template: null` is unchanged by C5 (see the module header's measured limit) — the picker
@@ -264,7 +269,7 @@ function DeclareShortcutOffer({
             }}
           />
         )}
-        {spec?.preview && <PreviewLines preview={spec.preview} />}
+        {previewed && <PreviewLines preview={previewed} />}
         <FamilyBadges axes={certificate.unbounded} />
         {convokeTappable > 0 && (
           <p className="text-xs text-slate-400">

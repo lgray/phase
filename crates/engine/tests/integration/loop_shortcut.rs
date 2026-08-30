@@ -9681,22 +9681,75 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
     let filtered = engine::game::visibility::filter_state_for_viewer(&state, proposer);
     let view = engine::game::interaction::derive_viewer_interaction(&state, &filtered, proposer);
     let engine::types::interaction::InteractionOpportunityResponse::Schema {
-        spec: engine::types::interaction::InteractionResponseSpec::Shortcut { preview, .. },
+        spec:
+            engine::types::interaction::InteractionResponseSpec::Shortcut {
+                count,
+                points,
+                preview,
+                ..
+            },
         ..
     } = &view.opportunities[0].response
     else {
         panic!("the bounded offer publishes a shortcut schema to its proposer");
     };
-    let preview = preview.as_ref().expect(
-        "CR 732.2a: the offer the engine raised on a REAL 4p drain must publish what its \
-         declared count does. A `None` here means every preview has vanished from every real \
-         game while the hand-built projection rows stayed green.",
+    let engine::types::interaction::InteractionShortcutCountSpec::Fixed { min, max, .. } = count
+    else {
+        panic!("a bounded offer publishes a Fixed count window, got {count:?}");
+    };
+    let published: Vec<u32> = preview.iter().map(|element| element.count).collect();
+    for endpoint in [*min, *max] {
+        assert!(
+            published.contains(&endpoint),
+            "CR 732.2a: the window's own {endpoint} must be published; got {published:?}"
+        );
+    }
+
+    // This board announces NO decision point at all, so there is nothing to allocate a count
+    // over — the negative half of the emptiness rule, on a real game rather than a synthetic.
+    assert!(
+        points.is_empty(),
+        "reach-guard: this drain announces no decision point, which is what makes the empty \
+         allocations below a property of the offer rather than of the producer; got {points:?}"
     );
-    assert_eq!(
-        i64::from(preview.count),
-        suggested,
-        "the magnitudes are stated for the offer's own suggested count and no other"
+    assert!(
+        preview.iter().all(|element| element.allocation.is_empty()),
+        "an offer announcing no target publishes no split"
     );
+
+    // Every published element states ITS OWN count's product, so the per-seat fold is checked
+    // across the whole sample and not only at the suggested count.
+    for element in preview {
+        let mut expected: Vec<(Option<u8>, i32)> = life_deltas
+            .iter()
+            .map(|(seat, delta)| (Some(seat.0), (delta * i64::from(element.count)) as i32))
+            .collect();
+        let mut stated: Vec<(Option<u8>, i32)> = element
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.family == engine::types::interaction::InteractionShortcutPreviewFamily::Life
+            })
+            .map(|entry| (entry.player, entry.amount))
+            .collect();
+        expected.sort_unstable();
+        stated.sort_unstable();
+        assert_eq!(
+            stated, expected,
+            "CR 704.5a: with no announced slot to charge, every life seat keeps the seat \
+             `payload_seat` gave it at the raw product of its own count {}",
+            element.count
+        );
+    }
+
+    let preview = preview
+        .iter()
+        .find(|element| i64::from(element.count) == suggested)
+        .expect(
+            "CR 732.2a: the offer the engine raised on a REAL 4p drain must publish what its \
+             suggested count does. An absent element means every preview has vanished from \
+             every real game while the hand-built projection rows stayed green.",
+        );
 
     let mut expected: Vec<(Option<u8>, i32)> = life_deltas
         .iter()

@@ -34,9 +34,10 @@ use engine::types::interaction::{
     InteractionPreviewRequest, InteractionPreviewStatus, InteractionReasonCode,
     InteractionResponse, InteractionResponseSpec, InteractionRoleCode, InteractionSessionId,
     InteractionShortcutCountSpec, InteractionShortcutDecision, InteractionShortcutPin,
-    InteractionShortcutPointKind, InteractionShortcutPreview, InteractionShortcutPreviewEntry,
-    InteractionShortcutPreviewFamily, InteractionShortcutResponseCode, InteractionSubmission,
-    PreviewRequestId, MAX_INTERACTION_LIST_LEN,
+    InteractionShortcutPoint, InteractionShortcutPointKind, InteractionShortcutPreview,
+    InteractionShortcutPreviewEntry, InteractionShortcutPreviewFamily,
+    InteractionShortcutResponseCode, InteractionSubmission, PreviewRequestId,
+    MAX_INTERACTION_LIST_LEN, MAX_SHORTCUT_PREVIEW_ELEMENTS,
 };
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::match_config::MatchPhase;
@@ -2962,11 +2963,33 @@ fn preview_period_delta() -> engine::analysis::resource::ResourceVector {
 
 /// A `LoopShortcut` offer stated exactly the way `certified_bounded_cycle_offer` states one:
 /// `Fixed(max_iterations)` as the suggestion and the same number as the ceiling, with the
-/// measured period on the certificate.
+/// measured period on the certificate, and no announced decision point.
 fn preview_offer(
     iteration_count: IterationCount,
     max_iterations: u32,
     per_cycle: Option<engine::analysis::resource::ResourceVector>,
+) -> GameState {
+    preview_offer_with_points(
+        iteration_count,
+        max_iterations,
+        per_cycle,
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+/// The same offer carrying announced decision points and the period's per-slot life charge.
+///
+/// An empty `points` schema never publishes a declaration — the same invariant row D4 asserts
+/// against `build_bounded_declaration` — so `declaration: None` is what the engine itself would
+/// stage. These rows exercise the PREVIEW projection, which reads the certificate and the
+/// schema; a declaration here would stage a state the producer cannot emit.
+fn preview_offer_with_points(
+    iteration_count: IterationCount,
+    max_iterations: u32,
+    per_cycle: Option<engine::analysis::resource::ResourceVector>,
+    points: Vec<DecisionPoint>,
+    victim_slot: Vec<(DecisionSlot, i64)>,
 ) -> GameState {
     let mut state = GameState::new_two_player(42);
     state.waiting_for = WaitingFor::LoopShortcut {
@@ -2980,35 +3003,89 @@ fn preview_offer(
             per_cycle: per_cycle.map(|delta| engine::analysis::resource::PeriodicDelta {
                 frames_per_period: 1,
                 delta,
-                victim_slot: Vec::new(),
+                victim_slot,
             }),
         },
         schema: ShortcutDecisionSchema {
             iteration_count,
             max_iterations,
+            points,
             ..Default::default()
         },
-        // `points` is empty here (`..Default::default()`), and an empty schema never publishes a
-        // declaration — the same invariant row D4 asserts against `build_bounded_declaration`. So
-        // `None` is what the engine itself would stage, not merely what makes the literal compile.
-        // These rows exercise the PREVIEW projection, which reads the certificate and schema; a
-        // declaration here would stage a state the producer cannot emit.
         declaration: None,
     };
     bind(&mut state, "loop-preview");
     state
 }
 
-fn shortcut_preview_of(state: &GameState) -> Option<InteractionShortcutPreview> {
+/// The announcement slots the synthetic preview offers speak through — one source, indexed,
+/// the shape `certified_bounded_cycle_offer` publishes.
+fn preview_slot(index: u8) -> DecisionSlot {
+    DecisionSlot {
+        source: engine::types::game_state::YieldTarget::AllCopies {
+            card_id: CardId(9001),
+            trigger_description: None,
+        },
+        index,
+    }
+}
+
+/// A `Targets` point over player seats. The bounds follow the candidate list because the
+/// projection's own authority guard refuses a positive `max_targets` beside an empty
+/// `legal_targets` — which is exactly what leaves a candidate-less `0/0` point admitted.
+fn player_targets_point(index: u8, seats: &[PlayerId]) -> DecisionPoint {
+    let bound = u32::from(!seats.is_empty());
+    DecisionPoint {
+        slot: preview_slot(index),
+        kind: DecisionPointKind::Targets {
+            legal_targets: seats.iter().copied().map(TargetRef::Player).collect(),
+            min_targets: bound,
+            max_targets: bound,
+            ordered: false,
+        },
+    }
+}
+
+/// The published shortcut offer, read whole so a row can compare an element against the count
+/// window and the point that minted its allocation ids without transcribing either.
+struct ShortcutOffer {
+    count: InteractionShortcutCountSpec,
+    points: Vec<InteractionShortcutPoint>,
+    preview: Vec<InteractionShortcutPreview>,
+}
+
+fn shortcut_offer_of(state: &GameState) -> ShortcutOffer {
     let view = priority_view(state);
     let InteractionOpportunityResponse::Schema {
-        spec: InteractionResponseSpec::Shortcut { preview, .. },
+        spec:
+            InteractionResponseSpec::Shortcut {
+                count,
+                points,
+                preview,
+                ..
+            },
         ..
     } = &view.opportunities[0].response
     else {
         panic!("loop shortcut uses a shortcut schema");
     };
-    preview.clone()
+    ShortcutOffer {
+        count: *count,
+        points: points.clone(),
+        preview: preview.clone(),
+    }
+}
+
+fn shortcut_preview_of(state: &GameState) -> Vec<InteractionShortcutPreview> {
+    shortcut_offer_of(state).preview
+}
+
+/// The published element for a count, or `None` when that count was not sampled.
+fn element_at(
+    preview: &[InteractionShortcutPreview],
+    count: u32,
+) -> Option<&InteractionShortcutPreview> {
+    preview.iter().find(|element| element.count == count)
 }
 
 fn preview_entry(
@@ -3072,13 +3149,20 @@ fn loop_shortcut_preview_states_the_finished_magnitude_for_the_declared_count() 
          proposer resolves to the wrong seat"
     );
 
+    // The offer's own suggested count, read off the published window rather than assumed, and
+    // then looked up in the published list by exact count — the same match the modal makes.
     let at = |n: u32| {
-        shortcut_preview_of(&preview_offer(
+        let offer = shortcut_offer_of(&preview_offer(
             IterationCount::Fixed(n),
             n,
             Some(preview_period_delta()),
-        ))
-        .expect("a bounded offer with a measured period states a preview")
+        ));
+        let InteractionShortcutCountSpec::Fixed { suggested, .. } = offer.count else {
+            panic!("a Fixed offer publishes a Fixed window");
+        };
+        element_at(&offer.preview, suggested)
+            .expect("the published sample always states the suggested count")
+            .clone()
     };
 
     let three = at(3);
@@ -3119,12 +3203,12 @@ fn loop_shortcut_preview_states_the_finished_magnitude_for_the_declared_count() 
 fn loop_shortcut_preview_is_absent_without_both_a_period_and_a_finite_count() {
     // ── PAIRED POSITIVE, first.
     assert!(
-        shortcut_preview_of(&preview_offer(
+        !shortcut_preview_of(&preview_offer(
             IterationCount::Fixed(4),
             4,
             Some(preview_period_delta()),
         ))
-        .is_some(),
+        .is_empty(),
         "control: both authorities present must publish a preview, else every arm below \
          passes for an unrelated reason"
     );
@@ -3133,7 +3217,7 @@ fn loop_shortcut_preview_is_absent_without_both_a_period_and_a_finite_count() {
     //    as does every save written before that field existed.
     assert_eq!(
         shortcut_preview_of(&preview_offer(IterationCount::Fixed(4), 4, None)),
-        None,
+        Vec::new(),
         "an offer that states no per-period signature has nothing to multiply"
     );
 
@@ -3146,7 +3230,7 @@ fn loop_shortcut_preview_is_absent_without_both_a_period_and_a_finite_count() {
             4,
             Some(preview_period_delta()),
         )),
-        None,
+        Vec::new(),
         "`UntilLethal` states no finite count to multiply the period by"
     );
 
@@ -3163,8 +3247,8 @@ fn loop_shortcut_preview_is_absent_without_both_a_period_and_a_finite_count() {
     );
     assert_eq!(
         shortcut_preview_of(&preview_offer(IterationCount::Fixed(4), 4, Some(inert))),
-        None,
-        "a period that nets to nothing on every family publishes no preview at all"
+        Vec::new(),
+        "a period that nets to nothing on every family publishes no element at any count"
     );
 }
 
@@ -3198,13 +3282,13 @@ fn loop_shortcut_preview_is_absent_without_both_a_period_and_a_finite_count() {
 /// that computes the right numbers by some other expensive means. This is a routing guard; the
 /// value rows above pin the arithmetic.
 ///
-/// The likeliest instance of that first gap is closed by TYPE rather than by text (fix round 3,
-/// G4): the cheapest way to reach a `GameState` from the preview is to widen
-/// `loop_shortcut_projection` to accept one, which contains none of the banned strings and
-/// lives in a span this row does not read. Its parameter list is pinned below, so the
-/// projection can see the waiting-for state and nothing else — and neither can anything it
-/// calls. What remains uncovered is a clone reached through some OTHER existing binding, which
-/// no signature can rule out.
+/// The likeliest instance of that first gap is closed by TYPE rather than by text: the cheapest
+/// way to reach a `GameState` from the preview is to widen one of the two functions that
+/// compute it to accept one, which contains none of the banned strings and lives in a span this
+/// row does not read. Both parameter lists are pinned below, so the projection sees the
+/// waiting-for state and nothing else, and the count-keyed mint sees the offer id and that
+/// projection — and neither can anything they call. What remains uncovered is a clone reached
+/// through some OTHER existing binding, which no signature can rule out.
 ///
 /// REVERT-PROBES, ALL THREE RUN:
 /// * add the line `// preview_interaction` inside `shortcut_preview_entries` ⇒ FAILS on the
@@ -3273,9 +3357,9 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
         "\n        HumanResponseModel::",
     );
     assert!(
-        attach.contains("loop_shortcut_projection(") && attach.contains("projection.preview"),
-        "reach-guard: the extracted arm must be the one that projects the offer AND publishes \
-         the preview onto the spec, else the ban is being applied to the wrong arm"
+        attach.contains("loop_shortcut_projection(") && attach.contains("loop_shortcut_preview("),
+        "reach-guard: the extracted arm must be the one that projects the offer AND mints the \
+         preview onto the spec, else the ban is being applied to the wrong arm"
     );
     assert!(
         attach.contains("filtered_state"),
@@ -3290,19 +3374,30 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
     //    only a `&WaitingFor` in scope, no callee it reaches can be handed a `GameState`
     //    either, so "the preview computation cannot see game state" stops being a search
     //    result and becomes a fact about the signature.
-    let projection_signature = extract(&text, "\nfn loop_shortcut_projection(", ") -> ");
-    let projection_params = projection_signature
-        .strip_prefix("\nfn loop_shortcut_projection(")
-        .expect("`extract` re-emits its own marker, so the prefix is always present")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let params_of = |name: &str| {
+        let marker = format!("\nfn {name}(");
+        extract(&text, &marker, ") -> ")
+            .strip_prefix(&marker)
+            .expect("`extract` re-emits its own marker, so the prefix is always present")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_end_matches(',')
+            .to_string()
+    };
     assert_eq!(
-        projection_params.trim_end_matches(','),
+        params_of("loop_shortcut_projection"),
         "waiting_for: &WaitingFor",
-        "type-level pin: the shortcut preview is computed from the WAITING-FOR state alone. \
+        "type-level pin: the shortcut projection is computed from the WAITING-FOR state alone. \
          Adding a parameter here — a `&GameState`, or anything reaching one — reopens the \
          clone-apply route through a span the textual ban below never reads"
+    );
+    assert_eq!(
+        params_of("loop_shortcut_preview"),
+        "interaction_id: &InteractionId, projection: &LoopShortcutProjection",
+        "type-level pin, second half: the count-keyed magnitudes are minted from the offer's \
+         id and its projection alone. Neither binding reaches a `GameState`, so a textual ban \
+         over this span would be unwritable and therefore vacuous — the pin is the guard"
     );
 
     for (span_name, body) in [
@@ -3317,6 +3412,654 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
                  the result of a sequence that is deliberately never played out"
             );
         }
+    }
+}
+
+/// The three legs one `#[serde(default, skip_serializing_if = "Vec::is_empty")]` list carrier
+/// owes, plus the positive control that keeps the two absence legs from passing against a
+/// serializer that emits nothing at all.
+///
+/// `pointer` is where the carrier lives in the emitted JSON, so one helper serves a field on a
+/// tagged union arm and a field on a plain struct without either being transcribed.
+fn assert_defaulting_list_carrier<T>(pointer: &str, populated: &T, empty: &T)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+{
+    let populated_json = serde_json::to_value(populated).expect("the carrier serializes");
+    assert!(
+        populated_json
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|list| !list.is_empty()),
+        "positive control: a NON-EMPTY `{pointer}` must be emitted, else every absence leg \
+         below is satisfied by a serializer that writes no key under any circumstances"
+    );
+    assert_eq!(
+        &serde_json::from_value::<T>(populated_json.clone()).expect("a populated carrier reads"),
+        populated,
+        "a populated `{pointer}` round-trips unchanged"
+    );
+
+    let empty_json = serde_json::to_value(empty).expect("the empty carrier serializes");
+    assert!(
+        empty_json.pointer(pointer).is_none(),
+        "an EMPTY `{pointer}` is omitted from the emitted JSON rather than written as `[]`"
+    );
+    assert_eq!(
+        &serde_json::from_value::<T>(empty_json).expect("an absent carrier reads"),
+        empty,
+        "an ABSENT `{pointer}` deserializes to the empty list"
+    );
+
+    let mut null_json = populated_json;
+    *null_json
+        .pointer_mut(pointer)
+        .expect("the populated carrier was just asserted present") = serde_json::Value::Null;
+    assert!(
+        serde_json::from_value::<T>(null_json).is_err(),
+        "an explicit `null` at `{pointer}` is refused — a list is not a nullable field"
+    );
+}
+
+/// The wire shape of the two carriers this offer gained: the count-keyed preview list on the
+/// spec, and each element's allocation.
+///
+/// REVERT-PROBES: drop `#[serde(default)]` on either carrier ⇒ its absent-key leg fails; drop
+/// `skip_serializing_if` ⇒ its omission leg fails.
+#[test]
+fn the_preview_list_and_its_allocation_default_when_absent_and_are_omitted_when_empty() {
+    let element = InteractionShortcutPreview {
+        count: 3,
+        entries: vec![preview_entry(
+            InteractionShortcutPreviewFamily::Life,
+            Some(P1.0),
+            -6,
+        )],
+        allocation: vec![AmountAssignment {
+            choice_id: InteractionChoiceId("k0".to_string()),
+            amount: 3,
+        }],
+    };
+    let spec = |preview: Vec<InteractionShortcutPreview>| InteractionResponseSpec::Shortcut {
+        count: InteractionShortcutCountSpec::Fixed {
+            min: 1,
+            max: 3,
+            suggested: 3,
+        },
+        points: Vec::new(),
+        allow_decline: true,
+        preview,
+        confirm: engine::types::interaction::ConfirmSemantics::Explicit,
+    };
+
+    assert_defaulting_list_carrier(
+        "/data/preview",
+        &spec(vec![element.clone()]),
+        &spec(Vec::new()),
+    );
+    let unallocated = InteractionShortcutPreview {
+        allocation: Vec::new(),
+        ..element.clone()
+    };
+    assert_defaulting_list_carrier("/allocation", &element, &unallocated);
+}
+
+/// A window whose three count axes are all DISTINCT — the only shape that can separate the
+/// `min`, `suggested` and `max` seeds from one another.
+///
+/// Every offer the engine mints today has `suggested == max` (the bounded producer builds its
+/// schema from one number), so a real board cannot tell those two seeds apart. `max_iterations`
+/// stays below the engine's own cycle ceiling so the staged window is the one published.
+fn separating_window() -> GameState {
+    preview_offer(
+        IterationCount::Fixed(500),
+        999,
+        Some(preview_period_delta()),
+    )
+}
+
+/// CR 732.2a: the picker's window is engine-owned, and the published sample always states its
+/// endpoints — so the count the box opens on always has magnitudes, and both ends are readable.
+///
+/// REVERT-PROBES, one per seed, all on the separating window: drop the `min` seed ⇒ 1 is absent
+/// (the stride loop starts at `k = 1`); drop `suggested` ⇒ 500 is absent (`1 + 63k` never lands
+/// on it); drop `max` ⇒ 999 is absent (the loop's guard is `< max`).
+#[test]
+fn the_published_preview_always_states_the_count_window_endpoints() {
+    let separating = shortcut_offer_of(&separating_window());
+    let InteractionShortcutCountSpec::Fixed {
+        min,
+        max,
+        suggested,
+    } = separating.count
+    else {
+        panic!("a Fixed offer publishes a Fixed window");
+    };
+    assert_eq!(
+        [min, suggested, max]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3,
+        "reach-guard: the three seeds must be DISTINCT here, or dropping any one of them \
+         leaves the published set unchanged and this row cannot fail. window = \
+         {min}/{suggested}/{max}"
+    );
+
+    let collapsed = shortcut_offer_of(&preview_offer(
+        IterationCount::Fixed(1),
+        1,
+        Some(preview_period_delta()),
+    ));
+    for offer in [&separating, &collapsed] {
+        let InteractionShortcutCountSpec::Fixed {
+            min,
+            max,
+            suggested,
+        } = offer.count
+        else {
+            panic!("a Fixed offer publishes a Fixed window");
+        };
+        let counts: Vec<u32> = offer.preview.iter().map(|element| element.count).collect();
+        for endpoint in [min, suggested, max] {
+            assert!(
+                counts.contains(&endpoint),
+                "CR 732.2a: the window's own {endpoint} must be published; got {counts:?} for \
+                 window {min}/{suggested}/{max}"
+            );
+        }
+    }
+}
+
+/// CR 732.2a: the sample is a BOUNDED projection of the window — thinned by a stride, capped by
+/// element count, and spread across the window rather than clustered at its floor.
+///
+/// REVERT-PROBES: drop the `counts.len() < MAX_SHORTCUT_PREVIEW_ELEMENTS` guard ⇒ the cap leg
+/// fails, the separating window then publishing 18; collapse the stride to 1 ⇒ the spread leg
+/// fails and NO other leg moves, because a stride of 1 fills the cap just as well; yield a
+/// non-empty sample for `UntilLethal` ⇒ the finite-count leg fails.
+#[test]
+fn the_published_preview_thins_its_interior_and_stops_at_the_element_cap() {
+    let offer = shortcut_offer_of(&separating_window());
+    let InteractionShortcutCountSpec::Fixed {
+        min,
+        max,
+        suggested,
+    } = offer.count
+    else {
+        panic!("a Fixed offer publishes a Fixed window");
+    };
+    let counts: Vec<u32> = offer.preview.iter().map(|element| element.count).collect();
+
+    assert!(
+        usize::try_from(max - min).is_ok_and(|span| span + 1 > MAX_SHORTCUT_PREVIEW_ELEMENTS),
+        "reach-guard: the UNTHINNED axis {min}..={max} must exceed the cap, or the length leg \
+         below is satisfied by a window that fits anyway"
+    );
+    assert!(
+        counts.len() <= MAX_SHORTCUT_PREVIEW_ELEMENTS,
+        "the published sample is capped; got {} counts",
+        counts.len()
+    );
+    assert!(
+        counts.windows(2).all(|pair| pair[0] < pair[1]),
+        "the published counts are strictly increasing, so no count is stated twice: {counts:?}"
+    );
+    assert!(
+        counts
+            .iter()
+            .any(|count| ![min, suggested, max].contains(count)
+                && usize::try_from(count - min)
+                    .is_ok_and(|span| span > MAX_SHORTCUT_PREVIEW_ELEMENTS)),
+        "the interior sample is SPREAD across the window, not clustered at its floor: a \
+         stride of 1 would reach only {} above {min}. got {counts:?}",
+        MAX_SHORTCUT_PREVIEW_ELEMENTS
+    );
+
+    // ── HOSTILE, the collapsed windows: one element per distinct endpoint, never a duplicate.
+    for width in [1u32, 2] {
+        let narrow = shortcut_offer_of(&preview_offer(
+            IterationCount::Fixed(width),
+            width,
+            Some(preview_period_delta()),
+        ));
+        let InteractionShortcutCountSpec::Fixed {
+            min: narrow_min,
+            max: narrow_max,
+            ..
+        } = narrow.count
+        else {
+            panic!("a Fixed offer publishes a Fixed window");
+        };
+        let published: Vec<u32> = narrow.preview.iter().map(|element| element.count).collect();
+        let expected: Vec<u32> = [narrow_min, narrow_max]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            published, expected,
+            "a window of width {width} publishes each of its endpoints exactly once"
+        );
+    }
+
+    // ── HOSTILE: `UntilLethal` names no number, so the exhaustive match yields no sample and
+    //    the producer publishes nothing — the offer's single finite-count gate.
+    assert!(
+        shortcut_preview_of(&preview_offer(
+            IterationCount::UntilLethal,
+            999,
+            Some(preview_period_delta()),
+        ))
+        .is_empty(),
+        "`UntilLethal` states no finite count, so no element is published"
+    );
+}
+
+/// The canonical-allocation property, asserted over EVERY published element of an offer that
+/// publishes a `Targets` point with candidates. Read from the same projection under test.
+fn assert_canonical_allocation(offer: &ShortcutOffer) {
+    let point = offer
+        .points
+        .iter()
+        .find(|point| point.kind == InteractionShortcutPointKind::Targets)
+        .expect("reach-guard: this offer must publish a Targets point");
+    assert!(
+        !point.candidate_ids.is_empty() && !offer.preview.is_empty(),
+        "reach-guard: the point must publish candidates and the offer must publish elements, \
+         or every leg below is vacuous"
+    );
+    for element in &offer.preview {
+        let parts = usize::try_from(element.count)
+            .expect("a published count fits usize")
+            .min(point.candidate_ids.len());
+        assert_eq!(
+            element.allocation.len(),
+            parts,
+            "the split has one part per allocated candidate, truncated by the count itself"
+        );
+        assert_eq!(
+            element
+                .allocation
+                .iter()
+                .map(|assignment| assignment.choice_id.clone())
+                .collect::<Vec<_>>(),
+            point.candidate_ids[..parts].to_vec(),
+            "CR 601.2c: the ids are the FIRST {parts} of the point's own candidate ids, in the \
+             order it published them"
+        );
+        let amounts: Vec<u32> = element
+            .allocation
+            .iter()
+            .map(|assignment| assignment.amount)
+            .collect();
+        assert!(
+            amounts.iter().all(|amount| *amount >= 1),
+            "no part is empty — a zero segment names a cycle no candidate absorbs: {amounts:?}"
+        );
+        assert!(
+            amounts.windows(2).all(|pair| pair[0] >= pair[1]),
+            "the remainder lands on the EARLIEST ids, so the amounts are non-increasing: \
+             {amounts:?}"
+        );
+        let spread =
+            amounts.iter().max().copied().unwrap_or(0) - amounts.iter().min().copied().unwrap_or(0);
+        assert!(spread <= 1, "the split is even to within one: {amounts:?}");
+        assert_eq!(
+            amounts.iter().sum::<u32>(),
+            element.count,
+            "the split covers the element's whole count: {amounts:?}"
+        );
+    }
+}
+
+/// CR 601.2c + CR 732.2a: every published element states the canonical even split of ITS OWN
+/// count over the offer's announced candidates.
+///
+/// REVERT-PROBE: derive the choice id from a seat index instead of the offer's own
+/// `interaction_choice_id(.., 'k', ..)` ⇒ the membership leg fails wherever the allocated
+/// point is not the first one published.
+#[test]
+fn every_published_element_states_the_canonical_split_of_its_own_count() {
+    let seats = [P0, P1, PlayerId(2), PlayerId(3)];
+    // The window reaches ABOVE the candidate count so both hostile shapes are published: counts
+    // below four exercise the truncation, counts above it that four does not divide exercise
+    // the remainder.
+    let offer = shortcut_offer_of(&preview_offer_with_points(
+        IterationCount::Fixed(6),
+        6,
+        Some(preview_period_delta()),
+        vec![player_targets_point(0, &seats)],
+        Vec::new(),
+    ));
+    let candidates = offer
+        .points
+        .iter()
+        .find(|point| point.kind == InteractionShortcutPointKind::Targets)
+        .map(|point| point.candidate_ids.len())
+        .expect("the offer publishes a Targets point");
+
+    // ── REACH-GUARDS: the published sample must actually reach each hostile shape, or the
+    //    property below holds only over the easy elements.
+    assert!(
+        offer
+            .preview
+            .iter()
+            .any(|element| usize::try_from(element.count).is_ok_and(|count| count < candidates)),
+        "reach-guard: an element BELOW the candidate count must be published, or the \
+         truncation is never exercised"
+    );
+    assert!(
+        offer.preview.iter().any(|element| {
+            usize::try_from(element.count)
+                .is_ok_and(|count| count > candidates && count % candidates != 0)
+        }),
+        "reach-guard: an element whose count does NOT divide the candidate count must be \
+         published, or the remainder distribution is never exercised"
+    );
+    assert_canonical_allocation(&offer);
+
+    // ── The count-1 element names exactly the FIRST published candidate.
+    let point = offer
+        .points
+        .iter()
+        .find(|point| point.kind == InteractionShortcutPointKind::Targets)
+        .expect("the offer publishes a Targets point");
+    let single = element_at(&offer.preview, 1).expect("the window's floor is published");
+    assert_eq!(
+        single
+            .allocation
+            .iter()
+            .map(|assignment| &assignment.choice_id)
+            .collect::<Vec<_>>(),
+        vec![&point.candidate_ids[0]],
+    );
+
+    // ── A single-legal-victim offer: one part per element, never an empty allocation
+    //    masquerading as "no split".
+    let lone = shortcut_offer_of(&preview_offer_with_points(
+        IterationCount::Fixed(3),
+        4,
+        Some(preview_period_delta()),
+        vec![player_targets_point(0, &[P1])],
+        Vec::new(),
+    ));
+    assert_canonical_allocation(&lone);
+    for element in &lone.preview {
+        assert_eq!(
+            element.allocation.len(),
+            1,
+            "one legal victim absorbs the whole count"
+        );
+        assert_eq!(element.allocation[0].amount, element.count);
+    }
+
+    // ── HOSTILE: TWO `Targets` points. The allocation's domain is the FIRST in published order.
+    let paired = shortcut_offer_of(&preview_offer_with_points(
+        IterationCount::Fixed(3),
+        4,
+        Some(preview_period_delta()),
+        vec![
+            player_targets_point(0, &[P0, P1]),
+            player_targets_point(1, &[PlayerId(2), PlayerId(3)]),
+        ],
+        Vec::new(),
+    ));
+    let later: Vec<InteractionChoiceId> = paired
+        .points
+        .iter()
+        .filter(|point| point.kind == InteractionShortcutPointKind::Targets)
+        .skip(1)
+        .flat_map(|point| point.candidate_ids.clone())
+        .collect();
+    assert!(
+        !later.is_empty(),
+        "reach-guard: the second Targets point must publish ids of its own, or 'the first \
+         point' is not a claim about anything"
+    );
+    assert_canonical_allocation(&paired);
+    for element in &paired.preview {
+        assert!(
+            element
+                .allocation
+                .iter()
+                .all(|assignment| !later.contains(&assignment.choice_id)),
+            "no id from a LATER Targets point may appear: {:?}",
+            element.allocation
+        );
+    }
+}
+
+/// CR 601.2c: `allocation` is empty if and only if the offer publishes no `Targets` point
+/// HOLDING AT LEAST ONE CANDIDATE. The qualifier is the code's behaviour, not a hedge: the ids
+/// come from `candidate_indices`, and a candidate-less point mints none.
+///
+/// REVERT-PROBES: key emptiness on `points.is_empty()` ⇒ the may-choice leg fails; divide before
+/// the empty-ids return in the generator ⇒ the candidate-less leg panics on a division by zero;
+/// build the split without its non-empty filter ⇒ the candidate-less leg's charged `Life` entry
+/// silently disappears.
+#[test]
+fn the_allocation_is_empty_exactly_when_no_targets_point_holds_a_candidate() {
+    // ── PAIRED POSITIVE, first: a Targets point with candidates publishes a split everywhere.
+    let allocated = shortcut_offer_of(&preview_offer_with_points(
+        IterationCount::Fixed(3),
+        4,
+        Some(preview_period_delta()),
+        vec![player_targets_point(0, &[P1, PlayerId(2)])],
+        Vec::new(),
+    ));
+    assert!(
+        !allocated.preview.is_empty()
+            && allocated
+                .preview
+                .iter()
+                .all(|element| !element.allocation.is_empty()),
+        "control: every element of an offer with announced candidates carries a split"
+    );
+
+    // ── HOSTILE: points, but none of them announces targets. A point-free offer cannot
+    //    separate this from "no points at all".
+    let may_only = shortcut_offer_of(&preview_offer_with_points(
+        IterationCount::Fixed(3),
+        4,
+        Some(preview_period_delta()),
+        vec![DecisionPoint {
+            slot: preview_slot(0),
+            kind: DecisionPointKind::MayChoice,
+        }],
+        Vec::new(),
+    ));
+    assert!(
+        !may_only.points.is_empty()
+            && !may_only
+                .points
+                .iter()
+                .any(|point| point.kind == InteractionShortcutPointKind::Targets),
+        "reach-guard: the offer must publish points and none of them a Targets point"
+    );
+    assert!(
+        !may_only.preview.is_empty()
+            && may_only
+                .preview
+                .iter()
+                .all(|element| element.allocation.is_empty()),
+        "no announced target, no split — while elements are still published"
+    );
+
+    // ── HOSTILE, the member the qualifier admits: a `Targets` point with no candidates, whose
+    //    slot the period nonetheless charges. The charge resolves; only the split is missing.
+    let rate = 3i64;
+    let mut charged = engine::analysis::resource::ResourceVector::default();
+    charged.life.insert(P1, -rate);
+    let empty_point = shortcut_offer_of(&preview_offer_with_points(
+        IterationCount::Fixed(3),
+        4,
+        Some(charged),
+        vec![player_targets_point(0, &[])],
+        vec![(preview_slot(0), rate)],
+    ));
+    let point = empty_point
+        .points
+        .iter()
+        .find(|point| point.kind == InteractionShortcutPointKind::Targets)
+        .expect("reach-guard: the candidate-less Targets point is ADMITTED and published");
+    assert!(
+        point.candidate_ids.is_empty(),
+        "reach-guard: the admitted point publishes no candidate id"
+    );
+    assert!(
+        !empty_point.preview.is_empty(),
+        "reach-guard: elements are published"
+    );
+    for element in &empty_point.preview {
+        assert!(
+            element.allocation.is_empty(),
+            "a Targets point with no candidate announces nothing to split over"
+        );
+        assert!(
+            element.entries.contains(&preview_entry(
+                InteractionShortcutPreviewFamily::Life,
+                Some(P1.0),
+                i32::try_from(-rate * i64::from(element.count)).unwrap(),
+            )),
+            "a split with no parts leaves the charged seat's own magnitude standing: {:?}",
+            element.entries
+        );
+    }
+}
+
+/// CR 704.5a: the published life magnitudes follow the allocation when — and only when — the
+/// period's charge for the announced slot names exactly one seat at a positive magnitude.
+///
+/// REVERT-PROBES: fold with no split at all ⇒ the positive leg publishes one `Life` seat where
+/// the allocation names three; take the FIRST matching seat instead of requiring exactly one ⇒
+/// the ambiguous leg re-attributes an arbitrary seat; drop the positivity keep ⇒ the
+/// life-gaining leg spreads a GAIN across the allocated seats.
+#[test]
+fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positive_charge() {
+    let seats = [P1, PlayerId(2), PlayerId(3)];
+    let period = |life: Vec<(PlayerId, i64)>| {
+        let mut delta = engine::analysis::resource::ResourceVector::default();
+        for (seat, magnitude) in life {
+            delta.life.insert(seat, magnitude);
+        }
+        // A seat-keyed axis the slot charge does NOT attribute — the paired control that must
+        // stay on the seat `payload_seat` gave it.
+        delta.library_delta.insert(P0, -1);
+        delta
+    };
+    let offer_at = |life: Vec<(PlayerId, i64)>, charge: i64| {
+        shortcut_offer_of(&preview_offer_with_points(
+            IterationCount::Fixed(3),
+            4,
+            Some(period(life)),
+            vec![player_targets_point(0, &seats)],
+            vec![(preview_slot(0), charge)],
+        ))
+    };
+    let life_entries = |element: &InteractionShortcutPreview| {
+        let mut published: Vec<(Option<u8>, i32)> = element
+            .entries
+            .iter()
+            .filter(|entry| entry.family == InteractionShortcutPreviewFamily::Life)
+            .map(|entry| (entry.player, entry.amount))
+            .collect();
+        published.sort_unstable();
+        published
+    };
+
+    // ── THE CHARGE RESOLVES: rate 3, one matching seat, three announced candidates.
+    let rate = 3i64;
+    let spread = offer_at(vec![(P1, -rate)], rate);
+    assert!(
+        spread
+            .preview
+            .iter()
+            .any(|element| element.allocation.len() > 1),
+        "reach-guard: some element must allocate over MORE THAN ONE candidate, or a \
+         seat-per-part claim is satisfied by a one-part split"
+    );
+    assert!(
+        spread.preview.iter().any(|element| {
+            u32::try_from(element.allocation.len())
+                .is_ok_and(|parts| parts > 0 && element.count % parts != 0)
+        }),
+        "reach-guard: some element's count must NOT divide its part count, or a split that \
+         dropped its remainder still totals correctly"
+    );
+    assert!(
+        spread.preview.len() > 1,
+        "reach-guard: more than one count must be published, or a producer that ignores \
+         `count` entirely passes"
+    );
+    for element in &spread.preview {
+        let mut expected: Vec<(Option<u8>, i32)> = seats
+            .iter()
+            .zip(element.allocation.iter())
+            .map(|(seat, assignment)| {
+                (
+                    Some(seat.0),
+                    i32::try_from(-rate * i64::from(assignment.amount)).unwrap(),
+                )
+            })
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(
+            life_entries(element),
+            expected,
+            "CR 704.5a: each allocated candidate is charged the rate times ITS OWN share of \
+             count {}",
+            element.count
+        );
+        assert_eq!(
+            life_entries(element)
+                .iter()
+                .map(|(_, amount)| i64::from(*amount))
+                .sum::<i64>(),
+            -rate * i64::from(element.count),
+            "the split is exact: the seats together absorb the whole count"
+        );
+        assert!(
+            element.entries.contains(&preview_entry(
+                InteractionShortcutPreviewFamily::Mill,
+                Some(P0.0),
+                i32::try_from(-i64::from(element.count)).unwrap(),
+            )),
+            "PAIRED CONTROL: an axis the slot charge does not attribute keeps its own seat \
+             and its own unscaled magnitude: {:?}",
+            element.entries
+        );
+    }
+
+    // ── HOSTILE: the charged magnitude is matched by TWO seats, so it names none of them.
+    let ambiguous = offer_at(vec![(P1, -1), (PlayerId(2), -1)], 1);
+    for element in &ambiguous.preview {
+        assert!(
+            !element.allocation.is_empty(),
+            "the declaration is still published — the allocation is its shape, not a \
+             magnitude claim"
+        );
+        assert_eq!(
+            life_entries(element),
+            vec![
+                (Some(P1.0), -i32::try_from(element.count).unwrap()),
+                (Some(PlayerId(2).0), -i32::try_from(element.count).unwrap()),
+            ],
+            "an ambiguous charge is refused, so the entries are the raw per-seat fold and no \
+             third seat appears"
+        );
+    }
+
+    // ── HOSTILE: the charged magnitude is not positive, so it charges nothing.
+    let gaining = offer_at(vec![(P0, 2)], -2);
+    for element in &gaining.preview {
+        assert!(!element.allocation.is_empty());
+        assert_eq!(
+            life_entries(element),
+            vec![(Some(P0.0), 2 * i32::try_from(element.count).unwrap())],
+            "a non-positive charge is refused, so a life GAIN is never spread over the \
+             announced candidates"
+        );
     }
 }
 

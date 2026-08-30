@@ -4654,6 +4654,246 @@ fn t2_reach_guard_a_same_seat_schedule_shape_already_commits_its_whole_count() {
     }
 }
 
+/// **The count-keyed preview on the real 4p board** — the published sample states this offer's
+/// own count window, splits each count over the three announced player candidates, and charges
+/// each candidate its own share of the drain.
+///
+/// This board is the one that gives the split cardinality: `delta.life` names ONE seat and the
+/// per-cycle rate is 1, but the announced `Targets` point publishes THREE player candidates, so
+/// a multi-seat allocation is real here and an implementation keyed on the life map alone
+/// cannot produce it. The candidate ids also sit on the THIRD published point, so an
+/// implementation keyed on `points[0]` mints the wrong namespace.
+///
+/// # Discrimination
+///
+/// Fold with no split ⇒ (a) publishes ONE life seat where the allocation names three; keep the
+/// split but drop the remainder distribution ⇒ (c) is short on the elements whose count the
+/// candidates do not divide, while (a) at the suggested count still passes; publish the
+/// suggested count's magnitudes on every element ⇒ (c) fails on the second published count;
+/// re-attribute the looper's library axis too ⇒ (b) fails.
+#[test]
+fn the_f4_offer_splits_each_published_count_over_its_announced_candidates() {
+    use engine::game::interaction::{bind_interaction_authority, derive_viewer_interaction};
+    use engine::game::visibility::filter_state_for_viewer;
+    use engine::types::interaction::{
+        InteractionOpportunityResponse, InteractionResponseSpec, InteractionSessionId,
+        InteractionShortcutCountSpec, InteractionShortcutPointKind, InteractionShortcutPreview,
+        InteractionShortcutPreviewFamily,
+    };
+
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, certificate, schema) = offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+
+    // ── The announced slot and its candidate seats, read off the SCHEMA — the same "first
+    //    `Targets` point" the producer keys the allocation on.
+    let (charged_slot, seats) = schema
+        .points
+        .iter()
+        .find_map(|point| match &point.kind {
+            DecisionPointKind::Targets { legal_targets, .. } => Some((
+                point.slot.clone(),
+                legal_targets
+                    .iter()
+                    .map(|target| match target {
+                        TargetRef::Player(seat) => Some(*seat),
+                        TargetRef::Object(_) => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .expect("this board announces player targets"),
+            )),
+            _ => None,
+        })
+        .expect("the F4 offer announces a Targets point");
+    let rate = per_cycle
+        .victim_slot
+        .iter()
+        .find(|(slot, _)| *slot == charged_slot)
+        .map(|(_, magnitude)| *magnitude)
+        .expect("the period charges the announced slot");
+    assert!(
+        rate > 0 && seats.len() > 1,
+        "reach-guard: a positive charge over MORE THAN ONE announced candidate is what makes a \
+         per-seat split observable at all; rate={rate} seats={seats:?}"
+    );
+    assert_eq!(
+        per_cycle.delta.life.len(),
+        1,
+        "reach-guard: this board's life map names ONE seat, so a per-seat split published here \
+         cannot have been read off the life map; got {:?}",
+        per_cycle.delta.life
+    );
+    assert!(
+        !per_cycle.delta.library_delta.is_empty(),
+        "reach-guard: the unattributed seat-keyed control axis must be fed, or (b) below is \
+         vacuous; got {:?}",
+        per_cycle.delta
+    );
+
+    let mut probe = state.clone();
+    bind_interaction_authority(
+        &mut probe,
+        InteractionSessionId("f4-count-keyed-preview".to_string()),
+    )
+    .expect("bind the interaction authority over the live offer");
+    let filtered = filter_state_for_viewer(&probe, proposer);
+    let view = derive_viewer_interaction(&probe, &filtered, proposer);
+    let InteractionOpportunityResponse::Schema {
+        spec:
+            InteractionResponseSpec::Shortcut {
+                count,
+                points,
+                preview,
+                ..
+            },
+        ..
+    } = &view
+        .opportunities
+        .first()
+        .expect("the live offer publishes an interaction opportunity")
+        .response
+    else {
+        panic!("the live offer publishes a Shortcut response schema");
+    };
+    let InteractionShortcutCountSpec::Fixed {
+        min,
+        max,
+        suggested,
+    } = count
+    else {
+        panic!("a bounded offer publishes a Fixed count window, got {count:?}");
+    };
+    let candidate_ids = points
+        .iter()
+        .find(|point| point.kind == InteractionShortcutPointKind::Targets)
+        .map(|point| point.candidate_ids.clone())
+        .expect("the offer publishes its announced Targets point");
+
+    // ── THE COUNT AXIS: the window's own endpoints are always stated.
+    let published: Vec<u32> = preview.iter().map(|element| element.count).collect();
+    for endpoint in [*min, *suggested, *max] {
+        assert!(
+            published.contains(&endpoint),
+            "CR 732.2a: the window's own {endpoint} must be published; got {published:?}"
+        );
+    }
+
+    // ── REACH-GUARDS on the published list, before any magnitude is read.
+    assert!(
+        published.len() > 1,
+        "reach-guard: more than one count must be published, or a producer that ignores \
+         `count` passes every leg below; got {published:?}"
+    );
+    assert!(
+        preview.iter().any(|element| {
+            u32::try_from(element.allocation.len())
+                .is_ok_and(|parts| parts > 0 && element.count % parts != 0)
+        }),
+        "reach-guard: some published count must NOT divide its part count, or a split that \
+         drops its remainder still totals correctly"
+    );
+    assert!(
+        preview.iter().any(|element| element
+            .allocation
+            .iter()
+            .map(|assignment| &assignment.choice_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            > 1),
+        "reach-guard: some element must allocate over more than one candidate — the count-1 \
+         element necessarily names exactly one"
+    );
+
+    let life_of = |element: &InteractionShortcutPreview| {
+        let mut entries: Vec<(Option<u8>, i32)> = element
+            .entries
+            .iter()
+            .filter(|entry| entry.family == InteractionShortcutPreviewFamily::Life)
+            .map(|entry| (entry.player, entry.amount))
+            .collect();
+        entries.sort_unstable();
+        entries
+    };
+
+    for element in preview {
+        // ── THE SPLIT: one part per announced candidate, truncated by the count, ids taken
+        //    from the point's own published order.
+        let parts = usize::try_from(element.count)
+            .expect("a published count fits usize")
+            .min(candidate_ids.len());
+        assert_eq!(element.allocation.len(), parts);
+        assert_eq!(
+            element
+                .allocation
+                .iter()
+                .map(|assignment| assignment.choice_id.clone())
+                .collect::<Vec<_>>(),
+            candidate_ids[..parts].to_vec(),
+            "CR 601.2c: the split speaks the announced point's OWN candidate ids, in the order \
+             it published them"
+        );
+        let amounts: Vec<u32> = element
+            .allocation
+            .iter()
+            .map(|assignment| assignment.amount)
+            .collect();
+        assert!(amounts.iter().all(|amount| *amount >= 1));
+        assert!(amounts.windows(2).all(|pair| pair[0] >= pair[1]));
+        assert_eq!(amounts.iter().sum::<u32>(), element.count);
+
+        // ── (a) THE ENTRIES FOLLOW THE SPLIT: each allocated candidate at its own share.
+        let mut expected: Vec<(Option<u8>, i32)> = seats
+            .iter()
+            .zip(element.allocation.iter())
+            .map(|(seat, assignment)| {
+                (
+                    Some(seat.0),
+                    i32::try_from(-rate * i64::from(assignment.amount))
+                        .expect("a previewed magnitude fits i32"),
+                )
+            })
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(
+            life_of(element),
+            expected,
+            "CR 704.5a: at count {} the drain is charged to each announced candidate at the \
+             published rate {rate} times its own share",
+            element.count
+        );
+
+        // ── (c) TOTAL INVARIANCE: whatever the split, the seats together absorb the count.
+        assert_eq!(
+            life_of(element)
+                .iter()
+                .map(|(_, amount)| i64::from(*amount))
+                .sum::<i64>(),
+            -rate * i64::from(element.count),
+            "the published split totals the element's own count at count {}",
+            element.count
+        );
+
+        // ── (b) PAIRED CONTROL: the looper's own library axis is seat-keyed too and is NOT
+        //    victim-attributed, so it keeps its seat and its unscaled product.
+        for (seat, magnitude) in &per_cycle.delta.library_delta {
+            assert!(
+                element.entries.iter().any(|entry| {
+                    entry.family == InteractionShortcutPreviewFamily::Mill
+                        && entry.player == Some(seat.0)
+                        && i64::from(entry.amount) == magnitude * i64::from(element.count)
+                }),
+                "an axis the announced slot does not charge keeps the seat `payload_seat` gave \
+                 it and the raw count product: {:?}",
+                element.entries
+            );
+        }
+    }
+}
+
 /// **T3** — the token axis is PUBLISHED and DELIVERED, and the two are coupled.
 ///
 /// CR 111.1: a token creation is an event, so the snapshot pair the per-period signature used
@@ -4678,7 +4918,7 @@ fn t3_the_published_token_rate_is_delivered_by_the_accepted_drive() {
     use engine::game::visibility::filter_state_for_viewer;
     use engine::types::interaction::{
         InteractionOpportunityResponse, InteractionResponseSpec, InteractionSessionId,
-        InteractionShortcutPreviewFamily,
+        InteractionShortcutCountSpec, InteractionShortcutPreviewFamily,
     };
 
     let mut state = load_f4();
@@ -4720,7 +4960,7 @@ fn t3_the_published_token_rate_is_delivered_by_the_accepted_drive() {
         .first()
         .expect("the live offer publishes an interaction opportunity");
     let InteractionOpportunityResponse::Schema {
-        spec: InteractionResponseSpec::Shortcut { preview, .. },
+        spec: InteractionResponseSpec::Shortcut { count, preview, .. },
         ..
     } = &opportunity.response
     else {
@@ -4729,9 +4969,13 @@ fn t3_the_published_token_rate_is_delivered_by_the_accepted_drive() {
             opportunity.response
         );
     };
+    let InteractionShortcutCountSpec::Fixed { suggested, .. } = count else {
+        panic!("a bounded offer publishes a Fixed count window, got {count:?}");
+    };
     let preview = preview
-        .as_ref()
-        .expect("a bounded offer with a per-period signature publishes a preview");
+        .iter()
+        .find(|element| element.count == *suggested)
+        .expect("the published sample always states the offer's suggested count");
     let tokens: Vec<i32> = preview
         .entries
         .iter()

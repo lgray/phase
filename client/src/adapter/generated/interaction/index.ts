@@ -87,7 +87,28 @@ export type InteractionShortcutPreviewFamily = "mana" | "life" | "damage" | "mil
 
 export type InteractionShortcutPreviewEntry = { family: InteractionShortcutPreviewFamily, player: number | null, amount: number, };
 
-export type InteractionShortcutPreview = { count: number, entries: Array<InteractionShortcutPreviewEntry>, };
+export type InteractionShortcutPreview = { count: number, entries: Array<InteractionShortcutPreviewEntry>, 
+/**
+ * CR 732.2a + CR 601.2c: the DECLARATION's shape over this element's `count` — which
+ * announced choices the count is spread across, and how many repetitions each takes.
+ * It is not a magnitude claim about any axis.
+ *
+ * The `choice_id`s are the offer's own published candidate ids, taken from the first
+ * `Targets` point in published order; the amounts are the canonical even split of
+ * `count`, remainder on the earliest ids, so they sum to `count` exactly. Empty exactly
+ * when the offer publishes no `Targets` point holding at least one candidate.
+ *
+ * CR 704.5a: `entries` follow this allocation ONLY when the offer's charged slot names
+ * exactly one seat at a positive magnitude — the per-seat life magnitudes are then this
+ * split multiplied by that rate. On every other offer a non-empty allocation still ships
+ * beside entries folded from the raw period, because the allocation states the
+ * declaration and the entries state what the engine can attribute.
+ *
+ * The magnitudes are this declaration's arithmetic. On a drive whose first cycle resolves
+ * a target announced before the drive begins, the realized split is shifted one cycle at
+ * each boundary while the total stays exact.
+ */
+allocation?: Array<AmountAssignment>, };
 
 export type InteractionShortcutPointKind = "targets" | "convokeTaps" | "mode" | "mayChoice" | "unlessBreak" | "manaColor";
 
@@ -99,7 +120,7 @@ export type InteractionShortcutDecision = { "type": "decline" } | { "type": "acc
 
 export type InteractionShortcutReply = { "type": "accept" } | { "type": "shorten", "data": { atIteration: number, } };
 
-export type InteractionResponseSpec = { "type": "select", "data": { constraint: SelectionConstraint, confirm: ConfirmSemantics, } } | { "type": "assignAmounts", "data": { minTotal: number, maxTotal: number, exactTotal: number | null, } } | { "type": "assignDamage", "data": { total: number, modes: Array<InteractionDamageAssignmentMode>, confirm: ConfirmSemantics, } } | { "type": "sequence", "data": { min: number, max: number, unique: boolean, includeAll: boolean, engineValidated: boolean, escape: InteractionChoiceId | null, confirm: ConfirmSemantics, } } | { "type": "groupedSequence", "data": { groups: Array<InteractionGroupConstraint>, unique: boolean, confirm: ConfirmSemantics, } } | { "type": "manaGroups", "data": { groups: Array<InteractionGroupConstraint>, maxBatch: number, escape: InteractionChoiceId | null, confirm: ConfirmSemantics, } } | { "type": "text", "data": { allowArbitrary: boolean, maxLen: number, confirm: ConfirmSemantics, } } | { "type": "deckPartition", "data": { minMainTotal: number, maxMainTotal: number, confirm: ConfirmSemantics, } } | { "type": "relations", "data": { edges: Array<InteractionRelationConstraint>, min: number, max: number, sourceConstraint: InteractionRelationSourceConstraint, allowGroups: boolean, confirm: ConfirmSemantics, } } | { "type": "number", "data": { min: number, max: number, confirm: ConfirmSemantics, } } | { "type": "shortcut", "data": { count: InteractionShortcutCountSpec, points: Array<InteractionShortcutPoint>, allowDecline: boolean, preview: InteractionShortcutPreview | null, confirm: ConfirmSemantics, } } | { "type": "shortcutReply", "data": { minIteration: number, maxIteration: number, confirm: ConfirmSemantics, } };
+export type InteractionResponseSpec = { "type": "select", "data": { constraint: SelectionConstraint, confirm: ConfirmSemantics, } } | { "type": "assignAmounts", "data": { minTotal: number, maxTotal: number, exactTotal: number | null, } } | { "type": "assignDamage", "data": { total: number, modes: Array<InteractionDamageAssignmentMode>, confirm: ConfirmSemantics, } } | { "type": "sequence", "data": { min: number, max: number, unique: boolean, includeAll: boolean, engineValidated: boolean, escape: InteractionChoiceId | null, confirm: ConfirmSemantics, } } | { "type": "groupedSequence", "data": { groups: Array<InteractionGroupConstraint>, unique: boolean, confirm: ConfirmSemantics, } } | { "type": "manaGroups", "data": { groups: Array<InteractionGroupConstraint>, maxBatch: number, escape: InteractionChoiceId | null, confirm: ConfirmSemantics, } } | { "type": "text", "data": { allowArbitrary: boolean, maxLen: number, confirm: ConfirmSemantics, } } | { "type": "deckPartition", "data": { minMainTotal: number, maxMainTotal: number, confirm: ConfirmSemantics, } } | { "type": "relations", "data": { edges: Array<InteractionRelationConstraint>, min: number, max: number, sourceConstraint: InteractionRelationSourceConstraint, allowGroups: boolean, confirm: ConfirmSemantics, } } | { "type": "number", "data": { min: number, max: number, confirm: ConfirmSemantics, } } | { "type": "shortcut", "data": { count: InteractionShortcutCountSpec, points: Array<InteractionShortcutPoint>, allowDecline: boolean, preview?: Array<InteractionShortcutPreview>, confirm: ConfirmSemantics, } } | { "type": "shortcutReply", "data": { minIteration: number, maxIteration: number, confirm: ConfirmSemantics, } };
 
 export type InteractionOpportunityResponse = { "type": "exactChoices", "data": { choices: Array<InteractionChoice>, } } | { "type": "schema", "data": { spec: InteractionResponseSpec, candidates: Array<InteractionChoice>, } };
 

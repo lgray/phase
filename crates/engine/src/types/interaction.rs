@@ -12,6 +12,15 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_INTERACTION_LIST_LEN: usize = 10_000;
 
+/// CR 732.2a: the most count-axis elements one loop-shortcut offer publishes magnitudes for.
+///
+/// Two grounds, both bounds rather than preferences. It must be at least 3, because the
+/// published sample always carries the count window's own `min`, `suggested` and `max`. And it
+/// must stay small, because every element is charged to the outbound ceiling — once for the
+/// element and once more for each of its entry and allocation lists — and a count axis reaching
+/// the shortcut cycle ceiling would otherwise publish thousands of them.
+pub const MAX_SHORTCUT_PREVIEW_ELEMENTS: usize = 16;
+
 macro_rules! opaque_string_id {
     ($name:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -975,8 +984,16 @@ pub enum InteractionResponseSpec {
         confirm: ConfirmSemantics,
     },
     /// CR 732.2a: the loop-shortcut declaration. `count` is the picker's window and
-    /// `preview` is what the count it states actually DOES, per axis — see
-    /// [`InteractionShortcutPreview`] for why the count travels with the magnitudes.
+    /// `preview` states what the counts inside that window actually DO, per axis — see
+    /// [`InteractionShortcutPreview`] for why each element's count travels with its
+    /// magnitudes.
+    ///
+    /// `preview` is KEYED ON COUNT: one element per count the offer states magnitudes for,
+    /// never more than one per count, and a renderer picks by exact `count` match. The engine
+    /// publishes the window's own endpoints plus a bounded interior sample
+    /// (`MAX_SHORTCUT_PREVIEW_ELEMENTS`), so a count inside the window may legitimately have
+    /// no element. The list is EMPTY when the offer states no per-period signature to multiply
+    /// or no finite count to multiply it by.
     ///
     /// The doc lives on the VARIANT rather than on `preview`: ts_rs emits field docs into
     /// the generated bindings as JSDoc but drops variant docs, and a comment block in the
@@ -985,7 +1002,8 @@ pub enum InteractionResponseSpec {
         count: InteractionShortcutCountSpec,
         points: Vec<InteractionShortcutPoint>,
         allow_decline: bool,
-        preview: Option<InteractionShortcutPreview>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        preview: Vec<InteractionShortcutPreview>,
         confirm: ConfirmSemantics,
     },
     ShortcutReply {
@@ -1067,8 +1085,8 @@ pub struct InteractionShortcutPreviewEntry {
 /// is stated for exactly this count and for no other, so a renderer can never attach these
 /// numbers to a different one. The engine multiplies; the display layer reads.
 ///
-/// Absent (`None` on the spec) when the offer states no per-period signature to multiply, or
-/// states no finite count to multiply it by.
+/// One of these per published count; the spec's list is empty when the offer states no
+/// per-period signature to multiply, or no finite count to multiply it by.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "interaction-bindings", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -1076,6 +1094,26 @@ pub struct InteractionShortcutPreviewEntry {
 pub struct InteractionShortcutPreview {
     pub count: u32,
     pub entries: Vec<InteractionShortcutPreviewEntry>,
+    /// CR 732.2a + CR 601.2c: the DECLARATION's shape over this element's `count` — which
+    /// announced choices the count is spread across, and how many repetitions each takes.
+    /// It is not a magnitude claim about any axis.
+    ///
+    /// The `choice_id`s are the offer's own published candidate ids, taken from the first
+    /// `Targets` point in published order; the amounts are the canonical even split of
+    /// `count`, remainder on the earliest ids, so they sum to `count` exactly. Empty exactly
+    /// when the offer publishes no `Targets` point holding at least one candidate.
+    ///
+    /// CR 704.5a: `entries` follow this allocation ONLY when the offer's charged slot names
+    /// exactly one seat at a positive magnitude — the per-seat life magnitudes are then this
+    /// split multiplied by that rate. On every other offer a non-empty allocation still ships
+    /// beside entries folded from the raw period, because the allocation states the
+    /// declaration and the entries state what the engine can attribute.
+    ///
+    /// The magnitudes are this declaration's arithmetic. On a drive whose first cycle resolves
+    /// a target announced before the drive begins, the realized split is shifted one cycle at
+    /// each boundary while the total stays exact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allocation: Vec<AmountAssignment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -54,7 +54,7 @@ use crate::types::interaction::{
     InteractionShortcutPreviewFamily, InteractionShortcutReply, InteractionShortcutResponseCode,
     InteractionSlotKind, InteractionSubmission, InteractionSummaryCode, InteractionWaitingForCode,
     InteractionWaitingForKind, InteractionZoneCode, SelectionConstraint, SimultaneousDecisionKind,
-    ViewerInteraction, MAX_INTERACTION_LIST_LEN,
+    ViewerInteraction, MAX_INTERACTION_LIST_LEN, MAX_SHORTCUT_PREVIEW_ELEMENTS,
 };
 use crate::types::mana::{
     AbilityActivationScope, ManaColor, ManaCost, ManaRestriction, ManaSourceSelection, ManaType,
@@ -1204,7 +1204,11 @@ struct LoopShortcutPointProjection {
 #[derive(Debug, Clone)]
 struct LoopShortcutProjection {
     count: InteractionShortcutCountSpec,
-    preview: Option<InteractionShortcutPreview>,
+    /// CR 732.2a: the certificate's measured per-period signature, carried UNMULTIPLIED.
+    /// The count-keyed magnitudes are minted downstream by `loop_shortcut_preview`, which
+    /// needs the offer's interaction id to speak the published candidate ids — a binding
+    /// this projection's own parameter list is pinned against holding.
+    per_cycle: Option<crate::analysis::resource::PeriodicDelta>,
     points: Vec<LoopShortcutPointProjection>,
     candidates: Vec<LoopShortcutCandidateValue>,
 }
@@ -2549,6 +2553,25 @@ fn preview_family(family: UnboundedFamily) -> InteractionShortcutPreviewFamily {
     }
 }
 
+/// The single site at which a resource axis becomes a published preview key.
+///
+/// Both halves are `derived_views`' decisions, not this layer's: `family_of` owns the
+/// grouping and `payload_seat` owns the seat. The seat in particular is NOT keyed from the
+/// proposer — a drain's magnitude belongs to the player LOSING the life — and sharing the
+/// authority with `attribution_player` is what keeps the offer from attributing a seat the
+/// HUD badge does not.
+///
+/// Named because the per-cycle fold and the victim re-attribution both derive it; spelling a
+/// family literally at either site is how the two authorities drift apart.
+fn preview_key(
+    axis: crate::analysis::resource::ResourceAxis,
+) -> (InteractionShortcutPreviewFamily, Option<u8>) {
+    (
+        preview_family(family_of(axis)),
+        payload_seat(axis).map(|player| player.0),
+    )
+}
+
 /// CR 732.2a: the finished magnitude of repeating `count` cycles of a measured per-period
 /// delta — "the predictable results of the sequence of choices", stated per display family
 /// and per affected seat.
@@ -2573,33 +2596,284 @@ fn preview_family(family: UnboundedFamily) -> InteractionShortcutPreviewFamily {
 fn shortcut_preview_entries(
     delta: &crate::analysis::resource::ResourceVector,
     count: u32,
+    victim: Option<&VictimSplit>,
 ) -> Vec<InteractionShortcutPreviewEntry> {
+    let charged_axis =
+        victim.map(|split| crate::analysis::resource::ResourceAxis::Life(split.charged_seat));
     let mut per_cycle_totals: BTreeMap<(InteractionShortcutPreviewFamily, Option<u8>), i64> =
         BTreeMap::new();
     for (axis, magnitude) in delta.axis_components() {
-        // Both halves of the key are `derived_views`' decisions, not this layer's: `family_of`
-        // owns the grouping and `payload_seat` owns the seat. The seat in particular is NOT
-        // keyed from the proposer — a drain's magnitude belongs to the player LOSING the life
-        // — and sharing the authority with `attribution_player` is what keeps the offer from
-        // attributing a seat the HUD badge does not.
-        let key = (
-            preview_family(family_of(axis)),
-            payload_seat(axis).map(|player| player.0),
-        );
-        let total = per_cycle_totals.entry(key).or_insert(0);
+        // The charged seat's life is re-added below, spread across the seats the declaration
+        // allocates the count to. Folding it here as well would state it twice.
+        if Some(axis) == charged_axis {
+            continue;
+        }
+        let total = per_cycle_totals.entry(preview_key(axis)).or_insert(0);
         *total = total.saturating_add(magnitude);
     }
-    per_cycle_totals
+    let mut totals: BTreeMap<(InteractionShortcutPreviewFamily, Option<u8>), i64> =
+        per_cycle_totals
+            .into_iter()
+            .map(|(key, per_cycle)| (key, per_cycle.saturating_mul(i64::from(count))))
+            .collect();
+    // CR 704.5a: the announced slot charges a LIFE magnitude, so the re-attribution moves the
+    // `Life` family and nothing else. `DamageDealt`, `LibraryDelta` and `Poison` are seat-keyed
+    // by `payload_seat` too, and keep the seat it gave them.
+    if let Some(split) = victim {
+        for (seat, cycles) in &split.cycles {
+            let key = preview_key(crate::analysis::resource::ResourceAxis::Life(*seat));
+            let total = totals.entry(key).or_insert(0);
+            *total = total.saturating_sub(split.rate.saturating_mul(i64::from(*cycles)));
+        }
+    }
+    totals
         .into_iter()
-        .filter_map(|((family, player), per_cycle)| {
+        .filter_map(|((family, player), amount)| {
             // Families that cancel to zero across their axes (a cycle that gains and spends
             // the same mana) state nothing and are dropped rather than shown as `0`.
-            let amount = per_cycle.saturating_mul(i64::from(count));
             (amount != 0).then_some(InteractionShortcutPreviewEntry {
                 family,
                 player,
                 amount: amount.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
             })
+        })
+        .collect()
+}
+
+/// CR 732.2a: the counts one offer publishes magnitudes for — a bounded sample of the
+/// picker's own window, not the whole window.
+///
+/// The window's three stated axes (`min`, `suggested`, `max`) are always in the sample, so
+/// the count the picker opens on always has an element and both endpoints are readable. The
+/// interior is thinned by a stride wide enough that the whole sample fits under
+/// `MAX_SHORTCUT_PREVIEW_ELEMENTS`; the length guard, not the stride, is what enforces the cap.
+///
+/// `k` starts at 1 rather than 0 deliberately: at 0 the loop regenerates `min` itself, and the
+/// explicit `min` seed would then be unfalsifiable.
+///
+/// The exhaustive match is also the offer's single finite-count gate — `UntilLethal` names no
+/// number to multiply a period by, so it yields no sample and the caller publishes nothing.
+fn shortcut_preview_counts(count: &InteractionShortcutCountSpec) -> Vec<u32> {
+    match count {
+        InteractionShortcutCountSpec::UntilLethal => Vec::new(),
+        InteractionShortcutCountSpec::Fixed {
+            min,
+            max,
+            suggested,
+        } => {
+            let mut counts: std::collections::BTreeSet<u32> =
+                [*min, *suggested, *max].into_iter().collect();
+            let stride = u32::try_from(
+                usize::try_from(max.saturating_sub(*min))
+                    .unwrap_or(usize::MAX)
+                    .div_ceil(MAX_SHORTCUT_PREVIEW_ELEMENTS)
+                    .max(1),
+            )
+            .unwrap_or(u32::MAX);
+            let mut step = 1u32;
+            while counts.len() < MAX_SHORTCUT_PREVIEW_ELEMENTS {
+                let Some(next) = stride
+                    .checked_mul(step)
+                    .and_then(|offset| min.checked_add(offset))
+                    .filter(|next| next < max)
+                else {
+                    break;
+                };
+                counts.insert(next);
+                step += 1;
+            }
+            counts.into_iter().collect()
+        }
+    }
+}
+
+/// CR 732.2a + CR 601.2c: the even split of one element's `count` over the announced choices
+/// the declaration names, remainder on the EARLIEST ids so the amounts are non-increasing.
+///
+/// Empty ids or a zero count return before any division — the first because a `Targets` point
+/// with no candidates is an admitted offer shape, the second because dividing by nothing is
+/// not a split. Truncating to `count` when the candidates outnumber it is load-bearing: an
+/// untruncated split mints a zero segment, and a zero segment names a cycle no seat absorbs.
+fn canonical_allocation(ids: &[InteractionChoiceId], count: u32) -> Vec<AmountAssignment> {
+    if ids.is_empty() || count == 0 {
+        return Vec::new();
+    }
+    let parts = u32::try_from(ids.len()).unwrap_or(u32::MAX).min(count);
+    let base = count / parts;
+    let remainder = count % parts;
+    ids.iter()
+        .take(usize::try_from(parts).unwrap_or(usize::MAX))
+        .enumerate()
+        .map(|(index, choice_id)| AmountAssignment {
+            choice_id: choice_id.clone(),
+            amount: if u32::try_from(index).is_ok_and(|index| index < remainder) {
+                base + 1
+            } else {
+                base
+            },
+        })
+        .collect()
+}
+
+/// CR 704.5a: the life magnitude one repetition charges through an announced slot, and the
+/// single seat that magnitude currently lands on.
+#[derive(Debug, Clone, Copy)]
+struct VictimCharge {
+    rate: i64,
+    seat: PlayerId,
+}
+
+/// CR 704.5a: what the period charges through THIS announced slot, or `None` when the period
+/// does not say.
+///
+/// Deliberately NOT `analysis::resource::slot_charged_life`, which answers a different
+/// question — what TOTAL is liftable, largest loss first, refusing a tie. On a period whose
+/// slot charge is 1 while the looper separately loses 3, largest-first names the looper. This
+/// identifies the seat BY THE MAGNITUDE the slot publishes, and refuses outright when that
+/// magnitude does not name exactly one seat.
+///
+/// Three refusals, all fail-closed: no entry for the slot, a magnitude that is not positive,
+/// and a magnitude matched by zero or by several seats.
+fn victim_charge(
+    periodic: &crate::analysis::resource::PeriodicDelta,
+    point: &LoopShortcutPointProjection,
+) -> Option<VictimCharge> {
+    let rate = periodic
+        .victim_slot
+        .iter()
+        .find(|(slot, _)| *slot == point.slot)
+        .map(|(_, magnitude)| *magnitude)
+        .filter(|magnitude| *magnitude > 0)?;
+    let mut matching = periodic
+        .delta
+        .life
+        .iter()
+        .filter(|(_, magnitude)| **magnitude == -rate)
+        .map(|(seat, _)| *seat);
+    let seat = matching.next()?;
+    matching
+        .next()
+        .is_none()
+        .then_some(VictimCharge { rate, seat })
+}
+
+/// CR 704.5a: how one element's count spreads the charged life magnitude over the seats the
+/// declaration allocates it to.
+///
+/// `cycles` is never empty — the one constructor filters that case away — so "a split with no
+/// parts" is unrepresentable rather than a case the fold has to remember.
+#[derive(Debug, Clone)]
+struct VictimSplit {
+    rate: i64,
+    charged_seat: PlayerId,
+    cycles: Vec<(PlayerId, u32)>,
+}
+
+impl VictimSplit {
+    /// The seats are paired against the allocation's amounts by `zip`, so the split is
+    /// confined to the allocation's own length by the combinator's semantics.
+    fn new(
+        charge: &VictimCharge,
+        seats: &[PlayerId],
+        allocation: &[AmountAssignment],
+    ) -> Option<Self> {
+        Some(Self {
+            rate: charge.rate,
+            charged_seat: charge.seat,
+            cycles: seats
+                .iter()
+                .copied()
+                .zip(allocation.iter().map(|assignment| assignment.amount))
+                .collect(),
+        })
+        .filter(|split| !split.cycles.is_empty())
+    }
+}
+
+/// CR 601.2c: the announced-target point the allocation is stated over — the FIRST one in
+/// published order.
+///
+/// "First" rather than "the": nothing forbids an offer publishing two `Targets` points, and
+/// a per-point allocation carrier is a separate design. A candidate-less first point is NOT
+/// skipped to reach a later one either — skipping would silently move the domain to a second
+/// point, which is worse than publishing no allocation at all.
+fn allocation_point(projection: &LoopShortcutProjection) -> Option<&LoopShortcutPointProjection> {
+    projection
+        .points
+        .iter()
+        .find(|point| point.kind == InteractionShortcutPointKind::Targets)
+}
+
+/// CR 704.5a: the seats a point's candidates name, in published order, or `None` when any
+/// candidate is not a player.
+///
+/// Exhaustive over the candidate kinds so a new one must decide for itself rather than being
+/// silently admitted as a life-bearing seat.
+fn allocated_seats(
+    projection: &LoopShortcutProjection,
+    point: &LoopShortcutPointProjection,
+) -> Option<Vec<PlayerId>> {
+    point
+        .candidate_indices
+        .iter()
+        .map(|index| match projection.candidates.get(*index)? {
+            LoopShortcutCandidateValue::Target(TargetRef::Player(seat)) => Some(*seat),
+            LoopShortcutCandidateValue::Target(TargetRef::Object(_))
+            | LoopShortcutCandidateValue::ConvokeObject(_)
+            | LoopShortcutCandidateValue::Mode(_)
+            | LoopShortcutCandidateValue::May(_)
+            | LoopShortcutCandidateValue::Unless(_)
+            | LoopShortcutCandidateValue::ManaColor(_) => None,
+        })
+        .collect()
+}
+
+/// CR 732.2a: what each sampled count actually DOES, published as one element per count.
+///
+/// Three things have to hold before there is anything to state, and all three are the offer's
+/// own: a measured per-period signature, a finite count window, and a period that states
+/// something at all (a period netting to nothing on every family publishes no element at any
+/// count, because `amount` is the period times the count).
+///
+/// The allocation's ids are minted here, through the same `interaction_choice_id` call
+/// `loop_shortcut_points` uses, so an element's `choice_id`s and the point's `candidate_ids`
+/// are the same strings by construction rather than by agreement.
+fn loop_shortcut_preview(
+    interaction_id: &InteractionId,
+    projection: &LoopShortcutProjection,
+) -> Vec<InteractionShortcutPreview> {
+    let Some(periodic) = projection.per_cycle.as_ref() else {
+        return Vec::new();
+    };
+    let counts = shortcut_preview_counts(&projection.count);
+    if counts.is_empty() || shortcut_preview_entries(&periodic.delta, 1, None).is_empty() {
+        return Vec::new();
+    }
+    let point = allocation_point(projection);
+    let ids: Vec<InteractionChoiceId> = point
+        .map(|point| {
+            point
+                .candidate_indices
+                .iter()
+                .map(|index| interaction_choice_id(interaction_id, 'k', *index))
+                .collect()
+        })
+        .unwrap_or_default();
+    let charge = point.and_then(|point| victim_charge(periodic, point));
+    let seats = point.and_then(|point| allocated_seats(projection, point));
+    counts
+        .into_iter()
+        .map(|count| {
+            let allocation = canonical_allocation(&ids, count);
+            let split = charge
+                .as_ref()
+                .zip(seats.as_deref())
+                .and_then(|(charge, seats)| VictimSplit::new(charge, seats, &allocation));
+            InteractionShortcutPreview {
+                count,
+                entries: shortcut_preview_entries(&periodic.delta, count, split.as_ref()),
+                allocation,
+            }
         })
         .collect()
 }
@@ -2693,35 +2967,14 @@ fn loop_shortcut_projection(
             InteractionShortcutCountSpec::UntilLethal
         }
     };
-    // CR 732.2a: state what the offer's own count DOES, so the picker's number carries its
-    // consequence instead of standing alone. Two authorities have to agree before there is
-    // anything to state, and both are the offer's own:
-    //
-    //   * `per_cycle` — published only by the producer that measured a per-period signature
-    //     (`certified_bounded_cycle_offer`). Every other mint carries `None`, and so does
-    //     every save written before the field existed.
-    //   * a FINITE count — `UntilLethal` names no number to multiply by. It is the
-    //     determinate-drain mode, where the count is the drain's own arithmetic, not a
-    //     player's choice.
-    //
-    // Those two coincide by construction rather than by luck: the bounded producer is the
-    // one that both narrows `max_iterations` and mints `Fixed(max_iterations)`, so a preview
-    // exists exactly on the offers whose count is worth picking.
-    //
-    // `suggested` is the stated count, and the ONLY count these magnitudes describe — which
-    // is why it travels with them in `InteractionShortcutPreview.count` rather than being
-    // left for a renderer to assume.
-    let preview = match (&count, &certificate.per_cycle) {
-        (InteractionShortcutCountSpec::Fixed { suggested, .. }, Some(periodic)) => {
-            let entries = shortcut_preview_entries(&periodic.delta, *suggested);
-            (!entries.is_empty()).then_some(InteractionShortcutPreview {
-                count: *suggested,
-                entries,
-            })
-        }
-        (InteractionShortcutCountSpec::Fixed { .. }, None)
-        | (InteractionShortcutCountSpec::UntilLethal, _) => None,
-    };
+    // CR 732.2a: carry the measured per-period signature forward so the picker's numbers can
+    // state their consequence instead of standing alone. It is published only by the producer
+    // that measured one (`certified_bounded_cycle_offer`); every other mint carries `None`, as
+    // does every save written before the field existed. The other authority the magnitudes
+    // need — a FINITE count — is `count` above, and the two coincide by construction rather
+    // than by luck: the bounded producer both narrows `max_iterations` and mints
+    // `Fixed(max_iterations)`.
+    let per_cycle = certificate.per_cycle.clone();
     let mut candidates = Vec::new();
     let mut points = Vec::with_capacity(schema.points.len());
     for point in &schema.points {
@@ -2875,7 +3128,7 @@ fn loop_shortcut_projection(
     }
     Ok(LoopShortcutProjection {
         count,
-        preview,
+        per_cycle,
         points,
         candidates,
     })
@@ -7266,6 +7519,9 @@ fn opportunity_for_slot(
             let candidates =
                 loop_shortcut_choices(&slot.interaction_id, &projection, filtered_state);
             let points = loop_shortcut_points(&slot.interaction_id, &projection);
+            // AFTER the point projection, deliberately: the allocation speaks the very
+            // choice ids that loop runs over.
+            let preview = loop_shortcut_preview(&slot.interaction_id, &projection);
             let pin_minimum = projection
                 .points
                 .iter()
@@ -7286,7 +7542,7 @@ fn opportunity_for_slot(
                             count: projection.count,
                             points,
                             allow_decline: true,
-                            preview: projection.preview.clone(),
+                            preview,
                             confirm: ConfirmSemantics::Explicit,
                         },
                         candidates,
@@ -8313,11 +8569,13 @@ fn bound_outbound_spec(
                     budget.string(candidate_id.as_str())?;
                 }
             }
-            // The preview's entries are a published outbound list like every other
-            // list on this spec (at most one per display family per seat), so they are charged
+            // The preview is a published outbound list of lists — one element per sampled
+            // count, each carrying its own entries and allocation — so every level is charged
             // to the same ceiling rather than crossing uncounted.
-            if let Some(preview) = preview {
-                budget.list(preview.entries.len())?;
+            budget.list(preview.len())?;
+            for element in preview {
+                budget.list(element.entries.len())?;
+                budget.list(element.allocation.len())?;
             }
         }
         InteractionResponseSpec::Select { .. }
@@ -10068,27 +10326,23 @@ mod tests {
         assert!(projection.unique);
     }
 
-    /// F4 — the preview's entry list is budgeted like every other outbound list on the
-    /// shortcut spec.
+    /// F4 — the preview is budgeted like every other outbound list on the shortcut spec, at
+    /// all THREE of the levels it now has: the count-keyed element list, each element's
+    /// entries, and each element's allocation.
     ///
-    /// `bound_outbound_spec` counted `points` and each point's `candidate_ids` but not
-    /// `preview.entries`, so the one list added by the CR 732.2a preview crossed the boundary
-    /// uncounted. It is bounded small in practice (at most one entry per display family per
-    /// seat), so this is a CONSISTENCY row and not a live payload-exhaustion row — which is
-    /// why it drives the budget to its last free slot rather than building a giant preview.
+    /// Each leg is sized so that exactly ONE of the three charges is what tips the budget over,
+    /// which is what separates them: the element list against a budget that fits every entry,
+    /// and the allocation against a budget that fits the element list and every entry.
     ///
-    /// PAIRED CONTROL FIRST: the same spec at the same starting budget WITHOUT a preview must
-    /// fit. Without it, the failure below could come from the spec's other lists, or from a
-    /// budget that was already over before the preview was ever read.
+    /// WHAT WRONG IMPLEMENTATION WOULD STILL PASS THIS ROW? One that budgets these three lists
+    /// but not a future fourth added to the same spec — the row pins the fields it names, not
+    /// "every field is budgeted". One that charged any of them to the STRING budget instead
+    /// would fail here, because the controls prove the LIST budget is what moved.
     ///
-    /// WHAT WRONG IMPLEMENTATION WOULD STILL PASS THIS ROW? One that budgets the preview's
-    /// entries but not a future second list added to the same spec — the row pins the field it
-    /// names, not "every field is budgeted". One that charged the entries to the STRING budget
-    /// instead would fail here, because the control proves the LIST budget is what moved.
-    ///
-    /// REVERT-PROBE, RUN: drop the `preview` budget call ⇒ the second assertion gets `Ok`.
+    /// REVERT-PROBES: drop `budget.list(preview.len())` ⇒ the element-list leg gets `Ok`; drop
+    /// `budget.list(element.allocation.len())` ⇒ the allocation leg gets `Ok`.
     #[test]
-    fn the_shortcut_preview_entry_list_is_counted_against_the_outbound_budget() {
+    fn the_shortcut_preview_lists_are_counted_against_the_outbound_budget() {
         let spec = |preview| InteractionResponseSpec::Shortcut {
             count: InteractionShortcutCountSpec::Fixed {
                 min: 1,
@@ -10100,8 +10354,8 @@ mod tests {
             preview,
             confirm: ConfirmSemantics::Explicit,
         };
-        let preview = InteractionShortcutPreview {
-            count: 3,
+        let element = |count: u32, allocation: Vec<AmountAssignment>| InteractionShortcutPreview {
+            count,
             entries: vec![
                 InteractionShortcutPreviewEntry {
                     family: InteractionShortcutPreviewFamily::Life,
@@ -10114,25 +10368,66 @@ mod tests {
                     amount: 9,
                 },
             ],
+            allocation,
         };
-        let at_last_free_slot = || OutboundBudget {
-            entries: MAX_INTERACTION_LIST_LEN - 1,
+        let counts = || 1..=u32::try_from(MAX_SHORTCUT_PREVIEW_ELEMENTS).unwrap();
+        let plain: Vec<_> = counts().map(|count| element(count, Vec::new())).collect();
+        let allocated: Vec<_> = counts()
+            .map(|count| {
+                element(
+                    count,
+                    vec![AmountAssignment {
+                        choice_id: InteractionChoiceId("k0".to_string()),
+                        amount: count,
+                    }],
+                )
+            })
+            .collect();
+        let entry_slots: usize = plain.iter().map(|element| element.entries.len()).sum();
+        let allocation_slots: usize = allocated
+            .iter()
+            .map(|element| element.allocation.len())
+            .sum();
+        assert!(
+            allocation_slots > 0 && entry_slots > 0,
+            "reach-guard: both staged lists must actually hold entries, or the budgets derived \
+             from them below refuse for want of a list rather than for want of a charge"
+        );
+        let at_free_slots = |free: usize| OutboundBudget {
+            entries: MAX_INTERACTION_LIST_LEN - free,
             string_bytes: 0,
         };
 
-        let mut budget = at_last_free_slot();
+        // ── CONTROL FIRST: an empty preview list leaves this spec fitting in one slot, so
+        //    every refusal below is a preview charge and not the spec being oversized.
+        let mut budget = at_free_slots(1);
         assert!(
-            bound_outbound_spec(&spec(None), &mut budget).is_ok(),
-            "control: with one slot free and no preview, this spec's own lists fit — so the \
-             refusal below is the preview being counted, not the spec being oversized"
+            bound_outbound_spec(&spec(Vec::new()), &mut budget).is_ok(),
+            "control: with one slot free and no published element, this spec's own lists fit"
         );
 
-        let mut budget = at_last_free_slot();
+        // ── THE ELEMENT LIST: room for every entry, none for the elements carrying them.
+        let mut budget = at_free_slots(entry_slots);
         assert_eq!(
-            bound_outbound_spec(&spec(Some(preview)), &mut budget),
+            bound_outbound_spec(&spec(plain.clone()), &mut budget),
             Err(InteractionReasonCode::PayloadTooLarge),
-            "CR 732.2a: the preview's entries are published outbound, so they are charged to \
-             the same ceiling as every other list on the spec"
+            "CR 732.2a: the count-keyed element list is published outbound and charged, so a \
+             budget sized to its entries alone refuses it"
+        );
+
+        // ── THE ALLOCATION, against its own paired control on the same budget.
+        let mut budget = at_free_slots(plain.len() + entry_slots);
+        assert!(
+            bound_outbound_spec(&spec(plain), &mut budget).is_ok(),
+            "control: the element list and its entries fit exactly here, so the refusal below \
+             is the allocation and nothing else"
+        );
+        let mut budget = at_free_slots(allocated.len() + entry_slots);
+        assert_eq!(
+            bound_outbound_spec(&spec(allocated), &mut budget),
+            Err(InteractionReasonCode::PayloadTooLarge),
+            "CR 601.2c: each element's allocation is a third published list and is charged \
+             separately from its entries"
         );
     }
 
