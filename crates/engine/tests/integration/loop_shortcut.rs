@@ -9657,7 +9657,9 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
     // per-selected-count question, deliberately not answered here.
     //
     // REVERT-PROBE, RUN: mint this offer's count through `shortcut_iteration_count` (i.e.
-    // `UntilLethal` for a lethal drain) ⇒ `preview` is `None` ⇒ the expect below FAILS.
+    // `UntilLethal` for a lethal drain) ⇒ the offer publishes no `Fixed` window ⇒ this row
+    // dies at the `InteractionShortcutCountSpec::Fixed` destructure below, and `preview` is
+    // empty at every count.
     let suggested = i64::from(schema.max_iterations);
     let life_deltas: Vec<(PlayerId, i64)> = per_cycle
         .delta

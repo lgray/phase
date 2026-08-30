@@ -1101,14 +1101,17 @@ pub struct InteractionShortcutPreview {
     /// The `choice_id`s are the offer's own published candidate ids, taken from the first
     /// `Targets` point in published order; the amounts are the canonical even split of
     /// `count`, remainder on the earliest ids, so they sum to `count` exactly. Empty exactly
-    /// when the offer publishes no `Targets` point holding at least one candidate.
+    /// when THAT FIRST point holds no candidate. A later `Targets` point holding candidates
+    /// does not fill it: the domain is the first point or nothing, because silently moving it
+    /// to a second point would state the split over choices the reader cannot identify.
     ///
     /// CR 704.5a: `entries` follow this allocation ONLY when the slot's announced magnitude is
-    /// positive and the period's life map names exactly one losing seat that this allocation
-    /// itself announces — the per-seat life magnitudes are then this split multiplied by that
-    /// rate. On every other offer a non-empty allocation still ships
-    /// beside entries folded from the raw period, because the allocation states the
-    /// declaration and the entries state what the engine can attribute.
+    /// positive, the period's life map names exactly one losing seat that this allocation
+    /// itself announces, and that magnitude is the whole of that seat's per-period loss — the
+    /// per-seat life magnitudes are then this split multiplied by that rate, and they still
+    /// total the period. On every other offer a non-empty allocation still ships beside entries
+    /// folded from the raw period, because the allocation states the declaration and the
+    /// entries state what the engine can attribute.
     ///
     /// The magnitudes are this declaration's arithmetic. On a drive whose first cycle resolves
     /// a target announced before the drive begins, the realized split is shifted one cycle at

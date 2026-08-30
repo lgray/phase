@@ -3830,17 +3830,20 @@ fn every_published_element_states_the_canonical_split_of_its_own_count() {
     }
 }
 
-/// CR 601.2c: `allocation` is empty if and only if the offer publishes no `Targets` point
-/// HOLDING AT LEAST ONE CANDIDATE. The qualifier is the code's behaviour, not a hedge: the ids
-/// come from `candidate_indices`, and a candidate-less point mints none.
+/// CR 601.2c: `allocation` is empty if and only if the FIRST `Targets` point in published order
+/// holds no candidate. The qualifier is the code's behaviour, not a hedge: the ids come from
+/// that one point's `candidate_indices`, and a candidate-less point mints none — a later point
+/// holding candidates does not fill the gap, because moving the domain there would state the
+/// split over choices the reader cannot identify.
 ///
 /// REVERT-PROBES: key emptiness on `points.is_empty()` ⇒ the may-choice leg fails; divide before
 /// the empty-ids return in the generator ⇒ the candidate-less leg panics on a division by zero;
 /// drop BOTH the announced-seat conjunct of the charge and the split's non-empty filter ⇒ the
-/// candidate-less leg's charged `Life` entry silently disappears. That leg takes two drops
-/// because either refusal alone still holds the entry.
+/// candidate-less leg's charged `Life` entry silently disappears (that leg takes two drops
+/// because either refusal alone still holds the entry); make `allocation_point` skip a
+/// candidate-less point to reach a later one ⇒ the trailing leg publishes a split.
 #[test]
-fn the_allocation_is_empty_exactly_when_no_targets_point_holds_a_candidate() {
+fn the_allocation_is_empty_exactly_when_the_first_targets_point_holds_no_candidate() {
     // ── PAIRED POSITIVE, first: a Targets point with candidates publishes a split everywhere.
     let allocated = shortcut_offer_of(&preview_offer_with_points(
         IterationCount::Fixed(3),
@@ -3927,22 +3930,57 @@ fn the_allocation_is_empty_exactly_when_no_targets_point_holds_a_candidate() {
             element.entries
         );
     }
+
+    // ── HOSTILE, the member an unqualified "no Targets point holds a candidate" would refuse:
+    //    a candidate-less FIRST point followed by one that DOES hold candidates. A Targets
+    //    point holding a candidate exists, and the allocation is still empty.
+    let later_candidates = shortcut_offer_of(&preview_offer_with_points(
+        IterationCount::Fixed(3),
+        4,
+        Some(preview_period_delta()),
+        vec![
+            player_targets_point(0, &[]),
+            player_targets_point(1, &[P1, PlayerId(2)]),
+        ],
+        Vec::new(),
+    ));
+    assert!(
+        later_candidates
+            .points
+            .iter()
+            .filter(|point| point.kind == InteractionShortcutPointKind::Targets)
+            .any(|point| !point.candidate_ids.is_empty()),
+        "reach-guard: a Targets point holding candidates IS published, or this leg does not \
+         separate the qualified claim from the unqualified one"
+    );
+    assert!(
+        !later_candidates.preview.is_empty()
+            && later_candidates
+                .preview
+                .iter()
+                .all(|element| element.allocation.is_empty()),
+        "the domain is the FIRST Targets point or nothing: a later point's candidates do not \
+         fill an allocation the first point mints no ids for"
+    );
 }
 
 /// CR 704.5a: the published life magnitudes follow the allocation when — and only when — the
-/// announced slot charges a positive magnitude and the period's life map names exactly one
-/// losing seat that the declaration itself announces.
+/// announced slot charges a positive magnitude, the period's life map names exactly one losing
+/// seat that the declaration itself announces, and that charge is the whole of the seat's loss.
 ///
 /// The announced magnitude is an aggregate over every seat, so on any other shape it names the
-/// worst-off seat rather than this slot's victim. The refusal legs stage the shapes where the
-/// two diverge, each with its magnitude derived the way production derives it.
+/// worst-off seat rather than this slot's victim. Each refusal leg but the last derives its
+/// magnitude the way production derives it; the last stages a charge DECOUPLED from the period,
+/// which production does not emit but the type admits and `WaitingFor` carries across the
+/// persistence boundary.
 ///
 /// REVERT-PROBES: fold with no split at all ⇒ the positive leg publishes one `Life` seat where
 /// the allocation names three; take the FIRST losing seat instead of requiring exactly one ⇒
 /// the two-loser legs re-attribute the worst-off seat; drop the announced-seat requirement ⇒
 /// the unannounced-loser leg erases that seat and charges three seats that lose nothing; drop
-/// the positivity keep ⇒ the negative-magnitude leg spreads a GAIN across the allocated
-/// seats.
+/// the positivity keep ⇒ the negative-magnitude leg spreads a GAIN across the allocated seats;
+/// drop the equality with the losing seat's own loss ⇒ the undercharge leg's `Life` magnitudes
+/// total the charge times the count where the period takes three times that.
 #[test]
 fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positive_charge() {
     let seats = [P1, PlayerId(2), PlayerId(3)];
@@ -4139,6 +4177,53 @@ fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positiv
             ],
             "a non-positive charge is refused, so a life GAIN is never spread over the \
              announced candidates"
+        );
+    }
+
+    // ── HOSTILE: positive, exactly one losing seat, and that seat announced — every conjunct
+    //    above holds — but the charge is SMALLER than the seat's own per-period loss. The fold
+    //    re-states the charged seat by dropping its whole `Life` axis and re-adding the charge
+    //    once per allocated cycle, so a split here publishes a shallower drain than the count
+    //    actually runs.
+    let seat_loss = 3i64;
+    let undercharge = 1i64;
+    let coupled = offer_at(vec![(P1, -seat_loss)], seat_loss);
+    assert!(
+        coupled.preview.iter().any(|element| {
+            element
+                .entries
+                .iter()
+                .filter(|entry| entry.family == InteractionShortcutPreviewFamily::Life)
+                .count()
+                > 1
+        }),
+        "PAIRED CONTROL: the SAME life map charged its own loss DOES spread over several \
+         seats, so the refusal below is the charge's doing and not an unreachable arm"
+    );
+    let shallow = offer_at(vec![(P1, -seat_loss)], undercharge);
+    for element in &shallow.preview {
+        assert!(
+            !element.allocation.is_empty(),
+            "the declaration is still published — the allocation is its shape, not a \
+             magnitude claim"
+        );
+        assert_eq!(
+            life_entries(element),
+            vec![(
+                Some(P1.0),
+                -i32::try_from(seat_loss * i64::from(element.count)).unwrap()
+            )],
+            "an undercharge is refused, so the only losing seat keeps its whole per-period loss"
+        );
+        assert_eq!(
+            life_entries(element)
+                .iter()
+                .map(|(_, amount)| i64::from(*amount))
+                .sum::<i64>(),
+            -seat_loss * i64::from(element.count),
+            "CR 704.5a: the published life magnitudes total the period the count runs — a \
+             split at the announced charge states {undercharge} per cycle where the period \
+             takes {seat_loss}"
         );
     }
 }

@@ -2738,9 +2738,18 @@ struct VictimCharge {
 /// Deliberately NOT `analysis::resource::slot_charged_life`, which answers a different
 /// question — what TOTAL is liftable, largest loss first, refusing a tie.
 ///
-/// Four refusals, all fail-closed: no entry for the slot, a magnitude that is not positive, a
-/// period whose life map names zero or several losing seats, and a losing seat the declaration
-/// does not announce.
+/// Five refusals, all fail-closed: no entry for the slot, a magnitude that is not positive, a
+/// period whose life map names zero or several losing seats, a losing seat the declaration does
+/// not announce, and a charge that is not the whole of that seat's per-period loss.
+///
+/// That last one is the FOLD's precondition, not a second identification rule. CR 732.2a states
+/// a count's magnitudes as the period times the count, and `shortcut_preview_entries` re-states
+/// the charged seat's life by dropping that axis and re-adding `rate` once per allocated cycle.
+/// The substitution preserves the period's life total exactly when `rate` is the seat's whole
+/// loss; under any other charge the published magnitudes total less than the drain the
+/// declaration takes, and CR 704.5a is the number the player is deciding on. The equality is
+/// tested on the already-identified seat rather than used to pick one — filtering the life map
+/// by it would name whichever seat happened to match the aggregate.
 fn victim_charge(
     periodic: &crate::analysis::resource::PeriodicDelta,
     point: &LoopShortcutPointProjection,
@@ -2756,10 +2765,11 @@ fn victim_charge(
         .delta
         .life
         .iter()
-        .filter(|(_, magnitude)| **magnitude < 0)
-        .map(|(seat, _)| *seat);
-    let seat = losing.next()?;
-    (losing.next().is_none() && seats.contains(&seat)).then_some(VictimCharge { rate, seat })
+        .filter(|(_, magnitude)| **magnitude < 0);
+    let (seat, loss) = losing.next()?;
+    // `-rate` cannot overflow: the filter above admits only a positive `rate`.
+    (losing.next().is_none() && seats.contains(seat) && *loss == -rate)
+        .then_some(VictimCharge { rate, seat: *seat })
 }
 
 /// CR 704.5a: how one element's count spreads the charged life magnitude over the seats the
