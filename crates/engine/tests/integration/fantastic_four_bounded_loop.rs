@@ -3016,8 +3016,9 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
 ///
 /// Reach-guards: the published pin set is non-empty, so `predictability_gate` and
 /// `validate_pins` have something to check and the accepting arm proves they PASS (against an
-/// exposed-nothing schema they run but decide nothing, and a refusal on both arms would then be
-/// reported as a firewall hit); and the hostile owner names a LIVING seat
+/// exposed-nothing schema `predictability_gate` has no required slot, and `f4_pin_template`
+/// derives its pins FROM the schema, so `validate_pins` is handed none either — a refusal on
+/// both arms would then be reported as a firewall hit); and the hostile owner names a LIVING seat
 /// that is not the proposer, which is the only shape the guard can distinguish.
 ///
 /// REVERT-PROBE (shared with `r28_a`, and recorded as shared): delete
@@ -3032,8 +3033,9 @@ fn u6_the_declare_owner_firewall_holds_on_the_real_f4_offer() {
 
     assert!(
         !schema.points.is_empty(),
-        "reach-guard: a non-empty schema is what gives `predictability_gate` / `validate_pins` \
-         something to decide, so the accepting arm below proves the pair is keyed to `owner`"
+        "reach-guard: a non-empty schema gives `predictability_gate` a required slot, and \
+         `f4_pin_template` derives its pins from that schema so `validate_pins` is handed one \
+         too — so the accepting arm below proves the pair is keyed to `owner`"
     );
     let hostile = state
         .players
@@ -4070,8 +4072,8 @@ fn r3_placement_a_restored_foreign_owner_declaration_is_refused() {
 /// A points-empty offer carrying a restored declaration is reachable only through the restore
 /// ingress — no production mint emits that pair. The `or_else` needs no `!points.is_empty()`
 /// guard of its own, because the RESOLVED template is validated either way: CR 732.2a lets a
-/// declaration pin only choices the offer published, so a template addressing an unexposed slot
-/// is refused on that axis whatever its owner, and a pin-free one leaves
+/// declaration pin only choices the offer published, so a SLOT-ADDRESSING pin naming an
+/// unexposed slot is refused on that axis whatever its owner, and a pin-free one leaves
 /// the owner as the single remaining gate — which is what these arms vary.
 #[test]
 fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
@@ -4089,8 +4091,8 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
 
     // One F4 offer, `schema.points` emptied, `declaration` set per arm. Nothing else differs.
     // The declaration is stripped of its pins with the points: CR 732.2a lets a declaration pin
-    // only choices the offer published, so a template addressing an unexposed slot is refused on
-    // the PIN axis and the owner axis this row varies would not be the operative one.
+    // only choices the offer published, so a SLOT-ADDRESSING pin naming an unexposed slot is
+    // refused on the PIN axis and the owner axis this row varies would not be the operative one.
     let point_free_offer = |declaration: Option<PlayerId>| {
         let mut probe = state.clone();
         match &mut probe.waiting_for {
@@ -4172,12 +4174,14 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
     );
 }
 
-/// **A declaration may pin only choices the offer published — measured on the shape where the
-/// published set is EMPTY and the charged set is not.**
+/// **A SLOT-ADDRESSING pin may name only choices the offer published — measured on the shape
+/// where the published set is EMPTY and the charged set is not.**
 ///
 /// CR 732.2a: a shortcut proposal describes a sequence of choices that may legally be taken.
 /// An offer publishing no decision point states no such choice, so a template naming one is not
-/// a legal answer to it.
+/// a legal answer to it. The title says SLOT-ADDRESSING because the fourth arm below measures
+/// the kind that escapes: `validate_pins`' `PinnedDecision::Order` arm returns before
+/// `UnexposedSlot`, so an ordering pin is admitted here.
 ///
 /// The two sets diverge by construction and legitimately so: `victim_slot` is derived from the
 /// period's ANNOUNCED targets, which CR 704.5a charges whoever announces them, while
@@ -4186,23 +4190,26 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
 /// and a fabricated pin naming that slot is what the per-cycle conformance check would size its
 /// comparison by.
 ///
-/// Three arms on one staged offer, one axis apart — the declaration's `decisions`:
+/// Four arms on one staged offer, one axis apart — the declaration's `decisions`:
 ///
 /// | arm | `decisions` | expected |
 /// |---|---|---|
 /// | **matched positive** | empty | `RespondToShortcut` — the staged offer accepts |
 /// | **charged slot** | a `Targets` pin naming a `victim_slot` entry | `Priority` |
 /// | **unknown slot** | a `Targets` pin naming neither a point nor a charged slot | `Priority` |
+/// | **ordering pin** | an `Order` pin on the charged slot's source | `RespondToShortcut` |
 ///
 /// The positive is asserted FIRST and is what makes the two refusals attributable to the pin
 /// rather than to the staged offer refusing everything. The second refusal is the class end the
 /// first does not reach: the guard is keyed to what the offer PUBLISHED, not to what the
-/// certificate CHARGES, so a pin naming neither is refused by the same predicate.
+/// certificate CHARGES, so a pin naming neither is refused by the same predicate. The fourth
+/// arm is the other end — the member the title's SLOT-ADDRESSING qualifier excludes, run here
+/// so the qualifier is a measurement rather than a hedge.
 ///
 /// REVERT-PROBE: skip `declaration_conforms` when `offer.schema.points.is_empty()` ⇒ both
 /// refusals open APNAP and carry the fabricated pin into `proposal.template`.
 #[test]
-fn a_declaration_pinning_a_slot_the_offer_never_published_is_refused() {
+fn a_slot_addressing_pin_naming_a_slot_the_offer_never_published_is_refused() {
     use engine::analysis::decision_template::{
         AnnouncementSubject, DecisionGroupKey, DecisionSlot, DecisionTemplate, PinnedDecision,
         Ranking, ReplayMode, TargetPin, TargetSchedule,
@@ -4325,6 +4332,20 @@ fn a_declaration_pinning_a_slot_the_offer_never_published_is_refused() {
         "Priority",
         "the refusal is keyed to what the offer PUBLISHED, so a pin the certificate does not \
          charge either is refused by the same predicate"
+    );
+
+    assert_eq!(
+        declare(vec![PinnedDecision::Order {
+            source: charged_slot.source.clone(),
+            pos: 0,
+        }])
+        .waiting_for
+        .variant_name(),
+        "RespondToShortcut",
+        "CR 603.3b: MEASURED, NOT ENDORSED — `validate_pins`' `Order` arm returns before \
+         `UnexposedSlot`, so an ordering pin naming a slot the offer published no point for is \
+         ADMITTED. This is the member the title's SLOT-ADDRESSING qualifier excludes; the \
+         disclosure on `handle_declare_shortcut`'s pin block states what closing it takes"
     );
 }
 

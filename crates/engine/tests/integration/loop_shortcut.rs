@@ -2034,10 +2034,10 @@ fn pin_slot(source: YieldTarget) -> DecisionSlot {
 
 /// Stage the live offer to PUBLISH the one CR 601.2c point a pinned declaration answers.
 ///
-/// CR 732.2a: a declaration may pin only choices the offer published, so a synthetic pin needs
-/// a point beside it — and `validate_pins` then holds that pin to `legal` at every index the
-/// declared count drives, which is what leaves the DRIVE's per-iteration CR 608.2b re-check as
-/// the only thing a post-declare board change can trip.
+/// CR 732.2a: a declaration may pin only choices the offer published, so a synthetic `Targets`
+/// pin needs a point beside it — and `validate_pins` then holds that pin to `legal` at every
+/// index the declared count drives, which is what leaves the DRIVE's per-iteration CR 608.2b
+/// re-check as the only thing a post-declare board change can trip.
 fn publish_targets_point(runner: &mut GameRunner, slot: DecisionSlot, legal: Vec<TargetRef>) {
     let WaitingFor::LoopShortcut { schema, .. } = &mut runner.state_mut().waiting_for else {
         panic!("staged from the live offer, never from thin air");
@@ -2383,9 +2383,10 @@ fn b3_firewall_abort_incarnation_guard() {
 /// never-resolvable object at cycle `k` — "the enabler leaves the game" stated entirely from
 /// the schedule. `validate_pins` re-resolves every pin at every index the DECLARED COUNT will
 /// drive, so a break at `k < N` is a choice that cannot legally be taken and the declaration is
-/// refused into a priority handback. That handback carries the claim: declare is pre-drive on
-/// BOTH verdicts, so life is unmoved whichever way this goes and only `waiting_for`
-/// discriminates.
+/// refused into a priority handback. This board seats a LIVING opponent, so declare opens APNAP
+/// rather than driving on either verdict — life is unmoved whichever way this goes and only
+/// `waiting_for` discriminates. (`handle_declare_shortcut`'s no-living-opponents branch takes
+/// the shortcut immediately; declare IS the drive there, and that is not this fixture.)
 ///
 /// The pair is one axis apart — WHERE the switch point sits relative to the driven range. With
 /// it past N the same schedule shape resolves at every driven index, so the declaration is
@@ -2454,7 +2455,8 @@ fn b3_declare_refuses_a_schedule_breaking_inside_the_declared_count() {
     assert_eq!(
         life(&runner, P1),
         l0,
-        "declare is pre-drive on both verdicts: nothing may commit before the handback"
+        "with a living opponent seated, declare opens APNAP rather than driving on either \
+         verdict: nothing may commit before the handback"
     );
     assert!(!is_eliminated(&runner, P1));
     assert_eq!(
@@ -7468,9 +7470,10 @@ fn dump_c_still_crowns_at_one_living_opponent_after_pause_retention() {
     assert_eq!(schema.iteration_count, IterationCount::UntilLethal);
 }
 
-/// Seam D (CR 732.2a): a `template: None` declaration against a NON-EMPTY schema BYPASSES the
-/// declare-time pin firewall entirely — `predictability_gate` and `validate_pins` are simply not
-/// run, because there is no template to run them against. That bypass is legitimate for exactly
+/// Seam D (CR 732.2a): against a NON-EMPTY schema on an offer that published no declaration of
+/// its own, a `template: None` declaration BYPASSES the declare-time pin firewall entirely —
+/// `predictability_gate` and `validate_pins` are not run, because nothing resolves to a template
+/// to run them against. That bypass is legitimate for exactly
 /// one drive shape: the object-growth route, which re-derives its template from
 /// `state.last_loop_action_sequence` and never reads `proposal.template`. With an EMPTY sequence
 /// there is nothing to re-derive from, so a pin-consuming drive would run with no pins at all.
@@ -12679,8 +12682,8 @@ fn r5_pin_template(slot: DecisionSlot, seat: PlayerId, count: u32) -> DecisionTe
 }
 
 /// [`r5_pin_template`] with its pins removed and `owner` supplied — the declaration a
-/// POINTS-EMPTY offer admits. CR 732.2a: a declaration may pin only choices the offer
-/// published, so a template addressing an unexposed slot is refused before any other axis.
+/// POINTS-EMPTY offer admits on the PIN axis. CR 732.2a: a declaration may pin only choices the
+/// offer published, so a SLOT-ADDRESSING pin naming an unexposed slot is refused.
 fn r28_pinless_template(slot: DecisionSlot, owner: PlayerId) -> DecisionTemplate {
     let mut template = r5_pin_template(slot, P1, 1);
     template.decisions.clear();
@@ -13326,8 +13329,8 @@ fn r28_a_declared_template_owning_another_seat_is_refused_at_declare() {
 /// template and the end of the match.
 ///
 /// Both declarations here are PIN-FREE. CR 732.2a lets a declaration pin only choices the offer
-/// published, so a template addressing an unexposed slot is refused on the PIN axis and the
-/// owner axis this row varies would not be the operative one.
+/// published, so a SLOT-ADDRESSING pin naming an unexposed slot is refused on the PIN axis and
+/// the owner axis this row varies would not be the operative one.
 ///
 /// ⚠ **DISCLOSED REACHABILITY DOWNGRADE.** This arm used to run on the R5 offer's OWN empty
 /// schema — the empty-schema path was reached NATURALLY. It no longer is: the answer-beat

@@ -1817,9 +1817,9 @@ pub(crate) struct LoopWindowScope<'a> {
 pub(crate) struct PinnedChoices<'a> {
     /// The offer's proposer. Every slot in `slots` was minted for this seat.
     pub(crate) proposer: PlayerId,
-    /// The published slots, which `decision_template::predictability_gate` then FORCES the
-    /// declaration to pin. A slot listed here is a *specified* choice in CR 732.2a's sense,
-    /// not a free one.
+    /// The published slots, which `decision_template::predictability_gate` then forces the
+    /// declaration to ADDRESS. A slot listed here is a *specified* choice in CR 732.2a's sense
+    /// once a SLOT-ADDRESSING pin answers it, not a free one.
     pub(crate) slots: &'a [DecisionSlot],
 }
 
@@ -9463,9 +9463,9 @@ mod tests {
     /// this predicate's `Ok(Some(..))` straight to `AutoAssigned`, so no
     /// `WaitingFor::TriggerTargetSelection` is raised, so `record_trigger_target_answer` (whose
     /// only two call sites are that prompt's reducer arms) never runs. A point published here
-    /// would therefore demand a `predictability_gate` answer that CANNOT ARRIVE, and since the
-    /// gate's `required` set is EVERY published point, one such point makes the whole offer
-    /// undeclarable.
+    /// would demand a `predictability_gate` answer no writer can produce, and since the gate's
+    /// `required` set is every published point, one such point leaves the offer with no
+    /// declaration the engine can publish.
     ///
     /// # Discrimination, and the confound it breaks
     ///

@@ -3838,9 +3838,9 @@ fn entry_announces(
     // `WaitingFor::TriggerTargetSelection` is ever raised, so `record_trigger_target_answer`
     // — whose only two call sites are that prompt's reducer arms — never runs. A point
     // published here would demand a `predictability_gate` answer no writer can produce, and
-    // one unanswerable point makes the WHOLE offer undeclarable (the gate's `required` set is
-    // every published point). Journalling the auto-selection instead would model a decision
-    // the player never made.
+    // since the gate's `required` set is every published point, one such point leaves the
+    // offer with no declaration the engine can publish. Journalling the auto-selection instead
+    // would model a decision the player never made.
     //
     // THE SAME AUTHORITY AS THE RELIEF, exported rather than re-derived: gate (3)'s
     // `stack_entry_has_no_ordering_input` asks `forced_unique_targeting` about this same
@@ -7096,13 +7096,22 @@ fn handle_declare_shortcut(
     // CR 732.2a: a declaration cannot pin choices the offer published none of. Every
     // `Some(t)` meets `declaration_conforms` whatever the schema published — its
     // `PinValidation::UnexposedSlot` arm is that refusal for every SLOT-ADDRESSING pin, so a
-    // points-empty offer needs no second predicate for those. NOT closed for the rest:
-    // `validate_pins`' `PinnedDecision::Order` arm returns without reaching `UnexposedSlot`, so
-    // an ORDER-ONLY template pins a CR 603.3b trigger ordering the offer published none of and
-    // is admitted. Closing that needs an ordering decision point in the schema, not another
-    // predicate here. Only the `None` arm's
-    // re-derivation test is conditioned on the schema having points: an offer publishing none
-    // exposes nothing to re-derive.
+    // points-empty offer needs no second predicate for those.
+    //
+    // ⚠ NOT CLOSED FOR `PinnedDecision::Order`, AND THE HOLE IS NOT CONFINED TO AN
+    // EXPOSED-NOTHING OFFER. Two measured facts compose. (1) `validate_pins`' `Order` arm
+    // returns without reaching `UnexposedSlot`, so an ORDER-ONLY template pins a CR 603.3b
+    // trigger ordering the offer published none of and is admitted. (2) `pin_slot` addresses an
+    // `Order` pin at sub-index 0 — the same sub-index `DecisionSlot::target` hard-codes — while
+    // `predictability_gate` compares SLOTS and never KINDS, so that one pin also SATISFIES
+    // COVERAGE for a published `Targets` point on the same source. A NON-EMPTY schema is
+    // therefore declarable by a template answering none of its published choices, and
+    // `PinnedDecision` derives `Deserialize` and rides `GameAction::DeclareShortcut` verbatim,
+    // so the shape arrives from the wire. Closing it needs an ordering decision point in the
+    // schema and a kind-aware coverage comparison, not another predicate here.
+    //
+    // Only the `None` arm's re-derivation test is conditioned on the schema having points: an
+    // offer publishing none exposes nothing to re-derive.
     match &template {
         Some(t) => {
             // CR 732.2a: validate over the range the ACCEPTED COUNT will drive, not
@@ -18201,10 +18210,10 @@ mod bounded_declaration_tests {
     /// **Row D4 — an empty schema publishes NO declaration.**
     ///
     /// LOAD-BEARING, not tidiness: an empty schema exposes no slot, so a declaration minted
-    /// against one that pinned any choice would be refused by the handler that has to accept it
-    /// — `validate_pins` matches every pin to a published point. Publishing one would make
-    /// `declaration.is_some()`, the predicate `ai_support::candidates` gates its declare
-    /// candidate on, mean the opposite of what it says.
+    /// against one that pinned a SLOT-ADDRESSING choice would be refused by the handler that
+    /// has to accept it — `validate_pins` matches those pins to a published point. Publishing
+    /// one would make `declaration.is_some()`, the predicate `ai_support::candidates` gates
+    /// its declare candidate on, mean the opposite of what it says.
     /// The invariant is also staged at fixture level by
     /// `tests/integration/loop_shortcut.rs::r28_empty_schema_offer`, which passes
     /// `declaration: None` for this reason.
@@ -21322,8 +21331,8 @@ mod stage2_injector_tests {
     /// `MayChoice` point [`u4_may_template`] pins.
     ///
     /// CR 732.2a: a declaration may pin only choices the offer published, so an offer exposing
-    /// no point refuses every pinned template — which would take the `owner` axis out of the
-    /// measurement below rather than isolate it.
+    /// no point refuses a template carrying any SLOT-ADDRESSING pin — which would take the
+    /// `owner` axis out of the measurement below rather than isolate it.
     fn u4_park_on_offer(state: &mut GameState, src: ObjectId) {
         use crate::analysis::decision_template::{
             DecisionPoint, DecisionPointKind, ShortcutDecisionSchema,
