@@ -3836,8 +3836,9 @@ fn every_published_element_states_the_canonical_split_of_its_own_count() {
 ///
 /// REVERT-PROBES: key emptiness on `points.is_empty()` ⇒ the may-choice leg fails; divide before
 /// the empty-ids return in the generator ⇒ the candidate-less leg panics on a division by zero;
-/// build the split without its non-empty filter ⇒ the candidate-less leg's charged `Life` entry
-/// silently disappears.
+/// drop BOTH the announced-seat conjunct of the charge and the split's non-empty filter ⇒ the
+/// candidate-less leg's charged `Life` entry silently disappears. That leg takes two drops
+/// because either refusal alone still holds the entry.
 #[test]
 fn the_allocation_is_empty_exactly_when_no_targets_point_holds_a_candidate() {
     // ── PAIRED POSITIVE, first: a Targets point with candidates publishes a split everywhere.
@@ -3929,12 +3930,19 @@ fn the_allocation_is_empty_exactly_when_no_targets_point_holds_a_candidate() {
 }
 
 /// CR 704.5a: the published life magnitudes follow the allocation when — and only when — the
-/// period's charge for the announced slot names exactly one seat at a positive magnitude.
+/// announced slot charges a positive magnitude and the period's life map names exactly one
+/// losing seat that the declaration itself announces.
+///
+/// The announced magnitude is an aggregate over every seat, so on any other shape it names the
+/// worst-off seat rather than this slot's victim. The refusal legs stage the shapes where the
+/// two diverge, each with its magnitude derived the way production derives it.
 ///
 /// REVERT-PROBES: fold with no split at all ⇒ the positive leg publishes one `Life` seat where
-/// the allocation names three; take the FIRST matching seat instead of requiring exactly one ⇒
-/// the ambiguous leg re-attributes an arbitrary seat; drop the positivity keep ⇒ the
-/// life-gaining leg spreads a GAIN across the allocated seats.
+/// the allocation names three; take the FIRST losing seat instead of requiring exactly one ⇒
+/// the two-loser legs re-attribute the worst-off seat; drop the announced-seat requirement ⇒
+/// the unannounced-loser leg erases that seat and charges three seats that lose nothing; drop
+/// the positivity keep ⇒ the negative-magnitude leg spreads a GAIN across the allocated
+/// seats.
 #[test]
 fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positive_charge() {
     let seats = [P1, PlayerId(2), PlayerId(3)];
@@ -3956,6 +3964,15 @@ fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positiv
             vec![player_targets_point(0, &seats)],
             vec![(preview_slot(0), charge)],
         ))
+    };
+    // The magnitude production announces for a charged slot, derived here the way
+    // `ResourceVector::worst_seat_life_loss` derives it rather than hand-set: the worst single
+    // seat's loss over the whole period, clamped at zero, and the SAME number on every slot.
+    let announced = |life: &[(PlayerId, i64)]| {
+        life.iter()
+            .map(|(_, magnitude)| (-magnitude).max(0))
+            .max()
+            .unwrap_or(0)
     };
     let life_entries = |element: &InteractionShortcutPreview| {
         let mut published: Vec<(Option<u8>, i32)> = element
@@ -4050,13 +4067,76 @@ fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positiv
         );
     }
 
-    // ── HOSTILE: the charged magnitude is not positive, so it charges nothing.
-    let gaining = offer_at(vec![(P0, 2)], -2);
+    // ── HOSTILE: two seats lose UNEQUAL amounts, so the announced aggregate is the WORST
+    //    seat's loss and names no slot's own victim. P0 loses too and is not announced.
+    let uneven = vec![(P0, -1i64), (P1, -3i64)];
+    let worst = announced(&uneven);
+    assert_eq!(
+        uneven
+            .iter()
+            .filter(|(seat, magnitude)| *magnitude == -worst && seats.contains(seat))
+            .count(),
+        1,
+        "reach-guard: the announced aggregate is matched by exactly one seat and that seat is \
+         announced, so a magnitude-keyed attribution would resolve here and only the losing-\
+         seat count refuses it"
+    );
+    let uneven_offer = offer_at(uneven, worst);
+    for element in &uneven_offer.preview {
+        assert!(
+            !element.allocation.is_empty(),
+            "the declaration is still published — the allocation is its shape, not a \
+             magnitude claim"
+        );
+        assert_eq!(
+            life_entries(element),
+            vec![
+                (Some(P0.0), -i32::try_from(element.count).unwrap()),
+                (Some(P1.0), -3 * i32::try_from(element.count).unwrap()),
+            ],
+            "an aggregate over two losing seats charges neither of them, so the entries are \
+             the raw per-seat fold and each seat keeps its own rate"
+        );
+    }
+
+    // ── HOSTILE: the only losing seat is one the declaration does not announce.
+    let outside = vec![(P0, -3i64)];
+    assert!(
+        !seats.contains(&P0) && announced(&outside) > 0,
+        "reach-guard: the period charges a positive magnitude and names exactly one loser, so \
+         only that seat's absence from the announced candidates refuses the split"
+    );
+    let outside_offer = offer_at(outside.clone(), announced(&outside));
+    for element in &outside_offer.preview {
+        assert!(!element.allocation.is_empty());
+        assert_eq!(
+            life_entries(element),
+            vec![(Some(P0.0), -3 * i32::try_from(element.count).unwrap())],
+            "the seat that actually loses keeps its whole magnitude, and no announced seat is \
+             charged a loss it does not take"
+        );
+    }
+
+    // ── HOSTILE: the announced magnitude is not positive, so it charges nothing.
+    let gaining_period = vec![(P0, 2i64), (P1, -2i64)];
+    assert_eq!(
+        gaining_period
+            .iter()
+            .filter(|(seat, magnitude)| *magnitude < 0 && seats.contains(seat))
+            .count(),
+        1,
+        "reach-guard: exactly one announced seat loses life, so the sign of the announced \
+         magnitude is the only thing standing between this period and a split"
+    );
+    let gaining = offer_at(gaining_period, -2);
     for element in &gaining.preview {
         assert!(!element.allocation.is_empty());
         assert_eq!(
             life_entries(element),
-            vec![(Some(P0.0), 2 * i32::try_from(element.count).unwrap())],
+            vec![
+                (Some(P0.0), 2 * i32::try_from(element.count).unwrap()),
+                (Some(P1.0), -2 * i32::try_from(element.count).unwrap()),
+            ],
             "a non-positive charge is refused, so a life GAIN is never spread over the \
              announced candidates"
         );

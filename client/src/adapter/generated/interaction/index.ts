@@ -98,9 +98,10 @@ export type InteractionShortcutPreview = { count: number, entries: Array<Interac
  * `count`, remainder on the earliest ids, so they sum to `count` exactly. Empty exactly
  * when the offer publishes no `Targets` point holding at least one candidate.
  *
- * CR 704.5a: `entries` follow this allocation ONLY when the offer's charged slot names
- * exactly one seat at a positive magnitude — the per-seat life magnitudes are then this
- * split multiplied by that rate. On every other offer a non-empty allocation still ships
+ * CR 704.5a: `entries` follow this allocation ONLY when the slot's announced magnitude is
+ * positive and the period's life map names exactly one losing seat that this allocation
+ * itself announces — the per-seat life magnitudes are then this split multiplied by that
+ * rate. On every other offer a non-empty allocation still ships
  * beside entries folded from the raw period, because the allocation states the
  * declaration and the entries state what the engine can attribute.
  *

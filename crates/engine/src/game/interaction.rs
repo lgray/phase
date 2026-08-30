@@ -2726,17 +2726,25 @@ struct VictimCharge {
 /// CR 704.5a: what the period charges through THIS announced slot, or `None` when the period
 /// does not say.
 ///
-/// Deliberately NOT `analysis::resource::slot_charged_life`, which answers a different
-/// question — what TOTAL is liftable, largest loss first, refusing a tie. On a period whose
-/// slot charge is 1 while the looper separately loses 3, largest-first names the looper. This
-/// identifies the seat BY THE MAGNITUDE the slot publishes, and refuses outright when that
-/// magnitude does not name exactly one seat.
+/// **A `victim_slot` magnitude is an aggregate, not a per-slot charge.** Every entry carries
+/// the same number — the worst single seat's life loss over the whole period — so no victim
+/// identity is recoverable from it, and reading it as one seat's charge names whichever seat
+/// loses the most. This therefore resolves a victim only on the shape where the aggregate
+/// provably IS the slot's charge: a period whose `delta.life` names exactly ONE losing seat,
+/// and where that seat is one the declaration allocates to. Outside it the answer is `None`
+/// and the fold keeps `payload_seat`'s own keys — an unsplit magnitude on the right seat
+/// beats a split one on the wrong seats.
 ///
-/// Three refusals, all fail-closed: no entry for the slot, a magnitude that is not positive,
-/// and a magnitude matched by zero or by several seats.
+/// Deliberately NOT `analysis::resource::slot_charged_life`, which answers a different
+/// question — what TOTAL is liftable, largest loss first, refusing a tie.
+///
+/// Four refusals, all fail-closed: no entry for the slot, a magnitude that is not positive, a
+/// period whose life map names zero or several losing seats, and a losing seat the declaration
+/// does not announce.
 fn victim_charge(
     periodic: &crate::analysis::resource::PeriodicDelta,
     point: &LoopShortcutPointProjection,
+    seats: &[PlayerId],
 ) -> Option<VictimCharge> {
     let rate = periodic
         .victim_slot
@@ -2744,17 +2752,14 @@ fn victim_charge(
         .find(|(slot, _)| *slot == point.slot)
         .map(|(_, magnitude)| *magnitude)
         .filter(|magnitude| *magnitude > 0)?;
-    let mut matching = periodic
+    let mut losing = periodic
         .delta
         .life
         .iter()
-        .filter(|(_, magnitude)| **magnitude == -rate)
+        .filter(|(_, magnitude)| **magnitude < 0)
         .map(|(seat, _)| *seat);
-    let seat = matching.next()?;
-    matching
-        .next()
-        .is_none()
-        .then_some(VictimCharge { rate, seat })
+    let seat = losing.next()?;
+    (losing.next().is_none() && seats.contains(&seat)).then_some(VictimCharge { rate, seat })
 }
 
 /// CR 704.5a: how one element's count spreads the charged life magnitude over the seats the
@@ -2859,8 +2864,10 @@ fn loop_shortcut_preview(
                 .collect()
         })
         .unwrap_or_default();
-    let charge = point.and_then(|point| victim_charge(periodic, point));
     let seats = point.and_then(|point| allocated_seats(projection, point));
+    let charge = point
+        .zip(seats.as_deref())
+        .and_then(|(point, seats)| victim_charge(periodic, point, seats));
     counts
         .into_iter()
         .map(|count| {
