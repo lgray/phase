@@ -3965,22 +3965,27 @@ fn the_allocation_is_empty_exactly_when_the_first_targets_point_holds_no_candida
 }
 
 /// CR 704.5a: the published life magnitudes follow the allocation when — and only when — the
-/// announced slot charges a positive magnitude, the period's life map names exactly one losing
-/// seat that the declaration itself announces, and that charge is the whole of the seat's loss.
+/// period's life map names exactly one losing seat that the declaration itself announces and
+/// the announced charge is the whole of that seat's loss, which is what makes the charge
+/// positive.
 ///
 /// The announced magnitude is an aggregate over every seat, so on any other shape it names the
-/// worst-off seat rather than this slot's victim. Each refusal leg but the last derives its
-/// magnitude the way production derives it; the last stages a charge DECOUPLED from the period,
-/// which production does not emit but the type admits and `WaitingFor` carries across the
-/// persistence boundary.
+/// worst-off seat rather than this slot's victim. The ambiguous, uneven and unannounced-loser
+/// legs carry the magnitude production would announce for their own life map; the
+/// negative-magnitude, undercharge and unnegatable legs stage a charge DECOUPLED from the
+/// period, which production does not emit but the type admits and `WaitingFor` carries across
+/// the persistence boundary.
 ///
 /// REVERT-PROBES: fold with no split at all ⇒ the positive leg publishes one `Life` seat where
-/// the allocation names three; take the FIRST losing seat instead of requiring exactly one ⇒
-/// the two-loser legs re-attribute the worst-off seat; drop the announced-seat requirement ⇒
-/// the unannounced-loser leg erases that seat and charges three seats that lose nothing; drop
-/// the positivity keep ⇒ the negative-magnitude leg spreads a GAIN across the allocated seats;
-/// drop the equality with the losing seat's own loss ⇒ the undercharge leg's `Life` magnitudes
-/// total the charge times the count where the period takes three times that.
+/// the allocation names several; take the FIRST losing seat instead of requiring exactly one ⇒
+/// the ambiguous leg re-attributes a tied seat; pick the seat BY the announced magnitude
+/// instead of by "exactly one loser" ⇒ the uneven leg re-attributes the worst-off seat; drop
+/// the announced-seat requirement ⇒ the unannounced-loser leg erases that seat and charges
+/// announced seats that lose nothing; drop the equality with the losing seat's own loss ⇒ the
+/// negative-magnitude leg spreads a GAIN across the allocated seats and, behind it, the
+/// undercharge leg's `Life` magnitudes total the charge times the count where the period takes
+/// three times that; respell that equality as one against the NEGATED charge ⇒ the unnegatable
+/// leg overflows where the addition refuses.
 #[test]
 fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positive_charge() {
     let seats = [P1, PlayerId(2), PlayerId(3)];
@@ -4116,8 +4121,7 @@ fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positiv
             .count(),
         1,
         "reach-guard: the announced aggregate is matched by exactly one seat and that seat is \
-         announced, so a magnitude-keyed attribution would resolve here and only the losing-\
-         seat count refuses it"
+         announced, so a victim picked BY that magnitude would resolve here"
     );
     let uneven_offer = offer_at(uneven, worst);
     for element in &uneven_offer.preview {
@@ -4155,7 +4159,7 @@ fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positiv
         );
     }
 
-    // ── HOSTILE: the announced magnitude is not positive, so it charges nothing.
+    // ── HOSTILE: the announced magnitude is a GAIN, which no losing seat's loss can balance.
     let gaining_period = vec![(P0, 2i64), (P1, -2i64)];
     assert_eq!(
         gaining_period
@@ -4163,8 +4167,8 @@ fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positiv
             .filter(|(seat, magnitude)| *magnitude < 0 && seats.contains(seat))
             .count(),
         1,
-        "reach-guard: exactly one announced seat loses life, so the sign of the announced \
-         magnitude is the only thing standing between this period and a split"
+        "reach-guard: exactly one announced seat loses life and that seat is announced, so \
+         this period reaches the charge/loss equality and only that equality refuses it"
     );
     let gaining = offer_at(gaining_period, -2);
     for element in &gaining.preview {
@@ -4175,16 +4179,16 @@ fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positiv
                 (Some(P0.0), 2 * i32::try_from(element.count).unwrap()),
                 (Some(P1.0), -2 * i32::try_from(element.count).unwrap()),
             ],
-            "a non-positive charge is refused, so a life GAIN is never spread over the \
-             announced candidates"
+            "an announced GAIN can never be a losing seat's own loss, so it is refused \
+             rather than spread over the announced candidates"
         );
     }
 
-    // ── HOSTILE: positive, exactly one losing seat, and that seat announced — every conjunct
-    //    above holds — but the charge is SMALLER than the seat's own per-period loss. The fold
-    //    re-states the charged seat by dropping its whole `Life` axis and re-adding the charge
-    //    once per allocated cycle, so a split here publishes a shallower drain than the count
-    //    actually runs.
+    // ── HOSTILE: exactly one losing seat, that seat announced, and the charge positive —
+    //    every conjunct but the equality holds — but the charge is SMALLER than the seat's own
+    //    per-period loss. The fold re-states the charged seat by dropping its whole `Life`
+    //    axis and re-adding the charge once per allocated cycle, so a split here publishes a
+    //    shallower drain than the count actually runs.
     let seat_loss = 3i64;
     let undercharge = 1i64;
     let coupled = offer_at(vec![(P1, -seat_loss)], seat_loss);
@@ -4224,6 +4228,22 @@ fn the_preview_spreads_a_charged_life_magnitude_only_over_an_unambiguous_positiv
             "CR 704.5a: the published life magnitudes total the period the count runs — a \
              split at the announced charge states {undercharge} per cycle where the period \
              takes {seat_loss}"
+        );
+    }
+
+    // ── HOSTILE: a charge no magnitude can negate. `i64::MIN` reaches the same equality
+    //    every leg above ends at, and the addition answers over the whole of `i64` where a
+    //    negation would overflow.
+    let unnegatable = offer_at(vec![(P1, -seat_loss)], i64::MIN);
+    for element in &unnegatable.preview {
+        assert_eq!(
+            life_entries(element),
+            vec![(
+                Some(P1.0),
+                -i32::try_from(seat_loss * i64::from(element.count)).unwrap()
+            )],
+            "a charge that cannot be balanced is refused, so the losing seat keeps its whole \
+             per-period loss"
         );
     }
 }

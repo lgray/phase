@@ -2738,9 +2738,14 @@ struct VictimCharge {
 /// Deliberately NOT `analysis::resource::slot_charged_life`, which answers a different
 /// question — what TOTAL is liftable, largest loss first, refusing a tie.
 ///
-/// Five refusals, all fail-closed: no entry for the slot, a magnitude that is not positive, a
-/// period whose life map names zero or several losing seats, a losing seat the declaration does
-/// not announce, and a charge that is not the whole of that seat's per-period loss.
+/// Four refusals, all fail-closed: no entry for the slot, a period whose life map names zero or
+/// several losing seats, a losing seat the declaration does not announce, and a charge that is
+/// not the whole of that seat's per-period loss.
+///
+/// A resolved charge is POSITIVE by construction rather than by a guard of its own: the sum
+/// below is zero only when `rate` negates a magnitude the iterator already restricted to
+/// losses. `checked_add` states that over the whole of `i64`, so there is no negation to
+/// overflow and no positivity conjunct to keep.
 ///
 /// That last one is the FOLD's precondition, not a second identification rule. CR 732.2a states
 /// a count's magnitudes as the period times the count, and `shortcut_preview_entries` re-states
@@ -2759,16 +2764,14 @@ fn victim_charge(
         .victim_slot
         .iter()
         .find(|(slot, _)| *slot == point.slot)
-        .map(|(_, magnitude)| *magnitude)
-        .filter(|magnitude| *magnitude > 0)?;
+        .map(|(_, magnitude)| *magnitude)?;
     let mut losing = periodic
         .delta
         .life
         .iter()
         .filter(|(_, magnitude)| **magnitude < 0);
     let (seat, loss) = losing.next()?;
-    // `-rate` cannot overflow: the filter above admits only a positive `rate`.
-    (losing.next().is_none() && seats.contains(seat) && *loss == -rate)
+    (losing.next().is_none() && seats.contains(seat) && loss.checked_add(rate) == Some(0))
         .then_some(VictimCharge { rate, seat: *seat })
 }
 

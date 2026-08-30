@@ -100,9 +100,9 @@ export type InteractionShortcutPreview = { count: number, entries: Array<Interac
  * does not fill it: the domain is the first point or nothing, because silently moving it
  * to a second point would state the split over choices the reader cannot identify.
  *
- * CR 704.5a: `entries` follow this allocation ONLY when the slot's announced magnitude is
- * positive, the period's life map names exactly one losing seat that this allocation
- * itself announces, and that magnitude is the whole of that seat's per-period loss — the
+ * CR 704.5a: `entries` follow this allocation ONLY when the period's life map names
+ * exactly one losing seat that this allocation itself announces and the slot's announced
+ * magnitude is the whole of that seat's per-period loss, which is what makes it positive —
  * per-seat life magnitudes are then this split multiplied by that rate, and they still
  * total the period. On every other offer a non-empty allocation still ships beside entries
  * folded from the raw period, because the allocation states the declaration and the
