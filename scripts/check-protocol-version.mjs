@@ -317,10 +317,11 @@ if (rustDirectoryVersion !== EXPECTED_DIRECTORY_VERSION) {
 // 48)` under `fn protocol_version_is_47` is green, and so is a handshake pair
 // whose title still advertises the version before last. Each site requires the
 // CURRENT number and refuses the SUPERSEDED one, both derived from the
-// EXPECTED_* constants above, so a later bump edits the sources and not this
-// file. Ceiling: the refuse leg catches leftover text from the previous
-// version, which is the defect a bump produces. Prose rewritten to some other
-// wrong number is not a bump leftover and is not guarded here.
+// EXPECTED_* constants above, so a later bump edits the sources and those
+// constants, never the patterns themselves. Ceiling: the refuse leg catches
+// leftover text from the previous version, which is the defect a bump
+// produces. Prose rewritten to some other wrong number is not a bump leftover
+// and is not guarded here.
 const P = EXPECTED_PROTOCOL_VERSION;
 const W = EXPECTED_WIRE_PROTOCOL_VERSION;
 
@@ -356,8 +357,11 @@ for (const n of [W - 1, W]) {
     `${gateLabel} setupFrameAt(${n})`);
 }
 // Bare as well as `v`-prefixed: the comment writes the pair as "Revert 37 → 36",
-// so a leftover names the superseded number with no `v` in front of it. The
-// delimiter class excludes identifier characters and a decimal point so a
-// number that is part of a name or a version string is not matched.
-refusePattern(p2pGateBlock, new RegExp(`(^|[^0-9A-Za-z_.])v?${W - 2}([^0-9A-Za-z_.]|$)`),
+// so a leftover names the superseded number with no `v` in front of it. Both
+// guards exclude identifier characters; a decimal point is excluded only when
+// it makes the digits part of a longer number, so a decimal or a dotted
+// version string is admitted while a sentence-ending leftover is refused.
+// Ceiling: an uppercase `V` prefix reads as an identifier and is admitted.
+refusePattern(p2pGateBlock,
+  new RegExp(`(?<![0-9A-Za-z_]|[0-9]\\.)v?${W - 2}(?![0-9A-Za-z_]|\\.[0-9])`),
   gateLabel);
