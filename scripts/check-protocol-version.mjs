@@ -344,10 +344,14 @@ refusePattern(p2pProtocolTestSource, new RegExp(`\\bv${W - 1}\\b`),
 // the block's own closer, the first column-0 `});` after it, because the test
 // file writes seats, object ids and timeouts as bare integers: scanning past
 // the block would refuse an unrelated appended test as soon as the superseded
-// number reached a value one of them already uses. Ceiling: the closer is
-// found by column, so a column-0 `});` inside a template literal would end the
-// slice early — the `setupFrameAt` require legs sit inside the block and red
-// if that happens.
+// number reached a value one of them already uses. The closer is the first
+// column-0 `});` that is not inside a template literal — a candidate with an
+// odd number of backticks before it is skipped, because an early closer
+// shortens the refuse window silently: the `setupFrameAt` require legs sit
+// near the top of the block and only red on truncation above themselves.
+// Ceiling: the skip counts backticks, so an odd one in a comment or a string
+// overshoots the real closer and takes in whatever follows the block —
+// overshoot only ever adds refusals, never drops them.
 const P2P_GATE = 'describe("P2P wire-protocol version gate"';
 const gateAt = p2pAdapterTestSource.indexOf(P2P_GATE);
 if (gateAt < 0) {
@@ -357,7 +361,13 @@ if (gateAt < 0) {
   );
   process.exit(1);
 }
-const gateEnd = p2pAdapterTestSource.indexOf("\n});", gateAt);
+let gateEnd = p2pAdapterTestSource.indexOf("\n});", gateAt);
+while (
+  gateEnd >= 0 &&
+  (p2pAdapterTestSource.slice(gateAt, gateEnd).split("`").length - 1) % 2 === 1
+) {
+  gateEnd = p2pAdapterTestSource.indexOf("\n});", gateEnd + 1);
+}
 const p2pGateBlock = p2pAdapterTestSource.slice(
   gateAt,
   gateEnd < 0 ? undefined : gateEnd,
