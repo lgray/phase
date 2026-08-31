@@ -703,9 +703,6 @@ struct ServerContext {
     /// has no way to turn a label back into a number.
     replica_ordinal: Option<u32>,
     metrics: Arc<metrics::ServerMetrics>,
-    /// Per-game JSON-Lines log sink (see `logging::GameFileCache`). Disabled
-    /// (no-op writes) unless `PHASE_LOG_DIR` is set.
-    game_log: Arc<logging::GameFileCache>,
 }
 
 // The lobby-only broker capacity cap (`MAX_LOBBY_ENTRIES`) now lives in
@@ -1724,7 +1721,6 @@ async fn serve() {
         },
         replica_ordinal: cli.replica_ordinal,
         metrics: Arc::new(metrics::ServerMetrics::default()),
-        game_log,
     };
     info!(
         max_connections = server_context.limits.max_connections,
@@ -1805,11 +1801,16 @@ async fn serve() {
     // ten years is effectively unbounded without risking overflow in `now + grace`.
     // It also stamps `HostingMode::SingleUser` on every session this manager
     // owns, which is what grants the desktop sidecar its debug capability.
-    let state: SharedState = Arc::new(Mutex::new(if cli.single_user {
+    let mut session_manager = if cli.single_user {
         SessionManager::single_user(Duration::from_secs(10 * 365 * 24 * 60 * 60))
     } else {
         SessionManager::new()
-    }));
+    };
+    // Every session this manager creates or restores gets this cache
+    // (`SessionManager`/`GameSession` re-stamp it, same lifecycle as
+    // `hosting`) — see `server_core::game_log`.
+    session_manager.game_log = Arc::clone(&game_log);
+    let state: SharedState = Arc::new(Mutex::new(session_manager));
     let draft_sessions: SharedDraftState = Arc::new(Mutex::new(DraftSessionManager::new()));
     let draft_pools_path = data_path.join("draft-pools.json");
     let draft_pools: SharedDraftPools = match draft_pools::DraftPools::from_path(&draft_pools_path)
@@ -4933,7 +4934,6 @@ async fn handle_full_game_submission(
     // take it by shared reference; only `dispatch_broker` and
     // `handle_client_message` need `&mut`. Do not "fix" this to `&mut`.
     identity: &SocketIdentity,
-    game_log: &Arc<logging::GameFileCache>,
 ) {
     let kind = submission.kind();
     let is_zero_count_debug_create = submission.is_zero_count_debug_create();
@@ -5110,17 +5110,6 @@ async fn handle_full_game_submission(
                     let _ = socket.send(Message::text(json)).await;
                 }
                 return;
-            }
-
-            // Per-game JSON debug log (issue #7978): one row per typed
-            // `GameLogEntry` the engine produced for this action, plus any
-            // AI follow-up actions run under the same lock. No-op unless
-            // `PHASE_LOG_DIR` is set.
-            game_log.write_game_log_entries(&game_code, &log_entries);
-            for (_, ai_result) in &ai_results {
-                // `.3` is `log_entries` — `session::ActionResult` is an
-                // unnamed tuple alias, not a struct.
-                game_log.write_game_log_entries(&game_code, &ai_result.3);
             }
 
             let terminal_deliveries = match terminal {
@@ -6038,7 +6027,6 @@ async fn handle_client_message(
                 game_db,
                 game_spectators,
                 identity,
-                &context.game_log,
             )
             .await;
         }
@@ -6055,7 +6043,6 @@ async fn handle_client_message(
                 game_db,
                 game_spectators,
                 identity,
-                &context.game_log,
             )
             .await;
         }

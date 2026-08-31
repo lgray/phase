@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::filter::filter_state_for_player;
+use crate::game_log::GameFileCache;
 use crate::persist::{PersistedLobbyMeta, PersistedSession};
 use crate::protocol::PlayerSlotInfo;
 use crate::reconnect::ReconnectManager;
@@ -337,6 +338,11 @@ pub enum HostingMode {
 
 pub struct GameSession {
     pub game_code: String,
+    /// Per-game JSON debug log sink (issue #7978), copied from the owning
+    /// `SessionManager` at creation and re-stamped, never deserialized, at
+    /// `SessionManager::restore_session` — same lifecycle as `hosting`
+    /// below, for the same reason: a runtime handle, not session state.
+    pub game_log: Arc<GameFileCache>,
     /// Server-issued durable identity for a Full session lifetime. This is
     /// stamped by phase-server after persistence binds the newly-created
     /// session; it is not trusted from the serialized game blob.
@@ -1070,6 +1076,15 @@ impl GameSession {
                 // point; a rule that promoted entries out of
                 // `takeback_history` could not, because `run_ai` pushes none.
                 self.observe_transition(&r.events, &r.state);
+                // Per-game JSON debug log (issue #7978): this is the single
+                // AI-transition mint point every caller of `run_ai` funnels
+                // through (takeback approve/reject, reconnect, game start,
+                // Play-vs-AI start, and the AI follow-up after a human
+                // action) — one hook here covers all of them, matching the
+                // human-action hooks in `handle_action`/
+                // `handle_interaction_with_rejection`.
+                self.game_log
+                    .write_game_log_entries(&self.game_code, &r.log_entries);
                 (
                     revision,
                     (
@@ -1228,6 +1243,12 @@ impl GameSession {
             display_names: ps.display_names,
             reservations: HashMap::new(),
             timer_seconds: ps.timer_seconds,
+            // Placeholder, same rationale as `hosting` below: a runtime
+            // handle, not persisted state, re-stamped by
+            // `SessionManager::restore_session`. `Arc::default()` is a
+            // disabled (no-op) sink, so nothing is under- or over-logged
+            // between here and that stamp.
+            game_log: Arc::default(),
             // Least-privilege placeholder. `hosting` is a property of THIS
             // process, not of the persisted blob, and is re-stamped by
             // `SessionManager::restore_session`. Between here and that stamp
@@ -1295,6 +1316,11 @@ pub struct SessionManager {
     pub hosting: HostingMode,
     /// Maps player_token -> game_code for token-based lookups.
     token_to_game: HashMap<String, String>,
+    /// Per-game JSON debug log sink (issue #7978), stamped onto every session
+    /// this manager creates or restores — same lifecycle as `hosting`.
+    /// Disabled (no-op writes) unless the transport wires a real one in
+    /// (`phase-server` does this once at startup, from `PHASE_LOG_DIR`).
+    pub game_log: Arc<GameFileCache>,
 }
 
 impl SessionManager {
@@ -1305,6 +1331,7 @@ impl SessionManager {
             reconnect: ReconnectManager::default(),
             hosting: HostingMode::Shared,
             token_to_game: HashMap::new(),
+            game_log: Arc::default(),
         }
     }
 
@@ -1317,6 +1344,7 @@ impl SessionManager {
             reconnect: ReconnectManager::new(grace_period),
             hosting: HostingMode::SingleUser,
             token_to_game: HashMap::new(),
+            game_log: Arc::default(),
         }
     }
 
@@ -1411,6 +1439,7 @@ impl SessionManager {
             reservations: HashMap::new(),
             timer_seconds,
             hosting: self.hosting,
+            game_log: Arc::clone(&self.game_log),
             player_count,
             ai_seats: HashSet::new(),
             ai_configs: HashMap::new(),
@@ -1866,6 +1895,16 @@ impl SessionManager {
         let post_state = session.state.clone();
         session.observe_transition(&result.events, &post_state);
 
+        // Per-game JSON debug log (issue #7978): written here, at the point
+        // the engine's `GameLogEntry` rows are minted, not by each transport
+        // call site — so every path that reaches this function (and
+        // `handle_interaction_with_rejection`, and AI transitions via
+        // `run_ai_action_batch`) is covered without remembering a hook per
+        // caller.
+        session
+            .game_log
+            .write_game_log_entries(&session.game_code, &result.log_entries);
+
         Ok((
             post_state,
             result.events,
@@ -1978,6 +2017,12 @@ impl SessionManager {
         // Same capture, same placement rationale, as `handle_action`.
         let post_state = session.state.clone();
         session.observe_transition(&applied.result.events, &post_state);
+
+        // Per-game JSON debug log (issue #7978) — see `handle_action`'s
+        // sibling comment above; this is the interaction-path mint point.
+        session
+            .game_log
+            .write_game_log_entries(&session.game_code, &applied.result.log_entries);
 
         Ok((
             post_state,
@@ -2153,6 +2198,7 @@ impl SessionManager {
         // sole entry for a restored session into a manager (`sessions.insert`
         // has exactly two call sites: create, and this one).
         session.hosting = self.hosting;
+        session.game_log = Arc::clone(&self.game_log);
         // The stamp above only stops the blob from driving a future
         // *derivation*. `debug_mode` / `debug_permitted` are serialized state
         // and arrive already set, so a sidecar's capability would otherwise
@@ -5587,6 +5633,7 @@ mod tests {
 
         let mut session = GameSession {
             game_code: "TEST01".to_string(),
+            game_log: Arc::default(),
             full_runtime: None,
             state_revision: 0,
             ai_driver_fault: None,
