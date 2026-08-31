@@ -49,12 +49,13 @@ use crate::types::interaction::{
     InteractionPreview, InteractionPreviewRequest, InteractionPreviewStatus, InteractionProgress,
     InteractionReasonCode, InteractionRelationConstraint, InteractionRelationSourceConstraint,
     InteractionResponse, InteractionResponseSpec, InteractionRoleCode, InteractionSessionId,
-    InteractionShortcutCountSpec, InteractionShortcutDecision, InteractionShortcutPoint,
-    InteractionShortcutPointKind, InteractionShortcutPreview, InteractionShortcutPreviewEntry,
-    InteractionShortcutPreviewFamily, InteractionShortcutReply, InteractionShortcutResponseCode,
-    InteractionSlotKind, InteractionSubmission, InteractionSummaryCode, InteractionWaitingForCode,
-    InteractionWaitingForKind, InteractionZoneCode, SelectionConstraint, SimultaneousDecisionKind,
-    ViewerInteraction, MAX_INTERACTION_LIST_LEN, MAX_SHORTCUT_PREVIEW_ELEMENTS,
+    InteractionShortcutCountSpec, InteractionShortcutDecision, InteractionShortcutPin,
+    InteractionShortcutPoint, InteractionShortcutPointKind, InteractionShortcutPreview,
+    InteractionShortcutPreviewEntry, InteractionShortcutPreviewFamily, InteractionShortcutReply,
+    InteractionShortcutResponseCode, InteractionSlotKind, InteractionSubmission,
+    InteractionSummaryCode, InteractionWaitingForCode, InteractionWaitingForKind,
+    InteractionZoneCode, SelectionConstraint, SimultaneousDecisionKind, ViewerInteraction,
+    MAX_INTERACTION_LIST_LEN, MAX_SHORTCUT_PREVIEW_ELEMENTS,
 };
 use crate::types::mana::{
     AbilityActivationScope, ManaColor, ManaCost, ManaRestriction, ManaSourceSelection, ManaType,
@@ -8644,6 +8645,12 @@ fn bound_outbound_response(
                 for choice_id in &pin.choice_ids {
                     budget.string(choice_id.as_str())?;
                 }
+                // Charged on the SAME cumulative ceiling the `choice_ids` legs charge, so the
+                // two walks over one struct cannot disagree about what is authoritative.
+                budget.list(pin.amounts.len())?;
+                for assignment in &pin.amounts {
+                    budget.string(assignment.choice_id.as_str())?;
+                }
             }
         }
         InteractionResponse::Text { value } => budget.string(value)?,
@@ -8758,6 +8765,14 @@ fn validate_response_bounds(response: &InteractionResponse) -> Result<(), Intera
                 budget.list(pin.choice_ids.len())?;
                 for choice_id in &pin.choice_ids {
                     budget.string(choice_id.as_str())?;
+                }
+                // A client-controlled list of client-controlled strings at a trust boundary,
+                // charged to the SAME cumulative ceiling the `choice_ids` legs charge — so a
+                // submission whose per-pin lists are each legal but whose sum is not is refused
+                // here, where the engine is the sole authority for these bounds.
+                budget.list(pin.amounts.len())?;
+                for assignment in &pin.amounts {
+                    budget.string(assignment.choice_id.as_str())?;
                 }
             }
             Ok(())
@@ -9570,15 +9585,31 @@ fn materialize_loop_shortcut_response(
         let pin = submitted
             .remove(&group)
             .ok_or(InteractionReasonCode::ConstraintUnsatisfied)?;
+        // CR 732.2a: a SEQUENCED pin answers ONE target position with an ordered announcement
+        // sequence, so its `choice_ids` may exceed the point's `max`. Every other pin decodes
+        // exactly as before.
+        let sequenced = !pin.amounts.is_empty() || pin.choice_ids.len() > point.max as usize;
+        // A multi-position slot needs a per-position carrier a flat list cannot express, so
+        // refuse rather than mis-read. A nested carrier is a new exported type and its own
+        // design.
+        if sequenced
+            && !(matches!(point.kind, InteractionShortcutPointKind::Targets) && point.max == 1)
+        {
+            return Err(InteractionReasonCode::ConstraintUnsatisfied);
+        }
         if pin.choice_ids.len() < point.min as usize
-            || pin.choice_ids.len() > point.max as usize
+            || (!sequenced && pin.choice_ids.len() > point.max as usize)
             || (point.unique
                 && pin.choice_ids.iter().collect::<HashSet<_>>().len() != pin.choice_ids.len())
         {
             return Err(InteractionReasonCode::ConstraintUnsatisfied);
         }
+        // CR 732.2a: `InteractionProgress.selected` counts POSITIONS ANSWERED. A sequenced pin
+        // answers its point's positions, not one per subject in the sequence; charging the
+        // sequence length would publish `selected > maximum`. On a flat pin the `.min` is the
+        // identity, because the guard above already bounds the length by `point.max`.
         selected = selected
-            .checked_add(pin.choice_ids.len() as u32)
+            .checked_add((pin.choice_ids.len() as u32).min(point.max))
             .ok_or(InteractionReasonCode::PayloadTooLarge)?;
         let candidate_indices = pin
             .choice_ids
@@ -9594,40 +9625,37 @@ fn materialize_loop_shortcut_response(
             .collect::<Result<Vec<_>, _>>()?;
         match point.kind {
             InteractionShortcutPointKind::Targets => {
-                let targets = candidate_indices
+                let subjects = candidate_indices
                     .iter()
-                    .map(|index| match &projection.candidates[*index] {
-                        // CR 601.2c: the HUMAN ingress of the SAME point kind, so it emits
-                        // the SAME spelling as the engine's own producer
-                        // (`game::engine::record_trigger_target_answer`). A candidate on a
-                        // `Targets` point is an announced TARGET, so the seat is judged by
-                        // CR 702.11c hexproof / CR 702.18a shroud / CR 702.16b protection
-                        // through the announcement-subject arm — never by existence alone.
-                        // Emitting `TargetPin::Player` here instead would select the
-                        // authority by WHO SUBMITTED the answer rather than by WHAT IT IS.
-                        LoopShortcutCandidateValue::Target(TargetRef::Player(player)) => {
-                            Ok(TargetPin::Scheduled(TargetSchedule::Constant(
-                                Ranking::one(AnnouncementSubject::Seat(*player)),
-                            )))
-                        }
-                        LoopShortcutCandidateValue::Target(TargetRef::Object(object_id)) => {
-                            let object = authoritative_state
-                                .objects
-                                .get(object_id)
-                                .ok_or(InteractionReasonCode::ConstraintUnsatisfied)?;
-                            // CR 400.7: bind the submitted target to this object's current
-                            // incarnation so a zone change cannot silently retarget the replay.
-                            Ok(TargetPin::ByIdentity(
-                                crate::types::game_state::YieldTarget::ThisObject {
-                                    source_id: *object_id,
-                                    incarnation: Some(object.incarnation),
-                                    trigger_description: None,
-                                },
-                            ))
-                        }
-                        _ => Err(InteractionReasonCode::InvalidAuthorityState),
+                    .map(|index| {
+                        shortcut_announcement_subject(
+                            &projection.candidates[*index],
+                            authoritative_state,
+                        )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                let targets = if sequenced {
+                    vec![decode_sequenced_targets(&count, pin, subjects)?]
+                } else {
+                    // CR 400.7 vs CR 601.2c: an OBJECT position keeps the identity spelling it
+                    // already had, re-bound through `decision_template::resolve_source`
+                    // (battlefield-only). Any other subject answers its position through the
+                    // one-entry `Ranking`, where `evaluate_schedule` judges it by
+                    // `targeting::player_is_legal_target` rather than by existence alone. The
+                    // ranked arm BINDS rather than names its variant: `evaluate_schedule`,
+                    // `game::visibility` and `types::actions` each match `AnnouncementSubject`
+                    // exhaustively, so a future subject variant still build-breaks where the
+                    // decision belongs — at the resolver, not at this ingress.
+                    subjects
+                        .into_iter()
+                        .map(|subject| match subject {
+                            AnnouncementSubject::Object(source) => TargetPin::ByIdentity(source),
+                            ranked => {
+                                TargetPin::Scheduled(TargetSchedule::Constant(Ranking::one(ranked)))
+                            }
+                        })
+                        .collect()
+                };
                 decisions.push(PinnedDecision::Targets {
                     slot: point.slot.clone(),
                     targets,
@@ -9697,30 +9725,22 @@ fn materialize_loop_shortcut_response(
         key: DecisionGroupKey::from_sources(&sources, DecisionKind::LoopChoice),
     });
     if let Some(template) = &template {
-        // TRAP REMOVAL, NOT A BUG FIX — recorded so the next reader does not "correct" this
-        // literal into `shortcut_validated_range(..)` and then wonder what changed. This
-        // decoder emits only ITERATION-INVARIANT pins, so validating at index 0 alone is
-        // correct by construction here: a wider range would re-resolve the same pin to the
-        // same value. That is the property doing the work, and it is stated as the property
-        // rather than as a list of variant names — the list has already moved once. Today
-        // the emitted set is `ByIdentity` (never reads `iteration` at all) and
-        // `Scheduled(TargetSchedule::Constant(..))`, whose arm in
-        // `decision_template::evaluate_schedule` selects its `Ranking` without consulting
-        // `iter` (unlike the `RoundRobin` / `Piecewise` arms beside it, which this decoder
-        // does not emit). Emitting a genuinely iteration-VARYING pin here would invalidate
-        // the literal, not just this comment.
-        // It is also strictly weaker than the declare-path firewall rather than a second
-        // hole — `1` is a prefix of any range that path validates. It cannot mint a
-        // `Fixed(0)` either: the count-spec projection's `Fixed` arm hard-codes `min: 1`
-        // beside its `debug_assert!(schema.max_iterations >= 1, ..)` and its clamp.
-        // ⚠ Navigation trap: `shortcut_drive_period`'s doc enumerates its own consumers, and
-        // this site consumes the pin firewall WITHOUT consuming that helper, so it is
-        // invisible from there.
+        // CR 732.2a: validate over the range the ACCEPTED COUNT will drive. This decoder now
+        // emits `TargetSchedule::Piecewise`, whose value at an index is not its value at index
+        // 0, so an index-0-only check would accept a declaration whose driven image leaves the
+        // offer's published legal set at an index the count reaches. The helper's precondition
+        // — a count already bounded — is discharged here by the count-spec projection, which
+        // computes `max = schema.max_iterations.min(MAX_SHORTCUT_CYCLES)` and admits only that
+        // window.
         //
-        // The `required` slot list is no longer derived here: `declaration_conforms` derives
-        // it from the SAME `authoritative_schema` this site already passed, so the coverage
-        // half and the value half can no longer drift apart per call site.
-        if !declaration_conforms(authoritative_schema, template, 1, authoritative_state) {
+        // The `required` slot list is still not derived here: `declaration_conforms` derives it
+        // from the SAME `authoritative_schema` this site already passed.
+        if !declaration_conforms(
+            authoritative_schema,
+            template,
+            crate::game::engine::shortcut_validated_range(&count, Some(template)),
+            authoritative_state,
+        ) {
             return Err(InteractionReasonCode::ConstraintUnsatisfied);
         }
     }
@@ -9746,6 +9766,120 @@ fn materialize_loop_shortcut_response(
             confirmable: true,
         },
     ))
+}
+
+/// CR 601.2c: the announcement subject one `Targets`-point candidate names.
+///
+/// THE ONE PLACE THIS MODULE NAMES AN ANNOUNCEMENT SUBJECT. The per-position pin and the
+/// sequenced pin both speak through it, so one announcement cannot acquire two spellings
+/// depending on which shape carried it. A candidate on a `Targets` point is an announced
+/// TARGET, so a seat takes the TARGET class — judged by `targeting::player_is_legal_target`
+/// (CR 702.11c hexproof / CR 702.18a shroud / CR 702.16b protection) — and never the
+/// CR 115.10a CHOICE class `TargetPin::Player`, whose authority is existence alone. Emitting
+/// that spelling here would select the authority by WHO SUBMITTED the answer rather than by
+/// WHAT IT IS.
+fn shortcut_announcement_subject(
+    candidate: &LoopShortcutCandidateValue,
+    state: &GameState,
+) -> Result<AnnouncementSubject, InteractionReasonCode> {
+    match candidate {
+        LoopShortcutCandidateValue::Target(TargetRef::Player(player)) => {
+            Ok(AnnouncementSubject::Seat(*player))
+        }
+        LoopShortcutCandidateValue::Target(TargetRef::Object(object_id)) => {
+            let object = state
+                .objects
+                .get(object_id)
+                .ok_or(InteractionReasonCode::ConstraintUnsatisfied)?;
+            // CR 400.7: bind the submitted target to this object's current incarnation so a
+            // zone change cannot silently retarget the replay.
+            Ok(AnnouncementSubject::Object(
+                crate::types::game_state::YieldTarget::ThisObject {
+                    source_id: *object_id,
+                    incarnation: Some(object.incarnation),
+                    trigger_description: None,
+                },
+            ))
+        }
+        _ => Err(InteractionReasonCode::InvalidAuthorityState),
+    }
+}
+
+/// CR 732.2a + CR 601.2c: decode ONE SEQUENCED `Targets` pin — an ordered announcement
+/// sequence for a SINGLE target position — into the one `TargetPin` it names.
+///
+/// The declared count IS the mode discriminant and also carries the number to partition. Its
+/// variant is decided by the OFFER: the count match above the pin loop maps a `Fixed` count
+/// spec to `Fixed` and an `UntilLethal` spec to `UntilLethal`, and refuses the mixed cell, so
+/// the client cannot choose the mode.
+///
+///   * `Fixed(n)` — `amounts` partitions the sequence one-for-one and in order, every part at
+///     least 1, summing to `n`. Segment starts are the running prefix sums, so the pin is a
+///     `TargetSchedule::Piecewise`. Positive parts summing to `n` put every segment start
+///     inside `0..n`, which is the range `game::engine::shortcut_validated_range` validates,
+///     so this producer can never mint a `ScheduleExhausted`.
+///   * `UntilLethal` — no declared count exists to partition, so `amounts` must be EMPTY and
+///     the pin is a `TargetSchedule::Constant` over the whole ranking. CR 732.2a: within one
+///     drive only `Ranking::head` resolves; the tail is the NEXT episode's pre-declaration,
+///     which is what keeps the declaration free of the conditional actions the rule bars.
+///
+/// `Ranking::new` validates the sequence for BOTH modes, and it is the only thing that can:
+/// `loop_shortcut_projection` hard-codes `unique: false` into every `Targets` point it mints,
+/// so `point.unique` cannot refuse a duplicate for any member of this class. On the order-only
+/// mode the duplicate-free clause is the type's own rule, exactly on subject: a repeated entry
+/// in a preference ordering makes the tail unreachable. On the FIXED mode it is this ingress's
+/// deliberate restriction rather than a rule consequence — two disjoint `Piecewise` segments
+/// naming one seat are two announcements at two iterations, and the engine accepts that shape.
+/// The admitted set is compositions of the declared count into positive parts over a
+/// DUPLICATE-FREE subset of the published candidates. Non-contiguous allocations are foreclosed
+/// here, and an authoring surface built on this ingress inherits the foreclosure.
+///
+/// The result is ONE `TargetPin`, so `declaration_conforms`' `targets.len()` window needs no
+/// relaxation and none is made.
+fn decode_sequenced_targets(
+    declared: &IterationCount,
+    pin: &InteractionShortcutPin,
+    subjects: Vec<AnnouncementSubject>,
+) -> Result<TargetPin, InteractionReasonCode> {
+    let sequence =
+        Ranking::new(subjects).map_err(|_| InteractionReasonCode::ConstraintUnsatisfied)?;
+    match declared {
+        IterationCount::UntilLethal => {
+            if !pin.amounts.is_empty() {
+                return Err(InteractionReasonCode::ConstraintUnsatisfied);
+            }
+            Ok(TargetPin::Scheduled(TargetSchedule::Constant(sequence)))
+        }
+        IterationCount::Fixed(declared) => {
+            // One amount per announced subject, in the sequence's own order. This conjunct
+            // also refuses the amount-free sequence: `choice_ids` longer than the point's
+            // `max` with no declared lengths cannot partition a finite count.
+            if pin.amounts.len() != pin.choice_ids.len() {
+                return Err(InteractionReasonCode::ConstraintUnsatisfied);
+            }
+            let mut start = 0u32;
+            let mut segments = Vec::with_capacity(pin.amounts.len());
+            for (assignment, (choice_id, subject)) in pin
+                .amounts
+                .iter()
+                .zip(pin.choice_ids.iter().zip(sequence.iter()))
+            {
+                // A composition's parts are POSITIVE: a zero is not a part of the declared
+                // count, and it would also collide two segment starts.
+                if assignment.choice_id != *choice_id || assignment.amount == 0 {
+                    return Err(InteractionReasonCode::ConstraintUnsatisfied);
+                }
+                segments.push((start, Ranking::one(subject.clone())));
+                start = start
+                    .checked_add(assignment.amount)
+                    .ok_or(InteractionReasonCode::PayloadTooLarge)?;
+            }
+            if start != *declared {
+                return Err(InteractionReasonCode::ConstraintUnsatisfied);
+            }
+            Ok(TargetPin::Scheduled(TargetSchedule::Piecewise(segments)))
+        }
+    }
 }
 
 fn decode_amount_assignments(

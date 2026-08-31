@@ -1395,24 +1395,17 @@ pub fn validate_pins(
 ///
 /// # `validated_range` STAYS A PARAMETER, and that is a measurement, not a hedge
 ///
-/// The two pre-existing call sites did NOT pass the same range, so folding one in would adopt
-/// one site's semantics for the other:
+/// The call sites do NOT pass the same range, so folding one in would adopt one site's
+/// semantics for the other:
 ///
-/// * the declare firewall passes `game::engine::shortcut_validated_range(&count, template)` —
-///   the range the ACCEPTED COUNT will drive;
-/// * the interaction decoder passes `1`, correct by construction there because it emits only
-///   ITERATION-INVARIANT pins. That is the property, stated as a property because the variant
-///   list has already moved once: the decoder emits [`TargetPin::ByIdentity`] (which
-///   [`resolve_target`] resolves without reading `iteration` at all) and
-///   [`TargetPin::Scheduled`] carrying [`TargetSchedule::Constant`], whose arm of
-///   [`evaluate_schedule`] selects its [`Ranking`] without consulting the index — unlike the
-///   `RoundRobin` / `Piecewise` arms beside it, which that decoder does not emit. Its verdict
-///   is therefore identical at any range ≥ 1.
-///
-/// Ranges are nested rather than contradictory — `0..n` re-checks are a superset of `0..m` for
-/// `m <= n`, so a wider range is strictly stricter — which is why a PUBLISHER must validate at
-/// the widest range it could be declared with: passing there implies passing at every count a
-/// declarer may name.
+/// * the declare firewall and the human ingress each pass
+///   `game::engine::shortcut_validated_range(&count, template)` — the range the ACCEPTED COUNT
+///   will drive;
+/// * the bounded PUBLISHER passes the same helper over the SCHEMA's own `iteration_count`, the
+///   widest count any declarer may name against it. Ranges nest — `0..n` re-checks are a
+///   superset of `0..m` for `m <= n`, so a publisher validating at its ceiling implies passing
+///   at every count a declarer could name, while a declarer must be checked at the count it
+///   actually named. Two questions, one helper, two arguments.
 ///
 /// # Returns `bool`, deliberately
 ///

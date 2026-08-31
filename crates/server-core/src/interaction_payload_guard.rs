@@ -34,8 +34,9 @@ mod tests {
     use super::*;
     use engine::game::interaction::MAX_INTERACTION_STRING_LEN;
     use engine::types::interaction::{
-        InteractionChoiceId, InteractionId, InteractionReasonCode, InteractionResponse,
-        InteractionShortcutDecision, InteractionShortcutPin, MAX_INTERACTION_LIST_LEN,
+        AmountAssignment, InteractionChoiceId, InteractionId, InteractionReasonCode,
+        InteractionResponse, InteractionShortcutDecision, InteractionShortcutPin,
+        MAX_INTERACTION_LIST_LEN,
     };
 
     fn choice(id: &str) -> InteractionChoiceId {
@@ -116,10 +117,45 @@ mod tests {
             .map(|group| InteractionShortcutPin {
                 group,
                 choice_ids: vec![choice("a"); per_pin],
+                amounts: Vec::new(),
             })
             .collect();
 
         for pin in &pins {
+            assert!(pin.choice_ids.len() <= MAX_INTERACTION_LIST_LEN);
+        }
+
+        let msg = submission(InteractionResponse::Shortcut {
+            decision: InteractionShortcutDecision::AcceptSuggested,
+            pins,
+        });
+
+        assert!(guard_interaction_submission_payload(&msg).is_err());
+    }
+
+    /// The same cumulative branch reached through `amounts` rather than
+    /// `choice_ids`: every pin's allocation list is individually legal and only
+    /// their sum crosses the ceiling. Drop the engine's `budget.list` /
+    /// `budget.string` charge for `amounts` and this row accepts.
+    #[test]
+    fn rejects_an_oversized_nested_shortcut_amount_budget() {
+        let per_pin = MAX_INTERACTION_LIST_LEN / 2;
+        let pins: Vec<InteractionShortcutPin> = (0..3)
+            .map(|group| InteractionShortcutPin {
+                group,
+                choice_ids: vec![choice("a")],
+                amounts: vec![
+                    AmountAssignment {
+                        choice_id: choice("a"),
+                        amount: 1,
+                    };
+                    per_pin
+                ],
+            })
+            .collect();
+
+        for pin in &pins {
+            assert!(pin.amounts.len() <= MAX_INTERACTION_LIST_LEN);
             assert!(pin.choice_ids.len() <= MAX_INTERACTION_LIST_LEN);
         }
 

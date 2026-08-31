@@ -4550,19 +4550,19 @@ fn until_lethal_fallback(
 /// `Scheduled(TargetSchedule::Constant(Ranking::one(AnnouncementSubject::Seat(..))))` for a
 /// CR 601.2c announced seat.
 ///
-/// (iii) The property that actually holds, and the one this function's return value depends on,
-/// is about ROTATION rather than about subjects: **no in-tree producer emits a multi-STEP
-/// schedule** (`RoundRobin` / `Piecewise`) **or a multi-entry `Ranking`**. Every seat-carrying
-/// schedule the engine mints is a one-step `Constant`, which lands on the `1` arm of the match
-/// below — the same `1` a `TargetPin::Player` lands on, so the split moved the spelling and not
-/// the period. `live_mandatory_loop_winner` crowns on PLAYER fallers, and a loop whose targets
-/// do not rotate produces no NEW player faller per cycle to aggregate. The only crownable >2p
-/// player drain pins ALL opponents every cycle (constant, period 1 — via the
-/// `Scheduled(Constant(_))` arm below since the split, via `TargetPin::Player(_)` before it,
-/// and those two arms return the same `1`). The seam is built for generality and a multi-cycle
-/// aggregation is fail-safe either way (a loop reaching the arm measures 1 cycle, finds no
-/// faller, does not crown), so a future ROTATING producer changes what must be re-argued here,
-/// not what this function returns.
+/// (iii) `game::interaction::materialize_loop_shortcut_response` emits a multi-entry `Constant`
+/// on an `UntilLethal` offer and a `Piecewise` on a `Fixed` one. THIS FUNCTION'S ANSWER IS
+/// UNCHANGED FOR BOTH, and the reason is which consumer sees which: its two consumers are
+/// [`shortcut_validated_range`]'s `UntilLethal` arm and `apply_until_lethal_shortcut`, both
+/// UNTIL-LETHAL paths, and the multi-STEP shape is minted only under a FIXED count, which reads
+/// its range off the count and never consults a schedule. The multi-entry `Constant` that does
+/// reach here lands on the `Constant(_)` arm and still returns 1 — correctly, since
+/// `evaluate_schedule` resolves `head()` only. `live_mandatory_loop_winner` crowns on PLAYER
+/// fallers, and a loop whose targets do not rotate produces no NEW player faller per cycle to
+/// aggregate. The seam is built for generality and a multi-cycle aggregation is fail-safe either
+/// way (a loop reaching the arm measures 1 cycle, finds no faller, does not crown), so a future
+/// ROTATING producer on an until-lethal path changes what must be re-argued here, not what this
+/// function returns.
 ///
 /// CR 732.2a SAFETY LIMIT: the returned period is clamped to `MAX_SHORTCUT_CYCLES`. Both
 /// consumers derive their `0..period` range from this one helper (`validate_pins` and
@@ -4621,14 +4621,17 @@ fn shortcut_drive_period(
 /// and at a count of 1 over a length-2 rotation `Ok` is the CORRECT answer. Do not re-derive
 /// and re-add that term.
 ///
-/// PRECONDITION, discharged at its call site: the count is already cap-checked, because
-/// `handle_declare_shortcut` runs the `MAX_SHORTCUT_CYCLES` / `max_iterations` match ABOVE
-/// the pin-validation block. Without that ordering a hostile `Fixed(4e9)` would become a
-/// four-billion-iteration validation loop. Exactly ONE call site consumes this helper.
+/// PRECONDITION, DISCHARGED BY EACH CALLER: the count handed in is already bounded. A caller
+/// that has not bounded it must not call this — an unchecked `Fixed(4e9)` becomes a
+/// four-billion-iteration validation loop. `handle_declare_shortcut` discharges it by running
+/// the `MAX_SHORTCUT_CYCLES` / `max_iterations` match above its pin-validation block;
+/// `build_bounded_declaration` by passing the schema's own `iteration_count`; the interaction
+/// decoder by the count-spec projection, which computes
+/// `max = schema.max_iterations.min(MAX_SHORTCUT_CYCLES)` and admits only that window.
 ///
 /// Exhaustive over `IterationCount` with no wildcard, so a future variant build-breaks here
 /// and forces a range decision instead of silently inheriting one.
-fn shortcut_validated_range(
+pub(crate) fn shortcut_validated_range(
     count: &crate::analysis::decision_template::IterationCount,
     template: Option<&crate::analysis::decision_template::DecisionTemplate>,
 ) -> crate::analysis::decision_template::IterationIndex {

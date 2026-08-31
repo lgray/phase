@@ -905,6 +905,27 @@ pub struct InteractionShortcutPoint {
 pub struct InteractionShortcutPin {
     pub group: u32,
     pub choice_ids: Vec<InteractionChoiceId>,
+    /// CR 732.2a + CR 601.2c: the SEGMENT LENGTHS of the announcement sequence
+    /// `choice_ids` names, positionally and one-for-one — how many repetitions each
+    /// announced subject takes. Empty on every pin that answers its point per
+    /// position.
+    ///
+    /// The offer's own published count decides which kind a sequence is. A FIXED
+    /// count is partitioned: `amounts` is non-empty and sums to the DECLARED count,
+    /// every part at least 1. An UNTIL-LETHAL offer declares ORDER ONLY and `amounts`
+    /// must be EMPTY, because there is no declared count to partition and an amount
+    /// there could only be a sentinel.
+    ///
+    /// A sequenced pin is admissible only on a `Targets` point whose published `max`
+    /// is 1: a multi-position slot needs a per-position carrier a flat list cannot
+    /// express, so it is refused rather than mis-read.
+    ///
+    /// `#[serde(default)]` keeps the field additive on the wire; `skip_serializing_if`
+    /// keeps a pin carrying none byte-identical to the pre-field shape. Neither makes
+    /// it additive at CONSTRUCTION — every struct literal must still name it, and
+    /// nothing here uses `..Default::default()`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub amounts: Vec<AmountAssignment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

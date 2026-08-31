@@ -2,6 +2,48 @@ use engine::game::game_object::GameObject;
 use engine::types::ability::{TargetFilter, TypeFilter};
 use engine::types::actions::GameAction;
 use engine::types::game_state::WaitingFor;
+use engine::types::interaction::{
+    InteractionResponse, InteractionShortcutDecision, InteractionSubmission,
+};
+
+/// U8 byte-linkage: the Rust end of the one fixture the TS row also reads. The
+/// variant is asserted before the values, so a fixture that parsed into the
+/// wrong response variant cannot pass on the values alone. Mutate one `amount`
+/// in the JSON and both ends fail.
+#[test]
+fn shortcut_allocation_submission_fixture_matches_curated_client_contract() {
+    let parsed: InteractionSubmission = serde_json::from_str(include_str!(
+        "../../../../fixtures/adapter-contract/shortcut_allocation_submission.json"
+    ))
+    .unwrap();
+    assert_eq!(parsed.interaction_id.0, "i-1");
+    let (decision, pins) = match parsed.response {
+        InteractionResponse::Shortcut { decision, pins } => (decision, pins),
+        other => panic!("wrong variant: {other:?}"),
+    };
+    assert_eq!(
+        decision,
+        InteractionShortcutDecision::Fixed { iterations: 18 }
+    );
+    let [pin] = pins.as_slice() else {
+        panic!("expected exactly one pin: {pins:?}");
+    };
+    assert_eq!(pin.group, 2);
+    assert_eq!(
+        pin.choice_ids
+            .iter()
+            .map(|id| id.0.as_str())
+            .collect::<Vec<_>>(),
+        ["i-1.0.1.k4", "i-1.0.1.k5", "i-1.0.1.k6"]
+    );
+    assert_eq!(
+        pin.amounts
+            .iter()
+            .map(|assignment| (assignment.choice_id.0.as_str(), assignment.amount))
+            .collect::<Vec<_>>(),
+        [("i-1.0.1.k4", 6), ("i-1.0.1.k5", 6), ("i-1.0.1.k6", 6)]
+    );
+}
 
 #[test]
 fn game_action_fixture_matches_curated_client_contract() {

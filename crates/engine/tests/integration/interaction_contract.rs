@@ -2630,6 +2630,7 @@ fn preview_rejects_oversized_inputs_before_cloning_or_materializing() {
                     .map(|group| InteractionShortcutPin {
                         group: group as u32,
                         choice_ids: vec![InteractionChoiceId("x".to_string())],
+                        amounts: Vec::new(),
                     })
                     .collect(),
             },
@@ -4355,6 +4356,7 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
         .map(|group| InteractionShortcutPin {
             group: group as u32,
             choice_ids: vec![points[group].candidate_ids[0].clone()],
+            amounts: Vec::new(),
         })
         .collect::<Vec<_>>();
     let valid = preview_interaction(
@@ -4518,6 +4520,7 @@ fn loop_shortcut_human_ingress_emits_the_target_class_spelling_for_a_submitted_s
                     pins: vec![InteractionShortcutPin {
                         group: 0,
                         choice_ids: vec![points[0].candidate_ids[candidate].clone()],
+                        amounts: Vec::new(),
                     }],
                 },
             },
@@ -5534,5 +5537,758 @@ fn activate_mana_source_labels_fixed_and_flexible_sacrificial_sources() {
          still carries both produced units; `manual_selection_for_option` collapses \
          it to Colorless + DeferredColorChoice, so resolving it through the land \
          authority (the #6944 bug) would drop this label entirely"
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// PHASE 4 — the SEQUENCED-pin ingress: the A3 coherence relation, the hostile allocations,
+// the order-only mode, the wire charge, serde additivity, and the progress window.
+// ═════════════════════════════════════════════════════════════════════════════════════════
+
+/// One staged loop-shortcut offer whose points are exactly `kinds`, each on its own slot index
+/// over a live battlefield creature read at its CURRENT incarnation (CR 400.7).
+///
+/// The slot source is a live battlefield object for the reason
+/// [`loop_shortcut_human_ingress_emits_the_target_class_spelling_for_a_submitted_seat`] records
+/// above: an `AllCopies` source no object carries resolves `None` and fails `validate_pins`
+/// closed, which would make every positive leg below unsatisfiable and invite loosening a
+/// fail-closed predicate to "fix" it.
+fn stage_sequenced_offer(
+    label: &str,
+    iteration_count: IterationCount,
+    max_iterations: u32,
+    kinds: Vec<DecisionPointKind>,
+) -> (engine::game::scenario::GameRunner, Vec<DecisionSlot>) {
+    let mut scenario = GameScenario::new_n_player(4, 42);
+    let source = scenario.add_creature(P0, "P4 Ability Source", 1, 1).id();
+    let mut runner = scenario.build();
+    let incarnation = runner.state().objects[&source].incarnation;
+    let slots: Vec<DecisionSlot> = (0..kinds.len())
+        .map(|index| DecisionSlot {
+            source: engine::types::game_state::YieldTarget::ThisObject {
+                source_id: source,
+                incarnation: Some(incarnation),
+                trigger_description: None,
+            },
+            index: index as u8,
+        })
+        .collect();
+    runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
+        proposer: P0,
+        predicted_winner: Some(P0),
+        certificate: engine::analysis::loop_check::LoopCertificate {
+            unbounded: Vec::new(),
+            win_kind: engine::analysis::loop_check::WinKind::Advantage,
+            mandatory: false,
+            residual_board_delta: engine::analysis::resource::BoardDelta::default(),
+            per_cycle: None,
+        },
+        schema: ShortcutDecisionSchema {
+            iteration_count,
+            max_iterations,
+            points: slots
+                .iter()
+                .cloned()
+                .zip(kinds)
+                .map(|(slot, kind)| DecisionPoint { slot, kind })
+                .collect(),
+            convoke_tappable_count: 0,
+        },
+        declaration: None,
+    };
+    bind(runner.state_mut(), label);
+    (runner, slots)
+}
+
+/// The three opponent seats of the staged 4-player board, as a `Targets` point over all of
+/// them at a single position.
+fn victims_point(min_targets: u32, max_targets: u32) -> DecisionPointKind {
+    DecisionPointKind::Targets {
+        legal_targets: vec![
+            TargetRef::Player(P1),
+            TargetRef::Player(PlayerId(2)),
+            TargetRef::Player(PlayerId(3)),
+        ],
+        min_targets,
+        max_targets,
+        ordered: true,
+    }
+}
+
+fn shortcut_points(
+    view: &engine::types::interaction::ViewerInteraction,
+) -> Vec<InteractionShortcutPoint> {
+    let InteractionOpportunityResponse::Schema {
+        spec: InteractionResponseSpec::Shortcut { points, .. },
+        ..
+    } = &view.opportunities[0].response
+    else {
+        panic!("the loop shortcut offer uses a shortcut schema");
+    };
+    points.clone()
+}
+
+fn submit_pins(
+    state: &GameState,
+    view: &engine::types::interaction::ViewerInteraction,
+    decision: InteractionShortcutDecision,
+    pins: Vec<InteractionShortcutPin>,
+) -> Result<GameAction, engine::game::interaction::InteractionSubmitError> {
+    resolve_interaction_response(
+        state,
+        P0,
+        &InteractionSubmission {
+            interaction_id: view.opportunities[0].interaction_id.clone(),
+            response: InteractionResponse::Shortcut { decision, pins },
+        },
+    )
+}
+
+/// A sequenced pin naming `allocation` as `(candidate index, amount)` pairs against `point`.
+fn sequenced_pin(
+    point: &InteractionShortcutPoint,
+    allocation: &[(usize, u32)],
+) -> InteractionShortcutPin {
+    InteractionShortcutPin {
+        group: point.group,
+        choice_ids: allocation
+            .iter()
+            .map(|(candidate, _)| point.candidate_ids[*candidate].clone())
+            .collect(),
+        amounts: allocation
+            .iter()
+            .map(|(candidate, amount)| AmountAssignment {
+                choice_id: point.candidate_ids[*candidate].clone(),
+                amount: *amount,
+            })
+            .collect(),
+    }
+}
+
+/// **Row (3)** — the A3 COHERENCE RELATION, each refusal with its point named and each paired
+/// against the conforming declaration that differs only in the clause under test.
+///
+/// # Discrimination
+///
+/// Delete any one conjunct and its own leg starts accepting while the others stay red.
+///
+/// # The paired positive that proves the relaxation is CONFINED
+///
+/// A pin whose `choice_ids.len()` is inside `[min, max]` with EMPTY `amounts` still decodes
+/// exactly as before this phase — asserted here, and asserted independently on both candidate
+/// classes by the shipped
+/// [`loop_shortcut_human_ingress_emits_the_target_class_spelling_for_a_submitted_seat`].
+#[test]
+fn p4_row_3_the_sequenced_pin_coherence_relation_refuses_each_incoherent_shape() {
+    use engine::analysis::decision_template::{
+        AnnouncementSubject, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+    };
+
+    // ── A `Fixed` offer publishing a single-position Targets point AND a MayChoice point ──
+    let (runner, slots) = stage_sequenced_offer(
+        "p4-coherence-fixed",
+        IterationCount::Fixed(6),
+        6,
+        vec![victims_point(1, 1), DecisionPointKind::MayChoice],
+    );
+    let view = priority_view(runner.state());
+    let points = shortcut_points(&view);
+    assert_eq!(
+        (points.len(), points[0].max, points[0].candidate_ids.len()),
+        (2, 1, 3),
+        "reach-guard: a single-position Targets point over three candidates, beside a \
+         non-Targets point — the two shapes every leg below distinguishes"
+    );
+    let may_pin = InteractionShortcutPin {
+        group: points[1].group,
+        choice_ids: vec![points[1].candidate_ids[0].clone()],
+        amounts: Vec::new(),
+    };
+    let fixed = InteractionShortcutDecision::Fixed { iterations: 6 };
+
+    // ── PAIRED POSITIVE: a FLAT pin decodes exactly as at BASE ──
+    let flat = submit_pins(
+        runner.state(),
+        &view,
+        fixed,
+        vec![
+            InteractionShortcutPin {
+                group: points[0].group,
+                choice_ids: vec![points[0].candidate_ids[0].clone()],
+                amounts: Vec::new(),
+            },
+            may_pin.clone(),
+        ],
+    )
+    .expect("a flat in-window pin with empty amounts still decodes");
+    let GameAction::DeclareShortcut {
+        template: Some(flat_template),
+        ..
+    } = flat
+    else {
+        panic!("a shortcut acceptance carrying pins materializes a template");
+    };
+    assert!(
+        flat_template.decisions.contains(&PinnedDecision::Targets {
+            slot: slots[0].clone(),
+            targets: vec![TargetPin::Scheduled(TargetSchedule::Constant(
+                Ranking::one(AnnouncementSubject::Seat(P1))
+            ))],
+        }),
+        "the relaxation is CONFINED to sequenced pins: a flat pin still lowers to the \
+         one-entry per-position spelling. got {:?}",
+        flat_template.decisions
+    );
+
+    // ── PAIRED POSITIVE: the SEQUENCED pin the refusals below each perturb by one clause ──
+    let conforming = sequenced_pin(&points[0], &[(0, 1), (1, 2), (2, 3)]);
+    assert!(
+        submit_pins(
+            runner.state(),
+            &view,
+            fixed,
+            vec![conforming.clone(), may_pin.clone()]
+        )
+        .is_ok(),
+        "paired positive: the conforming allocation is ACCEPTED, so every refusal below is \
+         attributable to its own clause rather than to an ingress refusing everything"
+    );
+
+    // 1 — `amounts` non-empty on a point whose kind is not `Targets` ⇒ the sequenced gate.
+    let mut amounts_on_may = may_pin.clone();
+    amounts_on_may.amounts = vec![AmountAssignment {
+        choice_id: points[1].candidate_ids[0].clone(),
+        amount: 6,
+    }];
+    assert!(
+        submit_pins(
+            runner.state(),
+            &view,
+            fixed,
+            vec![
+                InteractionShortcutPin {
+                    group: points[0].group,
+                    choice_ids: vec![points[0].candidate_ids[0].clone()],
+                    amounts: Vec::new(),
+                },
+                amounts_on_may
+            ]
+        )
+        .is_err(),
+        "a sequenced pin is admissible only on a `Targets` point"
+    );
+
+    // 3 — `amounts.len() != choice_ids.len()`.
+    let mut short_amounts = conforming.clone();
+    short_amounts.amounts.pop();
+    short_amounts.amounts[1].amount = 5;
+    assert!(
+        submit_pins(
+            runner.state(),
+            &view,
+            fixed,
+            vec![short_amounts, may_pin.clone()]
+        )
+        .is_err(),
+        "one amount per announced subject, positionally"
+    );
+
+    // 4 — `amounts[i].choice_id != choice_ids[i]` at some `i`: the SAME multiset of ids and
+    //     the SAME sum, differing only in the positional pairing.
+    let mut transposed = conforming.clone();
+    transposed.amounts.swap(0, 1);
+    assert!(
+        submit_pins(
+            runner.state(),
+            &view,
+            fixed,
+            vec![transposed, may_pin.clone()]
+        )
+        .is_err(),
+        "the positional compare: an allocation whose amounts are attached to the wrong \
+         subjects is not the allocation its `choice_ids` name"
+    );
+
+    // 6 — `amounts` EMPTY with `choice_ids` longer than the point's `max` on a `Fixed` offer:
+    //     a sequence with no declared lengths cannot partition a finite count. This leg is
+    //     also what shows rows (1), (1b) and (1c) depend on the `amounts` field: the same
+    //     multi-candidate pin without it is refused.
+    let mut amount_free = conforming.clone();
+    amount_free.amounts.clear();
+    assert!(
+        submit_pins(
+            runner.state(),
+            &view,
+            fixed,
+            vec![amount_free, may_pin.clone()]
+        )
+        .is_err(),
+        "an amount-free sequence cannot partition a declared count"
+    );
+
+    // ── A `Targets` point whose published `max` is NOT 1: BOTH sequenced entries refused ──
+    let (wide_runner, _) = stage_sequenced_offer(
+        "p4-coherence-wide",
+        IterationCount::Fixed(6),
+        6,
+        vec![victims_point(1, 2)],
+    );
+    let wide_view = priority_view(wide_runner.state());
+    let wide_points = shortcut_points(&wide_view);
+    assert_eq!(
+        wide_points[0].max, 2,
+        "reach-guard: this offer's Targets point is multi-position, which is the shape A3 \
+         declines to represent"
+    );
+    assert!(
+        submit_pins(
+            wide_runner.state(),
+            &wide_view,
+            fixed,
+            vec![sequenced_pin(&wide_points[0], &[(0, 2), (1, 4)])]
+        )
+        .is_err(),
+        "`amounts` non-empty on a point whose max is not 1 ⇒ refused"
+    );
+    assert!(
+        submit_pins(
+            wide_runner.state(),
+            &wide_view,
+            fixed,
+            vec![InteractionShortcutPin {
+                group: wide_points[0].group,
+                choice_ids: wide_points[0].candidate_ids.clone(),
+                amounts: Vec::new(),
+            }]
+        )
+        .is_err(),
+        "`choice_ids` longer than max on a point whose max is not 1 ⇒ refused by the same gate"
+    );
+    assert!(
+        submit_pins(
+            wide_runner.state(),
+            &wide_view,
+            fixed,
+            vec![InteractionShortcutPin {
+                group: wide_points[0].group,
+                choice_ids: wide_points[0].candidate_ids[..2].to_vec(),
+                amounts: Vec::new(),
+            }]
+        )
+        .is_ok(),
+        "paired positive on the SAME offer: a flat pin filling both positions is accepted, so \
+         the two refusals above are the sequenced gate and not a broken board"
+    );
+
+    // 5 — `amounts` non-empty on an `UntilLethal` offer ⇒ the order-only arm's own conjunct.
+    let (lethal_runner, _) = stage_sequenced_offer(
+        "p4-coherence-until-lethal",
+        IterationCount::UntilLethal,
+        6,
+        vec![victims_point(1, 1)],
+    );
+    let lethal_view = priority_view(lethal_runner.state());
+    let lethal_points = shortcut_points(&lethal_view);
+    assert!(
+        submit_pins(
+            lethal_runner.state(),
+            &lethal_view,
+            InteractionShortcutDecision::AcceptSuggested,
+            vec![sequenced_pin(&lethal_points[0], &[(0, 1), (1, 2)])]
+        )
+        .is_err(),
+        "there is no declared count to partition, so an amount there could only be a sentinel"
+    );
+}
+
+/// **Row (4)** — HOSTILE ROWS ON THE ALLOCATION ITSELF, each with its refusal point named.
+///
+/// The middle-seat hexproof-after-latch leg lives on the real 4p dump, in
+/// `fantastic_four_bounded_loop::p4_row_2_a_later_segment_that_went_illegal_refuses_the_whole_declaration`,
+/// where a live board can actually grant it.
+#[test]
+fn p4_row_4_hostile_allocations_are_refused_each_at_its_own_guard() {
+    let (runner, _) = stage_sequenced_offer(
+        "p4-hostile-allocations",
+        IterationCount::Fixed(6),
+        6,
+        vec![victims_point(1, 1)],
+    );
+    let view = priority_view(runner.state());
+    let points = shortcut_points(&view);
+    let fixed = InteractionShortcutDecision::Fixed { iterations: 6 };
+
+    assert!(
+        submit_pins(
+            runner.state(),
+            &view,
+            fixed,
+            vec![sequenced_pin(&points[0], &[(0, 1), (1, 2), (2, 3)])]
+        )
+        .is_ok(),
+        "paired positive: the conforming allocation is accepted"
+    );
+
+    // Sum != the declared count ⇒ `start != *declared`.
+    assert!(
+        submit_pins(
+            runner.state(),
+            &view,
+            fixed,
+            vec![sequenced_pin(&points[0], &[(0, 1), (1, 2), (2, 2)])]
+        )
+        .is_err(),
+        "a composition of the declared count sums to it"
+    );
+
+    // A `choice_id` outside the point's `candidate_ids` ⇒ the `'k'` resolution, `UnknownChoice`.
+    let mut unknown = sequenced_pin(&points[0], &[(0, 1), (1, 2), (2, 3)]);
+    unknown.choice_ids[2] = InteractionChoiceId("not-an-offered-candidate".to_string());
+    unknown.amounts[2].choice_id = unknown.choice_ids[2].clone();
+    assert_eq!(
+        submit_pins(runner.state(), &view, fixed, vec![unknown])
+            .expect_err("an unoffered candidate is refused")
+            .code,
+        InteractionReasonCode::UnknownChoice,
+        "the sequence resolves against the POINT's own candidate indices, exactly as the flat \
+         path already does"
+    );
+
+    // A DUPLICATE subject ⇒ `Ranking::new`'s `DuplicateSubject`. Load-bearing for the whole
+    // class, not for this fixture: `loop_shortcut_projection`'s `Targets` arm hard-codes
+    // `unique: false` into every point it mints, so `point.unique` can never refuse one.
+    assert!(
+        !points[0].unique,
+        "reach-guard: the published point does NOT carry the uniqueness flag, so the refusal \
+         below is `Ranking`'s type invariant and not the point's own guard"
+    );
+    assert!(
+        submit_pins(
+            runner.state(),
+            &view,
+            fixed,
+            vec![sequenced_pin(&points[0], &[(0, 1), (1, 2), (0, 3)])]
+        )
+        .is_err(),
+        "a duplicate subject is refused at `Ranking::new`. On the FIXED path this is this \
+         ingress's deliberate foreclosure of NON-CONTIGUOUS allocations rather than a rule \
+         consequence — the engine itself accepts two disjoint segments naming one seat"
+    );
+
+    // A ZERO-amount segment ⇒ a composition's parts are positive.
+    assert!(
+        submit_pins(
+            runner.state(),
+            &view,
+            fixed,
+            vec![sequenced_pin(&points[0], &[(0, 0), (1, 2), (2, 4)])]
+        )
+        .is_err(),
+        "a zero is not a part of the declared count, and would collide two segment starts"
+    );
+}
+
+/// **Row (5) — U5, ORDER ONLY.** An `UntilLethal` offer's sequenced pin yields ONE
+/// `Constant(Ranking)` with more than one entry, in the SUBMITTED order.
+///
+/// # Discrimination
+///
+/// Swap `Constant(sequence)` for `Ranking::one(head)` ⇒ the multi-entry assertion fails. Swap
+/// in a sorted sequence ⇒ the order assertion fails, because the submitted order is the
+/// REVERSE of the published candidate order.
+///
+/// # Paired positive reach-guard
+///
+/// The submission returns `Ok(GameAction::DeclareShortcut { .. })` end to end, so
+/// `declaration_conforms` ran and passed. Without it a decoder that had started refusing
+/// everything would satisfy the duplicate leg below.
+#[test]
+fn p4_row_5_an_until_lethal_sequenced_pin_declares_order_only() {
+    use engine::analysis::decision_template::{
+        AnnouncementSubject, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+    };
+
+    let (runner, slots) = stage_sequenced_offer(
+        "p4-order-only",
+        IterationCount::UntilLethal,
+        6,
+        vec![victims_point(1, 1)],
+    );
+    let view = priority_view(runner.state());
+    let points = shortcut_points(&view);
+    assert_eq!(
+        points[0].candidate_ids.len(),
+        3,
+        "reach-guard: three candidates, so a submitted order can differ from the published one"
+    );
+
+    // Submitted in REVERSE published order, so a decoder that sorted or that kept only the
+    // head cannot satisfy the assertion below.
+    let reversed: Vec<InteractionChoiceId> =
+        points[0].candidate_ids.iter().rev().cloned().collect();
+    let action = submit_pins(
+        runner.state(),
+        &view,
+        InteractionShortcutDecision::AcceptSuggested,
+        vec![InteractionShortcutPin {
+            group: points[0].group,
+            choice_ids: reversed,
+            amounts: Vec::new(),
+        }],
+    )
+    .expect(
+        "paired positive: the order-only submission is accepted end to end, so \
+         `declaration_conforms` ran and passed",
+    );
+    let GameAction::DeclareShortcut {
+        template: Some(template),
+        count,
+    } = action
+    else {
+        panic!("a shortcut acceptance carrying pins materializes a template");
+    };
+    assert_eq!(count, IterationCount::UntilLethal);
+    assert_eq!(
+        template.decisions,
+        vec![PinnedDecision::Targets {
+            slot: slots[0].clone(),
+            targets: vec![TargetPin::Scheduled(TargetSchedule::Constant(
+                Ranking::new(vec![
+                    AnnouncementSubject::Seat(PlayerId(3)),
+                    AnnouncementSubject::Seat(PlayerId(2)),
+                    AnnouncementSubject::Seat(P1),
+                ])
+                .expect("three distinct seats are a legal ranking")
+            ))],
+        }],
+        "CR 732.2a: ONE pin carrying the whole ordered preference, in the SUBMITTED order. \
+         Only `Ranking::head` resolves within a drive; the tail is the next episode's \
+         pre-declaration, which is what keeps the declaration free of conditional actions"
+    );
+
+    // A DUPLICATE seat is refused at `Ranking::new`, asserted THROUGH THE WIRE PATH rather
+    // than by calling the constructor — the `#[serde(try_from)]` shim is what makes the wire
+    // assertion meaningful, since the invariant holds on every route into the type.
+    assert!(
+        submit_pins(
+            runner.state(),
+            &view,
+            InteractionShortcutDecision::AcceptSuggested,
+            vec![InteractionShortcutPin {
+                group: points[0].group,
+                choice_ids: vec![
+                    points[0].candidate_ids[0].clone(),
+                    points[0].candidate_ids[1].clone(),
+                    points[0].candidate_ids[0].clone(),
+                ],
+                amounts: Vec::new(),
+            }]
+        )
+        .is_err(),
+        "a repeated entry in a preference ordering makes its tail unreachable"
+    );
+}
+
+/// **Row (6), engine side** — the inbound wire charge for `amounts`, on the SAME cumulative
+/// budget the `choice_ids` legs already charge.
+///
+/// Cumulative overflow across pins is the only nested branch in the validator and exactly what
+/// a naive per-field guard misses. The server-core sibling is
+/// `server_core::interaction_payload_guard::rejects_an_oversized_nested_shortcut_amount_budget`;
+/// revert the charge and BOTH accept.
+#[test]
+fn p4_row_6_the_inbound_wire_charge_bounds_amounts_cumulatively() {
+    let per_pin = MAX_INTERACTION_LIST_LEN / 2;
+    let assignment = AmountAssignment {
+        choice_id: InteractionChoiceId("a".to_string()),
+        amount: 1,
+    };
+    let pins: Vec<InteractionShortcutPin> = (0..3)
+        .map(|group| InteractionShortcutPin {
+            group,
+            choice_ids: vec![InteractionChoiceId("a".to_string())],
+            amounts: vec![assignment.clone(); per_pin],
+        })
+        .collect();
+    for pin in &pins {
+        assert!(
+            pin.amounts.len() <= MAX_INTERACTION_LIST_LEN,
+            "each pin's allocation list is INDIVIDUALLY legal, so the refusal below is the \
+             cumulative ceiling and not a per-field one"
+        );
+    }
+    let submission = |pins: Vec<InteractionShortcutPin>| InteractionSubmission {
+        interaction_id: engine::types::interaction::InteractionId("i-1".to_string()),
+        response: InteractionResponse::Shortcut {
+            decision: InteractionShortcutDecision::AcceptSuggested,
+            pins,
+        },
+    };
+    assert!(
+        engine::game::interaction::bound_interaction_submission(&submission(pins)).is_err(),
+        "the sum of the per-pin `amounts` lists crosses the cumulative ceiling"
+    );
+    assert!(
+        engine::game::interaction::bound_interaction_submission(&submission(vec![
+            InteractionShortcutPin {
+                group: 0,
+                choice_ids: vec![InteractionChoiceId("a".to_string())],
+                amounts: vec![assignment; per_pin],
+            }
+        ]))
+        .is_ok(),
+        "paired positive: one pin carrying the same per-pin list is ACCEPTED, so the refusal \
+         above is the SUM and not the list length"
+    );
+}
+
+/// **Row (8)** — `#[serde(default)]` ADDITIVITY, PROVEN rather than asserted.
+///
+/// A submission serialized WITHOUT `amounts` deserializes to an empty vec and drives the
+/// pre-phase-4 behaviour unchanged. Remove the attribute ⇒ the parse errors and this row
+/// fails. The `skip_serializing_if` half is the stronger property: a pin carrying no amounts
+/// is BYTE-IDENTICAL to the pre-field wire shape, which is what keeps this field additive for
+/// the protocol version already in the tree.
+#[test]
+fn p4_row_8_the_amounts_field_is_additive_on_the_wire() {
+    let legacy = r#"{"group":0,"choiceIds":["i-1.0.0.k0"]}"#;
+    let parsed: InteractionShortcutPin =
+        serde_json::from_str(legacy).expect("a pre-field payload still parses");
+    assert_eq!(parsed.group, 0);
+    assert!(
+        parsed.amounts.is_empty(),
+        "a payload with no `amounts` key decodes to the empty allocation, which is the shape \
+         every flat pin already had"
+    );
+    assert_eq!(
+        serde_json::to_string(&parsed).expect("a pin serializes"),
+        legacy,
+        "`skip_serializing_if` keeps a pin carrying no amounts byte-identical to the \
+         pre-field wire shape"
+    );
+
+    // The paired positive: an amount-BEARING payload parses and carries them, so the row is
+    // not passing because both shapes are rejected.
+    let bearing = r#"{"group":0,"choiceIds":["i-1.0.0.k0"],"amounts":[{"choiceId":"i-1.0.0.k0","amount":3}]}"#;
+    let carried: InteractionShortcutPin =
+        serde_json::from_str(bearing).expect("an amount-bearing payload parses");
+    assert_eq!(
+        carried.amounts,
+        vec![AmountAssignment {
+            choice_id: InteractionChoiceId("i-1.0.0.k0".to_string()),
+            amount: 3,
+        }]
+    );
+    assert_eq!(
+        serde_json::to_string(&carried).expect("a pin serializes"),
+        bearing,
+        "the amount-bearing shape round-trips on the same wire key"
+    );
+
+    // And a legacy-shaped submission still DRIVES the pre-phase-4 behaviour end to end.
+    let (runner, _) = stage_sequenced_offer(
+        "p4-serde-additivity",
+        IterationCount::Fixed(6),
+        6,
+        vec![victims_point(1, 1)],
+    );
+    let view = priority_view(runner.state());
+    let points = shortcut_points(&view);
+    let wire = serde_json::to_string(&InteractionSubmission {
+        interaction_id: view.opportunities[0].interaction_id.clone(),
+        response: InteractionResponse::Shortcut {
+            decision: InteractionShortcutDecision::Fixed { iterations: 6 },
+            pins: vec![InteractionShortcutPin {
+                group: points[0].group,
+                choice_ids: vec![points[0].candidate_ids[0].clone()],
+                amounts: Vec::new(),
+            }],
+        },
+    })
+    .expect("a submission serializes");
+    assert!(
+        !wire.contains("amounts"),
+        "the omitted key is what makes the shape additive; wire was {wire}"
+    );
+    let round_tripped: InteractionSubmission =
+        serde_json::from_str(&wire).expect("the omitted-key wire shape parses back");
+    assert!(
+        resolve_interaction_response(runner.state(), P0, &round_tripped).is_ok(),
+        "a legacy-shaped submission still decodes and drives"
+    );
+}
+
+/// **Row (9)** — PROGRESS STAYS INSIDE ITS OWN WINDOW.
+///
+/// `InteractionProgress.selected` counts POSITIONS ANSWERED. Charge the sequence length
+/// instead of the position count and a sequenced pin publishes `selected > maximum`.
+///
+/// # Paired positive
+///
+/// The SAME offer answered with a FLAT pin publishes the identical progress, which is what
+/// proves the `.min(point.max)` is the identity on the unchanged path.
+#[test]
+fn p4_row_9_a_sequenced_pin_publishes_progress_inside_its_own_window() {
+    let (runner, _) = stage_sequenced_offer(
+        "p4-progress-window",
+        IterationCount::Fixed(6),
+        6,
+        vec![victims_point(1, 1)],
+    );
+    let view = priority_view(runner.state());
+    let points = shortcut_points(&view);
+
+    let preview = |label: &str, pin: InteractionShortcutPin| {
+        preview_interaction(
+            runner.state(),
+            P0,
+            &InteractionPreviewRequest {
+                request_id: PreviewRequestId(label.to_string()),
+                interaction_id: view.opportunities[0].interaction_id.clone(),
+                response: InteractionResponse::Shortcut {
+                    decision: InteractionShortcutDecision::Fixed { iterations: 6 },
+                    pins: vec![pin],
+                },
+            },
+        )
+    };
+
+    let sequenced = preview(
+        "p4-progress-sequenced",
+        sequenced_pin(&points[0], &[(0, 1), (1, 2), (2, 3)]),
+    );
+    assert_eq!(
+        sequenced.status,
+        InteractionPreviewStatus::Confirmable,
+        "reach-guard: the sequenced pin is accepted, so the progress below is the one this \
+         offer publishes for it"
+    );
+    assert!(
+        sequenced
+            .progress
+            .maximum
+            .is_some_and(|maximum| sequenced.progress.selected <= maximum),
+        "a sequenced pin answers its point's POSITIONS, not one per subject in the sequence. \
+         got {:?}",
+        sequenced.progress
+    );
+
+    let flat = preview(
+        "p4-progress-flat",
+        InteractionShortcutPin {
+            group: points[0].group,
+            choice_ids: vec![points[0].candidate_ids[0].clone()],
+            amounts: Vec::new(),
+        },
+    );
+    assert_eq!(
+        flat.status,
+        InteractionPreviewStatus::Confirmable,
+        "reach-guard: the flat pin is accepted too"
+    );
+    assert_eq!(
+        sequenced.progress, flat.progress,
+        "the `.min(point.max)` is the IDENTITY on the unchanged path: three subjects at one \
+         position publish the same progress one subject at that position does"
     );
 }
