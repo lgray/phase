@@ -125,6 +125,12 @@ export type InteractionShortcutPin = { group: number, choiceIds: Array<Interacti
  * announced subject takes. Empty on every pin that answers its point per
  * position.
  *
+ * The lengths are a DECLARATION of how the count is spread, not a claim about what
+ * each subject realizes. On a drive whose first cycle resolves a target announced
+ * before the drive begins, the realized split is shifted one cycle late at each
+ * boundary while the total stays exact — so a segment starting at the last index is
+ * admitted and stays announced, yet realizes no repetition at all.
+ *
  * The offer's own published count decides which kind a sequence is. A FIXED
  * count is partitioned: `amounts` is non-empty and sums to the DECLARED count,
  * every part at least 1. An UNTIL-LETHAL offer declares ORDER ONLY and `amounts`
