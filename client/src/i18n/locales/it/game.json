@@ -33,7 +33,7 @@
     "rankingTitle": "Ordina i bersagli. Ogni ripetizione prende il primo legale:",
     "rankingMoveUp": "Sposta prima",
     "rankingMoveDown": "Sposta dopo",
-    "mayTitle": "Abilità opzionale — ripetere questa scelta a ogni iterazione?",
+    "mayTitle": "Abilità opzionale {{group}} — ripetere questa scelta a ogni iterazione?",
     "mayTake": "Usala",
     "mayDecline": "Rifiutala",
     "mayTakeAria": "Usa l'abilità opzionale {{group}}",

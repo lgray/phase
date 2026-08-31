@@ -33,7 +33,7 @@
     "rankingTitle": "Ordne die Ziele. Jede Wiederholung nimmt das erste legale Ziel:",
     "rankingMoveUp": "Nach vorne verschieben",
     "rankingMoveDown": "Nach hinten verschieben",
-    "mayTitle": "Optionale Fähigkeit — diese Wahl in jeder Iteration wiederholen?",
+    "mayTitle": "Optionale Fähigkeit {{group}} — diese Wahl in jeder Iteration wiederholen?",
     "mayTake": "Nutzen",
     "mayDecline": "Ablehnen",
     "mayTakeAria": "Optionale Fähigkeit {{group}} nutzen",

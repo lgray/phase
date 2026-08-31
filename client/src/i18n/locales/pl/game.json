@@ -33,7 +33,7 @@
     "rankingTitle": "Ustal kolejność celów. Każde powtórzenie wybiera pierwszy legalny:",
     "rankingMoveUp": "Przesuń wcześniej",
     "rankingMoveDown": "Przesuń później",
-    "mayTitle": "Zdolność opcjonalna — powtórzyć ten wybór w każdej iteracji?",
+    "mayTitle": "Zdolność opcjonalna {{group}} — powtórzyć ten wybór w każdej iteracji?",
     "mayTake": "Skorzystaj",
     "mayDecline": "Odrzuć",
     "mayTakeAria": "Skorzystaj ze zdolności opcjonalnej {{group}}",

@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import { useCallback, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
@@ -134,6 +134,23 @@ function mayCandidate(candidates: InteractionChoice[], id: InteractionChoiceId):
     (s): s is Extract<InteractionPresentationSurface, { type: "value" }> => s.type === "value",
   );
   return value?.data.value ?? null;
+}
+
+/**
+ * The one shape every per-subject control in this modal is built from. A control that asks the
+ * player about a specific subject — a named victim, one particular optional ability — states that
+ * subject visibly beside itself, alongside whatever accessible name the control itself carries.
+ * A subject reachable only through an `aria-label` leaves a sighted player looking at N identical
+ * controls; a subject reachable only through visible text is unreachable by a screen reader. Both
+ * are required, so this renders the text and no caller drops its `aria-label`.
+ */
+function SubjectControl({ subject, children }: { subject: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="grow text-sm text-slate-200">{subject}</span>
+      {children}
+    </div>
+  );
 }
 
 // CR 732.1b: render the engine-proposed repeat mode — the offer's own stated count, echoed
@@ -407,7 +424,7 @@ function DeclareShortcutOffer({
   const confirmDisabled =
     (countSpec !== null && chosen === null) || (pinRoute && !declarationComplete);
 
-  const handleConfirm = useCallback(() => {
+  const handleConfirm = () => {
     // THE refusal, and the first statement of the ONE handler both production entry points reach:
     // the footer button's `onClick`, and every `AmountInput`'s Enter (`onSubmit`, which the box
     // calls unconditionally and deliberately does not re-guard). It reads the same predicate the
@@ -463,21 +480,7 @@ function DeclareShortcutOffer({
     // `dispatchInteraction` already reports the error before rethrowing; the catch only suppresses
     // an unhandled rejection, exactly as `AttachmentFan` does.
     void dispatchInteraction(submission).catch(() => undefined);
-  }, [
-    dispatch,
-    countSpec,
-    chosen,
-    schema.iteration_count,
-    confirmDisabled,
-    pinRoute,
-    spec,
-    offerId,
-    points,
-    mayPicks,
-    targetsControl,
-    effective,
-    rankedOrder,
-  ]);
+  };
 
   const handleDecline = useCallback(() => {
     // CR 732.2a: decline the auto-offer; the engine restores ordinary priority.
@@ -541,21 +544,22 @@ function DeclareShortcutOffer({
               {t("comboShortcut.allocationTitle")}
             </p>
             {targetsControl.point.candidateIds.map((id) => (
-              <AmountInput
-                key={id}
-                raw={rowRaw(id)}
-                onRawChange={(next) => editRow(id, next)}
-                min={0}
-                max={chosen}
-                onSubmit={handleConfirm}
-                labels={{
-                  input: t("comboShortcut.allocationAria", {
-                    subject: candidateLabel(t, candidates, id),
-                  }),
-                  decrease: t("mana.decreaseAmount"),
-                  increase: t("mana.increaseAmount"),
-                }}
-              />
+              <SubjectControl key={id} subject={candidateLabel(t, candidates, id)}>
+                <AmountInput
+                  raw={rowRaw(id)}
+                  onRawChange={(next) => editRow(id, next)}
+                  min={0}
+                  max={chosen}
+                  onSubmit={handleConfirm}
+                  labels={{
+                    input: t("comboShortcut.allocationAria", {
+                      subject: candidateLabel(t, candidates, id),
+                    }),
+                    decrease: t("mana.decreaseAmount"),
+                    increase: t("mana.increaseAmount"),
+                  }}
+                />
+              </SubjectControl>
             ))}
             <p className="text-xs text-slate-400 tabular-nums">
               {t("comboShortcut.allocationSum", { allocated, total: chosen })}
@@ -574,10 +578,7 @@ function DeclareShortcutOffer({
               {t("comboShortcut.rankingTitle")}
             </p>
             {rankedOrder.map((id, position) => (
-              <div key={id} className="flex items-center gap-2">
-                <span className="grow text-sm text-slate-200">
-                  {candidateLabel(t, candidates, id)}
-                </span>
+              <SubjectControl key={id} subject={candidateLabel(t, candidates, id)}>
                 <button
                   aria-label={t("comboShortcut.rankingMoveUp")}
                   disabled={position === 0}
@@ -594,43 +595,51 @@ function DeclareShortcutOffer({
                 >
                   ▼
                 </button>
-              </div>
+              </SubjectControl>
             ))}
           </div>
         )}
-        {mayPoints.map((p) => (
-          <div key={p.group} className="flex flex-col gap-2 rounded-lg bg-white/5 px-3 py-2">
-            <p className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              {t("comboShortcut.mayTitle")}
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {p.candidateIds.map((id) => {
-                const take = mayCandidate(candidates, id) === "take";
-                const picked = mayPicks[p.group] === id;
-                return (
-                  <button
-                    key={id}
-                    onClick={() => setMayPicks((prev) => ({ ...prev, [p.group]: id }))}
-                    aria-pressed={picked}
-                    // Two `MayChoice` points are indistinguishable in published data, so the
-                    // control disambiguates by the published `group`.
-                    aria-label={t(
-                      take ? "comboShortcut.mayTakeAria" : "comboShortcut.mayDeclineAria",
-                      { group: p.group },
-                    )}
-                    className={`min-h-9 rounded-[12px] border px-3 py-1 text-sm font-semibold transition ${
-                      picked
-                        ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100"
-                        : "border-white/8 bg-white/5 text-slate-200 hover:bg-white/8"
-                    }`}
-                  >
-                    {t(take ? "comboShortcut.mayTake" : "comboShortcut.mayDecline")}
-                  </button>
-                );
-              })}
+        {mayPoints.map((p) => {
+          // The published `group` is the ONLY datum that tells one may point from another:
+          // `InteractionShortcutPoint` carries no source, name or label, and its candidates carry
+          // only a take/decline `value` surface. So the ordinal IS the subject, and it is rendered
+          // rather than merely announced. Displayed +1 like every other index this modal shows
+          // (`candidateLabel`'s `seat + 1`), and the SAME value feeds the accessible names below,
+          // so what a player reads and what a screen reader says cannot disagree. Unique by
+          // construction: the projection mints `group` as the point's enumerate index
+          // (`shortcut_points` in `game/interaction.rs`), so two panels cannot collide.
+          const ordinal = p.group + 1;
+          return (
+            <div key={p.group} className="flex flex-col gap-2 rounded-lg bg-white/5 px-3 py-2">
+              <SubjectControl subject={t("comboShortcut.mayTitle", { group: ordinal })}>
+                <div className="flex flex-wrap gap-2">
+                  {p.candidateIds.map((id) => {
+                    const take = mayCandidate(candidates, id) === "take";
+                    const picked = mayPicks[p.group] === id;
+                    return (
+                      <button
+                        key={id}
+                        onClick={() => setMayPicks((prev) => ({ ...prev, [p.group]: id }))}
+                        aria-pressed={picked}
+                        aria-label={t(
+                          take ? "comboShortcut.mayTakeAria" : "comboShortcut.mayDeclineAria",
+                          { group: ordinal },
+                        )}
+                        className={`min-h-9 rounded-[12px] border px-3 py-1 text-sm font-semibold transition ${
+                          picked
+                            ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100"
+                            : "border-white/8 bg-white/5 text-slate-200 hover:bg-white/8"
+                        }`}
+                      >
+                        {t(take ? "comboShortcut.mayTake" : "comboShortcut.mayDecline")}
+                      </button>
+                    );
+                  })}
+                </div>
+              </SubjectControl>
             </div>
-          </div>
-        ))}
+          );
+        })}
         {showPreviewLines && previewed && <PreviewLines preview={previewed} />}
         {custom && (
           <p className="text-sm text-slate-300">{t("comboShortcut.customDistribution")}</p>

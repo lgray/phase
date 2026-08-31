@@ -33,7 +33,7 @@
     "rankingTitle": "Ordena los objetivos. Cada repetición toma el primero legal:",
     "rankingMoveUp": "Mover antes",
     "rankingMoveDown": "Mover después",
-    "mayTitle": "Habilidad opcional: ¿repetir esta elección en cada iteración?",
+    "mayTitle": "Habilidad opcional {{group}}: ¿repetir esta elección en cada iteración?",
     "mayTake": "Aceptarla",
     "mayDecline": "Rechazarla",
     "mayTakeAria": "Aceptar la habilidad opcional {{group}}",

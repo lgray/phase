@@ -846,9 +846,9 @@ describe("LoopShortcutModal", () => {
 
     // Reach-guard: a full pin set cannot pass on a modal that dispatches unconditionally.
     expect(confirmButton()).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 0" }));
+    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 1" }));
     expect(confirmButton()).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Decline optional ability 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Decline optional ability 2" }));
     expect(confirmButton()).toBeEnabled();
 
     fireEvent.click(confirmButton());
@@ -862,7 +862,7 @@ describe("LoopShortcutModal", () => {
     // Hostile sibling: picking the SAME option on both points must still send two different ids,
     // which is what shows each control reads its own point's list rather than a shared index.
     vi.mocked(dispatchInteraction).mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 2" }));
     fireEvent.click(confirmButton());
     expect(submittedPins()).toEqual([
       { group: 0, choiceIds: ["m0take"], amounts: [] },
@@ -1157,9 +1157,9 @@ describe("LoopShortcutModal", () => {
     // Positive reach-guard: the edits actually LANDED, so "back to default" cannot pass on a
     // control that never accepted input.
     fireEvent.change(allocationRow("P2"), { target: { value: "1" } });
-    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 0" }));
+    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 1" }));
     expect(allocationRow("P2")).toHaveValue("1");
-    expect(screen.getByRole("button", { name: "Take optional ability 0" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Take optional ability 1" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -1171,7 +1171,7 @@ describe("LoopShortcutModal", () => {
     );
     view.rerender(<DeclareShortcutModal />);
     expect(allocationRow("P2")).toHaveValue("3");
-    expect(screen.getByRole("button", { name: "Take optional ability 0" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Take optional ability 1" })).toHaveAttribute(
       "aria-pressed",
       "false",
     );
@@ -1261,9 +1261,9 @@ describe("LoopShortcutModal", () => {
     expect(screen.queryAllByRole("spinbutton", { name: /repetitions for/i })).toHaveLength(0);
 
     expect(confirmButton()).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 0" }));
+    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 1" }));
     expect(confirmButton()).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Decline optional ability 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Decline optional ability 2" }));
     expect(confirmButton()).toBeEnabled();
 
     fireEvent.click(confirmButton());
@@ -1327,8 +1327,8 @@ describe("LoopShortcutModal", () => {
     // that DOES publish a targets point.
     expect(screen.queryAllByRole("button", { name: /move earlier/i })).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 0" }));
     fireEvent.click(screen.getByRole("button", { name: "Take optional ability 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 2" }));
     fireEvent.click(confirmButton());
     expect(dispatchInteraction).toHaveBeenCalledWith({
       interactionId: "session.0.1",
@@ -1487,7 +1487,7 @@ describe("LoopShortcutModal", () => {
     // leg B — a legal count with one may point unanswered, fired from BOTH box families, so a
     // repair that guards only the surface the count picker owns cannot pass.
     fireEvent.change(countBox(), { target: { value: "18" } });
-    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 0" }));
+    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 1" }));
     fireEvent.keyDown(countBox(), { key: "Enter" });
     fireEvent.keyDown(allocationRow("P2"), { key: "Enter" });
     expect(dispatchInteraction).not.toHaveBeenCalled();
@@ -1496,7 +1496,7 @@ describe("LoopShortcutModal", () => {
     // leg C — the instrument fires: with the declaration complete, Enter in the count box sends
     // the whole submission. Without this leg a modal that ignores Enter entirely satisfies A and
     // B vacuously.
-    fireEvent.click(screen.getByRole("button", { name: "Decline optional ability 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Decline optional ability 2" }));
     fireEvent.keyDown(countBox(), { key: "Enter" });
     expect(dispatchInteraction).toHaveBeenCalledWith({
       interactionId: "session.0.1",
@@ -1513,5 +1513,88 @@ describe("LoopShortcutModal", () => {
       },
     });
     expect(dispatchMock).not.toHaveBeenCalled();
+  });
+
+  // P5-20: the visible-subject class — a control that asks about a SPECIFIC subject renders that
+  // subject where a sighted player can read it. Every assertion is on rendered TEXT, never on an
+  // accessible name: the accessible names carry the subject whether or not the visible text does,
+  // so only a visible-text assertion discriminates on this property. All three members of the
+  // class are driven — allocation rows, may panels and ranking rows — which takes two offers,
+  // because allocation and ranking cannot coexist: the published count spec selects exactly one
+  // `targetsControl` kind.
+  it("renders every per-subject control's subject visibly (P5-20)", () => {
+    // A — a fixed-count offer with three victims and two may points.
+    seed(
+      buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 6 } } }),
+      {},
+      shortcutInteraction(
+        {
+          count: fixedCount(1, 6, 6),
+          points: [
+            mayPoint(0, ["m0take", "m0dec"]),
+            mayPoint(1, ["m1take", "m1dec"]),
+            targetsPoint(2, ["k4", "k5", "k6"]),
+          ],
+          preview: [element(6, [amt("k4", 2), amt("k5", 2), amt("k6", 2)])],
+        },
+        "session.0.1",
+        [
+          ...mayCandidates("m0take", "m0dec"),
+          ...mayCandidates("m1take", "m1dec"),
+          seatCandidate("k4", 1),
+          seatCandidate("k5", 2),
+          seatCandidate("k6", 3),
+        ],
+      ),
+    );
+    render(<DeclareShortcutModal />);
+
+    // Reach-guard: the allocation panel is mounted, and each box carries both names — the
+    // accessible one queried here and the visible one asserted below.
+    expect(allocationRow("P2")).toBeInTheDocument();
+    // Each victim's box states WHICH victim it is. Drop the visible subject and these three
+    // spinboxes are indistinguishable on screen, so each of these three queries fails.
+    for (const seat of ["P2", "P3", "P4"]) {
+      expect(screen.getByText(seat), seat).toBeInTheDocument();
+    }
+    // Two may panels, two DIFFERENT visible headings. `getByText` throws when more than one node
+    // matches, so a call that resolves is itself the proof that the two subjects are distinct.
+    expect(
+      screen.getByText("Optional ability 1 — repeat this choice each iteration?"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Optional ability 2 — repeat this choice each iteration?"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Take optional ability 1" })).toBeInTheDocument();
+
+    // B — the ranking member of the class, on the only offer shape that reaches it.
+    cleanup();
+    seed(
+      buildLoopShortcutWaitingFor(),
+      {},
+      shortcutInteraction(
+        {
+          count: { type: "untilLethal" },
+          points: [mayPoint(0, ["m0take", "m0dec"]), targetsPoint(2, ["k4", "k5", "k6"])],
+        },
+        "session.0.1",
+        [
+          ...mayCandidates("m0take", "m0dec"),
+          seatCandidate("k4", 1),
+          seatCandidate("k5", 2),
+          seatCandidate("k6", 3),
+        ],
+      ),
+    );
+    render(<DeclareShortcutModal />);
+
+    // Reach-guard: the ranking panel is mounted, one row per candidate.
+    expect(screen.getAllByRole("button", { name: "Move earlier" })).toHaveLength(3);
+    for (const seat of ["P2", "P3", "P4"]) {
+      expect(screen.getByText(seat), seat).toBeInTheDocument();
+    }
+    expect(
+      screen.getByText("Optional ability 1 — repeat this choice each iteration?"),
+    ).toBeInTheDocument();
   });
 });

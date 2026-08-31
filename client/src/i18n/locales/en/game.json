@@ -39,7 +39,7 @@
     "rankingTitle": "Order the targets. Each repetition takes the first legal one:",
     "rankingMoveUp": "Move earlier",
     "rankingMoveDown": "Move later",
-    "mayTitle": "Optional ability — repeat this choice each iteration?",
+    "mayTitle": "Optional ability {{group}} — repeat this choice each iteration?",
     "mayTake": "Take it",
     "mayDecline": "Decline it",
     "mayTakeAria": "Take optional ability {{group}}",

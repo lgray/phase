@@ -33,7 +33,7 @@
     "rankingTitle": "Ordonnez les cibles. Chaque répétition prend la première légale :",
     "rankingMoveUp": "Déplacer avant",
     "rankingMoveDown": "Déplacer après",
-    "mayTitle": "Capacité optionnelle — répéter ce choix à chaque itération ?",
+    "mayTitle": "Capacité optionnelle {{group}} — répéter ce choix à chaque itération ?",
     "mayTake": "L'utiliser",
     "mayDecline": "La refuser",
     "mayTakeAria": "Utiliser la capacité optionnelle {{group}}",
