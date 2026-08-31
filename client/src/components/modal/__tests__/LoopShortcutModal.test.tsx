@@ -237,11 +237,18 @@ const countBox = () => screen.getByRole("spinbutton", { name: "Number of iterati
 const MOVE_EARLIER = /^Move .+ earlier$/;
 
 /** Every focusable control the dialog renders, paired with the name assistive technology
- *  announces for it. Derived from the two ways this dialog names a control, then checked against
- *  the real accessible-name computation, so a control named some third way cannot slip through as
- *  an empty string. */
+ *  announces for it. The query is focusability itself rather than an enumeration of the roles this
+ *  dialog happens to render, so a control of a shape used nowhere here yet is still inside the
+ *  invariant; its root is `document.body`, the same root `screen` queries from. The name is
+ *  derived from the two ways this dialog labels a control, then checked against the real
+ *  accessible-name computation, so a control named some third way cannot slip through as an empty
+ *  string. */
 function controlNames(): string[] {
-  const controls = [...screen.getAllByRole("button"), ...screen.queryAllByRole("spinbutton")];
+  const controls = [
+    ...document.body.querySelectorAll<HTMLElement>(
+      'button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])',
+    ),
+  ];
   return controls.map((el) => {
     const name = (el.getAttribute("aria-label") ?? el.textContent ?? "").trim();
     expect(el).toHaveAccessibleName(name);
