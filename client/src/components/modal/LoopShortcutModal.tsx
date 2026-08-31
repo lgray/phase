@@ -432,8 +432,8 @@ function DeclareShortcutOffer({
     if (confirmDisabled) return;
 
     if (!pinRoute) {
-      // `template: null` is unchanged by C5 (see the module header's measured limit) — the picker
-      // moves the COUNT only.
+      // The picker moves the COUNT only: `template` stays `null` because building pins is not a
+      // client authority.
       if (countSpec === null) {
         dispatch({
           type: "DeclareShortcut",
