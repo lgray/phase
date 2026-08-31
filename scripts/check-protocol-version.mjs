@@ -12,8 +12,9 @@ const EXPECTED_LOBBY_PROTOCOL_VERSION = 4;
 // frames carry it, and the same GameState shape change that moves
 // EXPECTED_PROTOCOL_VERSION must move this one too. It was previously ungated
 // here, so a full-game bump could ship with an unbumped P2P version and CI
-// stayed green — a v(n-1) host and a v(n) guest would then complete a
-// handshake and only fail when the incompatible payload arrived.
+// stayed green — peers on opposite sides of the shape change would still agree
+// on the wire version, complete the handshake, and read each other's
+// incompatible payloads with no error anywhere.
 const EXPECTED_WIRE_PROTOCOL_VERSION = 43;
 
 function extractVersion(source, pattern, label) {
@@ -179,9 +180,14 @@ if (
 //
 // Pinned here for the same reason the full-game number is: a `GameState` shape
 // change crosses BOTH the WebSocket full-game wire and the P2P host/guest wire,
-// and bumping only one leaves the other pairing to fail at payload-decode time
-// instead of at the handshake. Gating both in one place makes "I bumped the
-// protocol" mean all of it.
+// and the decoder on each of those wires reads whatever arrives. The P2P peer's
+// `validateMessage` (client/src/network/protocol.ts) checks the `type` tag and
+// nothing else, and the WebSocket client hands server frames straight to
+// `JSON.parse` (client/src/adapter/ws-adapter.ts), so a payload built to the
+// other side's shape is rendered, not rejected. First-contact version equality
+// is the only place either skew is refusable, and bumping one number without
+// the other leaves the unbumped surface with nothing that can refuse. Gating
+// both in one place makes "I bumped the protocol" mean all of it.
 
 const wireProtocolVersion = extractVersion(
   p2pProtocolSource,
@@ -200,10 +206,15 @@ if (wireProtocolVersion !== EXPECTED_WIRE_PROTOCOL_VERSION) {
 // ── Lobby protocol: a SEPARATE surface with its own version ────────────────
 //
 // `PROTOCOL_VERSION` versions the full-game GameState/GameAction wire surface.
-// The lobby broker parses none of that, yet its accept-window used to be
-// derived from that same number — so a GameState-only bump slid the lobby
-// window and stranded every already-deployed client. These assertions keep the
-// two surfaces genuinely independent.
+// The lobby broker carries neither type, so most full-game bumps leave it
+// alone. It is not disjoint from them, though: its messages embed
+// `FormatConfig` and `MatchConfig`, which `GameState` also carries as fields,
+// so retyping one of those breaks lobby messages too and has to move BOTH
+// numbers. What is wrong is deriving one number from the other — the
+// accept-window used to come from the full-game number, so a GameState-only
+// bump slid the lobby window and stranded every already-deployed client. These
+// assertions keep the two surfaces independent without pretending they never
+// overlap.
 
 const rustLobbyVersion = extractVersion(
   rustSource,
@@ -257,7 +268,7 @@ if (rustLobbyVersion !== EXPECTED_LOBBY_PROTOCOL_VERSION) {
 
 if (rustLobbyFloor > rustLobbyVersion) {
   console.error(
-    `Lobby floor ${rustLobbyFloor} exceeds the lobby version ${rustLobbyVersion}: no client could connect.`,
+    `Lobby floor ${rustLobbyFloor} exceeds the lobby version ${rustLobbyVersion}: no client that advertises a lobby version could connect.`,
   );
   process.exit(1);
 }
