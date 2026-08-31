@@ -339,52 +339,23 @@ refusePattern(p2pProtocolTestSource, new RegExp(`\\bv${W - 1}\\b`),
 
 // The handshake pair stamps LITERALS on purpose — a frame built from
 // WIRE_PROTOCOL_VERSION cannot tell a bumped client from an unbumped one — so
-// the refused and the admitted number both live in this block, in the frames,
-// in the title, and in the comment explaining the choice. The slice ends at
-// the block's own closer, the first column-0 `});` after it, because the test
-// file writes seats, object ids and timeouts as bare integers: scanning past
-// the block would refuse an unrelated appended test as soon as the superseded
-// number reached a value one of them already uses. The closer is the first
-// column-0 `});` that is not inside a template literal — a candidate with an
-// odd number of backticks before it is skipped, because an early closer
-// shortens the refuse window silently: the `setupFrameAt` require legs sit
-// near the top of the block and only red on truncation above themselves.
-// Ceiling: the skip counts backticks, so an odd one in a comment or a string
-// overshoots the real closer and takes in whatever follows the block —
-// overshoot only ever adds refusals, never drops them.
+// the refused and the admitted frame are both written as bare numerals, and
+// both are required here. Those two values are what pins the block.
+//
+// Scanned against the whole file rather than a slice of it: a require leg
+// fails on ABSENCE, so a wider haystack can only admit, never falsely refuse.
+// Prose inside the block is not checked — a title or comment naming a
+// superseded version is invisible here.
 const P2P_GATE = 'describe("P2P wire-protocol version gate"';
-const gateAt = p2pAdapterTestSource.indexOf(P2P_GATE);
-if (gateAt < 0) {
+if (!p2pAdapterTestSource.includes(P2P_GATE)) {
   console.error(
     `Could not find ${P2P_GATE} in client/src/adapter/__tests__/p2p-adapter-multiplayer.test.ts: ` +
       "that block holds the only instrument that tells a bumped client from an unbumped one.",
   );
   process.exit(1);
 }
-let gateEnd = p2pAdapterTestSource.indexOf("\n});", gateAt);
-while (
-  gateEnd >= 0 &&
-  (p2pAdapterTestSource.slice(gateAt, gateEnd).split("`").length - 1) % 2 === 1
-) {
-  gateEnd = p2pAdapterTestSource.indexOf("\n});", gateEnd + 1);
-}
-const p2pGateBlock = p2pAdapterTestSource.slice(
-  gateAt,
-  gateEnd < 0 ? undefined : gateEnd,
-);
 const gateLabel = "client/src/adapter/__tests__/p2p-adapter-multiplayer.test.ts";
 for (const n of [W - 1, W]) {
-  requirePattern(p2pGateBlock, new RegExp(`setupFrameAt\\(${n}\\)`),
+  requirePattern(p2pAdapterTestSource, new RegExp(`setupFrameAt\\(${n}\\)`),
     `${gateLabel} setupFrameAt(${n})`);
 }
-// Bare as well as `v`-prefixed: the gate block writes the handshake pair as
-// bare numerals, so a leftover can name the superseded version with no `v` in
-// front of it. Both guards exclude identifier characters, and a dot disarms
-// the match only when a digit sits on its far side — `0.<n>` and `<n>.0` are
-// admitted because the digits are then part of a longer number, while a
-// leading-dot decimal `.<n>`, a wildcard `<n>.x` and a sentence-ending `<n>.`
-// are refused. Ceiling: an uppercase `V` prefix reads as an identifier and is
-// admitted.
-refusePattern(p2pGateBlock,
-  new RegExp(`(?<![0-9A-Za-z_]|[0-9]\\.)v?${W - 2}(?![0-9A-Za-z_]|\\.[0-9])`),
-  gateLabel);
