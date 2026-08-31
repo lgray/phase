@@ -38,14 +38,14 @@ import { DialogShell } from "./DialogShell.tsx";
  * MEASURED LIMIT, stated rather than assumed — `null` is what the client can honestly send,
  * NOT a payload the engine accepts everywhere. `handle_declare_shortcut`
  * (`game/engine.rs`, the `!offer.schema.points.is_empty()` block) REFUSES a `template: null`
- * declaration unless the proposer controls the recorded loop period, so only the point-free
- * drain shape declares successfully at this base. Carrying the engine's own issued
- * declaration through the manual declare path is an ENGINE-side repair; a client that
+ * declaration unless the proposer controls the recorded loop period. Carrying the engine's own
+ * issued declaration through the manual declare path is an ENGINE-side repair; a client that
  * reconstructed a template would be inventing rules authority it does not have.
  */
 
-/** The engine's published shortcut response spec — the count window, `allowDecline`, and the
- *  engine-computed preview. A lookup into what the engine already sent, never a derivation. */
+/** The engine's published shortcut response spec. This modal reads its count window, its
+ *  declaration points, `allowDecline` and its engine-computed preview — each a lookup into what
+ *  the engine already sent, never a derivation. */
 type ShortcutSpec = Extract<InteractionResponseSpec, { type: "shortcut" }>["data"];
 
 function shortcutSpec(interaction: ViewerInteraction | null): ShortcutSpec | null {
@@ -329,8 +329,7 @@ function DeclareShortcutOffer({
     points.every((p) => p.readOnly || renderable(p));
 
   // The may points this offer lets the player answer. Empty off the route BY CONSTRUCTION, so the
-  // route gate lives in the binding and cannot be omitted at one of its consumers: the render
-  // branch, `declarationComplete` and the dispatched pin set all read this one object.
+  // route gate lives in the binding and cannot be omitted at one of its consumers.
   const mayPoints = pinRoute ? points.filter((p) => !p.readOnly && p.kind === "mayChoice") : [];
 
   // CR 732.2a: the count window is ENGINE-OWNED. `null` when this offer publishes no finite
@@ -345,8 +344,8 @@ function DeclareShortcutOffer({
   const chosen = countSpec === null ? null : parseAmount(raw, countSpec.min, countSpec.max);
   // CR 732.2a: each published element's `count` travels with its own magnitudes, so the match
   // is EXACT — no nearest-match, no interpolation, and nothing rendered for a count the engine
-  // stated no magnitudes for. The engine always publishes the window's endpoints, so the
-  // suggested count the box opens on always has an element.
+  // stated no magnitudes for. The engine seeds its sample with `min`, `suggested` and `max`, so
+  // the suggested count the box opens on always has an element.
   const previewed = chosen === null ? undefined : spec?.preview?.find((e) => e.count === chosen);
 
   // CR 732.2a + CR 601.2c: the declared count's partition across the announcement subjects
@@ -612,11 +611,12 @@ function DeclareShortcutOffer({
         )}
         {mayPoints.map((p, index) => {
           // The ordinal IS the subject: `InteractionShortcutPoint` carries no source, name or
-          // label, and a may point's candidates carry only a take/decline `value` surface, so
-          // nothing else distinguishes one panel from another. It counts the RENDERED panels, not
-          // the published points — `group` is the point's index in the whole published list, which
-          // also numbers the read-only and `targets` points the projection mints alongside these
-          // (`loop_shortcut_points` in `game/interaction.rs`), and those publish no panel.
+          // label, and a may point's candidates carry no naming surface — their only non-summary
+          // surface is a take/decline `value` — so nothing else distinguishes one panel from
+          // another. It counts the RENDERED panels, not the published points — `group` is the
+          // point's index in the whole published list, which also numbers the read-only and
+          // `targets` points the projection mints alongside these (`loop_shortcut_points` in
+          // `game/interaction.rs`), and those publish no panel.
           // Numbering by `group` therefore skips: an entry publishing `[Targets, MayChoice]` —
           // the order `bounded_cycle_pin_slots_for_window` pushes them in — would head its only
           // panel "ability 2". `group` still keys `mayPicks`, the React key and the pin, so the

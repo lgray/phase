@@ -985,8 +985,9 @@ describe("LoopShortcutModal", () => {
 
   // P5-8: an unrenderable point keeps the `GameAction` route AND suppresses every control on the
   // renderable points beside it — a live control whose answer the count-only branch discards is
-  // worse than no control. Shape (d) is what makes conjunct (iii) an `every` rather than a `some`;
-  // shape (e) is the producible construction with a perfectly renderable may point alongside.
+  // worse than no control. Shape (d) is what makes `pinRoute`'s renderability conjunct an `every`
+  // rather than a `some`; shape (e) is the producible construction with a perfectly renderable
+  // may point alongside.
   it("keeps the GameAction route on an unrenderable point and renders no may control (P5-8)", () => {
     const shapes: Array<[string, InteractionShortcutPoint[]]> = [
       ["mode", [unrenderablePoint(0, "mode")]],
@@ -1023,9 +1024,9 @@ describe("LoopShortcutModal", () => {
     }
   });
 
-  // P5-9: an offer publishing no preview keeps the `GameAction` route. (a) is the isolating
-  // member — one renderable targets point and nothing else differing from P5-1; (c) is the
-  // shipped kilo shape, over-determined and isolating nothing on its own.
+  // P5-9: an offer publishing no preview keeps the `GameAction` route. The isolating member has
+  // one renderable targets point and nothing else differing from P5-1; the object-growth shape is
+  // the shipped kilo one, over-determined and isolating nothing on its own.
   it("keeps the GameAction route when the offer publishes no preview (P5-9)", () => {
     const shapes: Array<[string, Partial<ShortcutSpec>, number]> = [
       ["isolating", { count: fixedCount(1, 5, 5), points: [targetsPoint(2, ["k4"])] }, 5],
@@ -1056,9 +1057,9 @@ describe("LoopShortcutModal", () => {
       dispatchMock.mockClear();
     }
 
-    // MANDATORY paired positive, in the same invocation: (a)'s offer with a published preview
-    // added — its only difference — must still reach the pin ingress, or a conjunct that refuses
-    // everything would satisfy the shapes above vacuously.
+    // MANDATORY paired positive, in the same invocation: the isolating offer with a published
+    // preview added — its only difference — must still reach the pin ingress, or a conjunct that
+    // refuses everything would satisfy the shapes above vacuously.
     seed(
       buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 5 } } }),
       {},
@@ -1263,7 +1264,7 @@ describe("LoopShortcutModal", () => {
   // P5-15: a bounded MAY-ONLY offer routes to the pin ingress and answers its may points, with no
   // allocation control. This is the shape the routing rule's placement decides: the
   // `targetsControl !== null` test belongs to `renderable`'s targets arm, never to `pinRoute` —
-  // as a fourth conjunct there it would send this whole class to the count-only path.
+  // as a conjunct there it would send this whole class to the count-only path.
   it("routes a bounded may-only offer and answers its may points (P5-15)", () => {
     const offer = (mayIds: string[]) =>
       shortcutInteraction(
@@ -1753,8 +1754,7 @@ describe("LoopShortcutModal", () => {
       { group: 1, choiceIds: ["m1take"], amounts: [] },
     ]);
 
-    // B — a read-only point leads and both may points follow, so every published group is one
-    // above its panel's ordinal.
+    // B — a read-only point leads and both may points follow.
     cleanup();
     vi.mocked(dispatchInteraction).mockClear();
     seed(
