@@ -316,14 +316,14 @@ if (rustDirectoryVersion !== EXPECTED_DIRECTORY_VERSION) {
 // ── Names that embed a version number ─────────────────────────────────────
 //
 // A name carrying a version goes stale silently: `assert_eq!(PROTOCOL_VERSION,
-// <n>)` under `fn protocol_version_is_<n-1>` is green, and so is a handshake
-// pair whose title still advertises the version before last. Each site
-// requires the CURRENT number and refuses the SUPERSEDED one, both derived
-// from the EXPECTED_* constants above, so a later bump edits the sources and
-// those constants, never the patterns themselves. Ceiling: the refuse leg
-// catches leftover text from the previous version, which is the defect a bump
-// produces. Prose rewritten to some other wrong number is not a bump leftover
-// and is not guarded here.
+// <n>)` under `fn protocol_version_is_<n-1>` is green. The two sites below
+// require the CURRENT number and refuse the SUPERSEDED one; the handshake pair
+// after them requires both numerals and has no refuse leg. Every number here
+// derives from the EXPECTED_* constants above, so a later bump edits the
+// sources and those constants, never the patterns themselves. Ceiling: a
+// refuse leg catches leftover text from the previous version, which is the
+// defect a bump produces. Prose rewritten to some other wrong number is not a
+// bump leftover and is not guarded here.
 const P = EXPECTED_PROTOCOL_VERSION;
 const W = EXPECTED_WIRE_PROTOCOL_VERSION;
 
