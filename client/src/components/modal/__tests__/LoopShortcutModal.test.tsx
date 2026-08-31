@@ -236,18 +236,19 @@ const countBox = () => screen.getByRole("spinbutton", { name: "Number of iterati
  *  and the anchors keep a row that lost its subject from still matching. */
 const MOVE_EARLIER = /^Move .+ earlier$/;
 
-/** Every control jsdom reports focusable, paired with the name assistive technology announces for
- *  it. The population is a computed property — a non-negative `tabIndex`, jsdom's own focusability
- *  oracle, restricted to what the accessibility tree exposes — not a list of tags or roles, so a
- *  control of a shape used nowhere here yet is still inside the invariant; its root is
- *  `document.body`, the same root `screen` queries from. Disabled controls stay in: jsdom scores
- *  them focusable and the dialog announces them. `aria-hidden` subtrees stay out: they are not in
- *  the accessibility tree and carry no name obligation. Two shapes are deliberately outside it —
- *  an element made a control by an ARIA `role` alone, which no role taxonomy reachable from this
- *  file can tell apart from a live region, and `<summary>`/`[contenteditable]`, which browsers
- *  focus and jsdom scores -1. The name is derived from the two ways this dialog labels a control,
- *  then checked against the real accessible-name computation, so a control named some third way
- *  cannot slip through as an empty string. */
+/** Every control this suite's DOM implementation scores focusable, paired with the name assistive
+ *  technology announces for it. The population is a computed property — a non-negative `tabIndex`
+ *  as that implementation scores it, restricted to what the accessibility tree exposes — not a
+ *  list of tags or roles, so a control of a shape used nowhere here yet is still inside the
+ *  invariant; its root is `document.body`, the same root `screen` queries from. Disabled controls
+ *  stay in: they score focusable here and the dialog announces them. `aria-hidden` subtrees stay
+ *  out: they are not in the accessibility tree and carry no name obligation. Two shapes are
+ *  deliberately outside it — an element made a control by an ARIA `role` alone, which no role
+ *  taxonomy reachable from this file can tell apart from a live region, and
+ *  `<summary>`/`[contenteditable]`, which browsers focus but this harness scores -1. The name is
+ *  derived from the two ways this dialog labels a control, then checked against the real
+ *  accessible-name computation, so a control named some third way cannot slip through as an empty
+ *  string. */
 function controlNames(): string[] {
   const controls = [...document.body.querySelectorAll<HTMLElement>("*")].filter(
     (el) => el.tabIndex >= 0 && !isInaccessible(el),
@@ -1627,15 +1628,15 @@ describe("LoopShortcutModal", () => {
       screen.getByText("Optional ability 1 — repeat this choice each iteration?"),
     ).toBeInTheDocument();
   });
-  // P5-21: no control jsdom reports focusable is nameless, and no two share a name. P5-20 closes
-  // the per-subject class on the screen; this closes it for a screen reader, which navigates BY
-  // the accessible name — controls sharing one subject-free label are indistinguishable there
-  // however clearly the rows read on screen. An invariant over the population `controlNames`
-  // computes, not a list of today's controls: a control added later that reaches for a shared
-  // subject-free label reds this row without anyone remembering to extend a list. Both offers are
-  // driven because the published count spec selects exactly one `targetsControl` kind, and
-  // neither branch may hand out a duplicate.
-  it("gives every control jsdom reports focusable a distinct accessible name (P5-21)", () => {
+  // P5-21: no control in `controlNames`' population is nameless, and no two share a name. P5-20
+  // closes the per-subject class on the screen; this closes it for a screen reader, which
+  // navigates BY the accessible name — controls sharing one subject-free label are
+  // indistinguishable there however clearly the rows read on screen. An invariant over the
+  // population `controlNames` computes, not a list of today's controls: a control added later
+  // that reaches for a shared subject-free label reds this row without anyone remembering to
+  // extend a list. Both offers are driven because the published count spec selects exactly one
+  // `targetsControl` kind, and neither branch may hand out a duplicate.
+  it("gives every focusable control in the a11y tree a distinct accessible name (P5-21)", () => {
     // A — the allocation branch: a count picker and three victim rows, each an amount control
     // with two steppers, plus two may panels.
     seed(

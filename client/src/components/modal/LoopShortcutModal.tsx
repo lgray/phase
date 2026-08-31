@@ -28,8 +28,8 @@ import { DialogShell } from "./DialogShell.tsx";
  * CR 732.2a/b/c: the interactive loop-shortcut declare + accept-or-shorten
  * modals. Pure display layer — every rendered value is a direct read of an
  * engine schema/proposal/response-spec field; the frontend derives, filters, and
- * computes nothing. `DeclareShortcut.template` is always `null`: building pins is not a
- * client authority, and the engine remains the sole legality authority
+ * computes nothing. `DeclareShortcut.template` is always `null`: constructing a
+ * `DecisionTemplate` is not a client authority, and the engine remains the sole legality authority
  * (`predictability_gate` + `validate_pins`).
  *
  * MEASURED LIMIT, stated rather than assumed — `null` is what the client can honestly send,
@@ -432,8 +432,8 @@ function DeclareShortcutOffer({
     if (confirmDisabled) return;
 
     if (!pinRoute) {
-      // The picker moves the COUNT only: `template` stays `null` because building pins is not a
-      // client authority.
+      // The picker moves the COUNT only: `template` stays `null` because constructing a
+      // `DecisionTemplate` is not a client authority.
       if (countSpec === null) {
         dispatch({
           type: "DeclareShortcut",
