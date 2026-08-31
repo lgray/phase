@@ -4233,7 +4233,7 @@ describe("P2P wire-protocol version gate", () => {
     adapter.dispose();
   });
 
-  it("refuses a guest that omits the mandatory v28 wire version", async () => {
+  it("refuses a guest that omits the mandatory wire version", async () => {
     const { adapter, emitConnection } = makeHost(2);
     await adapter.initialize();
 

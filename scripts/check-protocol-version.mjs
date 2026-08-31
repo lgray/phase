@@ -226,10 +226,11 @@ const clientLobbyFloor = extractVersion(
 );
 
 // The structural invariant, and the reason this block exists. Each of the four
-// regexes above requires a bare integer literal on the right-hand side, so a
-// future edit to `LOBBY_PROTOCOL_VERSION = PROTOCOL_VERSION - 1` (or any other
-// expression) fails to match and trips "Could not find protocol version"
-// rather than silently re-coupling the two surfaces.
+// regexes above requires a bare integer literal on the right-hand side, and all
+// four names sit on the authored-literal lists further up, so a future edit to
+// `LOBBY_PROTOCOL_VERSION = PROTOCOL_VERSION - 1` (or any other expression)
+// fails that classification first rather than silently re-coupling the two
+// surfaces.
 
 if (rustLobbyVersion !== clientLobbyVersion) {
   console.error(
@@ -356,12 +357,14 @@ for (const n of [W - 1, W]) {
   requirePattern(p2pGateBlock, new RegExp(`setupFrameAt\\(${n}\\)`),
     `${gateLabel} setupFrameAt(${n})`);
 }
-// Bare as well as `v`-prefixed: the comment writes the pair as "Revert 37 → 36",
-// so a leftover names the superseded number with no `v` in front of it. Both
-// guards exclude identifier characters; a decimal point is excluded only when
-// it makes the digits part of a longer number, so a decimal or a dotted
-// version string is admitted while a sentence-ending leftover is refused.
-// Ceiling: an uppercase `V` prefix reads as an identifier and is admitted.
+// Bare as well as `v`-prefixed: the gate block writes the handshake pair as
+// bare numerals, so a leftover can name the superseded version with no `v` in
+// front of it. Both guards exclude identifier characters, and a dot disarms
+// the match only when a digit sits on its far side — `0.<n>` and `<n>.0` are
+// admitted because the digits are then part of a longer number, while a
+// leading-dot decimal `.<n>`, a wildcard `<n>.x` and a sentence-ending `<n>.`
+// are refused. Ceiling: an uppercase `V` prefix reads as an identifier and is
+// admitted.
 refusePattern(p2pGateBlock,
   new RegExp(`(?<![0-9A-Za-z_]|[0-9]\\.)v?${W - 2}(?![0-9A-Za-z_]|\\.[0-9])`),
   gateLabel);
