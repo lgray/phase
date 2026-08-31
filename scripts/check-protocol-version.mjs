@@ -110,8 +110,8 @@ requirePattern(
 // whether or not it existed when the list was written. Three ceilings: a
 // right-hand side that is constant but not a decimal integer (hex, arithmetic,
 // a block expression) reads as derived, and so does a decimal integer whose
-// type suffix falls outside INTEGER_RHS's `[iu]<digits>` alphabet — `47usize`,
-// `47isize` and TypeScript's `47n`; the name filter below lets a helper named
+// type suffix falls outside INTEGER_RHS's `[iu]<digits>` alphabet — `<n>usize`,
+// `<n>isize` and TypeScript's `<n>n`; the name filter below lets a helper named
 // neither PROTOCOL nor MIN_SUPPORTED hold the literal while a protocol
 // constant derives from it; and the declaration regex sees one binding per
 // `const` and ends the right-hand side at the first `;`, comment or not.
@@ -134,7 +134,8 @@ const AUTHORED_LITERALS = [
 
 // Binding keyword, visibility, type annotation, digit separators and a cast
 // are optional or free-form, so a literalization cannot hide behind `static`,
-// `pub(crate)`, `: std::primitive::u32`, `4_7`, `47 as u32`, or a comment.
+// `pub(crate)`, `: std::primitive::u32`, an underscore between digits,
+// `<n> as u32`, or a comment.
 const CONST_DECL =
   /(?:pub(?:\([^)]+\))?\s+|export\s+)?(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*(?::\s*[^=;]+)?\s*=\s*([^;]+);/g;
 const INTEGER_RHS = /^\d[\d_]*(_?[iu]\d+)?(\s+(as|satisfies)\s+[^=;]+)?$/;
@@ -315,12 +316,12 @@ if (rustDirectoryVersion !== EXPECTED_DIRECTORY_VERSION) {
 // ── Names that embed a version number ─────────────────────────────────────
 //
 // A name carrying a version goes stale silently: `assert_eq!(PROTOCOL_VERSION,
-// 48)` under `fn protocol_version_is_47` is green, and so is a handshake pair
-// whose title still advertises the version before last. Each site requires the
-// CURRENT number and refuses the SUPERSEDED one, both derived from the
-// EXPECTED_* constants above, so a later bump edits the sources and those
-// constants, never the patterns themselves. Ceiling: the refuse leg catches
-// leftover text from the previous version, which is the defect a bump
+// <n>)` under `fn protocol_version_is_<n-1>` is green, and so is a handshake
+// pair whose title still advertises the version before last. Each site
+// requires the CURRENT number and refuses the SUPERSEDED one, both derived
+// from the EXPECTED_* constants above, so a later bump edits the sources and
+// those constants, never the patterns themselves. Ceiling: the refuse leg
+// catches leftover text from the previous version, which is the defect a bump
 // produces. Prose rewritten to some other wrong number is not a bump leftover
 // and is not guarded here.
 const P = EXPECTED_PROTOCOL_VERSION;
@@ -339,9 +340,14 @@ refusePattern(p2pProtocolTestSource, new RegExp(`\\bv${W - 1}\\b`),
 // The handshake pair stamps LITERALS on purpose — a frame built from
 // WIRE_PROTOCOL_VERSION cannot tell a bumped client from an unbumped one — so
 // the refused and the admitted number both live in this block, in the frames,
-// in the title, and in the comment explaining the choice. Ceiling: the slice
-// below runs to EOF rather than to the block's closing brace, so text appended
-// after this `describe` also falls under the refuse leg.
+// in the title, and in the comment explaining the choice. The slice ends at
+// the block's own closer, the first column-0 `});` after it, because the test
+// file writes seats, object ids and timeouts as bare integers: scanning past
+// the block would refuse an unrelated appended test as soon as the superseded
+// number reached a value one of them already uses. Ceiling: the closer is
+// found by column, so a column-0 `});` inside a template literal would end the
+// slice early — the `setupFrameAt` require legs sit inside the block and red
+// if that happens.
 const P2P_GATE = 'describe("P2P wire-protocol version gate"';
 const gateAt = p2pAdapterTestSource.indexOf(P2P_GATE);
 if (gateAt < 0) {
@@ -351,7 +357,11 @@ if (gateAt < 0) {
   );
   process.exit(1);
 }
-const p2pGateBlock = p2pAdapterTestSource.slice(gateAt);
+const gateEnd = p2pAdapterTestSource.indexOf("\n});", gateAt);
+const p2pGateBlock = p2pAdapterTestSource.slice(
+  gateAt,
+  gateEnd < 0 ? undefined : gateEnd,
+);
 const gateLabel = "client/src/adapter/__tests__/p2p-adapter-multiplayer.test.ts";
 for (const n of [W - 1, W]) {
   requirePattern(p2pGateBlock, new RegExp(`setupFrameAt\\(${n}\\)`),
