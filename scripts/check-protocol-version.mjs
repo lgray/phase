@@ -4,17 +4,14 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EXPECTED_PROTOCOL_VERSION = 59;
-// The LOBBY message-set version. Deliberately separate from the full-game
-// number above and deliberately NOT derived from it: a GameState-only bump must
-// not move the lobby's compatibility window. See the assertions at the bottom.
+// The LOBBY message-set version, not derived from the full-game number above:
+// the assertions below refuse an expression on its right-hand side.
 const EXPECTED_LOBBY_PROTOCOL_VERSION = 4;
 // The P2P wire version. A THIRD independent surface: host/guest first-contact
 // frames carry it, and the same GameState shape change that moves
 // EXPECTED_PROTOCOL_VERSION must move this one too. It was previously ungated
 // here, so a full-game bump could ship with an unbumped P2P version and CI
-// stayed green — peers on opposite sides of the shape change would still agree
-// on the wire version, complete the handshake, and read each other's
-// incompatible payloads with no error anywhere.
+// stayed green.
 const EXPECTED_WIRE_PROTOCOL_VERSION = 43;
 
 function extractVersion(source, pattern, label) {
@@ -100,15 +97,10 @@ requirePattern(
 
 // ── Authored vs derived: which constants may carry a bare integer ──────────
 //
-// The `requirePattern` calls above pin the FORM of one named formula each.
-// This block closes the class those are members of: every protocol constant
-// declared in the four files below is classified, and only the names listed
-// here may carry an integer. A derived constant replaced by its correct
-// current value passes every value comparison here and every relational
-// assertion in the Rust and vitest suites, and only reds at the NEXT bump — on
-// a change that has nothing to do with it. This catches it at the edit that
-// introduces it, and an unlisted name with an integer right-hand side fails
-// whether or not it existed when the list was written. Three ceilings: a
+// Of the protocol constants declared in the files below, only the names listed
+// here may carry an integer. A derived constant replaced by its correct current
+// value passes every other check in this file and every relational assertion in
+// the Rust and vitest suites, and reds only at the next bump. Ceilings: a
 // right-hand side that is constant but not a decimal integer (hex, arithmetic,
 // a block expression) reads as derived, and so does a decimal integer whose
 // type suffix falls outside INTEGER_RHS's `[iu]<digits>` alphabet — `<n>usize`,
@@ -133,10 +125,6 @@ const AUTHORED_LITERALS = [
   ]],
 ];
 
-// Binding keyword, visibility, type annotation, digit separators and a cast
-// are optional or free-form, so a literalization cannot hide behind `static`,
-// `pub(crate)`, `: std::primitive::u32`, an underscore between digits,
-// `<n> as u32`, or a comment.
 const CONST_DECL =
   /(?:pub(?:\([^)]+\))?\s+|export\s+)?(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*(?::\s*[^=;]+)?\s*=\s*([^;]+);/g;
 const INTEGER_RHS = /^\d[\d_]*(_?[iu]\d+)?(\s+(as|satisfies)\s+[^=;]+)?$/;
@@ -183,11 +171,9 @@ if (
 // and the decoder on each of those wires reads whatever arrives. The P2P peer's
 // `validateMessage` (client/src/network/protocol.ts) checks the `type` tag and
 // nothing else, and the WebSocket client hands server frames straight to
-// `JSON.parse` (client/src/adapter/ws-adapter.ts), so a payload built to the
-// other side's shape is rendered, not rejected. First-contact version equality
-// is the only place either skew is refusable, and bumping one number without
-// the other leaves the unbumped surface with nothing that can refuse. Gating
-// both in one place makes "I bumped the protocol" mean all of it.
+// `JSON.parse` (client/src/adapter/ws-adapter.ts). First-contact version
+// equality is the only place either skew is refusable, and bumping one number
+// without the other leaves the unbumped surface with nothing that can refuse.
 
 const wireProtocolVersion = extractVersion(
   p2pProtocolSource,
@@ -212,9 +198,7 @@ if (wireProtocolVersion !== EXPECTED_WIRE_PROTOCOL_VERSION) {
 // so retyping one of those breaks lobby messages too and has to move BOTH
 // numbers. What is wrong is deriving one number from the other — the
 // accept-window used to come from the full-game number, so a GameState-only
-// bump slid the lobby window and stranded every already-deployed client. These
-// assertions keep the two surfaces independent without pretending they never
-// overlap.
+// bump slid the lobby window and stranded every already-deployed client.
 
 const rustLobbyVersion = extractVersion(
   rustSource,
@@ -236,13 +220,6 @@ const clientLobbyFloor = extractVersion(
   /export\s+const\s+MIN_SUPPORTED_SERVER_LOBBY_PROTOCOL\s*=\s*(\d+)\s*;/,
   "client/src/adapter/ws-adapter.ts",
 );
-
-// The structural invariant, and the reason this block exists. Each of the four
-// regexes above requires a bare integer literal on the right-hand side, and all
-// four names sit on the authored-literal lists further up, so a future edit to
-// `LOBBY_PROTOCOL_VERSION = PROTOCOL_VERSION - 1` (or any other expression)
-// fails that classification first rather than silently re-coupling the two
-// surfaces.
 
 if (rustLobbyVersion !== clientLobbyVersion) {
   console.error(
@@ -348,15 +325,6 @@ requirePattern(p2pProtocolTestSource, new RegExp(`\\bv${W}\\b`),
 refusePattern(p2pProtocolTestSource, new RegExp(`\\bv${W - 1}\\b`),
   "client/src/network/__tests__/protocol.test.ts");
 
-// The handshake pair stamps LITERALS on purpose — a frame built from
-// WIRE_PROTOCOL_VERSION cannot tell a bumped client from an unbumped one — so
-// the refused and the admitted frame are both written as bare numerals, and
-// both are required here. Those two values are what pins the block.
-//
-// Scanned against the whole file rather than a slice of it: a require leg
-// fails on ABSENCE, so a wider haystack can only admit, never falsely refuse.
-// Prose inside the block is not checked — a title or comment naming a
-// superseded version is invisible here.
 const P2P_GATE = 'describe("P2P wire-protocol version gate"';
 if (!p2pAdapterTestSource.includes(P2P_GATE)) {
   console.error(
