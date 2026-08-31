@@ -231,6 +231,23 @@ const confirmButton = () => screen.getByRole("button", { name: "Take the shortcu
 const allocationRow = (subject: string) =>
   screen.getByRole("spinbutton", { name: `Repetitions for ${subject}` });
 const countBox = () => screen.getByRole("spinbutton", { name: "Number of iterations" });
+/** The ranking ▲ control, whose accessible name names the row it moves — so the query matches the
+ *  shape rather than a literal. `getAllByRole` returns DOM order, which is the rendered row order,
+ *  and the anchors keep a row that lost its subject from still matching. */
+const MOVE_EARLIER = /^Move .+ earlier$/;
+
+/** Every focusable control the dialog renders, paired with the name assistive technology
+ *  announces for it. Derived from the two ways this dialog names a control, then checked against
+ *  the real accessible-name computation, so a control named some third way cannot slip through as
+ *  an empty string. */
+function controlNames(): string[] {
+  const controls = [...screen.getAllByRole("button"), ...screen.queryAllByRole("spinbutton")];
+  return controls.map((el) => {
+    const name = (el.getAttribute("aria-label") ?? el.textContent ?? "").trim();
+    expect(el).toHaveAccessibleName(name);
+    return name;
+  });
+}
 
 // `viewerInteraction` is ALWAYS written (null by default): `setGameStoreForTest` merges into a
 // module-level store, so an unset field would leak a previous test's published spec forward.
@@ -388,9 +405,11 @@ describe("LoopShortcutModal", () => {
     render(<DeclareShortcutModal />);
 
     const box = screen.getByRole("spinbutton");
-    fireEvent.click(screen.getByRole("button", { name: "Increase amount" }));
+    fireEvent.click(screen.getByRole("button", { name: "Increase the number of iterations" }));
     expect(box).toHaveValue("3");
-    expect(screen.getByRole("button", { name: "Increase amount" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Increase the number of iterations" }),
+    ).toBeDisabled();
 
     fireEvent.change(box, { target: { value: "9" } });
     fireEvent.click(screen.getByRole("button", { name: "Take the shortcut" }));
@@ -935,9 +954,9 @@ describe("LoopShortcutModal", () => {
     // Follow the ENTRY, not the row: move the third entry up, then up again from its NEW position.
     // [k4,k5,k6] -> [k4,k6,k5] -> [k6,k4,k5], which is neither the published order nor a
     // single-swap of it.
-    fireEvent.click(screen.getAllByRole("button", { name: "Move earlier" })[2]);
-    fireEvent.click(screen.getAllByRole("button", { name: "Move earlier" })[1]);
-    expect(screen.getAllByRole("button", { name: "Move earlier" })[0]).toBeDisabled();
+    fireEvent.click(screen.getAllByRole("button", { name: MOVE_EARLIER })[2]);
+    fireEvent.click(screen.getAllByRole("button", { name: MOVE_EARLIER })[1]);
+    expect(screen.getAllByRole("button", { name: MOVE_EARLIER })[0]).toBeDisabled();
 
     fireEvent.click(confirmButton());
     expect(dispatchInteraction).toHaveBeenCalledWith({
@@ -1189,7 +1208,7 @@ describe("LoopShortcutModal", () => {
     seed(buildLoopShortcutWaitingFor(), {}, rankingOffer("session.0.3"));
     const rankingView = render(<DeclareShortcutModal />);
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Move earlier" })[1]);
+    fireEvent.click(screen.getAllByRole("button", { name: MOVE_EARLIER })[1]);
     expect(screen.getAllByText(/^P[23]$/).map((n) => n.textContent)).toEqual(["P3", "P2"]);
 
     seed(buildLoopShortcutWaitingFor(), {}, rankingOffer("session.0.4"));
@@ -1325,7 +1344,7 @@ describe("LoopShortcutModal", () => {
 
     // Positive control for this query: P5-7, where it finds the ▲ buttons on an UntilLethal offer
     // that DOES publish a targets point.
-    expect(screen.queryAllByRole("button", { name: /move earlier/i })).toHaveLength(0);
+    expect(screen.queryAllByRole("button", { name: MOVE_EARLIER })).toHaveLength(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Take optional ability 1" }));
     fireEvent.click(screen.getByRole("button", { name: "Take optional ability 2" }));
@@ -1589,12 +1608,173 @@ describe("LoopShortcutModal", () => {
     render(<DeclareShortcutModal />);
 
     // Reach-guard: the ranking panel is mounted, one row per candidate.
-    expect(screen.getAllByRole("button", { name: "Move earlier" })).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: MOVE_EARLIER })).toHaveLength(3);
     for (const seat of ["P2", "P3", "P4"]) {
       expect(screen.getByText(seat), seat).toBeInTheDocument();
     }
     expect(
       screen.getByText("Optional ability 1 — repeat this choice each iteration?"),
     ).toBeInTheDocument();
+  });
+  // P5-21: no focusable control in the dialog is nameless, and no two share a name. P5-20 closes
+  // the per-subject class on the screen; this closes it for a screen reader, which navigates BY
+  // the accessible name — controls sharing one subject-free label are indistinguishable there
+  // however clearly the rows read on screen. An invariant over whatever the dialog renders, not a
+  // list of today's controls: a control added later that reaches for a shared subject-free label
+  // reds this row without anyone remembering to extend a list. Both offers are driven because the
+  // published count spec selects exactly one `targetsControl` kind, and neither branch may hand
+  // out a duplicate.
+  it("gives every focusable control a distinct accessible name (P5-21)", () => {
+    // A — the allocation branch: a count picker and three victim rows, each an amount control
+    // with two steppers, plus two may panels.
+    seed(
+      buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 6 } } }),
+      {},
+      shortcutInteraction(
+        {
+          count: fixedCount(1, 6, 6),
+          points: [
+            mayPoint(0, ["m0take", "m0dec"]),
+            mayPoint(1, ["m1take", "m1dec"]),
+            targetsPoint(2, ["k4", "k5", "k6"]),
+          ],
+          preview: [element(6, [amt("k4", 2), amt("k5", 2), amt("k6", 2)])],
+        },
+        "session.0.1",
+        [
+          ...mayCandidates("m0take", "m0dec"),
+          ...mayCandidates("m1take", "m1dec"),
+          seatCandidate("k4", 1),
+          seatCandidate("k5", 2),
+          seatCandidate("k6", 3),
+        ],
+      ),
+    );
+    render(<DeclareShortcutModal />);
+
+    const allocationNames = controlNames();
+    // Reach-guard: the enumeration reached all four amount controls, the ones whose steppers a
+    // shared label would collapse onto each other, so the assertions below run over a populated
+    // set rather than an empty one.
+    expect(allocationNames).toEqual(
+      expect.arrayContaining([
+        "Decrease the number of iterations",
+        "Decrease repetitions for P2",
+        "Decrease repetitions for P3",
+        "Decrease repetitions for P4",
+      ]),
+    );
+    expect(allocationNames.filter((n) => n.length === 0)).toEqual([]);
+    expect(new Set(allocationNames).size, allocationNames.join(" | ")).toBe(
+      allocationNames.length,
+    );
+
+    // B — the ranking branch, whose two move buttons repeat once per row.
+    cleanup();
+    seed(
+      buildLoopShortcutWaitingFor(),
+      {},
+      shortcutInteraction(
+        {
+          count: { type: "untilLethal" },
+          points: [mayPoint(0, ["m0take", "m0dec"]), targetsPoint(2, ["k4", "k5", "k6"])],
+        },
+        "session.0.1",
+        [
+          ...mayCandidates("m0take", "m0dec"),
+          seatCandidate("k4", 1),
+          seatCandidate("k5", 2),
+          seatCandidate("k6", 3),
+        ],
+      ),
+    );
+    render(<DeclareShortcutModal />);
+
+    const rankingNames = controlNames();
+    expect(rankingNames).toEqual(
+      expect.arrayContaining(["Move P2 earlier", "Move P3 earlier", "Move P4 later"]),
+    );
+    expect(rankingNames.filter((n) => n.length === 0)).toEqual([]);
+    expect(new Set(rankingNames).size, rankingNames.join(" | ")).toBe(rankingNames.length);
+  });
+
+  // P5-22: the may panel's ordinal counts the panels ON SCREEN, not the published points. The
+  // projection numbers every point it publishes — the read-only ones and the targets point
+  // included — and `bounded_cycle_pin_slots_for_window` pushes an accepted entry's targets point
+  // BEFORE that entry's may point, so an offer whose may points do not lead is the ordinary
+  // construction rather than an exotic one. Numbering by `group` would head the only panel
+  // "Optional ability 2" and tell the player the dialog is withholding a choice it is obliged to
+  // render. Shape A leads with a targets point, shape B with a read-only one and carries TWO may
+  // panels, so the numbering is shown contiguous rather than merely offset. Both shapes assert the
+  // DISPATCHED group as well: renumbering the wire instead of the display would satisfy every
+  // screen assertion here and corrupt the submission.
+  it("numbers the may panels by rendered position while pinning by group (P5-22)", () => {
+    // A — `[Targets(0), MayChoice(1)]`, the order one accepted entry carrying both publishes.
+    seed(
+      buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 6 } } }),
+      {},
+      shortcutInteraction(
+        {
+          count: fixedCount(1, 6, 6),
+          points: [targetsPoint(0, ["k4", "k5"]), mayPoint(1, ["m1take", "m1dec"])],
+          preview: [element(6, [amt("k4", 3), amt("k5", 3)])],
+        },
+        "session.0.1",
+        [seatCandidate("k4", 1), seatCandidate("k5", 2), ...mayCandidates("m1take", "m1dec")],
+      ),
+    );
+    render(<DeclareShortcutModal />);
+
+    // Reach-guard: the offer took the pin route (the allocation control beside the panel is only
+    // rendered there), so the single panel below is a rendered may point, not an absent one.
+    expect(allocationRow("P2")).toBeInTheDocument();
+    // The whole set of headings, so an "ability 1" that renders ALONGSIDE a stray "ability 2"
+    // cannot pass. `getAllByText` throws on an empty match, which is the query's own control.
+    expect(screen.getAllByText(/^Optional ability \d+ —/).map((n) => n.textContent)).toEqual([
+      "Optional ability 1 — repeat this choice each iteration?",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 1" }));
+    fireEvent.click(confirmButton());
+    // The published group, not the display ordinal, is what the engine is asked to pin.
+    expect(submittedPins()).toEqual([
+      { group: 0, choiceIds: ["k4", "k5"], amounts: [amt("k4", 3), amt("k5", 3)] },
+      { group: 1, choiceIds: ["m1take"], amounts: [] },
+    ]);
+
+    // B — a read-only point leads and both may points follow, so every published group is one
+    // above its panel's ordinal.
+    cleanup();
+    vi.mocked(dispatchInteraction).mockClear();
+    seed(
+      buildLoopShortcutWaitingFor(),
+      {},
+      shortcutInteraction(
+        {
+          count: { type: "untilLethal" },
+          points: [
+            readOnlyPoint(0, "convokeTaps"),
+            mayPoint(1, ["m1take", "m1dec"]),
+            mayPoint(2, ["m2take", "m2dec"]),
+          ],
+        },
+        "session.0.1",
+        [...mayCandidates("m1take", "m1dec"), ...mayCandidates("m2take", "m2dec")],
+      ),
+    );
+    render(<DeclareShortcutModal />);
+
+    expect(screen.getAllByText(/^Optional ability \d+ —/).map((n) => n.textContent)).toEqual([
+      "Optional ability 1 — repeat this choice each iteration?",
+      "Optional ability 2 — repeat this choice each iteration?",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Take optional ability 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Decline optional ability 2" }));
+    fireEvent.click(confirmButton());
+    // Each panel answers ITS OWN point: the ordinals shifted, the pins did not, and the read-only
+    // point still receives none.
+    expect(submittedPins()).toEqual([
+      { group: 1, choiceIds: ["m1take"], amounts: [] },
+      { group: 2, choiceIds: ["m2dec"], amounts: [] },
+    ]);
   });
 });

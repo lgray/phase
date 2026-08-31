@@ -533,8 +533,12 @@ function DeclareShortcutOffer({
             onSubmit={handleConfirm}
             labels={{
               input: t("comboShortcut.countAria"),
-              decrease: t("mana.decreaseAmount"),
-              increase: t("mana.increaseAmount"),
+              // Several amount controls stand side by side in this dialog, so a stepper names
+              // the quantity it steps rather than taking `AmountInput`'s shared
+              // `mana.decreaseAmount`, which names only "amount" and stays right for the
+              // single-control callers in `mana/`.
+              decrease: t("comboShortcut.countDecreaseAria"),
+              increase: t("comboShortcut.countIncreaseAria"),
             }}
           />
         )}
@@ -543,24 +547,25 @@ function DeclareShortcutOffer({
             <p className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
               {t("comboShortcut.allocationTitle")}
             </p>
-            {targetsControl.point.candidateIds.map((id) => (
-              <SubjectControl key={id} subject={candidateLabel(t, candidates, id)}>
-                <AmountInput
-                  raw={rowRaw(id)}
-                  onRawChange={(next) => editRow(id, next)}
-                  min={0}
-                  max={chosen}
-                  onSubmit={handleConfirm}
-                  labels={{
-                    input: t("comboShortcut.allocationAria", {
-                      subject: candidateLabel(t, candidates, id),
-                    }),
-                    decrease: t("mana.decreaseAmount"),
-                    increase: t("mana.increaseAmount"),
-                  }}
-                />
-              </SubjectControl>
-            ))}
+            {targetsControl.point.candidateIds.map((id) => {
+              const subject = candidateLabel(t, candidates, id);
+              return (
+                <SubjectControl key={id} subject={subject}>
+                  <AmountInput
+                    raw={rowRaw(id)}
+                    onRawChange={(next) => editRow(id, next)}
+                    min={0}
+                    max={chosen}
+                    onSubmit={handleConfirm}
+                    labels={{
+                      input: t("comboShortcut.allocationAria", { subject }),
+                      decrease: t("comboShortcut.allocationDecreaseAria", { subject }),
+                      increase: t("comboShortcut.allocationIncreaseAria", { subject }),
+                    }}
+                  />
+                </SubjectControl>
+              );
+            })}
             <p className="text-xs text-slate-400 tabular-nums">
               {t("comboShortcut.allocationSum", { allocated, total: chosen })}
             </p>
@@ -577,38 +582,44 @@ function DeclareShortcutOffer({
             <p className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
               {t("comboShortcut.rankingTitle")}
             </p>
-            {rankedOrder.map((id, position) => (
-              <SubjectControl key={id} subject={candidateLabel(t, candidates, id)}>
-                <button
-                  aria-label={t("comboShortcut.rankingMoveUp")}
-                  disabled={position === 0}
-                  onClick={() => move(position, position - 1)}
-                  className="min-h-8 rounded border border-white/10 px-2 text-white/80 transition hover:bg-white/10 disabled:opacity-30"
-                >
-                  ▲
-                </button>
-                <button
-                  aria-label={t("comboShortcut.rankingMoveDown")}
-                  disabled={position === rankedOrder.length - 1}
-                  onClick={() => move(position, position + 1)}
-                  className="min-h-8 rounded border border-white/10 px-2 text-white/80 transition hover:bg-white/10 disabled:opacity-30"
-                >
-                  ▼
-                </button>
-              </SubjectControl>
-            ))}
+            {rankedOrder.map((id, position) => {
+              const subject = candidateLabel(t, candidates, id);
+              return (
+                <SubjectControl key={id} subject={subject}>
+                  <button
+                    aria-label={t("comboShortcut.rankingMoveUp", { subject })}
+                    disabled={position === 0}
+                    onClick={() => move(position, position - 1)}
+                    className="min-h-8 rounded border border-white/10 px-2 text-white/80 transition hover:bg-white/10 disabled:opacity-30"
+                  >
+                    ▲
+                  </button>
+                  <button
+                    aria-label={t("comboShortcut.rankingMoveDown", { subject })}
+                    disabled={position === rankedOrder.length - 1}
+                    onClick={() => move(position, position + 1)}
+                    className="min-h-8 rounded border border-white/10 px-2 text-white/80 transition hover:bg-white/10 disabled:opacity-30"
+                  >
+                    ▼
+                  </button>
+                </SubjectControl>
+              );
+            })}
           </div>
         )}
-        {mayPoints.map((p) => {
-          // The published `group` is the ONLY datum that tells one may point from another:
-          // `InteractionShortcutPoint` carries no source, name or label, and its candidates carry
-          // only a take/decline `value` surface. So the ordinal IS the subject, and it is rendered
-          // rather than merely announced. Displayed +1 like every other index this modal shows
-          // (`candidateLabel`'s `seat + 1`), and the SAME value feeds the accessible names below,
-          // so what a player reads and what a screen reader says cannot disagree. Unique by
-          // construction: the projection mints `group` as the point's enumerate index
-          // (`shortcut_points` in `game/interaction.rs`), so two panels cannot collide.
-          const ordinal = p.group + 1;
+        {mayPoints.map((p, index) => {
+          // The ordinal IS the subject: `InteractionShortcutPoint` carries no source, name or
+          // label, and a may point's candidates carry only a take/decline `value` surface, so
+          // nothing else distinguishes one panel from another. It counts the RENDERED panels, not
+          // the published points — `group` is the point's index in the whole published list, which
+          // also numbers the read-only and `targets` points the projection mints alongside these
+          // (`loop_shortcut_points` in `game/interaction.rs`), and those publish no panel.
+          // Numbering by `group` therefore skips: an entry publishing `[Targets, MayChoice]` —
+          // the order `bounded_cycle_pin_slots_for_window` pushes them in — would head its only
+          // panel "ability 2". `group` still keys `mayPicks`, the React key and the pin, so the
+          // wire payload stays the engine's. The SAME ordinal feeds the accessible names below,
+          // so what a player reads and what a screen reader says cannot disagree.
+          const ordinal = index + 1;
           return (
             <div key={p.group} className="flex flex-col gap-2 rounded-lg bg-white/5 px-3 py-2">
               <SubjectControl subject={t("comboShortcut.mayTitle", { group: ordinal })}>
