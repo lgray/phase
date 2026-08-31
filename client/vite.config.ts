@@ -461,6 +461,16 @@ export default defineConfig(({ mode }) => ({
   // hit Caddy rather than the bare :5173 dev server. Both are gated on a
   // hostname presence check so plain `pnpm dev` on localhost still works.
   server: {
+    // Every consumer of this dev server pins :5173 as a literal it cannot
+    // re-resolve — tauri.conf.json's `devUrl`, the Caddyfile's reverse_proxy
+    // upstreams, the Tiltfile's link. `strictPort` is the enforcement: vite
+    // defaults it to false and on EADDRINUSE drifts to ++port, announced only
+    // by an info line that scrolls past inside `tauri dev`, leaving the shell
+    // on a dead URL painting a blank white document. `port` declares the pin;
+    // `strictPort` is what holds it. `vite preview` inherits strictPort from
+    // here (its own port stays 4173), so `pnpm preview` refuses.
+    port: 5173,
+    strictPort: true,
     allowedHosts: ["local.phase-rs.dev", ".local.phase-rs.dev"],
     hmr: process.env.CADDY_PROXY === "1"
       ? { protocol: "wss", host: "local.phase-rs.dev", clientPort: 443 }
