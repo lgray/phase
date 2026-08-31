@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EXPECTED_PROTOCOL_VERSION = 59;
-// The LOBBY message-set version, not derived from the full-game number above:
-// the assertions below refuse an expression on its right-hand side.
+// The LOBBY message-set version, not derived from the full-game number above.
+// The classifier below refuses an expression only on the SOURCE constants; this
+// script never reads itself, so its own EXPECTED_* must stay literals.
 const EXPECTED_LOBBY_PROTOCOL_VERSION = 4;
 // The P2P wire version. A THIRD independent surface: host/guest first-contact
 // frames carry it, and the same GameState shape change that moves
@@ -315,8 +316,8 @@ if (rustDirectoryVersion !== EXPECTED_DIRECTORY_VERSION) {
 const P = EXPECTED_PROTOCOL_VERSION;
 const W = EXPECTED_WIRE_PROTOCOL_VERSION;
 
-requirePattern(serverCoreSource, new RegExp(`protocol_version_is_${P}(?![0-9])`),
-  `crates/server-core/src/protocol.rs protocol_version_is_${P}`);
+requirePattern(serverCoreSource, new RegExp(`fn protocol_version_is_${P}(?![0-9])`),
+  `crates/server-core/src/protocol.rs fn protocol_version_is_${P}`);
 refusePattern(serverCoreSource, new RegExp(`protocol_version_is_${P - 1}(?![0-9])`),
   "crates/server-core/src/protocol.rs");
 
@@ -334,6 +335,9 @@ if (!p2pAdapterTestSource.includes(P2P_GATE)) {
   process.exit(1);
 }
 const gateLabel = "client/src/adapter/__tests__/p2p-adapter-multiplayer.test.ts";
+// The legs below deliberately scan the whole file rather than the block just
+// located: a require leg fails on absence, so a wider haystack can only admit and
+// never falsely refuse.
 for (const n of [W - 1, W]) {
   requirePattern(p2pAdapterTestSource, new RegExp(`setupFrameAt\\(${n}\\)`),
     `${gateLabel} setupFrameAt(${n})`);

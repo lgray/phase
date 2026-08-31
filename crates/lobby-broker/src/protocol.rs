@@ -49,12 +49,12 @@ pub enum ServerErrorCode {
 ///      so both directions are stated. v58 → v59 fails on EVERY shortcut offer: the
 ///      old field carried no `skip_serializing_if`, so a v58 peer always emits the
 ///      key, and neither `null` nor an object deserializes into a sequence.
-///      v59 → v58 fails only on an offer that actually carries a preview, because
-///      an empty list omits the key and a v58 peer's `Option` field reads that as
-///      `None`. `viewer_interaction` is a required field on `ServerMessage`, so a
-///      Rust peer decoding one of those frames is where that failure lands; the
-///      browser half deserializes with `JSON.parse` and validates nothing, which is
-///      why the handshake is the only place the pairing is refusable. No shim ships
+///      v58 → v57 fails only on an offer that actually carries a preview, because
+///      an empty list omits the key and a v57 peer's `Option` field reads that as
+///      `None`. The retype breaks the declared Rust types, but no production Rust
+///      code deserializes `ServerMessage` — the browser half is what decodes those
+///      frames, with `JSON.parse` and no validation, which is why the handshake is
+///      the only place the pairing is refusable. No shim ships
 ///      — no `deserialize_with`, no dual-parse path, no version-conditional branch —
 ///      and full-game floors are exact-match on both sides
 ///      (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`, and

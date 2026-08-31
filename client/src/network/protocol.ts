@@ -106,8 +106,9 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *       no decode error anywhere. First-contact version equality is the only
  *       place the skew is refusable, and no shim ships. Bumped in lockstep with
  *       PROTOCOL_VERSION 59 in crates/lobby-broker/src/protocol.rs, which the
- *       same retype breaks — on that track it IS a parse break, because
- *       ServerMessage carries viewer_interaction as a required field.
+ *       same retype breaks in the declared Rust types — but no production Rust
+ *       code deserializes ServerMessage, so that track fails silently at the
+ *       browser too, and the handshake is the only refusal point on both.
  *  42 — New guest → host `state_ack` frame, carrying the highest state
  *       revision the guest has actually APPLIED — the fact a host ledger that
  *       records TRANSMISSION cannot observe, since a send resolving true only
