@@ -106,6 +106,11 @@ local_resource('frontend',
     allow_parallel = True,
     links = ['http://localhost:5173'],
     labels = ['serve'],
+    # `tauri` depends on this resource being ready (see below) so it doesn't
+    # open devUrl before Vite accepts connections — the default Tilt
+    # readiness (process started) isn't enough, since Vite compiles for a
+    # moment before it binds :5173.
+    readiness_probe = probe(period_secs = 5, tcp_socket = tcp_socket_action(port = 5173)),
 )
 
 # Deck-import + lobby broker Worker. vite.config.ts proxies /import-deck to
