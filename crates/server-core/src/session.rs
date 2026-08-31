@@ -2965,6 +2965,42 @@ mod tests {
         assert!(row.get("ts").is_some(), "row must carry a ts field: {row}");
     }
 
+    /// Proves `GameSession::start_game`'s write hook is reachable, not just
+    /// present in source — `create_game_n_players`/`join_game` never call
+    /// `start_game` (see `handle_action_hook_writes_real_events_stream_file`'s
+    /// doc comment), so `create_game_with_ai` is the only `SessionManager`
+    /// path that reaches it, mirroring `takeback_auto_approves_for_sole_human_seat`'s setup.
+    #[test]
+    fn start_game_hook_writes_real_events_stream_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let games_dir = dir.path().join("games");
+        std::fs::create_dir_all(&games_dir).unwrap();
+
+        let mut mgr = SessionManager::new();
+        mgr.game_log = std::sync::Arc::new(GameFileCache::new(games_dir.clone()));
+        let db = engine::database::CardDatabase::default();
+        let (code, _token) = mgr
+            .create_game_with_ai(
+                make_deck(),
+                "Host".to_string(),
+                None,
+                MatchConfig::default(),
+                vec![(1, AiDifficulty::Easy, make_deck())],
+                Vec::new(),
+                None,
+                &db,
+            )
+            .expect("supported format config");
+
+        let events_path = games_dir.join(format!("{code}.events.jsonl"));
+        let content = std::fs::read_to_string(&events_path)
+            .expect("start_game's write hook must have written the events stream file");
+        assert!(
+            !content.trim().is_empty(),
+            "events stream file exists but is empty"
+        );
+    }
+
     /// `SetPhaseStops` is keyed to the authenticated player and delegated to the
     /// engine write-handler (keyed by `actor`), so a non-priority player's stops
     /// land on their OWN entry — not the priority holder's. Mirrors the
