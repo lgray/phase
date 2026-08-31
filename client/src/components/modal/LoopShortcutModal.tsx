@@ -26,9 +26,12 @@ import { DialogShell } from "./DialogShell.tsx";
 
 /**
  * CR 732.2a/b/c: the interactive loop-shortcut declare + accept-or-shorten
- * modals. Pure display layer — every rendered value is a direct read of an
- * engine schema/proposal/response-spec field; the frontend derives, filters, and
- * computes nothing. `DeclareShortcut.template` is always `null`: constructing a
+ * modals. A game MAGNITUDE — a consequence the shortcut causes, such as life lost or cards
+ * milled — is rendered only as a direct read of a published engine schema/proposal/response-spec
+ * field; the client never computes, scales or re-attributes one. The player's own DECLARATION is
+ * the other side of that line: the count and its partition across published `choice_id`s are
+ * authored, summed and displayed here for form state and button enablement, and the engine
+ * validates it independently. `DeclareShortcut.template` is always `null`: constructing a
  * `DecisionTemplate` is not a client authority, and the engine remains the sole legality authority
  * (`predictability_gate` + `validate_pins`).
  *
