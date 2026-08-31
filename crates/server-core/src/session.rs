@@ -968,6 +968,10 @@ impl GameSession {
         // can surface them; the broadcaster clears `start_events` afterward so
         // joiners/reconnects do not re-see the dice.
         let result = start_game(&mut self.state);
+        // Per-game JSON debug log (issue #7978): "Game started"/"Turn 1" rows
+        // — otherwise every game's events.jsonl would start mid-game.
+        self.game_log
+            .write_game_log_entries(&self.game_code, &result.log_entries);
         // Deliberately NOT a turn-rewind capture site, unlike the four
         // transition handlers. These events never reach a transition handler,
         // and turn 1's opening state sits adjacent to the mulligan flow —
@@ -1296,6 +1300,11 @@ impl GameSession {
         // still needs to observe every one of them.
         let post_state = self.state.clone();
         self.observe_transition(&resumed.action_result().events, &post_state);
+        // Per-game JSON debug log (issue #7978): stack automation replayed
+        // after a server restart is exactly the post-crash scenario this log
+        // exists to make debuggable — it must not be invisible here.
+        self.game_log
+            .write_game_log_entries(&self.game_code, &resumed.action_result().log_entries);
         let revision = self.advance_state_revision();
         let (legal_actions, spell_costs, by_object) = engine_legal_actions_full(&self.state);
         let auto_pass = auto_pass_recommended(&self.state, &legal_actions);
@@ -2882,6 +2891,78 @@ mod tests {
             }
         }
         (mgr, code, token0, token1)
+    }
+
+    /// Proves a production mint point (`handle_action` ->
+    /// `handle_action_with_card_db_outcome`'s write hook) actually reaches a
+    /// real `GameFileCache`, not just that `write_game_log_entries` works in
+    /// isolation. Attaching the cache post-hoc on `setup_two_player_game`'s
+    /// manager would not do this: `GameSession.game_log` is copied from
+    /// `SessionManager.game_log` at session-creation time, so the cache must
+    /// be installed before `create_game`. This is also the exact wiring gap
+    /// (`GameCodeVisitor::record_debug` never captured the span field) that
+    /// the second review round caught — a test reaching the real hook is what
+    /// would have caught it directly.
+    #[test]
+    fn handle_action_hook_writes_real_events_stream_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let games_dir = dir.path().join("games");
+        std::fs::create_dir_all(&games_dir).unwrap();
+
+        let mut mgr = SessionManager::new();
+        mgr.game_log = std::sync::Arc::new(GameFileCache::new(games_dir.clone()));
+        let (code, token0) = mgr.create_game(make_deck());
+        let (token1, _) = mgr.join_game(&code, make_deck()).unwrap();
+        for _ in 0..20 {
+            let session = mgr.sessions.get(&code).unwrap();
+            match &session.state.waiting_for.clone() {
+                WaitingFor::MulliganDecision { pending, .. } => {
+                    for entry in pending {
+                        let tok = if entry.player == PlayerId(0) {
+                            token0.clone()
+                        } else {
+                            token1.clone()
+                        };
+                        let _ = mgr.handle_action(
+                            &code,
+                            &tok,
+                            GameAction::MulliganDecision {
+                                choice: engine::types::actions::MulliganChoice::Keep,
+                            },
+                        );
+                    }
+                }
+                WaitingFor::Priority { .. } => break,
+                _ => break,
+            }
+        }
+
+        let priority_player = match &mgr.sessions.get(&code).unwrap().state.waiting_for {
+            WaitingFor::Priority { player } => *player,
+            other => panic!("expected Priority, got {other:?}"),
+        };
+        let acting_token = if priority_player == PlayerId(0) {
+            &token0
+        } else {
+            &token1
+        };
+        let result = mgr.handle_action(&code, acting_token, GameAction::PassPriority);
+        assert!(result.is_ok(), "PassPriority should succeed: {result:?}");
+
+        let events_path = games_dir.join(format!("{code}.events.jsonl"));
+        let content = std::fs::read_to_string(&events_path)
+            .expect("a real production action hook must have written the events stream file");
+        assert!(
+            !content.trim().is_empty(),
+            "events stream file exists but is empty"
+        );
+        let row: serde_json::Value = serde_json::from_str(content.lines().next().unwrap())
+            .expect("each row must be valid JSON");
+        assert!(
+            row.get("category").is_some(),
+            "row must carry the engine's LogCategory field: {row}"
+        );
+        assert!(row.get("ts").is_some(), "row must carry a ts field: {row}");
     }
 
     /// `SetPhaseStops` is keyed to the authenticated player and delegated to the

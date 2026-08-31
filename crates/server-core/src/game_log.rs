@@ -140,7 +140,12 @@ impl GameFileCache {
             let Ok(Value::Object(mut fields)) = serde_json::to_value(entry) else {
                 continue;
             };
-            fields.insert("ts".to_string(), Value::String(format_timestamp()));
+            // `or_insert`, not `insert`: `GameLogEntry` has no `ts` field
+            // today, but this keeps the same non-clobbering contract as the
+            // `phase-server` session-stream writer if that ever changes.
+            fields
+                .entry("ts".to_string())
+                .or_insert_with(|| Value::String(format_timestamp()));
             if let Ok(line) = serde_json::to_string(&Value::Object(fields)) {
                 self.write_line(game_code, Stream::Events, &line);
             }

@@ -14,7 +14,14 @@ use tracing_subscriber::Layer;
 /// Extension data stored on `game_session` spans to identify the game code.
 struct GameCode(String);
 
-/// Visitor that extracts the `game` field from span attributes.
+/// Visitor that extracts the `game` field from span attributes. The span is
+/// created as `game = %game_code` (`SocketIdentity::set_session`) — `%`
+/// records via `record_debug`, not `record_str` (tracing wraps the value in
+/// a `Debug` adapter whose impl delegates to `Display`), so `record_debug`
+/// must capture it too or every span silently carries no game code and this
+/// entire layer is a no-op. Verified with a driven probe: the real macro
+/// form (`%`) reaches `record_debug`; only a raw `&str` field reaches
+/// `record_str`.
 struct GameCodeVisitor(Option<String>);
 
 impl Visit for GameCodeVisitor {
@@ -24,7 +31,11 @@ impl Visit for GameCodeVisitor {
         }
     }
 
-    fn record_debug(&mut self, _field: &Field, _value: &dyn std::fmt::Debug) {}
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "game" {
+            self.0 = Some(format!("{value:?}"));
+        }
+    }
 }
 
 /// Visitor that collects every tracing event field into a JSON object, keyed
@@ -114,15 +125,18 @@ where
         let mut visitor = JsonFieldVisitor(Map::new());
         event.record(&mut visitor);
         let mut fields = visitor.0;
-        fields.insert("ts".to_string(), Value::String(format_timestamp()));
-        fields.insert(
-            "level".to_string(),
-            Value::String(event.metadata().level().to_string()),
-        );
-        fields.insert(
-            "target".to_string(),
-            Value::String(event.metadata().target().to_string()),
-        );
+        // `or_insert`, not `insert`: an event field that happens to be named
+        // `ts`/`level`/`target` must not be silently destroyed by this
+        // transport metadata — the event's own data wins on collision.
+        fields
+            .entry("ts".to_string())
+            .or_insert_with(|| Value::String(format_timestamp()));
+        fields
+            .entry("level".to_string())
+            .or_insert_with(|| Value::String(event.metadata().level().to_string()));
+        fields
+            .entry("target".to_string())
+            .or_insert_with(|| Value::String(event.metadata().target().to_string()));
 
         if let Ok(line) = serde_json::to_string(&Value::Object(fields)) {
             self.cache.write_line(&game_code, Stream::Session, &line);
@@ -227,5 +241,75 @@ pub fn init_logging(
             }
             (None, Arc::new(GameFileCache::disabled()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// End-to-end pin for the HIGH bug the second review round caught: a
+    /// `game_session` span created as `game = %code` (the real macro form
+    /// `SocketIdentity::set_session` uses) dispatches through `record_debug`,
+    /// not `record_str`. Before that visitor arm existed, `on_new_span` never
+    /// captured a `GameCode` extension, so `on_event`'s span walk always hit
+    /// `None => return` and no session-stream file was ever created — this
+    /// test drives the real span/event macros through a real `GameFileLayer`
+    /// and would fail exactly that way on the old code.
+    #[test]
+    fn game_session_span_with_display_recorded_code_writes_session_stream_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let games_dir = dir.path().join("games");
+        fs::create_dir_all(&games_dir).unwrap();
+
+        let cache = Arc::new(GameFileCache::new(games_dir.clone()));
+        let layer = GameFileLayer::new(Arc::clone(&cache));
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("game_session", game = %"CODE123");
+            let _enter = span.enter();
+            tracing::info!(extra = "value", "test event");
+        });
+
+        let path = games_dir.join("CODE123.session.jsonl");
+        let content = fs::read_to_string(&path)
+            .expect("session stream file must exist — proves the %-recorded `game` field reached record_debug");
+        let row: Value =
+            serde_json::from_str(content.lines().next().unwrap()).expect("row must be valid JSON");
+        assert_eq!(row["extra"], "value");
+        assert_eq!(row["message"], "test event");
+        assert_eq!(row["level"], "INFO");
+        assert!(row["ts"].is_string());
+    }
+
+    /// Pins the LOW clobbering fix: an event field literally named `level`
+    /// must survive — `or_insert` only synthesizes the metadata key when the
+    /// event didn't already supply one.
+    #[test]
+    fn user_supplied_field_wins_over_synthesized_metadata_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let games_dir = dir.path().join("games");
+        fs::create_dir_all(&games_dir).unwrap();
+
+        let cache = Arc::new(GameFileCache::new(games_dir.clone()));
+        let layer = GameFileLayer::new(Arc::clone(&cache));
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("game_session", game = %"CODE456");
+            let _enter = span.enter();
+            tracing::info!(level = "custom-level-value", "test event");
+        });
+
+        let path = games_dir.join("CODE456.session.jsonl");
+        let content = fs::read_to_string(&path).expect("session stream file must exist");
+        let row: Value =
+            serde_json::from_str(content.lines().next().unwrap()).expect("row must be valid JSON");
+        assert_eq!(
+            row["level"], "custom-level-value",
+            "a real event field named `level` must not be clobbered by the synthesized one"
+        );
     }
 }
