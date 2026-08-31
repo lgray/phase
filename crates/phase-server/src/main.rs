@@ -703,6 +703,9 @@ struct ServerContext {
     /// has no way to turn a label back into a number.
     replica_ordinal: Option<u32>,
     metrics: Arc<metrics::ServerMetrics>,
+    /// Per-game JSON-Lines log sink (see `logging::GameFileCache`). Disabled
+    /// (no-op writes) unless `PHASE_LOG_DIR` is set.
+    game_log: Arc<logging::GameFileCache>,
 }
 
 // The lobby-only broker capacity cap (`MAX_LOBBY_ENTRIES`) now lives in
@@ -1707,7 +1710,7 @@ fn main() {
 async fn serve() {
     let cli = Cli::parse();
 
-    let _log_guard = logging::init_logging(cli.log_dir.as_deref(), cli.log_json);
+    let (_log_guard, game_log) = logging::init_logging(cli.log_dir.as_deref(), cli.log_json);
     let mode: Mode = if cli.lobby_only {
         ServerMode::LobbyOnly
     } else {
@@ -1721,6 +1724,7 @@ async fn serve() {
         },
         replica_ordinal: cli.replica_ordinal,
         metrics: Arc::new(metrics::ServerMetrics::default()),
+        game_log,
     };
     info!(
         max_connections = server_context.limits.max_connections,
@@ -4929,6 +4933,7 @@ async fn handle_full_game_submission(
     // take it by shared reference; only `dispatch_broker` and
     // `handle_client_message` need `&mut`. Do not "fix" this to `&mut`.
     identity: &SocketIdentity,
+    game_log: &Arc<logging::GameFileCache>,
 ) {
     let kind = submission.kind();
     let is_zero_count_debug_create = submission.is_zero_count_debug_create();
@@ -5105,6 +5110,17 @@ async fn handle_full_game_submission(
                     let _ = socket.send(Message::text(json)).await;
                 }
                 return;
+            }
+
+            // Per-game JSON debug log (issue #7978): one row per typed
+            // `GameLogEntry` the engine produced for this action, plus any
+            // AI follow-up actions run under the same lock. No-op unless
+            // `PHASE_LOG_DIR` is set.
+            game_log.write_game_log_entries(&game_code, &log_entries);
+            for (_, ai_result) in &ai_results {
+                // `.3` is `log_entries` — `session::ActionResult` is an
+                // unnamed tuple alias, not a struct.
+                game_log.write_game_log_entries(&game_code, &ai_result.3);
             }
 
             let terminal_deliveries = match terminal {
@@ -6022,6 +6038,7 @@ async fn handle_client_message(
                 game_db,
                 game_spectators,
                 identity,
+                &context.game_log,
             )
             .await;
         }
@@ -6038,6 +6055,7 @@ async fn handle_client_message(
                 game_db,
                 game_spectators,
                 identity,
+                &context.game_log,
             )
             .await;
         }
