@@ -4540,29 +4540,19 @@ fn until_lethal_fallback(
 /// is a `Ranking`, which lives INSIDE the step and never changes the count — this seam is
 /// type-only across that parameterization.
 ///
-/// DORMANT for every Stage-2 crownable loop (Ruling B) — and the REASON has now been restated
-/// TWICE, because each restatement was falsified by the next commit and the history is the
-/// useful part. (i) It was "`TargetSchedule` rotates DecisionSource objects, not players";
-/// parameterizing a step's subject admitted `AnnouncementSubject::Seat` and killed that.
-/// (ii) It was then "no in-tree producer emits a `Seat` into a schedule", which is FALSE as of
-/// the provenance split: `record_trigger_target_answer` and
-/// `game::interaction::materialize_loop_shortcut_response` both mint
-/// `Scheduled(TargetSchedule::Constant(Ranking::one(AnnouncementSubject::Seat(..))))` for a
-/// CR 601.2c announced seat.
-///
-/// (iii) `game::interaction::materialize_loop_shortcut_response` emits a multi-entry `Constant`
-/// on an `UntilLethal` offer and a `Piecewise` on a `Fixed` one. THIS FUNCTION'S ANSWER IS
-/// UNCHANGED FOR BOTH, and the reason is which consumer sees which: its two consumers are
+/// DORMANT for every Stage-2 crownable loop (Ruling B). The producer
+/// `game::interaction::materialize_loop_shortcut_response` emits a multi-entry `Constant` on an
+/// `UntilLethal` offer and a `Piecewise` on a `Fixed` one, and NEITHER MOVES THIS FUNCTION'S
+/// ANSWER OFF 1 — the reason is which consumer sees which. This function's two consumers are
 /// [`shortcut_validated_range`]'s `UntilLethal` arm and `apply_until_lethal_shortcut`, both
 /// UNTIL-LETHAL paths, and the multi-STEP shape is minted only under a FIXED count, which reads
 /// its range off the count and never consults a schedule. The multi-entry `Constant` that does
-/// reach here lands on the `Constant(_)` arm and still returns 1 — correctly, since
-/// `evaluate_schedule` resolves `head()` only. `live_mandatory_loop_winner` crowns on PLAYER
-/// fallers, and a loop whose targets do not rotate produces no NEW player faller per cycle to
-/// aggregate. The seam is built for generality and a multi-cycle aggregation is fail-safe either
-/// way (a loop reaching the arm measures 1 cycle, finds no faller, does not crown), so a future
-/// ROTATING producer on an until-lethal path changes what must be re-argued here, not what this
-/// function returns.
+/// reach here lands on the `Constant(_)` arm and returns 1 — correctly, since `evaluate_schedule`
+/// resolves `head()` only. `live_mandatory_loop_winner` crowns on PLAYER fallers, and a loop
+/// whose targets do not rotate produces no NEW player faller per cycle to aggregate. The seam is
+/// built for generality and a multi-cycle aggregation is fail-safe either way (a loop reaching
+/// the arm measures 1 cycle, finds no faller, does not crown), so a future ROTATING producer on
+/// an until-lethal path changes what must be re-argued here, not what this function returns.
 ///
 /// CR 732.2a SAFETY LIMIT: the returned period is clamped to `MAX_SHORTCUT_CYCLES`. Both
 /// consumers derive their `0..period` range from this one helper (`validate_pins` and
