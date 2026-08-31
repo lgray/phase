@@ -29,8 +29,7 @@ import { DeclareShortcutModal, RespondToShortcutModal } from "../LoopShortcutMod
 
 // The pin route leaves through `dispatchInteraction`; the count-only route leaves through the
 // store's own `dispatch`. Both are observed by every routing row, so a regression in either
-// direction fires. Safe: none of `DialogShell`, `AmountInput`, `HudBadges`, `usePlayerId` or
-// `gameStore` imports this module, so the mock cannot reach the store's own `dispatch`.
+// direction fires.
 vi.mock("../../../game/dispatch.ts", () => ({
   dispatchAction: vi.fn(),
   dispatchInteraction: vi.fn(),
@@ -50,7 +49,7 @@ function shortcutInteraction(
   // ids because a rotating id is precisely what they discriminate on.
   interactionId = "session.0.1",
   // The offer's published candidates — the choices its decision points name by id. Defaults to
-  // the empty list every point-free row was written against.
+  // the empty list.
   candidates: InteractionChoice[] = [],
 ): ViewerInteraction {
   const spec: ShortcutSpec = {
@@ -90,9 +89,7 @@ const convokePoint: DecisionPoint = {
   kind: { ConvokeTaps: { tappable: [40, 41] } },
 };
 
-// ─── Projection builders. Each row states only what it varies; the shapes themselves come from
-//     the engine's published tuple table, so a row cannot quietly invent a point the projection
-//     cannot mint. ──────────────────────────────────────────────────────────────────────────────
+// ─── Projection builders. Each row states only what it varies. ────────────────────────────────
 const cid = (id: string) => id as InteractionChoiceId;
 const amt = (id: string, amount: number): AmountAssignment => ({ choiceId: cid(id), amount });
 const fixedCount = (min: number, max: number, suggested: number): ShortcutSpec["count"] => ({
@@ -131,7 +128,7 @@ function mayPoint(group: number, ids: string[]): InteractionShortcutPoint {
   };
 }
 
-/** The two published read-only kinds — the engine mints `min == max == 0` and no candidates. */
+/** A read-only point: `readOnly` is the field the routing rule turns on. */
 function readOnlyPoint(group: number, kind: "convokeTaps" | "manaColor"): InteractionShortcutPoint {
   return {
     group,
@@ -145,7 +142,7 @@ function readOnlyPoint(group: number, kind: "convokeTaps" | "manaColor"): Intera
   };
 }
 
-/** A non-read-only kind this modal does not render: each is its own declaration UI. */
+/** A non-read-only kind this modal does not render. */
 function unrenderablePoint(
   group: number,
   kind: "mode" | "unlessBreak",
@@ -192,8 +189,8 @@ function objectCandidate(id: string, name: string | null, reference: string): In
   };
 }
 
-/** A may point's two published options. Their only non-summary surface is the `value` the engine
- *  publishes, which is what the control reads — never the index. */
+/** A may point's two published options. The control reads the `value` surface these carry —
+ *  never the index. */
 function mayCandidates(takeId: string, declineId: string): InteractionChoice[] {
   return [
     {
@@ -246,9 +243,8 @@ const MOVE_EARLIER = /^Move .+ earlier$/;
  *  deliberately outside it — an element made a control by an ARIA `role` alone, which no role
  *  taxonomy reachable from this file can tell apart from a live region, and
  *  `<summary>`/`[contenteditable]`, which browsers focus but this harness scores -1. The name is
- *  derived from the two ways this dialog labels a control, then checked against the real
- *  accessible-name computation, so a control named some third way cannot slip through as an empty
- *  string. */
+ *  derived from how this dialog labels a control, then checked against the real accessible-name
+ *  computation, so a control named some other way cannot slip through as an empty string. */
 function controlNames(): string[] {
   const controls = [...document.body.querySelectorAll<HTMLElement>("*")].filter(
     (el) => el.tabIndex >= 0 && !isInaccessible(el),
@@ -847,8 +843,7 @@ describe("LoopShortcutModal", () => {
     });
   });
 
-  // P5-4: every non-read-only point gets a pin, each from its OWN candidate list. The engine's
-  // decoder refuses a submission missing a pin for any non-read-only point.
+  // P5-4: every non-read-only point gets a pin, each from its OWN candidate list.
   it("pins every non-read-only point from its own candidate list (P5-4)", () => {
     seed(
       buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 18 } } }),
@@ -918,8 +913,8 @@ describe("LoopShortcutModal", () => {
     expect(dispatchInteraction).not.toHaveBeenCalled();
   });
 
-  // P5-6: the shipped object-growth class — every published point read-only. Both read-only kinds
-  // are covered, so the row covers the set rather than a member.
+  // P5-6: an offer whose published points are all read-only keeps the count-only route and sends
+  // no pins. Both read-only kinds are covered, so the row covers the set rather than a member.
   it("keeps the GameAction route and sends no pins when every point is read-only (P5-6)", () => {
     for (const kind of ["convokeTaps", "manaColor"] as const) {
       seed(
@@ -928,7 +923,6 @@ describe("LoopShortcutModal", () => {
         shortcutInteraction({
           count: fixedCount(1, 5, 5),
           points: [readOnlyPoint(0, kind)],
-          // A published preview, so `targetsControl` is not what refuses here.
           preview: [element(5, [])],
         }),
       );
@@ -945,7 +939,7 @@ describe("LoopShortcutModal", () => {
   });
 
   // P5-7: the order-only branch. An UntilLethal declaration states ORDER only, so `amounts` is
-  // empty and no allocation box renders. The projection publishes no preview on this count spec.
+  // empty and no allocation box renders.
   it("declares order only on an UntilLethal offer carrying a targets point (P5-7)", () => {
     seed(
       buildLoopShortcutWaitingFor(),
@@ -985,9 +979,8 @@ describe("LoopShortcutModal", () => {
 
   // P5-8: an unrenderable point keeps the `GameAction` route AND suppresses every control on the
   // renderable points beside it — a live control whose answer the count-only branch discards is
-  // worse than no control. Shape (d) is what makes `pinRoute`'s renderability conjunct an `every`
-  // rather than a `some`; shape (e) is the producible construction with a perfectly renderable
-  // may point alongside.
+  // worse than no control. The mixed shapes below — an unrenderable point beside a renderable
+  // one — are what make `pinRoute`'s renderability conjunct an `every` rather than a `some`.
   it("keeps the GameAction route on an unrenderable point and renders no may control (P5-8)", () => {
     const shapes: Array<[string, InteractionShortcutPoint[]]> = [
       ["mode", [unrenderablePoint(0, "mode")]],
@@ -1024,9 +1017,7 @@ describe("LoopShortcutModal", () => {
     }
   });
 
-  // P5-9: an offer publishing no preview keeps the `GameAction` route. The isolating member has
-  // one renderable targets point and nothing else differing from P5-1; the object-growth shape is
-  // the shipped kilo one, over-determined and isolating nothing on its own.
+  // P5-9: an offer publishing no preview keeps the `GameAction` route.
   it("keeps the GameAction route when the offer publishes no preview (P5-9)", () => {
     const shapes: Array<[string, Partial<ShortcutSpec>, number]> = [
       ["isolating", { count: fixedCount(1, 5, 5), points: [targetsPoint(2, ["k4"])] }, 5],
@@ -1058,8 +1049,8 @@ describe("LoopShortcutModal", () => {
     }
 
     // MANDATORY paired positive, in the same invocation: the isolating offer with a published
-    // preview added — its only difference — must still reach the pin ingress, or a conjunct that
-    // refuses everything would satisfy the shapes above vacuously.
+    // preview added must still reach the pin ingress, or a conjunct that refuses everything would
+    // satisfy the shapes above vacuously.
     seed(
       buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 5 } } }),
       {},
@@ -1081,7 +1072,7 @@ describe("LoopShortcutModal", () => {
 
   // P5-10: a SECOND non-read-only targets point is unanswerable from published data — the
   // published allocation names the first point's candidates and nothing else — so the whole offer
-  // keeps the count-only route rather than sending a pin the engine would answer UnknownChoice on.
+  // keeps the count-only route rather than sending a pin for it.
   it("keeps the GameAction route when a second targets point is published (P5-10)", () => {
     seed(
       buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 5 } } }),
@@ -1271,8 +1262,6 @@ describe("LoopShortcutModal", () => {
         {
           count: fixedCount(1, 18, 18),
           points: [mayPoint(0, mayIds.slice(0, 2)), mayPoint(1, mayIds.slice(2))],
-          // A may-only bounded offer publishes a preview whose every element carries an EMPTY
-          // allocation — there is no announced target to state one over.
           preview: [element(18, [], [{ family: "life", player: 1, amount: -9 }])],
         },
         "session.0.1",
@@ -1378,11 +1367,9 @@ describe("LoopShortcutModal", () => {
     expect(dispatchMock).not.toHaveBeenCalled();
   });
 
-  // P5-17: a count the engine published no element for renders zeros and refuses Confirm — no
-  // seeded split and no nearest match. The engine samples its window, so an interior count can
-  // carry no element; authoring a partition there is what makes it a rendered state, not a dead
-  // end. Sibling of the landed "renders no preview lines for a picked count the engine did not
-  // publish" row, one level down.
+  // P5-17: a count the offer published no element for renders zeros and refuses Confirm — no
+  // seeded split and no nearest match. Authoring a partition there is what makes it a rendered
+  // state, not a dead end.
   it("seeds nothing at a count the engine published no element for (P5-17)", () => {
     seed(
       buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 8 } } }),
@@ -1443,10 +1430,10 @@ describe("LoopShortcutModal", () => {
     expect(submittedPins()).toEqual([{ group: 2, choiceIds: ["k4"], amounts: [amt("k4", 1)] }]);
   });
 
-  // P5-18: the candidate label is TOTAL over its type-closed population — the player arm, the
-  // object arm's RAW name, and the name -> reference fallback. The object fixture's name is
-  // deliberately a real key path in `en/game.json`, so a `t()` passthrough would be visible as
-  // "Take the shortcut" instead of the raw string.
+  // P5-18: the candidate label renders a player seat, an object's RAW name, and the published
+  // reference when that name is null. The object fixture's name is deliberately a real key path
+  // in `en/game.json`, so a `t()` passthrough would be visible as "Take the shortcut" instead of
+  // the raw string.
   it("labels player, object and unnamed-object candidates (P5-18)", () => {
     seed(
       buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 3 } } }),
@@ -1467,7 +1454,7 @@ describe("LoopShortcutModal", () => {
     );
     render(<DeclareShortcutModal />);
 
-    // The player arm is the paired positive: it is the arm the routed population actually reaches.
+    // The player arm is the paired positive.
     expect(
       screen.getByRole("spinbutton", { name: "Repetitions for P2" }),
     ).toBeInTheDocument();
@@ -1711,18 +1698,15 @@ describe("LoopShortcutModal", () => {
     expect(new Set(rankingNames).size, rankingNames.join(" | ")).toBe(rankingNames.length);
   });
 
-  // P5-22: the may panel's ordinal counts the panels ON SCREEN, not the published points. The
-  // projection numbers every point it publishes — the read-only ones and the targets point
-  // included — and `bounded_cycle_pin_slots_for_window` pushes an accepted entry's targets point
-  // BEFORE that entry's may point, so an offer whose may points do not lead is the ordinary
-  // construction rather than an exotic one. Numbering by `group` would head the only panel
-  // "Optional ability 2" and tell the player the dialog is withholding a choice it is obliged to
-  // render. Shape A leads with a targets point, shape B with a read-only one and carries TWO may
-  // panels, so the numbering is shown contiguous rather than merely offset. Both shapes assert the
-  // DISPATCHED group as well: renumbering the wire instead of the display would satisfy every
-  // screen assertion here and corrupt the submission.
+  // P5-22: the may panel's ordinal counts the panels ON SCREEN, not the published points.
+  // Numbering by `group` would head the only panel "Optional ability 2" and tell the player the
+  // dialog is withholding a choice it is obliged to render. Shape A leads with a targets point,
+  // shape B with a read-only one and carries TWO may panels, so the numbering is shown contiguous
+  // rather than merely offset. Both shapes assert the DISPATCHED group as well: renumbering the
+  // wire instead of the display would satisfy every screen assertion here and corrupt the
+  // submission.
   it("numbers the may panels by rendered position while pinning by group (P5-22)", () => {
-    // A — `[Targets(0), MayChoice(1)]`, the order one accepted entry carrying both publishes.
+    // A — a targets point leads, a may point follows.
     seed(
       buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 6 } } }),
       {},

@@ -43,9 +43,8 @@ import { DialogShell } from "./DialogShell.tsx";
  * reconstructed a template would be inventing rules authority it does not have.
  */
 
-/** The engine's published shortcut response spec. This modal reads its count window, its
- *  declaration points, `allowDecline` and its engine-computed preview — each a lookup into what
- *  the engine already sent, never a derivation. */
+/** The engine's published shortcut response spec — every field this modal reads is a lookup
+ *  into what the engine already sent, never a derivation. */
 type ShortcutSpec = Extract<InteractionResponseSpec, { type: "shortcut" }>["data"];
 
 function shortcutSpec(interaction: ViewerInteraction | null): ShortcutSpec | null {
@@ -145,7 +144,7 @@ function mayCandidate(candidates: InteractionChoice[], id: InteractionChoiceId):
  * subject visibly beside itself, alongside whatever accessible name the control itself carries.
  * A subject reachable only through an `aria-label` leaves a sighted player looking at N identical
  * controls; a subject reachable only through visible text is unreachable by a screen reader. Both
- * are required, so this renders the text and no caller drops its `aria-label`.
+ * are required: this renders the text, and the control it wraps carries the accessible name.
  */
 function SubjectControl({ subject, children }: { subject: string; children: ReactNode }) {
   return (
@@ -284,9 +283,7 @@ function DeclareShortcutOffer({
   // `ShortcutSpec | null`.
   const points = spec?.points ?? [];
   const previewElements = spec?.preview ?? [];
-  // CR 601.2c: the announced-target point the allocation is stated over. The same `find` as the
-  // engine-side authority that MINTS the published allocation, whose doc rules the domain in
-  // terms: "the domain is the first point or nothing".
+  // CR 601.2c: the announced-target point the allocation is stated over.
   const allocationPoint = points.find((p) => p.kind === "targets") ?? null;
   // Computed AFTER `allocationPoint` and null whenever it is absent, so no arm can name a control
   // with no candidate list to stand on.
@@ -302,9 +299,8 @@ function DeclareShortcutOffer({
   const renderable = (p: InteractionShortcutPoint): boolean => {
     switch (p.kind) {
       case "mayChoice":
-        // Its domain is its OWN candidate list. It does not consult `targetsControl`: a bounded
-        // offer whose accepted entries are all may-only publishes no `targets` point at all, and
-        // must still be answerable.
+        // Its domain is its OWN candidate list, never `targetsControl`: a may point must be
+        // answerable whether or not the offer also publishes a `targets` point.
         return p.candidateIds.length > 0;
       case "targets":
         return (
@@ -314,9 +310,9 @@ function DeclareShortcutOffer({
           p.candidateIds.length > 0
         );
       default:
-        // `mode` / `unlessBreak` are each their own declaration UI. A whitelist, deliberately:
-        // `InteractionShortcutPointKind` is a plain string union with no compile-time
-        // exhaustiveness at a `!==` test, so a seventh kind must default to NOT renderable.
+        // A whitelist, deliberately: `InteractionShortcutPointKind` is a plain string union
+        // with no compile-time exhaustiveness at a `!==` test, so a kind this modal has no
+        // control for must default to NOT renderable.
         return false;
     }
   };
@@ -344,8 +340,7 @@ function DeclareShortcutOffer({
   const chosen = countSpec === null ? null : parseAmount(raw, countSpec.min, countSpec.max);
   // CR 732.2a: each published element's `count` travels with its own magnitudes, so the match
   // is EXACT — no nearest-match, no interpolation, and nothing rendered for a count the engine
-  // stated no magnitudes for. The engine seeds its sample with `min`, `suggested` and `max`, so
-  // the suggested count the box opens on always has an element.
+  // stated no magnitudes for.
   const previewed = chosen === null ? undefined : spec?.preview?.find((e) => e.count === chosen);
 
   // CR 732.2a + CR 601.2c: the declared count's partition across the announcement subjects
@@ -410,9 +405,9 @@ function DeclareShortcutOffer({
     });
   };
 
-  // The player authored a split the selected element does not carry, so the engine has previewed
-  // no magnitudes for it. Leading `pinRoute` conjunct: off the route `showPreviewLines` reduces to
-  // the `{previewed && …}` this file already shipped, as a property of the expression.
+  // The player authored a split the selected element does not carry. Leading `pinRoute`
+  // conjunct: off the route `showPreviewLines` reduces to `previewed !== undefined`, as a
+  // property of the expression.
   const custom =
     pinRoute && targetsControl?.kind === "allocation" && !sameAllocation(effective, published);
   const showPreviewLines = previewed !== undefined && !custom;
@@ -463,8 +458,7 @@ function DeclareShortcutOffer({
 
     // Only `targetsControl.point` can reach the `targets` arms — the group conjunct in
     // `renderable` is what guarantees it — so there is no second `targets` point for `effective`
-    // to leak onto. `amounts` is always written explicitly; the field is optional only because the
-    // Rust side skips serializing an empty one.
+    // to leak onto. `amounts` is always written explicitly.
     const pinFor = (p: InteractionShortcutPoint): InteractionShortcutPin =>
       p.kind === "mayChoice"
         ? { group: p.group, choiceIds: [mayPicks[p.group]], amounts: [] }
@@ -479,8 +473,8 @@ function DeclareShortcutOffer({
         data: { decision, pins: points.filter((p) => !p.readOnly).map(pinFor) },
       },
     };
-    // `dispatchInteraction` already reports the error before rethrowing; the catch only suppresses
-    // an unhandled rejection, exactly as `AttachmentFan` does.
+    // `dispatchInteraction` already reports the error before rethrowing; the catch only
+    // suppresses an unhandled rejection.
     void dispatchInteraction(submission).catch(() => undefined);
   };
 
@@ -537,8 +531,7 @@ function DeclareShortcutOffer({
               input: t("comboShortcut.countAria"),
               // Several amount controls stand side by side in this dialog, so a stepper names
               // the quantity it steps rather than taking `AmountInput`'s shared
-              // `mana.decreaseAmount`, which names only "amount" and stays right for the
-              // single-control callers in `mana/`.
+              // `mana.decreaseAmount`.
               decrease: t("comboShortcut.countDecreaseAria"),
               increase: t("comboShortcut.countIncreaseAria"),
             }}
@@ -610,18 +603,11 @@ function DeclareShortcutOffer({
           </div>
         )}
         {mayPoints.map((p, index) => {
-          // The ordinal IS the subject: `InteractionShortcutPoint` carries no source, name or
-          // label, and a may point's candidates carry no naming surface — their only non-summary
-          // surface is a take/decline `value` — so nothing else distinguishes one panel from
-          // another. It counts the RENDERED panels, not the published points — `group` is the
-          // point's index in the whole published list, which also numbers the read-only and
-          // `targets` points the projection mints alongside these (`loop_shortcut_points` in
-          // `game/interaction.rs`), and those publish no panel.
-          // Numbering by `group` therefore skips: an entry publishing `[Targets, MayChoice]` —
-          // the order `bounded_cycle_pin_slots_for_window` pushes them in — would head its only
-          // panel "ability 2". `group` still keys `mayPicks`, the React key and the pin, so the
-          // wire payload stays the engine's. The SAME ordinal feeds the accessible names below,
-          // so what a player reads and what a screen reader says cannot disagree.
+          // The ordinal IS the subject: nothing else this panel renders distinguishes one may
+          // point from another. It counts the RENDERED panels, not the published points, so it
+          // can differ from `group`; `group` still keys `mayPicks`, the React key and the pin, so
+          // the wire payload stays the engine's. The SAME ordinal feeds the accessible names
+          // below, so what a player reads and what a screen reader says cannot disagree.
           const ordinal = index + 1;
           return (
             <div key={p.group} className="flex flex-col gap-2 rounded-lg bg-white/5 px-3 py-2">
