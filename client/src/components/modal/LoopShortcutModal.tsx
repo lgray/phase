@@ -1,13 +1,23 @@
+import type { TFunction } from "i18next";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
+  AmountAssignment,
+  InteractionChoice,
+  InteractionChoiceId,
   InteractionId,
+  InteractionPresentationSurface,
   InteractionResponseSpec,
+  InteractionShortcutDecision,
+  InteractionShortcutPin,
+  InteractionShortcutPoint,
   InteractionShortcutPreview,
+  InteractionSubmission,
   ViewerInteraction,
 } from "../../adapter/generated/interaction";
 import type { IterationCount, ResourceAxis, WaitingFor, WinKind } from "../../adapter/types.ts";
+import { dispatchInteraction } from "../../game/dispatch.ts";
 import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { familyOf, UNBOUNDED_FAMILY_LABEL_KEY, UnboundedBadge } from "../hud/HudBadges.tsx";
@@ -60,6 +70,70 @@ function shortcutInteractionId(interaction: ViewerInteraction | null): Interacti
     if (opportunity.response.data.spec.type === "shortcut") return opportunity.interactionId;
   }
   return null;
+}
+
+/** The live offer's published candidates — the choices its decision points name by id. Walks the
+ *  same list under the same predicate as the two selectors above.
+ *
+ *  Returns a reference INTO store state, or `null`; never `[]`. See `shortcutInteractionId`'s
+ *  stability note — a selector minting a fresh array literal is the same `Object.is` shape. The
+ *  caller supplies the empty default outside the selector. */
+function shortcutCandidates(interaction: ViewerInteraction | null): InteractionChoice[] | null {
+  for (const opportunity of interaction?.opportunities ?? []) {
+    if (opportunity.response.type !== "schema") continue;
+    if (opportunity.response.data.spec.type === "shortcut") {
+      return opportunity.response.data.candidates;
+    }
+  }
+  return null;
+}
+
+/** Which control the offer's announced-target point opens, CARRYING the point it opens on, so
+ *  routing, rendering and the dispatch cannot disagree about which point is answered. */
+type TargetsControl = { kind: "allocation" | "ranking"; point: InteractionShortcutPoint };
+
+/** Positional equality of two allocations. Not `JSON.stringify`: stringify equality also depends
+ *  on key insertion order, which would move the gate for a reason unrelated to the allocation. */
+function sameAllocation(a: AmountAssignment[], b: AmountAssignment[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((x, i) => x.choiceId === b[i].choiceId && x.amount === b[i].amount)
+  );
+}
+
+/**
+ * CR 601.2c: the announcement subject a candidate names, read off the engine's own surfaces —
+ * a player seat or an object. The seat label is frontend chrome and is translated; an object's
+ * `name` is card/engine pass-through and is rendered RAW, falling back to the published
+ * `reference` because the binding declares `name` nullable (`client/src/i18n/README.md`).
+ */
+function candidateLabel(
+  t: TFunction<"game">,
+  candidates: InteractionChoice[],
+  id: InteractionChoiceId,
+): string {
+  const surfaces = candidates.find((c) => c.id === id)?.surfaces ?? [];
+  const player = surfaces.find(
+    (s): s is Extract<InteractionPresentationSurface, { type: "player" }> => s.type === "player",
+  );
+  // The same +1 display formatting `PreviewLines` applies to `entry.player`. Formatting, not
+  // derivation.
+  if (player) return t("lifeTotal.playerLabel", { seat: player.data.seat + 1 });
+  const object = surfaces.find(
+    (s): s is Extract<InteractionPresentationSurface, { type: "object" }> => s.type === "object",
+  );
+  if (object) return object.data.name ?? object.data.reference;
+  return id;
+}
+
+/** A `mayChoice` candidate's published discriminant (`take` / `decline`). The enum string itself
+ *  is never rendered — the button copy is frontend-authored chrome keyed off this value. */
+function mayCandidate(candidates: InteractionChoice[], id: InteractionChoiceId): string | null {
+  const surfaces = candidates.find((c) => c.id === id)?.surfaces ?? [];
+  const value = surfaces.find(
+    (s): s is Extract<InteractionPresentationSurface, { type: "value" }> => s.type === "value",
+  );
+  return value?.data.value ?? null;
 }
 
 // CR 732.1b: render the engine-proposed repeat mode — the offer's own stated count, echoed
@@ -178,7 +252,66 @@ function DeclareShortcutOffer({
 }) {
   const { t } = useTranslation("game");
   const dispatch = useGameStore((s) => s.dispatch);
+  // Read here rather than passed down: the routing rule and the submission's `interactionId` both
+  // need it, and the parent already reads it for the `key`.
+  const offerId = useGameStore((s) => shortcutInteractionId(s.viewerInteraction));
+  const publishedCandidates = useGameStore((s) => shortcutCandidates(s.viewerInteraction));
+  const candidates = publishedCandidates ?? [];
   const { certificate, schema } = data;
+
+  // CR 732.2a: the offer's own published points and preview decide which declaration the client
+  // may author. Null-safe at this component's own typing — `spec` is the prop's declared
+  // `ShortcutSpec | null`.
+  const points = spec?.points ?? [];
+  const previewElements = spec?.preview ?? [];
+  // CR 601.2c: the announced-target point the allocation is stated over. The same `find` as the
+  // engine-side authority that MINTS the published allocation, whose doc rules the domain in
+  // terms: "the domain is the first point or nothing".
+  const allocationPoint = points.find((p) => p.kind === "targets") ?? null;
+  // Computed AFTER `allocationPoint` and null whenever it is absent, so no arm can name a control
+  // with no candidate list to stand on.
+  const targetsControl: TargetsControl | null =
+    allocationPoint === null
+      ? null
+      : spec?.count.type === "untilLethal"
+        ? { kind: "ranking", point: allocationPoint }
+        : previewElements.length > 0
+          ? { kind: "allocation", point: allocationPoint }
+          : null;
+
+  const renderable = (p: InteractionShortcutPoint): boolean => {
+    switch (p.kind) {
+      case "mayChoice":
+        // Its domain is its OWN candidate list. It does not consult `targetsControl`: a bounded
+        // offer whose accepted entries are all may-only publishes no `targets` point at all, and
+        // must still be answerable.
+        return p.candidateIds.length > 0;
+      case "targets":
+        return (
+          targetsControl !== null &&
+          p.group === targetsControl.point.group &&
+          p.max === 1 &&
+          p.candidateIds.length > 0
+        );
+      default:
+        // `mode` / `unlessBreak` are each their own declaration UI. A whitelist, deliberately:
+        // `InteractionShortcutPointKind` is a plain string union with no compile-time
+        // exhaustiveness at a `!==` test, so a seventh kind must default to NOT renderable.
+        return false;
+    }
+  };
+
+  const pinRoute =
+    offerId !== null &&
+    spec !== null &&
+    points.length > 0 &&
+    points.some((p) => !p.readOnly) &&
+    points.every((p) => p.readOnly || renderable(p));
+
+  // The may points this offer lets the player answer. Empty off the route BY CONSTRUCTION, so the
+  // route gate lives in the binding and cannot be omitted at one of its consumers: the render
+  // branch, `declarationComplete` and the dispatched pin set all read this one object.
+  const mayPoints = pinRoute ? points.filter((p) => !p.readOnly && p.kind === "mayChoice") : [];
 
   // CR 732.2a: the count window is ENGINE-OWNED. `null` when this offer publishes no finite
   // window (UntilLethal) or when the transport published no interaction projection at all — in
@@ -190,28 +323,161 @@ function DeclareShortcutOffer({
   // `parseAmount` is the shared sanitization authority — it REJECTS out-of-window entries rather
   // than clamping, so a count the engine did not offer can never be declared.
   const chosen = countSpec === null ? null : parseAmount(raw, countSpec.min, countSpec.max);
-  const confirmDisabled = countSpec !== null && chosen === null;
   // CR 732.2a: each published element's `count` travels with its own magnitudes, so the match
   // is EXACT — no nearest-match, no interpolation, and nothing rendered for a count the engine
   // stated no magnitudes for. The engine always publishes the window's endpoints, so the
   // suggested count the box opens on always has an element.
   const previewed = chosen === null ? undefined : spec?.preview?.find((e) => e.count === chosen);
 
+  // CR 732.2a + CR 601.2c: the declared count's partition across the announcement subjects
+  // `choice_ids` names. The state is RAW STRINGS keyed by published choice id — the same shape the
+  // count picker above uses, and for the same reason: `AmountInput` is controlled by a `raw` prop
+  // and deliberately does not re-guard, so a parent holding numbers could only drop or coerce the
+  // intermediate states a person types. `null` = no edit at the current count, so every row reads
+  // the published allocation.
+  const [authored, setAuthored] = useState<{ count: number; raw: Record<string, string> } | null>(
+    null,
+  );
+  // CR 732.2a: an UntilLethal declaration states ORDER only — there is no declared count to
+  // partition. `null` = untouched, so the rows read the point's published candidate order.
+  const [order, setOrder] = useState<InteractionChoiceId[] | null>(null);
+  // CR 603.5: the optional "may", whose choice is made on resolution; pinning it declares the same
+  // answer for every iteration. No client-side default — an unanswered point disables Confirm.
+  const [mayPicks, setMayPicks] = useState<Record<number, InteractionChoiceId>>({});
+
+  const published: AmountAssignment[] = previewed?.allocation ?? [];
+  const publishedRaw = (id: InteractionChoiceId) =>
+    String(published.find((a) => a.choiceId === id)?.amount ?? 0);
+  // The count tag travels with the edit: moving the picker moves `previewed`, this test goes
+  // false, and an edit made at another count is DISCARDED rather than re-scaled.
+  const rowRaw = (id: InteractionChoiceId) =>
+    authored?.count === chosen ? (authored.raw[id] ?? publishedRaw(id)) : publishedRaw(id);
+
+  // The declaration, re-parsed from what the rows actually READ, in published order. `parseAmount`
+  // is the single sanitization authority here exactly as it is for the count, so an out-of-window
+  // row is REFUSED (Confirm disables) rather than silently corrected.
+  const allocationRows =
+    targetsControl?.kind === "allocation" && chosen !== null
+      ? targetsControl.point.candidateIds.map((id) => ({
+          id,
+          amount: parseAmount(rowRaw(id), 0, chosen),
+        }))
+      : [];
+  const effective: AmountAssignment[] = allocationRows.every((r) => r.amount !== null)
+    ? allocationRows.filter((r) => r.amount! > 0).map((r) => ({ choiceId: r.id, amount: r.amount! }))
+    : [];
+  const allocated = effective.reduce((sum, a) => sum + a.amount, 0);
+  const rankedOrder: InteractionChoiceId[] =
+    targetsControl?.kind === "ranking" ? (order ?? targetsControl.point.candidateIds) : [];
+
+  const editRow = (id: InteractionChoiceId, next: string) => {
+    if (chosen === null) return;
+    setAuthored({
+      count: chosen,
+      raw: Object.fromEntries(
+        (targetsControl?.point.candidateIds ?? []).map((c) => [c, c === id ? next : rowRaw(c)]),
+      ),
+    });
+  };
+
+  const move = (from: number, to: number) => {
+    setOrder((prev) => {
+      const current = prev ?? rankedOrder;
+      if (to < 0 || to >= current.length) return prev;
+      const next = current.slice();
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      return next;
+    });
+  };
+
+  // The player authored a split the selected element does not carry, so the engine has previewed
+  // no magnitudes for it. Leading `pinRoute` conjunct: off the route `showPreviewLines` reduces to
+  // the `{previewed && …}` this file already shipped, as a property of the expression.
+  const custom =
+    pinRoute && targetsControl?.kind === "allocation" && !sameAllocation(effective, published);
+  const showPreviewLines = previewed !== undefined && !custom;
+
+  // Form completeness for button enablement only — summing the player's OWN declaration, never a
+  // game consequence. The engine remains the sole legality authority.
+  const declarationComplete =
+    mayPoints.every((p) => mayPicks[p.group] !== undefined) &&
+    (targetsControl?.kind !== "allocation" || (effective.length > 0 && allocated === chosen));
+
+  const confirmDisabled =
+    (countSpec !== null && chosen === null) || (pinRoute && !declarationComplete);
+
   const handleConfirm = useCallback(() => {
-    // `template: null` is unchanged by C5 (see the module header's measured limit) — the picker
-    // moves the COUNT only.
-    if (countSpec === null) {
-      dispatch({
-        type: "DeclareShortcut",
-        data: { count: schema.iteration_count, template: null },
-      });
+    // THE refusal, and the first statement of the ONE handler both production entry points reach:
+    // the footer button's `onClick`, and every `AmountInput`'s Enter (`onSubmit`, which the box
+    // calls unconditionally and deliberately does not re-guard). It reads the same predicate the
+    // button's `disabled` reads, so the guard and the button state cannot drift.
+    if (confirmDisabled) return;
+
+    if (!pinRoute) {
+      // `template: null` is unchanged by C5 (see the module header's measured limit) — the picker
+      // moves the COUNT only.
+      if (countSpec === null) {
+        dispatch({
+          type: "DeclareShortcut",
+          data: { count: schema.iteration_count, template: null },
+        });
+        return;
+      }
+      // Runtime-redundant under the guard above, and load-bearing at the TYPE level: the compiler
+      // cannot see that implication. The confirm button is disabled in the same state.
+      if (chosen === null) return;
+      dispatch({ type: "DeclareShortcut", data: { count: { Fixed: chosen }, template: null } });
       return;
     }
-    // Refused entry ⇒ submit nothing. The guard lives here once (AmountInput deliberately does
-    // not re-guard), and the confirm button is disabled in the same state.
-    if (chosen === null) return;
-    dispatch({ type: "DeclareShortcut", data: { count: { Fixed: chosen }, template: null } });
-  }, [dispatch, countSpec, chosen, schema.iteration_count]);
+
+    // CR 732.2a: a refused count entry has no count to declare. The `null` arm is the type-level
+    // half of the same refusal — it is what lets `iterations` be the PARSED value rather than an
+    // assertion, a default, a clamp or a fallback.
+    const decision: InteractionShortcutDecision | null =
+      spec.count.type !== "fixed"
+        ? { type: "acceptSuggested" }
+        : chosen === null
+          ? null
+          : { type: "fixed", data: { iterations: chosen } };
+    if (decision === null) return;
+
+    // Only `targetsControl.point` can reach the `targets` arms — the group conjunct in
+    // `renderable` is what guarantees it — so there is no second `targets` point for `effective`
+    // to leak onto. `amounts` is always written explicitly; the field is optional only because the
+    // Rust side skips serializing an empty one.
+    const pinFor = (p: InteractionShortcutPoint): InteractionShortcutPin =>
+      p.kind === "mayChoice"
+        ? { group: p.group, choiceIds: [mayPicks[p.group]], amounts: [] }
+        : targetsControl?.kind === "allocation"
+          ? { group: p.group, choiceIds: effective.map((a) => a.choiceId), amounts: effective }
+          : { group: p.group, choiceIds: rankedOrder, amounts: [] };
+
+    const submission: InteractionSubmission = {
+      interactionId: offerId,
+      response: {
+        type: "shortcut",
+        data: { decision, pins: points.filter((p) => !p.readOnly).map(pinFor) },
+      },
+    };
+    // `dispatchInteraction` already reports the error before rethrowing; the catch only suppresses
+    // an unhandled rejection, exactly as `AttachmentFan` does.
+    void dispatchInteraction(submission).catch(() => undefined);
+  }, [
+    dispatch,
+    countSpec,
+    chosen,
+    schema.iteration_count,
+    confirmDisabled,
+    pinRoute,
+    spec,
+    offerId,
+    points,
+    mayPicks,
+    targetsControl,
+    effective,
+    rankedOrder,
+  ]);
 
   const handleDecline = useCallback(() => {
     // CR 732.2a: decline the auto-offer; the engine restores ordinary priority.
@@ -269,7 +535,108 @@ function DeclareShortcutOffer({
             }}
           />
         )}
-        {previewed && <PreviewLines preview={previewed} />}
+        {pinRoute && targetsControl?.kind === "allocation" && chosen !== null && (
+          <div className="flex flex-col gap-2 rounded-lg bg-white/5 px-3 py-2">
+            <p className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
+              {t("comboShortcut.allocationTitle")}
+            </p>
+            {targetsControl.point.candidateIds.map((id) => (
+              <AmountInput
+                key={id}
+                raw={rowRaw(id)}
+                onRawChange={(next) => editRow(id, next)}
+                min={0}
+                max={chosen}
+                onSubmit={handleConfirm}
+                labels={{
+                  input: t("comboShortcut.allocationAria", {
+                    subject: candidateLabel(t, candidates, id),
+                  }),
+                  decrease: t("mana.decreaseAmount"),
+                  increase: t("mana.increaseAmount"),
+                }}
+              />
+            ))}
+            <p className="text-xs text-slate-400 tabular-nums">
+              {t("comboShortcut.allocationSum", { allocated, total: chosen })}
+            </p>
+            <button
+              onClick={() => setAuthored(null)}
+              className="min-h-9 self-start rounded-[12px] border border-white/8 bg-white/5 px-3 py-1 text-sm font-semibold text-slate-200 transition hover:bg-white/8"
+            >
+              {t("comboShortcut.evenSplit")}
+            </button>
+          </div>
+        )}
+        {pinRoute && targetsControl?.kind === "ranking" && (
+          <div className="flex flex-col gap-2 rounded-lg bg-white/5 px-3 py-2">
+            <p className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
+              {t("comboShortcut.rankingTitle")}
+            </p>
+            {rankedOrder.map((id, position) => (
+              <div key={id} className="flex items-center gap-2">
+                <span className="grow text-sm text-slate-200">
+                  {candidateLabel(t, candidates, id)}
+                </span>
+                <button
+                  aria-label={t("comboShortcut.rankingMoveUp")}
+                  disabled={position === 0}
+                  onClick={() => move(position, position - 1)}
+                  className="min-h-8 rounded border border-white/10 px-2 text-white/80 transition hover:bg-white/10 disabled:opacity-30"
+                >
+                  ▲
+                </button>
+                <button
+                  aria-label={t("comboShortcut.rankingMoveDown")}
+                  disabled={position === rankedOrder.length - 1}
+                  onClick={() => move(position, position + 1)}
+                  className="min-h-8 rounded border border-white/10 px-2 text-white/80 transition hover:bg-white/10 disabled:opacity-30"
+                >
+                  ▼
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {mayPoints.map((p) => (
+          <div key={p.group} className="flex flex-col gap-2 rounded-lg bg-white/5 px-3 py-2">
+            <p className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
+              {t("comboShortcut.mayTitle")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {p.candidateIds.map((id) => {
+                const take = mayCandidate(candidates, id) === "take";
+                const picked = mayPicks[p.group] === id;
+                return (
+                  <button
+                    key={id}
+                    onClick={() => setMayPicks((prev) => ({ ...prev, [p.group]: id }))}
+                    aria-pressed={picked}
+                    // Two `MayChoice` points are indistinguishable in published data, so the
+                    // control disambiguates by the published `group`.
+                    aria-label={t(
+                      take ? "comboShortcut.mayTakeAria" : "comboShortcut.mayDeclineAria",
+                      { group: p.group },
+                    )}
+                    className={`min-h-9 rounded-[12px] border px-3 py-1 text-sm font-semibold transition ${
+                      picked
+                        ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100"
+                        : "border-white/8 bg-white/5 text-slate-200 hover:bg-white/8"
+                    }`}
+                  >
+                    {t(take ? "comboShortcut.mayTake" : "comboShortcut.mayDecline")}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        {showPreviewLines && previewed && <PreviewLines preview={previewed} />}
+        {custom && (
+          <p className="text-sm text-slate-300">{t("comboShortcut.customDistribution")}</p>
+        )}
+        {/* Outside the `showPreviewLines` gate deliberately: the invariant families state a family
+            and no magnitude, so they survive a custom distribution. */}
         <FamilyBadges axes={certificate.unbounded} />
         {convokeTappable > 0 && (
           <p className="text-xs text-slate-400">
