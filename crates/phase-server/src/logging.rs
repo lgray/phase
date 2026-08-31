@@ -11,29 +11,45 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
-/// Extension data stored on `game_session` spans to identify the game code.
-struct GameCode(String);
+/// Extension data stored on `game_session` spans: the game code (used to pick
+/// the output file) and, when present, the player id — both inherited by
+/// every event within the span unless the event itself restates the field
+/// (`on_event` lets an event-level value win; see `SpanFieldsVisitor`'s doc
+/// comment for why a row otherwise carries no seat attribution).
+struct GameSessionFields {
+    game: String,
+    player: Option<String>,
+}
 
-/// Visitor that extracts the `game` field from span attributes. The span is
-/// created as `game = %game_code` (`SocketIdentity::set_session`) — `%`
-/// records via `record_debug`, not `record_str` (tracing wraps the value in
-/// a `Debug` adapter whose impl delegates to `Display`), so `record_debug`
-/// must capture it too or every span silently carries no game code and this
-/// entire layer is a no-op. Verified with a driven probe: the real macro
-/// form (`%`) reaches `record_debug`; only a raw `&str` field reaches
-/// `record_str`.
-struct GameCodeVisitor(Option<String>);
+/// Visitor that extracts the `game` and `player` fields from span
+/// attributes. The span is created as `game = %game_code, player =
+/// ?player_id` (`SocketIdentity::set_session`) — both `%` and `?` record via
+/// `record_debug`, not `record_str` (tracing wraps the value in a `Debug`
+/// adapter — `%`'s impl delegates to `Display`, `?`'s uses the value's own
+/// `Debug` — so `record_debug` must capture both or every span silently
+/// carries no game code / player id and this entire layer is a no-op).
+/// Verified with a driven probe: the real macro form (`%`/`?`) reaches
+/// `record_debug`; only a raw `&str` field reaches `record_str`.
+#[derive(Default)]
+struct SpanFieldsVisitor {
+    game: Option<String>,
+    player: Option<String>,
+}
 
-impl Visit for GameCodeVisitor {
+impl Visit for SpanFieldsVisitor {
     fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "game" {
-            self.0 = Some(value.to_string());
+        match field.name() {
+            "game" => self.game = Some(value.to_string()),
+            "player" => self.player = Some(value.to_string()),
+            _ => {}
         }
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "game" {
-            self.0 = Some(format!("{value:?}"));
+        match field.name() {
+            "game" => self.game = Some(format!("{value:?}")),
+            "player" => self.player = Some(format!("{value:?}")),
+            _ => {}
         }
     }
 }
@@ -96,29 +112,32 @@ where
         if attrs.metadata().name() != "game_session" {
             return;
         }
-        let mut visitor = GameCodeVisitor(None);
+        let mut visitor = SpanFieldsVisitor::default();
         attrs.record(&mut visitor);
-        if let Some(game_code) = visitor.0 {
+        if let Some(game) = visitor.game {
             if let Some(span) = ctx.span(id) {
-                span.extensions_mut().insert(GameCode(game_code));
+                span.extensions_mut().insert(GameSessionFields {
+                    game,
+                    player: visitor.player,
+                });
             }
         }
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         // Walk up the span scope to find the nearest game_session span.
-        let game_code = ctx.event_span(event).and_then(|span| {
+        let span_fields = ctx.event_span(event).and_then(|span| {
             // scope() yields the span itself first, then walks up to parents.
             for s in span.scope() {
-                if let Some(gc) = s.extensions().get::<GameCode>() {
-                    return Some(gc.0.clone());
+                if let Some(gc) = s.extensions().get::<GameSessionFields>() {
+                    return Some((gc.game.clone(), gc.player.clone()));
                 }
             }
             None
         });
 
-        let game_code = match game_code {
-            Some(gc) => gc,
+        let (game_code, player) = match span_fields {
+            Some(v) => v,
             None => return, // Not inside a game_session span — skip.
         };
 
@@ -126,8 +145,19 @@ where
         event.record(&mut visitor);
         let mut fields = visitor.0;
         // `or_insert`, not `insert`: an event field that happens to be named
-        // `ts`/`level`/`target` must not be silently destroyed by this
-        // transport metadata — the event's own data wins on collision.
+        // `player`/`ts`/`level`/`target` must not be silently destroyed by
+        // this transport/span metadata — the event's own data wins on
+        // collision. `player` is seeded from the span (not the game code —
+        // that's already the output filename, so restating it per row is
+        // pure redundancy) because per-event `player = ?player_id` fields
+        // are the exception, not the rule: most rows would otherwise carry
+        // no seat attribution at all, which is the whole point of a
+        // per-game debug log.
+        if let Some(player) = player {
+            fields
+                .entry("player".to_string())
+                .or_insert_with(|| Value::String(player));
+        }
         fields
             .entry("ts".to_string())
             .or_insert_with(|| Value::String(format_timestamp()));
@@ -144,9 +174,11 @@ where
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
-        let game_code = ctx
-            .span(&id)
-            .and_then(|span| span.extensions().get::<GameCode>().map(|gc| gc.0.clone()));
+        let game_code = ctx.span(&id).and_then(|span| {
+            span.extensions()
+                .get::<GameSessionFields>()
+                .map(|gc| gc.game.clone())
+        });
         if let Some(game_code) = game_code {
             self.cache.close(&game_code);
         }
@@ -253,7 +285,7 @@ mod tests {
     /// `game_session` span created as `game = %code` (the real macro form
     /// `SocketIdentity::set_session` uses) dispatches through `record_debug`,
     /// not `record_str`. Before that visitor arm existed, `on_new_span` never
-    /// captured a `GameCode` extension, so `on_event`'s span walk always hit
+    /// captured a `GameSessionFields` extension, so `on_event`'s span walk always hit
     /// `None => return` and no session-stream file was ever created — this
     /// test drives the real span/event macros through a real `GameFileLayer`
     /// and would fail exactly that way on the old code.
@@ -311,5 +343,61 @@ mod tests {
             row["level"], "custom-level-value",
             "a real event field named `level` must not be clobbered by the synthesized one"
         );
+    }
+
+    /// CodeRabbit finding on PR #8245: the span's `player` field (recorded
+    /// via `?`, same `record_debug` dispatch as `game`) never reached the
+    /// JSON row unless the event itself restated it — most rows carried no
+    /// seat attribution at all. This event omits `player` entirely, so the
+    /// row must inherit it from the span.
+    #[test]
+    fn player_field_inherited_from_span_when_event_omits_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let games_dir = dir.path().join("games");
+        fs::create_dir_all(&games_dir).unwrap();
+
+        let cache = Arc::new(GameFileCache::new(games_dir.clone()));
+        let layer = GameFileLayer::new(Arc::clone(&cache));
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("game_session", game = %"CODE789", player = ?7u8);
+            let _enter = span.enter();
+            tracing::info!("test event without an explicit player field");
+        });
+
+        let path = games_dir.join("CODE789.session.jsonl");
+        let content = fs::read_to_string(&path).expect("session stream file must exist");
+        let row: Value =
+            serde_json::from_str(content.lines().next().unwrap()).expect("row must be valid JSON");
+        assert_eq!(
+            row["player"], "7",
+            "row must inherit the span's player field when the event doesn't restate it"
+        );
+    }
+
+    /// An event that DOES restate `player` must win over the span-inherited
+    /// value — span inheritance is a fallback, not an override.
+    #[test]
+    fn event_supplied_player_field_wins_over_span_inherited_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let games_dir = dir.path().join("games");
+        fs::create_dir_all(&games_dir).unwrap();
+
+        let cache = Arc::new(GameFileCache::new(games_dir.clone()));
+        let layer = GameFileLayer::new(Arc::clone(&cache));
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("game_session", game = %"CODE790", player = ?7u8);
+            let _enter = span.enter();
+            tracing::info!(player = "explicit-override", "test event");
+        });
+
+        let path = games_dir.join("CODE790.session.jsonl");
+        let content = fs::read_to_string(&path).expect("session stream file must exist");
+        let row: Value =
+            serde_json::from_str(content.lines().next().unwrap()).expect("row must be valid JSON");
+        assert_eq!(row["player"], "explicit-override");
     }
 }

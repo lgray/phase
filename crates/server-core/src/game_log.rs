@@ -163,6 +163,16 @@ impl GameFileCache {
             }
         }
     }
+
+    /// Number of cached writer entries (open or sentinel) across all games.
+    /// Test-only introspection for proving `close`/`SessionManager::remove_game`
+    /// actually evict the cache, not just that the written file's content is
+    /// correct — `files` is private, so `server_core::session`'s tests need
+    /// this to observe eviction from outside `game_log`.
+    #[cfg(test)]
+    pub(crate) fn cached_entry_count(&self) -> usize {
+        self.files.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
 }
 
 impl Default for GameFileCache {

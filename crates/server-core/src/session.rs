@@ -2185,11 +2185,20 @@ impl SessionManager {
 
     /// Remove a game session entirely, cleaning up the token-to-game index.
     /// Returns the removed session if it existed.
+    ///
+    /// Also releases this game's cached per-game log writers (issue #7978
+    /// follow-up): every removal path — normal game-over cleanup, restored-
+    /// terminal cleanup, and reconnect-grace expiry — funnels through here,
+    /// and some of those (restored-terminal, expiry) run before any
+    /// `game_session` tracing span exists, so `GameFileLayer::on_close`
+    /// never fires for them. Closing here, once, covers all of them instead
+    /// of requiring every removal call site to remember it.
     pub fn remove_game(&mut self, game_code: &str) -> Option<GameSession> {
         let session = self.sessions.remove(game_code)?;
         for token in &session.player_tokens {
             self.unindex_token(token);
         }
+        self.game_log.close(game_code);
         Some(session)
     }
 
@@ -2998,6 +3007,52 @@ mod tests {
         assert!(
             !content.trim().is_empty(),
             "events stream file exists but is empty"
+        );
+    }
+
+    /// Maintainer review finding on PR #8245: `GameFileCache` cached a
+    /// writer for every game it ever logged and never released it —
+    /// `GameFileCache::close` existed, but nothing called it from
+    /// `SessionManager::remove_game`, so every removal path (game-over,
+    /// restored-terminal cleanup, reconnect-grace expiry) leaked the cached
+    /// `BufWriter`/file handle for the process lifetime. This setup has no
+    /// tracing span at all (server-core doesn't do tracing) — deliberately
+    /// exercising the "no active `game_session` span" removal shape the
+    /// finding named, where `GameFileLayer::on_close` (the OTHER eviction
+    /// path, span-teardown-triggered) never fires.
+    #[test]
+    fn remove_game_evicts_cached_log_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let games_dir = dir.path().join("games");
+        std::fs::create_dir_all(&games_dir).unwrap();
+
+        let mut mgr = SessionManager::new();
+        mgr.game_log = std::sync::Arc::new(GameFileCache::new(games_dir));
+        let db = engine::database::CardDatabase::default();
+        let (code, _token) = mgr
+            .create_game_with_ai(
+                make_deck(),
+                "Host".to_string(),
+                None,
+                MatchConfig::default(),
+                vec![(1, AiDifficulty::Easy, make_deck())],
+                Vec::new(),
+                None,
+                &db,
+            )
+            .expect("supported format config");
+
+        assert!(
+            mgr.game_log.cached_entry_count() > 0,
+            "start_game's write hook should have opened and cached a writer"
+        );
+
+        mgr.remove_game(&code);
+
+        assert_eq!(
+            mgr.game_log.cached_entry_count(),
+            0,
+            "remove_game must evict this game's cached writers, not just the session"
         );
     }
 
