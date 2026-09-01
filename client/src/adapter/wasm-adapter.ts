@@ -18,7 +18,11 @@ import type {
   SubmitResult,
   ViewerSnapshot,
 } from "./types";
-import type { InteractionSubmission } from "./generated/interaction";
+import type {
+  InteractionPreview,
+  InteractionPreviewRequest,
+  InteractionSubmission,
+} from "./generated/interaction";
 import {
   actionRejectionError,
   AdapterError,
@@ -440,6 +444,19 @@ export class WasmAdapter implements EngineAdapter, AiDecisionDiagnosticsCapabili
     try {
       if (this.engine) return await this.engine.previewManaPayment(actor, action);
       return await this.fallback!.previewManaPayment(action, actor);
+    } catch (err) {
+      throw await classifyEngineErrorAsync(err, this.takePanic);
+    }
+  }
+
+  async previewInteraction(
+    request: InteractionPreviewRequest,
+    actor: PlayerId,
+  ): Promise<InteractionPreview> {
+    this.assertInitialized();
+    try {
+      if (this.engine) return await this.engine.previewInteraction(actor, request);
+      return await this.fallback!.previewInteraction(request, actor);
     } catch (err) {
       throw await classifyEngineErrorAsync(err, this.takePanic);
     }
@@ -1188,6 +1205,10 @@ interface MainThreadFallback {
   submitAction(action: GameAction, actor: PlayerId): Promise<SubmitResult>;
   submitInteraction(submission: InteractionSubmission, actor: PlayerId): Promise<SubmitResult>;
   previewManaPayment(action: GameAction, actor: PlayerId): Promise<ObjectId[]>;
+  previewInteraction(
+    request: InteractionPreviewRequest,
+    actor: PlayerId,
+  ): Promise<InteractionPreview>;
   getState(): Promise<GameState>;
   getFilteredState(viewerId: number): Promise<GameState>;
   getLegalActions(): Promise<LegalActionsResult>;
@@ -1301,6 +1322,13 @@ async function createMainThreadFallback(): Promise<MainThreadFallback> {
     previewManaPayment: (action: GameAction, actor: PlayerId) =>
       enqueue(() => {
         return unwrapActionOutcome<ObjectId[]>(wasm.preview_mana_payment_js(actor, action));
+      }),
+
+    previewInteraction: (request: InteractionPreviewRequest, actor: PlayerId) =>
+      enqueue(() => {
+        return unwrapActionOutcome<InteractionPreview>(
+          wasm.preview_interaction_js(actor, request),
+        );
       }),
 
     // null from any of these three getters means WASM `GAME_STATE` is None

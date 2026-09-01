@@ -20,7 +20,9 @@ use engine::game::engine::{
     resume_restored_stack_automation, RestoredStackAutomationOutcome,
     RestoredStackAutomationPresentation,
 };
-use engine::game::interaction::{bind_interaction_authority, submit_interaction_with_rejection};
+use engine::game::interaction::{
+    bind_interaction_authority, preview_interaction, submit_interaction_with_rejection,
+};
 use engine::game::preview::{
     preview_action_with_rejection, preview_auto_payment_sources_with_rejection,
 };
@@ -45,7 +47,9 @@ use engine::types::game_state::{
     TrustedGameStateEnvelope, WaitingFor,
 };
 use engine::types::identifiers::ObjectId;
-use engine::types::interaction::{InteractionSessionId, InteractionSubmission};
+use engine::types::interaction::{
+    InteractionPreviewRequest, InteractionSessionId, InteractionSubmission,
+};
 use engine::types::mana::ManaCost;
 use engine::types::match_config::{MatchConfig, MatchType};
 use engine::types::{
@@ -1776,6 +1780,25 @@ pub fn submit_interaction_js(actor: u8, submission: JsValue) -> JsValue {
             action_outcome(Ok(applied.result))
         }
         Ok(Err(rejection)) => rejected_action_outcome(rejection),
+        Err(error) => error,
+    }
+}
+
+/// Preview one opaque interaction response without committing. A REFUSED declaration is a
+/// successful outcome carrying `status: rejected` — never a transport error — so the caller
+/// branches on the answer rather than on an error code.
+#[wasm_bindgen]
+pub fn preview_interaction_js(actor: u8, request: JsValue) -> JsValue {
+    let request: InteractionPreviewRequest = match serde_wasm_bindgen::from_value(request) {
+        Ok(request) => request,
+        Err(_) => {
+            return rejected_action_outcome(ActionRejection::new(
+                ActionRejectionCode::InvalidInteractionResponse,
+            ));
+        }
+    };
+    match with_state(|state| preview_interaction(state, PlayerId(actor), &request)) {
+        Ok(preview) => action_outcome(Ok(preview)),
         Err(error) => error,
     }
 }

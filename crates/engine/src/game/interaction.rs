@@ -2789,20 +2789,25 @@ struct VictimSplit {
 }
 
 impl VictimSplit {
-    /// The seats are paired against the allocation's amounts by `zip`, so the split is
-    /// confined to the allocation's own length by the combinator's semantics.
+    /// Each allocation segment names its seat by `choice_id`, resolved against the point's
+    /// published ids in published order; `ids` and `seats` are the two parallel readings of
+    /// that same order. A segment naming an id the point does not publish contributes
+    /// nothing rather than shifting every later segment onto the wrong seat.
     fn new(
         charge: &VictimCharge,
+        ids: &[InteractionChoiceId],
         seats: &[PlayerId],
         allocation: &[AmountAssignment],
     ) -> Option<Self> {
         Some(Self {
             rate: charge.rate,
             charged_seat: charge.seat,
-            cycles: seats
+            cycles: allocation
                 .iter()
-                .copied()
-                .zip(allocation.iter().map(|assignment| assignment.amount))
+                .filter_map(|assignment| {
+                    let index = ids.iter().position(|id| *id == assignment.choice_id)?;
+                    Some((*seats.get(index)?, assignment.amount))
+                })
                 .collect(),
         })
         .filter(|split| !split.cycles.is_empty())
@@ -2816,11 +2821,14 @@ impl VictimSplit {
 /// a per-point allocation carrier is a separate design. A candidate-less first point is NOT
 /// skipped to reach a later one either — skipping would silently move the domain to a second
 /// point, which is worse than publishing no allocation at all.
-fn allocation_point(projection: &LoopShortcutProjection) -> Option<&LoopShortcutPointProjection> {
-    projection
+fn allocation_point(
+    projection: &LoopShortcutProjection,
+) -> Option<(u32, &LoopShortcutPointProjection)> {
+    let index = projection
         .points
         .iter()
-        .find(|point| point.kind == InteractionShortcutPointKind::Targets)
+        .position(|point| point.kind == InteractionShortcutPointKind::Targets)?;
+    Some((u32::try_from(index).ok()?, projection.points.get(index)?))
 }
 
 /// CR 704.5a: the seats a point's candidates name, in published order, or `None` when any
@@ -2847,30 +2855,36 @@ fn allocated_seats(
         .collect()
 }
 
-/// CR 732.2a: what each sampled count actually DOES, published as one element per count.
+/// Everything a previewed element needs that neither its count nor its allocation supplies.
 ///
-/// Three things have to hold before there is anything to state, and all three are the offer's
-/// own: a measured per-period signature, a finite count window, and a period that states
-/// something at all (a period netting to nothing on every family publishes no element at any
-/// count, because `amount` is the period times the count).
-///
-/// The allocation's ids are minted here, through the same `interaction_choice_id` call
+/// The allocation's ids are minted through the same `interaction_choice_id` call
 /// `loop_shortcut_points` uses, so an element's `choice_id`s and the point's `candidate_ids`
 /// are the same strings by construction rather than by agreement.
-fn loop_shortcut_preview(
+struct ShortcutPreviewBasis<'a> {
+    delta: &'a crate::analysis::resource::ResourceVector,
+    group: Option<u32>,
+    ids: Vec<InteractionChoiceId>,
+    seats: Option<Vec<PlayerId>>,
+    charge: Option<VictimCharge>,
+}
+
+/// CR 732.2a: the per-period signature and the announced-choice domain every previewed element
+/// is minted over, resolved once per offer rather than once per count.
+///
+/// Refuses an offer carrying no measured per-period signature, and one whose period states
+/// nothing on any family: a magnitude is the period times the count, so neither has anything
+/// to multiply.
+fn shortcut_preview_basis<'a>(
     interaction_id: &InteractionId,
-    projection: &LoopShortcutProjection,
-) -> Vec<InteractionShortcutPreview> {
-    let Some(periodic) = projection.per_cycle.as_ref() else {
-        return Vec::new();
-    };
-    let counts = shortcut_preview_counts(&projection.count);
-    if counts.is_empty() || shortcut_preview_entries(&periodic.delta, 1, None).is_empty() {
-        return Vec::new();
+    projection: &'a LoopShortcutProjection,
+) -> Option<ShortcutPreviewBasis<'a>> {
+    let periodic = projection.per_cycle.as_ref()?;
+    if shortcut_preview_entries(&periodic.delta, 1, None).is_empty() {
+        return None;
     }
     let point = allocation_point(projection);
     let ids: Vec<InteractionChoiceId> = point
-        .map(|point| {
+        .map(|(_, point)| {
             point
                 .candidate_indices
                 .iter()
@@ -2878,25 +2892,115 @@ fn loop_shortcut_preview(
                 .collect()
         })
         .unwrap_or_default();
-    let seats = point.and_then(|point| allocated_seats(projection, point));
+    let seats = point.and_then(|(_, point)| allocated_seats(projection, point));
     let charge = point
         .zip(seats.as_deref())
-        .and_then(|(point, seats)| victim_charge(periodic, point, seats));
+        .and_then(|((_, point), seats)| victim_charge(periodic, point, seats));
+    Some(ShortcutPreviewBasis {
+        delta: &periodic.delta,
+        group: point.map(|(group, _)| group),
+        ids,
+        seats,
+        charge,
+    })
+}
+
+/// CR 732.2a: one previewed element — the basis multiplied by `count`, re-attributed over the
+/// allocation this element states.
+///
+/// CR 732.1b: the sequence is deliberately never performed, so this is `n x delta` and reaches
+/// no `GameState`. The single site that mints an element, for the published list and for a
+/// declared one alike, so the two cannot disagree.
+fn shortcut_preview_element(
+    basis: &ShortcutPreviewBasis<'_>,
+    count: u32,
+    allocation: Vec<AmountAssignment>,
+) -> InteractionShortcutPreview {
+    let split = basis
+        .charge
+        .as_ref()
+        .zip(basis.seats.as_deref())
+        .and_then(|(charge, seats)| VictimSplit::new(charge, &basis.ids, seats, &allocation));
+    InteractionShortcutPreview {
+        count,
+        entries: shortcut_preview_entries(basis.delta, count, split.as_ref()),
+        allocation,
+    }
+}
+
+/// CR 732.2a: what each sampled count actually DOES, published as one element per count.
+///
+/// Three things have to hold before there is anything to state, and all three are the offer's
+/// own: a measured per-period signature, a finite count window, and a period that states
+/// something at all (a period netting to nothing on every family publishes no element at any
+/// count, because `amount` is the period times the count).
+fn loop_shortcut_preview(
+    interaction_id: &InteractionId,
+    projection: &LoopShortcutProjection,
+) -> Vec<InteractionShortcutPreview> {
+    let counts = shortcut_preview_counts(&projection.count);
+    if counts.is_empty() {
+        return Vec::new();
+    }
+    let Some(basis) = shortcut_preview_basis(interaction_id, projection) else {
+        return Vec::new();
+    };
     counts
         .into_iter()
         .map(|count| {
-            let allocation = canonical_allocation(&ids, count);
-            let split = charge
-                .as_ref()
-                .zip(seats.as_deref())
-                .and_then(|(charge, seats)| VictimSplit::new(charge, seats, &allocation));
-            InteractionShortcutPreview {
-                count,
-                entries: shortcut_preview_entries(&periodic.delta, count, split.as_ref()),
-                allocation,
-            }
+            let allocation = canonical_allocation(&basis.ids, count);
+            shortcut_preview_element(&basis, count, allocation)
         })
         .collect()
+}
+
+/// CR 732.2a: the previewed element for the declaration this response states — the same
+/// arithmetic the published list carries, over the allocation the player authored.
+///
+/// CR 732.1b: the sequence is deliberately never performed, so this is `n x delta` and reaches
+/// no `GameState`.
+///
+/// Fail-closed: a pin carrying no `amounts` states no split, so no element is minted for it
+/// rather than one being invented from the canonical order. The count is not re-validated
+/// here — an out-of-window count is refused by the ingress in the same call, and the payload
+/// is attached only on the confirmable arm.
+fn declared_shortcut_preview(
+    waiting_for: &WaitingFor,
+    interaction_id: &InteractionId,
+    response: &InteractionResponse,
+) -> Option<InteractionShortcutPreview> {
+    let InteractionResponse::Shortcut { decision, pins } = response else {
+        return None;
+    };
+    let projection = loop_shortcut_projection(waiting_for).ok()?;
+    let count = match (*decision, projection.count) {
+        (
+            InteractionShortcutDecision::AcceptSuggested,
+            InteractionShortcutCountSpec::Fixed { suggested, .. },
+        ) => suggested,
+        (
+            InteractionShortcutDecision::Fixed { iterations },
+            InteractionShortcutCountSpec::Fixed { .. },
+        ) => iterations,
+        (InteractionShortcutDecision::Decline, _)
+        | (
+            InteractionShortcutDecision::AcceptSuggested,
+            InteractionShortcutCountSpec::UntilLethal,
+        )
+        | (InteractionShortcutDecision::Fixed { .. }, InteractionShortcutCountSpec::UntilLethal) => {
+            return None
+        }
+    };
+    let basis = shortcut_preview_basis(interaction_id, &projection)?;
+    let group = basis.group?;
+    let amounts = pins
+        .iter()
+        .find(|pin| pin.group == group)
+        .map(|pin| pin.amounts.clone())?;
+    if amounts.is_empty() {
+        return None;
+    }
+    Some(shortcut_preview_element(&basis, count, amounts))
 }
 
 fn loop_shortcut_projection(
@@ -10273,6 +10377,7 @@ pub fn preview_interaction(
         progress,
         outcome: InteractionOutcomeCode::Rejected,
         summaries: vec![InteractionSummaryCode::ConfirmUnavailable],
+        shortcut_preview: None,
     };
 
     if bound_string(request.request_id.as_str())
@@ -10310,6 +10415,11 @@ pub fn preview_interaction(
                 InteractionSummaryCode::ConfirmAvailable,
                 InteractionSummaryCode::Progress,
             ],
+            shortcut_preview: declared_shortcut_preview(
+                &filtered.waiting_for,
+                &request.interaction_id,
+                &request.response,
+            ),
         },
         Err(_) => rejected(InteractionReasonCode::ReducerRejected, progress),
     }
@@ -10358,6 +10468,11 @@ pub fn preview_interaction_with_rejection(
             InteractionSummaryCode::ConfirmAvailable,
             InteractionSummaryCode::Progress,
         ],
+        shortcut_preview: declared_shortcut_preview(
+            &filtered.waiting_for,
+            &request.interaction_id,
+            &request.response,
+        ),
     })
 }
 

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, isInaccessible, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, isInaccessible, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -6,6 +6,8 @@ import type {
   InteractionChoice,
   InteractionChoiceId,
   InteractionId,
+  InteractionPreview,
+  InteractionPreviewRequest,
   InteractionResponseSpec,
   InteractionShortcutPin,
   InteractionShortcutPoint,
@@ -15,10 +17,13 @@ import type {
 } from "../../../adapter/generated/interaction";
 import type {
   DecisionPoint,
+  EngineAdapter,
   GameState,
   WaitingFor,
 } from "../../../adapter/types.ts";
-import { dispatchInteraction } from "../../../game/dispatch.ts";
+import { dispatchInteraction, previewInteractionResponse } from "../../../game/dispatch.ts";
+import { useAppNotificationStore } from "../../../stores/appToastStore.ts";
+import { useGameStore } from "../../../stores/gameStore.ts";
 import {
   buildGameState,
   buildLoopShortcutWaitingFor,
@@ -29,8 +34,10 @@ import { DeclareShortcutModal, RespondToShortcutModal } from "../LoopShortcutMod
 
 // The pin route leaves through `dispatchInteraction`; the count-only route leaves through the
 // store's own `dispatch`. Both are observed by every routing row, so a regression in either
-// direction fires.
-vi.mock("../../../game/dispatch.ts", () => ({
+// direction fires. The rest of the module is left ORIGINAL, so the preview seam the rows below
+// drive is the real implementation.
+vi.mock("../../../game/dispatch.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../game/dispatch.ts")>()),
   dispatchAction: vi.fn(),
   dispatchInteraction: vi.fn(),
 }));
@@ -1772,5 +1779,329 @@ describe("LoopShortcutModal", () => {
       { group: 1, choiceIds: ["m1take"], amounts: [] },
       { group: 2, choiceIds: ["m2dec"], amounts: [] },
     ]);
+  });
+});
+
+// ── The round-trip preview of an authored allocation. ────────────────────────────────────────
+
+type StoreOverrides = Parameters<typeof setGameStoreForTest>[0];
+
+const PREVIEW_OFFER_ID = "session.0.1" as InteractionId;
+
+/** The request shape the seam takes, built from primitives so no row depends on a mint. */
+function previewRequest(id: string): InteractionPreviewRequest {
+  return {
+    requestId: id as InteractionPreviewRequest["requestId"],
+    interactionId: PREVIEW_OFFER_ID,
+    response: { type: "shortcut", data: { decision: { type: "fixed", data: { iterations: 5 } }, pins: [] } },
+  } as InteractionPreviewRequest;
+}
+
+/** An engine answer echoing the request's own id, carrying one per-victim entry. */
+function answerWith(request: InteractionPreviewRequest, amount: number): InteractionPreview {
+  return {
+    requestId: request.requestId,
+    interactionId: request.interactionId,
+    status: { type: "confirmable" },
+    progress: { selected: 1, minimum: 1, maximum: 1, aggregate: null, confirmable: true },
+    outcome: "advanced",
+    summaries: [],
+    shortcutPreview: element(5, [amt("k4", 4), amt("k5", 1)], [
+      { family: "life", player: 2, amount },
+    ]),
+  } as unknown as InteractionPreview;
+}
+
+/** The pin-route offer rows 9 and 10 author a split on: two announced seats, an even published
+ *  split of the count, and one published life line. */
+function seedPreviewOffer(store: StoreOverrides = {}) {
+  const waitingFor = buildLoopShortcutWaitingFor({
+    schema: { iteration_count: { Fixed: 5 } },
+    certificate: { unbounded: [{ DamageDealt: 1 }] },
+  });
+  setGameStoreForTest({
+    gameState: buildGameState({ objects: {}, priority_player: 0, waiting_for: waitingFor }),
+    waitingFor,
+    dispatch: dispatchMock,
+    viewerInteraction: shortcutInteraction(
+      {
+        count: fixedCount(1, 5, 5),
+        points: [targetsPoint(2, ["k4", "k5"])],
+        preview: [
+          element(5, [amt("k4", 3), amt("k5", 2)], [{ family: "life", player: 1, amount: -2 }]),
+        ],
+      },
+      "session.0.1",
+      [seatCandidate("k4", 1), seatCandidate("k5", 2)],
+    ),
+    engineCommitEpoch: 7,
+    gameMode: "ai",
+    ...store,
+  } as StoreOverrides);
+}
+
+/** Author the 4/1 split. The first edit leaves the declaration INCOMPLETE (the rows sum to 6),
+ *  so exactly one settled declaration reaches the effect. */
+function authorFourOne() {
+  fireEvent.change(allocationRow("P2"), { target: { value: "4" } });
+  fireEvent.change(allocationRow("P3"), { target: { value: "1" } });
+}
+
+function authorOneFour() {
+  fireEvent.change(allocationRow("P2"), { target: { value: "1" } });
+  fireEvent.change(allocationRow("P3"), { target: { value: "4" } });
+}
+
+/** An adapter implementing only what the seam's guards read, plus whatever a row installs. */
+const bareAdapter = () => ({ getSnapshot: vi.fn() }) as unknown as EngineAdapter;
+
+/** Counts unhandled rejections carrying a row's own sentinel tag, restoring vitest's own
+ *  listeners so the in-row positive control cannot poison the rest of the run. */
+function captureUnhandled() {
+  const seen: unknown[] = [];
+  const prior = process.listeners("unhandledRejection");
+  process.removeAllListeners("unhandledRejection");
+  const onUnhandled = (reason: unknown) => seen.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  return {
+    sentinels: (tag: string) => seen.filter((r) => r instanceof Error && r.message === tag),
+    restore() {
+      process.off("unhandledRejection", onUnhandled);
+      for (const l of prior) process.on("unhandledRejection", l as never);
+    },
+  };
+}
+
+describe("DeclareShortcutModal — authored-split preview", () => {
+  beforeEach(() => {
+    dispatchMock.mockReset();
+    dispatchMock.mockResolvedValue(undefined);
+    vi.mocked(dispatchInteraction).mockReset();
+    vi.mocked(dispatchInteraction).mockResolvedValue(undefined);
+    useAppNotificationStore.setState({ notification: null });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  // Row 9 (main): the rendered per-victim line is a read of the RETURNED element. The two
+  // iterations submit the IDENTICAL declaration and differ only in what the engine answered, so
+  // a client-side recomputation renders the same string twice and the row fails.
+  it("renders the magnitudes the engine returned, not a recomputation", async () => {
+    for (const amount of [-9, -7]) {
+      cleanup();
+      const previewInteraction = vi.fn((request: InteractionPreviewRequest) =>
+        Promise.resolve(answerWith(request, amount)),
+      );
+      seedPreviewOffer({ adapter: { ...bareAdapter(), previewInteraction } as EngineAdapter });
+      render(<DeclareShortcutModal />);
+
+      authorFourOne();
+
+      expect(await screen.findByText(`${amount} life — P3`)).toBeInTheDocument();
+      expect(screen.queryByText(/custom distribution/i)).toBeNull();
+    }
+  });
+
+  // Row 9(i-a): the seam's own contract, asserted where the two directions differ. Deleting
+  // `dispatch.ts`'s capability check makes the identical call REJECT with a TypeError.
+  it("resolves null without the capability and the answer with it", async () => {
+    const request = previewRequest("seam-1");
+
+    seedPreviewOffer({ adapter: bareAdapter() });
+    await expect(previewInteractionResponse(request)).resolves.toBeNull();
+
+    // Sibling: the FIRST guard, so the row distinguishes the capability check from its upstream
+    // neighbours rather than conflating them.
+    const previewInteraction = vi.fn((r: InteractionPreviewRequest) =>
+      Promise.resolve(answerWith(r, -9)),
+    );
+    seedPreviewOffer({
+      adapter: { ...bareAdapter(), previewInteraction } as EngineAdapter,
+      gameMode: "spectate",
+    });
+    await expect(previewInteractionResponse(request)).resolves.toBeNull();
+    expect(previewInteraction).not.toHaveBeenCalled();
+
+    // MANDATORY PAIRED POSITIVE: with the capability the identical call reaches the adapter and
+    // resolves the echoed answer, so the null above is the capability check's own answer rather
+    // than an earlier short-circuit's.
+    seedPreviewOffer({ adapter: { ...bareAdapter(), previewInteraction } as EngineAdapter });
+    await expect(previewInteractionResponse(request)).resolves.toMatchObject({
+      requestId: request.requestId,
+    });
+    expect(previewInteraction).toHaveBeenCalledOnce();
+  });
+
+  // Row 9(i-b): the render is a SWITCH between two defined states, not a missing element.
+  it("switches between the returned lines and the landed custom-distribution state", async () => {
+    seedPreviewOffer({ adapter: bareAdapter() });
+    render(<DeclareShortcutModal />);
+    authorFourOne();
+
+    expect(await screen.findByText(/custom distribution/i)).toBeInTheDocument();
+    expect(screen.queryByText(/life — P3$/)).toBeNull();
+
+    cleanup();
+    const previewInteraction = vi.fn((request: InteractionPreviewRequest) =>
+      Promise.resolve(answerWith(request, -9)),
+    );
+    seedPreviewOffer({ adapter: { ...bareAdapter(), previewInteraction } as EngineAdapter });
+    render(<DeclareShortcutModal />);
+    authorFourOne();
+
+    expect(await screen.findByText("-9 life — P3")).toBeInTheDocument();
+    expect(screen.queryByText(/custom distribution/i)).toBeNull();
+  });
+
+  // Row 9(ii): the effect HANDLES a rejected request. The rendered state is deliberately not the
+  // signal — the effect's leading clear makes it identical either way.
+  it("leaves no unhandled rejection when the transport fails", async () => {
+    const SENTINEL = "row-9ii-transport-failure";
+    const capture = captureUnhandled();
+    try {
+      // POSITIVE CONTROL: the instrument observes a deliberately unhandled sentinel rejection,
+      // so an empty projection below is a real negative rather than a dead listener.
+      void Promise.reject(new Error(SENTINEL));
+      // NOISE CONTROL: an unrelated unhandled rejection must not move the sentinel projection.
+      void Promise.reject(new Error("row-9ii-unrelated-noise"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const control = capture.sentinels(SENTINEL).length;
+      expect(control).toBe(1);
+
+      const previewInteraction = vi.fn(() => Promise.reject(new Error(SENTINEL)));
+      seedPreviewOffer({ adapter: { ...bareAdapter(), previewInteraction } as EngineAdapter });
+      render(<DeclareShortcutModal />);
+      authorFourOne();
+      await screen.findByText(/custom distribution/i);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(previewInteraction).toHaveBeenCalledOnce();
+      expect(capture.sentinels(SENTINEL).length - control).toBe(0);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  // Row 9(iii): the effect key is GATED on an authored split. Removing the `custom` conjunct
+  // issues a request for the published allocation and the first leg fails.
+  it("issues no request for the offer's own published allocation", async () => {
+    const previewInteraction = vi.fn((request: InteractionPreviewRequest) =>
+      Promise.resolve(answerWith(request, -9)),
+    );
+    seedPreviewOffer({ adapter: { ...bareAdapter(), previewInteraction } as EngineAdapter });
+    render(<DeclareShortcutModal />);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(previewInteraction).not.toHaveBeenCalled();
+
+    // PAIRED POSITIVE: the same spy IS called once the split is authored, so "not called" is a
+    // gate rather than a dead fixture.
+    authorFourOne();
+    expect(await screen.findByText("-9 life — P3")).toBeInTheDocument();
+    expect(previewInteraction).toHaveBeenCalledOnce();
+  });
+
+  // Row 10a: correlation on the ANSWER's echoed id. Two in flight, the EARLIER answering LAST.
+  it("renders the later answer when an earlier one arrives after it", async () => {
+    const gates: Array<() => void> = [];
+    const previewInteraction = vi.fn(
+      (request: InteractionPreviewRequest) =>
+        new Promise<InteractionPreview>((resolve) => {
+          const first =
+            request.response.type === "shortcut"
+              ? request.response.data.pins[0]?.amounts?.[0]?.amount
+              : undefined;
+          const amount = first === 4 ? -4 : -1;
+          gates.push(() => resolve(answerWith(request, amount)));
+        }),
+    );
+    seedPreviewOffer({ adapter: { ...bareAdapter(), previewInteraction } as EngineAdapter });
+    render(<DeclareShortcutModal />);
+
+    authorFourOne();
+    authorOneFour();
+    expect(gates).toHaveLength(2);
+
+    // The LATER request answers first, then the earlier one.
+    await act(async () => {
+      gates[1]();
+      await Promise.resolve();
+      gates[0]();
+      await Promise.resolve();
+    });
+
+    // PAIRED POSITIVE: the two answers carry DIFFERENT non-empty entries, so "renders the later
+    // one" is distinguishable from "renders nothing".
+    expect(await screen.findByText("-1 life — P3")).toBeInTheDocument();
+    expect(screen.queryByText("-4 life — P3")).toBeNull();
+  });
+
+  // Row 10b: the board-identity latch. `requestId` cannot catch this — the engine answered the
+  // right request correctly, for a board that no longer exists.
+  it("discards an answer for a board a snapshot commit moved past", async () => {
+    const gates: Array<() => void> = [];
+    const previewInteraction = vi.fn(
+      (request: InteractionPreviewRequest) =>
+        new Promise<InteractionPreview>((resolve) => {
+          gates.push(() => resolve(answerWith(request, -9)));
+        }),
+    );
+    seedPreviewOffer({ adapter: { ...bareAdapter(), previewInteraction } as EngineAdapter });
+    render(<DeclareShortcutModal />);
+
+    authorFourOne();
+    expect(gates).toHaveLength(1);
+    act(() => {
+      useGameStore.setState({ engineCommitEpoch: 8 });
+    });
+    await act(async () => {
+      gates[0]();
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText(/custom distribution/i)).toBeInTheDocument();
+    expect(screen.queryByText("-9 life — P3")).toBeNull();
+
+    // MANDATORY PAIRED POSITIVE: the same answer with the epoch UNCHANGED does render, so the
+    // discard is a branch rather than a render that never happens.
+    cleanup();
+    gates.length = 0;
+    seedPreviewOffer({ adapter: { ...bareAdapter(), previewInteraction } as EngineAdapter });
+    render(<DeclareShortcutModal />);
+    authorFourOne();
+    expect(gates).toHaveLength(1);
+    await act(async () => {
+      gates[0]();
+      await Promise.resolve();
+    });
+    expect(await screen.findByText("-9 life — P3")).toBeInTheDocument();
+  });
+
+  // Row 11: an adapter that cannot submit produces a user-visible error. With the guard above
+  // the `try` the only `catch` never sees the throw and the notification stays null.
+  it("reports an adapter that cannot submit an interaction", async () => {
+    const actual = await vi.importActual<typeof import("../../../game/dispatch.ts")>(
+      "../../../game/dispatch.ts",
+    );
+    vi.mocked(dispatchInteraction).mockImplementation(actual.dispatchInteraction);
+    // Reach-guard: the store starts with no notification, so a non-null read below is this
+    // row's own effect.
+    expect(useAppNotificationStore.getState().notification).toBeNull();
+
+    seedPreviewOffer({ adapter: bareAdapter() });
+    render(<DeclareShortcutModal />);
+    fireEvent.click(confirmButton());
+
+    await waitFor(() =>
+      expect(useAppNotificationStore.getState().notification).not.toBeNull(),
+    );
+    // Reach-guard: the delegating mock really was entered, so the assertion is about a path the
+    // click took rather than one it never reached.
+    expect(vi.mocked(dispatchInteraction)).toHaveBeenCalledOnce();
+    expect(useAppNotificationStore.getState().notification?.description).toBe(
+      "This game connection does not support interaction responses",
+    );
   });
 });

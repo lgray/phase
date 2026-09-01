@@ -1473,4 +1473,9 @@ pub struct InteractionPreview {
     pub progress: InteractionProgress,
     pub outcome: InteractionOutcomeCode,
     pub summaries: Vec<InteractionSummaryCode>,
+    /// CR 732.2a: the engine-computed consequence of the DECLARATION this request carries — one
+    /// previewed element in the same shape and vocabulary as an element of the offer's published
+    /// list, minted by the same producer. Absent unless the request declares a shortcut split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut_preview: Option<InteractionShortcutPreview>,
 }

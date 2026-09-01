@@ -1,6 +1,8 @@
 import type { BracketDeckRequest, BracketEstimate } from "../types/bracketEstimate";
 import type {
   InteractionActionId,
+  InteractionPreview,
+  InteractionPreviewRequest,
   InteractionSubmission,
   ViewerInteraction,
 } from "./generated/interaction";
@@ -4414,6 +4416,14 @@ export interface EngineAdapter {
    * offered by the engine. Unsupported transports omit this capability.
    */
   previewManaPayment?(action: GameAction, actor: PlayerId): Promise<ObjectId[]>;
+  /**
+   * Read-only preview of an interaction response the engine has not committed.
+   * Unsupported transports omit this capability.
+   */
+  previewInteraction?(
+    request: InteractionPreviewRequest,
+    actor: PlayerId,
+  ): Promise<InteractionPreview>;
   getState(): Promise<GameState>;
   getLegalActions(): Promise<LegalActionsResult>;
   /**

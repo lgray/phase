@@ -6,7 +6,7 @@ use engine::analysis::decision_template::{
 use engine::game::engine::apply;
 use engine::game::interaction::{
     bind_interaction_authority, derive_viewer_interaction, preview_interaction,
-    resolve_interaction_response, submit_interaction,
+    preview_interaction_with_rejection, resolve_interaction_response, submit_interaction,
 };
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
@@ -3414,6 +3414,77 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
             );
         }
     }
+
+    // ── SPAN 3: the RESPONSE-SIDE attach site — the arm that hangs the previewed element on
+    //    the answer, inside the one function that already holds the clone.
+    let answerer = "\npub fn preview_interaction(";
+    let answerer_start = text
+        .find(answerer)
+        .expect("reach-guard: the answering entry point must be found by name");
+    let answerer_scope = &text[answerer_start..];
+    let answerer_signature = &answerer_scope[..answerer_scope
+        .find(") -> ")
+        .expect("reach-guard: the entry point's signature must be delimited")];
+    // ── CONSTRUCTIBILITY: a ban guards nothing where the banned thing cannot be written. This
+    //    arm sits in a function that binds a `&GameState`, so a clone compiles at exactly the
+    //    point the payload is attached.
+    assert!(
+        answerer_signature.contains("state: &GameState"),
+        "constructibility: the attach arm guards nothing unless a `GameState` is IN SCOPE to be \
+         cloned"
+    );
+    let response_attach = extract(
+        answerer_scope,
+        "\n        Ok(_) => InteractionPreview {",
+        "\n        Err(_) =>",
+    );
+    assert!(
+        response_attach.contains("declared_shortcut_preview("),
+        "reach-guard: the extracted arm must be the one that ATTACHES the previewed element, \
+         else the ban is being applied to the wrong arm"
+    );
+    assert!(
+        response_attach.contains("state,"),
+        "constructibility, second half: the arm must actually USE that `&GameState` binding, so \
+         a clone is writable at the exact point the payload is minted"
+    );
+
+    // ── SPAN 4: the basis STRUCT. A parameter list cannot reach a `GameState` and is pinned
+    //    below instead; a struct FIELD can, so the textual ban is a real guard here.
+    let basis_struct = extract(&text, "\nstruct ShortcutPreviewBasis<'a> {", "\n}");
+    assert!(
+        basis_struct.contains("delta:"),
+        "reach-guard: the extracted text must be the struct BODY, else this span is not the \
+         declaration the ban is written against"
+    );
+
+    assert_eq!(
+        params_of("shortcut_preview_element"),
+        "basis: &ShortcutPreviewBasis<'_>, count: u32, allocation: Vec<AmountAssignment>",
+        "type-level pin: the single element producer is minted from a basis, a count and an \
+         allocation alone. Widening it to take anything reaching a `GameState` reopens the \
+         clone-apply route through a span no textual ban reads"
+    );
+    assert_eq!(
+        params_of("declared_shortcut_preview"),
+        "waiting_for: &WaitingFor, interaction_id: &InteractionId, response: &InteractionResponse",
+        "CR 732.2a: the DECLARED count and its allocation are read from the offer's own \
+         waiting-for state and the response that states them — not from a board. The pin is what \
+         keeps that a fact about the signature rather than a search result"
+    );
+
+    for (span_name, body) in [
+        ("preview_interaction's attach arm", &response_attach),
+        ("the ShortcutPreviewBasis declaration", &basis_struct),
+    ] {
+        for banned in ["preview_interaction", "state.clone()", "GameState"] {
+            assert!(
+                !body.contains(banned),
+                "CR 732.1b: the shortcut rules determine the repetition count WITHOUT performing \
+                 the actions, so {span_name} must not reach `{banned}`"
+            );
+        }
+    }
 }
 
 /// The three legs one `#[serde(default, skip_serializing_if = "Vec::is_empty")]` list carrier
@@ -6290,5 +6361,769 @@ fn p4_row_9_a_sequenced_pin_publishes_progress_inside_its_own_window() {
         sequenced.progress, flat.progress,
         "the `.min(point.max)` is the IDENTITY on the unchanged path: three subjects at one \
          position publish the same progress one subject at that position does"
+    );
+}
+
+// ── CR 732.2a: the round-trip preview of an AUTHORED allocation, driven on the tracked
+//    4-player dump through the production `apply()` path. ────────────────────────────────────
+
+/// One beat of the F4 drive policy, every beat crossing the public `apply()` boundary: at
+/// priority always pass, aim every target choice at a CONSTANT seat (a board-stable cycle is
+/// what the detector can certify), and take every optional-effect prompt.
+fn f4_drive_one_beat(state: &mut GameState) {
+    let who = state
+        .waiting_for
+        .acting_player()
+        .unwrap_or_else(|| panic!("no acting player at {:?}", state.waiting_for));
+    let (actions, _costs, _grouped) = engine::ai_support::legal_actions_for_viewer(state, who);
+    let chosen = if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+        actions
+            .iter()
+            .find(|action| matches!(action, GameAction::PassPriority))
+            .cloned()
+    } else {
+        actions
+            .iter()
+            .find(|action| {
+                matches!(
+                    action,
+                    GameAction::ChooseTarget { target: Some(TargetRef::Player(seat)) }
+                        if *seat == P1
+                )
+            })
+            .or_else(|| {
+                actions.iter().find(|action| {
+                    matches!(action, GameAction::DecideOptionalEffect { accept: true })
+                })
+            })
+            .cloned()
+    };
+    let action = chosen.unwrap_or_else(|| {
+        panic!(
+            "the F4 drive policy answers every beat it reaches; unhandled {:?}",
+            state.waiting_for
+        )
+    });
+    if let Err(error) = apply(state, who, action.clone()) {
+        panic!("apply err ({action:?}): {error:?}");
+    }
+}
+
+/// The tracked F4 dump at its CR 732.2a offer beat: restored through the production chokepoint
+/// `PersistedGameState::into_game_state`, driven by the engine's own `apply()` until the offer
+/// fires, and left with the interaction authority BOUND.
+///
+/// The offer beat is SEARCHED, never hardcoded. The proposer-only opportunity asserted below is
+/// this helper's own liveness control: an unbound probe can read zero opportunities, and every
+/// row built on this board would then be vacuous rather than negative.
+fn f4_offer_board() -> (GameState, PlayerId) {
+    use std::io::Read;
+
+    let gz: &[u8] = include_bytes!("../fixtures/fantastic_four_bounded_loop_4p.json.gz");
+    let mut json = String::new();
+    flate2::read::GzDecoder::new(gz)
+        .read_to_string(&mut json)
+        .expect("the tracked fixture inflates to UTF-8 JSON");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&json).expect("the dump envelope parses as JSON");
+    let mut state = serde_json::from_value::<engine::types::game_state::PersistedGameState>(
+        envelope["gameState"].clone(),
+    )
+    .expect("the dump deserializes through the production decoder")
+    .into_game_state()
+    .expect("the persisted snapshot satisfies the checked restore contract");
+    state.loop_detection = engine::types::game_state::LoopDetectionMode::Interactive;
+
+    for _ in 0..400u32 {
+        if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
+            break;
+        }
+        f4_drive_one_beat(&mut state);
+    }
+    let WaitingFor::LoopShortcut { proposer, .. } = state.waiting_for else {
+        panic!(
+            "the drive must reach the CR 732.2a bounded offer, got {:?}",
+            state.waiting_for
+        );
+    };
+
+    bind_interaction_authority(
+        &mut state,
+        InteractionSessionId("interaction-contract-f4-round-trip".to_string()),
+    )
+    .expect("the interaction authority binds over the live offer");
+
+    assert_eq!(
+        viewer_interaction(&state, proposer).opportunities.len(),
+        1,
+        "liveness control: the bound offer beat publishes the proposer's own opportunity. An \
+         empty read means the authority never bound, and every row over this board would then \
+         be reading a dead instrument rather than a negative"
+    );
+    let other = (0..u8::try_from(state.players.len()).expect("a board has few seats"))
+        .map(PlayerId)
+        .find(|seat| *seat != proposer)
+        .expect("the tracked dump is multiplayer");
+    assert!(
+        viewer_interaction(&state, other).opportunities.is_empty(),
+        "liveness control, second half: the offer beat is PROPOSER-ONLY, so a non-proposer \
+         reading an opportunity means this projection is not the offer's"
+    );
+
+    (state, proposer)
+}
+
+/// The offer's own published count window and preview list, read off the projection under test.
+fn f4_published(
+    view: &engine::types::interaction::ViewerInteraction,
+) -> (
+    InteractionShortcutCountSpec,
+    Vec<InteractionShortcutPreview>,
+) {
+    let InteractionOpportunityResponse::Schema {
+        spec: InteractionResponseSpec::Shortcut { count, preview, .. },
+        ..
+    } = &view.opportunities[0].response
+    else {
+        panic!("the loop shortcut offer uses a shortcut schema");
+    };
+    (*count, preview.clone())
+}
+
+/// The announced `Targets` point the allocation is stated over — the FIRST one in published
+/// order, which is the same rule the producer keys on.
+fn f4_allocation_point(points: &[InteractionShortcutPoint]) -> InteractionShortcutPoint {
+    points
+        .iter()
+        .find(|point| point.kind == InteractionShortcutPointKind::Targets)
+        .expect("the F4 offer announces a Targets point")
+        .clone()
+}
+
+/// Every pin this offer requires: the allocation over the announced `Targets` point through the
+/// landed `sequenced_pin`, plus the first published candidate on every other answerable point.
+///
+/// Built from the offer's own published points, so a re-dump that renumbers or re-orders them
+/// flows through without edit.
+fn f4_pins(
+    points: &[InteractionShortcutPoint],
+    allocation: &[(usize, u32)],
+) -> Vec<InteractionShortcutPin> {
+    points
+        .iter()
+        .filter(|point| !point.read_only)
+        .map(|point| {
+            if point.kind == InteractionShortcutPointKind::Targets {
+                sequenced_pin(point, allocation)
+            } else {
+                InteractionShortcutPin {
+                    group: point.group,
+                    choice_ids: vec![point.candidate_ids[0].clone()],
+                    amounts: Vec::new(),
+                }
+            }
+        })
+        .collect()
+}
+
+fn f4_preview(
+    state: &GameState,
+    actor: PlayerId,
+    interaction_id: &engine::types::interaction::InteractionId,
+    count: u32,
+    pins: Vec<InteractionShortcutPin>,
+) -> engine::types::interaction::InteractionPreview {
+    preview_interaction(state, actor, &f4_request(interaction_id, count, pins))
+}
+
+fn f4_request(
+    interaction_id: &engine::types::interaction::InteractionId,
+    count: u32,
+    pins: Vec<InteractionShortcutPin>,
+) -> InteractionPreviewRequest {
+    InteractionPreviewRequest {
+        request_id: PreviewRequestId("p7-round-trip".to_string()),
+        interaction_id: interaction_id.clone(),
+        response: InteractionResponse::Shortcut {
+            decision: InteractionShortcutDecision::Fixed { iterations: count },
+            pins,
+        },
+    }
+}
+
+/// The allocation stated as `(candidate index, amount)` pairs, so a published element can be
+/// resubmitted through the landed `sequenced_pin` without transcribing its ids.
+fn indexed(point: &InteractionShortcutPoint, allocation: &[AmountAssignment]) -> Vec<(usize, u32)> {
+    allocation
+        .iter()
+        .map(|assignment| {
+            (
+                point
+                    .candidate_ids
+                    .iter()
+                    .position(|id| *id == assignment.choice_id)
+                    .expect("a published allocation names the point's own published candidates"),
+                assignment.amount,
+            )
+        })
+        .collect()
+}
+
+/// **Row 1** — ONE producer, two call sites, and they agree: for EVERY element the offer
+/// publishes, resubmitting that element's own allocation at its own count round-trips an
+/// element BYTE-EQUAL to the published one.
+///
+/// # Discrimination
+///
+/// Re-derive the previewed entries at the new call site instead of calling the shared producer
+/// and the two disagree on the first element compared.
+#[test]
+fn every_published_shortcut_element_round_trips_byte_equal() {
+    let (state, proposer) = f4_offer_board();
+    let view = viewer_interaction(&state, proposer);
+    let interaction_id = view.opportunities[0].interaction_id.clone();
+    let points = shortcut_points(&view);
+    let point = f4_allocation_point(&points);
+    let (count_spec, published) = f4_published(&view);
+    let InteractionShortcutCountSpec::Fixed { min, .. } = count_spec else {
+        panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
+    };
+
+    // ── REACH-GUARD: the two views this board can be previewed from are NOT the same object,
+    //    so a self-view fixture cannot be mistaken for the general case.
+    assert_ne!(
+        serde_json::to_value(filter_state_for_viewer(&state, proposer))
+            .expect("the filtered state serializes"),
+        serde_json::to_value(&state).expect("the authoritative state serializes"),
+        "reach-guard: this fixture's filtered and authoritative views must DIFFER, else the \
+         authority the previewed element is minted from is untested here"
+    );
+    assert!(
+        !published.is_empty(),
+        "reach-guard: the offer must publish elements, else this row compares nothing"
+    );
+
+    for element in &published {
+        assert!(
+            !element.entries.is_empty(),
+            "paired positive: every compared element must state magnitudes, else a byte-equality \
+             between two empty elements satisfies this row; element {element:?}"
+        );
+        if element.count > min {
+            assert!(
+                element.allocation.len() > 1,
+                "paired positive: above the window FLOOR an element spreads its count over more \
+                 than one announced segment, which is what makes the allocation observable; \
+                 element {element:?}"
+            );
+        }
+        let preview = f4_preview(
+            &state,
+            proposer,
+            &interaction_id,
+            element.count,
+            f4_pins(&points, &indexed(&point, &element.allocation)),
+        );
+        assert_eq!(
+            preview.status,
+            InteractionPreviewStatus::Confirmable,
+            "an element's own published allocation is a declaration the ingress accepts"
+        );
+        assert_eq!(
+            preview.shortcut_preview.as_ref(),
+            Some(element),
+            "CR 732.2a: the published element and the round-tripped one are minted by ONE \
+             producer, so they cannot disagree at any published count"
+        );
+    }
+}
+
+/// **Row 2** — an AUTHORED, non-canonical distribution is previewed per DECLARED seat, and the
+/// seat is resolved by `choice_id` rather than by position.
+///
+/// # Discrimination
+///
+/// Restore the positional `zip` in `VictimSplit::new` and two legs fall at once: the two
+/// single-segment subsets return the SAME seat, and the reordered-unequal split returns the
+/// in-order element's entries.
+#[test]
+fn an_authored_split_is_previewed_per_declared_seat() {
+    let (state, proposer) = f4_offer_board();
+    let view = viewer_interaction(&state, proposer);
+    let interaction_id = view.opportunities[0].interaction_id.clone();
+    let points = shortcut_points(&view);
+    let point = f4_allocation_point(&points);
+    let (count_spec, published) = f4_published(&view);
+    let InteractionShortcutCountSpec::Fixed { max, .. } = count_spec else {
+        panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
+    };
+    assert!(
+        point.candidate_ids.len() > 1 && max > 2,
+        "reach-guard: an UNEQUAL split over MORE THAN ONE announced candidate is what makes a \
+         per-seat attribution observable at all; candidates={} max={max}",
+        point.candidate_ids.len()
+    );
+
+    let element = |allocation: &[(usize, u32)]| -> InteractionShortcutPreview {
+        let preview = f4_preview(
+            &state,
+            proposer,
+            &interaction_id,
+            max,
+            f4_pins(&points, allocation),
+        );
+        assert_eq!(
+            preview.status,
+            InteractionPreviewStatus::Confirmable,
+            "an authored split summing to the declared count is a declaration the ingress \
+             accepts: {allocation:?}"
+        );
+        let element = preview
+            .shortcut_preview
+            .expect("a confirmable authored declaration carries its previewed element");
+        assert_eq!(
+            element.count, max,
+            "the element states the count it was declared at"
+        );
+        assert_eq!(
+            indexed(&point, &element.allocation),
+            allocation.to_vec(),
+            "the element's allocation is exactly what was submitted"
+        );
+        assert!(
+            !element.entries.is_empty(),
+            "paired positive: an authored element must state magnitudes"
+        );
+        element
+    };
+    let life_seats = |element: &InteractionShortcutPreview| -> Vec<Option<u8>> {
+        element
+            .entries
+            .iter()
+            .filter(|entry| entry.family == InteractionShortcutPreviewFamily::Life)
+            .map(|entry| entry.player)
+            .collect()
+    };
+    // CR 704.5a governs the LIFE re-attribution and nothing else, so every other family is this
+    // row's allocation-invariant control.
+    let invariant = |element: &InteractionShortcutPreview| -> Vec<InteractionShortcutPreviewEntry> {
+        element
+            .entries
+            .iter()
+            .filter(|entry| entry.family != InteractionShortcutPreviewFamily::Life)
+            .copied()
+            .collect()
+    };
+
+    let canonical = published
+        .iter()
+        .find(|element| element.count == max)
+        .expect("the window's own ceiling is always published")
+        .clone();
+    assert!(
+        invariant(&canonical)
+            .iter()
+            .any(|entry| entry.player.is_some()),
+        "reach-guard: the control needs a SEAT-KEYED entry no allocation may move, else \
+         'identical across shapes' is a claim about whole-game entries only; got {:?}",
+        canonical.entries
+    );
+
+    let unequal = element(&[(0, max - 1), (1, 1)]);
+    let reordered = element(&[(1, max - 1), (0, 1)]);
+    let first_only = element(&[(0, max)]);
+    let second_only = element(&[(1, max)]);
+
+    assert_ne!(
+        reordered.entries, unequal.entries,
+        "CR 601.2c: the allocation names its seats by announced choice, so a REORDERED \
+         declaration carrying the same amount sequence attributes them differently. A positional \
+         pairing would have produced the in-order element's entries here"
+    );
+    assert_eq!(
+        life_seats(&first_only).len(),
+        1,
+        "a single-segment declaration charges a single seat"
+    );
+    assert_ne!(
+        life_seats(&first_only),
+        life_seats(&second_only),
+        "CR 601.2c: a subset naming the SECOND announced candidate charges the SECOND seat. A \
+         positional pairing returns the first seat for both"
+    );
+    for element in [&unequal, &reordered] {
+        assert_eq!(
+            life_seats(element).len(),
+            element.allocation.len(),
+            "paired positive: the element names as many charged seats as the declaration has \
+             segments; a raw count-times-delta fold returns one"
+        );
+    }
+    for (name, element) in [
+        ("unequal", &unequal),
+        ("reordered", &reordered),
+        ("first-only", &first_only),
+        ("second-only", &second_only),
+    ] {
+        assert_eq!(
+            invariant(element),
+            invariant(&canonical),
+            "control: the entries CR 704.5a does not re-attribute are identical across the \
+             canonical and every authored shape; {name} moved one"
+        );
+    }
+}
+
+/// **Row 4** — a declaration the ingress REFUSES carries no magnitude, each refusal asserted by
+/// the reason the ingress actually emits for it.
+///
+/// # Discrimination
+///
+/// Attach the payload above the simulation match — i.e. on the rejected closure too — and every
+/// refusal leg renders a magnitude.
+#[test]
+fn a_refused_shortcut_declaration_carries_no_previewed_magnitude() {
+    let (state, proposer) = f4_offer_board();
+    let view = viewer_interaction(&state, proposer);
+    let interaction_id = view.opportunities[0].interaction_id.clone();
+    let points = shortcut_points(&view);
+    let point = f4_allocation_point(&points);
+    let (count_spec, _published) = f4_published(&view);
+    let InteractionShortcutCountSpec::Fixed { max, .. } = count_spec else {
+        panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
+    };
+    assert!(
+        point.candidate_ids.len() > 1 && max > 2,
+        "reach-guard: the duplicate-id and subset shapes need more than one announced candidate"
+    );
+
+    // ── MANDATORY PAIRED POSITIVE: the same declaration made legal answers WITH the payload, so
+    //    no leg below can be satisfied by an upstream short-circuit that refuses everything.
+    let legal = f4_preview(
+        &state,
+        proposer,
+        &interaction_id,
+        max,
+        f4_pins(&points, &[(0, max - 1), (1, 1)]),
+    );
+    assert_eq!(legal.status, InteractionPreviewStatus::Confirmable);
+    assert!(
+        legal
+            .shortcut_preview
+            .is_some_and(|element| !element.entries.is_empty()),
+        "paired positive: the legal sibling of every refusal below carries a non-empty element"
+    );
+
+    let unknown_id = InteractionChoiceId("k-not-published".to_string());
+    let refusals: Vec<(&str, Vec<InteractionShortcutPin>, InteractionReasonCode)> = vec![
+        (
+            "sum below the declared count",
+            f4_pins(&points, &[(0, max - 1)]),
+            InteractionReasonCode::ConstraintUnsatisfied,
+        ),
+        (
+            "a zero segment",
+            f4_pins(&points, &[(0, max), (1, 0)]),
+            InteractionReasonCode::ConstraintUnsatisfied,
+        ),
+        (
+            "a duplicate choice id",
+            f4_pins(&points, &[(0, max - 1), (0, 1)]),
+            InteractionReasonCode::ConstraintUnsatisfied,
+        ),
+        (
+            "a choice id the point does not publish",
+            points
+                .iter()
+                .filter(|p| !p.read_only)
+                .map(|p| {
+                    if p.kind == InteractionShortcutPointKind::Targets {
+                        InteractionShortcutPin {
+                            group: p.group,
+                            choice_ids: vec![unknown_id.clone()],
+                            amounts: vec![AmountAssignment {
+                                choice_id: unknown_id.clone(),
+                                amount: max,
+                            }],
+                        }
+                    } else {
+                        InteractionShortcutPin {
+                            group: p.group,
+                            choice_ids: vec![p.candidate_ids[0].clone()],
+                            amounts: Vec::new(),
+                        }
+                    }
+                })
+                .collect(),
+            InteractionReasonCode::UnknownChoice,
+        ),
+    ];
+
+    for (name, pins, reason) in refusals {
+        let preview = f4_preview(&state, proposer, &interaction_id, max, pins);
+        assert_eq!(
+            preview.status,
+            InteractionPreviewStatus::Rejected { reason },
+            "{name} is refused by the reason the ingress emits for it"
+        );
+        assert!(
+            preview.shortcut_preview.is_none(),
+            "CR 732.2a: a declaration the engine refused states no magnitude; {name} rendered one"
+        );
+    }
+}
+
+/// **Row 5** — the preview COMMITS nothing, paired against the submission that does.
+///
+/// # Discrimination
+///
+/// The paired positive is written on what a `DeclareShortcut` actually changes — the pending
+/// interaction and the whole serialized state — never on a life delta: the declaration declares,
+/// and the magnitudes land at the accept beat.
+#[test]
+fn previewing_a_shortcut_declaration_commits_nothing() {
+    let (state, proposer) = f4_offer_board();
+    let view = viewer_interaction(&state, proposer);
+    let interaction_id = view.opportunities[0].interaction_id.clone();
+    let points = shortcut_points(&view);
+    let point = f4_allocation_point(&points);
+    let (count_spec, published) = f4_published(&view);
+    let InteractionShortcutCountSpec::Fixed { max, .. } = count_spec else {
+        panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
+    };
+    let ceiling = published
+        .iter()
+        .find(|element| element.count == max)
+        .expect("the window's own ceiling is always published")
+        .clone();
+    let pins = f4_pins(&points, &indexed(&point, &ceiling.allocation));
+
+    let before = serde_json::to_value(&state).expect("the authoritative state serializes");
+    let confirmable = f4_preview(&state, proposer, &interaction_id, max, pins.clone());
+    assert_eq!(confirmable.status, InteractionPreviewStatus::Confirmable);
+    assert_eq!(
+        serde_json::to_value(&state).expect("the authoritative state serializes"),
+        before,
+        "CR 732.1b: the sequence is never performed, so a preview at the published ceiling \
+         leaves the authoritative state byte-identical"
+    );
+
+    let refused = f4_preview(
+        &state,
+        proposer,
+        &interaction_id,
+        max,
+        f4_pins(&points, &[(0, max - 1)]),
+    );
+    assert!(matches!(
+        refused.status,
+        InteractionPreviewStatus::Rejected { .. }
+    ));
+    assert_eq!(
+        serde_json::to_value(&state).expect("the authoritative state serializes"),
+        before,
+        "previewing a REFUSED declaration is inert too"
+    );
+
+    // ── PAIRED POSITIVE: the same payload through the mutating path DOES move the board, so
+    //    the byte-equality above is a property of previewing rather than of an inert payload.
+    let mut submitted = state.clone();
+    submit_interaction(
+        &mut submitted,
+        proposer,
+        InteractionSubmission {
+            interaction_id,
+            response: InteractionResponse::Shortcut {
+                decision: InteractionShortcutDecision::Fixed { iterations: max },
+                pins,
+            },
+        },
+    )
+    .expect("the previewed declaration is submittable");
+    assert!(
+        !matches!(submitted.waiting_for, WaitingFor::LoopShortcut { .. }),
+        "paired positive: submitting moves the pending interaction off the offer"
+    );
+    assert_ne!(
+        serde_json::to_value(&submitted).expect("the submitted state serializes"),
+        before,
+        "paired positive: submitting changes the authoritative state"
+    );
+}
+
+/// **Row 5b** — both preview entry points answer a CONFIRMABLE declaration with the SAME
+/// element, from one request object handed to each.
+///
+/// # Discrimination
+///
+/// Attach the payload on one entry point only and the equality fails with one side `None`. The
+/// paired positive is what keeps that from being an equality between two absences: both sides
+/// must carry a non-empty `entries` and more than one allocation segment.
+///
+/// Refusal is deliberately NOT compared across the two: `preview_interaction_with_rejection`
+/// `?`-returns `Err(ActionRejection)` and constructs no answer at all on that path, so there is
+/// no second payload to compare. Refused-carries-nothing is asserted where it discriminates, on
+/// the answering entry point.
+#[test]
+fn both_preview_entry_points_answer_with_the_same_shortcut_element() {
+    let (state, proposer) = f4_offer_board();
+    let view = viewer_interaction(&state, proposer);
+    let interaction_id = view.opportunities[0].interaction_id.clone();
+    let points = shortcut_points(&view);
+    let (count_spec, _published) = f4_published(&view);
+    let InteractionShortcutCountSpec::Fixed { max, .. } = count_spec else {
+        panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
+    };
+    let request = f4_request(
+        &interaction_id,
+        max,
+        f4_pins(&points, &[(0, max - 1), (1, 1)]),
+    );
+
+    let answered = preview_interaction(&state, proposer, &request);
+    let rejecting = preview_interaction_with_rejection(&state, proposer, &request)
+        .expect("a confirmable declaration answers on the rejection-typed entry point too");
+    assert_eq!(answered.status, InteractionPreviewStatus::Confirmable);
+    assert_eq!(rejecting.status, InteractionPreviewStatus::Confirmable);
+
+    let element = answered
+        .shortcut_preview
+        .as_ref()
+        .expect("paired positive: the answering entry point carries an element");
+    assert!(
+        !element.entries.is_empty() && element.allocation.len() > 1,
+        "paired positive: an equality between two ABSENT payloads is exactly the failure this \
+         row exists to replace, so both sides must carry a stated, multi-segment element"
+    );
+    assert_eq!(
+        answered.shortcut_preview, rejecting.shortcut_preview,
+        "the two entry points answer one request with one element"
+    );
+}
+
+/// **Row 6** — the new payload is ADDITIVE on the wire, asserted on both status arms.
+///
+/// # Discrimination
+///
+/// Drop `skip_serializing_if` and the omission leg fails. The absent-key leg's failing change is
+/// removing the `Option` wrapper, NOT dropping `#[serde(default)]` — a missing `Option` field
+/// decodes to `None` either way, so no leg here claims that attribute is load-bearing.
+#[test]
+fn the_shortcut_preview_payload_is_additive_on_the_wire() {
+    let (state, proposer) = f4_offer_board();
+    let view = viewer_interaction(&state, proposer);
+    let interaction_id = view.opportunities[0].interaction_id.clone();
+    let points = shortcut_points(&view);
+    let (count_spec, _published) = f4_published(&view);
+    let InteractionShortcutCountSpec::Fixed { max, .. } = count_spec else {
+        panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
+    };
+
+    let populated = f4_preview(
+        &state,
+        proposer,
+        &interaction_id,
+        max,
+        f4_pins(&points, &[(0, max - 1), (1, 1)]),
+    );
+    let refused = f4_preview(
+        &state,
+        proposer,
+        &interaction_id,
+        max,
+        f4_pins(&points, &[(0, max - 1)]),
+    );
+    assert!(matches!(
+        refused.status,
+        InteractionPreviewStatus::Rejected { .. }
+    ));
+    let mut confirmable_without = populated.clone();
+    confirmable_without.shortcut_preview = None;
+
+    let populated_json = serde_json::to_value(&populated).expect("the preview serializes");
+    // ── POSITIVE CONTROL: a NON-EMPTY payload IS emitted, else both absence legs below are
+    //    satisfied by a serializer that writes no key under any circumstances.
+    assert!(
+        populated_json
+            .pointer("/shortcutPreview/entries")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|entries| !entries.is_empty()),
+        "positive control: a populated payload emits a non-empty `/shortcutPreview/entries`"
+    );
+    assert_eq!(
+        serde_json::from_value::<engine::types::interaction::InteractionPreview>(
+            populated_json.clone()
+        )
+        .expect("a populated payload reads"),
+        populated,
+        "a populated payload round-trips unchanged"
+    );
+
+    for (arm, preview) in [
+        ("confirmable", &confirmable_without),
+        ("rejected", &refused),
+    ] {
+        let json = serde_json::to_value(preview).expect("the preview serializes");
+        assert!(
+            json.pointer("/shortcutPreview").is_none(),
+            "an absent payload emits no `shortcutPreview` key on the {arm} arm"
+        );
+        assert_eq!(
+            &serde_json::from_value::<engine::types::interaction::InteractionPreview>(json.clone())
+                .expect("an absent payload reads"),
+            preview,
+            "JSON written before this field existed still deserializes on the {arm} arm"
+        );
+
+        let mut explicit_null = json;
+        explicit_null["shortcutPreview"] = serde_json::Value::Null;
+        assert_eq!(
+            &serde_json::from_value::<engine::types::interaction::InteractionPreview>(
+                explicit_null
+            )
+            .expect("an explicit null payload reads"),
+            preview,
+            "an explicit `null` reads as absent on the {arm} arm — the spelling the generated \
+             binding emits beside the optional one"
+        );
+    }
+}
+
+/// **Row 7** — an interaction whose response model is not `LoopShortcut` carries no payload.
+///
+/// # Discrimination
+///
+/// Make the response-side producer fall through to a default element instead of refusing a
+/// non-`Shortcut` response and the absence leg fails.
+#[test]
+fn a_non_shortcut_preview_carries_no_shortcut_payload() {
+    let mut state = GameState::new_two_player(42);
+    bind(&mut state, "non-shortcut-preview");
+    let view = priority_view(&state);
+    let interaction_id = view.opportunities[0].interaction_id.clone();
+    let InteractionAvailability::ProgressAvailable { witness } = view.availability else {
+        panic!("priority must expose a real progress witness");
+    };
+
+    let preview = preview_interaction(
+        &state,
+        P0,
+        &InteractionPreviewRequest {
+            request_id: PreviewRequestId("p7-non-shortcut".to_string()),
+            interaction_id,
+            response: witness.response,
+        },
+    );
+    // ── PAIRED POSITIVE: the preview path still ANSWERS this response model, so the absence
+    //    below is that model's own answer rather than a path that had started refusing all.
+    assert_eq!(preview.status, InteractionPreviewStatus::Confirmable);
+    assert!(preview.progress.confirmable);
+    assert!(matches!(
+        preview.outcome,
+        InteractionOutcomeCode::Advanced | InteractionOutcomeCode::Replaced
+    ));
+    assert!(
+        preview.shortcut_preview.is_none(),
+        "only a shortcut declaration states a shortcut magnitude"
     );
 }

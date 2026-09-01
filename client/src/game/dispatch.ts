@@ -1,5 +1,9 @@
 import type { AiActionProposal, EngineAdapter, EngineSnapshot, GameAction, GameEvent, GameLogEntry, GameState, RewindOption, WaitingFor } from "../adapter/types";
-import type { InteractionSubmission } from "../adapter/generated/interaction";
+import type {
+  InteractionPreview,
+  InteractionPreviewRequest,
+  InteractionSubmission,
+} from "../adapter/generated/interaction";
 import { actionRejectionError, AdapterError, AdapterErrorCode } from "../adapter/types";
 import { reportStructuredActionRejection } from "./actionRejectionReporter";
 import { attemptStateRehydrate, isEnginePanic, notifyEngineLost, routePanic } from "./engineRecovery";
@@ -795,15 +799,15 @@ export async function dispatchInteraction(
 ): Promise<void> {
   const { adapter, gameState, gameMode } = useGameStore.getState();
   if (!adapter || !gameState || gameMode === "spectate" || actor === SPECTATOR_PLAYER_ID) return;
-  if (!adapter.submitInteraction) {
-    throw new AdapterError(
-      AdapterErrorCode.UNSUPPORTED,
-      "This game connection does not support interaction responses",
-      false,
-    );
-  }
 
   try {
+    if (!adapter.submitInteraction) {
+      throw new AdapterError(
+        AdapterErrorCode.UNSUPPORTED,
+        "This game connection does not support interaction responses",
+        false,
+      );
+    }
     const result = await adapter.submitInteraction(submission, actor);
     const snapshot = await adapter.getSnapshot();
     useGameStore.getState().commitEngineSnapshot(snapshot, {
@@ -815,6 +819,26 @@ export async function dispatchInteraction(
     reportActionError(err);
     throw err;
   }
+}
+
+/**
+ * Ask the active adapter to preview an interaction response. Resolving `null` means this
+ * transport cannot preview, or the engine advanced while the request ran — in both cases the
+ * caller renders its own defined no-answer state rather than an error. An adapter or transport
+ * FAILURE rejects, exactly as the mana-payment preview does; the caller catches it.
+ */
+export async function previewInteractionResponse(
+  request: InteractionPreviewRequest,
+  actor: number = getPlayerId(),
+): Promise<InteractionPreview | null> {
+  const { adapter, gameState, gameMode } = useGameStore.getState();
+  if (!adapter || !gameState || gameMode === "spectate" || actor === SPECTATOR_PLAYER_ID) {
+    return null;
+  }
+  if (!adapter.previewInteraction) return null;
+  const previewEpoch = useGameStore.getState().engineCommitEpoch;
+  const preview = await adapter.previewInteraction(request, actor);
+  return useGameStore.getState().engineCommitEpoch === previewEpoch ? preview : null;
 }
 
 /** Dispatch a standing preference only while its captured game lifecycle is

@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
@@ -8,16 +8,20 @@ import type {
   InteractionChoiceId,
   InteractionId,
   InteractionPresentationSurface,
+  InteractionPreview,
+  InteractionPreviewRequest,
+  InteractionResponse,
   InteractionResponseSpec,
   InteractionShortcutDecision,
   InteractionShortcutPin,
   InteractionShortcutPoint,
   InteractionShortcutPreview,
   InteractionSubmission,
+  PreviewRequestId,
   ViewerInteraction,
 } from "../../adapter/generated/interaction";
 import type { IterationCount, ResourceAxis, WaitingFor, WinKind } from "../../adapter/types.ts";
-import { dispatchInteraction } from "../../game/dispatch.ts";
+import { dispatchInteraction, previewInteractionResponse } from "../../game/dispatch.ts";
 import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { familyOf, UNBOUNDED_FAMILY_LABEL_KEY, UnboundedBadge } from "../hud/HudBadges.tsx";
@@ -421,6 +425,38 @@ function DeclareShortcutOffer({
   const confirmDisabled =
     (countSpec !== null && chosen === null) || (pinRoute && !declarationComplete);
 
+  // CR 732.2a + CR 601.2c: the declaration this offer currently states, built ONCE and read by
+  // both consumers — the submission and the preview request — so what the player is shown and
+  // what the player sends are the same object rather than two constructions that agree.
+  const declaredResponse = (): InteractionResponse | null => {
+    if (!pinRoute) return null;
+    // CR 732.2a: a refused count entry has no count to declare. The `null` arm is the type-level
+    // half of the same refusal — it is what lets `iterations` be the PARSED value rather than an
+    // assertion, a default, a clamp or a fallback.
+    const decision: InteractionShortcutDecision | null =
+      spec.count.type !== "fixed"
+        ? { type: "acceptSuggested" }
+        : chosen === null
+          ? null
+          : { type: "fixed", data: { iterations: chosen } };
+    if (decision === null) return null;
+
+    // Only `targetsControl.point` can reach the `targets` arms — the group conjunct in
+    // `renderable` is what guarantees it — so there is no second `targets` point for `effective`
+    // to leak onto. `amounts` is always written explicitly.
+    const pinFor = (p: InteractionShortcutPoint): InteractionShortcutPin =>
+      p.kind === "mayChoice"
+        ? { group: p.group, choiceIds: [mayPicks[p.group]], amounts: [] }
+        : targetsControl?.kind === "allocation"
+          ? { group: p.group, choiceIds: effective.map((a) => a.choiceId), amounts: effective }
+          : { group: p.group, choiceIds: rankedOrder, amounts: [] };
+
+    return {
+      type: "shortcut",
+      data: { decision, pins: points.filter((p) => !p.readOnly).map(pinFor) },
+    };
+  };
+
   const handleConfirm = () => {
     // THE refusal, and the first statement of the ONE handler both production entry points reach:
     // the footer button's `onClick`, and every `AmountInput`'s Enter (`onSubmit`, which the box
@@ -445,38 +481,59 @@ function DeclareShortcutOffer({
       return;
     }
 
-    // CR 732.2a: a refused count entry has no count to declare. The `null` arm is the type-level
-    // half of the same refusal — it is what lets `iterations` be the PARSED value rather than an
-    // assertion, a default, a clamp or a fallback.
-    const decision: InteractionShortcutDecision | null =
-      spec.count.type !== "fixed"
-        ? { type: "acceptSuggested" }
-        : chosen === null
-          ? null
-          : { type: "fixed", data: { iterations: chosen } };
-    if (decision === null) return;
+    const response = declaredResponse();
+    if (response === null) return;
 
-    // Only `targetsControl.point` can reach the `targets` arms — the group conjunct in
-    // `renderable` is what guarantees it — so there is no second `targets` point for `effective`
-    // to leak onto. `amounts` is always written explicitly.
-    const pinFor = (p: InteractionShortcutPoint): InteractionShortcutPin =>
-      p.kind === "mayChoice"
-        ? { group: p.group, choiceIds: [mayPicks[p.group]], amounts: [] }
-        : targetsControl?.kind === "allocation"
-          ? { group: p.group, choiceIds: effective.map((a) => a.choiceId), amounts: effective }
-          : { group: p.group, choiceIds: rankedOrder, amounts: [] };
-
-    const submission: InteractionSubmission = {
-      interactionId: offerId,
-      response: {
-        type: "shortcut",
-        data: { decision, pins: points.filter((p) => !p.readOnly).map(pinFor) },
-      },
-    };
+    const submission: InteractionSubmission = { interactionId: offerId, response };
     // `dispatchInteraction` already reports the error before rethrowing; the catch only
     // suppresses an unhandled rejection.
     void dispatchInteraction(submission).catch(() => undefined);
   };
+
+  // CR 732.2a: the settled declaration stated as primitives, so one request is issued per SETTLED
+  // edit rather than one per keystroke. `null` while there is nothing to preview.
+  const declarationKey =
+    custom && declarationComplete && offerId !== null
+      ? [
+          offerId,
+          String(chosen),
+          effective.map((a) => `${a.choiceId}:${a.amount}`).join(","),
+          mayPoints.map((p) => `${p.group}:${mayPicks[p.group]}`).join(","),
+        ].join("|")
+      : null;
+
+  const [answer, setAnswer] = useState<InteractionPreview | null>(null);
+  const latest = useRef<PreviewRequestId | null>(null);
+  const minted = useRef(0);
+
+  useEffect(() => {
+    // Load-bearing rather than cosmetic: the resolve guard below compares against the ANSWER's
+    // echoed id, which a null answer does not carry, so this leading clear is the only thing that
+    // drops a previous answer when no answer comes back.
+    setAnswer(null);
+    if (declarationKey === null || offerId === null) return;
+    const response = declaredResponse();
+    if (response === null) return;
+    minted.current += 1;
+    const requestId = `${offerId}.p${minted.current}` as PreviewRequestId;
+    latest.current = requestId;
+    const request: InteractionPreviewRequest = { requestId, interactionId: offerId, response };
+    void previewInteractionResponse(request)
+      .then((preview) => {
+        if (latest.current === preview?.requestId) setAnswer(preview);
+      })
+      .catch(() => {
+        if (latest.current === requestId) setAnswer(null);
+      });
+    // The settled-declaration key IS the dependency: it holds the primitives the request is built
+    // from, and any wider identity would re-issue per keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [declarationKey]);
+
+  // CR 732.2a: magnitudes are read off a CONFIRMABLE answer only. `?? null` collapses the
+  // binding's optional-and-nullable spellings into the one absent state.
+  const authoredPreview =
+    answer?.status.type === "confirmable" ? (answer.shortcutPreview ?? null) : null;
 
   const handleDecline = useCallback(() => {
     // CR 732.2a: decline the auto-offer; the engine restores ordinary priority.
@@ -641,9 +698,12 @@ function DeclareShortcutOffer({
           );
         })}
         {showPreviewLines && previewed && <PreviewLines preview={previewed} />}
-        {custom && (
-          <p className="text-sm text-slate-300">{t("comboShortcut.customDistribution")}</p>
-        )}
+        {custom &&
+          (authoredPreview ? (
+            <PreviewLines preview={authoredPreview} />
+          ) : (
+            <p className="text-sm text-slate-300">{t("comboShortcut.customDistribution")}</p>
+          ))}
         {/* Outside the `showPreviewLines` gate deliberately: the invariant families state a family
             and no magnitude, so they survive a custom distribution. */}
         <FamilyBadges axes={certificate.unbounded} />

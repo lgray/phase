@@ -189,4 +189,10 @@ export type InteractionPreviewRequest = { requestId: PreviewRequestId, interacti
 
 export type InteractionPreviewStatus = { "type": "confirmable" } | { "type": "rejected", "data": { reason: InteractionReasonCode, } };
 
-export type InteractionPreview = { requestId: PreviewRequestId, interactionId: InteractionId, status: InteractionPreviewStatus, progress: InteractionProgress, outcome: InteractionOutcomeCode, summaries: Array<InteractionSummaryCode>, };
+export type InteractionPreview = { requestId: PreviewRequestId, interactionId: InteractionId, status: InteractionPreviewStatus, progress: InteractionProgress, outcome: InteractionOutcomeCode, summaries: Array<InteractionSummaryCode>, 
+/**
+ * CR 732.2a: the engine-computed consequence of the DECLARATION this request carries — one
+ * previewed element in the same shape and vocabulary as an element of the offer's published
+ * list, minted by the same producer. Absent unless the request declares a shortcut split.
+ */
+shortcutPreview?: InteractionShortcutPreview | null, };

@@ -1,6 +1,14 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { WasmAdapter, getHostAdapter, getSharedAdapter } from "../wasm-adapter";
 import { EngineWorkerClient } from "../engine-worker-client";
+import type {
+  InteractionPreview,
+  InteractionPreviewRequest,
+} from "../generated/interaction";
 import type {
   AiActionProposal,
   AiDecisionDiagnosticReceipt,
@@ -13,6 +21,7 @@ import { buildGameState, gameStateFactory } from "../../test/factories/gameState
 const ensureWasmInit = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const resumeRestoredGameState = vi.hoisted(() => vi.fn());
 const resumeMultiplayerHostState = vi.hoisted(() => vi.fn());
+const previewInteractionJs = vi.hoisted(() => vi.fn());
 
 vi.mock("../../services/cardData", () => ({
   ensureWasmInit,
@@ -22,6 +31,7 @@ vi.mock("../../services/cardData", () => ({
 vi.mock("@wasm/engine", () => ({
   resume_restored_game_state: resumeRestoredGameState,
   resume_multiplayer_host_state: resumeMultiplayerHostState,
+  preview_interaction_js: previewInteractionJs,
 }));
 
 // Mock EngineWorkerClient to avoid actual Worker creation in tests
@@ -50,6 +60,7 @@ const mockWorkerClient = {
     .mockResolvedValue({ events: [], log_entries: [] } as SubmitResult),
   submitInteraction: vi.fn().mockResolvedValue({ events: [], log_entries: [] } as SubmitResult),
   previewManaPayment: vi.fn().mockResolvedValue([]),
+  previewInteraction: vi.fn(),
   resolveAll: vi.fn().mockResolvedValue({ items_resolved: 0 }),
   getAiActionProposal: vi.fn(),
   getAiActionProposalWithDiagnostics: vi.fn(),
@@ -1064,5 +1075,246 @@ describe("releaseHostSession", () => {
     await expect(host.getState()).rejects.toThrow(AdapterError);
     // A private release must never post the shared engine's flag clear.
     expect(mockWorkerClient.setMultiplayerMode).not.toHaveBeenCalled();
+  });
+});
+
+describe("WasmAdapter.previewInteraction", () => {
+  const request = {
+    requestId: "req-1" as InteractionPreviewRequest["requestId"],
+    interactionId: "int-1" as InteractionPreviewRequest["interactionId"],
+    response: { type: "shortcut", data: { decision: { type: "acceptSuggested" }, pins: [] } },
+  } as InteractionPreviewRequest;
+
+  const answer = {
+    requestId: request.requestId,
+    interactionId: request.interactionId,
+    status: { type: "confirmable" },
+    progress: { selected: 1, minimum: 1, maximum: 1, aggregate: null, confirmable: true },
+    outcome: "advanced",
+    summaries: [],
+    shortcutPreview: {
+      count: 4,
+      entries: [{ family: "life", player: 2, amount: -8 }],
+      allocation: [{ choiceId: "int-1.k0", amount: 3 }, { choiceId: "int-1.k1", amount: 1 }],
+    },
+  } as unknown as InteractionPreview;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkerClient.previewInteraction.mockResolvedValue(answer);
+  });
+
+  it("forwards the whole engine answer through the worker client", async () => {
+    const adapter = new WasmAdapter();
+    await adapter.initialize();
+
+    const preview = await adapter.previewInteraction!(request, 1);
+
+    expect(mockWorkerClient.previewInteraction).toHaveBeenCalledExactlyOnceWith(1, request);
+    expect(preview).toEqual(answer);
+    expect(preview.shortcutPreview?.entries).toEqual(answer.shortcutPreview?.entries);
+    expect(preview.requestId).toBe(request.requestId);
+  });
+
+  it("round-trips an answer that carries no payload", async () => {
+    const { shortcutPreview: _dropped, ...withoutPayload } = answer;
+    mockWorkerClient.previewInteraction.mockResolvedValue(withoutPayload as InteractionPreview);
+    const adapter = new WasmAdapter();
+    await adapter.initialize();
+
+    const preview = await adapter.previewInteraction!(request, 1);
+
+    // Paired positive for the leg above: the adapter is forwarding the ANSWER, so it cannot be
+    // passing the payload leg by having dropped everything else.
+    expect(preview.shortcutPreview).toBeUndefined();
+    expect(preview.requestId).toBe(request.requestId);
+    expect(preview.status).toEqual({ type: "confirmable" });
+  });
+
+  it("carries the capability on the main-thread fallback too", async () => {
+    previewInteractionJs.mockReturnValue({ status: "applied", result: answer });
+    mockWorkerClient.initialize.mockRejectedValueOnce(new Error("worker unavailable"));
+    const adapter = new WasmAdapter();
+    await adapter.initialize();
+
+    const preview = await adapter.previewInteraction!(request, 1);
+
+    expect(previewInteractionJs).toHaveBeenCalledExactlyOnceWith(1, request);
+    expect(mockWorkerClient.previewInteraction).not.toHaveBeenCalled();
+    expect(preview).toEqual(answer);
+  });
+
+  it("surfaces a rejected fallback envelope as an AdapterError", async () => {
+    previewInteractionJs.mockReturnValue({
+      status: "rejected",
+      rejection: {
+        code: "invalid_interaction_response",
+        disposition: "invalid",
+        message: "That response is not valid.",
+        related_object_ids: [],
+      },
+    });
+    mockWorkerClient.initialize.mockRejectedValueOnce(new Error("worker unavailable"));
+    const adapter = new WasmAdapter();
+    await adapter.initialize();
+
+    await expect(adapter.previewInteraction!(request, 1)).rejects.toBeInstanceOf(AdapterError);
+  });
+});
+
+// ── The worker envelope's `type` literal, both ends. ─────────────────────────────────────────
+//
+// `request()` takes a `Record<string, unknown>` and the dispatch switch has no `default:`, so
+// nothing in the compiler relates the string one end posts to the one the other end handles.
+// This row reads both modules as TEXT and compares them; it proves `type`-literal agreement and
+// never that either body runs.
+
+/** Every `type` literal `EngineWorkerClient` posts through `request()`, typed or untyped. */
+function postedMessageTypes(source: string): string[] {
+  return Array.from(
+    source.matchAll(/this\.request\b[^(]*\(\s*\{\s*type:\s*"([A-Za-z0-9_]+)"/g),
+    (m) => m[1],
+  );
+}
+
+/** Call sites, so a call shape the extractor cannot read reds the row instead of shrinking it. */
+function requestCallSites(source: string): number {
+  return Array.from(source.matchAll(/this\.request\b/g)).length;
+}
+
+/** The body of the dispatch `switch (msg.type)`, brace-matched. */
+function dispatchSwitchBody(source: string): string | null {
+  const at = source.indexOf("switch (msg.type)");
+  if (at < 0) return null;
+  const open = source.indexOf("{", at);
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}" && --depth === 0) return source.slice(open + 1, i);
+  }
+  return null;
+}
+
+/** `case` labels at the dispatch switch's own brace depth. */
+function handledMessageTypes(source: string): string[] {
+  const body = dispatchSwitchBody(source);
+  if (body === null) return [];
+  const out: string[] = [];
+  let depth = 0;
+  for (const line of body.split("\n")) {
+    if (depth === 0) {
+      const m = /^\s*case "([A-Za-z0-9_]+)":/.exec(line);
+      if (m) out.push(m[1]);
+    }
+    for (const c of line) depth += c === "{" ? 1 : c === "}" ? -1 : 0;
+  }
+  return out;
+}
+
+function lockstepVerdict(clientSource: string, workerSource: string) {
+  const posted = postedMessageTypes(clientSource);
+  const handled = new Set(handledMessageTypes(workerSource));
+  return {
+    walkedAll: posted.length === requestCallSites(clientSource),
+    reach: ["previewInteraction", "submitInteraction"].filter((type) => posted.includes(type)),
+    missing: [...new Set(posted.filter((type) => !handled.has(type)))],
+  };
+}
+
+const isGreen = (verdict: ReturnType<typeof lockstepVerdict>): boolean =>
+  verdict.walkedAll && verdict.missing.length === 0;
+
+describe("worker message lockstep", () => {
+  const adapterDir = dirname(fileURLToPath(import.meta.url));
+  const clientSource = readFileSync(resolve(adapterDir, "..", "engine-worker-client.ts"), "utf8");
+  const workerSource = readFileSync(resolve(adapterDir, "..", "engine-worker.ts"), "utf8");
+
+  it("posts only message types the worker's dispatch switch handles", () => {
+    const verdict = lockstepVerdict(clientSource, workerSource);
+
+    // Each leg separately, so a failure names which one fell.
+    expect(verdict.walkedAll).toBe(true);
+    expect(verdict.reach).toEqual(["previewInteraction", "submitInteraction"]);
+    expect(verdict.missing).toEqual([]);
+  });
+
+  const handledFirst = handledMessageTypes(workerSource)[0];
+  const outsideDispatch = Array.from(
+    workerSource.matchAll(/case "([A-Za-z0-9_]+)":/g),
+    (m) => m[1],
+  ).find((label) => !handledMessageTypes(workerSource).includes(label));
+
+  const insertIntoDispatchBody = (source: string, snippet: string): string => {
+    const at = source.indexOf("switch (msg.type)");
+    const open = source.indexOf("{", at);
+    return `${source.slice(0, open + 1)}${snippet}${source.slice(open + 1)}`;
+  };
+
+  it.each([
+    [
+      "a worker case misspelled relative to the posted literal",
+      () => ({
+        client: clientSource,
+        worker: workerSource.replace(`case "${handledFirst}":`, `case "${handledFirst}Xx":`),
+      }),
+    ],
+    [
+      "an untyped post with no worker case",
+      () => ({
+        client: `${clientSource}\nvoid this.request({ type: "ghostUntypedMessage" });\n`,
+        worker: workerSource,
+      }),
+    ],
+    [
+      "a posted type equal to a case in an unrelated switch",
+      () => ({
+        client: `${clientSource}\nvoid this.request<void>({ type: "${outsideDispatch}" });\n`,
+        worker: workerSource,
+      }),
+    ],
+    [
+      "a case reachable only inside a nested switch",
+      () => ({
+        client: `${clientSource}\nvoid this.request<void>({ type: "nestedGhost" });\n`,
+        worker: insertIntoDispatchBody(
+          workerSource,
+          [
+            "",
+            '      case "nestedGhostOuter": {',
+            "        switch (msg.id) {",
+            '          case "nestedGhost": {',
+            "            break;",
+            "          }",
+            "        }",
+            "        break;",
+            "      }",
+          ].join("\n"),
+        ),
+      }),
+    ],
+    [
+      "a request call site the extractor cannot read",
+      () => ({
+        client: `${clientSource}\nvoid this.request<void>(unreadableMessage);\n`,
+        worker: workerSource,
+      }),
+    ],
+    [
+      "a request-prefixed identifier paired with an unreadable call site",
+      () => ({
+        client:
+          `${clientSource}\n` +
+          `this.requestQueue.push({ type: "${handledFirst}" });\n` +
+          `void this.request<void>(hiddenMessage);\n`,
+        worker: workerSource,
+      }),
+    ],
+  ])("refuses %s", (_name, mutate) => {
+    const { client, worker } = mutate();
+
+    // A mutation that changed nothing would pass as a silent no-op, so the control asserts it
+    // landed before it asserts what it produced.
+    expect(client !== clientSource || worker !== workerSource).toBe(true);
+    expect(isGreen(lockstepVerdict(client, worker))).toBe(false);
   });
 });
