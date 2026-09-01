@@ -3376,10 +3376,23 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
     //    either, so "the preview computation cannot see game state" stops being a search
     //    result and becomes a fact about the signature.
     let params_of = |name: &str| {
-        let marker = format!("\nfn {name}(");
-        extract(&text, &marker, ") -> ")
+        // A generic list sits between the name and the parameter list, so a marker ending in
+        // `(` never matches `fn shortcut_preview_basis<'a>(`.
+        let marker = format!("\nfn {name}");
+        let signature = extract(&text, &marker, ") -> ");
+        let tail = signature
             .strip_prefix(&marker)
-            .expect("`extract` re-emits its own marker, so the prefix is always present")
+            .expect("`extract` re-emits its own marker, so the prefix is always present");
+        let (generics, params) = tail.split_once('(').unwrap_or_else(|| {
+            panic!("reach-guard: `{name}`'s parameter list must follow its name")
+        });
+        assert!(
+            generics.is_empty() || (generics.starts_with('<') && generics.ends_with('>')),
+            "reach-guard: the name-anchored marker matched `fn {name}{generics}(` — a \
+             different function whose name merely starts with this one, so the pin below would \
+             be about the wrong signature"
+        );
+        params
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
@@ -3458,6 +3471,13 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
          declaration the ban is written against"
     );
 
+    assert_eq!(
+        params_of("shortcut_preview_basis"),
+        "interaction_id: &InteractionId, projection: &'a LoopShortcutProjection",
+        "type-level pin: the basis producer holds the half of the preview computation that moved \
+         out of `loop_shortcut_preview`. Unpinned it is the cheapest widening on the whole path, \
+         because a `&GameState` reaching it reaches every element minted from it"
+    );
     assert_eq!(
         params_of("shortcut_preview_element"),
         "basis: &ShortcutPreviewBasis<'_>, count: u32, allocation: Vec<AmountAssignment>",
