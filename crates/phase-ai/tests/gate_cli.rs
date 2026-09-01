@@ -1,9 +1,8 @@
 //! The gate's process-level contract: exit status and stdout body, together.
 //!
-//! Review found that every test for this pairing stopped at the library call, while the two
-//! statements that actually matter — print the body, exit with the code — lived in a binary no
-//! test executed. A `main` that printed the refusal to stderr, or exited 0 on it, would revert
-//! the fix with the whole unit suite green.
+//! The two statements that actually matter — print the body, exit with the code — live in a
+//! binary, not in the library, so a `main` that printed the refusal to stderr or exited 0 on it
+//! is invisible to the unit suite. These tests spawn the binary and read both.
 //!
 //! `.github/workflows/ai-gate.yml` redirects the gate's **stdout** into a file, posts that file
 //! as a drift issue only when the step **failed**, and aborts when the file is empty. Those two
@@ -132,10 +131,10 @@ fn a_refused_comparison_exits_nonzero_and_writes_its_reason_to_stdout() {
 
 /// A report that cannot be READ must refuse on the same terms as one that cannot be COMPARED.
 ///
-/// Review found these two arms returned 2 after an `eprintln!` alone, so the workflow's redirected
-/// stdout stayed empty and its "failed without a drift report" abort fired instead of the refusal
-/// being posted. Both inputs are covered because they are separate arms in the source — a fix
-/// applied to one and not the other is exactly the shape of defect this file exists to catch.
+/// A refusal that reaches only stderr leaves the workflow's redirected stdout empty, and its
+/// "failed without a drift report" abort fires instead of the refusal being posted. Both inputs
+/// are covered because they are separate arms in the source — a fix applied to one and not the
+/// other is exactly the shape of defect this file exists to catch.
 ///
 /// Missing and malformed are both exercised because they take different `CompareError` variants
 /// (`Io` vs `Parse`) to the same renderer, and a remedy keyed on only one of them would leave the
@@ -269,6 +268,12 @@ fn binary_name(rest: &str) -> String {
         .collect()
 }
 
+/// A commented-out YAML line. Both workflow scanners below skip these — an illustrative or
+/// disabled command inside a comment is not a live site.
+fn is_comment(line: &str) -> bool {
+    line.trim_start().starts_with('#')
+}
+
 /// `target/debug/<name>` occurrences on the non-comment `ci.yml` lines `keep` selects.
 ///
 /// Shipping a binary to a shard is a CONJUNCTION over two independently editable sites: the
@@ -280,7 +285,7 @@ fn debug_binaries(ci_yml: &str, keep: impl Fn(&str) -> bool) -> BTreeSet<String>
     let mut names = BTreeSet::new();
     for line in ci_yml
         .lines()
-        .filter(|line| !line.trim_start().starts_with('#') && keep(line))
+        .filter(|line| !is_comment(line) && keep(line))
     {
         for (idx, _) in line.match_indices(PREFIX) {
             let name = binary_name(&line[idx + PREFIX.len()..]);
@@ -344,6 +349,16 @@ fn every_binary_an_integration_test_spawns_is_shipped_to_the_test_shards() {
         unshipped(&consumers, &chmodded)
     );
 
+    // The two ci.yml sites name the SAME binaries, in both directions. A chmod on a name the
+    // upload omitted fails the step loudly; an uploaded-but-unchmodded name reaches the shard and
+    // dies at spawn. Set against set, never against a literal, so a fourth consumer passes once
+    // it is added to both sites and fails while it is missing from one.
+    assert_eq!(
+        uploaded, chmodded,
+        "ci.yml's `Upload test runtime binaries` path: list and its `chmod +x` line must name the \
+         same binaries"
+    );
+
     // Refused end, withheld from ONE site: a name absent from either list alone must be named
     // by that leg and by no other. An implementation that unioned the two sites passes the
     // assertions above while shipping a PermissionDenied.
@@ -401,7 +416,7 @@ fn gate_invocations(root: &Path) -> Vec<(String, Vec<String>)> {
             .to_string_lossy()
             .into_owned();
         let text = fs::read_to_string(&path).expect("read workflow");
-        for line in text.lines() {
+        for line in text.lines().filter(|line| !is_comment(line)) {
             let invokes_gate = line
                 .match_indices(NEEDLE)
                 .any(|(idx, _)| !line[idx + NEEDLE.len()..].starts_with('-'));
@@ -520,4 +535,28 @@ fn every_workflow_gate_invocation_spells_the_baseline_workload() {
         "control must name exactly the divergent invocation; findings:\n{}",
         control.join("\n")
     );
+}
+
+/// A commented-out invocation is not an invocation. Without the skip, an illustrative
+/// `# cargo ai-gate ...` line anywhere under `.github/workflows/` becomes a finding, and the
+/// scanner starts dictating what the comments beside it are allowed to say.
+#[test]
+fn a_commented_out_gate_invocation_is_not_scanned() {
+    let root = tempdir("commented-invocation");
+    let workflows = root.join(".github/workflows");
+    fs::create_dir_all(&workflows).expect("create workflow fixture dir");
+    write(
+        &workflows,
+        "fixture.yml",
+        "  # cargo ai-gate --games 100 --seed 7 --difficulty medium\n\
+         run: cargo ai-gate --games 40 --seed 7 --difficulty medium\n",
+    );
+
+    let found = gate_invocations(&root);
+
+    // PREMISE: the live line IS picked up, or the count below is satisfied by a dead scanner.
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(flag(&found[0].1, "--games"), Some("40"), "{found:?}");
+
+    fs::remove_dir_all(&root).ok();
 }

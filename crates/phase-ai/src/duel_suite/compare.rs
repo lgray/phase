@@ -808,12 +808,11 @@ fn render_markdown(report: &CompareReport) -> String {
 /// Applied uniformly rather than only to the fields that look risky today: deciding per field
 /// means re-deciding every time a field is added, and one of those decisions will be wrong.
 fn md_cell(text: &str) -> String {
-    // ORDER IS LOAD-BEARING: backslashes first, then pipes. The reverse — which this function
-    // did until review caught it — turns the input `\|` into `\\|`, and a markdown parser
-    // reads that as an escaped backslash followed by a LIVE separator, so the very input that
-    // looks pre-escaped is the one that breaks the row. Escaping backslashes first makes every
-    // backslash run even before any `\|` is introduced, so no emitted `|` can ever be preceded
-    // by an odd run.
+    // ORDER IS LOAD-BEARING: backslashes first, then pipes. The reverse turns the input `\|`
+    // into `\\|`, and a markdown parser reads that as an escaped backslash followed by a LIVE
+    // separator, so the very input that looks pre-escaped is the one that breaks the row.
+    // Escaping backslashes first makes every backslash run even before any `\|` is introduced,
+    // so no emitted `|` can ever be preceded by an odd run.
     text.replace('\\', "\\\\")
         .replace('|', "\\|")
         .replace(['\n', '\r'], " ")
@@ -851,12 +850,11 @@ pub fn print_markdown(report: &CompareReport) {
 /// A refused comparison is the case most likely to be read by someone who did not run it: the
 /// nightly captures stdout into `target/ai-gate-report.md` and posts it as a drift issue.
 ///
-/// The reason is NOT that stderr-only would leave that file empty. Review measured the opposite:
-/// `run_suite` prints the suite's own table to stdout before the baseline is ever loaded
-/// (`run.rs`, `print_markdown_table`), so on this path the file always has content and the
-/// workflow's empty-file abort is unreachable. What a stderr-only refusal actually produces is
-/// worse to read than an empty file: a red job whose issue body is a table of PASSing matchups
-/// and no statement of what failed.
+/// The workflow's empty-file abort is unreachable on this path: `run_suite` prints the suite's
+/// own table to stdout (`run.rs`, `print_markdown_table`) before the baseline is ever loaded, so
+/// the file always has content. What a stderr-only refusal produces is worse to read than an
+/// empty file — a red job whose issue body is a table of PASSing matchups and no statement of
+/// what failed.
 pub fn render_error_markdown(err: &CompareError) -> String {
     let remedy = match err {
         CompareError::WorkloadMismatch {
@@ -1221,20 +1219,17 @@ mod tests {
         assert!(!result.any_fail(), "an improvement must not fail the gate");
     }
 
-    /// **The escalation the tier order actually produces.** An independent review measured this
-    /// input against both the pre-change and post-change comparator and found the earlier
-    /// "no input that reaches Fail or Warn today can change verdict" claim FALSE: the draw Fail
-    /// arm sits above the W/L Warn arm, so a Warn escalates to Fail.
+    /// **The escalation the tier order produces.** The draw Fail arm sits above the win/loss
+    /// Warn arm, so a draw regression escalates a verdict the win/loss axis alone would only
+    /// have warned on.
     ///
     /// The escalation is intended — 8 of 11 games ceasing to resolve is the failure this gate
     /// exists to catch, and suppressing it because the win/loss axis also wobbled insignificantly
-    /// would reintroduce the same blindness one case narrower. It is pinned here because the
-    /// claim that it *couldn't* happen was the reason it went untested.
+    /// would reintroduce the same blindness one case narrower.
     ///
-    /// The two premise asserts below are what make this a proof of escalation without compiling
-    /// the old code: `sign_test_p > 0.05` means the W/L Fail arm cannot fire, and
-    /// `flipped_w_to_l != flipped_l_to_w` means the old chain fell to the W/L Warn arm. Warn
-    /// before, Fail now.
+    /// The two premise asserts below are what attribute the Fail to the draw axis:
+    /// `sign_test_p > 0.05` means the W/L Fail arm cannot fire, and
+    /// `flipped_w_to_l != flipped_l_to_w` means the W/L axis reaches its Warn arm.
     #[test]
     fn draw_regression_escalates_an_insignificant_win_loss_warn() {
         let before: &[(u64, Option<u8>, u32)] = &[
@@ -1553,14 +1548,12 @@ mod tests {
         );
     }
 
-    /// The status analogue of `draw_regression_escalates_an_insignificant_win_loss_warn`, and it
-    /// exists because round 2 of review showed the status Fail arm's placement was UNPINNED:
-    /// moving it below the W/L Warn arm left the whole suite green. The concrete consequence —
-    /// measured — was `any_fail() == false` on a matchup that newly fails its own suite check.
+    /// The status analogue of `draw_regression_escalates_an_insignificant_win_loss_warn`: this is
+    /// what pins the status Fail arm ABOVE the win/loss Warn arm. Moved below it, this fixture
+    /// reports `any_fail() == false` on a matchup that newly fails its own suite check.
     ///
     /// Same premise structure: the W/L axis is insignificant (p=0.0625) so the W/L Fail arm cannot
-    /// fire, and `w2l != l2w` so the pre-change chain landed on the W/L Warn arm. Warn before,
-    /// Fail now.
+    /// fire, and `w2l != l2w` so the W/L axis reaches its Warn arm.
     #[test]
     fn status_regression_escalates_an_insignificant_win_loss_warn() {
         let before: &[(u64, Option<u8>, u32)] = &[
@@ -1664,11 +1657,9 @@ mod tests {
         );
     }
 
-    /// The column invariant, enforced instead of asserted in a comment. Round 2 of review measured
-    /// that both new columns could be deleted with the entire suite still green, because the table
-    /// was built inline in `println!` and nothing read it.
-    ///
-    /// One column per axis the verdict chain can decide on: win/loss, draw, avg-turn, suite status.
+    /// One column per axis the verdict chain can decide on: win/loss, draw, avg-turn, suite
+    /// status. Enforced here rather than asserted in a comment, so a column dropped from the
+    /// renderer cannot leave the suite green.
     #[test]
     fn markdown_has_a_column_for_every_verdict_axis() {
         for axis in [
@@ -2028,10 +2019,9 @@ mod tests {
 
     /// Every refusal variant renders a body, including the two `compare` itself cannot produce.
     ///
-    /// `Io` and `Parse` are reachable only through `load_report`, which `bin/ai_gate.rs` calls
-    /// before `compare` — review found that arm was written and unreachable, because the caller
-    /// that could hit it was still failing to stderr alone. That caller is now wired to this
-    /// function, and this test covers the arm regardless of which caller reaches it.
+    /// `Io` and `Parse` reach this renderer only from `load_report`'s callers, never from
+    /// `compare`, so covering them here holds the arms live regardless of which caller gets
+    /// there.
     ///
     /// The `assert_ne!` against the bare `Display` is the discriminating half: an implementation
     /// that forwarded the error string would satisfy every other assertion here while losing the
@@ -2409,16 +2399,15 @@ mod tests {
         assert!(rendered.contains("| REMOVED |"), "no Removed row emitted");
 
         // A New row's verdict is decided FROM its suite status, so that column must carry a value
-        // even though there is no shift to show. It read `—` until review measured it.
+        // even though there is no shift to show.
         let new_row = rendered.lines().find(|l| l.contains("| NEW |")).unwrap();
         assert!(
             new_row.contains("| Pass | NEW |"),
             "a status-decided verdict must not print a blank status cell: {new_row}"
         );
 
-        // The `—` fallbacks are what New and Removed rows print in the paired-only columns, and
-        // every one of them survived a fully green suite until review measured it. A New row has no
-        // baseline to compare against; a Removed row has no current report at all.
+        // The `—` fallbacks are what New and Removed rows print in the paired-only columns: a New
+        // row has no baseline to compare against, a Removed row no current report at all.
         //
         // Every `—` fallback site is asserted; a partial sweep reads as complete.
         assert_eq!(cell(&rendered, "brand-new", "baseline p0%"), "—");
@@ -2532,8 +2521,7 @@ mod tests {
         assert!(result.any_fail());
         assert_eq!(result.rows[0].status, CompareStatus::Fail);
         // The counters and their ORDER, not just the phrase: transposing the two format args here
-        // printed `W→L=0 L→W=10` for this very fixture — a regression reported as an improvement —
-        // and survived the whole suite until review measured it.
+        // printed `W→L=0 L→W=10` for this very fixture: a regression reported as an improvement.
         assert!(
             result.rows[0]
                 .reason
