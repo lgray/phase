@@ -81,6 +81,22 @@ impl CompareReport {
     }
 }
 
+/// Which of the two reports a refusal is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportSide {
+    Baseline,
+    Current,
+}
+
+impl std::fmt::Display for ReportSide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ReportSide::Baseline => "baseline",
+            ReportSide::Current => "current",
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum CompareError {
     Io(std::io::Error),
@@ -88,6 +104,13 @@ pub enum CompareError {
     SchemaMismatch {
         baseline: u32,
         current: u32,
+    },
+    /// One report is internally malformed: pairing keys on the seed number, so a repeated seed
+    /// has no single partner. Some games would be counted twice and others never visited.
+    DuplicateSeed {
+        side: ReportSide,
+        matchup_id: String,
+        seed: u64,
     },
     /// A configuration that defines what a seed *means* differs between the reports, so
     /// pairing by seed number would compare two unrelated games and call the difference
@@ -119,6 +142,15 @@ impl std::fmt::Display for CompareError {
                 "{field} mismatch: baseline={baseline} current={current} — \
                  the reports describe different workloads and cannot be paired by seed"
             ),
+            CompareError::DuplicateSeed {
+                side,
+                matchup_id,
+                seed,
+            } => write!(
+                f,
+                "{side} report repeats seed {seed} in matchup {matchup_id} — the pairing is \
+                 ambiguous and some games would go uncompared"
+            ),
         }
     }
 }
@@ -145,6 +177,21 @@ pub fn load_report(path: &Path) -> Result<SuiteReport, CompareError> {
     Ok(report)
 }
 
+/// The first matchup in `report` that lists a seed twice, with that seed.
+///
+/// `run_suite` derives seeds as `base_seed + matchup_idx * 1000 + game_idx`, so a real report
+/// cannot hit this; it fires on a hand-edited or corrupted one.
+fn first_duplicate_seed(report: &SuiteReport) -> Option<(&str, u64)> {
+    report.results.iter().find_map(|matchup| {
+        let mut seen = HashSet::new();
+        matchup
+            .games
+            .iter()
+            .find(|game| !seen.insert(game.seed))
+            .map(|game| (matchup.matchup_id.as_str(), game.seed))
+    })
+}
+
 /// Core comparison entry point. Takes two reports and an options block;
 /// returns a `CompareReport` whose `any_fail()` drives the exit code.
 pub fn compare(
@@ -163,22 +210,16 @@ pub fn compare(
     // reports derive their seeds the same way and play them under the same AI, so the two
     // inputs that define what a seed means are checked before any row is classified.
     //
-    // `games_per_matchup` IS here, and the reasoning that kept it out is recorded because it
-    // was wrong in an instructive way. It changes how MANY seeds exist rather than what a seed
-    // means, so the samples that do pair really are comparable — from which an earlier draft
-    // concluded that counting the unpaired remainder (the `unpaired_*` columns below) was the
-    // honest treatment, and that erroring would break a live nightly that runs `--games 100`
-    // against a `games_per_matchup: 10` baseline.
-    //
-    // The error in that is one layer downstream of the comparator. A `Warn` leaves `any_fail`
-    // false, so the gate exits 0, so the nightly step SUCCEEDS, and the step that publishes the
-    // report is guarded by `if: steps.gate.outcome == 'failure'`. The counters were therefore
-    // written to a file nobody reads: a green run that compared a tenth of its sample and said
-    // so only where nothing was listening. Producing a diagnostic is not surfacing it. A gate
-    // whose verdict covers 10% of the evidence must not be able to return Pass, so this is an
-    // incompatibility, and the diagnostics survive it — `render_error_markdown` puts the two
-    // values on stdout, which is what the workflow captures as the report body, so the failure
-    // opens a drift issue that says exactly which knob to turn.
+    // `games_per_matchup` IS here, even though it changes how MANY seeds exist rather than
+    // what a seed means, so the samples that do pair really are comparable. Counting the
+    // unpaired remainder and Warning is not enough: a `Warn` leaves `any_fail` false, so the
+    // gate exits 0, so the nightly step SUCCEEDS, and the step that publishes the report is
+    // guarded by `if: steps.gate.outcome == 'failure'`. The counters would be written to a file
+    // nobody reads — a diagnostic written where nothing is listening is not a surfaced
+    // diagnostic. A verdict covering a tenth of the evidence must not be able to Pass, so this
+    // is an incompatibility, and the diagnostics survive it: `render_error_markdown` puts the
+    // two values on stdout, which is what the workflow captures as the report body, so the
+    // failure opens a drift issue that says exactly which knob to turn.
     //
     // The columns stay. A mismatch of this field is now refused, but two reports built at the
     // same `games_per_matchup` can still fail to pair — a crashed matchup, a filter change —
@@ -208,6 +249,22 @@ pub fn compare(
             baseline: baseline.games_per_matchup.to_string(),
             current: current.games_per_matchup.to_string(),
         });
+    }
+
+    // After the workload guards: incomparability is the more fundamental refusal, and a report
+    // that repeats a seed is malformed rather than incomparable. Both sides are checked from one
+    // array so neither can be forgotten.
+    for (side, report) in [
+        (ReportSide::Baseline, baseline),
+        (ReportSide::Current, current),
+    ] {
+        if let Some((matchup_id, seed)) = first_duplicate_seed(report) {
+            return Err(CompareError::DuplicateSeed {
+                side,
+                matchup_id: matchup_id.to_string(),
+                seed,
+            });
+        }
     }
 
     // BTreeMap for deterministic iteration order.
@@ -305,22 +362,16 @@ fn classify_row(
             let paired = paired_seed_shift(b, c);
             let avg_turn_delta = c.avg_turns - b.avg_turns;
 
-            // TIER ORDER IS LOAD-BEARING. THREE earlier drafts of this comment overclaimed what
-            // it buys — "no input that reaches Fail or Warn today can change verdict" (false:
-            // Warn escalates), "nothing with a flat draw axis changes verdict" (false once the
-            // status axis landed in the same commit), and clause 2 as previously written (false
-            // once the unpaired axis landed, because its precondition named only the axes that
-            // existed when it was written). Every one was caught by review running the claim
-            // through the compiled base. The failure mode is always identical: a precondition
-            // enumerated over today's axes, silently falsified by tomorrow's. So — stated to its
-            // exact edge, and explicitly scoped to the axes that exist NOW:
+            // TIER ORDER IS LOAD-BEARING. A precondition enumerated over today's axes is
+            // silently falsified by tomorrow's, so each clause below is stated to its exact edge
+            // and explicitly scoped to the axes that exist NOW:
             //
-            //   0. Every claim below presupposes two COMPARABLE reports. `compare` rejects a
-            //      mismatched `base_seed` or `difficulty` with `WorkloadMismatch` before any row
-            //      is classified, so such a pair now yields no verdict at all — INCLUDING pairs
-            //      that would previously have produced a Fail. That is intended, not a
-            //      regression: a verdict built by pairing seed numbers across two different
-            //      workloads was never meaningful, it merely looked like one.
+            //   0. Every claim below presupposes two COMPARABLE reports. `compare` rejects any
+            //      pair whose workload fields disagree, and any report that repeats a seed,
+            //      before a row is classified — so such a pair yields no verdict at all,
+            //      INCLUDING pairs that would otherwise have produced a Fail. That is intended:
+            //      a verdict built by pairing seed numbers across two different workloads was
+            //      never meaningful, it merely looked like one.
             //   1. Given comparable reports, nothing that reaches Fail today changes verdict. The
             //      W/L Fail arm is still first and its counters are byte-identical to before, so
             //      it wins every input it used to win.
@@ -337,8 +388,8 @@ fn classify_row(
             //      axis also wobbled insignificantly would reintroduce the same blindness one case
             //      narrower. Pinned by `draw_regression_escalates_an_insignificant_win_loss_warn`
             //      and `status_regression_escalates_an_insignificant_win_loss_warn` — one per
-            //      escalating arm, because a claim about an arm that no test exercises is how the
-            //      first two drafts of this comment stayed wrong.
+            //      escalating arm, because a claim about an arm that no test exercises is an
+            //      unpinned claim.
             //   4. A row that previously Passed with unmatched seeds now Warns. This is the
             //      false-green the unpaired arm exists to close: two reports sharing no seeds at
             //      all scored zero on every counter and passed. Pinned per direction —
@@ -545,9 +596,7 @@ fn paired_seed_shift(baseline: &MatchupResult, current: &MatchupResult) -> Paire
     let mut unpaired_baseline = 0;
 
     // Seeds present on both sides. Counting the intersection lets the current-side leftover
-    // be derived by subtraction instead of walked a second time, and it stays correct if a
-    // report ever repeats a seed (`current_by_seed` keeps one entry per seed, so deriving
-    // from `games.len()` alone would undercount).
+    // be derived by subtraction instead of walked a second time.
     let mut paired = 0usize;
 
     for baseline_game in &baseline.games {
@@ -585,9 +634,9 @@ fn paired_seed_shift(baseline: &MatchupResult, current: &MatchupResult) -> Paire
         .then(|| sign_test_mid_p_upper_tail(draw_flips, decisive_to_draw.max(draw_to_decisive)));
 
     // Current games never visited by the loop above, because pairing walks the baseline.
-    // `current_by_seed` is deduplicated by seed, so this is the count of distinct current
-    // seeds the baseline does not contain — saturating because a repeated baseline seed can
-    // push `paired` above the map's length without meaning anything went uncompared.
+    // `compare` refuses a report that repeats a seed, so `paired` cannot exceed the map's
+    // length and this subtraction is exact; `saturating_sub` keeps the function total for the
+    // unit tests that drive it on unvalidated input.
     let unpaired_current = current_by_seed.len().saturating_sub(paired);
 
     PairedSeedShift {
@@ -807,9 +856,7 @@ pub fn print_markdown(report: &CompareReport) {
 /// (`run.rs`, `print_markdown_table`), so on this path the file always has content and the
 /// workflow's empty-file abort is unreachable. What a stderr-only refusal actually produces is
 /// worse to read than an empty file: a red job whose issue body is a table of PASSing matchups
-/// and no statement of what failed. (An earlier draft of this comment asserted the empty-file
-/// story, which was false here — though it is true of `ai-perf-gate`, whose refusal path this
-/// commit fixes for exactly that reason.)
+/// and no statement of what failed.
 pub fn render_error_markdown(err: &CompareError) -> String {
     let remedy = match err {
         CompareError::WorkloadMismatch {
@@ -832,6 +879,18 @@ pub fn render_error_markdown(err: &CompareError) -> String {
              nothing else.\n\n\
              Until one of them is done this gate fails every run, by design: a verdict built \
              from a fraction of the sample is not a verdict."
+        ),
+        CompareError::DuplicateSeed {
+            side,
+            matchup_id,
+            seed,
+        } => format!(
+            "The {side} report lists seed `{seed}` more than once in matchup `{matchup_id}`. \
+             Pairing keys on the seed number, so a repeated seed has no single partner: one \
+             game would be compared twice and another never visited at all. Nothing was \
+             measured — this is not drift.\n\n\
+             Regenerate the report rather than editing it: `cargo ai-gate --refresh-baseline` \
+             for a baseline, a fresh gate run for a current report."
         ),
         CompareError::SchemaMismatch { .. } => "The baseline predates the current report format. \
              Re-record it with `cargo ai-gate --refresh-baseline`."
@@ -1291,10 +1350,9 @@ mod tests {
     /// The no-draw-shift control: with the draw counters equal, both draw guards (`>` and `!=`)
     /// are false and the chain falls through as it did before this change.
     ///
-    /// Scope, stated precisely because an earlier version of this doc overclaimed: the fixture is
-    /// an identity comparison, so ALL axes are flat, and it therefore pins only the draw guards'
-    /// inertness — not the full precondition of invariant 2, and not the tier order, which
-    /// `draw_regression_escalates_an_insignificant_win_loss_warn` pins.
+    /// Scope: the fixture is an identity comparison, so ALL axes are flat, and it therefore pins
+    /// only the draw guards' inertness — not the full precondition of invariant 2, and not the
+    /// tier order, which `draw_regression_escalates_an_insignificant_win_loss_warn` pins.
     #[test]
     fn compare_without_draw_shift_is_unaffected() {
         let rows: &[(u64, Option<u8>, u32)] = &[
@@ -1671,10 +1729,6 @@ mod tests {
     /// Only `unpaired_baseline` moves: every seed that pairs is UNCHANGED, so every other axis
     /// reads zero. Before this arm existed such a row scored zero on everything and returned
     /// Pass while half its samples went unexamined.
-    ///
-    /// (The two paragraphs that stood here were copied from
-    /// `markdown_cells_carry_their_own_column_values` and described that test's distinct-value
-    /// fixture, which this one does not have — every counter here is deliberately zero.)
     #[test]
     fn an_unmatched_baseline_sample_warns_instead_of_passing() {
         let before: &[(u64, Option<u8>, u32)] = &[
@@ -1835,12 +1889,10 @@ mod tests {
         assert_eq!(report.rows.len(), 1);
     }
 
-    /// A differing `games_per_matchup` is refused, and this test is the inversion of one that
-    /// asserted the opposite. The samples that pair really are comparable, which is why the
-    /// earlier version counted the remainder and Warned — but a Warn keeps `any_fail` false, the
-    /// gate exits 0, and the nightly publishes its report only on a non-zero exit. The counters
-    /// existed and were never read. A verdict drawn from a tenth of the sample must not be able
-    /// to come back Pass.
+    /// A differing `games_per_matchup` is refused. The samples that pair are comparable, but a
+    /// `Warn` keeps `any_fail` false, the gate exits 0, and the nightly publishes only on a
+    /// non-zero exit — so a verdict drawn from a tenth of the sample must not be able to come
+    /// back Pass.
     ///
     /// The two assertions below are the pair that makes this a fix rather than a trade: the row
     /// count pins that no verdict is produced, and the body pins that the diagnostics survive.
@@ -1890,6 +1942,90 @@ mod tests {
         );
     }
 
+    /// A repeated seed has no single partner. Pairing walks the baseline and looks each seed up
+    /// in a map keyed by seed, so the duplicate's second game re-pairs against the same current
+    /// game while a real current game is never visited — and `unpaired_current`, the counter that
+    /// would have said so, reads zero.
+    #[test]
+    fn a_repeated_seed_is_refused_rather_than_silently_dropping_current_games() {
+        let baseline = mk_report(vec![mk_result_from_games(
+            "dup",
+            &[(1, Some(0), 10), (1, Some(0), 10)],
+        )]);
+        let current = mk_report(vec![mk_result_from_games(
+            "dup",
+            &[(1, Some(0), 10), (2, Some(1), 10)],
+        )]);
+
+        // PREMISE: every workload field agrees, so the refusal can only come from the seed.
+        assert_eq!(baseline.base_seed, current.base_seed);
+        assert_eq!(baseline.difficulty, current.difficulty);
+        assert_eq!(baseline.games_per_matchup, current.games_per_matchup);
+
+        let err = compare(&baseline, &current, &CompareOptions).expect_err("must refuse");
+        assert!(
+            matches!(
+                &err,
+                CompareError::DuplicateSeed {
+                    side: ReportSide::Baseline,
+                    matchup_id,
+                    seed,
+                } if matchup_id == "dup" && *seed == 1
+            ),
+            "unexpected error: {err:?}"
+        );
+
+        // The refusal reaches the reader with the coordinates it needs to find the bad report.
+        let body = render_error_markdown(&err);
+        assert!(body.contains("baseline"), "{body}");
+        assert!(body.contains("dup"), "{body}");
+        assert!(body.contains("--refresh-baseline"), "{body}");
+    }
+
+    /// The other end of the class: the same malformedness on the current side.
+    #[test]
+    fn a_repeated_seed_in_the_current_report_is_refused_too() {
+        let baseline = mk_report(vec![mk_result_from_games(
+            "dup",
+            &[(1, Some(0), 10), (2, Some(1), 10)],
+        )]);
+        let current = mk_report(vec![mk_result_from_games(
+            "dup",
+            &[(1, Some(0), 10), (1, Some(0), 10)],
+        )]);
+
+        let err = compare(&baseline, &current, &CompareOptions).expect_err("must refuse");
+        assert!(
+            matches!(
+                &err,
+                CompareError::DuplicateSeed {
+                    side: ReportSide::Current,
+                    ..
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// The adversarial admitted member. A longer current run with DISTINCT seeds is the
+    /// legitimate unpaired-remainder case, and the guard must not turn it into a refusal — the
+    /// counter it pins is the one a duplicate corrupts.
+    #[test]
+    fn a_longer_current_run_with_distinct_seeds_still_compares() {
+        let baseline = mk_report(vec![mk_result_from_games(
+            "n",
+            &[(1, Some(0), 10), (2, Some(1), 10)],
+        )]);
+        let current = mk_report(vec![mk_result_from_games(
+            "n",
+            &[(1, Some(0), 10), (2, Some(1), 10), (3, Some(0), 10)],
+        )]);
+
+        let report = compare(&baseline, &current, &CompareOptions).expect("distinct seeds pair");
+        assert_eq!(report.rows[0].unpaired_current, 1);
+        assert_eq!(report.rows[0].unpaired_baseline, 0);
+    }
+
     /// Every refusal variant renders a body, including the two `compare` itself cannot produce.
     ///
     /// `Io` and `Parse` are reachable only through `load_report`, which `bin/ai_gate.rs` calls
@@ -1914,7 +2050,13 @@ mod tests {
             current: "100".to_string(),
         };
 
-        for err in [&io, &parse, &schema, &workload] {
+        let duplicate = CompareError::DuplicateSeed {
+            side: ReportSide::Baseline,
+            matchup_id: "red-mirror".to_string(),
+            seed: 7,
+        };
+
+        for err in [&io, &parse, &schema, &workload, &duplicate] {
             let body = render_error_markdown(err);
             assert!(!body.trim().is_empty(), "empty body for {err:?}");
             assert!(
@@ -2021,10 +2163,8 @@ mod tests {
             (6, Some(0), 10),
             (7, Some(0), 10),
             // p0 win, and still `Some(_) → None` in `after`, so this separates the two win-rate
-            // cells WITHOUT touching any of the four counters. Earlier this test made the rates
-            // differ by giving `after` an extra seed absent from `before` and leaning on
-            // `paired_seed_shift` skipping it in silence. That skip is now counted and warned on,
-            // so the fixture is re-derived to stand on matched seed sets instead of on a hole.
+            // cells WITHOUT touching any of the four counters. Both sides carry the same seed
+            // set, so the separation cannot come from an unpaired-seed skip.
             (8, Some(0), 10),
             (9, Some(1), 10),
             (10, None, 10),
@@ -2059,9 +2199,8 @@ mod tests {
             ),
             (2, 3, 4, 1)
         );
-        // PREMISE: the two win-rate cells DIFFER. They rendered identical `45%` in the first
-        // version of this test, so swapping them survived — the premise has to be asserted, not
-        // assumed, or "no pair of cells can be transposed" is false for the pair nobody checked.
+        // PREMISE: the two win-rate cells DIFFER. Identical cells would let a transposition
+        // survive, so the premise is asserted rather than assumed.
         assert_ne!(
             winrate(row.baseline.as_ref().unwrap()),
             winrate(row.current.as_ref().unwrap())
@@ -2281,10 +2420,7 @@ mod tests {
         // every one of them survived a fully green suite until review measured it. A New row has no
         // baseline to compare against; a Removed row has no current report at all.
         //
-        // All six sites are listed deliberately. The first pass at this pinned five and missed
-        // `draw sign p` — which is the fallback the real gate renders on every row today, since a
-        // matchup with a flat draw axis has no statistic to report. Sweeping a defect by recipe
-        // means sweeping ALL of its sites; a partial sweep reads as complete.
+        // Every `—` fallback site is asserted; a partial sweep reads as complete.
         assert_eq!(cell(&rendered, "brand-new", "baseline p0%"), "—");
         assert_eq!(cell(&rendered, "brand-new", "sign p"), "—");
         assert_eq!(cell(&rendered, "brand-new", "draw sign p"), "—");

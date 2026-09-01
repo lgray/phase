@@ -14,7 +14,14 @@
 //! `emit_gate_verdict` that needs no card database and plays no games — it reads two report
 //! files and prints a verdict. That makes this a millisecond test instead of a full suite run,
 //! and it exercises the same shared emitter `ai-gate` and `ai-perf-gate` end in.
+//!
+//! The same subject widens to the CI contracts this crate's tests depend on: the hand-maintained
+//! lists in `.github/workflows/` that must agree with what the code does, which nothing else
+//! checks.
 
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use phase_ai::duel_suite::run::{GameResult, MatchupResult, SuiteReport, SuiteStatus};
@@ -22,11 +29,10 @@ use phase_ai::duel_suite::Expected;
 
 /// Build the fixture from the real types rather than hand-written JSON.
 ///
-/// The first draft of this test hand-wrote the report and got `Expected`'s encoding wrong — it
-/// is an internally tagged enum — so both arms failed on a parse error instead of on the
-/// contract under test. Serialising the actual structs cannot drift from the schema: a field
-/// added to `SuiteReport` breaks compilation here rather than silently producing a fixture the
-/// binary rejects, and the parse is exercised by the binary, not asserted by the test.
+/// Serialising the actual structs cannot drift from the schema (`Expected` is internally tagged,
+/// which a hand-written fixture gets wrong silently): a field added to `SuiteReport` breaks
+/// compilation here rather than producing a fixture the binary rejects on a parse error instead
+/// of on the contract under test, and the parse is exercised by the binary, not asserted here.
 ///
 /// `games_per_matchup` is the workload knob; everything else is held equal so the refusal in
 /// the first test can only come from that field.
@@ -199,4 +205,319 @@ fn a_comparable_pair_exits_zero_and_writes_a_table() {
     );
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Repository root, from the crate this test compiles in.
+///
+/// `CARGO_MANIFEST_DIR` points at source the shard's checkout provides, unlike `CARGO_BIN_EXE_*`,
+/// which points at a build artifact the archive does not ship.
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Every `.rs` file under `dir`, recursively. Callers pass directories they have confirmed exist.
+fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read a directory that is_dir() reported") {
+        let path = entry.expect("read directory entry").path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name == "target") {
+                continue;
+            }
+            rs_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Binaries named by a literal `CARGO_BIN_EXE_<name>` under `crates/*/tests` and `crates/*/benches`.
+///
+/// Cargo sets that variable only when building an integration test or a benchmark, so an
+/// occurrence elsewhere would not compile. This is a LOWER BOUND on "every binary a test spawns":
+/// a name assembled through `concat!` or supplied by a build script evades a textual scan.
+fn bin_exe_consumers(root: &Path) -> BTreeSet<String> {
+    const PREFIX: &str = "CARGO_BIN_EXE_";
+    let mut files = Vec::new();
+    // The one directory whose absence means the scanner is aimed wrong; a missing per-crate
+    // `tests`/`benches` is the normal case (most crates have neither).
+    for entry in fs::read_dir(root.join("crates")).expect("read crates/") {
+        let crate_dir = entry.expect("read crates/ entry").path();
+        for sub in ["tests", "benches"] {
+            let dir = crate_dir.join(sub);
+            if dir.is_dir() {
+                rs_files(&dir, &mut files);
+            }
+        }
+    }
+    let mut names = BTreeSet::new();
+    for path in files {
+        let text = fs::read_to_string(&path).expect("read integration-test source");
+        for (idx, _) in text.match_indices(PREFIX) {
+            let name = binary_name(&text[idx + PREFIX.len()..]);
+            if !name.is_empty() {
+                names.insert(name);
+            }
+        }
+    }
+    names
+}
+
+/// The leading crate-name-shaped token of `rest`.
+fn binary_name(rest: &str) -> String {
+    rest.chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
+/// `target/debug/<name>` occurrences on the non-comment `ci.yml` lines `keep` selects.
+///
+/// Shipping a binary to a shard is a CONJUNCTION over two independently editable sites: the
+/// upload `path:` list carries the file, and the `chmod +x` line restores the executable bit
+/// Actions artifacts drop. Neither implies the other, so the two are scanned separately and
+/// never unioned. `match_indices`, not `find`: the `chmod` line names several binaries.
+fn debug_binaries(ci_yml: &str, keep: impl Fn(&str) -> bool) -> BTreeSet<String> {
+    const PREFIX: &str = "target/debug/";
+    let mut names = BTreeSet::new();
+    for line in ci_yml
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#') && keep(line))
+    {
+        for (idx, _) in line.match_indices(PREFIX) {
+            let name = binary_name(&line[idx + PREFIX.len()..]);
+            if !name.is_empty() {
+                names.insert(name);
+            }
+        }
+    }
+    names
+}
+
+fn uploaded_binaries(ci_yml: &str) -> BTreeSet<String> {
+    debug_binaries(ci_yml, |line| !line.contains("chmod"))
+}
+
+fn chmod_binaries(ci_yml: &str) -> BTreeSet<String> {
+    debug_binaries(ci_yml, |line| line.contains("chmod"))
+}
+
+fn unshipped(consumers: &BTreeSet<String>, shipped: &BTreeSet<String>) -> Vec<String> {
+    consumers.difference(shipped).cloned().collect()
+}
+
+/// The sharded CI jobs replay a nextest archive and never invoke Cargo, so every binary an
+/// integration test spawns has to be hand-shipped to them by `ci.yml`. A name that reaches
+/// neither list dies at `Command::spawn`, in the shard, with the rest of the suite green.
+#[test]
+fn every_binary_an_integration_test_spawns_is_shipped_to_the_test_shards() {
+    let root = repo_root();
+    let consumers = bin_exe_consumers(&root);
+    assert!(
+        !consumers.is_empty(),
+        "no CARGO_BIN_EXE_ consumer found under crates/*/tests — the scanner or the tree moved"
+    );
+
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read ci.yml");
+    let uploaded = uploaded_binaries(&ci);
+    let chmodded = chmod_binaries(&ci);
+    assert!(
+        !uploaded.is_empty(),
+        "no uploaded binary found in ci.yml — the scanner or the upload step moved"
+    );
+    assert!(
+        !chmodded.is_empty(),
+        "no chmod'd binary found in ci.yml — the scanner or the chmod step moved"
+    );
+
+    assert!(
+        unshipped(&consumers, &uploaded).is_empty(),
+        "{:?} are spawned by an integration test but are not in ci.yml's `Upload test runtime \
+         binaries` path: list. The shards replay an archive and never invoke cargo, so a \
+         CARGO_BIN_EXE_ path that was not uploaded resolves to a file that does not exist.",
+        unshipped(&consumers, &uploaded)
+    );
+    assert!(
+        unshipped(&consumers, &chmodded).is_empty(),
+        "{:?} are spawned by an integration test but are not on ci.yml's `chmod +x` line. \
+         Actions artifacts preserve file contents but not executable bits, so an \
+         uploaded-but-not-chmod'd binary reaches the shard and fails at spawn with \
+         PermissionDenied.",
+        unshipped(&consumers, &chmodded)
+    );
+
+    // Refused end, withheld from ONE site: a name absent from either list alone must be named
+    // by that leg and by no other. An implementation that unioned the two sites passes the
+    // assertions above while shipping a PermissionDenied.
+    let victim = consumers.iter().next().expect("non-empty above").clone();
+    let mut degraded = chmodded.clone();
+    degraded.remove(&victim);
+    assert_eq!(unshipped(&consumers, &degraded), vec![victim.clone()]);
+    assert!(unshipped(&consumers, &uploaded).is_empty());
+
+    // Admitted end: containment, not equality — a shipped binary nothing spawns stays admitted.
+    let spare = "a-binary-no-integration-test-spawns".to_string();
+    let mut wider_uploaded = uploaded.clone();
+    wider_uploaded.insert(spare.clone());
+    let mut wider_chmod = chmodded.clone();
+    wider_chmod.insert(spare);
+    assert!(unshipped(&consumers, &wider_uploaded).is_empty());
+    assert!(unshipped(&consumers, &wider_chmod).is_empty());
+}
+
+/// The two scanners must read DIFFERENT lines. The real lists are equal, so every set-level
+/// assertion above survives a pair that aliased — this fixture is what does not.
+#[test]
+fn the_upload_and_chmod_scanners_partition_the_file() {
+    const FIXTURE: &str = "  path: target/debug/alpha\n  run: chmod +x target/debug/beta\n";
+
+    assert_eq!(
+        uploaded_binaries(FIXTURE),
+        BTreeSet::from(["alpha".to_string()])
+    );
+    assert_eq!(
+        chmod_binaries(FIXTURE),
+        BTreeSet::from(["beta".to_string()])
+    );
+}
+
+/// Every `cargo ai-gate` invocation written down in `.github/workflows/`, as `(file, tokens)`.
+///
+/// `cargo ai-perf-gate` is a different binary with its own baseline, so the match requires a
+/// non-`-` boundary after the name.
+fn gate_invocations(root: &Path) -> Vec<(String, Vec<String>)> {
+    const NEEDLE: &str = "cargo ai-gate";
+    let mut out = Vec::new();
+    // A missing directory means the scanner is aimed wrong; it must not yield an empty pass.
+    for entry in fs::read_dir(root.join(".github/workflows")).expect("read .github/workflows") {
+        let path = entry.expect("read workflow entry").path();
+        if !matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("yml" | "yaml")
+        ) {
+            continue;
+        }
+        let file = path
+            .file_name()
+            .expect("a file with an extension has a name")
+            .to_string_lossy()
+            .into_owned();
+        let text = fs::read_to_string(&path).expect("read workflow");
+        for line in text.lines() {
+            let invokes_gate = line
+                .match_indices(NEEDLE)
+                .any(|(idx, _)| !line[idx + NEEDLE.len()..].starts_with('-'));
+            if invokes_gate {
+                out.push((
+                    file.clone(),
+                    line.split_whitespace().map(str::to_string).collect(),
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// The token after `name`, when `name` is present.
+fn flag<'a>(tokens: &'a [String], name: &str) -> Option<&'a str> {
+    let idx = tokens.iter().position(|token| token == name)?;
+    tokens.get(idx + 1).map(String::as_str)
+}
+
+/// Each invocation's disagreements with the baseline, one string per (invocation, field).
+///
+/// A field is compared case-insensitively because `AiDifficulty::from_label` folds case — and a
+/// MISSING field is a finding too: an unspelled value comes from a `bin/ai_gate.rs` default, so
+/// a change there would break the job at runtime with every test still green.
+fn findings(invocations: &[(String, Vec<String>)], baseline: &SuiteReport) -> Vec<String> {
+    let expected = [
+        ("--games", baseline.games_per_matchup.to_string()),
+        ("--seed", baseline.base_seed.to_string()),
+        ("--difficulty", baseline.difficulty.clone()),
+    ];
+    let mut out = Vec::new();
+    for (file, tokens) in invocations {
+        for (name, want) in &expected {
+            match flag(tokens, name) {
+                None => out.push(format!(
+                    "{file}: `{name}` is not spelled out; its value comes from a binary default \
+                     nothing checks. Add `{name} {want}`."
+                )),
+                Some(got) if !got.eq_ignore_ascii_case(want) => out.push(format!(
+                    "{file}: `{name} {got}`, but the baseline was recorded at `{want}`. The \
+                     comparator refuses a pair whose workloads disagree, so this invocation can \
+                     reach no verdict. Set `{name} {want}`."
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+    out
+}
+
+/// The gate's workload must be written down where it is invoked, at the value the baseline was
+/// recorded at. Anything else makes the job incapable of a verdict — the comparator refuses the
+/// pair — and an unspelled field hides the dependency on a binary constant instead.
+#[test]
+fn every_workflow_gate_invocation_spells_the_baseline_workload() {
+    let root = repo_root();
+    let invocations = gate_invocations(&root);
+    assert!(
+        !invocations.is_empty(),
+        "no `cargo ai-gate` invocation found under .github/workflows — the scanner or the \
+         workflows moved"
+    );
+
+    for (file, tokens) in &invocations {
+        assert!(
+            flag(tokens, "--baseline").is_none(),
+            "{file} names its own baseline; extend this check to resolve a baseline per \
+             invocation before comparing any of them against the default one"
+        );
+    }
+
+    let baseline = phase_ai::duel_suite::compare::load_report(
+        &root.join("crates/phase-ai/baselines/suite-baseline.json"),
+    )
+    .expect("load the committed baseline through the production loader");
+
+    let live = findings(&invocations, &baseline);
+    assert!(
+        live.is_empty(),
+        "workflow gate invocations disagree with the baseline:\n{}",
+        live.join("\n")
+    );
+
+    // Two invocations, one matching and one divergent, driven through the same call: the
+    // findings must name the divergent one and only it. A file-level verdict fails here, and an
+    // instrument that cannot produce a finding at all fails here too.
+    let spell = |games: usize| {
+        format!(
+            "cargo ai-gate --games {games} --seed {} --difficulty {}",
+            baseline.base_seed,
+            baseline.difficulty.to_lowercase()
+        )
+    };
+    let tokens = |line: String| line.split_whitespace().map(str::to_string).collect();
+    let control = findings(
+        &[
+            (
+                "matching.yml".to_string(),
+                tokens(spell(baseline.games_per_matchup)),
+            ),
+            (
+                "divergent.yml".to_string(),
+                tokens(spell(baseline.games_per_matchup + 90)),
+            ),
+        ],
+        &baseline,
+    );
+    let named: BTreeSet<&str> = control
+        .iter()
+        .map(|finding| finding.split(':').next().expect("a finding names its file"))
+        .collect();
+    assert_eq!(
+        named,
+        BTreeSet::from(["divergent.yml"]),
+        "control must name exactly the divergent invocation; findings:\n{}",
+        control.join("\n")
+    );
 }

@@ -451,9 +451,9 @@ pub fn run_perf_suite(
 /// real trajectory — this gate compares aggregate COST LEVELS, not a replayed game.
 ///
 /// Panics (internal invariant, not a runtime input path) if `samples` is empty or
-/// the samples disagree on schema_version / base_seed / action_cap — every sample
-/// is produced by the same binary at the same const workload, so disagreement is a
-/// bug. Provenance (git_sha, card_data_hash) is left None for the caller to stamp.
+/// the samples disagree on any workload field — every sample is produced by the
+/// same binary at the same const workload, so disagreement is a bug. Provenance
+/// (git_sha, card_data_hash) is left None for the caller to stamp.
 pub fn median_report(samples: &[PerfReport]) -> PerfReport {
     assert!(
         !samples.is_empty(),
@@ -467,6 +467,9 @@ pub fn median_report(samples: &[PerfReport]) -> PerfReport {
         );
         assert_eq!(s.base_seed, first.base_seed, "sample seed mismatch");
         assert_eq!(s.action_cap, first.action_cap, "sample action_cap mismatch");
+        // Order-sensitive: samples come from the same const `default_scenarios()`, so this is
+        // an internal invariant rather than a runtime input path.
+        assert_eq!(s.scenarios, first.scenarios, "sample scenario mismatch");
     }
     // All samples share an identical key set (from_snapshot is a total destructure).
     let mut counters = BTreeMap::new();
@@ -554,8 +557,8 @@ impl PerfCompareReport {
 }
 
 /// Comparison error. Parallels the win-rate gate's `compare::CompareError` but
-/// is defined locally (that type lives in the out-of-bounds `compare.rs` and
-/// lacks the workload-mismatch variant this gate needs).
+/// is defined locally: the two gates carry different payloads and render their
+/// refusals separately.
 #[derive(Debug)]
 pub enum PerfCompareError {
     Io(std::io::Error),
@@ -565,8 +568,8 @@ pub enum PerfCompareError {
         baseline: u32,
         current: u32,
     },
-    /// The workload (seed or action_cap) differs — the counter payloads describe
-    /// different runs, so any comparison would be a false PASS/FAIL (exit 2).
+    /// A workload field differs — the counter payloads describe different runs, so
+    /// any comparison would be a false PASS/FAIL (exit 2).
     WorkloadMismatch {
         field: &'static str,
         baseline: String,
@@ -617,6 +620,13 @@ pub fn load_report(path: &Path) -> Result<PerfReport, PerfCompareError> {
     Ok(report)
 }
 
+/// The scenario list as a sorted multiset, for comparison.
+fn sorted_scenarios(scenarios: &[String]) -> Vec<&str> {
+    let mut sorted: Vec<&str> = scenarios.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    sorted
+}
+
 /// FAIL threshold for a counter: `baseline * ratio + floor`, rounded via f64
 /// (the counters are far below f64's 2^53 exact-integer ceiling).
 fn fail_threshold(baseline: u64) -> u64 {
@@ -629,8 +639,8 @@ fn counter_fails(baseline: u64, current: u64) -> bool {
     (current as f64) > (baseline as f64) * PERF_TOLERANCE_RATIO + PERF_ABSOLUTE_FLOOR as f64
 }
 
-/// Compare a current report against a baseline. Guards run in order: (1) schema
-/// version, (2) workload (seed/action_cap). Only then are counters classified
+/// Compare a current report against a baseline. Guards run in order: schema
+/// version first, then every workload field. Only then are counters classified
 /// per key across the union of baseline and current keys.
 pub fn compare(
     baseline: &PerfReport,
@@ -663,6 +673,20 @@ pub fn compare(
             field: "sample_count",
             baseline: baseline.sample_count.to_string(),
             current: current.sample_count.to_string(),
+        });
+    }
+
+    // Counters are summed field-wise across scenarios, so the aggregate does not say which
+    // scenarios produced it. The sum is order-invariant, which makes a reorder the same
+    // workload — but a repeat is not, because that scenario's cost is counted twice. Hence a
+    // sorted multiset, and the message renders the same sorted form that was compared.
+    let baseline_scenarios = sorted_scenarios(&baseline.scenarios);
+    let current_scenarios = sorted_scenarios(&current.scenarios);
+    if baseline_scenarios != current_scenarios {
+        return Err(PerfCompareError::WorkloadMismatch {
+            field: "scenarios",
+            baseline: baseline_scenarios.join(", "),
+            current: current_scenarios.join(", "),
         });
     }
 
@@ -1404,6 +1428,71 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // Matrix 15: the counter aggregate does not say which scenarios produced it, so a
+    // differing scenario list is a differing workload. Three arms, three wrong
+    // implementations: `Vec` equality fails the reorder arm, `HashSet` fails the repeat arm,
+    // no guard at all fails the length arm.
+    #[test]
+    fn a_different_scenario_list_is_refused_rather_than_compared() {
+        let mut baseline = mk_report(&[("c", 1)]);
+        baseline.scenarios = vec!["a".to_string(), "b".to_string()];
+        let mut current = mk_report(&[("c", 1)]);
+        current.scenarios = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+        let err = compare(&baseline, &current).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PerfCompareError::WorkloadMismatch {
+                    field: "scenarios",
+                    ..
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_reordered_scenario_list_still_compares() {
+        let mut baseline = mk_report(&[("c", 1)]);
+        baseline.scenarios = vec!["a".to_string(), "b".to_string()];
+        let mut current = mk_report(&[("c", 1)]);
+        current.scenarios = vec!["b".to_string(), "a".to_string()];
+
+        compare(&baseline, &current).expect("a field-wise sum is order-invariant");
+    }
+
+    #[test]
+    fn a_repeated_scenario_is_refused() {
+        let mut baseline = mk_report(&[("c", 1)]);
+        baseline.scenarios = vec!["a".to_string(), "a".to_string(), "b".to_string()];
+        let mut current = mk_report(&[("c", 1)]);
+        current.scenarios = vec!["a".to_string(), "b".to_string()];
+
+        let err = compare(&baseline, &current).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PerfCompareError::WorkloadMismatch {
+                    field: "scenarios",
+                    ..
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    // Matrix 13 (hostile): `scenarios` is the member the sample-agreement loop omitted, so a
+    // median over mixed scenario lists was stamped with the first sample's and read as clean.
+    #[test]
+    #[should_panic(expected = "sample scenario mismatch")]
+    fn median_report_rejects_samples_that_disagree_on_scenarios() {
+        let mut odd = mk_report(&[("c", 1)]);
+        odd.scenarios = vec!["a-scenario-the-other-sample-did-not-run".to_string()];
+        let samples = [mk_report(&[("c", 1)]), odd];
+        let _ = median_report(&samples);
     }
 
     // Matrix M-even: median totality for even K — deterministic upper-middle at
