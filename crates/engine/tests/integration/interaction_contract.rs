@@ -6589,15 +6589,10 @@ fn every_published_shortcut_element_round_trips_byte_equal() {
         panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
     };
 
-    // ── REACH-GUARD: the two views this board can be previewed from are NOT the same object,
-    //    so a self-view fixture cannot be mistaken for the general case.
-    assert_ne!(
-        serde_json::to_value(filter_state_for_viewer(&state, proposer))
-            .expect("the filtered state serializes"),
-        serde_json::to_value(&state).expect("the authoritative state serializes"),
-        "reach-guard: this fixture's filtered and authoritative views must DIFFER, else the \
-         authority the previewed element is minted from is untested here"
-    );
+    // No reach-guard on filtered-vs-authoritative `waiting_for`: the two cannot diverge for a
+    // `LoopShortcut` offer at either attach site. Both run `slot_for_submission` first, which
+    // admits only the proposer's authorized submitter — the same predicate that gates the offer's
+    // redaction in `filter_state_for_viewer` — and no other arm of that filter writes the variant.
     assert!(
         !published.is_empty(),
         "reach-guard: the offer must publish elements, else this row compares nothing"

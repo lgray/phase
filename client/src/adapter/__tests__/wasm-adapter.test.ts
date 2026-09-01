@@ -1078,27 +1078,27 @@ describe("releaseHostSession", () => {
   });
 });
 
+const request = {
+  requestId: "req-1" as InteractionPreviewRequest["requestId"],
+  interactionId: "int-1" as InteractionPreviewRequest["interactionId"],
+  response: { type: "shortcut", data: { decision: { type: "acceptSuggested" }, pins: [] } },
+} as InteractionPreviewRequest;
+
+const answer = {
+  requestId: request.requestId,
+  interactionId: request.interactionId,
+  status: { type: "confirmable" },
+  progress: { selected: 1, minimum: 1, maximum: 1, aggregate: null, confirmable: true },
+  outcome: "advanced",
+  summaries: [],
+  shortcutPreview: {
+    count: 4,
+    entries: [{ family: "life", player: 2, amount: -8 }],
+    allocation: [{ choiceId: "int-1.k0", amount: 3 }, { choiceId: "int-1.k1", amount: 1 }],
+  },
+} as unknown as InteractionPreview;
+
 describe("WasmAdapter.previewInteraction", () => {
-  const request = {
-    requestId: "req-1" as InteractionPreviewRequest["requestId"],
-    interactionId: "int-1" as InteractionPreviewRequest["interactionId"],
-    response: { type: "shortcut", data: { decision: { type: "acceptSuggested" }, pins: [] } },
-  } as InteractionPreviewRequest;
-
-  const answer = {
-    requestId: request.requestId,
-    interactionId: request.interactionId,
-    status: { type: "confirmable" },
-    progress: { selected: 1, minimum: 1, maximum: 1, aggregate: null, confirmable: true },
-    outcome: "advanced",
-    summaries: [],
-    shortcutPreview: {
-      count: 4,
-      entries: [{ family: "life", player: 2, amount: -8 }],
-      allocation: [{ choiceId: "int-1.k0", amount: 3 }, { choiceId: "int-1.k1", amount: 1 }],
-    },
-  } as unknown as InteractionPreview;
-
   beforeEach(() => {
     vi.clearAllMocks();
     mockWorkerClient.previewInteraction.mockResolvedValue(answer);
@@ -1316,5 +1316,87 @@ describe("worker message lockstep", () => {
     // landed before it asserts what it produced.
     expect(client !== clientSource || worker !== workerSource).toBe(true);
     expect(isGreen(lockstepVerdict(client, worker))).toBe(false);
+  });
+});
+
+// ── The preview envelope's FIELD names, both ends. ───────────────────────────────────────────
+//
+// `request()` takes a `Record<string, unknown>`, so nothing relates the keys `EngineWorkerClient`
+// posts to the ones `engine-worker.ts` reads off `msg`. The row above compares only the `type`
+// literal. This one runs the REAL client method against a stubbed `Worker` and compares the keys
+// it actually posts against the reads that case performs, taken from the worker module as text.
+// It executes the client body only; the worker's own body still has no test.
+
+/** The distinct `msg.<field>` names one dispatch case reads. */
+function caseFieldReads(workerSource: string, type: string): string[] {
+  const body = dispatchSwitchBody(workerSource);
+  if (body === null) return [];
+  const at = body.indexOf(`case "${type}":`);
+  if (at < 0) return [];
+  let depth = 0;
+  for (let i = body.indexOf("{", at); i < body.length; i++) {
+    if (body[i] === "{") depth++;
+    else if (body[i] === "}" && --depth === 0) {
+      const reads = body.slice(at, i).matchAll(/\bmsg\.([A-Za-z0-9_]+)/g);
+      return [...new Set(Array.from(reads, (m) => m[1]))];
+    }
+  }
+  return [];
+}
+
+/** Captures what the client posts and lets a test reply, like the worker-client suite's stub. */
+class StubWorker {
+  static last: StubWorker | undefined;
+  onmessage: ((e: MessageEvent) => void) | null = null;
+  onerror: ((e: ErrorEvent) => void) | null = null;
+  readonly posted: Array<Record<string, unknown>> = [];
+
+  constructor() {
+    StubWorker.last = this;
+  }
+
+  postMessage(msg: Record<string, unknown>): void {
+    this.posted.push(msg);
+  }
+
+  terminate(): void {}
+
+  replyResult(id: number, data: unknown): void {
+    this.onmessage?.({ data: { type: "result", id, data } } as MessageEvent);
+  }
+}
+
+describe("worker preview envelope", () => {
+  const workerSource = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "..", "engine-worker.ts"),
+    "utf8",
+  );
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts exactly the fields the worker's previewInteraction case reads", async () => {
+    vi.stubGlobal("Worker", StubWorker);
+    const { EngineWorkerClient: RealClient } = await vi.importActual<
+      typeof import("../engine-worker-client")
+    >("../engine-worker-client");
+    const client = new RealClient();
+    const worker = StubWorker.last!;
+
+    const pending = client.previewInteraction(1, request);
+    const posted = worker.posted[0];
+
+    // Renaming a field on either side moves exactly one of these two sets.
+    expect(new Set(Object.keys(posted))).toEqual(
+      new Set(["type", ...caseFieldReads(workerSource, "previewInteraction")]),
+    );
+    expect(posted.actor).toBe(1);
+    expect(posted.request).toEqual(request);
+
+    worker.replyResult(posted.id as number, answer);
+
+    await expect(pending).resolves.toEqual(answer);
+    client.dispose();
   });
 });

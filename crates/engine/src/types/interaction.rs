@@ -1126,11 +1126,17 @@ pub struct InteractionShortcutPreview {
     /// It is not a magnitude claim about any axis.
     ///
     /// The `choice_id`s are the offer's own published candidate ids, taken from the first
-    /// `Targets` point in published order; the amounts are the canonical even split of
-    /// `count`, remainder on the earliest ids, so they sum to `count` exactly. Empty exactly
-    /// when THAT FIRST point holds no candidate. A later `Targets` point holding candidates
-    /// does not fill it: the domain is the first point or nothing, because silently moving it
-    /// to a second point would state the split over choices the reader cannot identify.
+    /// `Targets` point in published order. A later `Targets` point holding candidates does not
+    /// fill that domain: it is the first point or nothing, because silently moving it to a
+    /// second point would state the split over choices the reader cannot identify.
+    ///
+    /// The amounts come from whichever producer minted the element. In the offer's published list
+    /// (`loop_shortcut_preview`) they are the canonical even split of `count`, remainder on the
+    /// earliest ids, empty exactly when that first point holds no candidate. In a preview of a
+    /// player's own declaration (`declared_shortcut_preview`) they are the amounts that player
+    /// authored — positive parts summing to `count` over a duplicate-free subset of those ids,
+    /// enforced by the declaration ingress rather than by this type — and never empty: that
+    /// producer states no element at all rather than one carrying an empty split.
     ///
     /// CR 704.5a: `entries` follow this allocation ONLY when the period's life map names
     /// exactly one losing seat that this allocation itself announces and the slot's announced
