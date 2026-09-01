@@ -35,6 +35,40 @@ const viewerInteractionWithProducedMana = {
   availability: { type: "inputRequired" },
 } as never;
 
+/**
+ * An allocation whose segments are UNEQUAL and whose `choice_id` order is NOT
+ * the candidate publication order, so a sort or a canonicalisation anywhere on
+ * the wire path is caught rather than coinciding with the input.
+ */
+export const HOSTILE_PREVIEW_REQUEST = {
+  requestId: "preview-req-1",
+  interactionId: "interaction-1",
+  response: {
+    type: "shortcut",
+    data: {
+      decision: { type: "fixed", data: { iterations: 6 } },
+      pins: [{
+        group: 0,
+        choiceIds: ["choice-c", "choice-a", "choice-b"],
+        amounts: [
+          { choiceId: "choice-c", amount: 3 },
+          { choiceId: "choice-a", amount: 1 },
+          { choiceId: "choice-b", amount: 2 },
+        ],
+      }],
+    },
+  },
+} as never;
+
+const PREVIEW_ANSWER = {
+  requestId: "preview-req-1",
+  interactionId: "interaction-1",
+  status: { type: "confirmable" },
+  progress: { selected: 3, minimum: 1, maximum: 3, aggregate: 6, confirmable: true },
+  outcome: "advanced",
+  summaries: ["confirmAvailable", "progress"],
+} as never;
+
 describe("encodeWireMessage / decodeWireMessage", () => {
   it("pins the P2P wire protocol to v43", () => {
     expect(WIRE_PROTOCOL_VERSION).toBe(43);
@@ -135,6 +169,20 @@ describe("encodeWireMessage / decodeWireMessage", () => {
       type: "preview_mana_payment",
       requestId: 4,
       action: { type: "PassPriority" },
+    },
+    {
+      type: "preview_interaction",
+      request: HOSTILE_PREVIEW_REQUEST,
+    },
+    {
+      type: "interaction_preview",
+      requestId: "preview-req-1",
+      answer: { type: "preview", preview: PREVIEW_ANSWER },
+    },
+    {
+      type: "interaction_preview",
+      requestId: "preview-req-1",
+      answer: { type: "failed", message: "Game paused" },
     },
     {
       type: "action",
@@ -272,6 +320,44 @@ describe("encodeWireMessage / decodeWireMessage", () => {
     const bytes = new Uint8Array(1 + gz.length);
     bytes[0] = 0x01;
     bytes.set(gz, 1);
+    await expect(decodeWireMessage(bytes)).rejects.toThrow(/Invalid message type/);
+  });
+
+  /**
+   * Row 6's paired demonstration that the allowlist is load-bearing: the two
+   * new types are accepted by `validateMessage` while a neighbouring
+   * near-miss name is not, so the round-trips above are not passing through a
+   * validator that accepts everything.
+   */
+  it("gates the two new preview types on VALID_TYPES", () => {
+    expect(validateMessage({ type: "preview_interaction", request: HOSTILE_PREVIEW_REQUEST }))
+      .toMatchObject({ type: "preview_interaction" });
+    expect(validateMessage({
+      type: "interaction_preview",
+      requestId: "preview-req-1",
+      answer: { type: "failed", message: "x" },
+    })).toMatchObject({ type: "interaction_preview" });
+    expect(() => validateMessage({ type: "preview_interactions" }))
+      .toThrow(/Invalid message type/);
+    expect(() => validateMessage({ type: "interaction_previewed" }))
+      .toThrow(/Invalid message type/);
+  });
+
+  /**
+   * Row 7, P2P half, at the real wire format: a decoder that does not know the
+   * tag throws rather than passing it through. The KNOWN tag on the identical
+   * path in the same test is the positive control — without it this could be a
+   * decoder that rejects everything.
+   */
+  it("refuses an unknown preview-shaped tag while the known one decodes", async () => {
+    const known: P2PMessage = { type: "preview_interaction", request: HOSTILE_PREVIEW_REQUEST };
+    await expect(decodeWireMessage(await encodeWireMessage(known))).resolves.toEqual(known);
+
+    const unknown = { type: "preview_interaction_v2", request: HOSTILE_PREVIEW_REQUEST };
+    const json = new TextEncoder().encode(JSON.stringify(unknown));
+    const bytes = new Uint8Array(1 + json.length);
+    bytes[0] = 0x00;
+    bytes.set(json, 1);
     await expect(decodeWireMessage(bytes)).rejects.toThrow(/Invalid message type/);
   });
 });

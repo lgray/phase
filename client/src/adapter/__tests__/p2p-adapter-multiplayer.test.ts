@@ -111,6 +111,14 @@ const mocks = vi.hoisted(() => {
     initialize: vi.fn(async () => undefined),
     submitAction: vi.fn(async (_action: unknown) => ({ events: [] })),
     submitInteraction: vi.fn(async (_submission: unknown) => ({ events: [] })),
+    previewInteraction: vi.fn(async (request: { requestId: string }, _actor: number) => ({
+      requestId: request.requestId,
+      interactionId: "interaction-1",
+      status: { type: "confirmable" },
+      progress: { selected: 3, minimum: 1, maximum: 3, aggregate: 6, confirmable: true },
+      outcome: "advanced",
+      summaries: ["confirmAvailable", "progress"],
+    })),
     checkDeckCompatibility,
     evaluateDeckFormatGate,
     getState,
@@ -338,6 +346,7 @@ vi.mock("../wasm-adapter", () => {
     initializeMultiplayerHostGame: mocks.initializeMultiplayerHostGame,
     submitAction: mocks.submitAction,
     submitInteraction: mocks.submitInteraction,
+    previewInteraction: mocks.previewInteraction,
     checkDeckCompatibility: mocks.checkDeckCompatibility,
     evaluateDeckFormatGate: mocks.evaluateDeckFormatGate,
     getState: mocks.getState,
@@ -5433,6 +5442,356 @@ describe("P2PHostAdapter — per-guest eventual state delivery", () => {
     await sweepAndWaitFor(async () => {
       expect(statesSentTo((await guest.getSentMessages()).slice(before))).toHaveLength(2);
     });
+    adapter.dispose();
+  });
+});
+
+/**
+ * Rows 6, 7 (P2P half), 8 (guest leg) and 12 (guest leg).
+ *
+ * Wire-format note, disclosed: this file stubs `encodeWireMessage` /
+ * `decodeWireMessage` (see the `vi.mock` at the top), but the stub's decode
+ * ends in the REAL `validateMessage`, so an unknown tag still throws and the
+ * real `peer.ts` catch still runs. The real gzip wire format is exercised by
+ * `client/src/network/__tests__/protocol.test.ts`.
+ */
+describe("P2P interaction preview", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * An allocation whose segments are UNEQUAL and whose `choiceId` order is NOT
+   * the candidate publication order, so a sort or a canonicalisation anywhere
+   * on the P2P path is caught rather than coinciding with the input.
+   */
+  const request = (requestId: string) => ({
+    requestId,
+    interactionId: "interaction-1",
+    response: {
+      type: "shortcut",
+      data: {
+        decision: { type: "fixed", data: { iterations: 6 } },
+        pins: [{
+          group: 0,
+          choiceIds: ["choice-c", "choice-a", "choice-b"],
+          amounts: [
+            { choiceId: "choice-c", amount: 3 },
+            { choiceId: "choice-a", amount: 1 },
+            { choiceId: "choice-b", amount: 2 },
+          ],
+        }],
+      },
+    },
+  });
+
+  const previewAnswer = (requestId: string) => ({
+    requestId,
+    interactionId: "interaction-1",
+    status: { type: "confirmable" },
+    progress: { selected: 3, minimum: 1, maximum: 3, aggregate: 6, confirmable: true },
+    outcome: "advanced",
+    summaries: ["confirmAvailable", "progress"],
+  });
+
+  async function authenticatedGuest(conn: FakeDataConnection) {
+    const { peer } = createFakePeer();
+    const adapter = new P2PGuestAdapter(
+      { player: { main_deck: [], sideboard: [] } },
+      peer as unknown as Peer,
+      "host-peer",
+      conn as unknown as DataConnection,
+    );
+    await adapter.initialize();
+    await conn.simulateData({
+      type: "game_setup",
+      wireProtocolVersion: WIRE_PROTOCOL_VERSION,
+      assignedPlayerId: 1,
+      playerToken: "seat-token",
+      state: remoteState("live"),
+      events: [],
+      legalActions: [],
+      autoPassRecommended: false,
+      manaPaymentShortcutActions: [],
+    });
+    return adapter;
+  }
+
+  // Row 8, guest leg: the guest sends the authored request VERBATIM.
+  it("sends the guest's authored request verbatim", async () => {
+    const conn = new FakeDataConnection();
+    const adapter = await authenticatedGuest(conn);
+
+    const pending = adapter.previewInteraction(request("req-1") as never, 1);
+    await flushPromises();
+
+    const sent = (await conn.getSentMessages()).find(
+      (message) => (message as { type?: string }).type === "preview_interaction",
+    ) as { type: string; request: ReturnType<typeof request> } | undefined;
+    expect(sent).toBeDefined();
+    expect(sent!.request).toEqual(request("req-1"));
+    const pin = sent!.request.response.data.pins[0];
+    // Reach guard: the asserted allocation has more than one segment.
+    expect(pin.amounts.length).toBeGreaterThan(1);
+    expect(pin.amounts.map((a) => a.choiceId)).toEqual(pin.choiceIds);
+
+    await conn.simulateData({
+      type: "interaction_preview",
+      requestId: "req-1",
+      answer: { type: "preview", preview: previewAnswer("req-1") },
+    });
+    await expect(pending).resolves.toMatchObject({ requestId: "req-1" });
+  });
+
+  // Row 6: two in flight, answered OUT OF ORDER; each promise gets its own
+  // answer, and an id that was never sent settles nothing.
+  it("correlates out-of-order answers and drops an id it never sent", async () => {
+    const conn = new FakeDataConnection();
+    const adapter = await authenticatedGuest(conn);
+
+    const first = adapter.previewInteraction(request("req-1") as never, 1);
+    const second = adapter.previewInteraction(request("req-2") as never, 1);
+    const settledFirst = vi.fn();
+    const settledSecond = vi.fn();
+    void first.then(settledFirst, settledFirst);
+    void second.then(settledSecond, settledSecond);
+    await flushPromises();
+
+    await conn.simulateData({
+      type: "interaction_preview",
+      requestId: "req-never-sent",
+      answer: { type: "preview", preview: previewAnswer("req-never-sent") },
+    });
+    await flushPromises();
+    expect(settledFirst).not.toHaveBeenCalled();
+    expect(settledSecond).not.toHaveBeenCalled();
+
+    await conn.simulateData({
+      type: "interaction_preview",
+      requestId: "req-2",
+      answer: { type: "preview", preview: previewAnswer("req-2") },
+    });
+    await expect(second).resolves.toMatchObject({ requestId: "req-2" });
+    await flushPromises();
+    expect(settledFirst).not.toHaveBeenCalled();
+
+    await conn.simulateData({
+      type: "interaction_preview",
+      requestId: "req-1",
+      answer: { type: "preview", preview: previewAnswer("req-1") },
+    });
+    await expect(first).resolves.toMatchObject({ requestId: "req-1" });
+  });
+
+  it("rejects a correlated host failure without disturbing the other entry", async () => {
+    const conn = new FakeDataConnection();
+    const adapter = await authenticatedGuest(conn);
+
+    const failing = adapter.previewInteraction(request("req-1") as never, 1);
+    const surviving = adapter.previewInteraction(request("req-2") as never, 1);
+    const settledSurviving = vi.fn();
+    void surviving.then(settledSurviving, settledSurviving);
+    await flushPromises();
+
+    await conn.simulateData({
+      type: "interaction_preview",
+      requestId: "req-1",
+      answer: { type: "failed", message: "Game paused-manual" },
+    });
+    await expect(failing).rejects.toMatchObject({
+      code: "P2P_ERROR",
+      message: "Game paused-manual",
+    });
+    await flushPromises();
+    expect(settledSurviving).not.toHaveBeenCalled();
+
+    await conn.simulateData({
+      type: "interaction_preview",
+      requestId: "req-2",
+      answer: { type: "preview", preview: previewAnswer("req-2") },
+    });
+    await expect(surviving).resolves.toMatchObject({ requestId: "req-2" });
+  });
+
+  // Row 12, guest leg: two in flight, one answered on a live channel, then the
+  // channel closes. Delete the `handleHostDisconnect` clearing call and the
+  // unanswered promise never settles.
+  it("rejects every unanswered preview when the host channel goes away", async () => {
+    const conn = new FakeDataConnection();
+    const adapter = await authenticatedGuest(conn);
+
+    const answered = adapter.previewInteraction(request("req-1") as never, 1);
+    const unanswered = adapter.previewInteraction(request("req-2") as never, 1);
+    await flushPromises();
+
+    await conn.simulateData({
+      type: "interaction_preview",
+      requestId: "req-1",
+      answer: { type: "preview", preview: previewAnswer("req-1") },
+    });
+    await expect(answered).resolves.toMatchObject({ requestId: "req-1" });
+
+    conn.simulateClose();
+    // The clearing loop walks the map rather than rejecting indiscriminately.
+    await expect(answered).resolves.toMatchObject({ requestId: "req-1" });
+    await expect(unanswered).rejects.toMatchObject({
+      code: "P2P_ERROR",
+      message: "Host disconnected during interaction preview",
+    });
+    adapter.dispose();
+  });
+
+  // Row 7, P2P half, DRIVEN: an undecodable frame is dropped and the session
+  // survives it. The control that distinguishes "dropped" from "died" is that
+  // a SUBSEQUENT known frame on the same connection is still delivered.
+  it("survives an undecodable frame and still delivers the next known one", async () => {
+    const conn = new FakeDataConnection();
+    const adapter = await authenticatedGuest(conn);
+
+    const pending = adapter.previewInteraction(request("req-1") as never, 1);
+    await flushPromises();
+
+    await conn.simulateData({
+      type: "interaction_preview_from_the_future",
+      requestId: "req-1",
+      answer: { type: "preview", preview: previewAnswer("req-1") },
+    } as never);
+    await flushPromises();
+
+    await conn.simulateData({
+      type: "interaction_preview",
+      requestId: "req-1",
+      answer: { type: "preview", preview: previewAnswer("req-1") },
+    });
+    await expect(pending).resolves.toMatchObject({ requestId: "req-1" });
+    expect(conn.open).toBe(true);
+    adapter.dispose();
+  });
+
+  // Row 6, host half: the host answers the ASKING guest and no other peer.
+  it("answers only the asking guest", async () => {
+    const { adapter, emitConnection } = makeHost(3);
+    await adapter.initialize();
+    const asker = await joinGuest(emitConnection, {
+      type: "guest_deck",
+      deckData: { player: { main_deck: [], sideboard: [] } },
+    });
+    const bystander = await joinGuest(emitConnection, {
+      type: "guest_deck",
+      deckData: { player: { main_deck: [], sideboard: [] } },
+    });
+    await adapter.initializeGame();
+    await flushPromises();
+
+    await asker.simulateData({ type: "preview_interaction", request: request("req-1") as never });
+    await flushPromises();
+
+    const answers = (await asker.getSentMessages()).filter(
+      (message) => (message as { type?: string }).type === "interaction_preview",
+    ) as { requestId: string; answer: { type: string; preview?: { requestId: string } } }[];
+    expect(answers).toHaveLength(1);
+    expect(answers[0].requestId).toBe("req-1");
+    expect(answers[0].answer.type).toBe("preview");
+    expect(answers[0].answer.preview!.requestId).toBe("req-1");
+
+    // The negative — and its live-instrument control in the same assertion:
+    // the bystander's channel DID carry other host traffic, so an empty
+    // preview-frame filter is a measured absence, not a dead capture.
+    const bystanderMessages = await bystander.getSentMessages();
+    expect(bystanderMessages.length).toBeGreaterThan(0);
+    expect(bystanderMessages.filter(
+      (message) => (message as { type?: string }).type === "interaction_preview",
+    )).toHaveLength(0);
+    adapter.dispose();
+  });
+
+  // Row 6, host refusals: each is a CORRELATED `failed` frame, never silence.
+  // The positive is the same request on a live, running seat, above.
+  it("answers a correlated failure for an eliminated seat and a non-running game", async () => {
+    const { adapter, emitConnection } = makeHost(2);
+    await adapter.initialize();
+    const guest = await joinGuest(emitConnection, {
+      type: "guest_deck",
+      deckData: { player: { main_deck: [], sideboard: [] } },
+    });
+    await adapter.initializeGame();
+    await flushPromises();
+
+    const host = adapter as unknown as {
+      eliminatedSeats: Set<number>;
+      gameRunState: string;
+    };
+
+    host.gameRunState = "paused-manual";
+    await guest.simulateData({ type: "preview_interaction", request: request("paused") as never });
+    await flushPromises();
+    host.gameRunState = "running";
+
+    host.eliminatedSeats.add(1);
+    await guest.simulateData({ type: "preview_interaction", request: request("gone") as never });
+    await flushPromises();
+    host.eliminatedSeats.delete(1);
+
+    const answers = (await guest.getSentMessages()).filter(
+      (message) => (message as { type?: string }).type === "interaction_preview",
+    ) as { requestId: string; answer: { type: string; message?: string } }[];
+    expect(answers.map((a) => [a.requestId, a.answer.type, a.answer.message])).toEqual([
+      ["paused", "failed", "Game paused-manual"],
+      ["gone", "failed", "Player has conceded and can no longer act"],
+    ]);
+
+    // Reach guard: the identical request on a live, running seat IS answered
+    // with a preview, so the refusals above are the guards and not a host that
+    // fails every preview.
+    await guest.simulateData({ type: "preview_interaction", request: request("live") as never });
+    await flushPromises();
+    const live = (await guest.getSentMessages()).filter(
+      (message) => (message as { type?: string }).type === "interaction_preview",
+    ) as { requestId: string; answer: { type: string } }[];
+    expect(live[live.length - 1]).toMatchObject({
+      requestId: "live",
+      answer: { type: "preview" },
+    });
+    adapter.dispose();
+  });
+
+  // The preview must NOT take the mutating arm's delivery path.
+  it("does not broadcast, persist or run the AI loop for a preview", async () => {
+    const { adapter, emitConnection } = makeHost(2);
+    await adapter.initialize();
+    const guest = await joinGuest(emitConnection, {
+      type: "guest_deck",
+      deckData: { player: { main_deck: [], sideboard: [] } },
+    });
+    await adapter.initializeGame();
+    await flushPromises();
+    persistenceMocks.saveP2PHostSession.mockClear();
+    mocks.getViewerSnapshot.mockClear();
+    const before = (await guest.getSentMessages()).length;
+
+    await guest.simulateData({ type: "preview_interaction", request: request("req-1") as never });
+    await flushPromises();
+
+    const after = await guest.getSentMessages();
+    // Exactly one new frame: the answer. A `state_update` fan-out or a snapshot
+    // publish would add more.
+    expect(after.length).toBe(before + 1);
+    expect((after[after.length - 1] as { type?: string }).type).toBe("interaction_preview");
+    expect(persistenceMocks.saveP2PHostSession).not.toHaveBeenCalled();
+    expect(mocks.getViewerSnapshot).not.toHaveBeenCalled();
+
+    // Reach guard: a real submission on the same connection DOES take those
+    // paths, so the absences above are the preview arm and not a dead host.
+    await guest.simulateData({
+      type: "interaction",
+      senderPlayerId: 1,
+      submission: { interactionId: "interaction-1", response: { type: "choose", data: { choiceId: "a" } } } as never,
+    });
+    await flushPromises();
+    expect(mocks.getViewerSnapshot).toHaveBeenCalled();
     adapter.dispose();
   });
 });

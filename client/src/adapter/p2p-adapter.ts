@@ -21,7 +21,11 @@ import type {
   SubmitResult,
   WaitingFor,
 } from "./types";
-import type { InteractionSubmission } from "./generated/interaction";
+import type {
+  InteractionPreview,
+  InteractionPreviewRequest,
+  InteractionSubmission,
+} from "./generated/interaction";
 import type { BracketDeckRequest, BracketEstimate } from "../types/bracketEstimate";
 
 import {
@@ -348,6 +352,13 @@ class NativeP2PBridge {
 
   async exportPersistenceState(): Promise<string> {
     return this.clientFor(0).exportPersistenceState();
+  }
+
+  async previewInteraction(
+    request: InteractionPreviewRequest,
+    playerId: PlayerId,
+  ): Promise<InteractionPreview> {
+    return this.clientFor(playerId).previewInteraction(request, playerId);
   }
 
   async getState(): Promise<GameState> {
@@ -2207,6 +2218,25 @@ export class P2PHostAdapter implements EngineAdapter {
     return this.wasm.previewManaPayment(action, actor);
   }
 
+  async previewInteraction(
+    request: InteractionPreviewRequest,
+    actor: PlayerId,
+  ): Promise<InteractionPreview> {
+    this.assertNotDisposed();
+    if (!this.ownsAuthority()) {
+      throw new AdapterError("P2P_ERROR", "Host session superseded", true);
+    }
+    if (this.gameRunState !== "running") {
+      throw new AdapterError(
+        "P2P_PAUSED",
+        `Cannot preview an interaction while game state is ${this.gameRunState}`,
+        true,
+      );
+    }
+    if (this.nativeBridge) return this.nativeBridge.previewInteraction(request, actor);
+    return this.wasm.previewInteraction(request, actor);
+  }
+
   /** Releases a complete native-server revision only after every local seat
    * socket has supplied its own filtered view. The native server is the
    * authority for this revision; PeerJS carries it through to terminal
@@ -3060,6 +3090,51 @@ export class P2PHostAdapter implements EngineAdapter {
         }
         break;
       }
+      case "preview_interaction": {
+        const session = this.guestSessions.get(pid);
+        // The only silent return, and only because there is no channel to
+        // answer on — the sibling arm's shape exactly.
+        if (!session) return;
+        if (this.eliminatedSeats.has(pid)) {
+          void this.send(session, {
+            type: "interaction_preview",
+            requestId: msg.request.requestId,
+            answer: { type: "failed", message: "Player has conceded and can no longer act" },
+          });
+          return;
+        }
+        if (this.gameRunState !== "running") {
+          void this.send(session, {
+            type: "interaction_preview",
+            requestId: msg.request.requestId,
+            answer: { type: "failed", message: `Game ${this.gameRunState}` },
+          });
+          return;
+        }
+        try {
+          const preview = this.nativeBridge
+            ? await this.nativeBridge.previewInteraction(msg.request, pid)
+            : await this.wasm.previewInteraction(msg.request, pid);
+          // The requesting session ALONE. No broadcast, no snapshot publish, no
+          // AI loop, no persistence — the four calls the "interaction" arm makes
+          // and a read-only preview must not.
+          void this.send(session, {
+            type: "interaction_preview",
+            requestId: msg.request.requestId,
+            answer: { type: "preview", preview },
+          });
+        } catch (err) {
+          void this.send(session, {
+            type: "interaction_preview",
+            requestId: msg.request.requestId,
+            answer: {
+              type: "failed",
+              message: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+        break;
+      }
       case "concede": {
         // CR 104.3a: Any player may concede at any time. Route through the
         // engine action so the seat is properly eliminated (CR 800.4a).
@@ -3554,6 +3629,10 @@ export class P2PGuestAdapter implements EngineAdapter {
     number,
     { resolve: (sourceIds: ObjectId[]) => void; reject: (error: Error) => void }
   >();
+  private pendingInteractionPreviews = new Map<
+    string,
+    { resolve: (preview: InteractionPreview) => void; reject: (error: Error) => void }
+  >();
   private session: PeerSession | null = null;
   /** The current transport becomes authenticated only after its setup ACK. */
   private authenticatedSession: PeerSession | null = null;
@@ -3664,6 +3743,9 @@ export class P2PGuestAdapter implements EngineAdapter {
     this.rejectPendingManaPaymentPreviews(
       new AdapterError("P2P_ERROR", "Host disconnected during mana-payment preview", true),
     );
+    this.rejectPendingInteractionPreviews(
+      new AdapterError("P2P_ERROR", "Host disconnected during interaction preview", true),
+    );
     this.session = session;
     this.authenticatedSession = null;
     this.matchConcedeSent = false;
@@ -3717,6 +3799,19 @@ export class P2PGuestAdapter implements EngineAdapter {
     return new Promise<ObjectId[]>((resolve, reject) => {
       this.pendingManaPaymentPreviews.set(requestId, { resolve, reject });
       this.send({ type: "preview_mana_payment", requestId, action });
+    });
+  }
+
+  async previewInteraction(
+    request: InteractionPreviewRequest,
+    _actor: PlayerId,
+  ): Promise<InteractionPreview> {
+    this.requireAuthenticatedSession();
+
+    return new Promise<InteractionPreview>((resolve, reject) => {
+      this.pendingInteractionPreviews.set(request.requestId, { resolve, reject });
+      // `request` is forwarded VERBATIM — no field is read, reshaped or rebuilt.
+      this.send({ type: "preview_interaction", request });
     });
   }
 
@@ -4150,6 +4245,23 @@ export class P2PGuestAdapter implements EngineAdapter {
         }
         break;
       }
+      case "interaction_preview": {
+        const pending = this.pendingInteractionPreviews.get(msg.requestId);
+        // A requestId this adapter never sent settles nothing and disturbs no
+        // other entry.
+        if (pending) {
+          this.pendingInteractionPreviews.delete(msg.requestId);
+          switch (msg.answer.type) {
+            case "preview":
+              pending.resolve(msg.answer.preview);
+              break;
+            case "failed":
+              pending.reject(new AdapterError("P2P_ERROR", msg.answer.message, true));
+              break;
+          }
+        }
+        break;
+      }
       case "player_disconnected": {
         this.emit({
           type: "opponentDisconnected",
@@ -4233,6 +4345,13 @@ export class P2PGuestAdapter implements EngineAdapter {
     this.pendingManaPaymentPreviews.clear();
   }
 
+  private rejectPendingInteractionPreviews(error: Error): void {
+    for (const { reject } of this.pendingInteractionPreviews.values()) {
+      reject(error);
+    }
+    this.pendingInteractionPreviews.clear();
+  }
+
   private rejectPendingSubmission(error: Error): void {
     this.pendingReject?.(error);
     this.pendingResolve = null;
@@ -4297,6 +4416,9 @@ export class P2PGuestAdapter implements EngineAdapter {
     this.rejectPendingManaPaymentPreviews(
       new AdapterError("P2P_ERROR", "Host disconnected during mana-payment preview", true),
     );
+    this.rejectPendingInteractionPreviews(
+      new AdapterError("P2P_ERROR", "Host disconnected during interaction preview", true),
+    );
     this.authenticatedSession = null;
     this.matchConcedeSent = false;
     this.session = null;
@@ -4313,6 +4435,7 @@ export class P2PGuestAdapter implements EngineAdapter {
     this.authenticatedSession = null;
     this.rejectPendingSubmission(error);
     this.rejectPendingManaPaymentPreviews(error);
+    this.rejectPendingInteractionPreviews(error);
     const session = this.session;
     this.session = null;
     session?.close();
