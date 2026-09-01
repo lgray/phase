@@ -8,9 +8,10 @@
 //! [`SuiteReport::deterministic_core`].
 
 use std::collections::{HashMap, HashSet};
-use std::io::BufWriter;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use engine::database::CardDatabase;
@@ -204,12 +205,28 @@ pub enum AttributionMode {
     Enabled,
 }
 
+/// Where a suite run's report is written.
+///
+/// `Reserved` exists because a path is not an identity: an entry that replaces the name after it
+/// was reserved would be followed (symlink) or shared (hard link) by a writer that reopens it.
+/// Holding the descriptor the reservation returned removes the question — the variant carries no
+/// path to reopen.
+#[derive(Debug)]
+pub enum ReportSink {
+    /// Create (truncating) at this path when the report is written.
+    Create(PathBuf),
+    /// Write through a descriptor the caller already opened, positioned at offset 0. The report
+    /// replaces whatever the handle refers to; the handle need not be empty.
+    Reserved(File),
+}
+
 #[derive(Debug)]
 pub struct SuiteOptions {
     pub difficulty: AiDifficulty,
     pub games_per_matchup: usize,
     pub base_seed: u64,
-    pub output_path: PathBuf,
+    /// Destination for the run's JSON report.
+    pub output: ReportSink,
     /// Comma-separated list of id substrings; a matchup is run if its id
     /// contains *any* of them (e.g. `"red-mirror,affinity-mirror"` runs both).
     /// `None` runs every matchup. A single substring keeps the legacy behavior.
@@ -229,7 +246,7 @@ impl SuiteOptions {
             difficulty,
             games_per_matchup,
             base_seed,
-            output_path: PathBuf::from("target/duel-suite-results.json"),
+            output: ReportSink::Create(PathBuf::from("target/duel-suite-results.json")),
             filter: None,
             attribution: AttributionMode::Disabled,
             git_sha: None,
@@ -239,7 +256,7 @@ impl SuiteOptions {
     }
 }
 
-/// Run every registered matchup, write the report to `options.output_path`,
+/// Run every registered matchup, write the report to `options.output`,
 /// and return the in-memory report for the caller to print.
 pub fn run_suite(db: &CardDatabase, options: &SuiteOptions) -> Result<SuiteReport, std::io::Error> {
     let capture = match options.attribution {
@@ -550,7 +567,7 @@ fn finalize_report(
         results,
     };
 
-    write_report(&report, &options.output_path)?;
+    write_report(&report, &options.output)?;
     print_markdown_table(&report);
 
     Ok(report)
@@ -951,13 +968,31 @@ pub(crate) fn drive_game_observed(
     (winner, state.turn_number)
 }
 
-fn write_report(report: &SuiteReport, path: &Path) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+fn write_report(report: &SuiteReport, sink: &ReportSink) -> Result<(), std::io::Error> {
+    match sink {
+        ReportSink::Create(path) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            write_through(&File::create(path)?, report)
+        }
+        ReportSink::Reserved(file) => write_through(file, report),
     }
-    let file = std::fs::File::create(path)?;
-    serde_json::to_writer_pretty(BufWriter::new(file), report).map_err(std::io::Error::other)?;
-    Ok(())
+}
+
+/// Serialize into an already-open handle and put it on disk.
+fn write_through(file: &File, report: &SuiteReport) -> Result<(), std::io::Error> {
+    // The report replaces the file's contents, so a shorter report must not leave the tail of a
+    // longer one behind. This is what lets any caller hand this function a destination rather
+    // than only an empty file.
+    file.set_len(0)?;
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(&mut writer, report).map_err(std::io::Error::other)?;
+    // `BufWriter`'s drop-flush discards its error, so a short write would otherwise return Ok
+    // over a truncated report; and the bytes must be on disk before a caller renames this file
+    // into place.
+    writer.flush()?;
+    file.sync_all()
 }
 
 fn print_matchup_row(r: &MatchupResult) {
@@ -1416,5 +1451,105 @@ mod tests {
             baseline, observed,
             "no-op observer must not perturb (winner, turns)"
         );
+    }
+
+    /// A reserved sink writes into the inode it was handed, never into whatever its former path
+    /// names now.
+    ///
+    /// Guards the finding that the writer reopened the staging path by name: an entry placed
+    /// there after the reservation was followed (symlink) or shared (hard link), so the report
+    /// landed on a file the run never chose.
+    #[cfg(unix)]
+    #[test]
+    fn a_reserved_sink_writes_through_its_descriptor_after_the_path_is_replaced() {
+        const VICTIM: &str = "VICTIM-BYTES";
+        let report = report_with_timing(1, 1);
+
+        for kind in ["symlink", "hardlink"] {
+            let dir = std::env::temp_dir()
+                .join(format!("phase-reserved-sink-{kind}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("scratch dir");
+
+            let victim = dir.join("victim.json");
+            std::fs::write(&victim, VICTIM).expect("seed victim");
+
+            let reserved_path = dir.join("report.staging.json");
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&reserved_path)
+                .expect("reserve staging");
+            // A second name for the reserved inode, so it stays readable once its own name is
+            // taken away below.
+            let witness = dir.join("witness.json");
+            std::fs::hard_link(&reserved_path, &witness).expect("witness link");
+
+            std::fs::remove_file(&reserved_path).expect("drop the reserved name");
+            if kind == "symlink" {
+                std::os::unix::fs::symlink(&victim, &reserved_path).expect("symlink");
+            } else {
+                std::fs::hard_link(&victim, &reserved_path).expect("hard link");
+            }
+
+            // PREMISE: the replacement really does redirect that name at the victim, and the
+            // reserved inode is still empty — so neither assertion below can pass vacuously.
+            assert_eq!(
+                std::fs::read_to_string(&reserved_path).expect("read through replacement"),
+                VICTIM,
+                "{kind}: the replacement must resolve to the victim"
+            );
+            assert!(
+                std::fs::read_to_string(&witness)
+                    .expect("read witness")
+                    .is_empty(),
+                "{kind}: the reserved inode must still be empty"
+            );
+
+            write_report(&report, &ReportSink::Reserved(file)).expect("reserved write");
+
+            assert_eq!(
+                std::fs::read_to_string(&victim).expect("read victim"),
+                VICTIM,
+                "{kind}: the reserved sink followed its replaced path onto the victim"
+            );
+            let landed: SuiteReport =
+                serde_json::from_str(&std::fs::read_to_string(&witness).expect("read witness"))
+                    .expect("the reserved inode must hold the report");
+            assert_eq!(landed.results[0].matchup_id, "red-mirror");
+
+            // CONTROL, same fixture, other arm: opening that path by name DOES reach the victim,
+            // which is what makes the survival above a property of the retained descriptor
+            // rather than of an inert fixture.
+            write_report(&report, &ReportSink::Create(reserved_path)).expect("create write");
+            assert_ne!(
+                std::fs::read_to_string(&victim).expect("read victim"),
+                VICTIM,
+                "{kind}: the fixture is inert — writing by name did not reach the victim"
+            );
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        // A reserved handle is only positioned at offset 0, not necessarily empty. The report
+        // replaces the contents, so no tail of a longer predecessor may survive it.
+        let dir =
+            std::env::temp_dir().join(format!("phase-reserved-sink-padded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let padded = dir.join("padded.json");
+        std::fs::write(&padded, "A".repeat(64 * 1024)).expect("seed padding");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&padded)
+            .expect("open padded");
+
+        write_report(&report, &ReportSink::Reserved(file)).expect("reserved write");
+
+        let landed: SuiteReport =
+            serde_json::from_str(&std::fs::read_to_string(&padded).expect("read padded"))
+                .expect("the padded file must parse as the report, with no tail left behind");
+        assert_eq!(landed.results[0].matchup_id, "red-mirror");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -14,7 +14,7 @@ use phase_ai::duel_suite::compare::{
     compare, emit_gate_verdict, load_report, print_markdown, render_error_markdown, CompareError,
     CompareOptions,
 };
-use phase_ai::duel_suite::run::{run_suite, SuiteOptions};
+use phase_ai::duel_suite::run::{run_suite, ReportSink, SuiteOptions};
 
 const DEFAULT_BASELINE: &str = "crates/phase-ai/baselines/suite-baseline.json";
 const DEFAULT_CURRENT: &str = "target/ai-gate-current.json";
@@ -49,7 +49,7 @@ fn main() {
 
     // Refuse before ANY work — before the card database, before a single game — when the
     // suite's output path and the baseline are the same file. Review found this defeats the
-    // refusal this PR adds: `run_suite` writes its report to `options.output_path` before any
+    // refusal this PR adds: `run_suite` writes its report to `options.output` before any
     // guard runs, so an aliased pair truncated the baseline and only THEN printed "refusing to
     // refresh". Measured on the real binary at the reviewed head: 116 bytes in, 250 bytes out,
     // different sha256, exit 1.
@@ -99,9 +99,10 @@ fn main() {
     //
     // Third route to the same destruction, and the only one no argument check could ever catch:
     // this path is derived internally, so `same_file` never sees it — it compares `--baseline`
-    // against `--current-output`, and the staging file is neither. `write_report` opens it with
-    // `File::create`, which FOLLOWS a symlink to its target and SHARES a hard link's inode, so an
-    // entry already sitting there truncates whatever it points at, before any refresh guard runs.
+    // against `--current-output`, and the staging file is neither. `write_report` opened it by
+    // name with `File::create`, which FOLLOWS a symlink to its target and SHARES a hard link's
+    // inode, so an entry already sitting there truncated whatever it pointed at, before any
+    // refresh guard ran.
     // Measured on the binary before this reservation existed: with a symlink pre-placed at the
     // staging path, the refresh reported success and the baseline's bytes were gone.
     //
@@ -110,6 +111,7 @@ fn main() {
     // same class of bug one layer down; `O_CREAT|O_EXCL` fails on ANY existing entry — regular
     // file, hard link, live or dangling symlink — in one atomic step. What the suite then
     // truncates is a regular file this process just created, with a link count of one.
+    let mut reserved = None;
     if let Some(path) = &staging {
         if let Some(parent) = path.parent() {
             if let Err(err) = std::fs::create_dir_all(parent) {
@@ -117,28 +119,34 @@ fn main() {
                 std::process::exit(2);
             }
         }
-        if let Err(err) = std::fs::OpenOptions::new()
+        match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)
         {
+            // Retained, not dropped: the suite writes the report through this descriptor, so an
+            // entry that replaces `path` after this point can no longer be followed or truncated.
+            Ok(file) => reserved = Some(file),
             // Refusing rather than reusing is the point. The path is derived, so anything already
             // there was not put there by this run, and a leftover from a killed run is exactly
             // the artefact the refusal paths below delete. Naming it and stopping is better than
             // writing through something whose provenance is unknown.
-            eprintln!(
-                "failed to reserve the staging file {}: {err}\n\
-                 if a previous run was interrupted, remove that file and retry; if it is a \
-                 symlink or hard link, it would have been written straight through into whatever \
-                 it points at",
-                path.display()
-            );
-            std::process::exit(2);
+            Err(err) => {
+                eprintln!(
+                    "failed to reserve the staging file {}: {err}\n\
+                     if a previous run was interrupted, remove that file and retry; if it is a \
+                     symlink or hard link, it would have been written straight through into \
+                     whatever it points at",
+                    path.display()
+                );
+                std::process::exit(2);
+            }
         }
     }
-    options.output_path = staging
-        .clone()
-        .unwrap_or_else(|| args.current_output.clone());
+    options.output = match reserved {
+        Some(file) => ReportSink::Reserved(file),
+        None => ReportSink::Create(args.current_output.clone()),
+    };
     options.filter = args.suite_filter.clone();
     options.git_sha = command_output("git", &["rev-parse", "--short=12", "HEAD"]);
     options.card_data_hash = command_output("git", &["hash-object", path_str(&db_path)]);
@@ -514,6 +522,9 @@ mod tests {
     #[test]
     fn same_file_sees_through_a_symlink() {
         let dir = std::env::temp_dir().join(format!("phase-same-file-{}", std::process::id()));
+        // A pid is reused, and a failed run leaves its scratch dir behind; without this the next
+        // run dies at `symlink()` with EEXIST, which reads as an assertion failure.
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let real = dir.join("baseline.json");
         std::fs::write(&real, "{}").expect("write");

@@ -23,7 +23,9 @@ use phase_ai::duel_suite::compare::{
     compare as compare_reports, emit_gate_verdict, load_report, render_error_markdown,
     CompareOptions,
 };
-use phase_ai::duel_suite::run::{resolve_matchup, run_suite, AttributionMode, SuiteOptions};
+use phase_ai::duel_suite::run::{
+    resolve_matchup, run_suite, AttributionMode, ReportSink, SuiteOptions,
+};
 use phase_ai::duel_suite::{all_matchups, find_matchup};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -140,7 +142,7 @@ fn main() {
             let output_path =
                 output.unwrap_or_else(|| PathBuf::from("target/duel-suite-results.json"));
             let mut options = SuiteOptions::new(difficulty, games, base_seed);
-            options.output_path = output_path.clone();
+            options.output = ReportSink::Create(output_path.clone());
             options.filter = suite_filter;
             options.attribution = attribution;
             options.harvest_output = harvest_output;

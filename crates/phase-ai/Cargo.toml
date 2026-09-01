@@ -52,8 +52,10 @@ test = false
 
 [[bin]]
 name = "ai-gate"
+# No `test = false`: that key suppresses a bin's unittest target entirely, so it belongs only on a
+# bin with no `#[cfg(test)]` code. This one carries unit tests over the staging-path and aliasing
+# predicates, which have to be built before they can run.
 path = "src/bin/ai_gate.rs"
-test = false
 
 [[bin]]
 name = "ai-perf-gate"

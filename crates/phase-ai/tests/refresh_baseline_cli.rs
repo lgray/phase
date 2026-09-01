@@ -25,8 +25,19 @@ use std::process::Command;
 /// fix, a refresh that reaches `load_report` refuses on this rather than running the suite.
 const SENTINEL: &str = r#"{"this":"is the trusted baseline, byte for byte"}"#;
 
+/// Marks a pre-seeded `--current-output`. On the refresh path the refreshed baseline IS the run's
+/// report, so this file must come back untouched whether the run is refused or accepted.
+const CURRENT_MARKER: &str = "CURRENT-OUTPUT-MARKER";
+
+/// A scratch dir per `tag`. Every caller passes a tag no other caller uses, so the pre-clean
+/// cannot race a sibling test in this binary.
+///
+/// Pre-cleaned because pids are reused and a failed run leaves its dir behind; without it the
+/// next run dies at `create_new`, `symlink()` or `hard_link()` with EEXIST — an infrastructure
+/// failure wearing the costume of an assertion failure.
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("phase-refresh-cli-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     dir
 }
@@ -239,6 +250,123 @@ fn a_gameless_refresh_is_refused_by_the_block_and_leaves_the_baseline_untouched(
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `--games 0` is refused at argument parse time, before any work at all.
+///
+/// The data root deliberately does not exist, so `failed to load card database` WOULD appear if
+/// the run reached it — its absence is what makes the ordering claim a live signal rather than an
+/// absence-shaped one.
+#[test]
+fn a_zero_game_refresh_is_refused_before_the_run_begins() {
+    let dir = scratch("zero-games");
+    let baseline = seed_baseline(&dir);
+    let current = dir.join("current.json");
+    std::fs::write(&current, CURRENT_MARKER).expect("seed current-output");
+
+    let (code, stderr) = run(&[
+        "--refresh-baseline",
+        "--data-root",
+        &dir.join("no-such-data-root").display().to_string(),
+        "--baseline",
+        &baseline.display().to_string(),
+        "--current-output",
+        &current.display().to_string(),
+        "--games",
+        "0",
+    ]);
+
+    assert_eq!(
+        code,
+        Some(2),
+        "a zero-game refresh must be refused at the argument check; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--games must be a positive integer"),
+        "the refusal must name --games; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("failed to load card database"),
+        "the refusal must precede the card database load; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&baseline).expect("read baseline"),
+        SENTINEL,
+        "the baseline was modified by a run that was refused"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&current).expect("read current-output"),
+        CURRENT_MARKER,
+        "--current-output was written by a run that was refused"
+    );
+    let staging = baseline.with_file_name("suite-baseline.json.staging.json");
+    assert!(
+        !staging.exists(),
+        "a refused refresh must not leave {} behind",
+        staging.display()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The failure half of the refusal block, executed: a run whose matchup failed its own `Expected`
+/// check must not become the baseline, or the next run compares equal to a blessed regression.
+///
+/// Fixture: with an empty card database, `--seed 20` gives red-mirror four games that all go to
+/// p1, which is what makes `classify` fail the mirror. If the engine ever perturbs those games,
+/// rescan seeds against this same matchup at `--games 4` and take any seed where red-mirror fails
+/// its own check.
+///
+/// Exit code asserted as exactly 1, not merely non-zero: argument and database failures exit 2,
+/// so a mutant that stops the binary before the suite runs fails here.
+#[test]
+fn a_refresh_whose_matchup_failed_is_refused_and_the_baseline_survives() {
+    let dir = scratch("failing-matchup");
+    let data_arg = empty_card_db(&dir);
+    let baseline = record_baseline(&dir, &data_arg, "suite-baseline.json");
+    let trusted = std::fs::read_to_string(&baseline).expect("read baseline");
+
+    let (code, stderr) = run(&[
+        "--refresh-baseline",
+        "--data-root",
+        &data_arg,
+        "--baseline",
+        &baseline.display().to_string(),
+        "--current-output",
+        &dir.join("current.json").display().to_string(),
+        "--suite-filter",
+        "red-mirror",
+        "--games",
+        "4",
+        "--seed",
+        "20",
+    ]);
+
+    assert_eq!(
+        code,
+        Some(1),
+        "expected the refusal block's exit 1, not an earlier failure; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("matchup(s) failed their own suite check"),
+        "the refusal must be the failing-matchup one; stderr:\n{stderr}"
+    );
+    // The per-matchup diagnostic, which is what distinguishes this refusal from the gameless one.
+    assert!(
+        stderr.contains("red-mirror: mirror imbalance"),
+        "the refusal must name the matchup and its reason; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&baseline).expect("read baseline"),
+        trusted,
+        "a refused refresh must leave the baseline byte-identical"
+    );
+    let staging = baseline.with_file_name("suite-baseline.json.staging.json");
+    assert!(
+        !staging.exists(),
+        "a refused refresh must not leave {} behind",
+        staging.display()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The other side of the transaction: an ACCEPTED refresh must actually promote the staged
 /// report over the old baseline.
 ///
@@ -265,6 +393,10 @@ fn an_accepted_refresh_promotes_the_staged_report_over_the_old_baseline() {
     old["git_sha"] = serde_json::json!("OLD-BASELINE-MARKER");
     let marked = serde_json::to_string(&old).expect("serialize baseline");
     std::fs::write(&baseline, &marked).expect("write baseline");
+    // On the refresh path the refreshed baseline IS the run's report, so the suite must stage
+    // beside the baseline rather than write through `--current-output`.
+    let current = dir.join("current.json");
+    std::fs::write(&current, CURRENT_MARKER).expect("seed current-output");
 
     let (code, stderr) = run(&[
         "--refresh-baseline",
@@ -273,7 +405,7 @@ fn an_accepted_refresh_promotes_the_staged_report_over_the_old_baseline() {
         "--baseline",
         &baseline.display().to_string(),
         "--current-output",
-        &dir.join("current.json").display().to_string(),
+        &current.display().to_string(),
         "--suite-filter",
         "red-mirror",
         "--games",
@@ -284,6 +416,11 @@ fn an_accepted_refresh_promotes_the_staged_report_over_the_old_baseline() {
         code,
         Some(0),
         "an accepted refresh must succeed; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&current).expect("read current-output"),
+        CURRENT_MARKER,
+        "an accepted refresh must not write through --current-output"
     );
     let written = std::fs::read_to_string(&baseline).expect("read baseline");
     assert_ne!(
@@ -502,10 +639,10 @@ fn two_existing_but_different_files_are_not_aliases() {
 /// The third route to the same destruction, and the one no argument check can see: the staging
 /// path the process derives for ITSELF.
 ///
-/// `staging_path` is deterministic — `<baseline>.staging.json` — and `write_report` opens it with
-/// `File::create` before any refresh guard runs. So an entry already sitting at that path is
-/// followed (symlink) or shared (hard link), and the baseline is truncated by a write nobody
-/// passed on the command line. `same_file` cannot help: it compares `--baseline` against
+/// `staging_path` is deterministic — `<baseline>.staging.json` — and `write_report` opened it by
+/// name with `File::create` before any refresh guard ran. So an entry already sitting at that
+/// path was followed (symlink) or shared (hard link), and the baseline was truncated by a write
+/// nobody passed on the command line. `same_file` cannot help: it compares `--baseline` against
 /// `--current-output`, and the staging path is neither.
 ///
 /// Both alias kinds are exercised because they fail differently — `File::create` FOLLOWS a
