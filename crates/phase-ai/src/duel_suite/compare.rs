@@ -481,15 +481,12 @@ fn classify_row(
                 //   * Recovery is a behavior change, and a comparator that hid it would be as
                 //     wrong as one that hid a regression (the same reason the W/L tier warns on
                 //     L→W and the draw tier warns on draw→decisive).
-                //   * STILL failing is reported every run rather than passing quietly. Review
-                //     showed this is reachable, not theoretical: nothing revalidates a committed
-                //     baseline when it is loaded, so a baseline that already sanctions a failure
-                //     keeps sanctioning it, and that matchup exits 0 forever. (The wording is
-                //     deliberately about the baseline rather than about `--refresh-baseline`
-                //     writing without a verdict check: that WAS the mechanism, and #7029 adds the
-                //     missing check, so naming it here would make this comment false the day that
-                //     lands. Reachability does not depend on it — a baseline blessed before the
-                //     guard, or hand-edited, is unaffected by any guard on the write path.)
+                //   * STILL failing is reported every run rather than passing quietly. Nothing
+                //     revalidates a committed baseline when it is loaded, so a baseline that
+                //     already sanctions a failure keeps sanctioning it and that matchup exits 0
+                //     forever — a baseline blessed before, or hand-edited around, any guard on the
+                //     `--refresh-baseline` write path stays reachable however that path is
+                //     guarded.
                 //
                 // It is a Warn and not a Fail deliberately: the exit code answers "did this change
                 // make things worse", and the baseline — however it got that way — already
@@ -921,12 +918,12 @@ pub fn gate_verdict(comparison: &Result<CompareReport, CompareError>) -> (String
 
 /// Write the gate's stdout body and return the process exit code.
 ///
-/// Every binary that compares two suite reports ends in these same two statements, and review
-/// pointed out that a unit test on `gate_verdict` cannot see them: a `main` that printed to
-/// stderr, or exited 0 on a refusal, would revert the whole fix with the suite green. Both
-/// halves live here so that surface is one shared function instead of one copy per binary —
-/// and `tests/gate_cli.rs` drives it through a real process, so the pairing is bound at the
-/// boundary CI actually redirects, not just at the library call below it.
+/// Every binary that compares two suite reports ends in these same two statements, which a unit
+/// test on `gate_verdict` cannot see: a `main` that printed to stderr, or exited 0 on a refusal,
+/// would revert the whole fix with the suite green. Both halves live here so that surface is one
+/// shared function instead of one copy per binary — and `tests/gate_cli.rs` drives it through a
+/// real process, so the pairing is bound at the boundary CI actually redirects, not just at the
+/// library call below it.
 pub fn emit_gate_verdict(comparison: &Result<CompareReport, CompareError>) -> i32 {
     let (body, code) = gate_verdict(comparison);
     print!("{body}");
@@ -1227,9 +1224,10 @@ mod tests {
     /// exists to catch, and suppressing it because the win/loss axis also wobbled insignificantly
     /// would reintroduce the same blindness one case narrower.
     ///
-    /// The two premise asserts below are what attribute the Fail to the draw axis:
-    /// `sign_test_p > 0.05` means the W/L Fail arm cannot fire, and
-    /// `flipped_w_to_l != flipped_l_to_w` means the W/L axis reaches its Warn arm.
+    /// The asserts below are what attribute the Fail to the draw axis: `sign_test_p > 0.05` means
+    /// the W/L Fail arm cannot fire, `flipped_w_to_l != flipped_l_to_w` means the W/L axis reaches
+    /// its Warn arm, and the status Fail arm is out because both fixtures report
+    /// `SuiteStatus::Pass` — which the `reason` assert then confirms by name.
     #[test]
     fn draw_regression_escalates_an_insignificant_win_loss_warn() {
         let before: &[(u64, Option<u8>, u32)] = &[
@@ -1790,9 +1788,8 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
-        // Mirrored against the test above: this one must be (0, 2), not (2, 0). A single
-        // fixture covering "some unpaired sample exists" would pass with the two counters
-        // swapped, which is the transposition defect this PR already had to fix once.
+        // Mirrored against the test above: this one must be (0, 2), not (2, 0). A single fixture
+        // covering "some unpaired sample exists" would pass with the two counters transposed.
         assert_eq!((row.unpaired_baseline, row.unpaired_current), (0, 2));
         assert_eq!(row.status, CompareStatus::Warn);
         assert!(!report.any_fail());

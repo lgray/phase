@@ -730,11 +730,9 @@ fn run_compare(args: &[String]) -> i32 {
     }
 
     // A report that cannot be READ is refused on the same terms as one that cannot be COMPARED.
-    // Review found these two arms spoke only to stderr while every other refusal on this path
-    // publishes a stdout body, so a caller redirecting stdout — which is the only way this
-    // command is used in CI — got an empty file and no statement of what failed. That is the
-    // same defect this PR fixed twice already, at `compare`'s error arm and in `ai-perf-gate`;
-    // these were the last two instances of it on the gate's report contract.
+    // Every other refusal on this path publishes a stdout body; an arm that spoke only to stderr
+    // would hand a caller redirecting stdout — the only way this command is used in CI — an empty
+    // file and no statement of what failed.
     //
     // The path stays on stderr because `CompareError` carries the cause but not the file, and a
     // refusal that says "I/O error" without naming which of two inputs it was reading is not

@@ -274,6 +274,8 @@ fn is_comment(line: &str) -> bool {
     line.trim_start().starts_with('#')
 }
 
+const DEBUG_DIR: &str = "target/debug/";
+
 /// `target/debug/<name>` occurrences on the non-comment `ci.yml` lines `keep` selects.
 ///
 /// Shipping a binary to a shard is a CONJUNCTION over two independently editable sites: the
@@ -281,14 +283,13 @@ fn is_comment(line: &str) -> bool {
 /// Actions artifacts drop. Neither implies the other, so the two are scanned separately and
 /// never unioned. `match_indices`, not `find`: the `chmod` line names several binaries.
 fn debug_binaries(ci_yml: &str, keep: impl Fn(&str) -> bool) -> BTreeSet<String> {
-    const PREFIX: &str = "target/debug/";
     let mut names = BTreeSet::new();
     for line in ci_yml
         .lines()
         .filter(|line| !is_comment(line) && keep(line))
     {
-        for (idx, _) in line.match_indices(PREFIX) {
-            let name = binary_name(&line[idx + PREFIX.len()..]);
+        for (idx, _) in line.match_indices(DEBUG_DIR) {
+            let name = binary_name(&line[idx + DEBUG_DIR.len()..]);
             if !name.is_empty() {
                 names.insert(name);
             }
@@ -297,8 +298,20 @@ fn debug_binaries(ci_yml: &str, keep: impl Fn(&str) -> bool) -> BTreeSet<String>
     names
 }
 
+/// Lines that ARE an upload `path:` entry: the whole trimmed content is one `target/debug/<name>`,
+/// as a block-scalar item or as the single-entry inline form. Keyed on any mention instead, a
+/// `run: ls -l target/debug/<name>` elsewhere in the file would enroll a binary the upload step
+/// never carries, and the set-equality assertion would then confirm agreement about a binary that
+/// never reaches the shard. Every command form (`chmod +x …`, `ls -l …`) leaves a prefix, so none
+/// of them can pass this.
 fn uploaded_binaries(ci_yml: &str) -> BTreeSet<String> {
-    debug_binaries(ci_yml, |line| !line.contains("chmod"))
+    debug_binaries(ci_yml, |line| {
+        let entry = line.trim();
+        let entry = entry.strip_prefix("path:").map_or(entry, str::trim_start);
+        entry
+            .strip_prefix(DEBUG_DIR)
+            .is_some_and(|name| name == binary_name(name))
+    })
 }
 
 fn chmod_binaries(ci_yml: &str) -> BTreeSet<String> {
@@ -392,6 +405,39 @@ fn the_upload_and_chmod_scanners_partition_the_file() {
         chmod_binaries(FIXTURE),
         BTreeSet::from(["beta".to_string()])
     );
+}
+
+/// A `target/debug/<name>` that is merely MENTIONED — an `ls`, a `cp`, a diagnostic — is not an
+/// upload `path:` entry. Keyed on any mention, `spare` below joins BOTH sets: every subset
+/// assertion holds and the two sets compare equal, so the suite stays green while `spare` is
+/// never uploaded and its consumer dies at spawn in the shard.
+#[test]
+fn a_mentioned_binary_is_not_an_uploaded_one() {
+    // The three real shapes: a block-scalar `path:` entry, a diagnostic that merely names a
+    // binary, and the chmod line that names both.
+    const FIXTURE: &str = "          path: |
+            target/debug/shipped
+        run: ls -l target/debug/spare
+        run: chmod +x target/debug/shipped target/debug/spare
+";
+
+    assert_eq!(
+        uploaded_binaries(FIXTURE),
+        BTreeSet::from(["shipped".to_string()])
+    );
+    assert_eq!(
+        chmod_binaries(FIXTURE),
+        BTreeSet::from(["shipped".to_string(), "spare".to_string()])
+    );
+    assert_ne!(uploaded_binaries(FIXTURE), chmod_binaries(FIXTURE));
+
+    // The consumer of the un-uploaded binary is named by the upload leg, and only by it.
+    let consumers = BTreeSet::from(["spare".to_string()]);
+    assert_eq!(
+        unshipped(&consumers, &uploaded_binaries(FIXTURE)),
+        vec!["spare".to_string()]
+    );
+    assert!(unshipped(&consumers, &chmod_binaries(FIXTURE)).is_empty());
 }
 
 /// Every `cargo ai-gate` invocation written down in `.github/workflows/`, as `(file, tokens)`.
