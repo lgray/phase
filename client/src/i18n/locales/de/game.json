@@ -530,6 +530,8 @@
     "unboundedConditionalYouTooltip": "Unbegrenzt: {{resource}} (∞) — Auflösung steht aus; dies kann unbegrenzt bleiben, und andernfalls nennst du die Anzahl",
     "unboundedMixedTooltip": "Unbegrenzt: {{resource}} (∞) — ein Teil dieser Gruppe hat eine ausstehende Auflösung; ein Teil bleibt unbegrenzt",
     "unboundedConditionalGlyph": "∞→?",
+    "boundedLoopGlyph": "≤{{bound}}×",
+    "boundedLoopTooltip": "{{resource}} aus einer erkannten Schleife, mit höchstens {{bound}} Wiederholungen",
     "unboundedManaPoolMarker": "Unbegrenztes Mana (∞)",
     "unboundedMana": "Mana",
     "unboundedLife": "Leben",

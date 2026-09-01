@@ -863,6 +863,13 @@ pub struct DerivedViews {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unbounded_pile: Vec<ObjectId>,
 
+    /// CR 732.2a: the open loop-shortcut window's own repetition ceiling — the largest number of
+    /// repetitions the proposal may specify. Absent whenever no such window is open, and absent for
+    /// a window whose producer never narrowed the bound. Display surfaces state it; nothing
+    /// re-derives or clamps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounded_loop_max_repetitions: Option<u32>,
+
     /// CR 122.1 + CR 732.2a: the COMPLETE per-object counter-display projection — every counter
     /// row every display surface renders, for EVERY object that has one, in ANY zone. The single
     /// authority for counter display: the client looks up its object's [`ObjectCounterDisplay`]
@@ -1868,6 +1875,18 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     //
     // Unconditional while a collapse is merely scheduled — see the CR 732 timing block above.
     views.counter_display = counter_display_views(state);
+
+    // CR 732.2a: an open shortcut window states the largest number of repetitions its proposal may
+    // specify. Publish that count; nothing downstream may re-derive it. The `is_bounded()` guard is
+    // the single authority for "the producer narrowed the bound"; an unnarrowed offer publishes
+    // nothing. Emitted HERE, above the Commander short-circuit below, for the same reason the
+    // channels above are.
+    views.bounded_loop_max_repetitions = match &state.waiting_for {
+        WaitingFor::LoopShortcut { schema, .. } if schema.is_bounded() => {
+            Some(schema.max_iterations)
+        }
+        _ => None,
+    };
 
     if state.format_config.commander_damage_threshold.is_none() {
         return views;

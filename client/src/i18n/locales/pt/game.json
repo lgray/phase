@@ -530,6 +530,8 @@
     "unboundedConditionalYouTooltip": "{{resource}} ilimitado (∞) — colapso pendente; isto pode continuar ilimitado e, caso contrário, você indicará a quantidade",
     "unboundedMixedTooltip": "{{resource}} ilimitado (∞) — parte deste grupo tem um colapso pendente; parte continua ilimitada",
     "unboundedConditionalGlyph": "∞→?",
+    "boundedLoopGlyph": "≤{{bound}}×",
+    "boundedLoopTooltip": "{{resource}} de um ciclo detectado, com um máximo de {{bound}} repetições",
     "unboundedManaPoolMarker": "Mana ilimitada (∞)",
     "unboundedMana": "mana",
     "unboundedLife": "vida",

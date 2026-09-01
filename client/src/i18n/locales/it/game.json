@@ -530,6 +530,8 @@
     "unboundedConditionalYouTooltip": "{{resource}} illimitato (∞) — collasso in sospeso; questo può restare illimitato e, in caso contrario, indicherai tu la quantità",
     "unboundedMixedTooltip": "{{resource}} illimitato (∞) — parte di questo gruppo ha un collasso in sospeso; parte resta illimitata",
     "unboundedConditionalGlyph": "∞→?",
+    "boundedLoopGlyph": "≤{{bound}}×",
+    "boundedLoopTooltip": "{{resource}} da un ciclo rilevato, con un massimo di {{bound}} ripetizioni",
     "unboundedManaPoolMarker": "Mana illimitato (∞)",
     "unboundedMana": "mana",
     "unboundedLife": "punti vita",

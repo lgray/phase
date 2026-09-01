@@ -530,6 +530,8 @@
     "unboundedConditionalYouTooltip": "Nieograniczone: {{resource}} (∞) — zwinięcie oczekuje; może pozostać nieograniczone, a jeśli nie — podasz liczbę",
     "unboundedMixedTooltip": "Nieograniczone: {{resource}} (∞) — część tej grupy ma oczekujące zwinięcie; część pozostaje nieograniczona",
     "unboundedConditionalGlyph": "∞→?",
+    "boundedLoopGlyph": "≤{{bound}}×",
+    "boundedLoopTooltip": "{{resource}} z wykrytej pętli, maksymalnie {{bound}} powtórzeń",
     "unboundedManaPoolMarker": "Nieograniczona mana (∞)",
     "unboundedMana": "mana",
     "unboundedLife": "życie",

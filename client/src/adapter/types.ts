@@ -3531,6 +3531,12 @@ export interface DerivedViews {
    */
   unbounded_pile?: ObjectId[];
   /**
+   * CR 732.2a: the open loop-shortcut window's repetition ceiling. Absent when no window is
+   * open, or when the engine never narrowed the bound. Render it; never re-derive it.
+   * Mirrors `engine::game::derived_views::DerivedViews::bounded_loop_max_repetitions`.
+   */
+  bounded_loop_max_repetitions?: number;
+  /**
    * CR 122.1 + CR 732.2a: the COMPLETE per-object counter-display projection, keyed by
    * ObjectId-as-string — every counter row every display surface renders, for every
    * object that has one, in ANY zone (a Skullbriar-class permanent keeps its counters in

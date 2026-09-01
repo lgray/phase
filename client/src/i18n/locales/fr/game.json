@@ -530,6 +530,8 @@
     "unboundedConditionalYouTooltip": "{{resource}} illimité (∞) — réduction en attente ; cela peut rester illimité, et sinon vous indiquerez le nombre",
     "unboundedMixedTooltip": "{{resource}} illimité (∞) — une partie de ce groupe a une réduction en attente ; une partie reste illimitée",
     "unboundedConditionalGlyph": "∞→?",
+    "boundedLoopGlyph": "≤{{bound}}×",
+    "boundedLoopTooltip": "{{resource}} d'une boucle détectée, avec un maximum de {{bound}} répétitions",
     "unboundedManaPoolMarker": "Mana illimité (∞)",
     "unboundedMana": "mana",
     "unboundedLife": "points de vie",

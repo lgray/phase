@@ -583,6 +583,8 @@
     "unboundedConditionalYouTooltip": "Unbounded {{resource}} (∞) — collapse pending; this may stay unbounded, and you'll name the count if it doesn't",
     "unboundedMixedTooltip": "Unbounded {{resource}} (∞) — part of this group has a pending collapse; part remains unbounded",
     "unboundedConditionalGlyph": "∞→?",
+    "boundedLoopGlyph": "≤{{bound}}×",
+    "boundedLoopTooltip": "{{resource}} from a detected loop, bounded at {{bound}} repetitions",
     "unboundedManaPoolMarker": "Unbounded mana (∞)",
     "unboundedMana": "mana",
     "unboundedLife": "life",

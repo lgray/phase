@@ -6016,3 +6016,397 @@ fn p4_row_2_a_later_segment_that_went_illegal_refuses_the_whole_declaration() {
          split above is attributable to the index window rather than to a range-shaped board"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// E — `DerivedViews::bounded_loop_max_repetitions`, the open window's own repetition ceiling
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// **Rows E1 / E2 / E3.** CR 732.2a: a narrowed offer publishes the largest number of
+/// repetitions its proposal may specify; the `∞` channel beside it is neither admitted nor
+/// withheld by that publication; and the channel is absent before the window opens and again
+/// after the accepted drive hands priority back.
+///
+/// # Non-vacuity
+///
+/// The bound is READ OFF the live offer, never written as a literal, so a re-dump that moves the
+/// board's CR 704.5a threshold flows through instead of reddening the row. Every absence leg
+/// carries its matched positive in the same test: the `∞` emptiness at the offer beat is paired
+/// with a hand-marked clone of that same beat, and both `None` readings are paired with the
+/// `Some(..)` this row asserts between them.
+///
+/// # Discrimination
+///
+/// Delete the `derive_views` `LoopShortcut` arm ⇒ the offer-beat assertion reads `None`. Emit
+/// the channel unconditionally ⇒ the load-time and handback legs read `Some(..)`.
+#[test]
+fn e1_a_narrowed_offer_publishes_its_bound_beside_an_untouched_infinity_channel() {
+    use engine::analysis::resource::ResourceAxis;
+    use engine::game::derived_views::derive_views;
+
+    for (label, mut state) in [
+        ("F4", load_f4()),
+        ("MODE1", load_mode1()),
+        ("MODE2", load_mode2()),
+    ] {
+        // ── E3, load leg: no window is open, so there is no ceiling to state.
+        assert_eq!(
+            derive_views(&state, None).bounded_loop_max_repetitions,
+            None,
+            "[{label}] CR 732.2a: a board with no open shortcut window states no ceiling"
+        );
+
+        drive_f4_to_offer(&mut state, 400)
+            .unwrap_or_else(|| panic!("[{label}] reach-guard: the bounded offer must FIRE"));
+        let (proposer, _certificate, schema) = offer_parts(&state);
+        let bound = schema.max_iterations;
+        let bounded = schema.is_bounded();
+        let schema = schema.clone();
+        assert!(
+            bounded && bound > 1,
+            "[{label}] reach-guard: this offer's producer must have NARROWED the bound below the \
+             engine cap, and to more than one repetition — an unnarrowed offer takes the other \
+             arm and a ceiling of 1 could not discriminate. max_iterations={bound} cap={}",
+            MAX_SHORTCUT_CYCLES_MIRROR
+        );
+
+        // ── E1.
+        let views = derive_views(&state, None);
+        assert_eq!(
+            views.bounded_loop_max_repetitions,
+            Some(bound),
+            "[{label}] CR 732.2a: the open window's own ceiling, read off the live offer"
+        );
+
+        // ── E2, both directions on the same beat. The marked clone is the matched positive
+        //    without which the emptiness below could mean the `∞` channel never fills at all.
+        assert!(
+            views.unbounded_resources.is_empty(),
+            "[{label}] the bounded window marks no unbounded resource; got {:?}",
+            views.unbounded_resources
+        );
+        let mut marked = state.clone();
+        marked.mark_unbounded_loop(proposer, &[ResourceAxis::TokensCreated]);
+        let marked_views = derive_views(&marked, None);
+        assert_eq!(
+            marked_views
+                .unbounded_resources
+                .iter()
+                .map(|row| (row.player, row.axis))
+                .collect::<Vec<_>>(),
+            vec![(proposer, ResourceAxis::TokensCreated)],
+            "[{label}] CR 732.2a: a marked `∞` row is published unchanged while the bounded \
+             window is open"
+        );
+        assert_eq!(
+            marked_views.bounded_loop_max_repetitions,
+            Some(bound),
+            "[{label}] and the bound is still stated beside it — neither channel withholds the \
+             other"
+        );
+
+        // ── E3, handback leg: the window's own lifetime ends the channel.
+        let template = f4_pin_template(&schema, proposer, 3);
+        apply(
+            &mut state,
+            proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(3),
+                template: Some(template),
+            },
+        )
+        .unwrap_or_else(|e| panic!("[{label}] the declaration is dispatched: {e:?}"));
+        let responders = accept_all_opponents(&mut state);
+        assert!(
+            responders > 0,
+            "[{label}] reach-guard: the CR 732.2b window must have opened and been answered, \
+             else no drive ran and no window was ever closed"
+        );
+        assert!(
+            matches!(state.waiting_for, WaitingFor::Priority { .. }),
+            "[{label}] reach-guard: CR 732.2a's ending point is a place where a player has \
+             priority; got {:?}",
+            state.waiting_for
+        );
+        assert_eq!(
+            derive_views(&state, None).bounded_loop_max_repetitions,
+            None,
+            "[{label}] CR 732.2a: the closed window states no ceiling — the channel is WITHDRAWN, \
+             not merely never set"
+        );
+    }
+}
+
+/// **Row E4.** The channel is additive on the wire: a `DerivedViews` object serialized before it
+/// existed still decodes, and an absent channel is omitted from emitted JSON.
+///
+/// # Non-vacuity
+///
+/// Each leg carries the opposite-direction control in the same test, because "decodes to `None`"
+/// alone is satisfied by a decoder that never looks at the field, and "the key is absent" alone
+/// is satisfied by a serializer that never emits it.
+///
+/// # Discrimination
+///
+/// Remove `#[serde(default, ..)]` ⇒ the key-absent decode fails; remove
+/// `skip_serializing_if = "Option::is_none"` ⇒ the omitted-key assertion fails.
+#[test]
+fn e4_the_bounded_repetition_channel_is_additive_in_both_directions() {
+    use engine::game::derived_views::DerivedViews;
+
+    const KEY: &str = "bounded_loop_max_repetitions";
+    let absent =
+        serde_json::to_value(DerivedViews::default()).expect("an empty projection serializes");
+    assert!(
+        absent.get(KEY).is_none(),
+        "an absent channel is OMITTED from emitted JSON; got {absent:?}"
+    );
+    assert_eq!(
+        serde_json::from_value::<DerivedViews>(absent.clone())
+            .expect("a projection without the key decodes")
+            .bounded_loop_max_repetitions,
+        None,
+        "a `DerivedViews` object serialized before this channel existed still decodes"
+    );
+
+    let mut present = absent;
+    present[KEY] = serde_json::json!(7);
+    assert_eq!(
+        serde_json::from_value::<DerivedViews>(present)
+            .expect("a projection carrying the key decodes")
+            .bounded_loop_max_repetitions,
+        Some(7),
+        "control: the decoder does read the field, so the `None` above is the default and not a \
+         field the decoder ignores"
+    );
+
+    let emitted = serde_json::to_value(DerivedViews {
+        bounded_loop_max_repetitions: Some(7),
+        ..DerivedViews::default()
+    })
+    .expect("a populated projection serializes");
+    assert_eq!(
+        emitted.get(KEY),
+        Some(&serde_json::json!(7)),
+        "control: the serializer does emit the field, so the omission above is \
+         `skip_serializing_if` and not a field that is never written"
+    );
+}
+
+/// **Rows E5a / E5b / E6.** CR 732.2a: only a producer that NARROWED the bound has a ceiling to
+/// state. An unnarrowed offer publishes nothing, a legal `Fixed(n)` declaration made against
+/// that unnarrowed offer still publishes nothing, and neither does a respond window on a
+/// narrowed offer.
+///
+/// # Non-vacuity
+///
+/// E5b's `None` would pass on a board where the declaration was simply refused, so four
+/// reach-guards run before it: the dispatch returned `Ok`, the respond window is open, the
+/// proposal carries the declared count, and the proposal's axis vector is NON-EMPTY — the vector
+/// the accept path marks, which is what makes a published `n` here a false bound rather than a
+/// merely missing one. E6 is paired with the `Some(..)` read one beat earlier on the same board.
+///
+/// # Discrimination
+///
+/// Drop the `is_bounded()` guard ⇒ E5a reads `Some(cap)`. Add a `RespondToShortcut` arm ⇒ E5b
+/// and E6 both read `Some(n)`.
+#[test]
+fn e5_an_unnarrowed_offer_and_every_respond_window_state_no_ceiling() {
+    use engine::game::derived_views::derive_views;
+
+    for (label, mut state) in [
+        ("F4", load_f4()),
+        ("MODE1", load_mode1()),
+        ("MODE2", load_mode2()),
+    ] {
+        drive_f4_to_offer(&mut state, 400)
+            .unwrap_or_else(|| panic!("[{label}] reach-guard: the bounded offer must FIRE"));
+        let (proposer, _certificate, schema) = offer_parts(&state);
+        let declared = schema.max_iterations;
+        let schema = schema.clone();
+
+        // ── E5a: the same board with its bound un-narrowed to the engine cap.
+        let mut unnarrowed = state.clone();
+        let WaitingFor::LoopShortcut {
+            schema: hostile_schema,
+            ..
+        } = &mut unnarrowed.waiting_for
+        else {
+            panic!("[{label}] the driven beat is the CR 732.2a offer");
+        };
+        hostile_schema.max_iterations = MAX_SHORTCUT_CYCLES_MIRROR;
+        assert!(
+            !hostile_schema.is_bounded(),
+            "[{label}] reach-guard: the mutated board really is UNNARROWED, so the absence below \
+             is the guard's work and not a failure to build the offer"
+        );
+        assert_eq!(
+            derive_views(&unnarrowed, None).bounded_loop_max_repetitions,
+            None,
+            "[{label}] CR 732.2a: a producer that never narrowed the bound has no ceiling to state"
+        );
+
+        // ── E5b: a LEGAL declaration against that unnarrowed offer still states nothing.
+        apply(
+            &mut unnarrowed,
+            proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(declared),
+                template: Some(f4_pin_template(&schema, proposer, declared)),
+            },
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "[{label}] reach-guard: a `Fixed({declared})` under the cap is legal here: {e:?}"
+            )
+        });
+        let WaitingFor::RespondToShortcut { proposal, .. } = &unnarrowed.waiting_for else {
+            panic!(
+                "[{label}] reach-guard: the declaration must open the CR 732.2b window, got {:?}",
+                unnarrowed.waiting_for
+            );
+        };
+        assert_eq!(
+            proposal.count,
+            IterationCount::Fixed(declared),
+            "[{label}] reach-guard: the open window carries the count that was declared"
+        );
+        assert!(
+            !proposal.unbounded.is_empty(),
+            "[{label}] reach-guard: the proposal carries the axis vector the accept path marks — \
+             publishing a count here would be a FALSE bound, not a missing one"
+        );
+        assert_eq!(
+            derive_views(&unnarrowed, None).bounded_loop_max_repetitions,
+            None,
+            "[{label}] CR 732.2a: a proposal carries no boundedness witness, so no respond window \
+             states a ceiling"
+        );
+
+        // ── E6: the same refusal on a NARROWED offer, with its matched positive one beat back.
+        assert_eq!(
+            derive_views(&state, None).bounded_loop_max_repetitions,
+            Some(declared),
+            "[{label}] matched positive: the narrowed offer DOES state its ceiling one beat \
+             before the declaration below"
+        );
+        apply(
+            &mut state,
+            proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(declared),
+                template: Some(f4_pin_template(&schema, proposer, declared)),
+            },
+        )
+        .unwrap_or_else(|e| panic!("[{label}] the declaration is dispatched: {e:?}"));
+        assert!(
+            matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+            "[{label}] reach-guard: the CR 732.2b window is open, got {:?}",
+            state.waiting_for
+        );
+        assert_eq!(
+            derive_views(&state, None).bounded_loop_max_repetitions,
+            None,
+            "[{label}] CR 732.2a: the respond surface is refused UNIFORMLY — narrowed offer or not"
+        );
+    }
+}
+
+/// **Row E7.** CR 732.2a: the ceiling this channel states IS the ceiling the count picker
+/// publishes for the same window — one number in the dialog, not two that could diverge.
+///
+/// # Non-vacuity
+///
+/// The comparison is against the OTHER projection's live output, never against a re-derived
+/// clamp, so it can red independently of E1. The interaction authority is BOUND on the clone
+/// before the read, and the proposer's opportunity list is asserted non-empty first: an unbound
+/// probe can answer `AuthorityUnbound` with no ceiling at all, which is a dead instrument rather
+/// than a disagreement.
+///
+/// # Discrimination
+///
+/// Publish `max_iterations + 1` from the new arm ⇒ the equality reds. The hostile leg is the
+/// unnarrowed board, where the picker still publishes a ceiling at the cap while this channel
+/// states nothing — so no disagreement is representable there.
+#[test]
+fn e7_the_published_bound_is_the_count_pickers_own_ceiling() {
+    use engine::game::derived_views::derive_views;
+    use engine::game::interaction::{bind_interaction_authority, derive_viewer_interaction};
+    use engine::game::visibility::filter_state_for_viewer;
+    use engine::types::interaction::{
+        InteractionOpportunityResponse, InteractionResponseSpec, InteractionSessionId,
+        InteractionShortcutCountSpec,
+    };
+
+    fn published_ceiling(state: &GameState, proposer: PlayerId, label: &str) -> u32 {
+        let mut probe = state.clone();
+        bind_interaction_authority(
+            &mut probe,
+            InteractionSessionId("e7-bounded-channel".to_string()),
+        )
+        .expect("bind the interaction authority over the live offer");
+        let filtered = filter_state_for_viewer(&probe, proposer);
+        let view = derive_viewer_interaction(&probe, &filtered, proposer);
+        assert!(
+            !view.opportunities.is_empty(),
+            "[{label}] liveness control: a bound proposer must read a non-empty opportunity list, \
+             else the ceiling below is an unbound probe's silence"
+        );
+        let InteractionOpportunityResponse::Schema {
+            spec: InteractionResponseSpec::Shortcut { count, .. },
+            ..
+        } = &view.opportunities[0].response
+        else {
+            panic!("[{label}] the live offer publishes a Shortcut response schema");
+        };
+        let InteractionShortcutCountSpec::Fixed { max, .. } = count else {
+            panic!("[{label}] a Fixed count window publishes a ceiling, got {count:?}");
+        };
+        *max
+    }
+
+    for (label, mut state) in [
+        ("F4", load_f4()),
+        ("MODE1", load_mode1()),
+        ("MODE2", load_mode2()),
+    ] {
+        drive_f4_to_offer(&mut state, 400)
+            .unwrap_or_else(|| panic!("[{label}] reach-guard: the bounded offer must FIRE"));
+        let (proposer, _certificate, schema) = offer_parts(&state);
+        let bound = schema.max_iterations;
+        assert!(
+            schema.is_bounded() && bound > 1,
+            "[{label}] reach-guard: a narrowed window with a ceiling above 1 — a ceiling of 1 \
+             could not discriminate a clamp from an identity"
+        );
+
+        assert_eq!(
+            derive_views(&state, None).bounded_loop_max_repetitions,
+            Some(published_ceiling(&state, proposer, label)),
+            "[{label}] CR 732.2a: the badge's number and the count picker's ceiling are the same \
+             engine value"
+        );
+
+        // ── HOSTILE: unnarrowed. The picker still caps at the engine-wide limit while this
+        //    channel states nothing, so the two cannot disagree.
+        let mut unnarrowed = state.clone();
+        let WaitingFor::LoopShortcut {
+            schema: hostile_schema,
+            ..
+        } = &mut unnarrowed.waiting_for
+        else {
+            panic!("[{label}] the driven beat is the CR 732.2a offer");
+        };
+        hostile_schema.max_iterations = MAX_SHORTCUT_CYCLES_MIRROR;
+        assert_eq!(
+            published_ceiling(&unnarrowed, proposer, label),
+            MAX_SHORTCUT_CYCLES_MIRROR,
+            "[{label}] reach-guard: the picker still publishes a ceiling on the unnarrowed board"
+        );
+        assert_eq!(
+            derive_views(&unnarrowed, None).bounded_loop_max_repetitions,
+            None,
+            "[{label}] CR 732.2a: and this channel states nothing there, so no number can \
+             disagree with the picker beside it"
+        );
+    }
+}
