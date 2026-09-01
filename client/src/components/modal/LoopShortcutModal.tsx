@@ -699,7 +699,9 @@ function DeclareShortcutOffer({
         })}
         {showPreviewLines && previewed && <PreviewLines preview={previewed} />}
         {custom &&
-          (authoredPreview ? (
+          // `PreviewLines` states nothing for an element carrying no magnitudes, so the ENTRY
+          // COUNT is the predicate here: an answer without one still states the landed split.
+          (authoredPreview?.entries.length ? (
             <PreviewLines preview={authoredPreview} />
           ) : (
             <p className="text-sm text-slate-300">{t("comboShortcut.customDistribution")}</p>

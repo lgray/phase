@@ -1955,6 +1955,64 @@ describe("DeclareShortcutModal — authored-split preview", () => {
     expect(screen.queryByText(/custom distribution/i)).toBeNull();
   });
 
+  // Row 9(i-c): the switch's third arm. `PreviewLines` states nothing for an element carrying no
+  // magnitudes, so an answer whose entries are empty is a state WITHOUT magnitudes and states the
+  // landed split, exactly as the absent answer the row above covers does.
+  it("renders the custom-distribution state for an answer whose element carries no entries", async () => {
+    const gates: Array<() => void> = [];
+    const previewInteraction = vi.fn(
+      (request: InteractionPreviewRequest) =>
+        new Promise<InteractionPreview>((resolve) => {
+          gates.push(() =>
+            resolve({
+              ...answerWith(request, -9),
+              shortcutPreview: element(5, [amt("k4", 4), amt("k5", 1)]),
+            } as InteractionPreview),
+          );
+        }),
+    );
+    seedPreviewOffer({ adapter: { ...bareAdapter(), previewInteraction } as EngineAdapter });
+    render(<DeclareShortcutModal />);
+
+    authorFourOne();
+    expect(gates).toHaveLength(1);
+    // The answer LANDS here, so the state asserted below is the empty entry list's own — not the
+    // pre-answer state it is spelled the same as.
+    await act(async () => {
+      gates[0]();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/custom distribution/i)).toBeInTheDocument();
+    expect(screen.queryByText(/life — P\d/)).toBeNull();
+    expect(screen.queryByText(/Repeating/)).toBeNull();
+
+    // MANDATORY PAIRED POSITIVE: identical mechanics, ONE entry added to the SAME element, and the
+    // preview arm renders. So the gate above does land an answer, and the fallback is the entry
+    // count's answer rather than a dead transport.
+    cleanup();
+    gates.length = 0;
+    const populated = vi.fn(
+      (request: InteractionPreviewRequest) =>
+        new Promise<InteractionPreview>((resolve) => {
+          gates.push(() => resolve(answerWith(request, -9)));
+        }),
+    );
+    seedPreviewOffer({
+      adapter: { ...bareAdapter(), previewInteraction: populated } as EngineAdapter,
+    });
+    render(<DeclareShortcutModal />);
+    authorFourOne();
+    expect(gates).toHaveLength(1);
+    await act(async () => {
+      gates[0]();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("-9 life — P3")).toBeInTheDocument();
+    expect(screen.queryByText(/custom distribution/i)).toBeNull();
+  });
+
   // Row 9(ii): the effect HANDLES a rejected request. The rendered state is deliberately not the
   // signal — the effect's leading clear makes it identical either way.
   it("leaves no unhandled rejection when the transport fails", async () => {
