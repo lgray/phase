@@ -5,6 +5,7 @@ import { ServerDraftAdapter } from "../server-draft-adapter";
 import { PROTOCOL_VERSION } from "../ws-adapter";
 import type { DraftPlayerView } from "../draft-adapter";
 import type { GameLogEntry, GameState, LegalActionsResult, ObjectAction } from "../types";
+import type { InteractionPreviewRequest } from "../generated/interaction";
 
 // ── MockWebSocket (copied from ws-adapter.test.ts) ─────────────────────
 
@@ -824,6 +825,125 @@ describe("ServerDraftAdapter", () => {
         message: "preview lookup failed",
         recoverable: false,
       });
+    });
+
+    /**
+     * An allocation whose segments are UNEQUAL and whose `choiceId` order is
+     * NOT the candidate publication order, so a sort or a canonicalisation in
+     * the adapter layer is caught rather than coinciding.
+     */
+    const previewRequest = {
+      requestId: "preview-req-1",
+      interactionId: "interaction-1",
+      response: {
+        type: "shortcut",
+        data: {
+          decision: { type: "fixed", data: { iterations: 6 } },
+          pins: [{
+            group: 0,
+            choiceIds: ["choice-c", "choice-a", "choice-b"],
+            amounts: [
+              { choiceId: "choice-c", amount: 3 },
+              { choiceId: "choice-a", amount: 1 },
+              { choiceId: "choice-b", amount: 2 },
+            ],
+          }],
+        },
+      },
+    } as never as InteractionPreviewRequest;
+
+    const previewAnswer = (requestId: string) => ({
+      requestId,
+      interactionId: "interaction-1",
+      status: { type: "confirmable" },
+      progress: { selected: 3, minimum: 1, maximum: 3, aggregate: 6, confirmable: true },
+      outcome: "advanced",
+      summaries: ["confirmAvailable", "progress"],
+    });
+
+    function sentPreviewFrame() {
+      const calls = ws.send.mock.calls;
+      for (let i = calls.length - 1; i >= 0; i--) {
+        const parsed = JSON.parse(calls[i][0] as string);
+        if (parsed.type === "PreviewInteraction") return parsed;
+      }
+      throw new Error("no PreviewInteraction frame was sent");
+    }
+
+    // Row 8, draft-adapter leg.
+    it("sends the authored request verbatim and resolves its own answer", async () => {
+      ws.send.mockClear();
+      const pending = adapter.previewInteraction(previewRequest, 0);
+
+      const frame = sentPreviewFrame();
+      expect(frame.type).toBe("PreviewInteraction");
+      expect(frame.data.request).toEqual(previewRequest);
+      const pin = frame.data.request.response.data.pins[0];
+      // Reach guard: more than one segment, so dropping all but the first fails.
+      expect(pin.amounts.length).toBeGreaterThan(1);
+      expect(pin.amounts).toEqual([
+        { choiceId: "choice-c", amount: 3 },
+        { choiceId: "choice-a", amount: 1 },
+        { choiceId: "choice-b", amount: 2 },
+      ]);
+      expect(pin.amounts.map((a: { choiceId: string }) => a.choiceId)).toEqual(pin.choiceIds);
+
+      ws.dispatchSynthetic(
+        "message",
+        JSON.stringify({
+          type: "InteractionPreview",
+          data: { preview: previewAnswer("preview-req-1") },
+        }),
+      );
+      await expect(pending).resolves.toMatchObject({ requestId: "preview-req-1" });
+    });
+
+    // Row 12, close-site leg on this adapter.
+    it("rejects in-flight previews on socket close, keeping answered ones", async () => {
+      const answered = adapter.previewInteraction(previewRequest, 0);
+      const unanswered = adapter.previewInteraction(
+        { ...previewRequest, requestId: "preview-req-2" } as InteractionPreviewRequest,
+        0,
+      );
+
+      ws.dispatchSynthetic(
+        "message",
+        JSON.stringify({
+          type: "InteractionPreview",
+          data: { preview: previewAnswer("preview-req-1") },
+        }),
+      );
+      await expect(answered).resolves.toMatchObject({ requestId: "preview-req-1" });
+
+      ws.dispatchSynthetic("close");
+      await expect(answered).resolves.toMatchObject({ requestId: "preview-req-1" });
+      await expect(unanswered).rejects.toMatchObject({
+        code: "WS_CLOSED",
+        message: "Connection closed during interaction preview",
+      });
+    });
+
+    // Row 12, dispose-site leg. THIS is the site a single-site wiring drops —
+    // measured on the mana twin, deleting only the `dispose` call leaves this
+    // promise never settling while the close-site leg above still passes.
+    it("rejects in-flight previews when the adapter is disposed", async () => {
+      const pending = adapter.previewInteraction(previewRequest, 0);
+      adapter.dispose();
+      await expect(pending).rejects.toMatchObject({
+        code: "WS_CLOSED",
+        message: "Adapter disposed during interaction preview",
+      });
+    });
+
+    // The draft adapter's own precondition, which its WS twin does not carry.
+    it("refuses a preview outside the match phase", async () => {
+      const lobbyAdapter = new ServerDraftAdapter("ws://localhost:9374/ws");
+      await expect(lobbyAdapter.previewInteraction(previewRequest, 0)).rejects.toMatchObject({
+        code: "PHASE_ERROR",
+      });
+      // Reach guard: the adapter under test IS in the match phase, so the
+      // refusal above is the precondition and not a universally-throwing method.
+      expect(adapter.currentPhase).toBe("match");
     });
   });
 });

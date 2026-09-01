@@ -34,7 +34,7 @@ use engine::types::action_rejection::{ActionRejection, ActionRejectionCode};
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
 use engine::types::game_state::{GameState, TrustedGameStateEnvelope};
-use engine::types::interaction::InteractionSubmission;
+use engine::types::interaction::{InteractionPreviewRequest, InteractionSubmission};
 use engine::types::player::PlayerId;
 use engine::types::GameLogEntry;
 use http::{HeaderMap, HeaderValue};
@@ -1165,6 +1165,7 @@ fn reject_if_disabled(msg: &ClientMessage, mode: ServerMode) -> Option<&'static 
         | ClientMessage::JoinGame { .. }
         | ClientMessage::Action { .. }
         | ClientMessage::Interaction { .. }
+        | ClientMessage::PreviewInteraction { .. }
         | ClientMessage::PreviewManaPayment { .. }
         | ClientMessage::ExportAuthoritativeState
         | ClientMessage::Reconnect { .. }
@@ -1425,6 +1426,7 @@ fn full_socket_authority(message: &ClientMessage) -> FullSocketAuthority {
 
         ClientMessage::Action { .. }
         | ClientMessage::Interaction { .. }
+        | ClientMessage::PreviewInteraction { .. }
         | ClientMessage::PreviewManaPayment { .. }
         | ClientMessage::ExportAuthoritativeState
         | ClientMessage::AbandonGame
@@ -5543,6 +5545,12 @@ fn operation_failed_message(msg: &ClientMessage, message: String) -> Option<Serv
         ClientMessage::ExportAuthoritativeState => {
             Some(ServerMessage::AuthoritativeStateExportFailed { message })
         }
+        ClientMessage::PreviewInteraction { request } => {
+            Some(ServerMessage::InteractionPreviewFailed {
+                request_id: request.request_id.clone(),
+                message,
+            })
+        }
         ClientMessage::ClientHello { .. }
         | ClientMessage::CreateGame { .. }
         | ClientMessage::JoinGame { .. }
@@ -5654,6 +5662,69 @@ impl GameSubmission {
             }
         }
     }
+}
+
+/// Answer one interaction preview to its requester alone.
+///
+/// Takes NO socket: the reply rides the connection's own `tx`, which shares the
+/// one `biased` `tokio::select!` loop with `socket.recv()` on a single task, so
+/// it reaches exactly this socket with no interleaving hazard. That is also why
+/// this is a free function rather than an inline dispatch arm — `axum`'s
+/// `WebSocket` has no test constructor, so a socket-taking handler could not be
+/// driven from a test at all.
+///
+/// `connections` is read only through the socket-currency check; nothing is
+/// broadcast, and no lock is held across the send.
+async fn handle_preview_interaction(
+    request: InteractionPreviewRequest,
+    state: &SharedState,
+    connections: &SharedConnections,
+    tx: &mpsc::UnboundedSender<ServerMessage>,
+    identity: &SocketIdentity,
+) {
+    let request_id = request.request_id.clone();
+    let response = match (identity.game_code.clone(), identity.player_token.clone()) {
+        (Some(game_code), Some(player_token)) => {
+            let mgr = state.lock().await;
+            if !full_socket_is_current_while_state_locked(&mgr, connections, identity, tx).await {
+                ServerMessage::InteractionPreviewFailed {
+                    request_id,
+                    message: FULL_SOCKET_AUTHORITY_REJECTION.to_string(),
+                }
+            } else {
+                // No handler-level payload re-guard, deliberately:
+                // `guard_client_message_before_dispatch` already charged this
+                // frame at the wire, and `preview_interaction` re-charges every
+                // member and answers its own `PayloadTooLarge` INSIDE the
+                // preview — a correlated, non-tearing answer on this request's
+                // own channel, identical to what the local WASM seat gets.
+                match mgr.preview_interaction_with_rejection(&game_code, &player_token, &request) {
+                    Ok(preview) => ServerMessage::InteractionPreview { preview },
+                    Err(SessionActionError::Rejected(rejection)) => {
+                        ServerMessage::InteractionPreviewFailed {
+                            request_id,
+                            message: rejection.message,
+                        }
+                    }
+                    Err(SessionActionError::RequestRejected(reason)) => {
+                        ServerMessage::RequestRejected { reason }
+                    }
+                    Err(SessionActionError::Operational(error)) => {
+                        ServerMessage::InteractionPreviewFailed {
+                            request_id,
+                            message: error,
+                        }
+                    }
+                }
+            }
+        }
+        _ => ServerMessage::InteractionPreviewFailed {
+            request_id,
+            message: "Not in a game".to_string(),
+        },
+    };
+
+    let _ = tx.send(response);
 }
 
 /// Apply one authenticated game submission from a Full-mode game socket, then
@@ -6808,6 +6879,10 @@ async fn handle_client_message(
             if let Ok(json) = serde_json::to_string(&response) {
                 let _ = socket.send(Message::text(json)).await;
             }
+        }
+
+        ClientMessage::PreviewInteraction { request } => {
+            handle_preview_interaction(request, state, connections, tx, identity).await;
         }
 
         ClientMessage::Action { action } => {
@@ -10594,6 +10669,412 @@ mod ranked_tests {
         assert!(ranked_duel_players_for_room(false, 2, false, &display_names).is_none());
         assert!(ranked_duel_players_for_room(true, 3, false, &display_names).is_none());
         assert!(ranked_duel_players_for_room(true, 2, true, &display_names).is_none());
+    }
+}
+
+#[cfg(test)]
+mod interaction_preview_route_tests {
+    use super::*;
+    use engine::game::deck_loading::PlayerDeckPayload;
+    use engine::types::interaction::{
+        InteractionAvailability, InteractionPreview, InteractionPreviewRequest,
+        InteractionPreviewStatus, InteractionSubmission, PreviewRequestId,
+    };
+    use server_core::filter_state_for_player;
+    use server_core::{AiDriverFailure, AiDriverFault};
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    fn empty_identity() -> SocketIdentity {
+        SocketIdentity {
+            game_code: None,
+            player_id: None,
+            player_token: None,
+            lobby_subscribed: false,
+            session_span: None,
+            client_hello: None,
+            lobby_host_game: None,
+            seat_reservations: Vec::new(),
+            lobby_reservations: Vec::new(),
+            lobby_organized_tournaments: Vec::new(),
+            lobby_joined_tournaments: Vec::new(),
+            draft_code: None,
+            draft_seat: None,
+            draft_token: None,
+            spectator_draft_code: None,
+            spectator_visibility: None,
+            spectator_game_code: None,
+        }
+    }
+
+    /// The witness is minted by `derive_viewer_interaction`, never hand-built:
+    /// a fabricated id would be indistinguishable from a stale one.
+    fn live_witness(
+        manager: &SessionManager,
+        game_code: &str,
+        token0: &str,
+        token1: &str,
+    ) -> (String, String, InteractionSubmission) {
+        let state = &manager.sessions.get(game_code).expect("session").state;
+        for (player, token, other) in [(PlayerId(0), token0, token1), (PlayerId(1), token1, token0)]
+        {
+            let filtered = filter_state_for_player(state, player);
+            let view = derive_viewer_interaction(state, &filtered, player);
+            if let InteractionAvailability::ProgressAvailable { witness } = view.availability {
+                return (token.to_string(), other.to_string(), witness);
+            }
+        }
+        panic!("a started session must publish a progress witness for some seat");
+    }
+
+    /// Two seats, both senders installed through the production
+    /// `attach_full_seat`, plus a live engine-minted preview request for
+    /// whichever seat holds the capability.
+    async fn two_seat_table() -> (
+        SharedState,
+        SharedConnections,
+        String,
+        InteractionPreviewRequest,
+        (
+            SocketIdentity,
+            mpsc::UnboundedSender<ServerMessage>,
+            mpsc::UnboundedReceiver<ServerMessage>,
+        ),
+        (
+            SocketIdentity,
+            mpsc::UnboundedSender<ServerMessage>,
+            mpsc::UnboundedReceiver<ServerMessage>,
+        ),
+    ) {
+        let mut manager = SessionManager::new();
+        let (game_code, token0) = manager.create_game(PlayerDeckPayload::default());
+        let (token1, _) = manager
+            .join_game(&game_code, PlayerDeckPayload::default())
+            .expect("the second seat joins and starts the game");
+        let (acting_token, other_token, witness) =
+            live_witness(&manager, &game_code, &token0, &token1);
+
+        let request = InteractionPreviewRequest {
+            request_id: PreviewRequestId("req-1".to_string()),
+            interaction_id: witness.interaction_id.clone(),
+            response: witness.response.clone(),
+        };
+
+        let state: SharedState = Arc::new(Mutex::new(manager));
+        let connections: SharedConnections = Arc::new(Mutex::new(HashMap::new()));
+
+        let (requester_tx, requester_rx) = mpsc::unbounded_channel();
+        let mut requester_identity = empty_identity();
+        attach_full_seat(
+            &state,
+            &connections,
+            &mut requester_identity,
+            game_code.clone(),
+            acting_token,
+            &requester_tx,
+        )
+        .await
+        .expect("the requesting seat attaches");
+
+        let (other_tx, other_rx) = mpsc::unbounded_channel();
+        let mut other_identity = empty_identity();
+        attach_full_seat(
+            &state,
+            &connections,
+            &mut other_identity,
+            game_code.clone(),
+            other_token,
+            &other_tx,
+        )
+        .await
+        .expect("the second seat attaches");
+
+        (
+            state,
+            connections,
+            game_code,
+            request,
+            (requester_identity, requester_tx, requester_rx),
+            (other_identity, other_tx, other_rx),
+        )
+    }
+
+    fn fault() -> AiDriverFault {
+        AiDriverFault {
+            id: 1,
+            after_state_revision: 0,
+            cause: AiDriverFailure::ActionSafetyCapReached { limit: 1 },
+        }
+    }
+
+    /// Row 1. Fan the answer out through `connections` and the negative below
+    /// fails: the other seat's `rx` yields a frame.
+    #[tokio::test]
+    async fn preview_answers_the_requester_and_no_other_seat() {
+        let (
+            state,
+            connections,
+            game_code,
+            request,
+            (requester_identity, requester_tx, mut requester_rx),
+            (_other_identity, _other_tx, mut other_rx),
+        ) = two_seat_table().await;
+
+        handle_preview_interaction(
+            request.clone(),
+            &state,
+            &connections,
+            &requester_tx,
+            &requester_identity,
+        )
+        .await;
+
+        // Positive (i): the route ran. An unreached route yields an empty channel,
+        // which would also satisfy the negative below.
+        let preview: InteractionPreview = match requester_rx
+            .try_recv()
+            .expect("the requesting seat is answered")
+        {
+            ServerMessage::InteractionPreview { preview } => preview,
+            other => panic!("the requester must receive a preview, got {other:?}"),
+        };
+        assert!(
+            matches!(preview.status, InteractionPreviewStatus::Confirmable),
+            "the answer must reach the reducer simulation: {:?}",
+            preview.status
+        );
+        assert_eq!(preview.request_id, request.request_id);
+        assert_eq!(preview.interaction_id, request.interaction_id);
+        assert!(matches!(requester_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        // The negative.
+        assert!(
+            matches!(other_rx.try_recv(), Err(TryRecvError::Empty)),
+            "a preview must reach no seat but the requester"
+        );
+
+        // Positive (ii): the instrument is alive. The landed production fan-out
+        // over the SAME `connections` map fills the SAME receiver, so a dead
+        // channel cannot pass both legs of this row.
+        broadcast_ai_failure(&connections, &game_code, Some(fault())).await;
+        assert!(
+            matches!(other_rx.try_recv(), Ok(ServerMessage::AiDriverFault { .. })),
+            "the second seat's channel is reachable by a real fan-out"
+        );
+    }
+
+    /// Row 1's sibling: the socket-currency check refuses a sender that is not
+    /// the one registered for this seat, and answers on the correlated channel.
+    #[tokio::test]
+    async fn preview_from_a_superseded_socket_is_refused() {
+        let (
+            state,
+            connections,
+            _game_code,
+            request,
+            (requester_identity, _requester_tx, mut requester_rx),
+            (_other_identity, _other_tx, _other_rx),
+        ) = two_seat_table().await;
+
+        let (stale_tx, mut stale_rx) = mpsc::unbounded_channel();
+        handle_preview_interaction(
+            request.clone(),
+            &state,
+            &connections,
+            &stale_tx,
+            &requester_identity,
+        )
+        .await;
+
+        match stale_rx.try_recv().expect("the stale socket is answered") {
+            ServerMessage::InteractionPreviewFailed {
+                request_id,
+                message,
+            } => {
+                assert_eq!(request_id, request.request_id);
+                assert_eq!(message, FULL_SOCKET_AUTHORITY_REJECTION);
+            }
+            other => panic!("expected a correlated authority refusal, got {other:?}"),
+        }
+        assert!(
+            matches!(requester_rx.try_recv(), Err(TryRecvError::Empty)),
+            "a refused stale socket must not leak an answer to the live seat"
+        );
+    }
+
+    /// A socket with no attached seat never reaches the session at all, and is
+    /// still answered on the correlated channel rather than left hanging.
+    #[tokio::test]
+    async fn preview_before_joining_is_refused_on_the_correlated_channel() {
+        let (state, connections, _game_code, request, _requester, _other) = two_seat_table().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_preview_interaction(
+            request.clone(),
+            &state,
+            &connections,
+            &tx,
+            &empty_identity(),
+        )
+        .await;
+
+        match rx.try_recv().expect("a pre-join preview is answered") {
+            ServerMessage::InteractionPreviewFailed {
+                request_id,
+                message,
+            } => {
+                assert_eq!(request_id, request.request_id);
+                assert_eq!(message, "Not in a game");
+            }
+            other => panic!("expected a correlated refusal, got {other:?}"),
+        }
+    }
+
+    /// Row 11's transport half: a session-level refusal reaches the client as a
+    /// correlated failure carrying the session's own reason, not as an `Error`
+    /// (which the native client treats as a session teardown).
+    #[tokio::test]
+    async fn an_interlocked_session_answers_a_correlated_failure_not_an_error() {
+        let (
+            state,
+            connections,
+            game_code,
+            request,
+            (requester_identity, requester_tx, mut requester_rx),
+            (_other_identity, _other_tx, _other_rx),
+        ) = two_seat_table().await;
+
+        {
+            let mut manager = state.lock().await;
+            let session = manager.sessions.get_mut(&game_code).expect("session");
+            session.ai_driver_fault = Some(fault());
+        }
+
+        handle_preview_interaction(
+            request.clone(),
+            &state,
+            &connections,
+            &requester_tx,
+            &requester_identity,
+        )
+        .await;
+
+        match requester_rx.try_recv().expect("the requester is answered") {
+            ServerMessage::InteractionPreviewFailed {
+                request_id,
+                message,
+            } => {
+                assert_eq!(request_id, request.request_id);
+                assert!(
+                    message.contains("Native AI driver fault"),
+                    "the session's own reason must ride the correlated channel: {message}"
+                );
+            }
+            other => panic!("an interlock must not tear the session down: {other:?}"),
+        }
+
+        // Reach guard: with the interlock cleared the identical request is
+        // answered, so the failure above is the interlock and not a broken table.
+        {
+            let mut manager = state.lock().await;
+            manager
+                .sessions
+                .get_mut(&game_code)
+                .expect("session")
+                .ai_driver_fault = None;
+        }
+        handle_preview_interaction(
+            request,
+            &state,
+            &connections,
+            &requester_tx,
+            &requester_identity,
+        )
+        .await;
+        assert!(matches!(
+            requester_rx.try_recv(),
+            Ok(ServerMessage::InteractionPreview { .. })
+        ));
+    }
+
+    /// Row 5's non-compiler-enforced leg. `to_lobby_client_message` carries
+    /// `_ => return None`, so no compile error would catch a preview leaking
+    /// into a broker clone. `SubscribeLobby` is the in-test positive: without
+    /// it a wholesale-`None` regression would satisfy this.
+    #[test]
+    fn preview_is_never_projected_into_the_lobby_broker() {
+        let frame = ClientMessage::PreviewInteraction {
+            request: InteractionPreviewRequest {
+                request_id: PreviewRequestId("req-1".to_string()),
+                interaction_id: engine::types::interaction::InteractionId("i-1".to_string()),
+                response: engine::types::interaction::InteractionResponse::Choose {
+                    choice_id: engine::types::interaction::InteractionChoiceId("a".to_string()),
+                },
+            },
+        };
+        assert!(to_lobby_client_message(&frame).is_none());
+        assert!(to_lobby_client_message(&ClientMessage::SubscribeLobby).is_some());
+    }
+
+    /// Row 5's three compiler-enforced legs, asserted by value rather than by
+    /// "it compiled": the preview is classified exactly as `Interaction` is at
+    /// each, and its operational failure is CORRELATED where `Interaction`'s is
+    /// not — an uncorrelated `ActionFailed` would leave the pending promise
+    /// hanging. Move it to `reject_if_disabled`'s always-allowed group and the
+    /// LobbyOnly leg fails; give it `Independent` and the authority leg fails.
+    #[test]
+    fn preview_is_classified_exactly_as_its_submission_sibling() {
+        let request = InteractionPreviewRequest {
+            request_id: PreviewRequestId("req-1".to_string()),
+            interaction_id: engine::types::interaction::InteractionId("i-1".to_string()),
+            response: engine::types::interaction::InteractionResponse::Choose {
+                choice_id: engine::types::interaction::InteractionChoiceId("a".to_string()),
+            },
+        };
+        let preview = ClientMessage::PreviewInteraction {
+            request: request.clone(),
+        };
+        let interaction = ClientMessage::Interaction {
+            submission: InteractionSubmission {
+                interaction_id: request.interaction_id.clone(),
+                response: request.response.clone(),
+            },
+        };
+
+        assert!(reject_if_disabled(&preview, ServerMode::Full).is_none());
+        assert!(reject_if_disabled(&preview, ServerMode::LobbyOnly).is_some());
+        assert_eq!(
+            reject_if_disabled(&preview, ServerMode::LobbyOnly),
+            reject_if_disabled(&interaction, ServerMode::LobbyOnly)
+        );
+
+        assert_eq!(
+            full_socket_authority(&preview),
+            FullSocketAuthority::CurrentSeat
+        );
+        assert_eq!(
+            full_socket_authority(&preview),
+            full_socket_authority(&interaction)
+        );
+        // Non-vacuity for the equality above: not every variant is CurrentSeat.
+        assert_eq!(
+            full_socket_authority(&ClientMessage::Ping { timestamp: 1 }),
+            FullSocketAuthority::Independent
+        );
+
+        match operation_failed_message(&preview, "disabled".to_string()) {
+            Some(ServerMessage::InteractionPreviewFailed {
+                request_id,
+                message,
+            }) => {
+                assert_eq!(request_id, request.request_id);
+                assert_eq!(message, "disabled");
+            }
+            other => panic!("a preview failure must stay correlated, got {other:?}"),
+        }
+        assert!(matches!(
+            operation_failed_message(&interaction, "disabled".to_string()),
+            Some(ServerMessage::ActionFailed { .. })
+        ));
     }
 }
 

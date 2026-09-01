@@ -7,7 +7,9 @@ use engine::types::events::GameEvent;
 use engine::types::format::FormatConfig;
 use engine::types::game_state::GameState;
 use engine::types::identifiers::ObjectId;
-use engine::types::interaction::InteractionSubmission;
+use engine::types::interaction::{
+    InteractionPreview, InteractionPreviewRequest, InteractionSubmission, PreviewRequestId,
+};
 use engine::types::log::GameLogEntry;
 use engine::types::mana::ManaCost;
 use engine::types::match_config::MatchConfig;
@@ -314,6 +316,17 @@ pub enum ClientMessage {
     /// See `client_message_wire_guard::wire_rejection_message`.
     Interaction {
         submission: InteractionSubmission,
+    },
+    /// Read-only preview of one engine-authored interaction response. The client
+    /// echoes the request it minted; the authenticated session — not the payload —
+    /// determines the acting seat.
+    ///
+    /// The answer never travels on `ServerMessage::Error`: like `Interaction`, a
+    /// preview is a routine client decision, and the native client tears the
+    /// session down on any `Error`. Both answer variants carry the request's
+    /// `PreviewRequestId` so the caller's pending promise settles.
+    PreviewInteraction {
+        request: InteractionPreviewRequest,
     },
     Reconnect {
         game_code: String,
@@ -754,6 +767,20 @@ pub enum ServerMessage {
     AuthoritativeStateExportFailed {
         message: String,
     },
+    /// Answer to a `PreviewInteraction` request, carrying the engine's own DTO —
+    /// including its `Rejected` status, so there is no `*Rejected` sibling. Sent
+    /// only to the requesting player.
+    InteractionPreview {
+        preview: InteractionPreview,
+    },
+    /// Correlated operational failure for an interaction preview: the session
+    /// could not be reached, was interlocked, or the socket is no longer
+    /// current. Never `Error`, which the native client treats as a session
+    /// teardown.
+    InteractionPreviewFailed {
+        request_id: PreviewRequestId,
+        message: String,
+    },
     OpponentDisconnected {
         grace_seconds: u32,
         #[serde(default)]
@@ -1131,6 +1158,109 @@ mod tests {
                 assert_eq!(source_ids, vec![ObjectId(12)]);
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    fn preview_request() -> InteractionPreviewRequest {
+        use engine::types::interaction::{InteractionChoiceId, InteractionId, InteractionResponse};
+        InteractionPreviewRequest {
+            request_id: PreviewRequestId("req-1".to_string()),
+            interaction_id: InteractionId("interaction-1".to_string()),
+            response: InteractionResponse::Choose {
+                choice_id: InteractionChoiceId("a".to_string()),
+            },
+        }
+    }
+
+    /// Row 7's full-game leg. The known tag is the positive control on the
+    /// identical decoder in the same test: without it, the `Err` below would
+    /// be indistinguishable from a decoder that rejects everything.
+    #[test]
+    fn client_message_interaction_preview_roundtrips_and_an_unknown_tag_is_a_benign_err() {
+        let request = preview_request();
+        let json = serde_json::to_string(&ClientMessage::PreviewInteraction {
+            request: request.clone(),
+        })
+        .unwrap();
+        let parsed: ClientMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ClientMessage::PreviewInteraction { request: restored } => {
+                assert_eq!(restored, request);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // The cross-language contract the three adapters send against:
+        // `ClientMessage` carries no `rename_all`, so `data` is snake_case
+        // while the engine DTO inside it is camelCase.
+        assert_eq!(
+            json,
+            r#"{"type":"PreviewInteraction","data":{"request":{"requestId":"req-1","interactionId":"interaction-1","response":{"type":"choose","data":{"choiceId":"a"}}}}}"#
+        );
+
+        // The decode loop answers this `Err` with `ServerMessage::error` and
+        // continues; a peer that does not know the new tag degrades to phase
+        // 7's rendering rather than losing its session.
+        assert!(serde_json::from_str::<ClientMessage>(
+            r#"{"type":"PreviewInteractionFromTheFuture","data":{}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn server_message_interaction_preview_roundtrips() {
+        use engine::types::interaction::{
+            InteractionOutcomeCode, InteractionPreviewStatus, InteractionProgress,
+            InteractionSummaryCode,
+        };
+        let request = preview_request();
+        let preview = InteractionPreview {
+            request_id: request.request_id.clone(),
+            interaction_id: request.interaction_id.clone(),
+            status: InteractionPreviewStatus::Confirmable,
+            progress: InteractionProgress {
+                confirmable: true,
+                ..InteractionProgress::default()
+            },
+            outcome: InteractionOutcomeCode::Advanced,
+            summaries: vec![InteractionSummaryCode::ConfirmAvailable],
+            shortcut_preview: None,
+        };
+
+        let json = serde_json::to_string(&ServerMessage::InteractionPreview {
+            preview: preview.clone(),
+        })
+        .unwrap();
+        let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ServerMessage::InteractionPreview { preview: restored } => {
+                assert_eq!(restored, preview);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // The failure frame is correlated: the adapter keys its pending map on
+        // this field, so an uncorrelated frame would leave a promise hanging.
+        // `ServerMessage` carries no `rename_all`, so this field is snake_case
+        // on the wire while the DTO inside `InteractionPreview` is camelCase.
+        let failed = serde_json::to_string(&ServerMessage::InteractionPreviewFailed {
+            request_id: request.request_id.clone(),
+            message: "preview lookup failed".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            failed,
+            r#"{"type":"InteractionPreviewFailed","data":{"request_id":"req-1","message":"preview lookup failed"}}"#
+        );
+        match serde_json::from_str::<ServerMessage>(&failed).unwrap() {
+            ServerMessage::InteractionPreviewFailed {
+                request_id,
+                message,
+            } => {
+                assert_eq!(request_id, request.request_id);
+                assert_eq!(message, "preview lookup failed");
+            }
+            other => panic!("wrong variant: {other:?}"),
         }
     }
 

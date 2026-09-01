@@ -49,8 +49,8 @@ pub enum ServerErrorCode {
 ///      so both directions are stated. v58 → v59 fails on EVERY shortcut offer: the
 ///      old field carried no `skip_serializing_if`, so a v58 peer always emits the
 ///      key, and neither `null` nor an object deserializes into a sequence.
-///      v58 → v57 fails only on an offer that actually carries a preview, because
-///      an empty list omits the key and a v57 peer's `Option` field reads that as
+///      v59 → v58 fails only on an offer that actually carries a preview, because
+///      an empty list omits the key and a v58 peer's `Option` field reads that as
 ///      `None`. The retype breaks the declared Rust types, but no production Rust
 ///      code deserializes `ServerMessage` — the browser half is what decodes those
 ///      frames, with `JSON.parse` and no validation, which is why the handshake is

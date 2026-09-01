@@ -27,7 +27,9 @@ use engine::types::events::GameEvent;
 use engine::types::format::FormatConfig;
 use engine::types::game_state::{GameState, PersistedGameState};
 use engine::types::identifiers::ObjectId;
-use engine::types::interaction::{InteractionSessionId, InteractionSubmission};
+use engine::types::interaction::{
+    InteractionPreview, InteractionPreviewRequest, InteractionSessionId, InteractionSubmission,
+};
 use engine::types::log::GameLogEntry;
 use engine::types::mana::ManaCost;
 use engine::types::match_config::MatchConfig;
@@ -1691,6 +1693,53 @@ impl SessionManager {
             action,
         )
         .map_err(SessionActionError::Rejected)
+    }
+
+    /// Answers the preview a player authored without moving the authenticated
+    /// session. Sibling of `handle_interaction_with_rejection` minus everything
+    /// that mutates: no `session.state` write, no `push_takeback_state`, no
+    /// `log_player_names` write, no `observe_transition`, no game-log write and
+    /// no broadcast. `&self`, not `&mut self`, so that subtraction is enforced
+    /// by the borrow checker before any test runs.
+    ///
+    /// `preview_interaction` — not `preview_interaction_with_rejection` — is
+    /// the callee on purpose: it is the function `preview_interaction_js`
+    /// already calls, so a networked seat's answer is byte-identical to the
+    /// local seat's for the same request, and every engine-level refusal rides
+    /// inside `InteractionPreviewStatus::Rejected` rather than needing a
+    /// rejection channel of its own.
+    pub fn preview_interaction_with_rejection(
+        &self,
+        game_code: &str,
+        player_token: &str,
+        request: &InteractionPreviewRequest,
+    ) -> Result<InteractionPreview, SessionActionError> {
+        let session = self
+            .sessions
+            .get(game_code)
+            .ok_or_else(|| format!("Game not found: {game_code}"))?;
+        session.reject_if_ai_driver_faulted()?;
+        let player = session
+            .player_for_token(player_token)
+            .ok_or_else(|| "Invalid player token".to_string())?;
+
+        // GH #1507: the authoritative state must not move while the table is
+        // voting on a rollback. Copied from `handle_interaction_with_rejection`
+        // rather than from `preview_mana_payment_with_rejection`, which carries
+        // no such interlock — a divergence from the traced sibling, taken
+        // because a preview answered mid-vote describes a board the vote is
+        // about to discard.
+        if session.pending_takeback.is_some() {
+            return Err(SessionActionError::Rejected(ActionRejection::new(
+                engine::types::action_rejection::ActionRejectionCode::ActionNotAllowed,
+            )));
+        }
+
+        Ok(engine::game::interaction::preview_interaction(
+            &session.state,
+            player,
+            request,
+        ))
     }
 
     /// Handle a game action from a player.
@@ -6759,6 +6808,273 @@ mod tests {
         mgr.sessions.get_mut(&code).unwrap().pending_takeback = None;
         mgr.handle_interaction(&code, acting_token, witness)
             .expect("with no pending takeback the same submission applies");
+    }
+
+    fn preview_request(
+        id: &str,
+        witness: &InteractionSubmission,
+    ) -> engine::types::interaction::InteractionPreviewRequest {
+        engine::types::interaction::InteractionPreviewRequest {
+            request_id: engine::types::interaction::PreviewRequestId(id.to_string()),
+            interaction_id: witness.interaction_id.clone(),
+            response: witness.response.clone(),
+        }
+    }
+
+    /// Three pins whose `amounts` are each under `MAX_INTERACTION_LIST_LEN` and
+    /// whose sum is not — the cumulative branch a naive per-field guard misses.
+    fn oversized_preview_request(
+        id: &str,
+        witness: &InteractionSubmission,
+    ) -> engine::types::interaction::InteractionPreviewRequest {
+        use engine::types::interaction::{
+            AmountAssignment, InteractionShortcutDecision, InteractionShortcutPin,
+        };
+        let per_pin = MAX_INTERACTION_LIST_LEN / 2;
+        let pins: Vec<InteractionShortcutPin> = (0..3)
+            .map(|group| InteractionShortcutPin {
+                group,
+                choice_ids: vec![InteractionChoiceId("a".to_string())],
+                amounts: vec![
+                    AmountAssignment {
+                        choice_id: InteractionChoiceId("a".to_string()),
+                        amount: 1,
+                    };
+                    per_pin
+                ],
+            })
+            .collect();
+        for pin in &pins {
+            assert!(pin.amounts.len() <= MAX_INTERACTION_LIST_LEN);
+        }
+        engine::types::interaction::InteractionPreviewRequest {
+            request_id: engine::types::interaction::PreviewRequestId(id.to_string()),
+            interaction_id: witness.interaction_id.clone(),
+            response: engine::types::interaction::InteractionResponse::Shortcut {
+                decision: InteractionShortcutDecision::AcceptSuggested,
+                pins,
+            },
+        }
+    }
+
+    /// Row 2. `&self` already forbids a write; this asserts the whole
+    /// authoritative session is byte-identical across a run of previews that
+    /// includes an accepted one, a refused one and an over-budget one — a
+    /// mutation on any of those paths moves the serialization.
+    #[test]
+    fn preview_interaction_commits_nothing() {
+        use engine::types::interaction::InteractionPreviewStatus;
+        let (mut mgr, code, token0, token1) = started_two_seat_game();
+        let (_acting, acting_token, other_token, witness) =
+            live_witness(&mgr, &code, &token0, &token1);
+
+        let before_json = serde_json::to_string(&mgr.sessions[&code].state).expect("serializes");
+        let before_slots = mgr.sessions[&code].state.active_interaction_slots.clone();
+        let before_waiting = mgr.sessions[&code].state.waiting_for.clone();
+        let before_life: Vec<i32> = mgr.sessions[&code]
+            .state
+            .players
+            .iter()
+            .map(|player| player.life)
+            .collect();
+        let before_battlefield = mgr.sessions[&code].state.battlefield.clone();
+        let before_takeback_depth = mgr.sessions[&code].takeback_history.len();
+        // The field `handle_interaction_with_rejection` writes before applying,
+        // for log resolution — the preview route must not reach it.
+        let before_log_names = mgr.sessions[&code].state.log_player_names.clone();
+
+        let accepted = mgr
+            .preview_interaction_with_rejection(
+                &code,
+                acting_token,
+                &preview_request("a", &witness),
+            )
+            .expect("the owning seat's preview is answered");
+        assert!(
+            matches!(accepted.status, InteractionPreviewStatus::Confirmable),
+            "the accepted leg must actually reach the reducer simulation: {:?}",
+            accepted.status
+        );
+
+        let foreign = mgr
+            .preview_interaction_with_rejection(&code, other_token, &preview_request("b", &witness))
+            .expect("a valid foreign token is answered, not errored");
+        assert!(matches!(
+            foreign.status,
+            InteractionPreviewStatus::Rejected {
+                reason: InteractionReasonCode::NotAuthorized
+            }
+        ));
+
+        let over_budget = mgr
+            .preview_interaction_with_rejection(
+                &code,
+                acting_token,
+                &oversized_preview_request("c", &witness),
+            )
+            .expect("an over-budget preview is a status, not an error");
+        assert!(matches!(
+            over_budget.status,
+            InteractionPreviewStatus::Rejected {
+                reason: InteractionReasonCode::PayloadTooLarge
+            }
+        ));
+
+        assert_eq!(
+            mgr.sessions[&code].state.active_interaction_slots,
+            before_slots
+        );
+        assert_eq!(mgr.sessions[&code].state.waiting_for, before_waiting);
+        assert_eq!(
+            mgr.sessions[&code]
+                .state
+                .players
+                .iter()
+                .map(|player| player.life)
+                .collect::<Vec<_>>(),
+            before_life
+        );
+        assert_eq!(mgr.sessions[&code].state.battlefield, before_battlefield);
+        assert_eq!(
+            mgr.sessions[&code].takeback_history.len(),
+            before_takeback_depth
+        );
+        assert_eq!(mgr.sessions[&code].state.log_player_names, before_log_names);
+        assert_eq!(
+            serde_json::to_string(&mgr.sessions[&code].state).expect("serializes"),
+            before_json,
+            "no field of the authoritative state may move on the preview route"
+        );
+
+        // Reach guard: the identity above is over a state a submission of the
+        // SAME witness demonstrably moves, so it is not the identity of a
+        // session nothing can change.
+        mgr.handle_interaction(&code, acting_token, witness)
+            .expect("the same witness submitted does apply");
+        assert_ne!(
+            mgr.sessions[&code].state.active_interaction_slots, before_slots,
+            "the submission route moves what the preview route left alone"
+        );
+        assert_ne!(
+            serde_json::to_string(&mgr.sessions[&code].state).expect("serializes"),
+            before_json
+        );
+    }
+
+    /// Row 3. The multi-authority hostile fixture, on the preview route: two
+    /// legitimately authenticated seats, one live capability. Sibling of
+    /// `handle_interaction_binds_the_actor_to_the_authenticated_token`.
+    #[test]
+    fn preview_interaction_binds_the_actor_to_the_authenticated_token() {
+        use engine::types::interaction::InteractionPreviewStatus;
+        let (mgr, code, token0, token1) = started_two_seat_game();
+        let (_acting, acting_token, other_token, witness) =
+            live_witness(&mgr, &code, &token0, &token1);
+        let request = preview_request("req-1", &witness);
+
+        let forged = mgr
+            .preview_interaction_with_rejection(&code, other_token, &request)
+            .expect("a validly authenticated foreign seat gets a status, not an Err");
+        assert!(
+            matches!(
+                forged.status,
+                InteractionPreviewStatus::Rejected {
+                    reason: InteractionReasonCode::NotAuthorized
+                }
+            ),
+            "the reason code, not merely 'not Confirmable' — a stale or malformed \
+             id answers with a different one: {:?}",
+            forged.status
+        );
+        assert_eq!(
+            forged.request_id, request.request_id,
+            "the answer is correlated"
+        );
+
+        // Reach guard: the identical request from the owning token IS answered,
+        // so the refusal above is attributable to authorization and not to a
+        // stale witness or a broken session.
+        let owned = mgr
+            .preview_interaction_with_rejection(&code, acting_token, &request)
+            .expect("the owning seat's preview is answered");
+        assert!(matches!(
+            owned.status,
+            InteractionPreviewStatus::Confirmable
+        ));
+        assert_eq!(owned.request_id, request.request_id);
+        assert_eq!(owned.interaction_id, witness.interaction_id);
+
+        // A token that is no seat at all is a different channel entirely.
+        let unknown = mgr
+            .preview_interaction_with_rejection(&code, "not-a-real-token", &request)
+            .expect_err("an unknown token is not a seat");
+        assert!(matches!(
+            unknown,
+            SessionActionError::Operational(ref reason) if reason == "Invalid player token"
+        ));
+    }
+
+    /// Row 11. Both interlocks, each with the paired positive that the
+    /// identical request is answered once the interlock is cleared, and each
+    /// asserting the CHANNEL and the code — a pending takeback must not be
+    /// reported as an operational failure, nor a driver fault as a rejection.
+    #[test]
+    fn preview_interaction_refuses_while_either_interlock_holds() {
+        use engine::types::interaction::InteractionPreviewStatus;
+        let (mut mgr, code, token0, token1) = started_two_seat_game();
+        let (acting, acting_token, _other, witness) = live_witness(&mgr, &code, &token0, &token1);
+        let request = preview_request("req-1", &witness);
+
+        let target_state = mgr.sessions[&code].state.clone();
+        mgr.sessions.get_mut(&code).unwrap().pending_takeback = Some(PendingTakeback {
+            requested_by: acting,
+            target_state,
+            approvals: HashSet::new(),
+            history_truncate_len: 0,
+        });
+        let refused = mgr
+            .preview_interaction_with_rejection(&code, acting_token, &request)
+            .expect_err("the table is voting; the preview waits");
+        match refused {
+            SessionActionError::Rejected(rejection) => assert_eq!(
+                rejection.code,
+                engine::types::action_rejection::ActionRejectionCode::ActionNotAllowed
+            ),
+            other => panic!("a pending takeback is a game rejection, not {other:?}"),
+        }
+
+        mgr.sessions.get_mut(&code).unwrap().pending_takeback = None;
+        let cleared = mgr
+            .preview_interaction_with_rejection(&code, acting_token, &request)
+            .expect("with no pending takeback the identical request is answered");
+        assert!(matches!(
+            cleared.status,
+            InteractionPreviewStatus::Confirmable
+        ));
+
+        mgr.sessions
+            .get_mut(&code)
+            .unwrap()
+            .record_ai_driver_fault(AiDriverFailure::ActionSafetyCapReached { limit: 1 });
+        let faulted = mgr
+            .preview_interaction_with_rejection(&code, acting_token, &request)
+            .expect_err("a faulted driver fences the whole session");
+        match faulted {
+            SessionActionError::Operational(reason) => assert!(
+                reason.contains("Native AI driver fault"),
+                "the fault's own message must ride the operational channel: {reason}"
+            ),
+            other => panic!("a driver fault is operational, not {other:?}"),
+        }
+
+        mgr.sessions.get_mut(&code).unwrap().ai_driver_fault = None;
+        let recovered = mgr
+            .preview_interaction_with_rejection(&code, acting_token, &request)
+            .expect("with the fault cleared the identical request is answered");
+        assert!(matches!(
+            recovered.status,
+            InteractionPreviewStatus::Confirmable
+        ));
     }
 
     /// Parks a one-entry stack in front of a human seat that has already been
