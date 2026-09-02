@@ -45,6 +45,7 @@ vi.mock("../../../game/dispatch.ts", async (importOriginal) => ({
 const dispatchMock = vi.fn();
 
 type ShortcutSpec = Extract<InteractionResponseSpec, { type: "shortcut" }>["data"];
+type ShortcutReplySpec = Extract<InteractionResponseSpec, { type: "shortcutReply" }>["data"];
 
 /** The engine's published shortcut response spec, delivered on `viewerInteraction` exactly as
  *  `gameStore.legalResultState` assigns it. Defaults mirror the live publisher
@@ -122,7 +123,11 @@ function targetsPoint(
   };
 }
 
-function mayPoint(group: number, ids: string[]): InteractionShortcutPoint {
+function mayPoint(
+  group: number,
+  ids: string[],
+  overrides: Partial<InteractionShortcutPoint> = {},
+): InteractionShortcutPoint {
   return {
     group,
     kind: "mayChoice",
@@ -132,7 +137,63 @@ function mayPoint(group: number, ids: string[]): InteractionShortcutPoint {
     ordered: false,
     readOnly: false,
     candidateIds: ids.map(cid),
+    ...overrides,
   };
+}
+
+/** The engine's published accept-or-shorten spec, delivered on `viewerInteraction` exactly as
+ *  `gameStore.legalResultState` assigns it. The sibling of `shortcutInteraction`, one predicate
+ *  apart; none existed before the responder read a declaration. Defaults mirror the live
+ *  publisher on a count-only proposal: no statement point and no declared element. */
+function respondInteraction(
+  overrides: Partial<ShortcutReplySpec> = {},
+  candidates: InteractionChoice[] = [],
+  interactionId = "session.0.2",
+): ViewerInteraction {
+  const spec: ShortcutReplySpec = {
+    minIteration: 0,
+    maxIteration: 5,
+    points: [],
+    declared: null,
+    confirm: "explicit",
+    ...overrides,
+  };
+  return {
+    waitingForKind: { simultaneous: null, terminal: false, code: "shortcut" },
+    authorizedSubmitters: [0],
+    canSubmit: true,
+    autoPassRecommended: false,
+    opportunities: [
+      {
+        interactionId: interactionId as InteractionId,
+        response: {
+          type: "schema",
+          data: { spec: { type: "shortcutReply", data: spec }, candidates },
+        },
+        surfaces: [],
+        progress: { selected: 0, minimum: 1, maximum: 1, aggregate: null, confirmable: false },
+      },
+    ],
+    attachmentFans: {},
+    attachmentViews: {},
+    availability: { type: "inputRequired" },
+  };
+}
+
+/** A read-only announced-target statement point — what the engine publishes on the respond side,
+ *  where the responder's only outbound values are Accept and Shorten. */
+function statementTargetsPoint(group: number, ids: string[]): InteractionShortcutPoint {
+  return targetsPoint(group, ids, { min: 0, max: 0, unique: true, readOnly: true });
+}
+
+/** A read-only optional-decision statement point: SUBJECT then ANSWER, in that order. */
+function statementMayPoint(group: number, subjectId: string, answerId: string) {
+  return mayPoint(group, [subjectId, answerId], {
+    min: 0,
+    max: 0,
+    ordered: true,
+    readOnly: true,
+  });
 }
 
 /** A read-only point: `readOnly` is the field the routing rule turns on. */
@@ -669,6 +730,170 @@ describe("LoopShortcutModal", () => {
       type: "RespondToShortcut",
       data: { response: { Shorten: { at_iteration: 1 } } },
     });
+  });
+
+  // ── CR 732.2b: what the responding opponent SEES ─────────────────────────────────────────
+  //
+  // T4 and T5 above stay UNMODIFIED: they seed `viewerInteraction: null`, which is the degrade
+  // path, and they are the standing instrument that the base three lines are the shipped ones.
+
+  // Every rendered magnitude is a direct read of a published entry. The discriminator is
+  // the MUTATION: the same seed re-rendered with ONE published entry changed must render a
+  // DIFFERENT specific string. A client-side recomputation reproduces the first value in both
+  // renders and fails the second half. -13 and -29 are reachable by no arithmetic over the
+  // other published fields (count 7, segments 2 and 5).
+  it("renders the published element's magnitude, and follows it when it changes", () => {
+    const render_at = (amount: number) => {
+      cleanup();
+      seed(
+        buildRespondToShortcutWaitingFor(),
+        {},
+        respondInteraction(
+          {
+            points: [statementTargetsPoint(0, ["r0", "r1"])],
+            declared: element(
+              7,
+              [amt("r0", 2), amt("r1", 5)],
+              [{ family: "life", player: 1, amount }],
+            ),
+          },
+          [seatCandidate("r0", 1), seatCandidate("r1", 2)],
+        ),
+      );
+      render(<RespondToShortcutModal />);
+    };
+
+    render_at(-13);
+    expect(screen.getByText("-13 life — P2")).toBeInTheDocument();
+    expect(screen.getByText("Proposed declaration:")).toBeInTheDocument();
+    expect(screen.getByText("P2 — ×2")).toBeInTheDocument();
+    expect(screen.getByText("P3 — ×5")).toBeInTheDocument();
+
+    render_at(-29);
+    expect(screen.getByText("-29 life — P2")).toBeInTheDocument();
+    expect(screen.queryByText("-13 life — P2")).not.toBeInTheDocument();
+    // The partition is unchanged, so the magnitude moved BECAUSE the published entry did —
+    // not because anything the modal computes from the allocation did.
+    expect(screen.getByText("P2 — ×2")).toBeInTheDocument();
+    expect(screen.getByText("P3 — ×5")).toBeInTheDocument();
+  });
+
+  // The degrade half: a respond window whose spec carries NO declared sequence renders the base
+  // three lines unchanged and adds nothing. Paired with the row above, the two are a SWITCH.
+  it("renders the base three lines and nothing else without a declared sequence", () => {
+    seed(buildRespondToShortcutWaitingFor(), {}, respondInteraction());
+    render(<RespondToShortcutModal />);
+
+    expect(screen.getByText("This loop deals lethal damage.")).toBeInTheDocument();
+    expect(screen.getByText("Repeat until the game ends.")).toBeInTheDocument();
+    expect(screen.queryByText("Proposed declaration:")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Repeating /)).not.toBeInTheDocument();
+  });
+
+  // Hostile: an ORDER-ONLY declaration — points but no element — renders the announcement
+  // order and no magnitude. The order is asserted by its rendered position numbers, so a
+  // renderer that reversed or sorted it fails.
+  it("renders an order-only declaration as an order and no magnitudes", () => {
+    seed(
+      buildRespondToShortcutWaitingFor(),
+      {},
+      respondInteraction({ points: [statementTargetsPoint(0, ["r0", "r1"])] }, [
+        seatCandidate("r0", 2),
+        seatCandidate("r1", 0),
+      ]),
+    );
+    render(<RespondToShortcutModal />);
+
+    expect(screen.getByText("1. P3")).toBeInTheDocument();
+    expect(screen.getByText("2. P1")).toBeInTheDocument();
+    expect(screen.queryByText("2. P3")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Repeating /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ — ×/)).not.toBeInTheDocument();
+  });
+
+  // Hostile: a declared element with EMPTY entries renders no preview block — the shared
+  // `PreviewLines` already states nothing for one — but still states the partition. "Renders
+  // nothing" cannot pass for "renders the right nothing".
+  it("renders the partition for an element carrying no magnitudes", () => {
+    seed(
+      buildRespondToShortcutWaitingFor(),
+      {},
+      respondInteraction(
+        {
+          points: [statementTargetsPoint(0, ["r0", "r1"])],
+          declared: element(7, [amt("r0", 2), amt("r1", 5)], []),
+        },
+        [seatCandidate("r0", 1), seatCandidate("r1", 2)],
+      ),
+    );
+    render(<RespondToShortcutModal />);
+
+    expect(screen.getByText("P2 — ×2")).toBeInTheDocument();
+    expect(screen.getByText("P3 — ×5")).toBeInTheDocument();
+    expect(screen.queryByText(/^Repeating /)).not.toBeInTheDocument();
+  });
+
+  // The client half of the answered-optional-decision claim. An engine test renders nothing, and
+  // the claim is about a RENDER: a component that states "taken" for every optional decision
+  // passes a uniform fixture and fails this one. Both lines are positive DOM reads by their full
+  // text, so "renders nothing twice" cannot satisfy the difference.
+  it("renders each answered optional decision with its OWN answer", () => {
+    seed(
+      buildRespondToShortcutWaitingFor(),
+      {},
+      respondInteraction(
+        {
+          points: [
+            statementMayPoint(0, "s0", "a0"),
+            statementMayPoint(1, "s1", "a1"),
+          ],
+        },
+        [
+          objectCandidate("s0", "Sue Storm", "402"),
+          ...mayCandidates("a0", "unused-decline"),
+          objectCandidate("s1", "Reed Richards", "401"),
+          ...mayCandidates("unused-take", "a1"),
+        ],
+      ),
+    );
+    render(<RespondToShortcutModal />);
+
+    const taken = screen.getByText("Sue Storm — taken each iteration");
+    const declined = screen.getByText("Reed Richards — declined each iteration");
+    expect(taken).toBeInTheDocument();
+    expect(declined).toBeInTheDocument();
+    expect(taken.textContent).not.toEqual(declined.textContent);
+    // The uniform sibling: a component keying the wording off anything but each point's own
+    // answer candidate would render this string twice, and it must render it zero times here.
+    expect(screen.queryByText("Reed Richards — taken each iteration")).not.toBeInTheDocument();
+  });
+
+  // The uniform sibling, so the difference above is a BRANCH rather than a shape the component
+  // always emits.
+  it("renders two identical answers when the declaration answered both the same way", () => {
+    seed(
+      buildRespondToShortcutWaitingFor(),
+      {},
+      respondInteraction(
+        {
+          points: [
+            statementMayPoint(0, "s0", "a0"),
+            statementMayPoint(1, "s1", "a1"),
+          ],
+        },
+        [
+          objectCandidate("s0", "Sue Storm", "402"),
+          ...mayCandidates("a0", "unused-decline"),
+          objectCandidate("s1", "Reed Richards", "401"),
+          ...mayCandidates("a1", "unused-decline-2"),
+        ],
+      ),
+    );
+    render(<RespondToShortcutModal />);
+
+    expect(screen.getByText("Sue Storm — taken each iteration")).toBeInTheDocument();
+    expect(screen.getByText("Reed Richards — taken each iteration")).toBeInTheDocument();
+    expect(screen.queryByText(/declined each iteration/)).not.toBeInTheDocument();
   });
 
   // T6 (non-vacuity): both modals self-gate — a non-matching waitingFor.type

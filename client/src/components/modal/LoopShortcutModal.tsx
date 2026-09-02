@@ -94,6 +94,39 @@ function shortcutCandidates(interaction: ViewerInteraction | null): InteractionC
   return null;
 }
 
+/** The engine's published accept-or-shorten response spec, carrying the declaration this player
+ *  is being asked to judge. Every field the responder modal reads is a lookup into what the
+ *  engine already sent, never a derivation. */
+type ShortcutReplySpec = Extract<InteractionResponseSpec, { type: "shortcutReply" }>["data"];
+
+/** Line-for-line sibling of `shortcutSpec`, one predicate apart. Returns a reference INTO store
+ *  state, or `null`; see `shortcutInteractionId`'s `Object.is` stability note. */
+function shortcutReplySpec(interaction: ViewerInteraction | null): ShortcutReplySpec | null {
+  for (const opportunity of interaction?.opportunities ?? []) {
+    if (opportunity.response.type !== "schema") continue;
+    const { spec } = opportunity.response.data;
+    if (spec.type === "shortcutReply") return spec.data;
+  }
+  return null;
+}
+
+/** The declaration's published candidates — the subjects and answers its statement points name
+ *  by id. Walks the same list under the same predicate as the selector above.
+ *
+ *  Returns a reference INTO store state, or `null`; never `[]`. The caller supplies the empty
+ *  default outside the selector. */
+function shortcutReplyCandidates(
+  interaction: ViewerInteraction | null,
+): InteractionChoice[] | null {
+  for (const opportunity of interaction?.opportunities ?? []) {
+    if (opportunity.response.type !== "schema") continue;
+    if (opportunity.response.data.spec.type === "shortcutReply") {
+      return opportunity.response.data.candidates;
+    }
+  }
+  return null;
+}
+
 /** Which control the offer's announced-target point opens, CARRYING the point it opens on, so
  *  routing, rendering and the dispatch cannot disagree about which point is answered. */
 type TargetsControl = { kind: "allocation" | "ranking"; point: InteractionShortcutPoint };
@@ -730,6 +763,9 @@ export function RespondToShortcutModal() {
   const canAct = useCanActForWaitingState();
   const waitingFor = useGameStore((s) => s.waitingFor);
   const dispatch = useGameStore((s) => s.dispatch);
+  // Both selectors return a reference INTO store state (or null), so both are `Object.is`-stable.
+  const spec = useGameStore((s) => shortcutReplySpec(s.viewerInteraction));
+  const publishedCandidates = useGameStore((s) => shortcutReplyCandidates(s.viewerInteraction));
 
   const handleAccept = useCallback(() => {
     dispatch({ type: "RespondToShortcut", data: { response: "Accept" } });
@@ -742,6 +778,22 @@ export function RespondToShortcutModal() {
   if (waitingFor?.type !== "RespondToShortcut" || !canAct) return null;
 
   const { proposal } = waitingFor.data;
+  const candidates = publishedCandidates ?? [];
+  // CR 732.2b: everything below is a direct read of a published field. The count, the partition,
+  // every per-seat magnitude and every answer are the engine's; this modal states them.
+  const declared = spec?.declared ?? null;
+  const points = spec?.points ?? [];
+  // CR 601.2c: the FIRST `targets`-kind point in published order — the same rule
+  // `allocation_point` applies engine-side, so the order shown here and the allocation the
+  // engine states are about the same announced-target decision.
+  const orderPoint = points.find((p) => p.kind === "targets") ?? null;
+  // A published allocation states the partition by id, so the order is stated only when there is
+  // no partition to state.
+  const orderIds = declared === null ? (orderPoint?.candidateIds ?? []) : [];
+  const allocation = declared?.allocation ?? [];
+  const mayPoints = points.filter((p) => p.kind === "mayChoice");
+  const showsDeclaration =
+    allocation.length > 0 || orderIds.length > 0 || mayPoints.length > 0;
 
   const footer = (
     <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
@@ -771,6 +823,48 @@ export function RespondToShortcutModal() {
         <WinKindLine kind={proposal.win_kind} />
         <CountLine count={proposal.count} />
         <FamilyBadges axes={proposal.unbounded} />
+        {declared && <PreviewLines preview={declared} />}
+        {showsDeclaration && (
+          <div className="flex flex-col gap-1 rounded-lg bg-white/5 px-3 py-2">
+            <p className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
+              {t("comboShortcut.respondDeclaredTitle")}
+            </p>
+            {allocation.map((entry) => (
+              <p key={entry.choiceId} className="text-sm text-slate-200 tabular-nums">
+                {t("comboShortcut.respondAllocationEntry", {
+                  repetitions: entry.amount,
+                  subject: candidateLabel(t, candidates, entry.choiceId),
+                })}
+              </p>
+            ))}
+            {orderIds.map((id, index) => (
+              <p key={id} className="text-sm text-slate-200 tabular-nums">
+                {t("comboShortcut.respondOrderEntry", {
+                  position: index + 1,
+                  subject: candidateLabel(t, candidates, id),
+                })}
+              </p>
+            ))}
+            {mayPoints.map((point) => {
+              // The engine publishes EXACTLY TWO candidate ids on a `mayChoice` statement point,
+              // read in order as SUBJECT then ANSWER; a decision whose subject cannot be minted
+              // publishes no point at all, so this positional read is total over what arrives.
+              const [subjectId, answerId] = point.candidateIds;
+              if (subjectId === undefined || answerId === undefined) return null;
+              const answer = mayCandidate(candidates, answerId);
+              // A whitelist, deliberately: an answer this modal has no wording for renders
+              // nothing rather than a raw lookup key.
+              if (answer !== "take" && answer !== "decline") return null;
+              return (
+                <p key={point.group} className="text-sm text-slate-200">
+                  {t(`comboShortcut.respondDecision.${answer}`, {
+                    subject: candidateLabel(t, candidates, subjectId),
+                  })}
+                </p>
+              );
+            })}
+          </div>
+        )}
       </div>
     </DialogShell>
   );
