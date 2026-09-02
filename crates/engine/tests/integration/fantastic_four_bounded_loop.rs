@@ -5216,6 +5216,14 @@ struct F4Allocation {
     candidate_ids: Vec<engine::types::interaction::InteractionChoiceId>,
     /// Pins answering every OTHER non-read-only point, so a submission is complete.
     other_pins: Vec<engine::types::interaction::InteractionShortcutPin>,
+    /// Those same points, carrying their own candidate lists — so a row can author a DIFFERENT
+    /// answer than `other_pins`' default first pick without re-reading the offer.
+    answerable: Vec<engine::types::interaction::InteractionShortcutPoint>,
+    /// The offer's own count-keyed published preview list, read at the offer beat because the
+    /// interaction id rotates the moment the declaration is dispatched.
+    published_preview: Vec<engine::types::interaction::InteractionShortcutPreview>,
+    /// The offer beat's published candidates, for the same reason.
+    offer_candidates: Vec<engine::types::interaction::InteractionChoice>,
     /// The CR 601.2c announcement journal's answer at the `Targets` slot — the seat the
     /// drive's LEADING cycle resolves, before anything the allocation governs.
     preannounced: PlayerId,
@@ -5300,8 +5308,14 @@ fn f4_allocation_offer(state: &mut GameState) -> F4Allocation {
         })
         .expect("reach-guard: the offer is published as a shortcut schema");
     let InteractionOpportunityResponse::Schema {
-        spec: InteractionResponseSpec::Shortcut { count, points, .. },
-        ..
+        spec:
+            InteractionResponseSpec::Shortcut {
+                count,
+                points,
+                preview,
+                ..
+            },
+        candidates: offer_candidates,
     } = &opportunity.response
     else {
         unreachable!("the find above selected a shortcut schema");
@@ -5329,12 +5343,16 @@ fn f4_allocation_offer(state: &mut GameState) -> F4Allocation {
         other => panic!("this board publishes a Fixed count window, got {other:?}"),
     };
 
-    let other_pins = points
+    let answerable: Vec<_> = points
         .iter()
         .enumerate()
         .filter(|(group, point)| !point.read_only && *group != target_group)
-        .map(|(group, point)| InteractionShortcutPin {
-            group: group as u32,
+        .map(|(_, point)| point.clone())
+        .collect();
+    let other_pins = answerable
+        .iter()
+        .map(|point| InteractionShortcutPin {
+            group: point.group,
             choice_ids: point
                 .candidate_ids
                 .iter()
@@ -5352,6 +5370,9 @@ fn f4_allocation_offer(state: &mut GameState) -> F4Allocation {
         legal_seats,
         candidate_ids: target_point.candidate_ids.clone(),
         other_pins,
+        answerable,
+        published_preview: preview.clone(),
+        offer_candidates: offer_candidates.clone(),
         preannounced,
         max_count,
         rate,
@@ -6409,4 +6430,810 @@ fn e7_the_published_bound_is_the_count_pickers_own_ceiling() {
              disagree with the picker beside it"
         );
     }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// CR 732.2b — WHAT THE RESPONDING OPPONENT ACTUALLY SEES
+//
+// A responder reads the proposer's declaration here, not only the count. These tests drive the
+// tracked dump through the real ingress, open the accept-or-shorten window, and read the
+// published `InteractionResponseSpec::ShortcutReply` off `derive_viewer_interaction`.
+// ═════════════════════════════════════════════════════════════════════════════════════════
+
+/// What one seat's published accept-or-shorten schema carries.
+struct F4Reply {
+    points: Vec<engine::types::interaction::InteractionShortcutPoint>,
+    declared: Option<engine::types::interaction::InteractionShortcutPreview>,
+    candidates: Vec<engine::types::interaction::InteractionChoice>,
+}
+
+/// Read `viewer`'s own respond-side projection. Panics unless that seat has exactly one
+/// opportunity, so a row cannot silently assert about a seat the projection never addressed.
+fn f4_reply_at(state: &GameState, viewer: PlayerId) -> F4Reply {
+    use engine::game::interaction::derive_viewer_interaction;
+    use engine::game::visibility::filter_state_for_viewer;
+    use engine::types::interaction::{InteractionOpportunityResponse, InteractionResponseSpec};
+
+    let filtered = filter_state_for_viewer(state, viewer);
+    let view = derive_viewer_interaction(state, &filtered, viewer);
+    let [opportunity] = view.opportunities.as_slice() else {
+        panic!(
+            "{viewer:?} must carry exactly one opportunity at the respond beat, got {}",
+            view.opportunities.len()
+        );
+    };
+    let InteractionOpportunityResponse::Schema {
+        spec: InteractionResponseSpec::ShortcutReply {
+            points, declared, ..
+        },
+        candidates,
+    } = &opportunity.response
+    else {
+        panic!("the accept-or-shorten window uses a shortcut-reply schema");
+    };
+    F4Reply {
+        points: points.clone(),
+        declared: declared.clone(),
+        candidates: candidates.clone(),
+    }
+}
+
+/// How many opportunities `viewer` reads, and the availability it reads them under.
+fn f4_opportunity_count(
+    state: &GameState,
+    viewer: PlayerId,
+) -> (usize, engine::types::interaction::InteractionAvailability) {
+    use engine::game::interaction::derive_viewer_interaction;
+    use engine::game::visibility::filter_state_for_viewer;
+
+    let filtered = filter_state_for_viewer(state, viewer);
+    let view = derive_viewer_interaction(state, &filtered, viewer);
+    (view.opportunities.len(), view.availability)
+}
+
+/// [`f4_allocation_submission`] with each answerable point's candidate chosen by INDEX rather
+/// than defaulted to the first, so a row can author a declaration whose optional decisions went
+/// different ways.
+fn f4_submission_with_answers(
+    offer: &F4Allocation,
+    count: u32,
+    allocation: &[(PlayerId, u32)],
+    answers: &[usize],
+) -> engine::types::interaction::InteractionSubmission {
+    use engine::types::interaction::InteractionResponse;
+
+    assert_eq!(
+        answers.len(),
+        offer.answerable.len(),
+        "fixture guard: one authored answer per answerable point"
+    );
+    let mut submission = f4_allocation_submission(offer, count, allocation);
+    let InteractionResponse::Shortcut { pins, .. } = &mut submission.response else {
+        unreachable!("the allocation submission is a shortcut response");
+    };
+    for (point, answer) in offer.answerable.iter().zip(answers) {
+        let pin = pins
+            .iter_mut()
+            .find(|pin| pin.group == point.group)
+            .expect("every answerable point already carries a pin");
+        pin.choice_ids = vec![point.candidate_ids[*answer].clone()];
+    }
+    submission
+}
+
+/// Dispatch a declaration through the real ingress and STOP at the CR 732.2b window, rather
+/// than draining it the way [`f4_drive_allocation`] does.
+fn f4_open_respond_window(
+    state: &mut GameState,
+    offer: &F4Allocation,
+    submission: &engine::types::interaction::InteractionSubmission,
+) -> PlayerId {
+    use engine::game::interaction::resolve_interaction_response;
+
+    let action = resolve_interaction_response(state, offer.proposer, submission)
+        .expect("the allocation ingress accepts a conformant sequenced pin");
+    apply(state, offer.proposer, action).expect("the minted declaration is dispatched");
+    // THE DISCRIMINATOR between "declare refused it" and "the drive aborted": a refused
+    // declaration hands priority straight back and never opens the APNAP window.
+    let WaitingFor::RespondToShortcut { player, .. } = state.waiting_for else {
+        panic!(
+            "the accepted declaration must open the CR 732.2b APNAP window, got {:?}",
+            state.waiting_for
+        );
+    };
+    player
+}
+
+/// The seat a published candidate names, read off the engine's own player surface.
+fn f4_candidate_seat(
+    candidates: &[engine::types::interaction::InteractionChoice],
+    id: &engine::types::interaction::InteractionChoiceId,
+) -> Option<u8> {
+    use engine::types::interaction::InteractionPresentationSurface;
+    candidates
+        .iter()
+        .find(|choice| choice.id == *id)?
+        .surfaces
+        .iter()
+        .find_map(|surface| match surface {
+            InteractionPresentationSurface::Player { seat, .. } => Some(*seat),
+            _ => None,
+        })
+}
+
+/// The object reference a published candidate names, read off the engine's own object surface.
+fn f4_candidate_object(
+    candidates: &[engine::types::interaction::InteractionChoice],
+    id: &engine::types::interaction::InteractionChoiceId,
+) -> Option<String> {
+    use engine::types::interaction::InteractionPresentationSurface;
+    candidates
+        .iter()
+        .find(|choice| choice.id == *id)?
+        .surfaces
+        .iter()
+        .find_map(|surface| match surface {
+            InteractionPresentationSurface::Object { reference, .. } => Some(reference.clone()),
+            _ => None,
+        })
+}
+
+/// The discriminant a published `mayChoice` answer candidate states.
+fn f4_candidate_value(
+    candidates: &[engine::types::interaction::InteractionChoice],
+    id: &engine::types::interaction::InteractionChoiceId,
+) -> Option<String> {
+    use engine::types::interaction::InteractionPresentationSurface;
+    candidates
+        .iter()
+        .find(|choice| choice.id == *id)?
+        .surfaces
+        .iter()
+        .find_map(|surface| match surface {
+            InteractionPresentationSurface::Value { value, .. } => Some(value.clone()),
+            _ => None,
+        })
+}
+
+/// The per-seat life magnitudes one published element states, keyed by seat.
+fn f4_life_entries(
+    element: &engine::types::interaction::InteractionShortcutPreview,
+) -> Vec<(u8, i32)> {
+    use engine::types::interaction::InteractionShortcutPreviewFamily;
+    element
+        .entries
+        .iter()
+        .filter(|entry| entry.family == InteractionShortcutPreviewFamily::Life)
+        .map(|entry| {
+            (
+                entry
+                    .player
+                    .expect("a Life magnitude is keyed by the seat that loses it"),
+                entry.amount,
+            )
+        })
+        .collect()
+}
+
+/// AGREEMENT MODULO BEAT-LOCAL IDS — the substitute for a byte equality that cannot hold.
+///
+/// `InteractionChoiceId` embeds the interaction id, and that id ROTATES between the offer beat
+/// and the respond beat (`rebind_interaction_slots_after_action`: "Single decisions always
+/// rotate, including A→A and A→B→A"), so a whole-struct equality across beats could only ever
+/// fail. Each side therefore resolves its OWN beat's candidate list, and the conjunct is that
+/// the two allocations name the same seats in the same order.
+///
+/// Returns the conjunct that refused, so a caller can assert WHICH one did.
+fn shortcut_elements_agree_modulo_ids(
+    a: (
+        &engine::types::interaction::InteractionShortcutPreview,
+        &[engine::types::interaction::InteractionChoice],
+    ),
+    b: (
+        &engine::types::interaction::InteractionShortcutPreview,
+        &[engine::types::interaction::InteractionChoice],
+    ),
+) -> Result<(), &'static str> {
+    let (left, left_candidates) = a;
+    let (right, right_candidates) = b;
+    if left.count != right.count {
+        return Err("count");
+    }
+    if left.entries != right.entries {
+        return Err("entries");
+    }
+    if left.allocation.len() != right.allocation.len() {
+        return Err("allocation arity");
+    }
+    if left
+        .allocation
+        .iter()
+        .zip(&right.allocation)
+        .any(|(x, y)| x.amount != y.amount)
+    {
+        return Err("allocation amounts");
+    }
+    for (x, y) in left.allocation.iter().zip(&right.allocation) {
+        let left_seat = f4_candidate_seat(left_candidates, &x.choice_id);
+        if left_seat.is_none() || left_seat != f4_candidate_seat(right_candidates, &y.choice_id) {
+            return Err("allocation subject");
+        }
+    }
+    Ok(())
+}
+
+/// **The responder reads the declared partition, each declared seat's own magnitude, and nothing
+/// that belongs to another seat.**
+///
+/// CR 732.2b's right is to name a place where this player's choice will differ from what was
+/// proposed, so the responder is published the proposer's declaration and not only the count.
+///
+/// # Non-vacuity, on a fixture that is cardinality-degenerate by default
+///
+/// The tracked dump's per-cycle life rate is 1 and its life map names exactly ONE seat, so a
+/// driven row can admit a flag where a count is required. The declaration this row authors is
+/// therefore `1 / 2 / 3` at a count of 6: THREE segments, PAIRWISE DISTINCT, and a non-canonical
+/// split (the canonical one at 6 over three seats is `2 / 2 / 2`). Every per-seat magnitude is
+/// asserted as the published rate times the authored segment, so a uniform re-attribution, a
+/// flag standing in for a count, and an equality between two empty lists all fail.
+///
+/// # The per-seat opportunity claim rides here, because this test's harness proof is its
+/// positive control
+///
+/// The projection is empty for every seat at every beat unless the interaction authority is
+/// bound first, and what is uniform under an unbound harness is `opportunities = 0` AT THE OFFER
+/// BEAT TOO. So the opportunity COUNT is what the obligation asserts on, and the offer beat's
+/// proposer-only opportunity is the control that the binding took.
+///
+/// # Discrimination
+///
+/// Leave `declared: None` on the spec ⇒ the responder is back to the two-number shape and the
+/// element assertions fail. Publish to any seat but the current responder ⇒ the per-seat
+/// opportunity counts fail.
+#[test]
+fn the_responder_reads_the_declared_partition_and_its_per_seat_magnitudes() {
+    use engine::types::interaction::{
+        InteractionAvailability, InteractionShortcutPointKind, InteractionShortcutPreviewFamily,
+    };
+
+    const COUNT: u32 = 6;
+    const SEGMENTS: [u32; 3] = [1, 2, 3];
+
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let seats: Vec<PlayerId> = state.players.iter().map(|player| player.id).collect();
+
+    // ── HARNESS CONTROL + the per-seat paired positive: at the OFFER beat exactly the proposer
+    //    carries an opportunity. Under an unbound authority every seat reads zero, so a
+    //    non-zero count here is what proves the binding took.
+    for seat in &seats {
+        let (count, availability) = f4_opportunity_count(&state, *seat);
+        if *seat == offer.proposer {
+            assert_eq!(
+                count, 1,
+                "control: the proposer's own offer opportunity is what proves the interaction \
+                 authority is bound — a zero here makes every count below a dead instrument"
+            );
+        } else {
+            assert_eq!(
+                (count, availability),
+                (0, InteractionAvailability::Waiting),
+                "CR 732.2a: the offer addresses the player with priority and nobody else \
+                 ({seat:?})"
+            );
+        }
+    }
+
+    assert!(
+        offer.rate > 0,
+        "ANTI-VACUITY: the published per-cycle life rate is strictly positive, else every \
+         magnitude below degenerates to zero"
+    );
+    assert_eq!(
+        offer.legal_seats.len(),
+        3,
+        "reach-guard: three legal victims, which is what makes a three-segment declaration a \
+         real member of the composition set"
+    );
+    let allocation: Vec<(PlayerId, u32)> =
+        offer.legal_seats.iter().copied().zip(SEGMENTS).collect();
+    let responder = f4_open_respond_window(
+        &mut state,
+        &offer,
+        &f4_allocation_submission(&offer, COUNT, &allocation),
+    );
+
+    // ── PER-SEAT: at the RESPOND beat exactly the current responder carries an opportunity. The
+    //    queued opponents read `Waiting`, which is what distinguishes "not yet their turn" from
+    //    "published to everyone".
+    let WaitingFor::RespondToShortcut {
+        ref remaining_players,
+        ..
+    } = state.waiting_for
+    else {
+        unreachable!("the window was just asserted open");
+    };
+    assert!(
+        !remaining_players.is_empty(),
+        "reach-guard: opponents are still QUEUED behind this responder, so the zero counts \
+         below are a routing rule and not an empty table"
+    );
+    for seat in &seats {
+        let (count, availability) = f4_opportunity_count(&state, *seat);
+        if *seat == responder {
+            assert_eq!(count, 1, "CR 732.2b addresses the current responder");
+        } else {
+            assert_eq!(
+                (count, availability),
+                (0, InteractionAvailability::Waiting),
+                "CR 732.2b: neither the proposer nor a queued opponent is addressed yet \
+                 ({seat:?})"
+            );
+        }
+    }
+
+    // ── THE GAP ITSELF.
+    let reply = f4_reply_at(&state, responder);
+    let targets: Vec<_> = reply
+        .points
+        .iter()
+        .filter(|point| point.kind == InteractionShortcutPointKind::Targets)
+        .collect();
+    let [target_point] = targets.as_slice() else {
+        panic!("the declaration states exactly one announced-target decision");
+    };
+    assert_eq!(
+        target_point
+            .candidate_ids
+            .iter()
+            .map(|id| f4_candidate_seat(&reply.candidates, id))
+            .collect::<Vec<_>>(),
+        offer
+            .legal_seats
+            .iter()
+            .map(|seat| Some(seat.0))
+            .collect::<Vec<_>>(),
+        "the declaration's announced seats reach the responder in the proposer's own order"
+    );
+    let element = reply
+        .declared
+        .as_ref()
+        .expect("CR 732.2b: the responder is published the declaration they are judging");
+    assert_eq!(element.count, COUNT);
+    assert_eq!(
+        element
+            .allocation
+            .iter()
+            .map(|assignment| assignment.amount)
+            .collect::<Vec<_>>(),
+        SEGMENTS.to_vec(),
+        "the published partition is the one the proposer authored — THREE segments, pairwise \
+         distinct, and NOT the canonical split of {COUNT} over three seats"
+    );
+    assert_eq!(
+        element
+            .allocation
+            .iter()
+            .map(|assignment| f4_candidate_seat(&reply.candidates, &assignment.choice_id))
+            .collect::<Vec<_>>(),
+        offer
+            .legal_seats
+            .iter()
+            .map(|seat| Some(seat.0))
+            .collect::<Vec<_>>(),
+        "and every segment names its own seat through this beat's published candidates"
+    );
+    let expected: Vec<(u8, i32)> = allocation
+        .iter()
+        .map(|(seat, segment)| (seat.0, -(offer.rate * i64::from(*segment)) as i32))
+        .collect();
+    assert_eq!(
+        f4_life_entries(element),
+        expected,
+        "CR 704.5a: each declared seat's magnitude is the published per-cycle rate times ITS \
+         OWN segment — {expected:?} — so a producer that re-attributed the drain uniformly, or \
+         keyed it on the seat the period was measured on, fails here"
+    );
+    let magnitudes: Vec<i32> = f4_life_entries(element)
+        .into_iter()
+        .map(|(_, amount)| amount)
+        .collect();
+    assert_eq!(
+        magnitudes
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        magnitudes.len(),
+        "ANTI-VACUITY: the three magnitudes are PAIRWISE DISTINCT, so a flag standing in for a \
+         count cannot satisfy the equality above. magnitudes={magnitudes:?}"
+    );
+    assert!(
+        element
+            .entries
+            .iter()
+            .any(|entry| entry.family != InteractionShortcutPreviewFamily::Life),
+        "reach-guard: the element states the period's other families too, so the Life filter \
+         above is selecting rather than describing the whole list"
+    );
+
+    // ── HOSTILE (a): the count-only route. A proposal carrying no declaration — every offer
+    //    minted before the declaration ingress existed, and every save written then — publishes
+    //    no statement point and no element. First production branch: the decoder's template
+    //    `as_ref()`.
+    let mut count_only = state.clone();
+    let WaitingFor::RespondToShortcut { proposal, .. } = &mut count_only.waiting_for else {
+        unreachable!("the clone parks on the same window");
+    };
+    proposal.template = None;
+    let bare = f4_reply_at(&count_only, responder);
+    assert!(
+        bare.points.is_empty() && bare.declared.is_none(),
+        "a count-only proposal states no declaration, so the responder reads the base shape"
+    );
+
+    // ── HOSTILE (b): a declaration whose proposal states NO per-period signature. The
+    //    statement points still publish — the declaration is still shown — but no magnitude is
+    //    invented for it. First production branch: `shortcut_preview_basis`'s `per_cycle`.
+    let mut signatureless = state.clone();
+    let WaitingFor::RespondToShortcut { proposal, .. } = &mut signatureless.waiting_for else {
+        unreachable!("the clone parks on the same window");
+    };
+    proposal.per_cycle = None;
+    let unmeasured = f4_reply_at(&signatureless, responder);
+    assert_eq!(
+        unmeasured.points.len(),
+        reply.points.len(),
+        "the declaration is still published whole — only its magnitudes are unstated"
+    );
+    assert!(
+        unmeasured.declared.is_none(),
+        "CR 732.2a: a magnitude is the period times the count, and there is no period to \
+         multiply"
+    );
+}
+
+/// **ONE PRODUCER, AND THE CALL SITES AGREE — the responder's element is minted by the same
+/// function the proposer's own preview and the offer's published list are.**
+///
+/// # A byte equality across the two beats is unsatisfiable, and the substitute is pinned
+///
+/// `InteractionChoiceId` embeds the interaction id, which rotates between the two beats, so a
+/// whole-struct equality could only fail. [`shortcut_elements_agree_modulo_ids`] is the
+/// substitute, and the ADMITTED-MEMBER leg below is what shows it is not merely weaker: it
+/// constructs a pair that agrees on every conjunct EXCEPT the resolved subject mapping and
+/// asserts the predicate refuses it, naming that conjunct.
+///
+/// # Discrimination
+///
+/// Re-derive the entries at the respond-side call site instead of calling
+/// `shortcut_preview_element` ⇒ the two disagree and the main leg fails. Delete the resolved-
+/// subject conjunct ⇒ the admitted-member leg's second half fails.
+#[test]
+fn the_responders_element_agrees_with_the_producers_other_two_call_sites() {
+    use engine::game::interaction::preview_interaction;
+    use engine::types::interaction::{
+        AmountAssignment, InteractionChoice, InteractionChoiceId, InteractionPresentationSurface,
+        InteractionPreviewRequest, InteractionShortcutPreview, InteractionShortcutPreviewEntry,
+        InteractionShortcutPreviewFamily, PreviewRequestId,
+    };
+
+    const COUNT: u32 = 6;
+    const SEGMENTS: [u32; 3] = [1, 2, 3];
+
+    // ── MAIN LEG: the proposer's own preview of this declaration, through `preview_interaction`,
+    //    the responder's published element for the same declaration.
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let allocation: Vec<(PlayerId, u32)> =
+        offer.legal_seats.iter().copied().zip(SEGMENTS).collect();
+    let submission = f4_allocation_submission(&offer, COUNT, &allocation);
+    let authored = preview_interaction(
+        &state,
+        offer.proposer,
+        &InteractionPreviewRequest {
+            request_id: PreviewRequestId("declared-element-agreement".to_string()),
+            interaction_id: submission.interaction_id.clone(),
+            response: submission.response.clone(),
+        },
+    )
+    .shortcut_preview
+    .expect("the proposer's own declaration previews an element");
+
+    let responder = f4_open_respond_window(&mut state, &offer, &submission);
+    let reply = f4_reply_at(&state, responder);
+    let published = reply
+        .declared
+        .as_ref()
+        .expect("the responder is published the same declaration");
+
+    // Reach-guards, before the comparison: MORE than one segment, non-empty entries, and
+    // PAIRWISE-DISTINCT per-seat magnitudes — so an equality between two empty elements, or
+    // between two uniform ones, cannot satisfy the agreement below.
+    assert!(published.allocation.len() > 1 && !published.entries.is_empty());
+    let magnitudes: Vec<i32> = f4_life_entries(published)
+        .into_iter()
+        .map(|(_, amount)| amount)
+        .collect();
+    assert_eq!(
+        magnitudes,
+        SEGMENTS
+            .iter()
+            .map(|segment| -(offer.rate * i64::from(*segment)) as i32)
+            .collect::<Vec<_>>(),
+        "reach-guard: the compared element states three DISTINCT per-seat magnitudes"
+    );
+    assert_ne!(
+        submission.interaction_id,
+        reply_interaction_id(&state, responder),
+        "reach-guard: the interaction id really DID rotate across the two beats, which is why \
+         a byte equality is unsatisfiable and this predicate exists"
+    );
+    assert_eq!(
+        shortcut_elements_agree_modulo_ids(
+            (&authored, &offer.offer_candidates),
+            (published, &reply.candidates),
+        ),
+        Ok(()),
+        "CR 732.2a: one producer mints both, so the two call sites cannot disagree about what \
+         this declaration does"
+    );
+
+    // ── SECOND LEG: when the declaration IS the canonical split at a count the offer publishes
+    //    an element for, the responder's element agrees with THAT element too.
+    let mut canonical_state = load_f4();
+    let canonical_offer = f4_allocation_offer(&mut canonical_state);
+    let sampled = canonical_offer
+        .published_preview
+        .iter()
+        .find(|element| {
+            element.allocation.len() == canonical_offer.legal_seats.len()
+                && element.count % 3 != 0
+                && element.count > 3
+        })
+        .cloned()
+        .expect(
+            "reach-guard: the offer publishes an element whose canonical split has a REMAINDER, \
+             so the compared magnitudes are not all equal",
+        );
+    let canonical_allocation: Vec<(PlayerId, u32)> = sampled
+        .allocation
+        .iter()
+        .map(|assignment| {
+            let seat = f4_candidate_seat(&canonical_offer.offer_candidates, &assignment.choice_id)
+                .expect("every published allocation position names a seat");
+            (PlayerId(seat), assignment.amount)
+        })
+        .collect();
+    let canonical_submission =
+        f4_allocation_submission(&canonical_offer, sampled.count, &canonical_allocation);
+    let canonical_responder = f4_open_respond_window(
+        &mut canonical_state,
+        &canonical_offer,
+        &canonical_submission,
+    );
+    let canonical_reply = f4_reply_at(&canonical_state, canonical_responder);
+    let canonical_published = canonical_reply
+        .declared
+        .as_ref()
+        .expect("the responder is published the canonical declaration too");
+    let canonical_magnitudes: Vec<i32> = f4_life_entries(canonical_published)
+        .into_iter()
+        .map(|(_, amount)| amount)
+        .collect();
+    assert!(
+        canonical_magnitudes.len() > 1
+            && canonical_magnitudes
+                .windows(2)
+                .any(|pair| pair[0] != pair[1]),
+        "reach-guard: the canonical split at {} carries a remainder, so its per-seat magnitudes \
+         are NOT all equal and a uniform producer cannot satisfy the agreement below. \
+         magnitudes={canonical_magnitudes:?}",
+        sampled.count
+    );
+    assert_eq!(
+        shortcut_elements_agree_modulo_ids(
+            (&sampled, &canonical_offer.offer_candidates),
+            (canonical_published, &canonical_reply.candidates),
+        ),
+        Ok(()),
+        "CR 732.2a: the offer's own published element for that count and the responder's \
+         element for the same declaration are the same arithmetic"
+    );
+
+    // ── ADMITTED-MEMBER LEG: the substitute must not admit what a byte equality would have
+    //    refused aside from ids. Such a member is CONSTRUCTIBLE — two elements agreeing on
+    //    count, entries and allocation AMOUNTS while position 0 resolves to a different seat —
+    //    so both halves are asserted: that the pair really satisfies every other conjunct, and
+    //    that the predicate refuses it naming the subject conjunct.
+    let seat_choice = |id: &str, seat: u8| InteractionChoice {
+        id: InteractionChoiceId(id.to_string()),
+        surfaces: vec![InteractionPresentationSurface::Player {
+            role: engine::types::interaction::InteractionRoleCode::Target,
+            index: None,
+            seat,
+        }],
+        status: engine::types::interaction::InteractionChoiceStatus::Available,
+    };
+    let element = |first: &str, second: &str| InteractionShortcutPreview {
+        count: 3,
+        entries: vec![InteractionShortcutPreviewEntry {
+            family: InteractionShortcutPreviewFamily::Tokens,
+            player: None,
+            amount: 9,
+        }],
+        allocation: vec![
+            AmountAssignment {
+                choice_id: InteractionChoiceId(first.to_string()),
+                amount: 1,
+            },
+            AmountAssignment {
+                choice_id: InteractionChoiceId(second.to_string()),
+                amount: 2,
+            },
+        ],
+    };
+    let left = element("beat-a.k0", "beat-a.k1");
+    let right = element("beat-b.k0", "beat-b.k1");
+    let left_candidates = [seat_choice("beat-a.k0", 1), seat_choice("beat-a.k1", 2)];
+    // The SAME ids in the same order, resolving to the OPPOSITE seats — the whole difference.
+    let right_candidates = [seat_choice("beat-b.k0", 2), seat_choice("beat-b.k1", 1)];
+    assert_eq!(left.count, right.count);
+    assert_eq!(left.entries, right.entries);
+    assert_eq!(
+        left.allocation.iter().map(|a| a.amount).collect::<Vec<_>>(),
+        right
+            .allocation
+            .iter()
+            .map(|a| a.amount)
+            .collect::<Vec<_>>(),
+        "the constructed pair really is a member only the resolved-subject conjunct can refuse: \
+         it agrees on count, on entries element-for-element, and on the allocation amounts"
+    );
+    assert_eq!(
+        shortcut_elements_agree_modulo_ids((&left, &left_candidates), (&right, &right_candidates),),
+        Err("allocation subject"),
+        "the substitute REFUSES a pair whose allocation positions name different seats — delete \
+         that conjunct and this leg fails while the two agreements above still pass"
+    );
+}
+
+/// The interaction id `viewer` is currently answering under, so a row can show that it rotated.
+fn reply_interaction_id(
+    state: &GameState,
+    viewer: PlayerId,
+) -> engine::types::interaction::InteractionId {
+    use engine::game::interaction::derive_viewer_interaction;
+    use engine::game::visibility::filter_state_for_viewer;
+
+    let filtered = filter_state_for_viewer(state, viewer);
+    let view = derive_viewer_interaction(state, &filtered, viewer);
+    view.opportunities
+        .first()
+        .expect("the responder carries an opportunity")
+        .interaction_id
+        .clone()
+}
+
+/// **THE ANSWERED OPTIONAL DECISIONS REACH THE RESPONDER, AND WHICH WAY EACH ONE WENT.**
+///
+/// CR 732.2c makes every choice in the proposal actually taken on acceptance, so the answers are
+/// the rule's own object rather than decoration. Each published statement point carries exactly
+/// two candidate ids, read in order as its own decision's SUBJECT and that decision's ANSWER.
+///
+/// # HOSTILE, and it is what makes the row discriminating rather than decorative
+///
+/// The declaration is authored with the two answers going DIFFERENT ways. A producer that keyed
+/// an answer on anything but its own pin's slot pairs the wrong answer to the wrong source, and
+/// one that states "taken" for every optional decision passes the uniform case and fails this.
+///
+/// # Discrimination
+///
+/// Drop one answered decision ⇒ the point count fails. Publish both answers from the first
+/// point ⇒ the difference assertion fails. The uniform sibling below keeps the difference from
+/// being a shape the producer always emits.
+#[test]
+fn both_answered_optional_decisions_reach_the_responder_with_their_own_answers() {
+    use engine::types::interaction::InteractionShortcutPointKind;
+
+    const COUNT: u32 = 6;
+
+    let answered = |answers: &[usize]| {
+        let mut state = load_f4();
+        let offer = f4_allocation_offer(&mut state);
+        assert_eq!(
+            offer.answerable.len(),
+            2,
+            "reach-guard: the tracked offer publishes TWO optional decisions, which is what \
+             makes a differing pair constructible at all"
+        );
+        assert!(
+            offer
+                .answerable
+                .iter()
+                .all(|point| point.kind == InteractionShortcutPointKind::MayChoice),
+            "reach-guard: both answerable points are optional decisions"
+        );
+        let allocation: Vec<(PlayerId, u32)> = offer
+            .legal_seats
+            .iter()
+            .copied()
+            .zip([1u32, 2, 3])
+            .collect();
+        let submission = f4_submission_with_answers(&offer, COUNT, &allocation, answers);
+        let responder = f4_open_respond_window(&mut state, &offer, &submission);
+        let reply = f4_reply_at(&state, responder);
+        let published: Vec<_> = reply
+            .points
+            .iter()
+            .filter(|point| point.kind == InteractionShortcutPointKind::MayChoice)
+            .cloned()
+            .collect();
+        assert_eq!(
+            published.len(),
+            2,
+            "both answered optional decisions reach the responder"
+        );
+        let stated: Vec<(String, String)> = published
+            .iter()
+            .map(|point| {
+                let [subject, answer] = point.candidate_ids.as_slice() else {
+                    panic!(
+                        "a published optional-decision statement point carries EXACTLY two \
+                         candidate ids — subject then answer — got {}",
+                        point.candidate_ids.len()
+                    );
+                };
+                (
+                    f4_candidate_object(&reply.candidates, subject)
+                        .expect("the subject candidate names its decision's own source object"),
+                    f4_candidate_value(&reply.candidates, answer)
+                        .expect("the answer candidate states which way the decision went"),
+                )
+            })
+            .collect();
+        (stated, reply.declared)
+    };
+
+    // ── HOSTILE: take one, decline the other.
+    let (differing, differing_declared) = answered(&[0, 1]);
+    assert_ne!(
+        differing[0].0, differing[1].0,
+        "reach-guard: the two statement points name DIFFERENT source objects, so pairing an \
+         answer to the wrong one is visible"
+    );
+    assert_eq!(
+        differing
+            .iter()
+            .map(|(_, answer)| answer.as_str())
+            .collect::<Vec<_>>(),
+        vec!["take", "decline"],
+        "CR 732.2c: each published answer is its OWN decision's — a producer that stated \
+         'taken' for every optional decision passes the uniform sibling below and fails here"
+    );
+    assert!(
+        differing_declared.is_some(),
+        "and publishing the answered decisions does not cost the declaration its partition"
+    );
+
+    // ── SIBLING: the same board declared with BOTH answers taken, so the difference above is a
+    //    branch rather than a shape the producer always emits.
+    let (uniform, _) = answered(&[0, 0]);
+    assert_eq!(
+        uniform
+            .iter()
+            .map(|(_, answer)| answer.as_str())
+            .collect::<Vec<_>>(),
+        vec!["take", "take"]
+    );
+    assert_eq!(
+        uniform
+            .iter()
+            .map(|(subject, _)| subject)
+            .collect::<Vec<_>>(),
+        differing
+            .iter()
+            .map(|(subject, _)| subject)
+            .collect::<Vec<_>>(),
+        "and both boards name the same two decisions, so only the ANSWERS differ between them"
+    );
 }
