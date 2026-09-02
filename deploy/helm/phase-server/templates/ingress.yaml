@@ -29,11 +29,14 @@
      topology would render a web sidecar and a Service port with nothing
      pointing at them. */}}
 {{- /* `/admin/drafts[/{code}]` is mounted by the server only when an admin token
-     is configured, so it is routed only then. It shares /health's middleware set
+     is configured, and is routed only when the SPA also holds the catch-all —
+     without it there is no `/` route to swallow the path, so the chart's default
+     "port-forward only" reachability still stands. Gated exactly as
+     `ingressroute.yaml` gates the same route. It shares /health's middleware set
      and rides on that Ingress rather than getting its own: one more object would
      buy nothing, and the server's own bearer guard is the access control. */}}
 {{- $serverPaths := list "/health" }}
-{{- if .Values.server.adminTokenSecret }}
+{{- if and .Values.web.enabled .Values.server.adminTokenSecret }}
 {{- $serverPaths = append $serverPaths "/admin" }}
 {{- end }}
 {{- $routes := list

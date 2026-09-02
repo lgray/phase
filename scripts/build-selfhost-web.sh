@@ -20,6 +20,29 @@ case "${1:-}" in
   *) echo "usage: $0 [--push]" >&2; exit 2 ;;
 esac
 
+# Fail before the build, not after it. Packaging needs a docker-container
+# builder: the default "docker" driver cannot do multi-platform at all, and even
+# with a container builder a two-platform result has nowhere to go locally —
+# docker's image store holds one platform, so without --push buildx leaves the
+# result in the build cache and exits 0 having produced nothing. Both of those
+# are ~25 minutes of wasm and vite away if we only find out at the end.
+if [ -n "${IMAGE:-}" ]; then
+  if [ ${#push[@]} -eq 0 ]; then
+    echo "ERROR: IMAGE is set but --push was not passed." >&2
+    echo "  A two-platform image cannot be loaded into the local docker image store," >&2
+    echo "  so the build would produce nothing. Re-run with --push, or unset IMAGE to" >&2
+    echo "  build client/dist only." >&2
+    exit 2
+  fi
+  driver=$(docker buildx inspect 2>/dev/null | awk '/^Driver:/ { print $2 }')
+  if [ "$driver" != "docker-container" ]; then
+    echo "ERROR: the active buildx builder uses the '${driver:-unknown}' driver, which cannot" >&2
+    echo "  build multi-platform images. Create one that can, then re-run:" >&2
+    echo "    docker buildx create --use --driver docker-container --bootstrap" >&2
+    exit 2
+  fi
+fi
+
 # Reuse the upstream data plane by default: these JSONs are large, versioned
 # with the card pool rather than the engine, and served with
 # `access-control-allow-origin: *`. Point this at your own bucket to self-host

@@ -33,7 +33,9 @@ server:
   logJson: true
   rustLog: info
   # Existing Secret holding PHASE_ADMIN_TOKEN. Leave empty to keep /admin/*
-  # unmounted (404). /admin is never routed through the Ingress; reach it with
+  # unmounted (404). /admin is routed through the Ingress only when `web.enabled`
+  # puts the SPA on the catch-all — otherwise nothing at the edge would reach it
+  # and the path stays unpublished. With the SPA off, reach it with
   # `kubectl port-forward svc/<release> 9374`.
   adminTokenSecret: ""
   adminTokenSecretKey: token
@@ -175,7 +177,9 @@ ingress:
   enabled: true
   className: traefik
   host: phase.example.com
-  # Only /ws, /health and /p2p-draft-backup are routed; /admin never is.
+  # Only /ws, /health and /p2p-draft-backup are routed. /admin joins them only
+  # when `web.enabled` gives the SPA the catch-all; with the SPA off it is
+  # never published.
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"

@@ -368,14 +368,22 @@ its own because the chart mounts one, so building it is a client build plus a
 copy:
 
 ```bash
+docker buildx create --use --driver docker-container --bootstrap   # once
 IMAGE=<you>/phase-web:v0.59.0 ./scripts/build-selfhost-web.sh --push
 ```
 
-That script sets the data-plane URLs, strips the JSONs it just pointed
-elsewhere, and builds both architectures. It bundles `client/public/card-data.json`
-when you have generated one, which is the pool your own engine parses; without it
-the client reads the shared copy, which tracks upstream's releases rather than
-your checkout.
+A `docker-container` builder is required: Docker's default driver cannot build
+multi-platform at all, and a two-platform result has nowhere to go locally, so
+`--push` is not optional either. The script checks both before it starts rather
+than after the client build.
+
+It sets the data-plane URLs, strips the JSONs it just pointed elsewhere, and
+builds both architectures. It bundles `client/public/card-data.json` when you have
+generated one, which is the pool your own engine parses. Without it the client
+reads the shared copy, which tracks upstream's releases rather than your checkout
+— and because that copy is not content-addressed, the service worker may serve a
+cached one for up to 30 days after upstream updates it. Generate your own if that
+matters to you.
 
 ## Values
 

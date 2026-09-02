@@ -66,6 +66,31 @@ app.kubernetes.io/instance: {{ .Release.Name }}
      crashloop rather than as a config error. Same class as the metrics/service
      check further down, kept here because the web listener has three siblings
      to clear rather than one. */}}
+{{- /* Reject a default server address the client will silently refuse.
+
+     The client validates the value it reads from /config.js and ignores a
+     malformed one, falling back to the bundle's build-time default — which in a
+     generic image is the public lobby. So a typo here does not break the site,
+     it quietly points every new player at someone else's server. Failing the
+     render is the only place an operator finds out.
+
+     The two rules mirror `parseWebSocketUrl` exactly, which is what the client
+     applies: a ws:// or wss:// scheme with a host, and no fragment. The fragment
+     rule tests for "#" anywhere rather than a trailing component because the
+     WebSocket constructor throws on a bare trailing "#" too. Keep these in step
+     with that function; they are one contract expressed on both sides. */}}
+{{- define "phase-server.validateDefaultServerUrl" -}}
+{{- $url := .Values.web.defaultMultiplayerServerUrl -}}
+{{- if $url -}}
+{{- if not (regexMatch "^wss?://[^/?#]+" $url) -}}
+{{- fail (printf "web.defaultMultiplayerServerUrl is %q, which is not a ws:// or wss:// address with a host. The client ignores an address it cannot parse and falls back to this build's default server, so the deployment would come up pointing players somewhere you did not choose." $url) -}}
+{{- end -}}
+{{- if contains "#" $url -}}
+{{- fail (printf "web.defaultMultiplayerServerUrl is %q, and a WebSocket address may not carry a fragment — the browser's WebSocket constructor rejects one outright. Drop everything from the \"#\" onwards." $url) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "phase-server.validateWebPort" -}}
 {{- $web := int .Values.web.server.port -}}
 {{- if le $web 1024 -}}
@@ -479,6 +504,7 @@ containers:
   {{- end }}
   {{- if .Values.web.enabled }}
   {{- include "phase-server.validateWebPort" . }}
+  {{- include "phase-server.validateDefaultServerUrl" . }}
   - name: web
     image: {{ include "phase-server.webImage" . }}
     imagePullPolicy: {{ .Values.image.pullPolicy }}
