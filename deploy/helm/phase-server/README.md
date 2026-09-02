@@ -357,7 +357,10 @@ docker buildx build --platform linux/arm64 --build-arg PHASE_CHANNEL=release \
 
 `PHASE_CHANNEL=release` is what lets an empty data volume self-bootstrap.
 Pin `image.digest` in your values; `:latest`-style tags resolve stale on some
-k3s nodes.
+k3s nodes. Pin `web.image.digest` too when you enable the SPA — it shares the
+server's pod, so an image that resolves to something unpullable takes `/ws` and
+`/health` down with it, and a digest turns that into a deploy-time failure
+instead of a runtime one.
 
 `web.image.repository` defaults to `ghcr.io/phase-rs/phase-web`. The job that
 publishes it ships separately from this chart (touching a workflow makes a whole
