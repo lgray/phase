@@ -3368,6 +3368,27 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
          bindings, so a clone is writable at the exact point the reviewer's probe inserted one"
     );
 
+    // ── SPAN 2b: the RESPOND-side attach site, inside the same enclosing signature. CR 732.2b's
+    //    accept-or-shorten payload is minted here from a declaration whose count may reach
+    //    `MAX_SHORTCUT_CYCLES` exactly as the offer's does, so the same ban applies.
+    let respond_attach = extract(
+        builder_scope,
+        "\n        HumanResponseModel::ShortcutReply => {",
+        "\n        HumanResponseModel::",
+    );
+    assert!(
+        respond_attach.contains("declared_shortcut_projection(")
+            && respond_attach.contains("declared_sequence_preview("),
+        "reach-guard: the extracted arm must be the one that decodes the declaration AND mints \
+         its element onto the spec, else the ban is being applied to the wrong arm"
+    );
+    assert!(
+        respond_attach.contains("filtered_state"),
+        "constructibility: the arm must actually USE one of the enclosing signature's two \
+         `&GameState` bindings — asserted above — so a clone is writable at the exact point the \
+         payload is minted"
+    );
+
     // ── TYPE-LEVEL PIN: the ban below is TEXTUAL, so its cheapest evasion is to widen
     //    `loop_shortcut_projection` to take a `&GameState` and clone it THERE — a third span
     //    this row does not read, and one that would contain none of the three banned strings.
@@ -3413,10 +3434,25 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
          id and its projection alone. Neither binding reaches a `GameState`, so a textual ban \
          over this span would be unwritable and therefore vacuous — the pin is the guard"
     );
+    assert_eq!(
+        params_of("declared_shortcut_projection"),
+        "waiting_for: &WaitingFor",
+        "type-level pin: the respond-side decode reads the already-redacted WAITING-FOR state \
+         alone. Widening it to a `&GameState` reopens the clone-apply route through a span the \
+         textual ban never reads"
+    );
+    assert_eq!(
+        params_of("declared_sequence_preview"),
+        "interaction_id: &InteractionId, declared: &DeclaredSequence",
+        "type-level pin: the declared element is minted from the responder's interaction id and \
+         the decoded declaration alone — id-minting and arithmetic on opposite sides of one \
+         signature"
+    );
 
     for (span_name, body) in [
         ("shortcut_preview_entries", &arithmetic),
         ("opportunity_for_slot's LoopShortcut arm", &attach),
+        ("opportunity_for_slot's ShortcutReply arm", &respond_attach),
     ] {
         for banned in ["preview_interaction", "state.clone()", "GameState"] {
             assert!(
@@ -3594,6 +3630,1025 @@ fn the_preview_list_and_its_allocation_default_when_absent_and_are_omitted_when_
         ..element.clone()
     };
     assert_defaulting_list_carrier("/allocation", &element, &unallocated);
+}
+
+// ═══ CR 732.2b — the respond-side declared sequence ══════════════════════════════════════════
+//
+// Every row below drives the PRODUCTION projection (`derive_viewer_interaction` over a
+// constructed accept-or-shorten window), never the private decoder, so a producer that is right
+// in isolation but unwired still fails.
+
+/// The seat the constructed windows address. It is also the first seat those declarations
+/// announce, which is what a real window looks like: the responder is one of the victims.
+const R_RESPONDER: PlayerId = PlayerId(1);
+const R_FIRST: PlayerId = PlayerId(1);
+const R_SECOND: PlayerId = PlayerId(2);
+/// The seat a constructed period's life map drains. Deliberately OUTSIDE the pair the
+/// "charge escapes the declaration" boards announce.
+const R_DRAINED: PlayerId = PlayerId(3);
+
+fn four_seat_state() -> GameState {
+    GameState::new(FormatConfig::standard(), 4, 42)
+}
+
+/// One CR 732.2b accept-or-shorten window on `state`, carrying the proposer's declaration.
+///
+/// The group key is fixed rather than derived: nothing in the respond-side projection reads it,
+/// and deriving it here would state a second rule about it that no row checks.
+fn respond_window_on(
+    mut state: GameState,
+    count: IterationCount,
+    per_cycle: Option<engine::analysis::resource::PeriodicDelta>,
+    decisions: Vec<engine::analysis::decision_template::PinnedDecision>,
+) -> GameState {
+    use engine::analysis::decision_template::{
+        DecisionGroupKey, DecisionKind, DecisionTemplate, ReplayMode,
+    };
+    state.waiting_for = WaitingFor::RespondToShortcut {
+        player: R_RESPONDER,
+        remaining_players: Vec::new(),
+        proposal: engine::analysis::loop_check::ShortcutProposal {
+            proposer: P0,
+            predicted_winner: Some(P0),
+            count: count.clone(),
+            unbounded: Vec::new(),
+            win_kind: engine::analysis::loop_check::WinKind::Advantage,
+            template: Some(DecisionTemplate {
+                owner: P0,
+                decisions,
+                replay: ReplayMode::Scheduled { count },
+                key: DecisionGroupKey::from_sources(
+                    &[preview_slot(0).source],
+                    DecisionKind::LoopChoice,
+                ),
+            }),
+            per_cycle,
+        },
+    };
+    bind(&mut state, "respond-declared");
+    state
+}
+
+fn respond_window(
+    count: IterationCount,
+    per_cycle: Option<engine::analysis::resource::PeriodicDelta>,
+    decisions: Vec<engine::analysis::decision_template::PinnedDecision>,
+) -> GameState {
+    respond_window_on(four_seat_state(), count, per_cycle, decisions)
+}
+
+/// What the responder's own published `ShortcutReply` schema carries.
+struct RespondReply {
+    points: Vec<InteractionShortcutPoint>,
+    declared: Option<InteractionShortcutPreview>,
+    candidates: Vec<engine::types::interaction::InteractionChoice>,
+}
+
+fn respond_reply_of(state: &GameState) -> RespondReply {
+    let view = viewer_interaction(state, R_RESPONDER);
+    let [opportunity] = view.opportunities.as_slice() else {
+        panic!(
+            "the respond window publishes exactly one opportunity to its responder, got {}",
+            view.opportunities.len()
+        );
+    };
+    let InteractionOpportunityResponse::Schema {
+        spec: InteractionResponseSpec::ShortcutReply {
+            points, declared, ..
+        },
+        candidates,
+    } = &opportunity.response
+    else {
+        panic!("the accept-or-shorten window uses a shortcut-reply schema");
+    };
+    RespondReply {
+        points: points.clone(),
+        declared: declared.clone(),
+        candidates: candidates.clone(),
+    }
+}
+
+/// The seat a published candidate names, read off the engine's own player surface — so a row
+/// states an announcement ORDER without transcribing a single choice id.
+fn respond_seat_of(reply: &RespondReply, id: &InteractionChoiceId) -> Option<u8> {
+    reply
+        .candidates
+        .iter()
+        .find(|choice| choice.id == *id)?
+        .surfaces
+        .iter()
+        .find_map(|surface| match surface {
+            InteractionPresentationSurface::Player { seat, .. } => Some(*seat),
+            _ => None,
+        })
+}
+
+fn respond_seats_of(reply: &RespondReply, ids: &[InteractionChoiceId]) -> Vec<u8> {
+    ids.iter()
+        .map(|id| {
+            respond_seat_of(reply, id).unwrap_or_else(|| {
+                panic!("every published seat candidate carries a player surface")
+            })
+        })
+        .collect()
+}
+
+fn respond_period(
+    life: &[(PlayerId, i64)],
+    victim_slot: Vec<(DecisionSlot, i64)>,
+) -> engine::analysis::resource::PeriodicDelta {
+    let mut delta = engine::analysis::resource::ResourceVector::default();
+    for (seat, amount) in life {
+        delta.life.insert(*seat, *amount);
+    }
+    engine::analysis::resource::PeriodicDelta {
+        frames_per_period: 1,
+        delta,
+        victim_slot,
+    }
+}
+
+/// A piecewise-scheduled announced-target pin: `starts[i]` is where subject `i` takes over, which
+/// is that partition's own prefix sums.
+fn piecewise_pin(
+    slot: DecisionSlot,
+    starts: &[u32],
+    subjects: &[engine::analysis::decision_template::AnnouncementSubject],
+) -> engine::analysis::decision_template::PinnedDecision {
+    use engine::analysis::decision_template::{PinnedDecision, Ranking, TargetPin, TargetSchedule};
+    assert_eq!(
+        starts.len(),
+        subjects.len(),
+        "fixture guard: a piecewise schedule names one subject per start"
+    );
+    PinnedDecision::Targets {
+        slot,
+        targets: vec![TargetPin::Scheduled(TargetSchedule::Piecewise(
+            starts
+                .iter()
+                .zip(subjects)
+                .map(|(start, subject)| (*start, Ranking::one(subject.clone())))
+                .collect(),
+        ))],
+    }
+}
+
+fn seat_subjects(
+    seats: &[PlayerId],
+) -> Vec<engine::analysis::decision_template::AnnouncementSubject> {
+    use engine::analysis::decision_template::AnnouncementSubject;
+    seats
+        .iter()
+        .copied()
+        .map(AnnouncementSubject::Seat)
+        .collect()
+}
+
+fn object_subject(id: ObjectId) -> engine::analysis::decision_template::AnnouncementSubject {
+    engine::analysis::decision_template::AnnouncementSubject::Object(
+        engine::types::game_state::YieldTarget::ThisObject {
+            source_id: id,
+            incarnation: Some(1),
+            trigger_description: None,
+        },
+    )
+}
+
+/// The segment LENGTHS a piecewise schedule's starts imply at `count`, computed the way the row
+/// reasons rather than the way the producer does — so the two can disagree.
+fn segments_from(starts: &[u32], count: u32) -> Vec<u32> {
+    starts
+        .iter()
+        .zip(starts.iter().skip(1).copied().chain(std::iter::once(count)))
+        .map(|(start, next)| next - start)
+        .collect()
+}
+
+fn declared_amounts(element: &InteractionShortcutPreview) -> Vec<u32> {
+    element
+        .allocation
+        .iter()
+        .map(|assignment| assignment.amount)
+        .collect()
+}
+
+/// **CR 704.5a — the attribution guard fires on ONE board and on no other.**
+///
+/// `victim_charge` refuses for FOUR reasons; only one of them is about this
+/// call site's narrower seat domain. The guard therefore re-asks that same rule over the period's
+/// own life-map keys and withholds the element only when the charge it resolves names a seat the
+/// declaration does NOT announce — because folding it without a split would key the whole drain
+/// on the seat the period was measured on, which is the number the responder decides on.
+///
+/// # All four legs run in ONE invocation, so each is the others' positive control
+///
+/// Leg 1 is the board the guard exists for; legs 2, 3 and 4 each falsify exactly one conjunct.
+/// Every leg asserts a POSITIVE fact — a published point set, a present element with non-empty
+/// entries — so "the projection published nothing" cannot satisfy any of them.
+///
+/// REVERT-PROBES: delete the guard ⇒ leg 1's `declared.is_none()` flips (the responder is handed
+/// `[Life P4 −72]`, the whole drain attributed to a seat the declaration never names); delete
+/// the `!announced.contains(..)` conjunct ⇒ leg 2 fails; take the charge probe without the
+/// `basis.seats` wrapper ⇒ leg 4 fails; use `basis.charge.is_none()` as the probe ⇒ leg 3 fails
+/// on its first assertion.
+#[test]
+fn the_declared_element_is_withheld_only_when_the_periods_charge_escapes_the_declaration() {
+    const COUNT: u32 = 6;
+    const STARTS: [u32; 2] = [0, 2];
+    let slot = preview_slot(0);
+    let announced = [R_FIRST, R_SECOND];
+
+    // ── LEG 1 — IT FIRES. One losing seat, charged through this very slot, and the
+    //    declaration announces two OTHER seats. ──
+    let escapes = respond_window(
+        IterationCount::Fixed(COUNT),
+        Some(respond_period(
+            &[(R_DRAINED, -12)],
+            vec![(slot.clone(), 12)],
+        )),
+        vec![piecewise_pin(
+            slot.clone(),
+            &STARTS,
+            &seat_subjects(&announced),
+        )],
+    );
+    let reply = respond_reply_of(&escapes);
+    assert_eq!(
+        respond_seats_of(&reply, &reply.points[0].candidate_ids),
+        vec![R_FIRST.0, R_SECOND.0],
+        "reach-guard: the declaration IS still published — the guard withholds the magnitudes, \
+         never the statement — and it announces exactly the two seats the period does not drain"
+    );
+    assert!(
+        reply.declared.is_none(),
+        "CR 704.5a: the period's per-slot charge resolves to a seat this declaration never \
+         announces, so no element is published rather than one keying the whole drain on the \
+         seat the period was measured on"
+    );
+
+    // ── LEG 2 — the membership conjunct. The same board with the drained seat announced. ──
+    let announces_victim = [R_DRAINED, R_FIRST];
+    let member = respond_window(
+        IterationCount::Fixed(COUNT),
+        Some(respond_period(
+            &[(R_DRAINED, -12)],
+            vec![(slot.clone(), 12)],
+        )),
+        vec![piecewise_pin(
+            slot.clone(),
+            &STARTS,
+            &seat_subjects(&announces_victim),
+        )],
+    );
+    let reply = respond_reply_of(&member);
+    let element = reply
+        .declared
+        .as_ref()
+        .expect("CR 704.5a: a declaration that announces the charged seat states its magnitudes");
+    assert_eq!(
+        declared_amounts(element),
+        segments_from(&STARTS, COUNT),
+        "the published partition is the declaration's own segment lengths"
+    );
+    assert_eq!(
+        declared_amounts(element),
+        vec![2, 4],
+        "ANTI-VACUITY: TWO segments, pairwise DISTINCT — a flag standing in for a count, or a \
+         uniform split, cannot satisfy this"
+    );
+    assert_eq!(
+        respond_seats_of(&reply, &reply.points[0].candidate_ids),
+        vec![R_DRAINED.0, R_FIRST.0]
+    );
+    assert_eq!(
+        element.entries,
+        vec![
+            preview_entry(InteractionShortcutPreviewFamily::Life, Some(R_FIRST.0), -48),
+            preview_entry(
+                InteractionShortcutPreviewFamily::Life,
+                Some(R_DRAINED.0),
+                -24
+            ),
+        ],
+        "CR 704.5a: the drain follows the DECLARATION — 2 cycles on the announced victim and 4 \
+         on the seat it named second, at the period's own rate — and the two magnitudes differ, \
+         so a producer that re-attributed uniformly fails here"
+    );
+
+    // ── LEG 3 — the probe conjunct, over the whole class of remaining refusals. On each board
+    //    the charged seat is unannounced AND `victim_charge` refuses over the period's own keys
+    //    too, so BOTH sides fold the period unsplit and publishing is correct. ──
+    for (why, period) in [
+        (
+            "no victim_slot entry for this point's slot",
+            respond_period(&[(R_DRAINED, -12)], Vec::new()),
+        ),
+        (
+            "a life map naming TWO losing seats",
+            respond_period(&[(P0, -12), (R_DRAINED, -36)], vec![(slot.clone(), 36)]),
+        ),
+        (
+            "a charge that is not the whole of the seat's loss",
+            respond_period(&[(R_DRAINED, -36)], vec![(slot.clone(), 12)]),
+        ),
+    ] {
+        let expected: Vec<InteractionShortcutPreviewEntry> = period
+            .delta
+            .life
+            .iter()
+            .map(|(seat, amount)| {
+                preview_entry(
+                    InteractionShortcutPreviewFamily::Life,
+                    Some(seat.0),
+                    (*amount * i64::from(COUNT)) as i32,
+                )
+            })
+            .collect();
+        let state = respond_window(
+            IterationCount::Fixed(COUNT),
+            Some(period),
+            vec![piecewise_pin(
+                slot.clone(),
+                &STARTS,
+                &seat_subjects(&announced),
+            )],
+        );
+        let reply = respond_reply_of(&state);
+        let element = reply.declared.as_ref().unwrap_or_else(|| {
+            panic!("the guard must NOT fire on the board where {why}: both sides refuse alike")
+        });
+        assert_eq!(
+            declared_amounts(element),
+            vec![2, 4],
+            "the responder still sees the partition on the {why} board"
+        );
+        assert!(
+            !element.entries.is_empty(),
+            "reach-guard: the {why} board really states magnitudes, so the equality below is \
+             not two empty lists"
+        );
+        assert_eq!(
+            element.entries, expected,
+            "CR 732.2a: with no resolvable charge over its own domain the element folds the \
+             PERIOD's own seat keys, unsplit — which is what the offer's element does on the \
+             identical period ({why})"
+        );
+    }
+
+    // ── LEG 4 — the seat-domain conjunct. A declaration announcing OBJECTS has no seat domain
+    //    at all, so nothing narrowed and the offer's own fold is right for it too. ──
+    let objects = respond_window(
+        IterationCount::Fixed(COUNT),
+        Some(respond_period(
+            &[(R_DRAINED, -12)],
+            vec![(slot.clone(), 12)],
+        )),
+        vec![piecewise_pin(
+            slot.clone(),
+            &STARTS,
+            &[
+                object_subject(ObjectId(4001)),
+                object_subject(ObjectId(4002)),
+            ],
+        )],
+    );
+    let reply = respond_reply_of(&objects);
+    let element = reply.declared.as_ref().expect(
+        "a declaration whose announced subjects are OBJECTS narrows no seat domain, so the \
+         attribution guard has nothing to fire on",
+    );
+    assert!(
+        reply.points[0]
+            .candidate_ids
+            .iter()
+            .all(|id| respond_seat_of(&reply, id).is_none()),
+        "reach-guard: this board really publishes OBJECT subjects — if either resolved to a \
+         seat, `allocated_seats` would answer `Some` and this leg would be leg 2 again"
+    );
+    assert_eq!(
+        declared_amounts(element),
+        vec![2, 4],
+        "the partition is still the declaration's own"
+    );
+    assert_eq!(
+        element.entries,
+        vec![preview_entry(
+            InteractionShortcutPreviewFamily::Life,
+            Some(R_DRAINED.0),
+            -72
+        )],
+        "CR 732.2a: the period's own seat key, times the declared count — the offer's fold, \
+         reached unchanged"
+    );
+}
+
+/// **CR 601.2c — two announced-target decisions, and the segments belong to the one
+/// `allocation_point` picks.**
+///
+/// A proposal may carry more than one announced-target decision. `allocation_point` names the
+/// FIRST in published order as the one the allocation is stated over, and every later one
+/// publishes its declared ORDER with no allocation stated over it. Reading the segments and the
+/// candidate ids back through that same index is what keeps the two halves of the element about
+/// one point.
+///
+/// # The fixture is built so a producer cannot be right by accident
+///
+/// The two segment vectors are PERMUTATIONS of each other, so a producer that sorts is visible;
+/// they are DIFFERENT, so a producer that carried a flat vector written by whichever decision
+/// the walk saw last is visible; and the two points announce the seats in different orders, so
+/// zipping one point's segments against the other's ids is visible.
+///
+/// REVERT-PROBES: carry one flat segment vector written by the LAST `Targets` decision ⇒ (1)
+/// fails; read a segment entry chosen by anything other than `basis.group` ⇒ (1) and (2) fail.
+#[test]
+fn the_declared_allocation_belongs_to_the_first_announced_target_decision() {
+    const COUNT: u32 = 6;
+    const FIRST_STARTS: [u32; 3] = [0, 1, 3];
+    const SECOND_STARTS: [u32; 3] = [0, 3, 5];
+    let first_order = [R_FIRST, R_SECOND, R_DRAINED];
+    let second_order = [R_DRAINED, R_SECOND, R_FIRST];
+
+    // (0) The fixture's own two vectors, asserted DIFFERENT before anything is read off the
+    //     projection. A fixture edit that made them equal takes this row's discriminating power
+    //     with it, which is what this assertion is for.
+    let first_segments = segments_from(&FIRST_STARTS, COUNT);
+    let second_segments = segments_from(&SECOND_STARTS, COUNT);
+    assert_eq!(first_segments, vec![1, 2, 3]);
+    assert_eq!(second_segments, vec![3, 2, 1]);
+    assert_ne!(
+        first_segments, second_segments,
+        "fixture guard: the two declarations must partition the count DIFFERENTLY, or reading \
+         the wrong one would be invisible"
+    );
+
+    let state = respond_window(
+        IterationCount::Fixed(COUNT),
+        Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+        vec![
+            piecewise_pin(preview_slot(0), &FIRST_STARTS, &seat_subjects(&first_order)),
+            piecewise_pin(
+                preview_slot(1),
+                &SECOND_STARTS,
+                &seat_subjects(&second_order),
+            ),
+        ],
+    );
+    let reply = respond_reply_of(&state);
+    assert_eq!(
+        reply.points.len(),
+        2,
+        "reach-guard: both decisions publish a point"
+    );
+    assert!(
+        reply
+            .points
+            .iter()
+            .all(|point| point.kind == InteractionShortcutPointKind::Targets),
+        "reach-guard: both are announced-target points, so `allocation_point` really has two to \
+         choose between"
+    );
+    let element = reply
+        .declared
+        .as_ref()
+        .expect("the first decision partitions the declared count, so an element is stated");
+
+    // (1) THE DISCRIMINATING ASSERTION.
+    assert_eq!(
+        declared_amounts(element),
+        first_segments,
+        "CR 601.2c: the allocation is stated over the FIRST announced-target decision, so its \
+         amounts are that decision's segment lengths — a decoder carrying a flat vector written \
+         by the last decision publishes {second_segments:?} and fails here"
+    );
+    // (2) Independently discriminating: zipping the first point's SEGMENTS against the second
+    //     point's IDS satisfies (1) and fails this.
+    assert!(
+        element.allocation.iter().all(|assignment| reply.points[0]
+            .candidate_ids
+            .contains(&assignment.choice_id)),
+        "every allocation position names a candidate of the point it is stated over"
+    );
+    // (3) The later decision publishes its declared ORDER and no allocation of its own.
+    let second_seats = respond_seats_of(&reply, &reply.points[1].candidate_ids);
+    assert_eq!(
+        second_seats,
+        second_order.iter().map(|seat| seat.0).collect::<Vec<_>>(),
+        "the second decision publishes the proposer's own announcement order"
+    );
+    let mut reversed = second_seats.clone();
+    reversed.reverse();
+    assert_ne!(
+        second_seats, reversed,
+        "ANTI-VACUITY: the published order differs from itself reversed, so a producer that \
+         sorted or reversed it fails and an empty-vs-empty comparison cannot satisfy the \
+         equality above"
+    );
+}
+
+/// **THE PUBLICATION POSTURE, RUN FROM BOTH ENDS.**
+///
+/// A decision this projection can state nothing about publishes NO POINT, and the rest of the
+/// declaration publishes anyway — that is what every pin kind but one does. The ONE exception is
+/// the announced-target decision, which refuses the WHOLE sequence, and its ground is code
+/// rather than a rule: `allocation_point`'s own documented refusal to skip a candidate-less
+/// first point to reach a later one. The subject list IS the allocation domain, so a hole in it
+/// is not a missing statement line.
+///
+/// # Both legs are latent in production, and that is stated rather than implied
+///
+/// Both `DecisionSlot::may` call sites build their source through `object_decision_source`,
+/// which constructs a live-object source unconditionally, so leg A's card-identity branch is
+/// wired rather than exercised today; leg B's production reachability is unmeasured. Neither is
+/// a reason to leave the branch's behaviour untested — the branch is judged on what it does when
+/// reached.
+///
+/// # Discrimination
+///
+/// Refuse the whole sequence on an unstatable optional decision ⇒ leg A fails on both halves.
+/// Publish a ONE-candidate statement point for it ⇒ leg A's `points` assertion fails, because
+/// that posture mints a point on the very board where leg A asserts none. Publish a partial
+/// subject list for an unstatable announced target ⇒ leg B's `points.is_empty()` fails.
+#[test]
+fn an_unstatable_optional_decision_is_skipped_and_an_unstatable_target_refuses_the_sequence() {
+    use engine::analysis::decision_template::{
+        DecisionSlot, MayChoiceOption, PinnedDecision, TargetPin,
+    };
+    use engine::types::game_state::YieldTarget;
+
+    const COUNT: u32 = 6;
+    const STARTS: [u32; 2] = [0, 2];
+
+    let card_identity = YieldTarget::AllCopies {
+        card_id: CardId(9_314),
+        trigger_description: None,
+    };
+    let live_object = YieldTarget::ThisObject {
+        source_id: ObjectId(9_315),
+        incarnation: Some(1),
+        trigger_description: None,
+    };
+    let targets_first = piecewise_pin(
+        preview_slot(0),
+        &STARTS,
+        &seat_subjects(&[R_FIRST, R_SECOND]),
+    );
+    let with_optional = |source: YieldTarget| {
+        respond_window(
+            IterationCount::Fixed(COUNT),
+            Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+            vec![
+                targets_first.clone(),
+                PinnedDecision::MayChoice {
+                    slot: DecisionSlot::may(source),
+                    take: MayChoiceOption::Take,
+                },
+            ],
+        )
+    };
+
+    // ── LEG A: the optional decision's slot names a CARD identity, which mints no subject. It
+    //    costs the declaration one statement line and nothing else.
+    let skipped = respond_reply_of(&with_optional(card_identity));
+    assert_eq!(
+        skipped
+            .points
+            .iter()
+            .map(|point| point.kind)
+            .collect::<Vec<_>>(),
+        vec![InteractionShortcutPointKind::Targets],
+        "an optional decision whose subject cannot be minted publishes NO point, and the \
+         announced-target decision beside it publishes anyway"
+    );
+    let skipped_element = skipped
+        .declared
+        .as_ref()
+        .expect("and the declaration keeps its partition and its magnitudes");
+    assert_eq!(
+        declared_amounts(skipped_element),
+        vec![2, 4],
+        "ANTI-VACUITY: more than one segment, pairwise distinct — 'everything empty' is not \
+         what this leg asserts and could not satisfy it"
+    );
+
+    // ── The paired positive on the identical instrument: the same declaration whose optional
+    //    decision names a LIVE object publishes a second point at arity two — and the declared
+    //    element is EQUAL, because the announced-target decision is first in the walk and its
+    //    candidate indices are unchanged either way.
+    let published = respond_reply_of(&with_optional(live_object));
+    assert_eq!(
+        published
+            .points
+            .iter()
+            .map(|point| point.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            InteractionShortcutPointKind::Targets,
+            InteractionShortcutPointKind::MayChoice,
+        ]
+    );
+    assert_eq!(
+        published.points[1].candidate_ids.len(),
+        2,
+        "a PUBLISHED optional-decision statement point carries exactly two candidates — subject \
+         then answer — so the client's positional read is total over what arrives"
+    );
+    assert_eq!(
+        published.declared, skipped.declared,
+        "publishing an optional decision does not move the allocation: the announced-target \
+         decision is first in the walk, so its minted ids are the same on both boards"
+    );
+
+    // ── LEG B: an announced-target subject that cannot be minted refuses the WHOLE sequence.
+    let announced = |source: YieldTarget| {
+        respond_window(
+            IterationCount::Fixed(COUNT),
+            Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+            vec![PinnedDecision::Targets {
+                slot: preview_slot(0),
+                targets: vec![TargetPin::ByIdentity(source)],
+            }],
+        )
+    };
+    let refused = respond_reply_of(&announced(YieldTarget::AllCopies {
+        card_id: CardId(9_316),
+        trigger_description: None,
+    }));
+    assert!(
+        refused.points.is_empty() && refused.declared.is_none(),
+        "the subject list IS the allocation domain, and `allocation_point` refuses to skip a \
+         candidate-less first point to reach a later one — so a hole in the domain refuses the \
+         whole sequence rather than publishing it short"
+    );
+
+    // ── Paired positive in the same leg: the same declaration on a live object publishes.
+    let minted = respond_reply_of(&announced(YieldTarget::ThisObject {
+        source_id: ObjectId(9_317),
+        incarnation: Some(1),
+        trigger_description: None,
+    }));
+    assert_eq!(
+        minted.points.len(),
+        1,
+        "the same declaration one identity apart publishes its statement point"
+    );
+    assert_eq!(minted.points[0].candidate_ids.len(), 1);
+    assert_eq!(
+        declared_amounts(
+            minted
+                .declared
+                .as_ref()
+                .expect("and a single announced subject takes the whole declared count")
+        ),
+        vec![COUNT]
+    );
+}
+
+/// **CR 732.1b — an order-only declaration publishes its announcement ORDER and no magnitudes.**
+///
+/// An until-lethal proposal names no count to partition, so a magnitude there could only be
+/// invented. A MULTI-subject constant under a FINITE count is order-only for a different reason:
+/// its tail is the next episode's pre-declaration, never an in-drive switch, so no part of the
+/// declared count belongs to it. The single-subject constant is the shape the engine's own
+/// bounded-declaration builder mints, and it DOES take the whole count.
+///
+/// REVERT-PROBE: publish an allocation on the until-lethal arm ⇒ its `declared.is_none()` flips.
+#[test]
+fn an_order_only_declaration_publishes_its_order_and_no_allocation() {
+    use engine::analysis::decision_template::{PinnedDecision, Ranking, TargetPin, TargetSchedule};
+
+    const COUNT: u32 = 6;
+    let order = [R_DRAINED, R_FIRST, R_SECOND];
+    let constant_pin = |seats: &[PlayerId]| PinnedDecision::Targets {
+        slot: preview_slot(0),
+        targets: vec![TargetPin::Scheduled(TargetSchedule::Constant(
+            Ranking::new(seat_subjects(seats)).expect("distinct seats make a legal ranking"),
+        ))],
+    };
+    let period = || Some(respond_period(&[(R_DRAINED, -5)], Vec::new()));
+
+    for (why, count) in [
+        (
+            "an until-lethal proposal names no count to partition",
+            IterationCount::UntilLethal,
+        ),
+        (
+            "a multi-subject constant's tail is the NEXT episode's pre-declaration",
+            IterationCount::Fixed(COUNT),
+        ),
+    ] {
+        let state = respond_window(count, period(), vec![constant_pin(&order)]);
+        let reply = respond_reply_of(&state);
+        let published = respond_seats_of(&reply, &reply.points[0].candidate_ids);
+        assert_eq!(
+            published,
+            order.iter().map(|seat| seat.0).collect::<Vec<_>>(),
+            "the proposer's own announcement order reaches the responder element-for-element \
+             ({why})"
+        );
+        assert!(
+            published.len() > 1,
+            "ANTI-VACUITY: the order has more than one entry, so an empty-vs-empty comparison \
+             cannot satisfy the equality above"
+        );
+        let mut reversed = published.clone();
+        reversed.reverse();
+        assert_ne!(
+            published, reversed,
+            "ANTI-VACUITY: a producer that sorted or reversed the order fails here"
+        );
+        assert!(
+            reply.declared.is_none(),
+            "CR 732.1b: no allocation and no magnitudes — {why}"
+        );
+    }
+
+    // ── The paired positive on the identical instrument: ONE subject under a finite count DOES
+    //    take the whole count, so "order-only" is a branch rather than a producer that never
+    //    states an element.
+    let single = respond_window(
+        IterationCount::Fixed(COUNT),
+        period(),
+        vec![constant_pin(&[R_DRAINED])],
+    );
+    let reply = respond_reply_of(&single);
+    let element = reply
+        .declared
+        .as_ref()
+        .expect("a single-subject constant under a finite count takes the whole declared count");
+    assert_eq!(declared_amounts(element), vec![COUNT]);
+    assert_eq!(
+        element.entries,
+        vec![preview_entry(
+            InteractionShortcutPreviewFamily::Life,
+            Some(R_DRAINED.0),
+            -30
+        )],
+        "and its magnitudes are the period times that count"
+    );
+}
+
+/// **CR 732.2b — the respond-side projection inherits the single redaction authority.**
+///
+/// `opportunity_for_slot` reads `filtered_state.waiting_for`, so a template
+/// `game::visibility`'s one authority dropped whole is unreachable from the projection by
+/// construction. The projection then publishes NO declared sequence — never a partial one, which
+/// would state a proposal nobody made.
+///
+/// REVERT-PROBE: point the decode at the AUTHORITATIVE waiting-for state ⇒ the hidden identity
+/// is published and the negative below flips.
+#[test]
+fn the_respond_side_projection_publishes_nothing_for_a_redacted_declaration() {
+    use engine::analysis::decision_template::{PinnedDecision, TargetPin};
+    use engine::game::zones::create_object;
+
+    let window = |zone: Zone| {
+        let mut state = four_seat_state();
+        let card = create_object(
+            &mut state,
+            CardId(7742),
+            P0,
+            "Secret Card".to_string(),
+            zone,
+        );
+        let pin = PinnedDecision::Targets {
+            slot: preview_slot(0),
+            targets: vec![TargetPin::ByIdentity(
+                engine::types::game_state::YieldTarget::ThisObject {
+                    source_id: card,
+                    incarnation: Some(1),
+                    trigger_description: None,
+                },
+            )],
+        };
+        respond_window_on(
+            state,
+            IterationCount::Fixed(4),
+            Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+            vec![pin],
+        )
+    };
+
+    // ── MANDATORY PAIRED POSITIVE, first: the same board whose pin names a battlefield
+    //    permanent publishes the sequence, so the absence below is a branch rather than a
+    //    projection that never happens.
+    let visible = respond_reply_of(&window(Zone::Battlefield));
+    assert_eq!(
+        visible.points.len(),
+        1,
+        "a viewable identity reaches the responder as a published statement point"
+    );
+    let element = visible
+        .declared
+        .as_ref()
+        .expect("and its declared element is stated");
+    assert_eq!(declared_amounts(element), vec![4]);
+
+    // ── The hostile board: the same pin naming the PROPOSER's hand card.
+    let hidden = respond_reply_of(&window(Zone::Hand));
+    assert!(
+        hidden.points.is_empty() && hidden.declared.is_none(),
+        "CR 732.2b: the single authority dropped the template whole, so the projection reading \
+         the FILTERED state has nothing to decode — and states nothing rather than a partial \
+         sequence"
+    );
+}
+
+/// **CR 732.2b — the responder's declared sequence is CHARGED on the outbound budget.**
+///
+/// `InteractionResponseSpec::ShortcutReply` charges its points list, each point's candidate-id
+/// list and each id string on the SAME cumulative `OutboundBudget` the offer's own `Shortcut`
+/// arm charges its lists on, rather than riding in the zero-cost group.
+///
+/// # Discrimination
+///
+/// The two boards differ ONLY in how many optional decisions the declaration answers. At
+/// `CHARGED_POINTS` the published candidates alone stay under the ceiling — that is what
+/// `ACCEPTED_POINTS` establishes on the identical instrument, since candidates are charged by
+/// `bound_outbound_choices` either way — so the refusal can only come from the spec's own legs.
+/// Return the variant to the zero-cost group ⇒ the oversized projection is emitted and the
+/// `PayloadTooLarge` assertion fails.
+#[test]
+fn an_oversized_declared_sequence_is_charged_rather_than_emitted() {
+    use engine::analysis::decision_template::{DecisionSlot, MayChoiceOption, PinnedDecision};
+
+    /// Below the ceiling with the spec charge applied.
+    const ACCEPTED_POINTS: u32 = 1_000;
+    /// Above it with the spec charge applied, BELOW it without.
+    const CHARGED_POINTS: u32 = 1_500;
+
+    let answered = |count: u32| -> Vec<PinnedDecision> {
+        (0..count)
+            .map(|index| PinnedDecision::MayChoice {
+                slot: DecisionSlot::may(engine::types::game_state::YieldTarget::ThisObject {
+                    source_id: ObjectId(u64::from(index) + 9_000),
+                    incarnation: Some(1),
+                    trigger_description: None,
+                }),
+                take: MayChoiceOption::Take,
+            })
+            .collect()
+    };
+
+    let accepted = respond_window(
+        IterationCount::Fixed(4),
+        Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+        answered(ACCEPTED_POINTS),
+    );
+    let reply = respond_reply_of(&accepted);
+    assert_eq!(
+        reply.points.len() as u32,
+        ACCEPTED_POINTS,
+        "positive control: a declaration answering {ACCEPTED_POINTS} optional decisions is \
+         published whole, so the refusal below is the budget speaking and not the decoder"
+    );
+
+    let charged = respond_window(
+        IterationCount::Fixed(4),
+        Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+        answered(CHARGED_POINTS),
+    );
+    let view = viewer_interaction(&charged, R_RESPONDER);
+    assert_eq!(
+        view.availability,
+        InteractionAvailability::Unsupported {
+            reason: InteractionReasonCode::PayloadTooLarge,
+        },
+        "the declared sequence is CHARGED: growing the answered decisions from \
+         {ACCEPTED_POINTS} to {CHARGED_POINTS} crosses the same cumulative ceiling the offer's \
+         own lists charge against"
+    );
+    let [replaced] = view.opportunities.as_slice() else {
+        panic!(
+            "the over-budget slot is REPLACED by the fail-closed placeholder, not dropped, got \
+             {} opportunities",
+            view.opportunities.len()
+        );
+    };
+    assert!(
+        matches!(
+            replaced.response,
+            InteractionOpportunityResponse::ExactChoices { ref choices } if choices.is_empty()
+        ),
+        "failing the budget hands over the empty fail-closed placeholder rather than a \
+         truncated declaration — the responder is told the payload could not be stated, never \
+         shown a sequence nobody proposed"
+    );
+}
+
+/// The five legs one `#[serde(default, skip_serializing_if = "Option::is_none")]` carrier owes.
+///
+/// It is NOT `assert_defaulting_list_carrier` with a different pointer, and the difference is
+/// MEASURED rather than assumed: under these attributes an explicit `null` at the pointer
+/// deserializes to `None` and is ACCEPTED, while a `Vec` carrier under its own attributes
+/// refuses it. So the final leg INVERTS — and it is stated as an equality against the absent
+/// case rather than as a bare `is_ok()`, because a deserializer that accepted `null` as some
+/// third thing would pass `is_ok()` and fail this.
+fn assert_defaulting_option_carrier<T>(pointer: &str, populated: &T, absent: &T)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+{
+    let populated_json = serde_json::to_value(populated).expect("the carrier serializes");
+    assert!(
+        populated_json
+            .pointer(pointer)
+            .is_some_and(|value| !value.is_null()),
+        "positive control: a POPULATED `{pointer}` must be emitted, else every absence leg \
+         below is satisfied by a serializer that writes no key under any circumstances"
+    );
+    assert_eq!(
+        &serde_json::from_value::<T>(populated_json.clone()).expect("a populated carrier reads"),
+        populated,
+        "a populated `{pointer}` round-trips unchanged"
+    );
+
+    let absent_json = serde_json::to_value(absent).expect("the absent carrier serializes");
+    assert!(
+        absent_json.pointer(pointer).is_none(),
+        "an ABSENT `{pointer}` is omitted from the emitted JSON rather than written as `null`"
+    );
+    assert_eq!(
+        &serde_json::from_value::<T>(absent_json).expect("an absent carrier reads"),
+        absent,
+        "an ABSENT `{pointer}` deserializes to the empty option"
+    );
+
+    let mut null_json = populated_json;
+    *null_json
+        .pointer_mut(pointer)
+        .expect("the populated carrier was just asserted present") = serde_json::Value::Null;
+    assert_eq!(
+        &serde_json::from_value::<T>(null_json).expect("an explicit `null` reads as the option"),
+        absent,
+        "an explicit `null` at `{pointer}` deserializes to the SAME value the absent key does — \
+         an option is a nullable field, which is exactly where it parts company with a list"
+    );
+}
+
+/// **The two carriers the respond-side spec gained are ADDITIVE, proven rather than asserted.**
+///
+/// A `ShortcutReply` serialized before these fields existed still deserializes, and empty or
+/// absent ones are omitted from the emitted JSON — so no protocol version constant moves.
+///
+/// REVERT-PROBES: drop `#[serde(default)]` on either carrier ⇒ its absent-key leg fails; drop
+/// `skip_serializing_if` ⇒ its omission leg fails.
+#[test]
+fn the_respond_side_points_and_declared_default_when_absent_and_are_omitted_when_empty() {
+    let point = InteractionShortcutPoint {
+        group: 0,
+        kind: InteractionShortcutPointKind::Targets,
+        min: 0,
+        max: 0,
+        unique: true,
+        ordered: true,
+        read_only: true,
+        candidate_ids: vec![InteractionChoiceId("k0".to_string())],
+    };
+    let element = InteractionShortcutPreview {
+        count: 3,
+        entries: vec![preview_entry(
+            InteractionShortcutPreviewFamily::Life,
+            Some(P1.0),
+            -6,
+        )],
+        allocation: vec![AmountAssignment {
+            choice_id: InteractionChoiceId("k0".to_string()),
+            amount: 3,
+        }],
+    };
+    let spec = |points: Vec<InteractionShortcutPoint>,
+                declared: Option<InteractionShortcutPreview>| {
+        InteractionResponseSpec::ShortcutReply {
+            min_iteration: 0,
+            max_iteration: 4,
+            points,
+            declared,
+            confirm: engine::types::interaction::ConfirmSemantics::Explicit,
+        }
+    };
+
+    // The shape a save written before the declared-sequence fields existed carries: the two
+    // numbers and the confirm semantics, and neither of those keys.
+    let legacy = serde_json::json!({
+        "type": "shortcutReply",
+        "data": { "minIteration": 0, "maxIteration": 4, "confirm": "explicit" }
+    });
+    assert_eq!(
+        serde_json::from_value::<InteractionResponseSpec>(legacy)
+            .expect("a pre-field payload still deserializes"),
+        spec(Vec::new(), None),
+        "ADDITIVITY: the fields default, so no protocol version constant moves for them"
+    );
+
+    assert_defaulting_list_carrier(
+        "/data/points",
+        &spec(vec![point.clone()], None),
+        &spec(Vec::new(), None),
+    );
+    assert_defaulting_option_carrier(
+        "/data/declared",
+        &spec(Vec::new(), Some(element)),
+        &spec(Vec::new(), None),
+    );
 }
 
 /// A window whose three count axes are all DISTINCT — the only shape that can separate the

@@ -1033,9 +1033,38 @@ pub enum InteractionResponseSpec {
         preview: Vec<InteractionShortcutPreview>,
         confirm: ConfirmSemantics,
     },
+    /// CR 732.2b + CR 732.2c: the proposal this player is being asked to accept, published so
+    /// the responder can judge the object CR 732.2b gives them the right to shorten.
+    ///
+    /// `points` are READ-ONLY statement points — one per decision the declaration answered AND
+    /// this vocabulary can state, in the declaration's own order. `read_only` is `true` on every
+    /// one: the responder's only outbound values are Accept and Shorten, so nothing here is an
+    /// option set to pick from. A `mayChoice` statement point publishes EXACTLY TWO candidate
+    /// ids, read in order as SUBJECT then ANSWER — an optional decision whose subject cannot be
+    /// minted publishes NO point rather than a shorter one, so the positional read is total over
+    /// what is published. EMPTY when the proposal carries no declaration: every count-only offer,
+    /// every proposal the viewer's redaction dropped, and a declaration whose announced-target
+    /// subject list cannot be minted (see `game::interaction::declared_shortcut_projection`).
+    ///
+    /// `declared` is what the DECLARED count does: the same element vocabulary the offer's own
+    /// published list carries, minted by the same producer over the allocation the proposer
+    /// actually declared. Absent on an order-only declaration (CR 732.1b: an until-lethal
+    /// proposal names no count to partition, so a magnitude there could only be invented), on
+    /// any proposal stating no per-period signature, and on a declaration whose announced
+    /// subjects do not include the seat the period's per-slot life charge resolves to
+    /// (CR 704.5a — see `game::interaction::declared_sequence_preview`).
+    ///
+    /// The docs live on the VARIANT rather than on the fields, for the reason the `Shortcut`
+    /// variant above records: ts_rs emits field docs into the generated bindings as JSDoc but
+    /// drops variant docs, and a comment block in the middle of a union keeps that file from
+    /// being one declaration per line.
     ShortcutReply {
         min_iteration: u32,
         max_iteration: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        points: Vec<InteractionShortcutPoint>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        declared: Option<InteractionShortcutPreview>,
         confirm: ConfirmSemantics,
     },
 }
