@@ -28,19 +28,15 @@
      /p2p-draft-backup still win over "/". Without this route the default
      topology would render a web sidecar and a Service port with nothing
      pointing at them. */}}
-{{- /* `/admin/drafts[/{code}]` is mounted by the server only when an admin token
-     is configured, and is routed only when the SPA also holds the catch-all —
-     without it there is no `/` route to swallow the path, so the chart's default
-     "port-forward only" reachability still stands. Gated exactly as
-     `ingressroute.yaml` gates the same route. It shares /health's middleware set
-     and rides on that Ingress rather than getting its own: one more object would
-     buy nothing, and the server's own bearer guard is the access control. */}}
-{{- $serverPaths := list "/health" }}
-{{- if and .Values.web.enabled .Values.server.adminTokenSecret }}
-{{- $serverPaths = append $serverPaths "/admin" }}
-{{- end }}
+{{- /* `/admin/*` is deliberately absent. It is mounted by the server only when an
+     admin token is set, and its bearer guard is authentication, not a reason to
+     move the documented network boundary: the chart keeps it reachable only
+     through `kubectl port-forward`. With the SPA on the catch-all an /admin
+     request therefore lands on the site and 404s, which is the intended answer
+     from the public edge. `tests/assert-web-routing.sh` asserts its absence with
+     a token configured, in both topologies. */}}
 {{- $routes := list
-      (dict "suffix" "" "paths" $serverPaths "mw" $common "port" "http")
+      (dict "suffix" "" "paths" (list "/health") "mw" $common "port" "http")
       (dict "suffix" "-ws" "paths" (list "/ws") "mw" $wsMw "port" "http")
       (dict "suffix" "-backup" "paths" (list "/p2p-draft-backup") "mw" $backupMw "port" "http") }}
 {{- if .Values.web.enabled }}

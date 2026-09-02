@@ -33,10 +33,8 @@ server:
   logJson: true
   rustLog: info
   # Existing Secret holding PHASE_ADMIN_TOKEN. Leave empty to keep /admin/*
-  # unmounted (404). /admin is routed through the Ingress only when `web.enabled`
-  # puts the SPA on the catch-all — otherwise nothing at the edge would reach it
-  # and the path stays unpublished. With the SPA off, reach it with
-  # `kubectl port-forward svc/<release> 9374`.
+  # unmounted (404). /admin is never routed through the Ingress, with or without
+  # the SPA; reach it with `kubectl port-forward svc/<release> 9374`.
   adminTokenSecret: ""
   adminTokenSecretKey: token
   # Per-process admission caps (PHASE_MAX_CONNECTIONS / PHASE_MAX_GAMES). Empty
@@ -101,14 +99,27 @@ web:
   enabled: false
   image:
     repository: ghcr.io/phase-rs/phase-web
-    # Defaults to image.tag when set, else "v<Chart.appVersion>" — the same
-    # value the server image resolves to. The SPA and the server it ships with
-    # must stay inside one protocol-version step of each other (a client accepts
-    # only [PROTOCOL_VERSION-1, PROTOCOL_VERSION] and the server advertises one
-    # number blind in an unprompted ServerHello), so they track by construction
-    # here rather than by an operator remembering. Override both or neither.
+    # An immutable reference is required: set `digest`, or affirm mutability
+    # with `followServerTag: true`. The render fails if you do neither, so
+    # enabling the SPA cannot silently add a mutable pull to the pod that
+    # serves /ws — a tag that moves under you takes the game server down with
+    # the site, since both are containers in one pod.
+    digest: ""          # sha256:... — the default, and the immutable choice
+    # Affirmative opt-in to a mutable tag that tracks the server image.
+    # Choose this when something bumps `image.tag` for you (a release
+    # automation, a GitOps sync) and you want the SPA to move with it: the tag
+    # falls back through image.tag to "v<Chart.appVersion>", so the SPA and the
+    # server resolve to the same version by construction rather than by an
+    # operator remembering. They must stay within one protocol-version step of
+    # each other — a client accepts only [PROTOCOL_VERSION-1, PROTOCOL_VERSION]
+    # and the server advertises one number blind in an unprompted ServerHello —
+    # so a pinned digest that outlives two releases is a site that loads and
+    # then cannot connect. Mutually exclusive with `digest` and with `tag`:
+    # either would win over the tracking you asked for.
+    followServerTag: false
+    # Pin one specific tag. Requires `digest` (a tag alone is mutable) and
+    # cannot be combined with `followServerTag`.
     tag: ""
-    digest: ""         # optional sha256:... — pins the image regardless of tag
   server:
     # The image's own non-root uid/gid; change together if you swap the image.
     runAsUser: 101
@@ -177,9 +188,7 @@ ingress:
   enabled: true
   className: traefik
   host: phase.example.com
-  # Only /ws, /health and /p2p-draft-backup are routed. /admin joins them only
-  # when `web.enabled` gives the SPA the catch-all; with the SPA off it is
-  # never published.
+  # Only /ws, /health and /p2p-draft-backup are routed; /admin never is.
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"

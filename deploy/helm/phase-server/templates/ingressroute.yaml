@@ -124,10 +124,8 @@ spec:
      the reason no `priority:` is set here either. Appended AFTER the catch-all
      so the first two rules keep the positions
      tests/assert-compression-boundary.sh slices by. */}}
+{{- /* `/admin/*` is deliberately absent here too — see templates/ingress.yaml. */}}
 {{- $serverPaths := list "/health" "/p2p-draft-backup" }}
-{{- if .Values.server.adminTokenSecret }}
-{{- $serverPaths = append $serverPaths "/admin" }}
-{{- end }}
 {{- range $p := $serverPaths }}
     - kind: Rule
       match: Host(`{{ $host }}`) && PathPrefix(`{{ $p }}`)

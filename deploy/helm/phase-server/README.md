@@ -314,11 +314,17 @@ an endpoint players need a separate client for.
 ```bash
 helm upgrade phase-server deploy/helm/phase-server -n phase \
   --set web.enabled=true \
+  --set web.image.digest=sha256:<the SPA image you deployed> \
   --set web.defaultMultiplayerServerUrl=wss://phase.example.com/ws
 ```
 
-The site is then at `https://phase.example.com/`, and `/ws`, `/health`,
-`/p2p-draft-backup` and (with an admin token) `/admin` still reach the server.
+The digest is required; see [Building the image](#building-the-image) for the
+one case where you trade it for `web.image.followServerTag: true` instead.
+
+The site is then at `https://phase.example.com/`, and `/ws`, `/health` and
+`/p2p-draft-backup` still reach the server. `/admin` is deliberately not routed
+with or without the SPA — it stays operator-only over `kubectl port-forward`, so
+a request for it from the public edge lands on the site and 404s there.
 Routing rests on longest-prefix matching for the plain Ingress and on Traefik's
 default rule-length ordering under `scaleOut`;
 [`tests/assert-web-routing.sh`](tests/assert-web-routing.sh) asserts that every
@@ -357,19 +363,28 @@ docker buildx build --platform linux/arm64 --build-arg PHASE_CHANNEL=release \
 
 `PHASE_CHANNEL=release` is what lets an empty data volume self-bootstrap.
 Pin `image.digest` in your values; `:latest`-style tags resolve stale on some
-k3s nodes. Pin `web.image.digest` alongside it when you enable the SPA and manage
-upgrades yourself — the SPA shares the server's pod, so an image that resolves to
-something unpullable takes `/ws` and `/health` down with it, and a digest turns
-that into a deploy-time failure instead of a runtime one.
+k3s nodes.
 
-**Pin both or neither.** If anything bumps `image.tag` for you — a release
-automation, a GitOps sync — leave `web.image.tag` and `web.image.digest` empty so
-the SPA follows the server's version automatically; that is what keeps the two
-inside one protocol step without anyone remembering. A pinned `web.image.digest`
-does not move when the server does, and because the digest wins over the tag you
-get `phase-web:v0.72.0@sha256:<the v0.71.0 image>` — a reference that names one
-version and runs another. That is the version-skew failure above, wearing a
-correct-looking tag.
+**The SPA image must be immutable, or you must say otherwise.** The SPA shares
+the server's pod, so an image that resolves to something unpullable takes `/ws`
+and `/health` down with the site. With `web.enabled: true` the chart refuses to
+render unless you make one of two choices:
+
+| your situation | set | what you get |
+| --- | --- | --- |
+| you manage upgrades yourself | `web.image.digest: sha256:…` | the exact bytes you tested, until you change them |
+| something bumps `image.tag` for you (release automation, GitOps sync) | `web.image.followServerTag: true` | the SPA moves with the server, staying inside one protocol step by construction |
+
+They are mutually exclusive, and so are `followServerTag` and an explicit
+`web.image.tag`. A digest wins over a tag in an image reference, so allowing both
+would render `phase-web:v0.72.0@sha256:<the v0.71.0 image>` — a reference that
+names one version and runs another, which is the version-skew failure above
+wearing a correct-looking tag. The chart fails the render and says which one to
+drop rather than resolving it silently.
+
+If you pin a digest, **bump it when you bump `image.tag`.** Nothing does it for
+you: a digest does not move when the server does, and once the two drift past two
+releases the site loads and then cannot connect.
 
 `web.image.repository` defaults to `ghcr.io/phase-rs/phase-web`. The job that
 publishes it ships separately from this chart (touching a workflow makes a whole

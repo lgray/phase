@@ -21,8 +21,13 @@ render() {
     "$@" > "$out"
 }
 
-render "$work_dir/web.yaml" --set web.enabled=true
-render "$work_dir/web-scaleout.yaml" --set web.enabled=true --set scaleOut.enabled=true
+# A digest is what an operator is steered to set, so the routing renders below
+# use one. Without it the chart refuses to render at all, which the image-policy
+# cases further down assert directly.
+web_digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
+render "$work_dir/web.yaml" --set web.enabled=true --set web.image.digest=$web_digest
+render "$work_dir/web-scaleout.yaml" --set web.enabled=true --set web.image.digest=$web_digest \
+  --set scaleOut.enabled=true
 render "$work_dir/noweb.yaml"
 
 extract_doc() {
@@ -33,6 +38,15 @@ extract_doc() {
 }
 
 fail() { echo "assert-web-routing: $*" >&2; exit 1; }
+
+# `/admin/*` is mounted by the server but deliberately NOT routed at the edge.
+# Its bearer guard is authentication, not a reason to move the chart's documented
+# network boundary, so it stays reachable only through `kubectl port-forward`.
+# Listed here rather than silently skipped: the loop below excludes exactly these
+# prefixes from the must-be-routed check, and the negative assertion further down
+# requires each of them to be ABSENT from the render even with a token set. A new
+# server route still has to be routed or explicitly listed here.
+OPERATOR_ONLY="/admin"
 
 # ── The server's real HTTP surface ──────────────────────────────────────────
 # Walked from the router rather than recalled, so a route added to the server
@@ -55,12 +69,30 @@ grep -qx '/ws' <<<"$prefixes" || fail "route extractor found no /ws — it is br
 [ "$(wc -l <<<"$prefixes")" -ge 3 ] || fail "route extractor found only $(wc -l <<<"$prefixes") prefixes: $(tr '\n' ' ' <<<"$prefixes")"
 echo "server HTTP prefixes: $(tr '\n' ' ' <<<"$prefixes")"
 
+routed_any=0
 while IFS= read -r prefix; do
+  if grep -qx -- "$prefix" <<<"$OPERATOR_ONLY"; then continue; fi
   grep -q "path: $prefix\$" "$work_dir/web.yaml" ||
     fail "$prefix is mounted by the server but no Ingress routes it — the SPA catch-all would swallow it"
   grep -qF "PathPrefix(\`$prefix\`)" "$work_dir/web-scaleout.yaml" ||
     fail "$prefix is mounted by the server but no IngressRoute rule routes it under scaleOut"
+  routed_any=1
 done <<<"$prefixes"
+# The exclusion list must not be able to empty the positive check.
+[ "$routed_any" = "1" ] || fail "no prefix was checked for routing — the exclusion list swallowed the whole surface"
+
+# ── Negative: the operator-only surface must not be published ───────────────
+# Both renders above set server.adminTokenSecret, so the admin routes ARE mounted
+# in the pod; these assertions are about the edge, not about the feature.
+grep -q "PHASE_ADMIN_TOKEN" "$work_dir/web.yaml" ||
+  fail "the admin token is not wired into the pod, so the absence checks below would pass vacuously"
+while IFS= read -r prefix; do
+  for render in web.yaml web-scaleout.yaml noweb.yaml; do
+    if grep -q -- "$prefix" "$work_dir/$render"; then
+      fail "$prefix appears in the $render render — it must stay port-forward-only (see templates/ingress.yaml)"
+    fi
+  done
+done <<<"$OPERATOR_ONLY"
 
 # ── Plain Ingress topology: SPA on "/", server endpoints on the server port ──
 # Ingress matching is longest-prefix, so "/" losing to every endpoint above is
@@ -119,6 +151,83 @@ while IFS=$'\t' read -r match sticky port; do
   esac
   [ "$sticky" = "yes" ] || fail "server rule \"$match\" lost its sticky cookie"
 done < "$work_dir/rules.tsv"
+
+# ── The default-server address is validated the way the client validates it ──
+# A value the client refuses is worse than a render failure: the site comes up and
+# quietly uses the bundle's own default instead of the operator's server. Whitespace
+# is rejected outright because URL parsing STRIPS a tab or newline rather than
+# failing, which would silently change the host.
+url_case() {
+  local expect=$1 value=$2 out
+  if out=$(helm template phase-server "$chart_dir" --set ingress.host=phase.example.test \
+      --set web.enabled=true --set web.image.digest=$web_digest \
+      --set-string web.defaultMultiplayerServerUrl="$value" 2>&1 >/dev/null); then
+    [ "$expect" = "render" ] || fail "web.defaultMultiplayerServerUrl=$(printf %q "$value") rendered, but the client would refuse it"
+  else
+    [ "$expect" = "refuse" ] || fail "web.defaultMultiplayerServerUrl=$(printf %q "$value") was refused, but it is a valid address"
+  fi
+}
+url_case render 'wss://play.example.com/ws'
+url_case render 'ws://192.168.1.5:9374/ws'
+url_case render 'wss://play.example.com/ws?region=eu'
+url_case render ''
+url_case refuse 'https://play.example.com'
+url_case refuse 'play.example.com'
+url_case refuse 'wss://'
+url_case refuse 'wss://play.example.com bad'
+url_case refuse "wss://play.example.com$(printf '\t')bad"
+url_case refuse ' wss://play.example.com/ws'
+url_case refuse 'wss://play.example.com/ws '
+url_case refuse 'wss://play.example.com/ws#lobby'
+url_case refuse 'wss://play.example.com/ws#'
+
+# ── The SPA image must be immutable unless mutability is asked for by name ──
+# The SPA is a sidecar in the pod that serves /ws, so a tag that moves under the
+# deployment can take the game server down with the site. A digest is therefore
+# the default and a mutable tag needs an affirmative opt-in. The two are mutually
+# exclusive: a digest wins over a tag, so allowing both would render a reference
+# whose tag reads current and whose bytes are whatever was pinned.
+image_case() {
+  local expect=$1 desc=$2; shift 2
+  local out
+  if out=$(helm template phase-server "$chart_dir" --set ingress.host=phase.example.test \
+      --set web.enabled=true "$@" 2>&1); then
+    [ "$expect" = "render" ] || fail "web.image case '$desc' rendered, but the chart should refuse it"
+    printf '%s' "$out"
+  else
+    [ "$expect" = "refuse" ] || fail "web.image case '$desc' was refused, but it is a valid configuration"
+    printf ''
+  fi
+}
+
+# The default is refused: enabling the SPA must not silently add a mutable pull.
+image_case refuse 'no digest, no opt-in' >/dev/null
+image_case refuse 'tag alone is still mutable' --set web.image.tag=v1.2.3 >/dev/null
+
+# A pinned digest renders, and the digest actually reaches the container.
+pinned=$(image_case render 'digest pinned' --set web.image.digest=$web_digest |
+  grep -oE "ghcr\.io/phase-rs/phase-web:[^ ]+")
+case "$pinned" in
+  *"@$web_digest") ;;
+  *) fail "a pinned web.image.digest rendered as '$pinned', which does not carry the digest" ;;
+esac
+
+# Tracking renders only when deliberately selected, and then it really tracks:
+# overriding the server's tag must move the SPA with it, since that coupling is
+# the whole reason to accept a mutable tag.
+tracked=$(image_case render 'followServerTag' --set web.image.followServerTag=true \
+  --set image.tag=v9.9.9 | grep -oE "ghcr\.io/phase-rs/phase-web:[^ ]+")
+[ "$tracked" = "ghcr.io/phase-rs/phase-web:v9.9.9" ] ||
+  fail "followServerTag rendered '$tracked'; it must follow the server's tag (v9.9.9)"
+case "$tracked" in
+  *@sha256:*) fail "followServerTag rendered a digest ('$tracked'), so it would not track anything" ;;
+esac
+
+# Asking for both is refused rather than silently resolved in the digest's favour.
+image_case refuse 'digest + followServerTag' \
+  --set web.image.digest=$web_digest --set web.image.followServerTag=true >/dev/null
+image_case refuse 'tag + followServerTag' \
+  --set web.image.tag=v1.2.3 --set web.image.followServerTag=true >/dev/null
 
 # ── Opt-in stays opt-in ─────────────────────────────────────────────────────
 if grep -q 'name: phase-server-web$' "$work_dir/noweb.yaml"; then

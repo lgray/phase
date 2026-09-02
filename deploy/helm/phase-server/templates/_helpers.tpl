@@ -50,7 +50,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
      explicitly. That is the version-coupling guarantee: the SPA and the server
      in one pod must stay within one protocol-version step of each other, and
      chaining the fallback through image.tag is what stops `--set image.tag=...`
-     from silently leaving the SPA behind on appVersion. */}}
+     from silently leaving the SPA behind on appVersion.
+
+     Which of the two forms below renders is decided by validateWebImage, not
+     here: exactly one of `digest` and `followServerTag` is set by the time this
+     runs, so the digest branch is the pinned case and the bare-tag branch is
+     the affirmed-mutable one. */}}
 {{- define "phase-server.webImage" -}}
 {{- $img := .Values.web.image -}}
 {{- $tag := $img.tag | default .Values.image.tag | default (printf "v%s" .Chart.AppVersion) -}}
@@ -74,20 +79,60 @@ app.kubernetes.io/instance: {{ .Release.Name }}
      it quietly points every new player at someone else's server. Failing the
      render is the only place an operator finds out.
 
-     The two rules mirror `parseWebSocketUrl` exactly, which is what the client
-     applies: a ws:// or wss:// scheme with a host, and no fragment. The fragment
-     rule tests for "#" anywhere rather than a trailing component because the
-     WebSocket constructor throws on a bare trailing "#" too. Keep these in step
-     with that function; they are one contract expressed on both sides. */}}
+     The rules mirror `parseWebSocketUrl`, which is what the client applies: a
+     ws:// or wss:// scheme with a host, and no fragment. The fragment rule tests
+     for "#" anywhere rather than a trailing component because the WebSocket
+     constructor throws on a bare trailing "#" too. Keep these in step with that
+     function; they are one contract expressed on both sides.
+
+     The shape rule is anchored at both ends and forbids whitespace anywhere,
+     which is deliberately a little stricter than the client. WHATWG URL parsing
+     does not merely reject whitespace — it throws on an embedded space, but
+     SILENTLY STRIPS a tab or newline, so "wss://host<TAB>name" parses to the
+     host "hostname". A literally-equivalent rule would therefore accept a value
+     that sends players to a host the operator never typed, which is the same
+     class of failure this guard exists to prevent, just quieter. Reject the lot
+     and say so. */}}
 {{- define "phase-server.validateDefaultServerUrl" -}}
 {{- $url := .Values.web.defaultMultiplayerServerUrl -}}
 {{- if $url -}}
-{{- if not (regexMatch "^wss?://[^/?#]+" $url) -}}
-{{- fail (printf "web.defaultMultiplayerServerUrl is %q, which is not a ws:// or wss:// address with a host. The client ignores an address it cannot parse and falls back to this build's default server, so the deployment would come up pointing players somewhere you did not choose." $url) -}}
+{{- if not (regexMatch "^wss?://[^\\s/?#]+[^\\s#]*$" $url) -}}
+{{- fail (printf "web.defaultMultiplayerServerUrl is %q, which is not a ws:// or wss:// address with a host and no whitespace. The client ignores an address it cannot parse and falls back to this build's default server, so the deployment would come up pointing players somewhere you did not choose — and a tab or newline is worse than a space, because URL parsing strips it silently and changes the host rather than failing." $url) -}}
 {{- end -}}
 {{- if contains "#" $url -}}
 {{- fail (printf "web.defaultMultiplayerServerUrl is %q, and a WebSocket address may not carry a fragment — the browser's WebSocket constructor rejects one outright. Drop everything from the \"#\" onwards." $url) -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* Require an immutable image reference unless mutability is affirmed.
+
+     The SPA is a sidecar in the pod that serves /ws, so a tag that moves under
+     the deployment does not merely restyle the site — a bad or missing pull
+     takes the game server down with it. Defaulting to a mutable tag would make
+     `web.enabled: true` quietly widen the blast radius of every registry-side
+     change, so the default is a digest and mutability has to be asked for by
+     name.
+
+     The two settings are mutually exclusive rather than merely redundant. A
+     digest wins over a tag in an image reference, so `followServerTag: true`
+     alongside a digest renders `repo:v<new>@sha256:<old>` — a reference whose
+     tag reads current and whose bytes are whatever was pinned. That is worse
+     than either choice made alone, because it looks like the tracking that was
+     asked for while behaving as the pin that was not. An explicit
+     `web.image.tag` is refused with tracking for the same reason: it is the
+     tag that would be followed, so setting both means the SPA follows a tag
+     the server does not use. */}}
+{{- define "phase-server.validateWebImage" -}}
+{{- $img := .Values.web.image -}}
+{{- if and $img.digest $img.followServerTag -}}
+{{- fail (printf "web.image sets both digest (%q) and followServerTag: true, which contradict each other. A digest wins over a tag, so this would render %s:<server tag>@%s — a reference naming one version and running another. Pick one: keep the digest to pin the SPA, or drop it to track the server's tag." $img.digest $img.repository $img.digest) -}}
+{{- end -}}
+{{- if and $img.tag $img.followServerTag -}}
+{{- fail (printf "web.image sets both tag (%q) and followServerTag: true, which contradict each other — followServerTag means the SPA uses the server's tag, and an explicit tag is the thing it would otherwise follow. Pick one: keep the tag (with a digest, since a tag alone is mutable), or drop it to track the server." $img.tag) -}}
+{{- end -}}
+{{- if and (not $img.digest) (not $img.followServerTag) -}}
+{{- fail (printf "web.enabled is true but web.image.digest is empty, so %s would be pulled by a mutable tag. The SPA shares a pod with the game server, so a tag that moves under you takes /ws down with the site. Set web.image.digest to a sha256:... reference, or, if something bumps image.tag for you and you want the SPA to move with it, affirm that with web.image.followServerTag: true." $img.repository) -}}
 {{- end -}}
 {{- end -}}
 
@@ -504,6 +549,7 @@ containers:
   {{- end }}
   {{- if .Values.web.enabled }}
   {{- include "phase-server.validateWebPort" . }}
+  {{- include "phase-server.validateWebImage" . }}
   {{- include "phase-server.validateDefaultServerUrl" . }}
   - name: web
     image: {{ include "phase-server.webImage" . }}
