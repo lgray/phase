@@ -82,6 +82,12 @@ fn main() {
     };
 
     let mut options = SuiteOptions::new(args.difficulty, args.games, args.seed);
+    // `--baseline` names an entry, not necessarily a file. Resolve it to the file it designates
+    // BEFORE anything is derived from it, because two things downstream have to agree on that
+    // one answer: the staging sibling and the promotion target.
+    let destination = args
+        .refresh_baseline
+        .then(|| resolve_destination(&args.baseline));
     // On a refresh, the suite writes to a staging file BESIDE the baseline rather than to
     // `--current-output`, and the baseline is replaced by renaming that file only after every
     // guard has passed. The alias check above already refuses the one path that reached this
@@ -94,7 +100,7 @@ fn main() {
     // `--current-output` is therefore unused on the refresh path — the refreshed baseline IS
     // the run's report. No workflow passes `--refresh-baseline`, so nothing in CI depends on
     // the old behaviour.
-    let staging = args.refresh_baseline.then(|| staging_path(&args.baseline));
+    let staging = destination.as_deref().map(staging_path);
     // RESERVE the staging path before the suite can write a byte to it.
     //
     // Third route to the same destruction, and the only one no argument check could ever catch:
@@ -220,6 +226,8 @@ fn main() {
         // by checking failures first, because a run that is merely gameless — a
         // `--suite-filter` matching nothing — has no failing matchups to report.
         let staging = staging.expect("staging path is set whenever refresh_baseline is");
+        let destination =
+            destination.expect("the destination is resolved whenever refresh_baseline is");
         // Every exit below leaves the staging file behind otherwise, and a stale
         // `*.staging.json` next to a baseline is exactly the kind of artefact someone later
         // mistakes for a real one.
@@ -270,15 +278,12 @@ fn main() {
         // The run is accepted: promote the staging file. `rename` replaces the baseline in one
         // step, so a reader never observes a half-written baseline and a failure here leaves the
         // previous one intact.
-        if let Err(err) = std::fs::rename(&staging, &args.baseline) {
+        if let Err(err) = std::fs::rename(&staging, &destination) {
             let _ = std::fs::remove_file(&staging);
-            eprintln!(
-                "failed to write baseline {}: {err}",
-                args.baseline.display()
-            );
+            eprintln!("failed to write baseline {}: {err}", destination.display());
             std::process::exit(1);
         }
-        eprintln!("baseline refreshed at {}", args.baseline.display());
+        eprintln!("baseline refreshed at {}", destination.display());
         return;
     }
 
@@ -468,6 +473,47 @@ fn same_inode(_a: &Path, _b: &Path) -> Option<bool> {
     None
 }
 
+/// The file `--baseline` designates, following symlinks the way the write it replaces did.
+///
+/// A refresh used to open the baseline with `File::create`, which follows a symlink chain and
+/// refreshes the file at its end. Staging + `rename` does not: `rename` acts on the entry, so
+/// promoting onto the supplied spelling would replace the link with a regular file and leave its
+/// target stale. Resolving first restores the old destination and is also what keeps the
+/// promotion atomic — the staging file is a sibling of THIS path, and `rename` is only atomic
+/// within one filesystem, so a link that crosses a mount would otherwise stage on one device and
+/// rename onto another (`EXDEV`).
+///
+/// Not `canonicalize`, on three counts: it requires every component to exist, so a dangling link
+/// and a first-ever refresh both fail where `File::create` succeeded; it rewrites a relative path
+/// the caller typed into an absolute one, which then appears in every message; and on Windows it
+/// returns a `\\?\` UNC path. Reading only the links that are actually there leaves a plain path
+/// exactly as supplied.
+///
+/// Hard links are deliberately NOT followed — a hard link has no target to follow, it IS the
+/// file. `rename` breaks the link rather than truncating the shared inode, which is the less
+/// destructive of the two.
+///
+/// The budget bounds a symlink cycle, which would otherwise spin here forever. Exhausting it
+/// leaves a still-unresolved path, and nothing acts on it: the kernel refuses the same chain, so
+/// `load_report` below fails with `FilesystemLoop` — not `NotFound` — and the run exits before
+/// the promotion.
+fn resolve_destination(path: &Path) -> PathBuf {
+    let mut current = path.to_path_buf();
+    // Linux's own `MAXSYMLINKS`; a chain this deep is already refused by every open() on it.
+    for _ in 0..40 {
+        // `Err` is the ordinary exit: not a symlink, or not there at all.
+        let Ok(target) = std::fs::read_link(&current) else {
+            return current;
+        };
+        current = match current.parent() {
+            // A link's target is relative to the directory the link sits in, not to the cwd.
+            Some(parent) if target.is_relative() => parent.join(target),
+            _ => target,
+        };
+    }
+    current
+}
+
 /// Where a refresh run stages its report before it earns the right to be the baseline.
 ///
 /// Beside the baseline, so the later `rename` is a same-filesystem atomic replace.
@@ -493,6 +539,46 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sibling property has to hold of the RESOLVED destination, not of the spelling the
+    /// caller typed. `rename` is only atomic within one filesystem, so a staging file left beside
+    /// a link whose target lives on another mount would fail with `EXDEV`; measured directly,
+    /// tmpfs staging renamed onto a btrfs target returns `Invalid cross-device link (os error 18)`.
+    /// A cross-filesystem fixture is not constructible in a portable test, so the property is
+    /// pinned here, at the derivation.
+    #[test]
+    fn the_staging_file_is_a_sibling_of_the_resolved_destination() {
+        let dir = std::env::temp_dir().join(format!("phase-resolve-dest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real")).expect("scratch dir");
+        let target = dir.join("real/baseline.json");
+        std::fs::write(&target, "{}").expect("write");
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.json");
+            std::os::unix::fs::symlink(&target, &link).expect("symlink");
+            assert_eq!(
+                resolve_destination(&link),
+                target,
+                "the link must resolve to its target"
+            );
+            assert_eq!(
+                staging_path(&resolve_destination(&link)).parent(),
+                target.parent(),
+                "staging must sit beside the resolved destination, not beside the link"
+            );
+            // PREMISE: the two spellings really do have different parents, so the assertion above
+            // is about resolution and not about a trivially equal comparison.
+            assert_ne!(link.parent(), target.parent());
+        }
+        // Control: a path that is not a link comes back exactly as supplied — a relative spelling
+        // stays relative, which is what keeps `baseline refreshed at ...` printing what the caller
+        // typed (and, on Windows, keeps a `\\?\` prefix out of it).
+        let plain = Path::new(DEFAULT_BASELINE);
+        assert_eq!(resolve_destination(plain), plain);
+        assert_eq!(resolve_destination(&target), target);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// The staging file must be a SIBLING of the baseline. `rename` is only atomic within one
     /// filesystem, so a staging path that drifted to `/tmp` (or anywhere else the baseline is

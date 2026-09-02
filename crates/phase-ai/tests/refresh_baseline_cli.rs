@@ -746,3 +746,128 @@ fn distinct_paths_are_not_treated_as_aliases() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A symlinked baseline names a file somewhere else, and a refresh must update THAT file.
+///
+/// The pre-staging code opened the baseline with `File::create`, which follows the link and
+/// refreshes its target. Staging + `rename` does not: `rename` acts on the entry, so promoting
+/// onto the supplied spelling replaces the link with a regular file and leaves the target on its
+/// old bytes. Measured on the binary before the fix, over all four arms: exit 0,
+/// "baseline refreshed at <link>", the link no longer a link, and the target byte-identical.
+///
+/// The arms are the ends of the class, not a sample. An absolute and a relative link target
+/// separate a resolver that joins the link's own directory from one that does not; a dangling link
+/// is the first-refresh-through-a-link case, where the target has to be CREATED, which is what
+/// `File::create` did; and a two-hop chain separates a resolver that reads one link from one that
+/// follows to the end. A hard-linked baseline is deliberately absent — a hard link has no target,
+/// and `rename` breaking it instead of truncating the shared inode is the intended behaviour.
+///
+/// The target sits in a SUBDIRECTORY of the link so that "resolved" and "supplied" differ by more
+/// than a file name: a staging file derived from the wrong one lands in the wrong directory.
+///
+/// `#[cfg(unix)]` because creating a symlink on Windows needs a privilege the test process is not
+/// guaranteed to hold; this repository's CI is Linux (`ci.yml`, every job `runs-on: ubuntu-latest`),
+/// so this arm does run there, and the existing
+/// `a_pre_existing_staging_alias_cannot_truncate_the_baseline` sets the precedent.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_baseline_refreshes_its_target_and_stays_a_link() {
+    for kind in ["absolute", "relative", "dangling", "chain"] {
+        let dir = scratch(&format!("symlink-{kind}"));
+        let data_arg = empty_card_db(&dir);
+        std::fs::create_dir_all(dir.join("real")).expect("create target dir");
+        let target = dir.join("real/baseline.json");
+        let link = dir.join("link.json");
+
+        // A marked, VALID baseline at the target for every arm but `dangling`, whose whole point is
+        // that the target does not exist yet. An unparseable one would be refused before the suite
+        // ran, and the assertions would then pass on a run that never reached the promotion.
+        let marked = (kind != "dangling").then(|| {
+            let recorded = record_baseline(&dir, &data_arg, "real/baseline.json");
+            let mut old: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&recorded).expect("read baseline"))
+                    .expect("baseline is JSON");
+            old["git_sha"] = serde_json::json!("OLD-BASELINE-MARKER");
+            let marked = serde_json::to_string(&old).expect("serialize baseline");
+            std::fs::write(&recorded, &marked).expect("write baseline");
+            marked
+        });
+
+        match kind {
+            // Relative because a link's target resolves against the link's own directory: a
+            // resolver that passes the raw target onward yields `real/baseline.json` relative to
+            // the process cwd, which is not this file.
+            "relative" => std::os::unix::fs::symlink("real/baseline.json", &link),
+            // Two hops. A resolver that reads one link stops at `mid.json` and renames over THAT.
+            "chain" => {
+                let mid = dir.join("mid.json");
+                std::os::unix::fs::symlink(&target, &mid).expect("symlink mid");
+                std::os::unix::fs::symlink(&mid, &link)
+            }
+            _ => std::os::unix::fs::symlink(&target, &link),
+        }
+        .expect("symlink");
+
+        // PREMISE: the link really resolves to the target the assertions read — and, on the
+        // `dangling` arm, really resolves to nothing yet. Without this the fixture could be inert.
+        assert_eq!(
+            std::fs::read_to_string(&link).ok(),
+            marked,
+            "{kind}: the link must resolve to the target under test"
+        );
+
+        let (code, stderr) = run(&[
+            "--refresh-baseline",
+            "--data-root",
+            &data_arg,
+            "--baseline",
+            &link.display().to_string(),
+            "--current-output",
+            &dir.join("current.json").display().to_string(),
+            "--suite-filter",
+            "red-mirror",
+            "--games",
+            "1",
+        ]);
+
+        // Reach guard. Every assertion below is also satisfied by a binary that refuses the run —
+        // which would leave the link a link and the target untouched — so the ACCEPTED path has to
+        // be the one that was taken.
+        assert_eq!(
+            code,
+            Some(0),
+            "{kind}: the refresh must be accepted; stderr:\n{stderr}"
+        );
+        // The defect, in the direction that made the refresh a no-op for the caller: the entry
+        // named on the command line was replaced by a regular file.
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("stat link")
+                .file_type()
+                .is_symlink(),
+            "{kind}: --baseline was a symlink and must still be one"
+        );
+        // The other half: the file the link designates carries THIS run's report. Asserted
+        // positively rather than as "changed", so it covers the `dangling` arm, where the target
+        // had to be created, and so a truncation cannot pass for an update.
+        let written = std::fs::read_to_string(&target).expect("read the link's target");
+        let report: serde_json::Value =
+            serde_json::from_str(&written).expect("the target must hold a report");
+        assert_eq!(report["games_per_matchup"], 1, "{kind}: {written}");
+        assert_eq!(report["results"][0]["matchup_id"], "red-mirror", "{kind}");
+        assert_ne!(
+            report["git_sha"],
+            serde_json::json!("OLD-BASELINE-MARKER"),
+            "{kind}: the target still holds the old baseline"
+        );
+        assert!(
+            !dir.join("real/baseline.json.staging.json").exists(),
+            "{kind}: staging survived beside the resolved destination"
+        );
+        assert!(
+            !dir.join("link.json.staging.json").exists(),
+            "{kind}: staging survived beside the supplied spelling"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
