@@ -116,6 +116,12 @@ web:
     # so a pinned digest that outlives two releases is a site that loads and
     # then cannot connect. Mutually exclusive with `digest` and with `tag`:
     # either would win over the tracking you asked for.
+    #
+    # Requires image.tag to be set to a release at or after the one that first
+    # published this repository. With image.tag empty the tag falls back to
+    # "v<Chart.appVersion>", which is a chart constant rather than a server
+    # version anyone is tracking, and no phase-web image exists for releases
+    # older than the job that publishes it.
     followServerTag: false
     # Pin one specific tag. Requires `digest` (a tag alone is mutable) and
     # cannot be combined with `followServerTag`.

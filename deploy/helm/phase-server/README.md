@@ -375,6 +375,12 @@ render unless you make one of two choices:
 | you manage upgrades yourself | `web.image.digest: sha256:…` | the exact bytes you tested, until you change them |
 | something bumps `image.tag` for you (release automation, GitOps sync) | `web.image.followServerTag: true` | the SPA moves with the server, staying inside one protocol step by construction |
 
+`followServerTag` needs `image.tag` to actually be set. It makes the SPA use the
+server's tag, and with `image.tag` empty that falls back to `v<Chart.appVersion>`
+— a chart constant, not a version anyone is tracking — for which no `phase-web`
+image exists at releases older than the job that publishes it. Pin a digest
+instead if you deploy on chart defaults.
+
 They are mutually exclusive, and so are `followServerTag` and an explicit
 `web.image.tag`. A digest wins over a tag in an image reference, so allowing both
 would render `phase-web:v0.72.0@sha256:<the v0.71.0 image>` — a reference that
