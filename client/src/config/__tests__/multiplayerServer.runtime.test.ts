@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { parseWebSocketUrl } from "../multiplayerServer";
@@ -121,5 +124,75 @@ describe("parseWebSocketUrl", () => {
     ["a fragment that looks like a path", "wss://play.example.com/ws#/room/1"],
   ])("rejects %s", (_label, value) => {
     expect(parseWebSocketUrl(value)).toBeNull();
+  });
+});
+
+// The Helm chart refuses a default-server address the client would silently
+// discard. That only holds while the chart's grammar admits no more than
+// parseWebSocketUrl does, and the two live in different languages, so the
+// regex is read out of the template here rather than copied: a change to one
+// without the other fails this test instead of drifting quietly.
+describe("chart default-server grammar vs parseWebSocketUrl", () => {
+  // Walk up from the working directory so this resolves whether the suite runs
+  // from client/ or from the repo root; throws rather than silently skipping.
+  const helpers = (() => {
+    const rel = "deploy/helm/phase-server/templates/_helpers.tpl";
+    for (let dir = process.cwd(); ; dir = dirname(dir)) {
+      const candidate = resolve(dir, rel);
+      if (existsSync(candidate)) return candidate;
+      if (dirname(dir) === dir) throw new Error(`could not locate ${rel} from ${process.cwd()}`);
+    }
+  })();
+
+  function chartRegex(): RegExp {
+    const src = readFileSync(helpers, "utf8");
+    const m = src.match(/\{\{- \$re := `([^`]+)` -\}\}/);
+    if (!m) throw new Error(`no $re raw string found in ${helpers}`);
+    return new RegExp(m[1]);
+  }
+
+  // The chart also rejects ":::" separately, because RE2 has no lookahead.
+  const chartAccepts = (v: string) => chartRegex().test(v) && !v.includes(":::");
+
+  const CORPUS = [
+    "wss://play.example.com/ws",
+    "ws://192.168.1.5:9374/ws",
+    "wss://play.example.com/ws?region=eu",
+    "wss://play.example.com:65535/ws",
+    "wss://play.example.com:0/ws",
+    "wss://[::1]/ws",
+    "wss://[::1]:9374/ws",
+    "wss://[2001:db8::8a2e:370:7334]/ws",
+    "wss://play.example.com:abc/ws",
+    "wss://play.example.com:99999/ws",
+    "wss://play.example.com:-1/ws",
+    "wss://[::1/ws",
+    "wss://[]/ws",
+    "wss://]::1[/ws",
+    "wss://[:::::]/ws",
+    "wss://[gggg::1]/ws",
+    "wss://:9374/ws",
+    "wss://@/ws",
+    "wss://%00.com/ws",
+    "wss://play.example.com bad",
+    "wss://play.example.com\tbad",
+    "wss://play.example.com/ws#lobby",
+    "wss://play.example.com/ws#",
+    "https://play.example.com",
+    "play.example.com",
+    "wss://",
+  ];
+
+  it("never admits an address the client would discard", () => {
+    const admitted = CORPUS.filter((v) => chartAccepts(v) && parseWebSocketUrl(v) === null);
+    expect(admitted).toEqual([]);
+  });
+
+  // Without this the case above passes for a chart regex that accepts nothing.
+  it("still admits the ordinary addresses operators configure", () => {
+    for (const v of ["wss://play.example.com/ws", "ws://192.168.1.5:9374/ws", "wss://[::1]:9374/ws"]) {
+      expect(chartAccepts(v), v).toBe(true);
+      expect(parseWebSocketUrl(v), v).not.toBeNull();
+    }
   });
 });

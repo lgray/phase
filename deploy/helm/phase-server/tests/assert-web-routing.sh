@@ -181,6 +181,27 @@ url_case refuse 'wss://play.example.com/ws '
 url_case refuse 'wss://play.example.com/ws#lobby'
 url_case refuse 'wss://play.example.com/ws#'
 
+# Authority grammar. The chart's accept-set must stay a SUBSET of what
+# `parseWebSocketUrl` accepts: anything the chart admits and the client drops is
+# a deployment that renders clean and then silently uses the build-time default.
+# Verdicts below are the client's, measured with node's WHATWG URL rather than
+# recalled — the corpus and the comparison live in client/src/config.
+url_case render 'wss://[::1]/ws'
+url_case render 'wss://[::1]:9374/ws'
+url_case render 'wss://[2001:db8::8a2e:370:7334]/ws'
+url_case render 'wss://play.example.com:65535/ws'
+url_case render 'wss://play.example.com:0/ws'
+url_case refuse 'wss://play.example.com:abc/ws'      # non-numeric port
+url_case refuse 'wss://play.example.com:99999/ws'    # port above 65535
+url_case refuse 'wss://play.example.com:-1/ws'       # negative port
+url_case refuse 'wss://[::1/ws'                      # unclosed bracket
+url_case refuse 'wss://[]/ws'                        # empty bracket
+url_case refuse 'wss://]::1[/ws'                     # reversed brackets
+url_case refuse 'wss://[:::::]/ws'                   # more than one elision
+url_case refuse 'wss://:9374/ws'                     # port but no host
+url_case refuse 'wss://@/ws'                         # empty authority
+url_case refuse 'wss://%00.com/ws'                   # percent-encoding in a host
+
 # ── The SPA image must be immutable unless mutability is asked for by name ──
 # The SPA is a sidecar in the pod that serves /ws, so a tag that moves under the
 # deployment can take the game server down with the site. A digest is therefore
