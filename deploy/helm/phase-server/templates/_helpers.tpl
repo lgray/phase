@@ -131,7 +131,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
      fallback names a tag that exists; for the SPA it names one that never
      will, since the SPA is published only from the release its job first runs
      on. Enforcing it here turns that into a render failure rather than an
-     ImagePullBackOff on the pod that also serves /ws. */}}
+     ImagePullBackOff on the pod that also serves /ws.
+
+     Retire this rule if the tag fallback ever becomes release-tracking — put
+     `appVersion` in the release replacements, or give the chart a tracking
+     authority that is not a constant. The rule exists because the fallback is
+     a constant, not because tracking needs a tag spelled out twice. */}}
 {{- define "phase-server.validateWebImage" -}}
 {{- $img := .Values.web.image -}}
 {{- if and $img.digest $img.followServerTag -}}
