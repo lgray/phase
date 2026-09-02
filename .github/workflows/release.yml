@@ -687,6 +687,61 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ env.RELEASE_TAG }}
             ${{ env.IMAGE_NAME }}:latest
 
+  build-web-image:
+    name: Build Web Image
+    needs: [resolve-release-ref, build-wasm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELEASE_TAG: ${{ needs.resolve-release-ref.outputs.release_tag }}
+      RELEASE_SHA: ${{ needs.resolve-release-ref.outputs.release_sha }}
+      IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/phase-web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+
+      # The same bundle Pages gets, so the image and the official site are the
+      # same build. Its baked-in default lobby is this release's, which is what
+      # a self-hoster who configures nothing should reach; the chart overrides it
+      # at runtime through /config.js.
+      - name: Download frontend bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: client/dist
+
+      - name: Verify build context
+        run: test -s client/dist/index.html
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No setup-qemu-action, unlike build-server-image: deploy/phase-web.Dockerfile
+      # is FROM + COPY with no RUN step, so there is nothing to execute in either
+      # target rootfs and buildx assembles both platforms natively.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push web image
+        uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        with:
+          context: client
+          file: deploy/phase-web.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.RELEASE_TAG }}
+            ${{ env.IMAGE_NAME }}:latest
+
   deploy-production:
     name: Deploy Production (Cloudflare Pages)
     needs: [build-wasm, release]

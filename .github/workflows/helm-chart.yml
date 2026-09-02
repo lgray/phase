@@ -87,6 +87,13 @@ jobs:
       - name: assert compression boundary
         run: deploy/helm/phase-server/tests/assert-compression-boundary.sh /tmp/default.yaml /tmp/scaleout-render.yaml
 
+      - name: assert web routing
+        # Renders what it needs itself: the SPA topology is several distinct
+        # value combinations, and one leg reads the axum router to check that
+        # every path the server mounts is still routed around the site's
+        # catch-all.
+        run: deploy/helm/phase-server/tests/assert-web-routing.sh
+
       # With no prometheus-operator CRDs the operator path must FAIL rather than
       # render: hpa.yaml would otherwise install an HPA whose only producer of
       # `phase:wanted_replicas` — the PrometheusRule — was silently skipped.
