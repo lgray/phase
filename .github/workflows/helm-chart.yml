@@ -36,6 +36,15 @@ jobs:
         with:
           version: v3.16.3
 
+      - name: assert web routing
+        # Renders what it needs itself: the SPA topology is several distinct
+        # value combinations, and one leg reads the axum router to check that
+        # every path the server mounts is still routed around the site's
+        # catch-all. Placed before the render steps rather than after them so
+        # that independence is structural — reordering or breaking them cannot
+        # stop this assertion running.
+        run: deploy/helm/phase-server/tests/assert-web-routing.sh
+
       - name: helm lint (default values)
         run: helm lint deploy/helm/phase-server
 
