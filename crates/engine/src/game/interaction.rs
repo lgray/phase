@@ -3179,19 +3179,13 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
                                 segments.push(start.checked_sub(previous)?);
                             }
                             previous = Some(*start);
-                            // CR 601.2c: one subject per segment is the whole carrier this
-                            // vocabulary has, so a step whose ranking also names a FALLBACK order
-                            // cannot be stated — only its head could be, and a schedule published
-                            // a subject short is a shorter sequence than the one proposed. Refused
-                            // rather than mis-read, the same answer the multi-position slot and
-                            // `RoundRobin` give. Unreachable from the human ingress, which mints
-                            // `Ranking::one` per step; a save or wire restore is the way in.
-                            let mut fallbacks = ranking.iter();
-                            let subject = fallbacks.next()?;
-                            if fallbacks.next().is_some() {
-                                return None;
-                            }
-                            subjects.push(subject.clone());
+                            // CR 732.2a: a drive resolves a step's HEAD and never advances past
+                            // it — `evaluate_schedule` reads `head()` for a schedule of every
+                            // kind, and a tail is the NEXT episode's pre-declaration, so reaching
+                            // it mid-drive would be the conditional action the rule bars. The head
+                            // is therefore the whole statement of what this segment performs, and
+                            // one subject per segment keeps the two lists aligned.
+                            subjects.push(ranking.head().clone());
                         }
                         segments.push(n.checked_sub(previous?)?);
                         (subjects, segments)

@@ -4337,12 +4337,12 @@ fn an_unstatable_optional_decision_is_skipped_and_an_unstatable_target_refuses_t
     );
 }
 
-/// **CR 601.2c — a scheduled step that also names a FALLBACK order refuses the sequence.**
+/// **CR 732.2a — a scheduled step carrying a next-episode tail still states this drive.**
 ///
-/// One subject per segment is the whole carrier this vocabulary has. Publishing such a step's
-/// head alone would state a schedule shorter than the one proposed, with nothing marking the
-/// omission — so the sequence is refused, the same answer a multi-position slot and a
-/// `RoundRobin` schedule already get.
+/// A drive resolves a step's HEAD and never advances past it, so a tail is the NEXT episode's
+/// pre-declaration and no part of the sequence the responder is being asked to accept. The head
+/// is the whole statement of what its segment performs, and a tail therefore changes nothing the
+/// responder reads: the same subjects, the same partition, and the same other decisions.
 ///
 /// Latent from the human ingress, which mints a one-subject ranking per step
 /// (`decode_sequenced_targets`); a save or a wire restore is the way in, and the branch is judged
@@ -4350,11 +4350,17 @@ fn an_unstatable_optional_decision_is_skipped_and_an_unstatable_target_refuses_t
 ///
 /// # Discrimination
 ///
-/// Publish each step's head instead ⇒ the hostile leg fails, and the responder reads a two-step
-/// schedule for a declaration whose second step names two subjects.
+/// Refuse the sequence on a step whose ranking names more than its head ⇒ every assertion on the
+/// tail-carrying board fails, the optional decision beside it included — that refusal returns
+/// from the whole decision walk, so the responder loses the partition, the magnitudes, and every
+/// unrelated statement to withhold one subject this drive never performs. Publish every subject
+/// instead ⇒ the same comparison fails, the tail-carrying board arriving at arity three.
 #[test]
-fn a_scheduled_step_naming_a_fallback_order_refuses_the_sequence() {
-    use engine::analysis::decision_template::{PinnedDecision, Ranking, TargetPin, TargetSchedule};
+fn a_scheduled_step_carrying_a_next_episode_tail_still_states_this_drive() {
+    use engine::analysis::decision_template::{
+        DecisionSlot, MayChoiceOption, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+    };
+    use engine::types::game_state::YieldTarget;
 
     const COUNT: u32 = 6;
     const STARTS: [u32; 2] = [0, 2];
@@ -4369,42 +4375,80 @@ fn a_scheduled_step_naming_a_fallback_order_refuses_the_sequence() {
         respond_window(
             IterationCount::Fixed(COUNT),
             Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
-            vec![PinnedDecision::Targets {
-                slot: preview_slot(0),
-                targets: vec![TargetPin::Scheduled(TargetSchedule::Piecewise(vec![
-                    step(STARTS[0], &[R_FIRST]),
-                    step(STARTS[1], second_step),
-                ]))],
-            }],
+            vec![
+                PinnedDecision::Targets {
+                    slot: preview_slot(0),
+                    targets: vec![TargetPin::Scheduled(TargetSchedule::Piecewise(vec![
+                        step(STARTS[0], &[R_FIRST]),
+                        step(STARTS[1], second_step),
+                    ]))],
+                },
+                // A SECOND decision, so "the rest of the walk survives" is a fact this row can
+                // see: a refusal returns from the walk and takes this point with it.
+                PinnedDecision::MayChoice {
+                    slot: DecisionSlot::may(YieldTarget::ThisObject {
+                        source_id: ObjectId(9_318),
+                        incarnation: Some(1),
+                        trigger_description: None,
+                    }),
+                    take: MayChoiceOption::Take,
+                },
+            ],
         )
     };
 
-    // ── MANDATORY PAIRED POSITIVE, first: the same schedule one ranking-arity apart publishes
-    //    both its steps, so the refusal below is a branch rather than a producer that never
-    //    states anything.
+    // ── The paired positive, first: one subject per step, the arity the human ingress mints.
+    //    It is what the tail-carrying board below is compared against, so an empty publication
+    //    cannot satisfy that comparison.
     let one_each = respond_reply_of(&scheduled(&[R_SECOND]));
+    assert_eq!(
+        one_each
+            .points
+            .iter()
+            .map(|point| point.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            InteractionShortcutPointKind::Targets,
+            InteractionShortcutPointKind::MayChoice,
+        ],
+        "reach-guard: a one-subject-per-step schedule reaches the responder whole, the optional \
+         decision beside it included"
+    );
     assert_eq!(
         respond_seats_of(&one_each, &one_each.points[0].candidate_ids),
         vec![R_FIRST.0, R_SECOND.0],
-        "reach-guard: a one-subject-per-step schedule reaches the responder whole"
+        "and its two steps are announced in order"
     );
     assert_eq!(
         declared_amounts(
             one_each
                 .declared
                 .as_ref()
-                .expect("and its two steps partition the declared count")
+                .expect("and they partition the declared count")
         ),
-        vec![2, 4],
-        "ANTI-VACUITY: TWO segments, pairwise distinct"
+        segments_from(&STARTS, COUNT),
+        "ANTI-VACUITY: TWO segments, pairwise distinct — 'everything empty' is not what this row \
+         asserts and could not satisfy it"
     );
 
-    // ── The hostile board: the SECOND step also names a fallback subject.
-    let with_fallback = respond_reply_of(&scheduled(&[R_SECOND, R_DRAINED]));
-    assert!(
-        with_fallback.points.is_empty() && with_fallback.declared.is_none(),
-        "CR 601.2c: one subject per segment is the whole carrier, so a step naming a fallback \
-         order refuses the WHOLE sequence rather than publishing its head and dropping the rest"
+    // ── The tail-carrying board: the SECOND step also pre-declares the next episode's subject.
+    let with_tail = respond_reply_of(&scheduled(&[R_SECOND, R_DRAINED]));
+    // The whole-publication claim runs FIRST and by VALUE: a refusal empties `points`, so an
+    // assertion indexing it would panic before naming what went wrong.
+    assert_eq!(
+        with_tail.points, one_each.points,
+        "the tail moves NOTHING the responder reads: the same two statements, the optional \
+         decision included rather than lost with the whole walk"
+    );
+    assert_eq!(
+        respond_seats_of(&with_tail, &with_tail.points[0].candidate_ids),
+        vec![R_FIRST.0, R_SECOND.0],
+        "CR 732.2a: each step states the head this drive resolves, and the tail seat — which no \
+         iteration reaches — is not announced beside it"
+    );
+    assert_eq!(
+        with_tail.declared, one_each.declared,
+        "CR 732.2b: and the partition the responder accepts or shortens is the same one"
     );
 }
 
