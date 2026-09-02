@@ -18,7 +18,57 @@
  * unchanged.
  */
 export const OFFICIAL_MULTIPLAYER_SERVER_URL = __OFFICIAL_MULTIPLAYER_SERVER_URL__;
-export const DEFAULT_MULTIPLAYER_SERVER_URL = __DEFAULT_MULTIPLAYER_SERVER_URL__;
+
+/**
+ * Parse a `ws://`/`wss://` URL, or `null` if it is not one.
+ *
+ * Defined here rather than in `serverDetection` because this module is a leaf
+ * and has to validate the runtime override below without importing one of its
+ * own consumers. `serverDetection` re-exports it, so there is still exactly one
+ * implementation and every existing import site is unchanged.
+ */
+export function parseWebSocketUrl(value: string): URL | null {
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== "ws:" && url.protocol !== "wss:") || !url.host) {
+      return null;
+    }
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The default server a deployment configured at runtime, or `null`.
+ *
+ * A self-hosted deployment serves its own `/config.js` (see
+ * `client/public/config.js`), which lets one prebuilt bundle be pointed at any
+ * server without a rebuild — the helm chart renders it from
+ * `web.defaultMultiplayerServerUrl`. A malformed value is ignored rather than
+ * propagated: a typo'd address would otherwise become the seed for every new
+ * profile, with nothing to tell the player why nothing connects.
+ */
+function runtimeDefaultServerUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const configured = window.__PHASE_CONFIG__?.multiplayerServerUrl;
+  if (typeof configured !== "string" || configured === "") return null;
+  return parseWebSocketUrl(configured) ? configured : null;
+}
+
+/**
+ * Where this build connects by default.
+ *
+ * Runtime configuration wins over the build-time define so one generic image
+ * can be deployed anywhere; with no `/config.js` override the define is used
+ * unchanged, which is what every official build does.
+ *
+ * Read once at module load: `serverDetection` derives `SERVER_PRESETS` from
+ * this at import time, so re-reading later would let the picker and the store
+ * disagree about what "default" means.
+ */
+export const DEFAULT_MULTIPLAYER_SERVER_URL =
+  runtimeDefaultServerUrl() ?? __DEFAULT_MULTIPLAYER_SERVER_URL__;
 
 /** Hosts we operate. Every channel's broker belongs here — `isOfficial…` gates
  * the persisted-address migration, which treats an address on any of these as a
