@@ -53,6 +53,46 @@ OPERATOR_ONLY="/admin"
 # without a matching ingress rule fails here instead of being silently swallowed
 # by the SPA catch-all. `/metrics` is deliberately absent: it is mounted on a
 # separate listener outside build_router and must not be publicly routed.
+# ── This test must actually run when its inputs change ──────────────────────
+# The script reads the chart and the axum router. A CI path filter that lists
+# only the chart means a router-only change — the very case the routing check
+# exists to catch — merges without running it. Rather than rely on remembering
+# to keep the two in step, assert it: every repo file this script reads must be
+# covered by the workflow's trigger paths.
+workflow="$repo_root/.github/workflows/helm-chart.yml"
+if [ -f "$workflow" ]; then
+  # `|| true`: with no match the pipeline exits non-zero, and under `set -e` the
+  # assignment would kill the script before the emptiness check below could
+  # report it — a silent exit 1 that looks like a broken script rather than a
+  # dead parse.
+  trigger_paths=$(sed -n "/^on:/,/^permissions:/p" "$workflow" |
+    grep -oE "^ +- '[^']+'" | grep -oE "'[^']+'" | tr -d "'" | sort -u || true)
+  [ -n "$trigger_paths" ] ||
+    fail "no trigger paths parsed out of $workflow — the coverage check below cannot run"
+  covered() {                       # $1 = repo-relative path
+    local want=$1 pat
+    while IFS= read -r pat; do
+      case "$pat" in
+        */\*\*) [ "${want#"${pat%/\*\*}"/}" != "$want" ] && return 0 ;;
+        *)        [ "$want" = "$pat" ] && return 0 ;;
+      esac
+    done <<<"$trigger_paths"
+    return 1
+  }
+  # Positive control: a path that is obviously covered must report covered, or
+  # the matcher is broken and every check below passes for the wrong reason.
+  covered "deploy/helm/phase-server/values.yaml" ||
+    fail "trigger-path matcher is broken: it does not match a chart file"
+  # Negative control: a matcher that says yes to everything would pass the check
+  # above and every check below without testing anything.
+  ! covered "README.md" ||
+    fail "trigger-path matcher is broken: it matches a path no trigger lists"
+  for input in "crates/phase-server/src/main.rs" "deploy/helm/phase-server/tests/assert-web-routing.sh"; do
+    covered "$input" ||
+      fail "$input is read by this test but is not in the trigger paths of ${workflow#"$repo_root/"} — a change to it would skip this check"
+  done
+fi
+
 server_src="$repo_root/crates/phase-server/src/main.rs"
 prefixes=$(
   { awk '/^fn build_router\(/,/^}/' "$server_src"
