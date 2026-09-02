@@ -223,10 +223,22 @@ case "$tracked" in
   *@sha256:*) fail "followServerTag rendered a digest ('$tracked'), so it would not track anything" ;;
 esac
 
-# Asking for both is refused rather than silently resolved in the digest's favour.
-image_case refuse 'digest + followServerTag' \
+# Tracking with nothing to track is refused. This is the configuration an
+# operator reaches from chart defaults: the SPA tag would fall back to
+# v<Chart.appVersion>, a constant rather than the release being deployed, and no
+# SPA image is published for releases older than the job that publishes it. It
+# is the only rule that can reject this input, so the case cannot pass for
+# another reason.
+image_case refuse 'followServerTag with no server tag to follow' \
+  --set web.image.followServerTag=true >/dev/null
+
+# Asking for both is refused rather than silently resolved in the digest's
+# favour. These carry image.tag so the contradiction is the only defect left —
+# without it they would refuse on the missing-server-tag rule and prove nothing
+# about mutual exclusivity.
+image_case refuse 'digest + followServerTag' --set image.tag=v9.9.9 \
   --set web.image.digest=$web_digest --set web.image.followServerTag=true >/dev/null
-image_case refuse 'tag + followServerTag' \
+image_case refuse 'tag + followServerTag' --set image.tag=v9.9.9 \
   --set web.image.tag=v1.2.3 --set web.image.followServerTag=true >/dev/null
 
 # ── Opt-in stays opt-in ─────────────────────────────────────────────────────

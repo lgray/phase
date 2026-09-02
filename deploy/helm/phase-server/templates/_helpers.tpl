@@ -122,7 +122,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
      asked for while behaving as the pin that was not. An explicit
      `web.image.tag` is refused with tracking for the same reason: it is the
      tag that would be followed, so setting both means the SPA follows a tag
-     the server does not use. */}}
+     the server does not use.
+
+     Tracking also requires `image.tag` to be set, because otherwise there is
+     nothing being tracked: the SPA tag falls back to `v<Chart.AppVersion>`, a
+     constant this chart carries rather than the release a deployment runs, and
+     the appVersion is not bumped at release. For the server image that
+     fallback names a tag that exists; for the SPA it names one that never
+     will, since the SPA is published only from the release its job first runs
+     on. Enforcing it here turns that into a render failure rather than an
+     ImagePullBackOff on the pod that also serves /ws. */}}
 {{- define "phase-server.validateWebImage" -}}
 {{- $img := .Values.web.image -}}
 {{- if and $img.digest $img.followServerTag -}}
@@ -130,6 +139,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- if and $img.tag $img.followServerTag -}}
 {{- fail (printf "web.image sets both tag (%q) and followServerTag: true, which contradict each other — followServerTag means the SPA uses the server's tag, and an explicit tag is the thing it would otherwise follow. Pick one: keep the tag (with a digest, since a tag alone is mutable), or drop it to track the server." $img.tag) -}}
+{{- end -}}
+{{- if and $img.followServerTag (not .Values.image.tag) -}}
+{{- fail (printf "web.image.followServerTag is true but image.tag is empty, so there is no server tag to follow. The SPA tag would fall back to \"v%s\" from the chart's appVersion, which is a constant this chart carries rather than the release the deployment is running, and no %s image is published for releases older than the job that publishes it. Set image.tag to the release you are deploying, or pin web.image.digest instead." .Chart.AppVersion $img.repository) -}}
 {{- end -}}
 {{- if and (not $img.digest) (not $img.followServerTag) -}}
 {{- fail (printf "web.enabled is true but web.image.digest is empty, so %s would be pulled by a mutable tag. The SPA shares a pod with the game server, so a tag that moves under you takes /ws down with the site. Set web.image.digest to a sha256:... reference, or, if something bumps image.tag for you and you want the SPA to move with it, affirm that with web.image.followServerTag: true." $img.repository) -}}
