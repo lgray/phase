@@ -45,6 +45,43 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{/* The SPA image. Its tag falls back through image.tag before Chart.AppVersion,
+     so it resolves to whatever the server image resolved to unless it is set
+     explicitly. That is the version-coupling guarantee: the SPA and the server
+     in one pod must stay within one protocol-version step of each other, and
+     chaining the fallback through image.tag is what stops `--set image.tag=...`
+     from silently leaving the SPA behind on appVersion. */}}
+{{- define "phase-server.webImage" -}}
+{{- $img := .Values.web.image -}}
+{{- $tag := $img.tag | default .Values.image.tag | default (printf "v%s" .Chart.AppVersion) -}}
+{{- if $img.digest -}}
+{{- printf "%s:%s@%s" $img.repository $tag $img.digest -}}
+{{- else -}}
+{{- printf "%s:%s" $img.repository $tag -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Ports sharing the pod's network namespace must all differ; the loser of a
+     collision gets "address in use" at container start, which surfaces as a
+     crashloop rather than as a config error. Same class as the metrics/service
+     check further down, kept here because the web listener has three siblings
+     to clear rather than one. */}}
+{{- define "phase-server.validateWebPort" -}}
+{{- $web := int .Values.web.server.port -}}
+{{- if le $web 1024 -}}
+{{- fail (printf "web.server.port is %d, but the SPA sidecar image runs unprivileged (uid %v) and cannot bind a port below 1025." $web .Values.web.server.runAsUser) -}}
+{{- end -}}
+{{- if eq $web (int .Values.service.port) -}}
+{{- fail (printf "web.server.port (%d) must differ from service.port: they are two listeners in one pod, and the loser gets \"address in use\"." $web) -}}
+{{- end -}}
+{{- if and .Values.metrics.enabled (eq $web (int .Values.metrics.port)) -}}
+{{- fail (printf "web.server.port (%d) must differ from metrics.port: they are two listeners in one pod, and the loser gets \"address in use\"." $web) -}}
+{{- end -}}
+{{- if and .Values.logging.enabled (eq $web (int .Values.logging.server.port)) -}}
+{{- fail (printf "web.server.port (%d) must differ from logging.server.port: they are two listeners in one pod, and the loser gets \"address in use\"." $web) -}}
+{{- end -}}
+{{- end -}}
+
 {{/* PUBLIC_URL is what the server advertises to clients, so it is never
      guessed. Deriving it from ingress.host is only sound when that host is
      actually serving: with the ingress off it yields the values.yaml
@@ -84,8 +121,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "phase-server.commonMiddlewares" -}}
 {{- $list := list -}}
 {{- if .ctx.Values.traefik.middlewares.enabled -}}
+{{- /* excludeRateLimit is for the SPA route: the ratelimit/inflight pair is
+     sized for API calls, and one cold page load is tens of asset requests, so
+     sharing that bucket would throttle the site against the game server's own
+     budget. Its own limits live under web.rateLimit. */}}
+{{- if not .excludeRateLimit -}}
 {{- $list = append $list (include "phase-server.crdRef" (dict "ctx" .ctx "suffix" "ratelimit")) -}}
 {{- $list = append $list (include "phase-server.crdRef" (dict "ctx" .ctx "suffix" "inflight")) -}}
+{{- end -}}
+{{- if and .excludeRateLimit .ctx.Values.web.rateLimit.enabled -}}
+{{- $list = append $list (include "phase-server.crdRef" (dict "ctx" .ctx "suffix" "web-ratelimit")) -}}
+{{- end -}}
 {{- $list = append $list (include "phase-server.crdRef" (dict "ctx" .ctx "suffix" "headers")) -}}
 {{- if not .excludeCompress -}}
 {{- $list = append $list (include "phase-server.crdRef" (dict "ctx" .ctx "suffix" "compress")) -}}
@@ -132,6 +178,10 @@ traefik.ingress.kubernetes.io/router.tls.options: {{ include "phase-server.crdRe
 {{- if .Values.logging.enabled -}}
 {{- $annotations = merge (dict
       "checksum/logs-config" (include (print $.Template.BasePath "/logs-configmap.yaml") . | sha256sum)) $annotations -}}
+{{- end -}}
+{{- if .Values.web.enabled -}}
+{{- $annotations = merge (dict
+      "checksum/web-config" (include (print $.Template.BasePath "/web-configmap.yaml") . | sha256sum)) $annotations -}}
 {{- end -}}
 {{- with $annotations }}
 {{- toYaml . }}
@@ -182,8 +232,13 @@ traefik.ingress.kubernetes.io/router.tls.options: {{ include "phase-server.crdRe
 {{- define "phase-server.middlewareRefs" -}}
 {{- $fullname := include "phase-server.fullname" .ctx -}}
 {{- if .ctx.Values.traefik.middlewares.enabled }}
+{{- if not .excludeRateLimit }}
 - name: {{ $fullname }}-ratelimit
 - name: {{ $fullname }}-inflight
+{{- end }}
+{{- if and .excludeRateLimit .ctx.Values.web.rateLimit.enabled }}
+- name: {{ $fullname }}-web-ratelimit
+{{- end }}
 - name: {{ $fullname }}-headers
 {{- if not .excludeCompress }}
 - name: {{ $fullname }}-compress
@@ -422,7 +477,48 @@ containers:
       - name: logs-tmp
         mountPath: /tmp
   {{- end }}
-{{- if or (not $scaleOut) .Values.logging.enabled }}
+  {{- if .Values.web.enabled }}
+  {{- include "phase-server.validateWebPort" . }}
+  - name: web
+    image: {{ include "phase-server.webImage" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    # Serves the prebuilt SPA baked into the image, with nginx.conf and
+    # config.js coming from the ConfigMap instead. Public, unlike the logs
+    # sidecar — see web.enabled in values.yaml for the availability coupling
+    # this introduces.
+    securityContext:
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: {{ .Values.web.server.runAsUser }}
+      runAsGroup: {{ .Values.web.server.runAsGroup }}
+      capabilities:
+        drop: ["ALL"]
+    ports:
+      - name: web
+        containerPort: {{ .Values.web.server.port }}
+        protocol: TCP
+    readinessProbe:
+      httpGet:
+        path: /index.html
+        port: web
+      periodSeconds: 30
+    resources:
+      {{- toYaml .Values.web.server.resources | nindent 6 }}
+    volumeMounts:
+      - name: web-conf
+        mountPath: /etc/nginx/nginx.conf
+        subPath: nginx.conf
+        readOnly: true
+      # Whole-directory mount, deliberately: nginx `root`s here for /config.js,
+      # so nothing is layered over the image's own copy of that path.
+      - name: web-conf
+        mountPath: /etc/phase-web
+        readOnly: true
+      - name: web-tmp
+        mountPath: /tmp
+  {{- end }}
+{{- if or (not $scaleOut) .Values.logging.enabled .Values.web.enabled }}
 volumes:
 {{- if not $scaleOut }}
   - name: data
@@ -438,6 +534,13 @@ volumes:
     configMap:
       name: {{ include "phase-server.fullname" . }}-logs-conf
   - name: logs-tmp
+    emptyDir: {}
+{{- end }}
+{{- if .Values.web.enabled }}
+  - name: web-conf
+    configMap:
+      name: {{ include "phase-server.fullname" . }}-web-conf
+  - name: web-tmp
     emptyDir: {}
 {{- end }}
 {{- end }}
