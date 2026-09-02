@@ -3498,11 +3498,18 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
          a clone is writable at the exact point the payload is minted"
     );
 
-    // ── SPAN 4: the basis STRUCT. A parameter list cannot reach a `GameState` and is pinned
-    //    below instead; a struct FIELD can, so the textual ban is a real guard here.
+    // ── SPAN 4: the basis STRUCT and the domain STRUCT it folds in. A parameter list cannot
+    //    reach a `GameState` and is pinned below instead; a struct FIELD can, so the textual ban
+    //    is a real guard here.
     let basis_struct = extract(&text, "\nstruct ShortcutPreviewBasis<'a> {", "\n}");
     assert!(
         basis_struct.contains("delta:"),
+        "reach-guard: the extracted text must be the struct BODY, else this span is not the \
+         declaration the ban is written against"
+    );
+    let domain_struct = extract(&text, "\nstruct ShortcutAllocationDomain<'a> {", "\n}");
+    assert!(
+        domain_struct.contains("ids:"),
         "reach-guard: the extracted text must be the struct BODY, else this span is not the \
          declaration the ban is written against"
     );
@@ -3515,11 +3522,19 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
          because a `&GameState` reaching it reaches every element minted from it"
     );
     assert_eq!(
+        params_of("shortcut_allocation_domain"),
+        "interaction_id: &InteractionId, projection: &'a LoopShortcutProjection",
+        "type-level pin: the announced-choice domain is minted from the offer's id and its \
+         projection alone. It is the half of the basis that survives a proposal with no measured \
+         period, so it sits on every path the basis does and is pinned on the same ground"
+    );
+    assert_eq!(
         params_of("shortcut_preview_element"),
-        "basis: &ShortcutPreviewBasis<'_>, count: u32, allocation: Vec<AmountAssignment>",
+        "basis: Option<&ShortcutPreviewBasis<'_>>, count: u32, allocation: Vec<AmountAssignment>",
         "type-level pin: the single element producer is minted from a basis, a count and an \
-         allocation alone. Widening it to take anything reaching a `GameState` reopens the \
-         clone-apply route through a span no textual ban reads"
+         allocation alone — the basis OPTIONAL, so a partition whose magnitudes are unstatable is \
+         published by this producer rather than by a second one. Widening it to take anything \
+         reaching a `GameState` reopens the clone-apply route through a span no textual ban reads"
     );
     assert_eq!(
         params_of("declared_shortcut_preview"),
@@ -3532,6 +3547,7 @@ fn loop_shortcut_preview_never_routes_through_the_clone_apply_previewer() {
     for (span_name, body) in [
         ("preview_interaction's attach arm", &response_attach),
         ("the ShortcutPreviewBasis declaration", &basis_struct),
+        ("the ShortcutAllocationDomain declaration", &domain_struct),
     ] {
         for banned in ["preview_interaction", "state.clone()", "GameState"] {
             assert!(
@@ -3836,23 +3852,30 @@ fn declared_amounts(element: &InteractionShortcutPreview) -> Vec<u32> {
 ///
 /// `victim_charge` refuses for FOUR reasons; only one of them is about this
 /// call site's narrower seat domain. The guard therefore re-asks that same rule over the period's
-/// own life-map keys and withholds the element only when the charge it resolves names a seat the
-/// declaration does NOT announce — because folding it without a split would key the whole drain
-/// on the seat the period was measured on, which is the number the responder decides on.
+/// own life-map keys and withholds the MAGNITUDES only when the charge it resolves names a seat
+/// the declaration does NOT announce — because folding it without a split would key the whole
+/// drain on the seat the period was measured on, which is the number the responder decides on.
+///
+/// # What the guard withholds is the MAGNITUDES, never the partition
+///
+/// Segment lengths are not magnitudes, so the declaration's own partition is published on the
+/// board the guard fires on too — only its entry list is empty there.
 ///
 /// # All four legs run in ONE invocation, so each is the others' positive control
 ///
 /// Leg 1 is the board the guard exists for; legs 2, 3 and 4 each falsify exactly one conjunct.
-/// Every leg asserts a POSITIVE fact — a published point set, a present element with non-empty
-/// entries — so "the projection published nothing" cannot satisfy any of them.
+/// Every leg asserts a POSITIVE fact — a published point set, a present element carrying the
+/// declaration's own two distinct segments — so "the projection published nothing" cannot satisfy
+/// any of them.
 ///
-/// REVERT-PROBES: delete the guard ⇒ leg 1's `declared.is_none()` flips (the responder is handed
-/// `[Life P4 −72]`, the whole drain attributed to a seat the declaration never names); delete
-/// the `!announced.contains(..)` conjunct ⇒ leg 2 fails; take the charge probe without the
+/// REVERT-PROBES: delete the guard ⇒ leg 1's empty-entries assertion flips (the responder is
+/// handed `[Life P4 −72]`, the whole drain attributed to a seat the declaration never names);
+/// delete the `!announced.contains(..)` conjunct ⇒ leg 2 fails; take the charge probe without the
 /// `basis.seats` wrapper ⇒ leg 4 fails; use `basis.charge.is_none()` as the probe ⇒ leg 3 fails
-/// on its first assertion.
+/// on its first assertion; refuse the whole element on the magnitude leg instead of emptying its
+/// entries ⇒ leg 1's partition assertion fails.
 #[test]
-fn the_declared_element_is_withheld_only_when_the_periods_charge_escapes_the_declaration() {
+fn the_declared_magnitudes_are_withheld_only_when_the_periods_charge_escapes_the_declaration() {
     const COUNT: u32 = 6;
     const STARTS: [u32; 2] = [0, 2];
     let slot = preview_slot(0);
@@ -3879,11 +3902,22 @@ fn the_declared_element_is_withheld_only_when_the_periods_charge_escapes_the_dec
         "reach-guard: the declaration IS still published — the guard withholds the magnitudes, \
          never the statement — and it announces exactly the two seats the period does not drain"
     );
+    let element = reply.declared.as_ref().expect(
+        "CR 732.2b: the partition is the declaration's own segment lengths and not a magnitude, \
+         so it is published on the very board the attribution guard fires on",
+    );
+    assert_eq!(
+        declared_amounts(element),
+        vec![2, 4],
+        "ANTI-VACUITY: TWO segments, pairwise DISTINCT — the responder reads the whole \
+         declaration, so an element emptied wholesale cannot satisfy this"
+    );
     assert!(
-        reply.declared.is_none(),
+        element.entries.is_empty(),
         "CR 704.5a: the period's per-slot charge resolves to a seat this declaration never \
-         announces, so no element is published rather than one keying the whole drain on the \
-         seat the period was measured on"
+         announces, so NO magnitude is stated rather than one keying the whole drain on the seat \
+         the period was measured on. got {:?}",
+        element.entries
     );
 
     // ── LEG 2 — the membership conjunct. The same board with the drained seat announced. ──
@@ -4300,6 +4334,77 @@ fn an_unstatable_optional_decision_is_skipped_and_an_unstatable_target_refuses_t
                 .expect("and a single announced subject takes the whole declared count")
         ),
         vec![COUNT]
+    );
+}
+
+/// **CR 601.2c — a scheduled step that also names a FALLBACK order refuses the sequence.**
+///
+/// One subject per segment is the whole carrier this vocabulary has. Publishing such a step's
+/// head alone would state a schedule shorter than the one proposed, with nothing marking the
+/// omission — so the sequence is refused, the same answer a multi-position slot and a
+/// `RoundRobin` schedule already get.
+///
+/// Latent from the human ingress, which mints a one-subject ranking per step
+/// (`decode_sequenced_targets`); a save or a wire restore is the way in, and the branch is judged
+/// on what it does when reached rather than on how it is reached today.
+///
+/// # Discrimination
+///
+/// Publish each step's head instead ⇒ the hostile leg fails, and the responder reads a two-step
+/// schedule for a declaration whose second step names two subjects.
+#[test]
+fn a_scheduled_step_naming_a_fallback_order_refuses_the_sequence() {
+    use engine::analysis::decision_template::{PinnedDecision, Ranking, TargetPin, TargetSchedule};
+
+    const COUNT: u32 = 6;
+    const STARTS: [u32; 2] = [0, 2];
+
+    let scheduled = |second_step: &[PlayerId]| {
+        let step = |start: u32, seats: &[PlayerId]| {
+            (
+                start,
+                Ranking::new(seat_subjects(seats)).expect("distinct seats make a legal ranking"),
+            )
+        };
+        respond_window(
+            IterationCount::Fixed(COUNT),
+            Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+            vec![PinnedDecision::Targets {
+                slot: preview_slot(0),
+                targets: vec![TargetPin::Scheduled(TargetSchedule::Piecewise(vec![
+                    step(STARTS[0], &[R_FIRST]),
+                    step(STARTS[1], second_step),
+                ]))],
+            }],
+        )
+    };
+
+    // ── MANDATORY PAIRED POSITIVE, first: the same schedule one ranking-arity apart publishes
+    //    both its steps, so the refusal below is a branch rather than a producer that never
+    //    states anything.
+    let one_each = respond_reply_of(&scheduled(&[R_SECOND]));
+    assert_eq!(
+        respond_seats_of(&one_each, &one_each.points[0].candidate_ids),
+        vec![R_FIRST.0, R_SECOND.0],
+        "reach-guard: a one-subject-per-step schedule reaches the responder whole"
+    );
+    assert_eq!(
+        declared_amounts(
+            one_each
+                .declared
+                .as_ref()
+                .expect("and its two steps partition the declared count")
+        ),
+        vec![2, 4],
+        "ANTI-VACUITY: TWO segments, pairwise distinct"
+    );
+
+    // ── The hostile board: the SECOND step also names a fallback subject.
+    let with_fallback = respond_reply_of(&scheduled(&[R_SECOND, R_DRAINED]));
+    assert!(
+        with_fallback.points.is_empty() && with_fallback.declared.is_none(),
+        "CR 601.2c: one subject per segment is the whole carrier, so a step naming a fallback \
+         order refuses the WHOLE sequence rather than publishing its head and dropping the rest"
     );
 }
 

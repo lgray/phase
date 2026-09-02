@@ -811,6 +811,49 @@ describe("LoopShortcutModal", () => {
     expect(screen.queryByText(/ — ×/)).not.toBeInTheDocument();
   });
 
+  // Hostile: TWO announced-target decisions. The allocation is stated over the FIRST — so that
+  // decision's order is already the allocation lines' own order — and every LATER one carries no
+  // allocation and must state its order. A renderer reading only the first `targets` point shows
+  // the responder half the proposal, which is the object CR 732.2b gives them a right to shorten.
+  it("states every announced-target decision, not just the first", () => {
+    const points = [statementTargetsPoint(0, ["r0", "r1"]), statementTargetsPoint(1, ["r2", "r3"])];
+    const candidates = [
+      seatCandidate("r0", 1),
+      seatCandidate("r1", 2),
+      seatCandidate("r2", 3),
+      seatCandidate("r3", 0),
+    ];
+
+    seed(
+      buildRespondToShortcutWaitingFor(),
+      {},
+      respondInteraction({ points, declared: element(7, [amt("r0", 2), amt("r1", 5)]) }, candidates),
+    );
+    render(<RespondToShortcutModal />);
+
+    // The first decision reaches the responder as the allocation, in its published order.
+    expect(screen.getByText("P2 — ×2")).toBeInTheDocument();
+    expect(screen.getByText("P3 — ×5")).toBeInTheDocument();
+    // The second reaches it as an ORDER — the assertion that fails before the fix, where a
+    // published allocation suppressed every order line.
+    expect(screen.getByText("1. P4")).toBeInTheDocument();
+    expect(screen.getByText("2. P1")).toBeInTheDocument();
+    // And the allocated decision is not restated as an order beside its own partition.
+    expect(screen.queryByText("1. P2")).not.toBeInTheDocument();
+    expect(screen.queryByText("2. P3")).not.toBeInTheDocument();
+
+    // The other half of the same reduction: with NO allocation to state, both decisions publish
+    // an order and both must render — a renderer reading `points.find(…)` renders only the first.
+    cleanup();
+    seed(buildRespondToShortcutWaitingFor(), {}, respondInteraction({ points }, candidates));
+    render(<RespondToShortcutModal />);
+
+    expect(screen.getByText("1. P2")).toBeInTheDocument();
+    expect(screen.getByText("2. P3")).toBeInTheDocument();
+    expect(screen.getByText("1. P4")).toBeInTheDocument();
+    expect(screen.getByText("2. P1")).toBeInTheDocument();
+  });
+
   // Hostile: a declared element with EMPTY entries renders no preview block — the shared
   // `PreviewLines` already states nothing for one — but still states the partition. "Renders
   // nothing" cannot pass for "renders the right nothing".

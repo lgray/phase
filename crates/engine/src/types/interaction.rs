@@ -1048,11 +1048,16 @@ pub enum InteractionResponseSpec {
     ///
     /// `declared` is what the DECLARED count does: the same element vocabulary the offer's own
     /// published list carries, minted by the same producer over the allocation the proposer
-    /// actually declared. Absent on an order-only declaration (CR 732.1b: an until-lethal
-    /// proposal names no count to partition, so a magnitude there could only be invented), on
-    /// any proposal stating no per-period signature, and on a declaration whose announced
-    /// subjects do not include the seat the period's per-slot life charge resolves to
-    /// (CR 704.5a — see `game::interaction::declared_sequence_preview`).
+    /// actually declared. Absent only on a declaration whose PARTITION cannot be stated: an
+    /// order-only one (CR 732.1b: an until-lethal proposal names no count to partition, so a
+    /// magnitude there could only be invented), and one whose segments cannot be read back
+    /// against the announced-target decision's own published ids and total. A declaration whose
+    /// partition IS stated and whose magnitudes are not — a proposal carrying no per-period
+    /// signature, or one whose per-slot life charge resolves to a seat the declaration never
+    /// announces (CR 704.5a) — is published with its allocation and an EMPTY entry list: segment
+    /// lengths are not magnitudes, and a responder judging accept-or-shorten against half the
+    /// proposal is the partial statement this projection rules out. See
+    /// `game::interaction::declared_sequence_preview`.
     ///
     /// The docs live on the VARIANT rather than on the fields, for the reason the `Shortcut`
     /// variant above records: ts_rs emits field docs into the generated bindings as JSDoc but
@@ -1173,7 +1178,10 @@ pub struct InteractionShortcutPreview {
     /// per-seat life magnitudes are then this split multiplied by that rate, and they still
     /// total the period. On every other offer a non-empty allocation still ships beside entries
     /// folded from the raw period, because the allocation states the declaration and the
-    /// entries state what the engine can attribute.
+    /// entries state what the engine can attribute. On the RESPOND side that separation goes one
+    /// step further: a declaration whose partition is stated and whose magnitudes are not ships
+    /// this allocation beside an EMPTY `entries`, rather than withholding the whole element
+    /// (`game::interaction::declared_sequence_preview`).
     ///
     /// The magnitudes are this declaration's arithmetic. On a drive whose first cycle resolves
     /// a target announced before the drive begins, the realized split is shifted one cycle at

@@ -783,17 +783,19 @@ export function RespondToShortcutModal() {
   // every per-seat magnitude and every answer are the engine's; this modal states them.
   const declared = spec?.declared ?? null;
   const points = spec?.points ?? [];
-  // CR 601.2c: the FIRST `targets`-kind point in published order — the same rule
-  // `allocation_point` applies engine-side, so the order shown here and the allocation the
-  // engine states are about the same announced-target decision.
-  const orderPoint = points.find((p) => p.kind === "targets") ?? null;
-  // A published allocation states the partition by id, so the order is stated only when there is
-  // no partition to state.
-  const orderIds = declared === null ? (orderPoint?.candidateIds ?? []) : [];
+  // CR 601.2c: a proposal may carry MORE THAN ONE announced-target decision, and the allocation
+  // is stated over the first in published order — the same rule `allocation_point` applies
+  // engine-side. That one's order is already stated by the allocation lines' own order, so it is
+  // dropped here when an allocation exists; every later decision has no allocation stated over it
+  // and states its order. Reading only the first would show the responder half the proposal.
+  const targetPoints = points.filter((p) => p.kind === "targets");
+  const orderPoints = declared === null ? targetPoints : targetPoints.slice(1);
   const allocation = declared?.allocation ?? [];
   const mayPoints = points.filter((p) => p.kind === "mayChoice");
   const showsDeclaration =
-    allocation.length > 0 || orderIds.length > 0 || mayPoints.length > 0;
+    allocation.length > 0 ||
+    orderPoints.some((p) => p.candidateIds.length > 0) ||
+    mayPoints.length > 0;
 
   const footer = (
     <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
@@ -837,14 +839,22 @@ export function RespondToShortcutModal() {
                 })}
               </p>
             ))}
-            {orderIds.map((id, index) => (
-              <p key={id} className="text-sm text-slate-200 tabular-nums">
-                {t("comboShortcut.respondOrderEntry", {
-                  position: index + 1,
-                  subject: candidateLabel(t, candidates, id),
-                })}
-              </p>
-            ))}
+            {/* Positions are numbered WITHIN their own announced decision, which is the only
+                thing the engine states them over; the key carries the group so two decisions
+                naming the same subject stay distinct rows. */}
+            {orderPoints.flatMap((point) =>
+              point.candidateIds.map((id, index) => (
+                <p
+                  key={`${point.group}:${id}`}
+                  className="text-sm text-slate-200 tabular-nums"
+                >
+                  {t("comboShortcut.respondOrderEntry", {
+                    position: index + 1,
+                    subject: candidateLabel(t, candidates, id),
+                  })}
+                </p>
+              )),
+            )}
             {mayPoints.map((point) => {
               // The engine publishes EXACTLY TWO candidate ids on a `mayChoice` statement point,
               // read in order as SUBJECT then ANSWER; a decision whose subject cannot be minted

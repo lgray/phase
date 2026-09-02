@@ -2873,11 +2873,45 @@ fn allocated_seats(
         .collect()
 }
 
+/// CR 601.2c: the announced-target decision an allocation is stated over — its published index,
+/// the point itself, its choice ids in published order, and the seats those ids name when every
+/// one of them is a player.
+///
+/// Minted from the PROJECTION alone. Which decision an allocation partitions, and over which
+/// ids, is a property of the declaration and not of the period, so a proposal carrying no
+/// measured per-period signature still has a partition to state — see `declared_sequence_preview`.
+///
+/// The ids are minted through the same `interaction_choice_id` call `loop_shortcut_points` uses,
+/// so an element's `choice_id`s and the point's `candidate_ids` are the same strings by
+/// construction rather than by agreement.
+struct ShortcutAllocationDomain<'a> {
+    group: u32,
+    point: &'a LoopShortcutPointProjection,
+    ids: Vec<InteractionChoiceId>,
+    seats: Option<Vec<PlayerId>>,
+}
+
+fn shortcut_allocation_domain<'a>(
+    interaction_id: &InteractionId,
+    projection: &'a LoopShortcutProjection,
+) -> Option<ShortcutAllocationDomain<'a>> {
+    let (group, point) = allocation_point(projection)?;
+    Some(ShortcutAllocationDomain {
+        group,
+        point,
+        ids: point
+            .candidate_indices
+            .iter()
+            .map(|index| interaction_choice_id(interaction_id, 'k', *index))
+            .collect(),
+        seats: allocated_seats(projection, point),
+    })
+}
+
 /// Everything a previewed element needs that neither its count nor its allocation supplies.
 ///
-/// The allocation's ids are minted through the same `interaction_choice_id` call
-/// `loop_shortcut_points` uses, so an element's `choice_id`s and the point's `candidate_ids`
-/// are the same strings by construction rather than by agreement.
+/// The announced-choice half is `ShortcutAllocationDomain`, folded in flat: an offer publishing
+/// no announced-target decision has no domain, and states its magnitudes unsplit.
 struct ShortcutPreviewBasis<'a> {
     delta: &'a crate::analysis::resource::ResourceVector,
     group: Option<u32>,
@@ -2900,23 +2934,19 @@ fn shortcut_preview_basis<'a>(
     if shortcut_preview_entries(&periodic.delta, 1, None).is_empty() {
         return None;
     }
-    let point = allocation_point(projection);
-    let ids: Vec<InteractionChoiceId> = point
-        .map(|(_, point)| {
-            point
-                .candidate_indices
-                .iter()
-                .map(|index| interaction_choice_id(interaction_id, 'k', *index))
-                .collect()
-        })
-        .unwrap_or_default();
-    let seats = point.and_then(|(_, point)| allocated_seats(projection, point));
-    let charge = point
-        .zip(seats.as_deref())
-        .and_then(|((_, point), seats)| victim_charge(periodic, point, seats));
+    let (group, ids, seats, charge) = match shortcut_allocation_domain(interaction_id, projection) {
+        Some(domain) => {
+            let charge = domain
+                .seats
+                .as_deref()
+                .and_then(|seats| victim_charge(periodic, domain.point, seats));
+            (Some(domain.group), domain.ids, domain.seats, charge)
+        }
+        None => (None, Vec::new(), None, None),
+    };
     Some(ShortcutPreviewBasis {
         delta: &periodic.delta,
-        group: point.map(|(group, _)| group),
+        group,
         ids,
         seats,
         charge,
@@ -2929,19 +2959,27 @@ fn shortcut_preview_basis<'a>(
 /// CR 732.1b: the sequence is deliberately never performed, so this is `n x delta` and reaches
 /// no `GameState`. The single site that mints an element, for the published list and for a
 /// declared one alike, so the two cannot disagree.
+///
+/// A `None` basis is a declaration whose PARTITION is known and whose magnitudes are not: the
+/// count and the allocation are still the proposer's own, and no magnitude is invented beside
+/// them. Only the declared side passes one — an offer with no basis publishes no element at all.
 fn shortcut_preview_element(
-    basis: &ShortcutPreviewBasis<'_>,
+    basis: Option<&ShortcutPreviewBasis<'_>>,
     count: u32,
     allocation: Vec<AmountAssignment>,
 ) -> InteractionShortcutPreview {
-    let split = basis
-        .charge
-        .as_ref()
-        .zip(basis.seats.as_deref())
-        .and_then(|(charge, seats)| VictimSplit::new(charge, &basis.ids, seats, &allocation));
+    let entries =
+        basis
+            .map(|basis| {
+                let split = basis.charge.as_ref().zip(basis.seats.as_deref()).and_then(
+                    |(charge, seats)| VictimSplit::new(charge, &basis.ids, seats, &allocation),
+                );
+                shortcut_preview_entries(basis.delta, count, split.as_ref())
+            })
+            .unwrap_or_default();
     InteractionShortcutPreview {
         count,
-        entries: shortcut_preview_entries(basis.delta, count, split.as_ref()),
+        entries,
         allocation,
     }
 }
@@ -2967,7 +3005,7 @@ fn loop_shortcut_preview(
         .into_iter()
         .map(|count| {
             let allocation = canonical_allocation(&basis.ids, count);
-            shortcut_preview_element(&basis, count, allocation)
+            shortcut_preview_element(Some(&basis), count, allocation)
         })
         .collect()
 }
@@ -3018,7 +3056,7 @@ fn declared_shortcut_preview(
     if amounts.is_empty() {
         return None;
     }
-    Some(shortcut_preview_element(&basis, count, amounts))
+    Some(shortcut_preview_element(Some(&basis), count, amounts))
 }
 
 /// CR 400.7: a live object's identity is incarnation-keyed and names something to surface;
@@ -3141,7 +3179,19 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
                                 segments.push(start.checked_sub(previous)?);
                             }
                             previous = Some(*start);
-                            subjects.push(ranking.head().clone());
+                            // CR 601.2c: one subject per segment is the whole carrier this
+                            // vocabulary has, so a step whose ranking also names a FALLBACK order
+                            // cannot be stated — only its head could be, and a schedule published
+                            // a subject short is a shorter sequence than the one proposed. Refused
+                            // rather than mis-read, the same answer the multi-position slot and
+                            // `RoundRobin` give. Unreachable from the human ingress, which mints
+                            // `Ranking::one` per step; a save or wire restore is the way in.
+                            let mut fallbacks = ranking.iter();
+                            let subject = fallbacks.next()?;
+                            if fallbacks.next().is_some() {
+                                return None;
+                            }
+                            subjects.push(subject.clone());
                         }
                         segments.push(n.checked_sub(previous?)?);
                         (subjects, segments)
@@ -3250,23 +3300,42 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
 ///
 /// CR 732.1b: the sequence is deliberately never performed, so this is `n x delta` and reaches
 /// no game state.
+///
+/// `None` is reserved for a declaration whose PARTITION cannot be stated: no announced-target
+/// decision to allocate over, or a segment list this projection cannot read back against that
+/// decision's own published ids and total. Every refusal on the MAGNITUDE leg publishes the
+/// partition with no entries instead — segment lengths are not magnitudes, and a responder
+/// judging accept-or-shorten against half the proposal is the partial statement this projection
+/// exists to rule out.
 fn declared_sequence_preview(
     interaction_id: &InteractionId,
     declared: &DeclaredSequence,
 ) -> Option<InteractionShortcutPreview> {
-    let basis = shortcut_preview_basis(interaction_id, &declared.projection)?;
     // CR 601.2c: `allocation_point` is the single authority for WHICH announced-target point an
-    // allocation is stated over, and `basis.group`/`basis.ids` are already that point's. Reading
-    // the segments and the point back by that same index is what makes the two halves of this
-    // element speak about one point: a proposal may carry more than one announced-target
-    // decision, and every later one publishes its declared ORDER with no allocation stated over
-    // it.
-    let index = usize::try_from(basis.group?).ok()?;
+    // allocation is stated over, and the domain's `group`/`ids` are already that point's. Reading
+    // the segments back by that same index is what makes the two halves of this element speak
+    // about one point: a proposal may carry more than one announced-target decision, and every
+    // later one publishes its declared ORDER with no allocation stated over it.
+    let domain = shortcut_allocation_domain(interaction_id, &declared.projection)?;
+    let index = usize::try_from(domain.group).ok()?;
     let segments = declared.segments.get(index)?;
-    let point = declared.projection.points.get(index)?;
-    if segments.is_empty() || segments.len() != basis.ids.len() {
+    if segments.is_empty() || segments.len() != domain.ids.len() {
         return None;
     }
+
+    // A restored save is a wire ingress, so the declared total fails closed rather than wrapping.
+    let count = segments
+        .iter()
+        .try_fold(0u32, |total, segment| total.checked_add(*segment))?;
+    let allocation: Vec<AmountAssignment> = domain
+        .ids
+        .iter()
+        .zip(segments)
+        .map(|(choice_id, amount)| AmountAssignment {
+            choice_id: choice_id.clone(),
+            amount: *amount,
+        })
+        .collect();
 
     // CR 704.5a: the period charges this announced slot's life to whoever the DECLARATION names.
     //
@@ -3276,45 +3345,38 @@ fn declared_sequence_preview(
     // this call site's narrower domain — `basis.seats` here is the declaration's announced
     // subjects, a subset of the offer's candidate domain. On the other three the offer's own
     // element refuses in exactly the same way, so both sides fold the period's seat keys and
-    // publishing is correct.
+    // stating the magnitudes is correct.
     //
     // So re-ask the SAME landed rule over the life map's OWN KEYS. That domain satisfies the
     // third conjunct by construction (the seat it tests is drawn from that very map), leaving the
     // other three deciding — a charge it resolves that `basis.seats` does not name is a seat this
     // declaration never announces. Folding it without a split would key the whole drain on the
-    // seat the period was MEASURED on, so publish nothing rather than a magnitude the responder
-    // would judge their accept-or-shorten answer on.
+    // seat the period was MEASURED on, so state NO MAGNITUDE rather than one the responder would
+    // judge their accept-or-shorten answer on. The partition is published either way.
     //
     // The `basis.seats` wrapper covers the remaining case: a declaration whose announced subjects
     // are OBJECTS has no seat domain at all, so nothing narrowed and the offer's own fold over
     // the period's seat keys is right for it too.
     //
-    // This re-reads a value `shortcut_preview_basis` already required, so `per_cycle` is `Some`
-    // here and the `?` cannot refuse on a basis that resolved.
-    let periodic = declared.projection.per_cycle.as_ref()?;
-    let charge_escapes_declaration = basis.seats.as_deref().is_some_and(|announced| {
-        let life_seats: Vec<PlayerId> = periodic.delta.life.keys().copied().collect();
-        victim_charge(periodic, point, &life_seats)
-            .is_some_and(|charge| !announced.contains(&charge.seat))
-    });
-    if charge_escapes_declaration {
-        return None;
-    }
-
-    // A restored save is a wire ingress, so the declared total fails closed rather than wrapping.
-    let count = segments
-        .iter()
-        .try_fold(0u32, |total, segment| total.checked_add(*segment))?;
-    let allocation = basis
-        .ids
-        .iter()
-        .zip(segments)
-        .map(|(choice_id, amount)| AmountAssignment {
-            choice_id: choice_id.clone(),
-            amount: *amount,
-        })
-        .collect();
-    Some(shortcut_preview_element(&basis, count, allocation))
+    // The `per_cycle` conjunct re-reads a value `shortcut_preview_basis` already required, so it
+    // is `Some` on every basis that resolved; were it not, the zip would drop the magnitudes,
+    // which is the direction this guard already fails in.
+    let basis = shortcut_preview_basis(interaction_id, &declared.projection);
+    let charge_escapes_declaration = basis
+        .as_ref()
+        .zip(declared.projection.per_cycle.as_ref())
+        .is_some_and(|(basis, periodic)| {
+            basis.seats.as_deref().is_some_and(|announced| {
+                let life_seats: Vec<PlayerId> = periodic.delta.life.keys().copied().collect();
+                victim_charge(periodic, domain.point, &life_seats)
+                    .is_some_and(|charge| !announced.contains(&charge.seat))
+            })
+        });
+    Some(shortcut_preview_element(
+        basis.as_ref().filter(|_| !charge_escapes_declaration),
+        count,
+        allocation,
+    ))
 }
 
 fn loop_shortcut_projection(

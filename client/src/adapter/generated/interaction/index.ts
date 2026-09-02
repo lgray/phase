@@ -112,7 +112,10 @@ export type InteractionShortcutPreview = { count: number, entries: Array<Interac
  * per-seat life magnitudes are then this split multiplied by that rate, and they still
  * total the period. On every other offer a non-empty allocation still ships beside entries
  * folded from the raw period, because the allocation states the declaration and the
- * entries state what the engine can attribute.
+ * entries state what the engine can attribute. On the RESPOND side that separation goes one
+ * step further: a declaration whose partition is stated and whose magnitudes are not ships
+ * this allocation beside an EMPTY `entries`, rather than withholding the whole element
+ * (`game::interaction::declared_sequence_preview`).
  *
  * The magnitudes are this declaration's arithmetic. On a drive whose first cycle resolves
  * a target announced before the drive begins, the realized split is shifted one cycle at

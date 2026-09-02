@@ -6872,8 +6872,9 @@ fn the_responder_reads_the_declared_partition_and_its_per_seat_magnitudes() {
     );
 
     // ── HOSTILE (b): a declaration whose proposal states NO per-period signature. The
-    //    statement points still publish — the declaration is still shown — but no magnitude is
-    //    invented for it. First production branch: `shortcut_preview_basis`'s `per_cycle`.
+    //    statement points and the PARTITION still publish — segment lengths are not magnitudes —
+    //    but no magnitude is invented beside them. First production branch:
+    //    `shortcut_preview_basis`'s `per_cycle`.
     let mut signatureless = state.clone();
     let WaitingFor::RespondToShortcut { proposal, .. } = &mut signatureless.waiting_for else {
         unreachable!("the clone parks on the same window");
@@ -6885,10 +6886,33 @@ fn the_responder_reads_the_declared_partition_and_its_per_seat_magnitudes() {
         reply.points.len(),
         "the declaration is still published whole — only its magnitudes are unstated"
     );
+    let unmeasured_element = unmeasured.declared.as_ref().expect(
+        "CR 732.2b: the responder judges the whole declaration, and its partition is the \
+         proposer's own whether or not a period was measured",
+    );
+    assert_eq!(
+        (
+            unmeasured_element.count,
+            unmeasured_element
+                .allocation
+                .iter()
+                .map(|assignment| assignment.amount)
+                .collect::<Vec<_>>(),
+        ),
+        (COUNT, SEGMENTS.to_vec()),
+        "and it is the SAME partition the measured board published — three segments, pairwise \
+         distinct, so an element emptied wholesale cannot satisfy this"
+    );
     assert!(
-        unmeasured.declared.is_none(),
+        unmeasured_element.entries.is_empty(),
         "CR 732.2a: a magnitude is the period times the count, and there is no period to \
-         multiply"
+         multiply. got {:?}",
+        unmeasured_element.entries
+    );
+    assert!(
+        !element.entries.is_empty(),
+        "reach-guard: the measured board one field apart DOES state magnitudes, so the emptiness \
+         above is this branch rather than a producer that never states any"
     );
 }
 

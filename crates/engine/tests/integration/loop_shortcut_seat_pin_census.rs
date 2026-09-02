@@ -315,7 +315,7 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
     // What the pin READS is this site's own text and no more: the choice spelling, then a
     // binding containing no parenthesis, then `) =>` immediately after it. That is a property
     // of THIS arm head's text, NOT a fact about Rust grammar — a pattern may contain
-    // parentheses, and this arm's own destructure through `PlayerId` does.
+    // parentheses, so a future binding nested through `PlayerId` would red this pin.
     //
     // The failure direction, as a property: ANY edit breaking that adjacency reds the pin with
     // no behavioural change. A spurious red is adjudicated by a human at the failure and is
