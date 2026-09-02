@@ -11,7 +11,8 @@ helm install phase-server deploy/helm/phase-server -n phase --create-namespace \
   --set networkPolicy.ingressNamespaceLabels."kubernetes\.io/metadata\.name"=kube-system  # your Traefik's namespace
 ```
 
-Players enter `wss://phase.example.com/ws` in the client's Server picker.
+Players enter `wss://phase.example.com/ws` in the client's Server picker, or you can
+serve them the client too — see [Serving the web client](#serving-the-web-client).
 
 ## What the chart assumes about the server
 
@@ -304,6 +305,43 @@ Two things worth knowing before reading the graph:
   restores them if the ordinal returns, whereas a pod held drained loses
   disconnected players' games to the 120 s reaper.
 
+## Serving the web client
+
+`web.enabled=true` adds an nginx sidecar serving the phase web client from the
+same hostname as the server, turning one install into a complete site instead of
+an endpoint players need a separate client for.
+
+```bash
+helm upgrade phase-server deploy/helm/phase-server -n phase \
+  --set web.enabled=true \
+  --set web.defaultMultiplayerServerUrl=wss://phase.example.com/ws
+```
+
+The site is then at `https://phase.example.com/`, and `/ws`, `/health`,
+`/p2p-draft-backup` and (with an admin token) `/admin` still reach the server.
+Routing rests on longest-prefix matching for the plain Ingress and on Traefik's
+default rule-length ordering under `scaleOut`;
+[`tests/assert-web-routing.sh`](tests/assert-web-routing.sh) asserts that every
+route the server actually mounts stays reachable, reading the router itself so a
+new server endpoint cannot be silently swallowed by the site's catch-all.
+
+`web.defaultMultiplayerServerUrl` is what new players' Server picker starts on.
+The chart renders it into a `/config.js` the client reads at startup, so a single
+generic image points at any deployment with no rebuild. Leave it empty and the
+bundle keeps its build-time default (the public lobby). A malformed address is
+ignored rather than seeded into every profile.
+
+**Keep the two images on one version.** A client accepts a lobby only within one
+protocol version of its own build, and the server advertises its number without
+being asked — so a web image two releases from its server yields a site that
+loads and then cannot connect. `web.image.tag` defaults to `image.tag`, so
+pinning the server pins both; override it only together.
+
+Only `/config.js` differs between deployments, and nginx serves it
+`must-revalidate` while the service worker is told never to precache it —
+otherwise a returning player's browser would keep answering from the copy baked
+into the image and never see the deployment's own.
+
 ## Building the image
 
 `ghcr.io/phase-rs/phase-server` is published for linux/amd64 and linux/arm64.
@@ -320,6 +358,24 @@ docker buildx build --platform linux/arm64 --build-arg PHASE_CHANNEL=release \
 `PHASE_CHANNEL=release` is what lets an empty data volume self-bootstrap.
 Pin `image.digest` in your values; `:latest`-style tags resolve stale on some
 k3s nodes.
+
+`web.image.repository` defaults to `ghcr.io/phase-rs/phase-web`. The job that
+publishes it ships separately from this chart (touching a workflow makes a whole
+PR maintainer-only), so until that lands, point the value at your own build —
+`web.enabled` is false by default, so nothing resolves the image until you opt
+in. It is a static bundle over `nginx-unprivileged`, carrying no nginx.conf of
+its own because the chart mounts one, so building it is a client build plus a
+copy:
+
+```bash
+IMAGE=<you>/phase-web:v0.59.0 ./scripts/build-selfhost-web.sh --push
+```
+
+That script sets the data-plane URLs, strips the JSONs it just pointed
+elsewhere, and builds both architectures. It bundles `client/public/card-data.json`
+when you have generated one, which is the pool your own engine parses; without it
+the client reads the shared copy, which tracks upstream's releases rather than
+your checkout.
 
 ## Values
 

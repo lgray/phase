@@ -28,8 +28,16 @@
      /p2p-draft-backup still win over "/". Without this route the default
      topology would render a web sidecar and a Service port with nothing
      pointing at them. */}}
+{{- /* `/admin/drafts[/{code}]` is mounted by the server only when an admin token
+     is configured, so it is routed only then. It shares /health's middleware set
+     and rides on that Ingress rather than getting its own: one more object would
+     buy nothing, and the server's own bearer guard is the access control. */}}
+{{- $serverPaths := list "/health" }}
+{{- if .Values.server.adminTokenSecret }}
+{{- $serverPaths = append $serverPaths "/admin" }}
+{{- end }}
 {{- $routes := list
-      (dict "suffix" "" "paths" (list "/health") "mw" $common "port" "http")
+      (dict "suffix" "" "paths" $serverPaths "mw" $common "port" "http")
       (dict "suffix" "-ws" "paths" (list "/ws") "mw" $wsMw "port" "http")
       (dict "suffix" "-backup" "paths" (list "/p2p-draft-backup") "mw" $backupMw "port" "http") }}
 {{- if .Values.web.enabled }}
