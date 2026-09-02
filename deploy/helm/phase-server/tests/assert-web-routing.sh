@@ -208,6 +208,15 @@ url_case refuse 'wss://:9374/ws'                     # port but no host
 url_case refuse 'wss://@/ws'                         # empty authority
 url_case refuse 'wss://%00.com/ws'                   # percent-encoding in a host
 
+# Dotted-numeric authorities. URL parsing decides a host is an IPv4 attempt from
+# its final label, so these fail to parse rather than resolving as hostnames.
+url_case render 'wss://192.168.1.5:9374/ws'
+url_case render 'wss://255.255.255.255/ws'
+url_case refuse 'wss://999.999.999.999/ws'           # octets out of range
+url_case refuse 'wss://256.1.1.1/ws'                 # first octet out of range
+url_case refuse 'wss://1.2.3.4.5/ws'                 # five parts
+url_case refuse 'wss://0x7f.0.0.1/ws'                # hex octet: a number, not a name
+
 # ── The SPA image must be immutable unless mutability is asked for by name ──
 # The SPA is a sidecar in the pod that serves /ws, so a tag that moves under the
 # deployment can take the game server down with the site. A digest is therefore

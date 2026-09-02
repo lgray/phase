@@ -174,7 +174,21 @@ describe("chart default-server grammar vs parseWebSocketUrl", () => {
     "gggg::1", "1:2:3:4:5:6:7:8:9", "12345::1", "1::2::3", "::ffff:999.1.1.1", "x",
   ]) bracketed.add(h);
 
+  // Dotted-numeric hosts are the second generated class. URL parsing decides a
+  // host is an IPv4 attempt from its final label, so these are not hostnames
+  // that happen to contain digits — they are addresses that fail to parse.
+  const numeric = new Set<string>();
+  const MAGS = ["0", "1", "99", "127", "192", "255", "256", "999", "1000", "65535",
+                "4294967295", "4294967296", "01", "0x7f", "0xff", "00"];
+  for (const n of [1, 2, 3, 4, 5])
+    for (const m of MAGS) numeric.add(Array(n).fill(m).join("."));
+  for (const h of ["192.168.1.5", "255.255.255.255", "0.0.0.0", "1.2.3", "127.1",
+                   "2130706433", "1.2.3.4.5", "999.999.999.999", "256.1.1.1",
+                   "0x7f.0.0.1", "example.com", "sub.example.com", "localhost",
+                   "host-1.example.com", "xn--bcher-kva.example"]) numeric.add(h);
+
   const CORPUS = [
+    ...[...numeric].map((h) => `wss://${h}/ws`),
     ...[...bracketed].map((h) => `wss://[${h}]/ws`),
     "wss://play.example.com/ws",
     "ws://192.168.1.5:9374/ws",

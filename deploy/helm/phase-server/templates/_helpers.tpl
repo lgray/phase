@@ -85,6 +85,23 @@ app.kubernetes.io/instance: {{ .Release.Name }}
      constructor throws on a bare trailing "#" too. Keep these in step with that
      function; they are one contract expressed on both sides.
 
+     The host is matched as one of three things rather than as "a run of
+     characters that are not delimiters": a bracketed IPv6 literal (RFC 4291,
+     IPv4-mapped forms included), a dotted-quad IPv4 literal, or a DNS name
+     whose final label starts with a letter. That last condition is what keeps
+     the two branches apart. URL parsing decides a host is IPv4 by looking at
+     its final label, so `999.999.999.999` and `1.2.3.4.5` are IPv4 attempts
+     that fail rather than hostnames that succeed, and `0x7f` is a number, not
+     a name. A final label starting with a letter cannot be read as either.
+
+     The chart is deliberately stricter here than the parser, which also
+     accepts numeric shorthands: a bare integer (`2130706433`), a partial quad
+     (`127.1`), and hex or octal octets all resolve to real addresses. None is
+     a thing an operator means to type into a server address, and every one of
+     them reads as a typo, so the chart refuses them. The rule is only ever
+     safe in this direction: the chart must never accept what the parser
+     rejects, and may refuse what the parser would have taken.
+
      The shape rule is anchored at both ends and forbids whitespace anywhere,
      which is deliberately a little stricter than the client. WHATWG URL parsing
      does not merely reject whitespace — it throws on an embedded space, but
@@ -96,7 +113,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "phase-server.validateDefaultServerUrl" -}}
 {{- $url := .Values.web.defaultMultiplayerServerUrl -}}
 {{- if $url -}}
-{{- $re := `^wss?://(\[(([0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|([0-9A-Fa-f]{1,4}:){1,7}:|([0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|([0-9A-Fa-f]{1,4}:){1,5}(:[0-9A-Fa-f]{1,4}){1,2}|([0-9A-Fa-f]{1,4}:){1,4}(:[0-9A-Fa-f]{1,4}){1,3}|([0-9A-Fa-f]{1,4}:){1,3}(:[0-9A-Fa-f]{1,4}){1,4}|([0-9A-Fa-f]{1,4}:){1,2}(:[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(:[0-9A-Fa-f]{1,4}){1,6}|:((:[0-9A-Fa-f]{1,4}){1,7}|:)|::([Ff]{4}(:0{1,4})?:)?((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|([0-9A-Fa-f]{1,4}:){1,4}:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9]))\]|[^\s/?#:@\[\]<>^{}|\\%]+)(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[0-9]{1,4}))?([/?][^\s#]*)?$` -}}
+{{- $re := `^wss?://(\[(([0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|([0-9A-Fa-f]{1,4}:){1,7}:|([0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|([0-9A-Fa-f]{1,4}:){1,5}(:[0-9A-Fa-f]{1,4}){1,2}|([0-9A-Fa-f]{1,4}:){1,4}(:[0-9A-Fa-f]{1,4}){1,3}|([0-9A-Fa-f]{1,4}:){1,3}(:[0-9A-Fa-f]{1,4}){1,4}|([0-9A-Fa-f]{1,4}:){1,2}(:[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(:[0-9A-Fa-f]{1,4}){1,6}|:((:[0-9A-Fa-f]{1,4}){1,7}|:)|::([Ff]{4}(:0{1,4})?:)?((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|([0-9A-Fa-f]{1,4}:){1,4}:((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))\]|((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|([A-Za-z0-9_-]+\.)*[A-Za-z][A-Za-z0-9_-]*)(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[0-9]{1,4}))?([/?][^\s#]*)?$` -}}
 {{- if not (regexMatch $re $url) -}}
 {{- fail (printf "web.defaultMultiplayerServerUrl is %q, which is not a ws:// or wss:// address with a well-formed host. It must be a hostname or a bracketed IPv6 literal, optionally followed by a port in 0-65535, with no whitespace anywhere. The client ignores an address it cannot parse and falls back to this build's default server, so the deployment would come up pointing players somewhere you did not choose." $url) -}}
 {{- end -}}
