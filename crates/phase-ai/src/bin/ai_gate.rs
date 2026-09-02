@@ -449,10 +449,21 @@ fn same_inode(a: &Path, b: &Path) -> Option<bool> {
     Some(a.dev() == b.dev() && a.ino() == b.ino())
 }
 
-/// Non-Unix has no portable inode, so identity is unanswerable and the path check stands alone.
-/// The gate is a developer/CI tool that runs on Linux; this arm exists so the crate still builds
-/// elsewhere, not because the weaker guarantee is considered acceptable there.
-#[cfg(not(unix))]
+/// Windows has no inode, but it has the same *question*: `GetFileInformationByHandle` reports a
+/// volume serial number and a file index, and that pair is what two hard links to one file share.
+/// `same_file::is_same_file` asks exactly that (via `winapi-util`), which the standard library
+/// exposes only behind the unstable `windows_by_handle` feature.
+///
+/// `.ok()` collapses every failure — either path missing, or unopenable — into the same `None`
+/// the Unix arm returns for a missing path: unanswerable, decided by the path fallback.
+#[cfg(windows)]
+fn same_inode(a: &Path, b: &Path) -> Option<bool> {
+    same_file::is_same_file(a, b).ok()
+}
+
+/// Everything else (wasm32, redox) has no portable file identity, so the question is unanswerable
+/// and the path check stands alone. This arm exists so the crate still builds there.
+#[cfg(not(any(unix, windows)))]
 fn same_inode(_a: &Path, _b: &Path) -> Option<bool> {
     None
 }

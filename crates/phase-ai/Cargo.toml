@@ -25,6 +25,13 @@ rayon = { version = "1", optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mimalloc = "0.1"
 
+# Windows file identity for the ai-gate baseline-alias guard: volume serial + file
+# index via `GetFileInformationByHandle`, which std exposes only behind the unstable
+# `windows_by_handle` feature. Already in the lock (walkdir -> same-file), and gated
+# to windows so no other target's graph changes.
+[target.'cfg(windows)'.dependencies]
+same-file = "1"
+
 [features]
 tune = ["rayon"]
 # Scenario-backed benchmark binaries are opt-in: build them with

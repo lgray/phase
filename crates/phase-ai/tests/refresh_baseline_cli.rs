@@ -459,7 +459,14 @@ fn an_accepted_refresh_promotes_the_staged_report_over_the_old_baseline() {
 #[test]
 fn a_hard_linked_output_is_refused_and_the_baseline_survives() {
     let dir = scratch("hardlink");
-    let baseline = seed_baseline(&dir);
+    // A RECORDED baseline and a real card database, because the destructive write is what this
+    // test is about: with SENTINEL and no `--data-root` the run stops at the card database — or,
+    // with only a data root, at the baseline parse — before `run_suite` writes anything, so the
+    // exit code and the surviving bytes are both satisfied by a binary with no identity check at
+    // all, and only the refusal text discriminates.
+    let data_arg = empty_card_db(&dir);
+    let baseline = record_baseline(&dir, &data_arg, "suite-baseline.json");
+    let trusted = std::fs::read_to_string(&baseline).expect("read baseline");
     let link = dir.join("current-link.json");
     std::fs::hard_link(&baseline, &link).expect("hard link");
 
@@ -476,6 +483,12 @@ fn a_hard_linked_output_is_refused_and_the_baseline_survives() {
         &baseline.display().to_string(),
         "--current-output",
         &link.display().to_string(),
+        "--data-root",
+        &data_arg,
+        "--suite-filter",
+        "red-mirror",
+        "--games",
+        "1",
     ]);
 
     assert_eq!(
@@ -489,7 +502,7 @@ fn a_hard_linked_output_is_refused_and_the_baseline_survives() {
     );
     assert_eq!(
         std::fs::read_to_string(&baseline).expect("read baseline"),
-        SENTINEL,
+        trusted,
         "the baseline was truncated through its hard link"
     );
     std::fs::remove_dir_all(&dir).ok();
