@@ -2839,14 +2839,16 @@ impl VictimSplit {
 /// a per-point allocation carrier is a separate design. A candidate-less first point is NOT
 /// skipped to reach a later one either — skipping would silently move the domain to a second
 /// point, which is worse than publishing no allocation at all.
+///
+/// Takes the POINTS rather than a whole projection so the declared-sequence decode can ask this
+/// same function whether a domain is already fixed while it is still building the list.
 fn allocation_point(
-    projection: &LoopShortcutProjection,
+    points: &[LoopShortcutPointProjection],
 ) -> Option<(u32, &LoopShortcutPointProjection)> {
-    let index = projection
-        .points
+    let index = points
         .iter()
         .position(|point| point.kind == InteractionShortcutPointKind::Targets)?;
-    Some((u32::try_from(index).ok()?, projection.points.get(index)?))
+    Some((u32::try_from(index).ok()?, points.get(index)?))
 }
 
 /// CR 704.5a: the seats a point's candidates name, in published order, or `None` when any
@@ -2895,7 +2897,7 @@ fn shortcut_allocation_domain<'a>(
     interaction_id: &InteractionId,
     projection: &'a LoopShortcutProjection,
 ) -> Option<ShortcutAllocationDomain<'a>> {
-    let (group, point) = allocation_point(projection)?;
+    let (group, point) = allocation_point(&projection.points)?;
     Some(ShortcutAllocationDomain {
         group,
         point,
@@ -3076,6 +3078,105 @@ fn declared_object_candidate(
     }
 }
 
+/// CR 732.2a: the announcement sequence a scheduled pin's drive performs — one subject per step,
+/// in the order the drive reaches them, beside the iteration each step starts at.
+///
+/// ONE rule for every schedule shape: `evaluate_schedule` resolves `Ranking::head` and never
+/// advances past it, so a ranking's tail is the NEXT episode's pre-declaration and no iteration
+/// announces it — reaching it mid-drive would be the conditional action the rule bars. A constant
+/// IS the one-step schedule starting at zero, so both shapes read through this one walk rather
+/// than through arms that can drift apart.
+///
+/// `None` is a schedule this vocabulary cannot state: a cyclic one, which names no single
+/// announcement order, and — a restored save being a wire ingress — starts that do not begin at
+/// zero or do not strictly increase, which are not a partition anybody declared.
+fn scheduled_announcements(
+    schedule: &crate::analysis::decision_template::TargetSchedule,
+) -> Option<(
+    Vec<crate::analysis::decision_template::AnnouncementSubject>,
+    Vec<u32>,
+)> {
+    use crate::analysis::decision_template::{Ranking, TargetSchedule};
+
+    let steps: Vec<(u32, &Ranking)> = match schedule {
+        TargetSchedule::Constant(ranking) => vec![(0, ranking)],
+        TargetSchedule::Piecewise(steps) => steps
+            .iter()
+            .map(|(start, ranking)| (*start, ranking))
+            .collect(),
+        TargetSchedule::RoundRobin(_) => return None,
+    };
+    let mut subjects = Vec::with_capacity(steps.len());
+    let mut starts = Vec::with_capacity(steps.len());
+    for (start, ranking) in steps {
+        match starts.last() {
+            None if start != 0 => return None,
+            Some(previous) if start <= *previous => return None,
+            _ => {}
+        }
+        starts.push(start);
+        subjects.push(ranking.head().clone());
+    }
+    Some((subjects, starts))
+}
+
+/// CR 601.2c + CR 732.1b: the segment lengths a declared count partitions into over the
+/// iterations a decision's announcements start at — successive differences, the last running to
+/// the count.
+///
+/// The one place that rule is expressed, for every pin kind. An until-lethal proposal names no
+/// count to partition, so it declares an ORDER and no segment. `None` is a start past the count,
+/// which is a partition nobody could have declared.
+fn declared_segments(starts: &[u32], declared_count: Option<u32>) -> Option<Vec<u32>> {
+    let Some(count) = declared_count else {
+        return Some(Vec::new());
+    };
+    starts
+        .iter()
+        .zip(starts.iter().skip(1).copied().chain(std::iter::once(count)))
+        .map(|(start, next)| next.checked_sub(*start))
+        .collect()
+}
+
+/// CR 601.2c: what ONE announced-target decision states — its announcement subjects as published
+/// candidate values, in the order the drive performs them, and the segment lengths the declared
+/// count partitions into.
+///
+/// `None` is a decision this vocabulary cannot state: a multi-position slot, because one
+/// announcement sequence answers one target position and a per-position carrier does not exist
+/// here; a schedule naming no single announcement order; and a subject naming a CARD identity,
+/// which names no live object to mint a candidate from.
+fn declared_targets_statement(
+    targets: &[crate::analysis::decision_template::TargetPin],
+    declared_count: Option<u32>,
+) -> Option<(Vec<LoopShortcutCandidateValue>, Vec<u32>)> {
+    use crate::analysis::decision_template::{AnnouncementSubject, TargetPin};
+
+    let [pin] = targets else { return None };
+    let (subjects, starts) = match pin {
+        // A pin naming ONE subject announces it from the first iteration on, which is the
+        // one-step schedule the walk above mints for a constant.
+        TargetPin::ByIdentity(source) => {
+            (vec![AnnouncementSubject::Object(source.clone())], vec![0])
+        }
+        TargetPin::Player(seat) => (vec![AnnouncementSubject::Seat(*seat)], vec![0]),
+        TargetPin::Scheduled(schedule) => scheduled_announcements(schedule)?,
+    };
+    let values = subjects
+        .iter()
+        .map(|subject| match subject {
+            // CR 115.10a vs CR 601.2c: the two seat classes are two legality questions, and this
+            // publishes neither. A seat surface states who was NAMED, never whether they are
+            // still a legal target.
+            AnnouncementSubject::Seat(seat) => {
+                Some(LoopShortcutCandidateValue::Target(TargetRef::Player(*seat)))
+            }
+            AnnouncementSubject::Object(source) => declared_object_candidate(source),
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((values, declared_segments(&starts, declared_count)?))
+}
+
 /// CR 732.2b: the declaration a responder is being asked to accept or shorten, decoded into the
 /// OFFER side's own projection vocabulary so every surface below it is minted by the offer's
 /// producers rather than by a second copy of them.
@@ -3083,20 +3184,22 @@ fn declared_object_candidate(
 /// # The publication posture, stated once for all seven pin kinds
 ///
 /// A decision this projection can state nothing about publishes NO POINT, and the rest of the
-/// declaration publishes anyway. That is what `Mode`, `UnlessBreak`, `ManaColor`, `ConvokeTaps`,
-/// `Order` and an unmintable `MayChoice` all do below, each for its own reason. The ONE exception
-/// is `Targets`, which refuses the WHOLE sequence: `allocation_point`'s own documented rule is
-/// that a candidate-less first announced-target point is not skipped to reach a later one,
-/// because moving the allocation's domain silently is worse than publishing no allocation at all.
-/// The subject list IS that domain, so a hole in it is not a missing statement line.
+/// declaration publishes anyway — `Mode`, `UnlessBreak`, `ManaColor`, `ConvokeTaps`, `Order`, an
+/// unmintable `MayChoice` and an unstatable `Targets` decision alike, each for its own reason.
 ///
-/// The match is wildcard-free over `PinnedDecision`, `TargetPin` and `TargetSchedule`, so a
-/// future variant carrying an identity or an answer gets a compile-time visit here rather than a
-/// silent omission.
+/// The ONE thing a skip may not do is move the ALLOCATION'S DOMAIN. `allocation_point` names the
+/// FIRST published `Targets` point, so skipping an unstatable announced-target decision before
+/// any stated one would silently re-domain the allocation onto a later decision — worse than
+/// publishing no allocation at all. That case, and only it, refuses the whole sequence; once a
+/// domain is fixed a later hole costs one statement line rather than the partition, the
+/// magnitudes and every unrelated decision beside it. The condition is asked of
+/// `allocation_point` itself, so the skip and the domain cannot answer it differently.
+///
+/// The matches over `PinnedDecision` here, and over `TargetPin` and `TargetSchedule` in the
+/// statement helpers above, are wildcard-free, so a future variant carrying an identity or an
+/// answer gets a compile-time visit rather than a silent omission.
 fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequence> {
-    use crate::analysis::decision_template::{
-        AnnouncementSubject, IterationCount, PinnedDecision, TargetPin, TargetSchedule,
-    };
+    use crate::analysis::decision_template::{IterationCount, PinnedDecision};
 
     let WaitingFor::RespondToShortcut { proposal, .. } = waiting_for else {
         return None;
@@ -3123,101 +3226,31 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
     };
 
     let mut candidates: Vec<LoopShortcutCandidateValue> = Vec::new();
-    let mut accumulator: Vec<(LoopShortcutPointProjection, Vec<u32>)> = Vec::new();
+    let mut points: Vec<LoopShortcutPointProjection> = Vec::new();
+    let mut segments: Vec<Vec<u32>> = Vec::new();
     for decision in &template.decisions {
         match decision {
             PinnedDecision::Targets { slot, targets } => {
-                // CR 601.2c: one announcement sequence answers one target position. A
-                // multi-position slot needs a per-position carrier this vocabulary does not
-                // have, so it is refused rather than mis-read.
-                let [pin] = targets.as_slice() else {
+                let Some((values, declared)) = declared_targets_statement(targets, declared_count)
+                else {
+                    if allocation_point(&points).is_some() {
+                        continue;
+                    }
                     return None;
                 };
-                let (subjects, segments): (Vec<AnnouncementSubject>, Vec<u32>) = match pin {
-                    TargetPin::ByIdentity(source) => (
-                        vec![AnnouncementSubject::Object(source.clone())],
-                        declared_count.map(|n| vec![n]).unwrap_or_default(),
-                    ),
-                    TargetPin::Player(seat) => (
-                        vec![AnnouncementSubject::Seat(*seat)],
-                        declared_count.map(|n| vec![n]).unwrap_or_default(),
-                    ),
-                    TargetPin::Scheduled(TargetSchedule::Constant(ranking)) => {
-                        let subjects: Vec<AnnouncementSubject> = ranking.iter().cloned().collect();
-                        // A MULTI-subject constant declares an order whose tail is the NEXT
-                        // episode's pre-declaration, never an in-drive switch, so no part of the
-                        // declared count belongs to it and a segment there would be a lie. The
-                        // single-subject constant takes the whole count, which is the shape the
-                        // engine's own bounded-declaration builder mints.
-                        let segments = match (declared_count, subjects.as_slice()) {
-                            (Some(n), [_single]) => vec![n],
-                            _ => Vec::new(),
-                        };
-                        (subjects, segments)
-                    }
-                    TargetPin::Scheduled(TargetSchedule::Piecewise(steps)) => {
-                        // A piecewise schedule partitions a FINITE count: its starts are that
-                        // partition's own prefix sums, so the segment lengths are their
-                        // successive differences and the last runs to the count.
-                        let n = declared_count?;
-                        let mut subjects = Vec::with_capacity(steps.len());
-                        let mut segments = Vec::with_capacity(steps.len());
-                        let mut previous: Option<u32> = None;
-                        for (start, ranking) in steps {
-                            // A restored save is a wire ingress, so a schedule that does not
-                            // start at zero, does not strictly increase, or runs past the count
-                            // fails closed rather than producing a partition nobody declared.
-                            match previous {
-                                None if *start != 0 => return None,
-                                Some(previous) if *start <= previous => return None,
-                                _ => {}
-                            }
-                            if *start >= n {
-                                return None;
-                            }
-                            if let Some(previous) = previous {
-                                segments.push(start.checked_sub(previous)?);
-                            }
-                            previous = Some(*start);
-                            // CR 732.2a: a drive resolves a step's HEAD and never advances past
-                            // it — `evaluate_schedule` reads `head()` for a schedule of every
-                            // kind, and a tail is the NEXT episode's pre-declaration, so reaching
-                            // it mid-drive would be the conditional action the rule bars. The head
-                            // is therefore the whole statement of what this segment performs, and
-                            // one subject per segment keeps the two lists aligned.
-                            subjects.push(ranking.head().clone());
-                        }
-                        segments.push(n.checked_sub(previous?)?);
-                        (subjects, segments)
-                    }
-                    // No single announcement order, and no producer on this path mints one.
-                    TargetPin::Scheduled(TargetSchedule::RoundRobin(_)) => return None,
-                };
                 let start = candidates.len();
-                for subject in &subjects {
-                    candidates.push(match subject {
-                        // CR 115.10a vs CR 601.2c: the two seat classes are two legality
-                        // questions, and this publishes neither. A seat surface states who was
-                        // NAMED, never whether they are still a legal target.
-                        AnnouncementSubject::Seat(seat) => {
-                            LoopShortcutCandidateValue::Target(TargetRef::Player(*seat))
-                        }
-                        AnnouncementSubject::Object(source) => declared_object_candidate(source)?,
-                    });
-                }
-                accumulator.push((
-                    LoopShortcutPointProjection {
-                        slot: slot.clone(),
-                        kind: InteractionShortcutPointKind::Targets,
-                        min: 0,
-                        max: 0,
-                        unique: true,
-                        ordered: true,
-                        read_only: true,
-                        candidate_indices: (start..candidates.len()).collect(),
-                    },
-                    segments,
-                ));
+                candidates.extend(values);
+                points.push(LoopShortcutPointProjection {
+                    slot: slot.clone(),
+                    kind: InteractionShortcutPointKind::Targets,
+                    min: 0,
+                    max: 0,
+                    unique: true,
+                    ordered: true,
+                    read_only: true,
+                    candidate_indices: (start..candidates.len()).collect(),
+                });
+                segments.push(declared);
             }
             PinnedDecision::MayChoice { slot, take } => {
                 // CR 603.5 (for the triggered-ability gates it governs) + CR 732.2c: an answered
@@ -3241,19 +3274,17 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
                 let pair = [subject, LoopShortcutCandidateValue::May(*take)];
                 let start = candidates.len();
                 candidates.extend(pair);
-                accumulator.push((
-                    LoopShortcutPointProjection {
-                        slot: slot.clone(),
-                        kind: InteractionShortcutPointKind::MayChoice,
-                        min: 0,
-                        max: 0,
-                        unique: true,
-                        ordered: true,
-                        read_only: true,
-                        candidate_indices: (start..candidates.len()).collect(),
-                    },
-                    Vec::new(),
-                ));
+                points.push(LoopShortcutPointProjection {
+                    slot: slot.clone(),
+                    kind: InteractionShortcutPointKind::MayChoice,
+                    min: 0,
+                    max: 0,
+                    unique: true,
+                    ordered: true,
+                    read_only: true,
+                    candidate_indices: (start..candidates.len()).collect(),
+                });
+                segments.push(Vec::new());
             }
             // An offer carrying either of these keeps the count-only path, so no declaration
             // naming one reaches this decoder to render.
@@ -3273,10 +3304,9 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
             PinnedDecision::Order { .. } => {}
         }
     }
-    if accumulator.is_empty() {
+    if points.is_empty() {
         return None;
     }
-    let (points, segments) = accumulator.into_iter().unzip();
     Some(DeclaredSequence {
         projection: LoopShortcutProjection {
             count,

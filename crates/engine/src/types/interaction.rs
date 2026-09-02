@@ -1043,8 +1043,9 @@ pub enum InteractionResponseSpec {
     /// ids, read in order as SUBJECT then ANSWER — an optional decision whose subject cannot be
     /// minted publishes NO point rather than a shorter one, so the positional read is total over
     /// what is published. EMPTY when the proposal carries no declaration: every count-only offer,
-    /// every proposal the viewer's redaction dropped, and a declaration whose announced-target
-    /// subject list cannot be minted (see `game::interaction::declared_shortcut_projection`).
+    /// every proposal the viewer's redaction dropped, and a declaration whose FIRST announced-target
+    /// decision cannot be stated — skipping that one would silently move the allocation's domain
+    /// onto a later decision (see `game::interaction::declared_shortcut_projection`).
     ///
     /// `declared` is what the DECLARED count does: the same element vocabulary the offer's own
     /// published list carries, minted by the same producer over the allocation the proposer

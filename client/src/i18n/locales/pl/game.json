@@ -34,7 +34,7 @@
     "allocationSum": "Przydzielono {{allocated}} z {{total}} powtórzeń.",
     "evenSplit": "Przywróć równy podział",
     "customDistribution": "Własny podział — silnik nie przygotował podglądu tego podziału.",
-    "rankingTitle": "Ustal kolejność celów. Każde powtórzenie wybiera pierwszy legalny:",
+    "rankingTitle": "Ustal kolejność celów. Każde powtórzenie wybiera pierwszy:",
     "rankingMoveUp": "Przesuń {{subject}} wcześniej",
     "rankingMoveDown": "Przesuń {{subject}} później",
     "mayTitle": "Zdolność opcjonalna {{group}} — powtórzyć ten wybór w każdej iteracji?",

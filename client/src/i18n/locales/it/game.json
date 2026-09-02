@@ -34,7 +34,7 @@
     "allocationSum": "{{allocated}} di {{total}} ripetizioni assegnate.",
     "evenSplit": "Ripristina la divisione equa",
     "customDistribution": "Distribuzione personalizzata — il motore non ha previsualizzato questa divisione.",
-    "rankingTitle": "Ordina i bersagli. Ogni ripetizione prende il primo legale:",
+    "rankingTitle": "Ordina i bersagli. Ogni ripetizione prende il primo:",
     "rankingMoveUp": "Sposta {{subject}} prima",
     "rankingMoveDown": "Sposta {{subject}} dopo",
     "mayTitle": "Abilità opzionale {{group}} — ripetere questa scelta a ogni iterazione?",

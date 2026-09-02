@@ -34,7 +34,7 @@
     "allocationSum": "{{allocated}} von {{total}} Wiederholungen verteilt.",
     "evenSplit": "Auf die gleichmäßige Verteilung zurücksetzen",
     "customDistribution": "Eigene Verteilung — die Engine hat für diese Aufteilung keine Vorschau berechnet.",
-    "rankingTitle": "Ordne die Ziele. Jede Wiederholung nimmt das erste legale Ziel:",
+    "rankingTitle": "Ordne die Ziele. Jede Wiederholung nimmt das erste Ziel:",
     "rankingMoveUp": "{{subject}} nach vorne verschieben",
     "rankingMoveDown": "{{subject}} nach hinten verschieben",
     "mayTitle": "Optionale Fähigkeit {{group}} — diese Wahl in jeder Iteration wiederholen?",

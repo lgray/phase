@@ -34,7 +34,7 @@
     "allocationSum": "{{allocated}} répétitions sur {{total}} réparties.",
     "evenSplit": "Rétablir la répartition équitable",
     "customDistribution": "Répartition personnalisée — le moteur n'a pas prévisualisé ce partage.",
-    "rankingTitle": "Ordonnez les cibles. Chaque répétition prend la première légale :",
+    "rankingTitle": "Ordonnez les cibles. Chaque répétition prend la première :",
     "rankingMoveUp": "Déplacer {{subject}} avant",
     "rankingMoveDown": "Déplacer {{subject}} après",
     "mayTitle": "Capacité optionnelle {{group}} — répéter ce choix à chaque itération ?",

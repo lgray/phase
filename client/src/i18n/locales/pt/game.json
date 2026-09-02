@@ -34,7 +34,7 @@
     "allocationSum": "{{allocated}} de {{total}} repetições distribuídas.",
     "evenSplit": "Restaurar a divisão igual",
     "customDistribution": "Distribuição personalizada — o motor não pré-visualizou esta divisão.",
-    "rankingTitle": "Ordene os alvos. Cada repetição usa o primeiro legal:",
+    "rankingTitle": "Ordene os alvos. Cada repetição usa o primeiro:",
     "rankingMoveUp": "Mover {{subject}} para antes",
     "rankingMoveDown": "Mover {{subject}} para depois",
     "mayTitle": "Habilidade opcional {{group}} — repetir esta escolha em cada iteração?",

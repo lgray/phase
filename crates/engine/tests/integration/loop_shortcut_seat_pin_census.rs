@@ -264,7 +264,7 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
          3. `game/engine.rs` — `apply_action`'s CR 701.34a proliferate arm feeding \
             `record_loop_pin`. A proliferate choice is NOT a target, so this construction is \
             correct and is this census's positive control.\n\
-         4. `game/interaction.rs` — `declared_shortcut_projection`'s read arm, which maps a \
+         4. `game/interaction.rs` — `declared_targets_statement`'s read arm, which maps a \
             pinned seat onto the announcement vocabulary and mints no pin.\n\
          5. `game/visibility.rs` — `pins_name_hidden_source`'s redaction arm (`false`: seat \
             identity is public in this engine), kept for wire-sourced pins.\n\
@@ -368,7 +368,7 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
          the wildcard-free redaction arm in `game/visibility.rs`, and `GameAction`'s object-id \
          collection arm in `types/actions.rs`. `game/interaction.rs`'s occurrences are the \
          human ingress's mint in `shortcut_announcement_subject`, and \
-         `declared_shortcut_projection`'s declared-subject mint beside its subject-to-candidate \
+         `declared_targets_statement`'s declared-subject mint beside its subject-to-candidate \
          read arm. A MISSING producer is the revert this row exists to catch; an EXTRA file is \
          a new producer that must be classified rather than absorbed. got {ranked:?}"
     );

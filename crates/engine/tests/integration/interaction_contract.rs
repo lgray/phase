@@ -4182,11 +4182,11 @@ fn the_declared_allocation_belongs_to_the_first_announced_target_decision() {
 /// **THE PUBLICATION POSTURE, RUN FROM BOTH ENDS.**
 ///
 /// A decision this projection can state nothing about publishes NO POINT, and the rest of the
-/// declaration publishes anyway — that is what every pin kind but one does. The ONE exception is
-/// the announced-target decision, which refuses the WHOLE sequence, and its ground is code
-/// rather than a rule: `allocation_point`'s own documented refusal to skip a candidate-less
-/// first point to reach a later one. The subject list IS the allocation domain, so a hole in it
-/// is not a missing statement line.
+/// declaration publishes anyway. The one thing a skip may not do is move the allocation's
+/// domain, and its ground is code rather than a rule: `allocation_point` names the FIRST
+/// published `Targets` point, so a hole in the FIRST announced-target decision refuses the whole
+/// sequence rather than re-domaining the allocation onto a later one. Leg B drives that
+/// decision, which is the only announced-target decision on its board and therefore the first.
 ///
 /// # Both legs are latent in production, and that is stated rather than implied
 ///
@@ -4309,9 +4309,9 @@ fn an_unstatable_optional_decision_is_skipped_and_an_unstatable_target_refuses_t
     }));
     assert!(
         refused.points.is_empty() && refused.declared.is_none(),
-        "the subject list IS the allocation domain, and `allocation_point` refuses to skip a \
-         candidate-less first point to reach a later one — so a hole in the domain refuses the \
-         whole sequence rather than publishing it short"
+        "the subject list IS the allocation domain, and `allocation_point` names the FIRST \
+         announced-target point — so a hole in this one, the board's first, refuses the whole \
+         sequence rather than publishing it short"
     );
 
     // ── Paired positive in the same leg: the same declaration on a live object publishes.
@@ -4452,88 +4452,235 @@ fn a_scheduled_step_carrying_a_next_episode_tail_still_states_this_drive() {
     );
 }
 
-/// **CR 732.1b — an order-only declaration publishes its announcement ORDER and no magnitudes.**
+/// **CR 732.2a — a multi-subject schedule states the HEAD its drive announces.**
 ///
-/// An until-lethal proposal names no count to partition, so a magnitude there could only be
-/// invented. A MULTI-subject constant under a FINITE count is order-only for a different reason:
-/// its tail is the next episode's pre-declaration, never an in-drive switch, so no part of the
-/// declared count belongs to it. The single-subject constant is the shape the engine's own
-/// bounded-declaration builder mints, and it DOES take the whole count.
+/// `evaluate_schedule` resolves `Ranking::head` for a schedule of every kind and never advances
+/// past it, so a ranking's tail is the NEXT episode's pre-declaration and no iteration announces
+/// it. The responder is shown one subject per step — what the drive performs — and that subject
+/// takes the whole of its step. CR 732.1b: an until-lethal proposal names no count to partition,
+/// so it states an ORDER and no magnitude.
 ///
-/// REVERT-PROBE: publish an allocation on the until-lethal arm ⇒ its `declared.is_none()` flips.
+/// # Discrimination
+///
+/// Publish the whole ranking on either shape ⇒ that shape's tail-carrying board reaches arity
+/// three and the equality against its one-subject board fails. Refuse a multi-subject schedule ⇒
+/// the same equality fails on an empty publication. Withhold the partition from a multi-subject
+/// schedule under a finite count ⇒ the declared-element equality fails.
 #[test]
-fn an_order_only_declaration_publishes_its_order_and_no_allocation() {
+fn a_multi_subject_schedule_states_the_head_its_drive_announces() {
     use engine::analysis::decision_template::{PinnedDecision, Ranking, TargetPin, TargetSchedule};
 
     const COUNT: u32 = 6;
-    let order = [R_DRAINED, R_FIRST, R_SECOND];
-    let constant_pin = |seats: &[PlayerId]| PinnedDecision::Targets {
-        slot: preview_slot(0),
-        targets: vec![TargetPin::Scheduled(TargetSchedule::Constant(
-            Ranking::new(seat_subjects(seats)).expect("distinct seats make a legal ranking"),
-        ))],
-    };
-    let period = || Some(respond_period(&[(R_DRAINED, -5)], Vec::new()));
+    /// The two boards share a head, so their publications differ only in the tail.
+    const HEAD: [PlayerId; 1] = [R_FIRST];
+    const TAILED: [PlayerId; 3] = [R_FIRST, R_SECOND, R_DRAINED];
 
-    for (why, count) in [
+    // The two schedule shapes that carry a ranking, driven through ONE assertion so the arms
+    // cannot answer the same question differently.
+    let shapes = |seats: &[PlayerId]| {
+        let ranking =
+            Ranking::new(seat_subjects(seats)).expect("distinct seats make a legal ranking");
+        [
+            ("a constant", TargetSchedule::Constant(ranking.clone())),
+            (
+                "a piecewise step",
+                TargetSchedule::Piecewise(vec![(0, ranking)]),
+            ),
+        ]
+    };
+    let window = |count: &IterationCount, schedule: TargetSchedule| {
+        respond_reply_of(&respond_window(
+            count.clone(),
+            Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+            vec![PinnedDecision::Targets {
+                slot: preview_slot(0),
+                targets: vec![TargetPin::Scheduled(schedule)],
+            }],
+        ))
+    };
+
+    for count in [IterationCount::UntilLethal, IterationCount::Fixed(COUNT)] {
+        // A one-step schedule partitions the whole declared count, and nothing at all when the
+        // proposal names no count.
+        let partition = match &count {
+            IterationCount::UntilLethal => None,
+            IterationCount::Fixed(n) => Some(vec![*n]),
+        };
+        for ((shape, tailed), (_, single)) in shapes(&TAILED).into_iter().zip(shapes(&HEAD)) {
+            // ── The paired positive first: the one-subject board the comparison stands on, so
+            //    an empty publication cannot satisfy it.
+            let announced = window(&count, single);
+            assert_eq!(
+                respond_seats_of(&announced, &announced.points[0].candidate_ids),
+                vec![R_FIRST.0],
+                "reach-guard: a one-subject {shape} publishes the subject it announces"
+            );
+            assert_eq!(
+                announced.declared.as_ref().map(declared_amounts),
+                partition,
+                "CR 732.1b: {shape} states the count it partitions, and no magnitude where there \
+                 is no count to partition"
+            );
+
+            let with_tail = window(&count, tailed);
+            assert_eq!(
+                with_tail.points, announced.points,
+                "CR 732.2a: the tail moves nothing the responder reads — {shape} states the head \
+                 its drive announces, at the same arity"
+            );
+            assert_eq!(
+                respond_seats_of(&with_tail, &with_tail.points[0].candidate_ids),
+                vec![R_FIRST.0],
+                "and the tail seats, which no iteration announces, are not published beside it"
+            );
+            assert_eq!(
+                with_tail.declared, announced.declared,
+                "CR 732.2b: and the head takes the same partition the one-subject board states"
+            );
+        }
+    }
+}
+
+/// **CR 601.2c — an unstatable announced-target decision costs one statement line, unless the
+/// skip would move the allocation's domain.**
+///
+/// `allocation_point` names the FIRST published `Targets` point as the one an allocation is
+/// stated over, so skipping a LATER unstatable announced-target decision moves nothing and the
+/// responder keeps the first decision's partition, its magnitudes and every unrelated statement
+/// beside it. Skipping the FIRST one would silently re-domain the allocation onto the decision
+/// behind it, so that board refuses the whole sequence instead.
+///
+/// Both unstatable shapes are latent from the human ingress — `materialize_loop_shortcut_response`
+/// mints one pin per announced-target decision and `decode_sequenced_targets` mints no cyclic
+/// schedule — so a save or a wire restore is the way in, and the branch is judged on what it does
+/// when reached.
+///
+/// # Discrimination
+///
+/// Refuse the whole sequence on a LATER unstatable decision ⇒ the skipped legs lose their points
+/// and their element. Skip the FIRST one ⇒ the refused legs publish, with an allocation stated
+/// over the decision behind it.
+#[test]
+fn a_later_unstatable_target_decision_is_skipped_and_the_first_one_refuses_the_sequence() {
+    use engine::analysis::decision_template::{
+        DecisionSlot, MayChoiceOption, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+    };
+    use engine::types::game_state::YieldTarget;
+
+    const COUNT: u32 = 6;
+    const STARTS: [u32; 2] = [0, 2];
+
+    let ranked =
+        |seat: PlayerId| Ranking::new(seat_subjects(&[seat])).expect("one seat is a legal ranking");
+    let stated =
+        |slot: DecisionSlot| piecewise_pin(slot, &STARTS, &seat_subjects(&[R_FIRST, R_SECOND]));
+    let optional = || PinnedDecision::MayChoice {
+        slot: DecisionSlot::may(YieldTarget::ThisObject {
+            source_id: ObjectId(9_401),
+            incarnation: Some(1),
+            trigger_description: None,
+        }),
+        take: MayChoiceOption::Take,
+    };
+    let window = |decisions: Vec<PinnedDecision>| {
+        respond_reply_of(&respond_window(
+            IterationCount::Fixed(COUNT),
+            Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+            decisions,
+        ))
+    };
+    let kinds = |reply: &RespondReply| reply.points.iter().map(|p| p.kind).collect::<Vec<_>>();
+
+    // ── The paired positive, once: the same three decisions all stated. Both legs are compared
+    //    against it, and it is also what a wrongly-skipped FIRST decision would publish.
+    let whole = window(vec![
+        stated(preview_slot(0)),
+        PinnedDecision::Targets {
+            slot: preview_slot(1),
+            targets: vec![TargetPin::Player(R_DRAINED)],
+        },
+        optional(),
+    ]);
+    assert_eq!(
+        kinds(&whole),
+        vec![
+            InteractionShortcutPointKind::Targets,
+            InteractionShortcutPointKind::Targets,
+            InteractionShortcutPointKind::MayChoice,
+        ],
+        "reach-guard: three statable decisions publish three statement points"
+    );
+    assert_eq!(
+        declared_amounts(
+            whole
+                .declared
+                .as_ref()
+                .expect("and the first of them is partitioned")
+        ),
+        segments_from(&STARTS, COUNT),
+        "ANTI-VACUITY: two segments, pairwise distinct — 'everything empty' could not satisfy \
+         the comparisons below"
+    );
+
+    for (shape, targets) in [
         (
-            "an until-lethal proposal names no count to partition",
-            IterationCount::UntilLethal,
+            "a multi-position slot",
+            vec![TargetPin::Player(R_FIRST), TargetPin::Player(R_SECOND)],
         ),
         (
-            "a multi-subject constant's tail is the NEXT episode's pre-declaration",
-            IterationCount::Fixed(COUNT),
+            "a cyclic schedule",
+            vec![TargetPin::Scheduled(TargetSchedule::RoundRobin(vec![
+                ranked(R_FIRST),
+                ranked(R_SECOND),
+            ]))],
         ),
     ] {
-        let state = respond_window(count, period(), vec![constant_pin(&order)]);
-        let reply = respond_reply_of(&state);
-        let published = respond_seats_of(&reply, &reply.points[0].candidate_ids);
+        let unstatable = |slot: DecisionSlot| PinnedDecision::Targets {
+            slot,
+            targets: targets.clone(),
+        };
+
+        // ── LATER: the domain is already the first decision's, so the skip moves nothing.
+        let skipped = window(vec![
+            stated(preview_slot(0)),
+            unstatable(preview_slot(1)),
+            optional(),
+        ]);
         assert_eq!(
-            published,
-            order.iter().map(|seat| seat.0).collect::<Vec<_>>(),
-            "the proposer's own announcement order reaches the responder element-for-element \
-             ({why})"
+            kinds(&skipped),
+            vec![
+                InteractionShortcutPointKind::Targets,
+                InteractionShortcutPointKind::MayChoice,
+            ],
+            "{shape} in a LATER announced-target decision publishes no point, and the decisions \
+             beside it publish anyway"
         );
+        assert_eq!(
+            respond_seats_of(&skipped, &skipped.points[0].candidate_ids),
+            vec![R_FIRST.0, R_SECOND.0],
+            "{shape}: the surviving decision keeps its own announcement order"
+        );
+        assert_eq!(
+            skipped.declared, whole.declared,
+            "CR 601.2c: and its partition and magnitudes — `allocation_point` names the same \
+             decision either way, so the skip moves nothing ({shape})"
+        );
+
+        // ── FIRST: skipping would hand the domain to the decision behind it, so the whole
+        //    sequence is refused. This board is the positive above with its two announced-target
+        //    decisions swapped, so a skipping producer publishes here.
+        let refused = window(vec![
+            unstatable(preview_slot(0)),
+            stated(preview_slot(1)),
+            optional(),
+        ]);
         assert!(
-            published.len() > 1,
-            "ANTI-VACUITY: the order has more than one entry, so an empty-vs-empty comparison \
-             cannot satisfy the equality above"
-        );
-        let mut reversed = published.clone();
-        reversed.reverse();
-        assert_ne!(
-            published, reversed,
-            "ANTI-VACUITY: a producer that sorted or reversed the order fails here"
-        );
-        assert!(
-            reply.declared.is_none(),
-            "CR 732.1b: no allocation and no magnitudes — {why}"
+            refused.points.is_empty() && refused.declared.is_none(),
+            "{shape} in the FIRST announced-target decision refuses the whole sequence: skipping \
+             it would silently re-domain the allocation onto the decision behind it. got {:?}",
+            kinds(&refused)
         );
     }
-
-    // ── The paired positive on the identical instrument: ONE subject under a finite count DOES
-    //    take the whole count, so "order-only" is a branch rather than a producer that never
-    //    states an element.
-    let single = respond_window(
-        IterationCount::Fixed(COUNT),
-        period(),
-        vec![constant_pin(&[R_DRAINED])],
-    );
-    let reply = respond_reply_of(&single);
-    let element = reply
-        .declared
-        .as_ref()
-        .expect("a single-subject constant under a finite count takes the whole declared count");
-    assert_eq!(declared_amounts(element), vec![COUNT]);
-    assert_eq!(
-        element.entries,
-        vec![preview_entry(
-            InteractionShortcutPreviewFamily::Life,
-            Some(R_DRAINED.0),
-            -30
-        )],
-        "and its magnitudes are the period times that count"
-    );
 }
 
 /// **CR 732.2b — the respond-side projection inherits the single redaction authority.**
