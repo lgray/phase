@@ -96,10 +96,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "phase-server.validateDefaultServerUrl" -}}
 {{- $url := .Values.web.defaultMultiplayerServerUrl -}}
 {{- if $url -}}
-{{- $re := `^wss?://(\[[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7}\]|[^\s/?#:@\[\]<>^{}|\\%]+)(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[0-9]{1,4}))?([/?][^\s#]*)?$` -}}
-{{- if contains ":::" $url -}}
-{{- fail (printf "web.defaultMultiplayerServerUrl is %q, whose bracketed host has three or more consecutive colons. URL parsing rejects it, so the client would discard the address and fall back to this build's default server. (Checked separately from the shape rule below because RE2 has no lookahead.)" $url) -}}
-{{- end -}}
+{{- $re := `^wss?://(\[(([0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|([0-9A-Fa-f]{1,4}:){1,7}:|([0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|([0-9A-Fa-f]{1,4}:){1,5}(:[0-9A-Fa-f]{1,4}){1,2}|([0-9A-Fa-f]{1,4}:){1,4}(:[0-9A-Fa-f]{1,4}){1,3}|([0-9A-Fa-f]{1,4}:){1,3}(:[0-9A-Fa-f]{1,4}){1,4}|([0-9A-Fa-f]{1,4}:){1,2}(:[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(:[0-9A-Fa-f]{1,4}){1,6}|:((:[0-9A-Fa-f]{1,4}){1,7}|:)|::([Ff]{4}(:0{1,4})?:)?((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|([0-9A-Fa-f]{1,4}:){1,4}:((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9]))\]|[^\s/?#:@\[\]<>^{}|\\%]+)(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[0-9]{1,4}))?([/?][^\s#]*)?$` -}}
 {{- if not (regexMatch $re $url) -}}
 {{- fail (printf "web.defaultMultiplayerServerUrl is %q, which is not a ws:// or wss:// address with a well-formed host. It must be a hostname or a bracketed IPv6 literal, optionally followed by a port in 0-65535, with no whitespace anywhere. The client ignores an address it cannot parse and falls back to this build's default server, so the deployment would come up pointing players somewhere you did not choose." $url) -}}
 {{- end -}}

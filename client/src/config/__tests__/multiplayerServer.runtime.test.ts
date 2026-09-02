@@ -151,26 +151,42 @@ describe("chart default-server grammar vs parseWebSocketUrl", () => {
     return new RegExp(m[1]);
   }
 
-  // The chart also rejects ":::" separately, because RE2 has no lookahead.
-  const chartAccepts = (v: string) => chartRegex().test(v) && !v.includes(":::");
+  const chartAccepts = (v: string) => chartRegex().test(v);
+
+  // Generated, not hand-listed. The first version of this guard listed sample
+  // addresses and missed a whole class — bracketed hosts with two elisions, and
+  // ones with too few groups and no elision — because nobody thought to write
+  // them down. Enumerating the shape instead of the examples is what makes the
+  // subset claim mean something.
+  const bracketed = new Set<string>();
+  for (let n = 1; n <= 10; n++) bracketed.add(Array(n).fill("1").join(":"));
+  for (let a = 0; a <= 4; a++)
+    for (let b = 0; b <= 4; b++)
+      bracketed.add(`${Array(a).fill("1").join(":")}::${Array(b).fill("2").join(":")}`);
+  for (let a = 0; a <= 3; a++)
+    for (let b = 0; b <= 3; b++)
+      for (let c = 0; c <= 3; c++)
+        bracketed.add(
+          `${Array(a).fill("1").join(":")}::${Array(b).fill("2").join(":")}::${Array(c).fill("3").join(":")}`,
+        );
+  for (const h of [
+    "::1", "::", "::ffff:192.168.1.1", "1:2:3:4:5:6:7:8", "2001:db8::8a2e:370:7334",
+    "gggg::1", "1:2:3:4:5:6:7:8:9", "12345::1", "1::2::3", "::ffff:999.1.1.1", "x",
+  ]) bracketed.add(h);
 
   const CORPUS = [
+    ...[...bracketed].map((h) => `wss://[${h}]/ws`),
     "wss://play.example.com/ws",
     "ws://192.168.1.5:9374/ws",
     "wss://play.example.com/ws?region=eu",
     "wss://play.example.com:65535/ws",
     "wss://play.example.com:0/ws",
-    "wss://[::1]/ws",
-    "wss://[::1]:9374/ws",
-    "wss://[2001:db8::8a2e:370:7334]/ws",
     "wss://play.example.com:abc/ws",
     "wss://play.example.com:99999/ws",
     "wss://play.example.com:-1/ws",
     "wss://[::1/ws",
     "wss://[]/ws",
     "wss://]::1[/ws",
-    "wss://[:::::]/ws",
-    "wss://[gggg::1]/ws",
     "wss://:9374/ws",
     "wss://@/ws",
     "wss://%00.com/ws",

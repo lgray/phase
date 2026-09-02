@@ -197,7 +197,13 @@ url_case refuse 'wss://play.example.com:-1/ws'       # negative port
 url_case refuse 'wss://[::1/ws'                      # unclosed bracket
 url_case refuse 'wss://[]/ws'                        # empty bracket
 url_case refuse 'wss://]::1[/ws'                     # reversed brackets
+url_case render 'wss://[::]/ws'
+url_case render 'wss://[::ffff:192.168.1.1]/ws'
 url_case refuse 'wss://[:::::]/ws'                   # more than one elision
+url_case refuse 'wss://[1::2::3]/ws'                 # two elisions, no ":::" substring
+url_case refuse 'wss://[1:1:1]/ws'                   # too few groups, no elision
+url_case refuse 'wss://[1:2:3:4:5:6:7:8:9]/ws'       # too many groups
+url_case refuse 'wss://[gggg::1]/ws'                 # non-hex group
 url_case refuse 'wss://:9374/ws'                     # port but no host
 url_case refuse 'wss://@/ws'                         # empty authority
 url_case refuse 'wss://%00.com/ws'                   # percent-encoding in a host
