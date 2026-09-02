@@ -18,6 +18,11 @@
 # ConfigMap, so one image works for every deployment. Same for /config.js — the
 # copy here is the empty placeholder from client/public, and the chart serves its
 # own over it.
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+# Pinned to the multi-arch index digest, not just the tag, so a registry-side
+# retag cannot change the nginx shipped to every deployment built from this
+# file. Same image and same digest as the chart's logging sidecar
+# (`logging.server.image` in values.yaml) — keep the two in step.
+# Re-resolve with: docker buildx imagetools inspect nginxinc/nginx-unprivileged:<tag>
+FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
 
 COPY dist/ /usr/share/nginx/html/

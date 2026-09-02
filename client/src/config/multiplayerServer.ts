@@ -33,6 +33,14 @@ export function parseWebSocketUrl(value: string): URL | null {
     if ((url.protocol !== "ws:" && url.protocol !== "wss:") || !url.host) {
       return null;
     }
+    // `new WebSocket()` throws a SyntaxError on any fragment, so a URL carrying
+    // one is not a valid address however well-formed it looks. Tested on `href`
+    // rather than `hash`, which is "" for a bare trailing "#" that still throws;
+    // in the serialized form a literal "#" can only be the fragment delimiter,
+    // since a "#" anywhere else percent-encodes to %23.
+    if (url.href.includes("#")) {
+      return null;
+    }
     return url;
   } catch {
     return null;

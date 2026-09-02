@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { parseWebSocketUrl } from "../multiplayerServer";
+
 // DEFAULT_MULTIPLAYER_SERVER_URL is resolved once at module load, so every case
 // sets window.__PHASE_CONFIG__ first and then imports a fresh copy.
 async function loadWith(config: unknown) {
@@ -52,6 +54,7 @@ describe("DEFAULT_MULTIPLAYER_SERVER_URL runtime override", () => {
     ["a bare hostname", "play.example.com"],
     ["an empty string", ""],
     ["a scheme with no host", "wss://"],
+    ["a fragment the WebSocket constructor rejects", "wss://play.example.com/ws#lobby"],
     ["a non-string", 1234],
     ["null", null],
   ])("ignores %s and falls back to the define", async (_label, value) => {
@@ -95,5 +98,28 @@ describe("runtime override reaches the server picker", () => {
       true,
     );
     expect(detection.DEFAULT_SERVER).toBe(__DEFAULT_MULTIPLAYER_SERVER_URL__);
+  });
+});
+
+describe("parseWebSocketUrl", () => {
+  it.each([
+    ["wss://play.example.com/ws"],
+    ["ws://192.168.1.5:9374/ws"],
+    ["wss://play.example.com/ws?region=eu"],
+    // "#" outside a fragment survives as %23, so the guard must not reject it.
+    ["wss://play.example.com/ws%23one"],
+  ])("accepts %s", (value) => {
+    expect(parseWebSocketUrl(value)?.href).toBeTruthy();
+  });
+
+  // new WebSocket() throws a SyntaxError on any fragment, so these are not
+  // addresses a caller can open — including the bare "#", whose url.hash is ""
+  // and which a hash-based guard would wave through.
+  it.each([
+    ["a named fragment", "wss://play.example.com/ws#lobby"],
+    ["a bare trailing hash", "wss://play.example.com/ws#"],
+    ["a fragment that looks like a path", "wss://play.example.com/ws#/room/1"],
+  ])("rejects %s", (_label, value) => {
+    expect(parseWebSocketUrl(value)).toBeNull();
   });
 });
