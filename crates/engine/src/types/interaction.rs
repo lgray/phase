@@ -1043,9 +1043,10 @@ pub enum InteractionResponseSpec {
     /// ids, read in order as SUBJECT then ANSWER — an optional decision whose subject cannot be
     /// minted publishes NO point rather than a shorter one, so the positional read is total over
     /// what is published. EMPTY when the proposal carries no declaration: every count-only offer,
-    /// every proposal the viewer's redaction dropped, and a declaration whose FIRST announced-target
-    /// decision cannot be stated — skipping that one would silently move the allocation's domain
-    /// onto a later decision (see `game::interaction::declared_shortcut_projection`).
+    /// every proposal the viewer's redaction dropped, and a declaration whose unstatable
+    /// announced-target decision would hand its own allocation domain to a LATER one that IS
+    /// stated — an unstatable decision with no such successor is simply skipped, and the
+    /// statements beside it publish (see `game::interaction::declared_shortcut_projection`).
     ///
     /// `declared` is what the DECLARED count does: the same element vocabulary the offer's own
     /// published list carries, minted by the same producer over the allocation the proposer
@@ -1171,7 +1172,12 @@ pub struct InteractionShortcutPreview {
     /// player's own declaration (`declared_shortcut_preview`) they are the amounts that player
     /// authored — positive parts summing to `count` over a duplicate-free subset of those ids,
     /// enforced by the declaration ingress rather than by this type — and never empty: that
-    /// producer states no element at all rather than one carrying an empty split.
+    /// producer states no element at all rather than one carrying an empty split. In the
+    /// responder's view of a declaration (`declared_sequence_preview`) they are the segment
+    /// LENGTHS the declared count partitions into over the iterations that decision's
+    /// announcements start at: successive differences summing to `count`, one per published id,
+    /// never empty — and NOT necessarily positive, since a step starting exactly at the count
+    /// takes a zero-length segment.
     ///
     /// CR 704.5a: `entries` follow this allocation ONLY when the period's life map names
     /// exactly one losing seat that this allocation itself announces and the slot's announced

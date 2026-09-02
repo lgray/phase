@@ -104,7 +104,12 @@ export type InteractionShortcutPreview = { count: number, entries: Array<Interac
  * player's own declaration (`declared_shortcut_preview`) they are the amounts that player
  * authored — positive parts summing to `count` over a duplicate-free subset of those ids,
  * enforced by the declaration ingress rather than by this type — and never empty: that
- * producer states no element at all rather than one carrying an empty split.
+ * producer states no element at all rather than one carrying an empty split. In the
+ * responder's view of a declaration (`declared_sequence_preview`) they are the segment
+ * LENGTHS the declared count partitions into over the iterations that decision's
+ * announcements start at: successive differences summing to `count`, one per published id,
+ * never empty — and NOT necessarily positive, since a step starting exactly at the count
+ * takes a zero-length segment.
  *
  * CR 704.5a: `entries` follow this allocation ONLY when the period's life map names
  * exactly one losing seat that this allocation itself announces and the slot's announced

@@ -3088,8 +3088,11 @@ fn declared_object_candidate(
 /// than through arms that can drift apart.
 ///
 /// `None` is a schedule this vocabulary cannot state: a cyclic one, which names no single
-/// announcement order, and — a restored save being a wire ingress — starts that do not begin at
-/// zero or do not strictly increase, which are not a partition anybody declared.
+/// announcement order, and — a restored save being a wire ingress — a schedule with no step at
+/// all, or starts that do not begin at zero or do not strictly increase, none of which is a
+/// partition anybody declared. A stepless schedule announces nothing and cannot drive at all
+/// (`evaluate_schedule` answers `ScheduleExhausted` for it), so an empty announcement sequence
+/// would be a statement standing in for a refusal.
 fn scheduled_announcements(
     schedule: &crate::analysis::decision_template::TargetSchedule,
 ) -> Option<(
@@ -3106,6 +3109,9 @@ fn scheduled_announcements(
             .collect(),
         TargetSchedule::RoundRobin(_) => return None,
     };
+    if steps.is_empty() {
+        return None;
+    }
     let mut subjects = Vec::with_capacity(steps.len());
     let mut starts = Vec::with_capacity(steps.len());
     for (start, ranking) in steps {
@@ -3188,11 +3194,14 @@ fn declared_targets_statement(
 /// unmintable `MayChoice` and an unstatable `Targets` decision alike, each for its own reason.
 ///
 /// The ONE thing a skip may not do is move the ALLOCATION'S DOMAIN. `allocation_point` names the
-/// FIRST published `Targets` point, so skipping an unstatable announced-target decision before
-/// any stated one would silently re-domain the allocation onto a later decision — worse than
-/// publishing no allocation at all. That case, and only it, refuses the whole sequence; once a
-/// domain is fixed a later hole costs one statement line rather than the partition, the
-/// magnitudes and every unrelated decision beside it. The condition is asked of
+/// FIRST published `Targets` point, so what a skipped announced-target decision owes is not
+/// whether a domain is already fixed but whether a LATER decision ends up published in the slot
+/// this one would have owned — which nothing knows until the walk ends, and which is therefore
+/// asked there. A skip taken while that slot was still open refuses the whole sequence only if a
+/// `Targets` point did go on to fill it; a skip behind an already-published one moves nothing,
+/// and neither does one on a declaration that publishes no `Targets` point at all. Every skip
+/// that moves no domain costs one statement line rather than the partition, the magnitudes and
+/// every unrelated decision beside it. Both halves of the question are asked of
 /// `allocation_point` itself, so the skip and the domain cannot answer it differently.
 ///
 /// The matches over `PinnedDecision` here, and over `TargetPin` and `TargetSchedule` in the
@@ -3228,15 +3237,17 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
     let mut candidates: Vec<LoopShortcutCandidateValue> = Vec::new();
     let mut points: Vec<LoopShortcutPointProjection> = Vec::new();
     let mut segments: Vec<Vec<u32>> = Vec::new();
+    let mut skipped_before_domain_fixed = false;
     for decision in &template.decisions {
         match decision {
             PinnedDecision::Targets { slot, targets } => {
                 let Some((values, declared)) = declared_targets_statement(targets, declared_count)
                 else {
-                    if allocation_point(&points).is_some() {
-                        continue;
-                    }
-                    return None;
+                    // Whether this skip moves the domain depends on what the REST of the walk
+                    // publishes, so record that it was taken with the domain slot still open and
+                    // settle it below.
+                    skipped_before_domain_fixed |= allocation_point(&points).is_none();
+                    continue;
                 };
                 let start = candidates.len();
                 candidates.extend(values);
@@ -3303,6 +3314,12 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
             // per-iteration decision — and the one variant with no `slot`.
             PinnedDecision::Order { .. } => {}
         }
+    }
+    // CR 601.2c: the domain MOVED exactly when a skip was taken with the slot open and a later
+    // decision then filled it — that point is now standing where the skipped decision's own
+    // subjects would have been, which is worse than publishing no allocation at all.
+    if skipped_before_domain_fixed && allocation_point(&points).is_some() {
+        return None;
     }
     if points.is_empty() {
         return None;
