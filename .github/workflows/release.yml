@@ -6,7 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to recover, e.g. v0.1.32
+        # Dispatch from the tag's own ref -- `gh workflow run release.yml --ref "$TAG"` --
+        # never from a branch. `build-web-image` deploys to the protected `release`
+        # environment, whose tag policy is matched against the run's GITHUB_REF and not
+        # against this input, so a branch-ref dispatch is turned away there; `release`
+        # needs that job, so the whole recovery run would then produce no release.
+        description: Release tag to recover, e.g. v0.1.32 (dispatch from that tag's ref, not from a branch)
         required: true
         type: string
 
@@ -695,6 +700,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+    environment: release
     env:
       RELEASE_TAG: ${{ needs.resolve-release-ref.outputs.release_tag }}
       RELEASE_SHA: ${{ needs.resolve-release-ref.outputs.release_sha }}
