@@ -2840,15 +2840,18 @@ impl VictimSplit {
 /// skipped to reach a later one either — skipping would silently move the domain to a second
 /// point, which is worse than publishing no allocation at all.
 ///
-/// Takes the POINTS rather than a whole projection so the declared-sequence decode can ask this
-/// same function whether a domain is already fixed while it is still building the list.
-fn allocation_point(
-    points: &[LoopShortcutPointProjection],
-) -> Option<(u32, &LoopShortcutPointProjection)> {
-    let index = points
-        .iter()
-        .position(|point| point.kind == InteractionShortcutPointKind::Targets)?;
-    Some((u32::try_from(index).ok()?, points.get(index)?))
+/// Takes an ITERATOR of points rather than a whole projection, so the finished
+/// `projection.points` and the declared-sequence decode's still-accumulating `(point, segment)`
+/// pairs both reach THIS function — a second finder for the second carrier would fork the
+/// authority this one is.
+fn allocation_point<'a>(
+    points: impl IntoIterator<Item = &'a LoopShortcutPointProjection>,
+) -> Option<(u32, &'a LoopShortcutPointProjection)> {
+    let (index, point) = points
+        .into_iter()
+        .enumerate()
+        .find(|(_, point)| point.kind == InteractionShortcutPointKind::Targets)?;
+    Some((u32::try_from(index).ok()?, point))
 }
 
 /// CR 704.5a: the seats a point's candidates name, in published order, or `None` when any
@@ -3235,8 +3238,10 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
     };
 
     let mut candidates: Vec<LoopShortcutCandidateValue> = Vec::new();
-    let mut points: Vec<LoopShortcutPointProjection> = Vec::new();
-    let mut segments: Vec<Vec<u32>> = Vec::new();
+    // ONE accumulator, `unzip`ped at the single site below: a point cannot be recorded without
+    // the segment entry `DeclaredSequence` aligns it with, so that alignment is a fact the
+    // compiler holds rather than a pairing two parallel pushes have to remember.
+    let mut published: Vec<(LoopShortcutPointProjection, Vec<u32>)> = Vec::new();
     let mut skipped_before_domain_fixed = false;
     for decision in &template.decisions {
         match decision {
@@ -3246,22 +3251,25 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
                     // Whether this skip moves the domain depends on what the REST of the walk
                     // publishes, so record that it was taken with the domain slot still open and
                     // settle it below.
-                    skipped_before_domain_fixed |= allocation_point(&points).is_none();
+                    skipped_before_domain_fixed |=
+                        allocation_point(published.iter().map(|(point, _)| point)).is_none();
                     continue;
                 };
                 let start = candidates.len();
                 candidates.extend(values);
-                points.push(LoopShortcutPointProjection {
-                    slot: slot.clone(),
-                    kind: InteractionShortcutPointKind::Targets,
-                    min: 0,
-                    max: 0,
-                    unique: true,
-                    ordered: true,
-                    read_only: true,
-                    candidate_indices: (start..candidates.len()).collect(),
-                });
-                segments.push(declared);
+                published.push((
+                    LoopShortcutPointProjection {
+                        slot: slot.clone(),
+                        kind: InteractionShortcutPointKind::Targets,
+                        min: 0,
+                        max: 0,
+                        unique: true,
+                        ordered: true,
+                        read_only: true,
+                        candidate_indices: (start..candidates.len()).collect(),
+                    },
+                    declared,
+                ));
             }
             PinnedDecision::MayChoice { slot, take } => {
                 // CR 603.5 (for the triggered-ability gates it governs) + CR 732.2c: an answered
@@ -3285,17 +3293,19 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
                 let pair = [subject, LoopShortcutCandidateValue::May(*take)];
                 let start = candidates.len();
                 candidates.extend(pair);
-                points.push(LoopShortcutPointProjection {
-                    slot: slot.clone(),
-                    kind: InteractionShortcutPointKind::MayChoice,
-                    min: 0,
-                    max: 0,
-                    unique: true,
-                    ordered: true,
-                    read_only: true,
-                    candidate_indices: (start..candidates.len()).collect(),
-                });
-                segments.push(Vec::new());
+                published.push((
+                    LoopShortcutPointProjection {
+                        slot: slot.clone(),
+                        kind: InteractionShortcutPointKind::MayChoice,
+                        min: 0,
+                        max: 0,
+                        unique: true,
+                        ordered: true,
+                        read_only: true,
+                        candidate_indices: (start..candidates.len()).collect(),
+                    },
+                    Vec::new(),
+                ));
             }
             // An offer carrying either of these keeps the count-only path, so no declaration
             // naming one reaches this decoder to render.
@@ -3318,12 +3328,15 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
     // CR 601.2c: the domain MOVED exactly when a skip was taken with the slot open and a later
     // decision then filled it — that point is now standing where the skipped decision's own
     // subjects would have been, which is worse than publishing no allocation at all.
-    if skipped_before_domain_fixed && allocation_point(&points).is_some() {
+    if skipped_before_domain_fixed
+        && allocation_point(published.iter().map(|(point, _)| point)).is_some()
+    {
         return None;
     }
-    if points.is_empty() {
+    if published.is_empty() {
         return None;
     }
+    let (points, segments) = published.into_iter().unzip();
     Some(DeclaredSequence {
         projection: LoopShortcutProjection {
             count,
