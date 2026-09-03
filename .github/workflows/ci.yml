@@ -107,6 +107,13 @@ jobs:
           fi
           ./scripts/check-engine-authorities.sh "$BASE"
 
+      - name: Release dispatch guard tests
+        # release.yml's recovery guard is release authorization: it decides
+        # whether a workflow_dispatch run may publish the tag it asks for. The
+        # tests read the guard's shell out of the committed workflow, so an edit
+        # that weakens it fails here instead of shipping unnoticed.
+        run: python3 scripts/release_dispatch_guard_tests.py
+
       - name: Resolution-frame boundary guard
         # Full-tree guard: legacy resolution keys are reader/fixture-only, and
         # ResolutionStack mutation remains top-only or adjacent-pair scoped.
