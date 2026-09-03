@@ -4201,7 +4201,7 @@ fn the_declared_allocation_belongs_to_the_first_announced_target_decision() {
 /// that posture mints a point on the very board where leg A asserts none. Publish a partial
 /// subject list for an unstatable announced target ⇒ leg B's `points.is_empty()` fails.
 #[test]
-fn an_unstatable_optional_decision_is_skipped_and_an_unstatable_target_refuses_the_sequence() {
+fn an_unstatable_optional_decision_is_skipped_and_a_lone_unstatable_target_states_nothing() {
     use engine::analysis::decision_template::{
         DecisionSlot, MayChoiceOption, PinnedDecision, TargetPin,
     };
@@ -4290,7 +4290,8 @@ fn an_unstatable_optional_decision_is_skipped_and_an_unstatable_target_refuses_t
          decision is first in the walk, so its minted ids are the same on both boards"
     );
 
-    // ── LEG B: an announced-target subject that cannot be minted refuses the WHOLE sequence.
+    // ── LEG B: an announced-target subject that cannot be minted is this board's ONLY
+    //    decision, so the walk reaches its end with no point to publish.
     let announced = |source: YieldTarget| {
         respond_window(
             IterationCount::Fixed(COUNT),
@@ -4679,15 +4680,18 @@ fn an_order_only_declaration_publishes_its_announcement_order_and_no_magnitude()
 ///
 /// `allocation_point` names the FIRST published `Targets` point as the one an allocation is
 /// stated over, so the question a skip owes is whether some later decision ends up standing in
-/// the slot the skipped one would have owned. Three boards answer it, and the middle one is the
-/// member the rule must keep refusing:
+/// the slot the skipped one would have owned. Five boards answer it:
 ///
 /// * skipped BEHIND a stated decision — the domain is already that decision's, so the responder
 ///   keeps its partition, its magnitudes and every unrelated statement;
 /// * skipped AHEAD of one — the stated decision would inherit a domain the proposer never gave
 ///   it, so the whole sequence is refused;
 /// * skipped with NO other announced-target decision anywhere — there is no domain to move, so
-///   the rest of the declaration publishes and states no allocation.
+///   the rest of the declaration publishes and states no allocation;
+/// * skipped ahead of one AND AGAIN behind it — the second skip moves nothing, so it settles
+///   only for itself and leaves the first skip's debt standing;
+/// * skipped behind an OPTIONAL decision — a published point that is not an announced-target
+///   point leaves the domain open, so this skip is ahead of the allocation like any other.
 ///
 /// All three unstatable shapes are latent from the human ingress — `materialize_loop_shortcut_response`
 /// mints one pin per announced-target decision and `decode_sequenced_targets` mints neither a
@@ -4699,7 +4703,9 @@ fn an_order_only_declaration_publishes_its_announcement_order_and_no_magnitude()
 /// Refuse on ANY skip taken before a domain is fixed ⇒ the third board loses its optional
 /// statement and its points. Skip unconditionally ⇒ the second board publishes, with an
 /// allocation stated over the decision behind the hole. Refuse a LATER skip ⇒ the first board
-/// loses its points and its element.
+/// loses its points and its element. Let each skip OVERWRITE what the ones before it recorded
+/// rather than accumulating ⇒ the fourth board publishes. Ask whether ANY point is published
+/// rather than an ALLOCATING one ⇒ the fifth board publishes.
 #[test]
 fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
     use engine::analysis::decision_template::{
@@ -4760,6 +4766,34 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
         segments_from(&STARTS, COUNT),
         "ANTI-VACUITY: two segments, pairwise distinct — 'everything empty' could not satisfy \
          the comparisons below"
+    );
+
+    // ── And the same positive with an optional decision AHEAD of both announced-target ones, so
+    //    the last board below cannot refuse for want of a publishable arrangement.
+    let optional_first = window(vec![
+        optional(),
+        stated(preview_slot(0)),
+        stated(preview_slot(1)),
+    ]);
+    assert_eq!(
+        kinds(&optional_first),
+        vec![
+            InteractionShortcutPointKind::MayChoice,
+            InteractionShortcutPointKind::Targets,
+            InteractionShortcutPointKind::Targets,
+        ],
+        "reach-guard: an optional decision ahead of two stated ones publishes all three"
+    );
+    assert_eq!(
+        declared_amounts(
+            optional_first
+                .declared
+                .as_ref()
+                .expect("and the first announced-target decision is partitioned")
+        ),
+        segments_from(&STARTS, COUNT),
+        "CR 601.2c: the allocation is stated over the first announced-target point, which is not \
+         the first point published"
     );
 
     for (shape, targets) in [
@@ -4849,6 +4883,56 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
             "CR 601.2c: with no announced-target decision published there is no domain to state \
              an allocation over, so the responder is shown no magnitude rather than one \
              attributed to a decision the proposer never made ({shape})"
+        );
+
+        // ── FIRST, THEN AGAIN LATER: the second hole is behind the fixed domain and settles for
+        //    itself alone; the first one's debt is still owed at the end of the walk.
+        let twice = window(vec![
+            unstatable(preview_slot(0)),
+            stated(preview_slot(1)),
+            unstatable(preview_slot(2)),
+        ]);
+        assert!(
+            twice.points.is_empty() && twice.declared.is_none(),
+            "{shape} taken both ahead of and behind a stated announced-target decision still \
+             refuses: the later hole moves no domain, so it answers only for itself. got {:?}",
+            kinds(&twice)
+        );
+
+        // ── Its paired positive, ONE decision apart: the same board with the leading hole
+        //    stated, so the trailing hole is not what refuses above.
+        let trailing = window(vec![
+            stated(preview_slot(0)),
+            stated(preview_slot(1)),
+            unstatable(preview_slot(2)),
+        ]);
+        assert_eq!(
+            kinds(&trailing),
+            vec![
+                InteractionShortcutPointKind::Targets,
+                InteractionShortcutPointKind::Targets,
+            ],
+            "reach-guard: {shape} in the LAST decision publishes the two beside it"
+        );
+        assert_eq!(
+            trailing.declared, whole.declared,
+            "and the partition and magnitudes stay the first decision's ({shape})"
+        );
+
+        // ── BEHIND A NON-ALLOCATING POINT: the optional decision ahead of the hole publishes,
+        //    so points are no longer empty — but none of them is the one an allocation is stated
+        //    over, so the stated decision behind the hole would still inherit its domain.
+        let after_optional = window(vec![
+            optional(),
+            unstatable(preview_slot(0)),
+            stated(preview_slot(1)),
+        ]);
+        assert!(
+            after_optional.points.is_empty() && after_optional.declared.is_none(),
+            "CR 601.2c: an optional decision publishes no allocation domain, so {shape} taken \
+             after one is still ahead of the allocation — the arrangement itself publishes as \
+             `optional_first`. got {:?}",
+            kinds(&after_optional)
         );
     }
 }
