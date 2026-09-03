@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for check-action-pins.sh.
+"""Tests for check_action_pins.py.
 
 The script is a supply-chain gate, so what matters is not that it runs but that
 it refuses what it should. Each case builds a throwaway repository, copies the
@@ -172,6 +172,39 @@ class CheckActionPinsTests(unittest.TestCase):
         g = self.gate()
         g.write(ENTRY, f"docker://alpine@sha256:{'a' * 64}")
         self.assertEqual(g.run().returncode, 0)
+
+    def test_a_local_ref_climbing_out_of_the_tree_is_refused(self) -> None:
+        # The outside action is fully pinned, so a checker that follows the ref
+        # reports a clean tree. That is the bypass: the audited tree borrows the
+        # workspace above it, which holds the trusted checkout.
+        g = self.gate()
+        outside = g.root.parent / "outside" / "act"
+        outside.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, outside.parent, ignore_errors=True)
+        (outside / "action.yml").write_text(
+            f"runs:\n  steps:\n    - uses: actions/cache@{SHA} # v4\n", encoding="utf-8"
+        )
+        g.write(ENTRY, f"./../{outside.parent.name}/act")
+        r = g.run()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("resolves outside the checked tree", r.stderr)
+
+    def test_a_local_ref_through_a_symlink_out_of_the_tree_is_refused(self) -> None:
+        # Same class, different mechanism: the ref names a contained path and
+        # the filesystem does the climbing.
+        g = self.gate()
+        outside = g.root.parent / "linked" / "act"
+        outside.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, outside.parent, ignore_errors=True)
+        (outside / "action.yml").write_text(
+            f"runs:\n  steps:\n    - uses: actions/cache@{SHA} # v4\n", encoding="utf-8"
+        )
+        g.mkdir(".github/actions")
+        (g.root / ".github/actions/act").symlink_to(outside, target_is_directory=True)
+        g.write(ENTRY, "./.github/actions/act")
+        r = g.run()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("resolves outside the checked tree", r.stderr)
 
 
 if __name__ == "__main__":

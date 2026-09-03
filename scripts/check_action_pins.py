@@ -41,6 +41,14 @@ DOCKER_DIGEST = re.compile(r"^docker://[^@\s]+@sha256:[0-9a-f]{64}$")
 REMOTE_REUSABLE = re.compile(r"/\.github/workflows/[^@]+\.ya?ml@")
 
 
+def contained(target: Path, root: Path) -> bool:
+    """Whether `target` stays inside `root` once symlinks are followed."""
+    try:
+        return target.resolve().is_relative_to(root)
+    except OSError:
+        return False
+
+
 def uses_refs(node: object) -> list[str]:
     """Every `uses:` value anywhere in a parsed workflow or action."""
     found: list[str] = []
@@ -57,7 +65,7 @@ def uses_refs(node: object) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    root = Path(os.environ.get("PIN_CHECK_ROOT") or Path(__file__).resolve().parent.parent)
+    root = Path(os.environ.get("PIN_CHECK_ROOT") or Path(__file__).resolve().parent.parent).resolve()
     entries = argv[1:] or list(DEFAULT_ENTRIES)
 
     queue = list(entries)
@@ -86,6 +94,15 @@ def main(argv: list[str]) -> int:
         for ref in uses_refs(document):
             if ref.startswith("./"):
                 target = root / ref[2:]
+                if not contained(target, root):
+                    # A tree that reads its own actions out of a directory it
+                    # does not contain is not being audited: the audit walks the
+                    # workspace above it, which holds the trusted checkout.
+                    unpinned.append(
+                        f"{rel}: {ref} (local reference resolves outside the "
+                        "checked tree)"
+                    )
+                    continue
                 if target.is_dir():
                     manifest = next(
                         (m for m in ("action.yml", "action.yaml") if (target / m).is_file()),
