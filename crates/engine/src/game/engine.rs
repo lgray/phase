@@ -4541,18 +4541,21 @@ fn until_lethal_fallback(
 /// type-only across that parameterization.
 ///
 /// DORMANT for every Stage-2 crownable loop (Ruling B). The producer
-/// `game::interaction::materialize_loop_shortcut_response` emits a multi-entry `Constant` on an
+/// `game::interaction::materialize_loop_shortcut_response` emits a ONE-entry `Constant` on an
 /// `UntilLethal` offer and a `Piecewise` on a `Fixed` one, and NEITHER MOVES THIS FUNCTION'S
 /// ANSWER OFF 1 — the reason is which consumer sees which. This function's two consumers are
 /// [`shortcut_validated_range`]'s `UntilLethal` arm and `apply_until_lethal_shortcut`, both
 /// UNTIL-LETHAL paths, and the multi-STEP shape is minted only under a FIXED count, which reads
-/// its range off the count and never consults a schedule. The multi-entry `Constant` that does
-/// reach here lands on the `Constant(_)` arm and returns 1 — correctly, since `evaluate_schedule`
-/// resolves `head()` only. `live_mandatory_loop_winner` crowns on PLAYER fallers, and a loop
-/// whose targets do not rotate produces no NEW player faller per cycle to aggregate. The seam is
-/// built for generality and a multi-cycle aggregation is fail-safe either way (a loop reaching
-/// the arm measures 1 cycle, finds no faller, does not crown), so a future ROTATING producer on
-/// an until-lethal path changes what must be re-argued here, not what this function returns.
+/// its range off the count and never consults a schedule. A MULTI-entry `Constant` can still
+/// reach here from a decoded save — `declaration_conforms` refuses one at DECLARE, not at load —
+/// and it lands on the same `Constant(_)` arm and returns 1, correctly, since
+/// `evaluate_schedule` resolves `head()` only. The argument therefore rests on the schedule's
+/// SHAPE rather than on any producer's arity. `live_mandatory_loop_winner` crowns on PLAYER
+/// fallers, and a loop whose targets do not rotate produces no NEW player faller per cycle to
+/// aggregate. The seam is built for generality and a multi-cycle aggregation is fail-safe either
+/// way (a loop reaching the arm measures 1 cycle, finds no faller, does not crown), so a future
+/// ROTATING producer on an until-lethal path changes what must be re-argued here, not what this
+/// function returns.
 ///
 /// CR 732.2a SAFETY LIMIT: the returned period is clamped to `MAX_SHORTCUT_CYCLES`. Both
 /// consumers derive their `0..period` range from this one helper (`validate_pins` and
@@ -5213,12 +5216,6 @@ fn materialize_fixed_shortcut(
     // priority, though it need not be the player proposing the shortcut." THIS BLOCK IS
     // THAT ENDING POINT, and it is the ending point for BOTH entry paths above — `n`
     // cycles done with no cross-lethal, and `break 'cycles`.
-    //
-    // What the boundary means for a declared `Ranking`: within one accepted drive only its
-    // HEAD is ever resolved (`evaluate_schedule`), so this seam is where the NEXT episode
-    // may legitimately re-evaluate the tail. The reasoning is not restated here — it lives
-    // on `analysis::decision_template::Ranking` ("CONSUMED AT AN EPISODE BOUNDARY, NEVER
-    // MID-DRIVE"), and a second copy is the drift the R1 doc sweep exists to prevent.
     //
     // PROBE-PINNED (probe arm `MUT_SEAM`): the window clear here is load-bearing, not a
     // backstop. MEASURED — skipping it on the f4 accepted drive leaves `loop_detect_ring`

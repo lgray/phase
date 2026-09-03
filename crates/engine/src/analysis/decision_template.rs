@@ -467,13 +467,11 @@ impl std::fmt::Display for RankingError {
 /// ONE slot. A one-element ranking IS the old constant pin; that is the parameterization,
 /// and it is why there is no `Ranked` sibling of [`TargetSchedule`].
 ///
-/// CONSUMED AT AN EPISODE BOUNDARY, NEVER MID-DRIVE. Within one accepted drive only
-/// [`Ranking::head`] is ever resolved (see `evaluate_schedule`): advancing to a later entry
-/// because a game event removed the head would be the conditional action CR 732.2a bars, and
-/// CR 732.2a also requires the sequence to END at a place where a player has priority —
-/// which the drive-end handback already is. The tail is a pre-declaration for the NEXT
-/// episode, validated by THAT episode's `validate_pins` against THAT episode's published
-/// legal set.
+/// ONLY [`Ranking::head`] IS EVER RESOLVED (see `evaluate_schedule`): advancing to a later
+/// entry because a game event removed the head would be the conditional action CR 732.2a bars.
+/// CR 732.2c therefore makes a longer ranking a proposal certifying a choice nobody takes, and
+/// `validate_pins` refuses one at DECLARE time. The type still admits one — a save written
+/// before that rule can carry it — so the defensive walks over the whole list stay correct.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "Vec<AnnouncementSubject>")]
 pub struct Ranking(Vec<AnnouncementSubject>);
@@ -596,9 +594,8 @@ pub enum IterationCount {
 /// carries a [`Ranking`] rather than a single subject: a variant consults the live legal set
 /// to **re-bind the declared subject** (CR 400.7); it never uses the live set to
 /// **substitute a different subject**. Selecting a different entry because a game event
-/// removed the first is exactly the conditional action CR 732.2a bars — which is why a
-/// `Ranking` is advanced only at an episode boundary, by a caller, never by
-/// `evaluate_schedule`.
+/// removed the first is exactly the conditional action CR 732.2a bars — which is why
+/// `evaluate_schedule` reads a step's [`Ranking::head`] and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TargetSchedule {
     Constant(Ranking),
@@ -1078,8 +1075,8 @@ pub(crate) fn resolve_ability_instance(
 ///
 /// HEAD-ONLY, and that is the CR 732.2a clause rather than a simplification: skipping to a
 /// later entry because the head became illegal is a conditional action ("the outcome of a
-/// game event determines the next action a player takes"). The tail is the NEXT episode's
-/// pre-declaration; only an episode boundary may advance it.
+/// game event determines the next action a player takes"). Nothing advances a ranking, so
+/// [`schedule_announces_every_declared_subject`] refuses a longer one at declare time.
 fn evaluate_schedule(
     sched: &TargetSchedule,
     slot: &DecisionSlot,
@@ -1134,6 +1131,40 @@ fn evaluate_schedule(
         slot: slot.clone(),
         pin: TargetPin::Scheduled(sched.clone()),
     })
+}
+
+/// CR 732.2a + CR 732.2c: whether every announcement subject `schedule` declares is one
+/// [`evaluate_schedule`] resolves at SOME index. The declare-time dual of that reader, derived
+/// from it arm by arm rather than restated — CR 732.2c makes every choice in an accepted
+/// proposal a choice that is taken, so a declared subject no index reaches would certify a
+/// choice nobody makes.
+///
+/// * a step's ranking is read through [`Ranking::head`] alone, so an entry past the head is one
+///   no count, no range and no schedule shape can make a drive read;
+/// * `Piecewise` selects the greatest start at or below the index, and `max_by_key` keeps the
+///   LAST of equal maxima, so a segment sharing a start with a later-declared one is selected at
+///   no index at all. Distinctness of the starts is therefore the property and their ORDER is no
+///   part of it: the comparison SORTS first, or a collision the declared order separates is
+///   admitted, and it compares with `!=`, never `<`, or a descending pair is refused although
+///   the drive reads both its segments.
+///
+/// A step the ACCEPTED COUNT does not reach is a DIFFERENT question and not this one: that
+/// subject is read at its own index under a longer count, and refusing it is the over-veto
+/// [`crate::game::engine::shortcut_validated_range`] exists to remove.
+fn schedule_announces_every_declared_subject(schedule: &TargetSchedule) -> bool {
+    // Short-circuiting on the SECOND entry: `count() == 1` would walk the whole list to answer
+    // a question about one element of it.
+    let states_one = |ranking: &Ranking| ranking.iter().nth(1).is_none();
+    match schedule {
+        TargetSchedule::Constant(ranking) => states_one(ranking),
+        TargetSchedule::RoundRobin(steps) => steps.iter().all(states_one),
+        TargetSchedule::Piecewise(steps) => {
+            let mut starts: Vec<u32> = steps.iter().map(|(start, _)| *start).collect();
+            starts.sort_unstable();
+            steps.iter().all(|(_, ranking)| states_one(ranking))
+                && starts.windows(2).all(|pair| pair[0] != pair[1])
+        }
+    }
 }
 
 /// CR 732.2a firewall: a `Scheduled` template may auto-drive a shortcut only if every
@@ -1200,8 +1231,13 @@ pub enum PredictabilityViolation {
 pub enum PinValidation {
     /// The pin addresses a slot the offer never exposed (no matching `DecisionPoint`).
     UnexposedSlot { slot: DecisionSlot },
-    /// CR 608.2b: a `Targets` pin resolves to a value outside the slot's offered
-    /// `legal_targets` (or fails to resolve to a live legal object at all).
+    /// Raised for two reasons, which no production caller tells apart (see
+    /// [`declaration_conforms`]'s `bool` return):
+    ///
+    /// * CR 608.2b — a `Targets` pin resolves to a value outside the slot's offered
+    ///   `legal_targets`, or fails to resolve to a live legal object at all;
+    /// * CR 732.2c — a `Scheduled` pin declares an announcement no index resolves
+    ///   ([`schedule_announces_every_declared_subject`]).
     IllegalPinValue { slot: DecisionSlot },
     /// CR 700.2: a `Mode` pin names an index outside the slot's `available_modes`.
     IllegalModeIndex { slot: DecisionSlot },
@@ -1274,6 +1310,17 @@ pub fn validate_pins(
                 // require the concrete value to be an offered legal target. A scheduled pin
                 // that cannot resolve to a live legal object is itself an illegal value.
                 for t in targets {
+                    // CR 732.2a + CR 732.2c: a proposal states only announcements the drive
+                    // makes. The walk is STRUCTURAL over the pin's schedule — every step's
+                    // ranking — and never per resolved index: the loop below visits INDICES and
+                    // `resolve_target` answers each with a `ConcreteTarget`, never the
+                    // `&Ranking`, so a clause inside it cannot see a step no visited index
+                    // selects.
+                    if let TargetPin::Scheduled(schedule) = t {
+                        if !schedule_announces_every_declared_subject(schedule) {
+                            return Err(PinValidation::IllegalPinValue { slot: slot.clone() });
+                        }
+                    }
                     // CR 732.2b + CR 732.2c: NO `.max(1)` FLOOR. A shortened proposal whose
                     // new ending point is the first deviating choice — CR 732.2b's "that
                     // place becomes the new ending point" — is a ZERO-repetition accepted
@@ -2422,8 +2469,8 @@ mod tests {
     /// **Row R1-b — the head-only discriminator (CR 732.2a).** An illegal head is
     /// `IllegalTarget` even when a later entry is perfectly legal. Skipping to that later
     /// entry would be the conditional action CR 732.2a bars ("the outcome of a game event
-    /// determines the next action a player takes"), and it is the load-bearing guard for the
-    /// whole cross-episode consumption model: a ranking advances only at an episode boundary.
+    /// determines the next action a player takes"). Nothing advances a ranking, which is why
+    /// `schedule_announces_every_declared_subject` refuses a longer one at declare time.
     ///
     /// Both subject arms are exercised, because they fail through DIFFERENT predicates:
     /// `Object` through `resolve_source`'s `None`, `Seat` through `player_is_legal_target`'s

@@ -4418,14 +4418,14 @@ fn an_unstatable_optional_decision_is_skipped_and_a_lone_unstatable_target_state
 
 /// **CR 732.2a — a scheduled step carrying a next-episode tail still states this drive.**
 ///
-/// A drive resolves a step's HEAD and never advances past it, so a tail is the NEXT episode's
-/// pre-declaration and no part of the sequence the responder is being asked to accept. The head
-/// is the whole statement of what its segment performs, and a tail therefore changes nothing the
-/// responder reads: the same subjects, the same partition, and the same other decisions.
+/// A drive resolves a step's HEAD and never advances past it, so a tail is no part of the
+/// sequence the responder is being asked to accept. The head is the whole statement of what its
+/// segment performs, and a tail therefore changes nothing the responder reads: the same
+/// subjects, the same partition, and the same other decisions.
 ///
-/// Latent from the human ingress, which mints a one-subject ranking per step
-/// (`decode_sequenced_targets`); a save or a wire restore is the way in, and the branch is judged
-/// on what it does when reached rather than on how it is reached today.
+/// No declare ingress mints such a tail — `declaration_conforms` refuses one — so a save or a
+/// wire restore is the way in, and the branch is judged on what it does when reached rather than
+/// on how it is reached today.
 ///
 /// # Discrimination
 ///
@@ -4510,7 +4510,7 @@ fn a_scheduled_step_carrying_a_next_episode_tail_still_states_this_drive() {
          asserts and could not satisfy it"
     );
 
-    // ── The tail-carrying board: the SECOND step also pre-declares the next episode's subject.
+    // ── The tail-carrying board: the SECOND step also names a subject past its head.
     let with_tail = respond_reply_of(&scheduled(&[R_SECOND, R_DRAINED]));
     // The whole-publication claim runs FIRST and by VALUE: a refusal empties `points`, so an
     // assertion indexing it would panic before naming what went wrong.
@@ -4534,8 +4534,8 @@ fn a_scheduled_step_carrying_a_next_episode_tail_still_states_this_drive() {
 /// **CR 732.2a — a multi-subject schedule states the HEAD its drive announces.**
 ///
 /// `evaluate_schedule` resolves `Ranking::head` for a schedule of every kind and never advances
-/// past it, so a ranking's tail is the NEXT episode's pre-declaration and no iteration announces
-/// it. The responder is shown one subject per step — what the drive performs — and that subject
+/// past it, so no iteration announces a ranking's tail. The responder is shown one subject per
+/// step — what the drive performs — and that subject
 /// takes the whole of its step. CR 732.1b: an until-lethal proposal names no count to partition,
 /// so it states an ORDER and no magnitude.
 ///
@@ -7433,7 +7433,7 @@ fn activate_mana_source_labels_fixed_and_flexible_sacrificial_sources() {
 
 // ═════════════════════════════════════════════════════════════════════════════════════════
 // PHASE 4 — the SEQUENCED-pin ingress: the A3 coherence relation, the hostile allocations,
-// the order-only mode, the wire charge, serde additivity, and the progress window.
+// the until-lethal withdrawal, the wire charge, serde additivity, and the progress window.
 // ═════════════════════════════════════════════════════════════════════════════════════════
 
 /// One staged loop-shortcut offer whose points are exactly `kinds`, each on its own slot index
@@ -7770,26 +7770,6 @@ fn p4_row_3_the_sequenced_pin_coherence_relation_refuses_each_incoherent_shape()
         "paired positive on the SAME offer: a flat pin filling both positions is accepted, so \
          the two refusals above are the sequenced gate and not a broken board"
     );
-
-    // 5 — `amounts` non-empty on an `UntilLethal` offer ⇒ the order-only arm's own conjunct.
-    let (lethal_runner, _) = stage_sequenced_offer(
-        "p4-coherence-until-lethal",
-        IterationCount::UntilLethal,
-        6,
-        vec![victims_point(1, 1)],
-    );
-    let lethal_view = priority_view(lethal_runner.state());
-    let lethal_points = shortcut_points(&lethal_view);
-    assert!(
-        submit_pins(
-            lethal_runner.state(),
-            &lethal_view,
-            InteractionShortcutDecision::AcceptSuggested,
-            vec![sequenced_pin(&lethal_points[0], &[(0, 1), (1, 2)])]
-        )
-        .is_err(),
-        "there is no declared count to partition, so an amount there could only be a sentinel"
-    );
 }
 
 /// **Row (4)** — HOSTILE ROWS ON THE ALLOCATION ITSELF, each with its refusal point named.
@@ -7879,28 +7859,31 @@ fn p4_row_4_hostile_allocations_are_refused_each_at_its_own_guard() {
     );
 }
 
-/// **Row (5) — U5, ORDER ONLY.** An `UntilLethal` offer's sequenced pin yields ONE
-/// `Constant(Ranking)` with more than one entry, in the SUBMITTED order.
+/// **Row (5) — the human ingress no longer mints a sequenced until-lethal pin, and the FIXED
+/// one still does.**
+///
+/// CR 732.2c: an accepted proposal's choices are all taken, so an until-lethal declaration may
+/// announce only the ONE subject its drive resolves at every repetition. Under a FIXED count the
+/// extra ids are a partition across ITERATIONS and every one of them becomes its own segment's
+/// head, so that mode is untouched.
 ///
 /// # Discrimination
 ///
-/// Swap `Constant(sequence)` for `Ranking::one(head)` ⇒ the multi-entry assertion fails. Swap
-/// in a sorted sequence ⇒ the order assertion fails, because the submitted order is the
-/// REVERSE of the published candidate order.
-///
-/// # Paired positive reach-guard
-///
-/// The submission returns `Ok(GameAction::DeclareShortcut { .. })` end to end, so
-/// `declaration_conforms` ran and passed. Without it a decoder that had started refusing
-/// everything would satisfy the duplicate leg below.
+/// Restore the until-lethal sequenced route ⇒ the first leg accepts. Refuse EVERY until-lethal
+/// `Targets` submission rather than only the sequenced one — the shape a guard written on the
+/// count alone would have — ⇒ the second leg fails. Refuse every sequenced pin ⇒ the FIXED legs
+/// fail. The guard's other two conjuncts (the point's KIND, and its published `max`) keep their
+/// own ends in
+/// `p4_row_3_the_sequenced_pin_coherence_relation_refuses_each_incoherent_shape`, so a rewrite
+/// dropping either while adding the count one passes every leg here and fails that row.
 #[test]
-fn p4_row_5_an_until_lethal_sequenced_pin_declares_order_only() {
+fn p4_row_5_an_until_lethal_declaration_announces_the_one_subject_its_drive_resolves() {
     use engine::analysis::decision_template::{
         AnnouncementSubject, PinnedDecision, Ranking, TargetPin, TargetSchedule,
     };
 
     let (runner, slots) = stage_sequenced_offer(
-        "p4-order-only",
+        "p4-announce-one",
         IterationCount::UntilLethal,
         6,
         vec![victims_point(1, 1)],
@@ -7908,33 +7891,47 @@ fn p4_row_5_an_until_lethal_sequenced_pin_declares_order_only() {
     let view = priority_view(runner.state());
     let points = shortcut_points(&view);
     assert_eq!(
-        points[0].candidate_ids.len(),
-        3,
-        "reach-guard: three candidates, so a submitted order can differ from the published one"
+        (points[0].candidate_ids.len(), points[0].max),
+        (3, 1),
+        "reach-guard: three candidates on a single-position point, so a submission CAN exceed \
+         the published max and a one-id submission can name a candidate other than the head"
     );
 
-    // Submitted in REVERSE published order, so a decoder that sorted or that kept only the
-    // head cannot satisfy the assertion below.
-    let reversed: Vec<InteractionChoiceId> =
-        points[0].candidate_ids.iter().rev().cloned().collect();
-    let action = submit_pins(
+    // ── REFUSE: more ids than the point's published `max`, on an until-lethal offer. ──
+    let over_max = submit_pins(
         runner.state(),
         &view,
         InteractionShortcutDecision::AcceptSuggested,
         vec![InteractionShortcutPin {
             group: points[0].group,
-            choice_ids: reversed,
+            choice_ids: points[0].candidate_ids.clone(),
+            amounts: Vec::new(),
+        }],
+    );
+    assert_eq!(
+        over_max.err().map(|e| e.code),
+        Some(InteractionReasonCode::ConstraintUnsatisfied),
+        "CR 732.2c: there is no count to partition, so every id past the head names an \
+         announcement no repetition makes"
+    );
+
+    // ── ACCEPT: a SINGLE id, and NOT the published head — a decoder that kept
+    //    `candidate_ids[0]` would satisfy a first-candidate leg and fails this one. ──
+    let single = submit_pins(
+        runner.state(),
+        &view,
+        InteractionShortcutDecision::AcceptSuggested,
+        vec![InteractionShortcutPin {
+            group: points[0].group,
+            choice_ids: vec![points[0].candidate_ids[2].clone()],
             amounts: Vec::new(),
         }],
     )
-    .expect(
-        "paired positive: the order-only submission is accepted end to end, so \
-         `declaration_conforms` ran and passed",
-    );
+    .expect("a one-subject until-lethal declaration is accepted to the end of the human ingress");
     let GameAction::DeclareShortcut {
         template: Some(template),
         count,
-    } = action
+    } = single
     else {
         panic!("a shortcut acceptance carrying pins materializes a template");
     };
@@ -7944,39 +7941,76 @@ fn p4_row_5_an_until_lethal_sequenced_pin_declares_order_only() {
         vec![PinnedDecision::Targets {
             slot: slots[0].clone(),
             targets: vec![TargetPin::Scheduled(TargetSchedule::Constant(
-                Ranking::new(vec![
-                    AnnouncementSubject::Seat(PlayerId(3)),
-                    AnnouncementSubject::Seat(PlayerId(2)),
-                    AnnouncementSubject::Seat(P1),
-                ])
-                .expect("three distinct seats are a legal ranking")
+                Ranking::one(AnnouncementSubject::Seat(PlayerId(3)))
             ))],
         }],
-        "CR 732.2a: ONE pin carrying the whole ordered preference, in the SUBMITTED order. \
-         Only `Ranking::head` resolves within a drive; the tail is the next episode's \
-         pre-declaration, which is what keeps the declaration free of conditional actions"
+        "the pin names EXACTLY the one subject submitted, through the ordinary flat decode arm"
     );
 
-    // A DUPLICATE seat is refused at `Ranking::new`, asserted THROUGH THE WIRE PATH rather
-    // than by calling the constructor — the `#[serde(try_from)]` shim is what makes the wire
-    // assertion meaningful, since the invariant holds on every route into the type.
+    // ── PAIRED POSITIVE: the FIXED sequenced submission still materializes its `Piecewise`,
+    //    with the segment starts its amounts name. ──
+    let (fixed_runner, fixed_slots) = stage_sequenced_offer(
+        "p4-announce-one-fixed",
+        IterationCount::Fixed(6),
+        6,
+        vec![victims_point(1, 1)],
+    );
+    let fixed_view = priority_view(fixed_runner.state());
+    let fixed_points = shortcut_points(&fixed_view);
+    let fixed = InteractionShortcutDecision::Fixed { iterations: 6 };
+    let partitioned = submit_pins(
+        fixed_runner.state(),
+        &fixed_view,
+        fixed,
+        vec![sequenced_pin(&fixed_points[0], &[(0, 1), (1, 2), (2, 3)])],
+    )
+    .expect("the FIXED sequenced route is untouched");
+    let GameAction::DeclareShortcut {
+        template: Some(fixed_template),
+        ..
+    } = partitioned
+    else {
+        panic!("a shortcut acceptance carrying pins materializes a template");
+    };
+    let step = |seat: PlayerId| Ranking::one(AnnouncementSubject::Seat(seat));
+    assert_eq!(
+        fixed_template.decisions,
+        vec![PinnedDecision::Targets {
+            slot: fixed_slots[0].clone(),
+            targets: vec![TargetPin::Scheduled(TargetSchedule::Piecewise(vec![
+                (0, step(P1)),
+                (1, step(PlayerId(2))),
+                (3, step(PlayerId(3))),
+            ]))],
+        }],
+        "a declared count IS partitionable, and its parts are the running prefix sums"
+    );
+
+    // ── A DUPLICATE subject is refused at `Ranking::new`, asserted THROUGH THE WIRE PATH — on
+    //    the FIXED path, where a multi-subject sequence is still legal and the leg still has a
+    //    conforming twin. `point.unique` is false on every `Targets` point this projection
+    //    mints, so the type's own invariant is the only thing that can refuse it. ──
+    let repeated = sequenced_pin(&fixed_points[0], &[(0, 1), (1, 2), (0, 3)]);
+    assert_eq!(
+        (repeated.choice_ids[0].clone(), repeated.amounts.len()),
+        (repeated.choice_ids[2].clone(), 3),
+        "reach-guard: this pin really does name one candidate twice, with a full amount list \
+         summing to the declared count — so nothing else can refuse it"
+    );
+    assert!(
+        submit_pins(fixed_runner.state(), &fixed_view, fixed, vec![repeated]).is_err(),
+        "a repeated entry is the same declaration twice, not an ordering"
+    );
     assert!(
         submit_pins(
-            runner.state(),
-            &view,
-            InteractionShortcutDecision::AcceptSuggested,
-            vec![InteractionShortcutPin {
-                group: points[0].group,
-                choice_ids: vec![
-                    points[0].candidate_ids[0].clone(),
-                    points[0].candidate_ids[1].clone(),
-                    points[0].candidate_ids[0].clone(),
-                ],
-                amounts: Vec::new(),
-            }]
+            fixed_runner.state(),
+            &fixed_view,
+            fixed,
+            vec![sequenced_pin(&fixed_points[0], &[(0, 1), (1, 2), (2, 3)])]
         )
-        .is_err(),
-        "a repeated entry in a preference ordering makes its tail unreachable"
+        .is_ok(),
+        "PAIRED POSITIVE: the same partition without the repeat is accepted, so the refusal \
+         above is the duplicate and not a broken board"
     );
 }
 
@@ -8940,5 +8974,431 @@ fn a_non_shortcut_preview_carries_no_shortcut_payload() {
     assert!(
         preview.shortcut_preview.is_none(),
         "only a shortcut declaration states a shortcut magnitude"
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// PHASE 10 — a shortcut proposal states no announcement the drive makes (CR 732.2c).
+// ═════════════════════════════════════════════════════════════════════════════════════════
+
+/// A ranking over `seats`, in the order given.
+fn seat_rank(seats: &[PlayerId]) -> engine::analysis::decision_template::Ranking {
+    engine::analysis::decision_template::Ranking::new(seat_subjects(seats))
+        .expect("distinct seats make a legal ranking")
+}
+
+/// The single-position `Constant` schedule naming `seats`.
+fn constant_of(seats: &[PlayerId]) -> engine::analysis::decision_template::TargetPin {
+    use engine::analysis::decision_template::{TargetPin, TargetSchedule};
+    TargetPin::Scheduled(TargetSchedule::Constant(seat_rank(seats)))
+}
+
+/// A `Piecewise` schedule from `(start, seats)` pairs, in declared order.
+fn piecewise_of(steps: &[(u32, &[PlayerId])]) -> engine::analysis::decision_template::TargetPin {
+    use engine::analysis::decision_template::{TargetPin, TargetSchedule};
+    TargetPin::Scheduled(TargetSchedule::Piecewise(
+        steps
+            .iter()
+            .map(|(start, seats)| (*start, seat_rank(seats)))
+            .collect(),
+    ))
+}
+
+/// A `RoundRobin` schedule over `steps`, in declared order.
+fn round_robin_of(steps: &[&[PlayerId]]) -> engine::analysis::decision_template::TargetPin {
+    use engine::analysis::decision_template::{TargetPin, TargetSchedule};
+    TargetPin::Scheduled(TargetSchedule::RoundRobin(
+        steps.iter().map(|seats| seat_rank(seats)).collect(),
+    ))
+}
+
+/// One `Targets` pin over `slot`, as the whole declaration a proposer sends.
+fn targets_template(
+    slot: &DecisionSlot,
+    count: IterationCount,
+    targets: Vec<engine::analysis::decision_template::TargetPin>,
+) -> engine::analysis::decision_template::DecisionTemplate {
+    use engine::analysis::decision_template::{
+        DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+    };
+    DecisionTemplate {
+        // The offer's proposer. Bound here rather than left free because the CR 603.5 `owner`
+        // firewall sits AHEAD of `declaration_conforms` and lands on the same handback, so a
+        // foreign owner would make every leg below measure that firewall instead.
+        owner: P0,
+        decisions: vec![PinnedDecision::Targets {
+            slot: slot.clone(),
+            targets,
+        }],
+        replay: ReplayMode::Scheduled {
+            count: count.clone(),
+        },
+        key: DecisionGroupKey::from_sources(
+            std::slice::from_ref(&slot.source),
+            DecisionKind::LoopChoice,
+        ),
+    }
+}
+
+/// The verdict the PRODUCTION declare ingress reaches for `targets` declared over one
+/// `victims_point(min, max)`: `WaitingFor::Priority` is the manual-play handback every refusal
+/// arm lands on, `WaitingFor::RespondToShortcut` is the APNAP window an acceptance opens.
+/// `act` returns `Ok` either way, so the verdict is read here and nowhere else.
+///
+/// Each call stages its OWN offer: a declaration consumes it, so one runner cannot serve a
+/// second leg.
+///
+/// ⚠ `max_iterations` is a parameter and not a constant because
+/// `handle_declare_shortcut` refuses `UntilLethal` outright on a NARROWED bound, before any
+/// pin is read. An until-lethal leg staged that way lands on `Priority` for a reason with
+/// nothing to do with the pin, and every leg then agrees.
+fn declare_targets_verdict(
+    label: &str,
+    count: IterationCount,
+    max_iterations: u32,
+    positions: (u32, u32),
+    targets: Vec<engine::analysis::decision_template::TargetPin>,
+) -> WaitingFor {
+    let (mut runner, slots) = stage_sequenced_offer(
+        label,
+        count.clone(),
+        max_iterations,
+        vec![victims_point(positions.0, positions.1)],
+    );
+    let template = targets_template(&slots[0], count.clone(), targets);
+    runner
+        .act(GameAction::DeclareShortcut {
+            count,
+            template: Some(template),
+        })
+        .expect("the declare ingress answers a staged offer rather than erroring");
+    runner.state().waiting_for.clone()
+}
+
+fn refused(verdict: &WaitingFor) -> bool {
+    matches!(verdict, WaitingFor::Priority { .. })
+}
+
+fn accepted(verdict: &WaitingFor) -> bool {
+    matches!(verdict, WaitingFor::RespondToShortcut { .. })
+}
+
+/// **Row 1** — the gap, closed on its strongest member, at the production declare ingress.
+///
+/// A `Constant` naming its head plus a subject the offer never published is ACCEPTED at BASE:
+/// index 0 resolves the head, which IS a published legal target, so nothing but the new
+/// reachability clause can refuse it.
+///
+/// # Discrimination
+///
+/// Every hostile ranking here names EXACTLY TWO subjects. A head test loosened by one
+/// (`nth(2).is_none()`, "at most two") is verdict-identical to the shipped clause on a
+/// three-entry ranking and would admit these, so the size is the discrimination and not a
+/// convenience.
+///
+/// The third leg is a CONTROL, not a positive: it is refused at BASE and at the tip alike, by
+/// the pre-existing value-legality check both times, and it differs from the paired positive in
+/// exactly the head's publication status — which is what proves the board really withholds that
+/// subject.
+#[test]
+fn p10_row_1_a_declaration_naming_an_unread_announcement_is_refused_at_the_declare_ingress() {
+    let unbounded = ShortcutDecisionSchema::default().max_iterations;
+
+    let hostile = declare_targets_verdict(
+        "p10-row1-hostile",
+        IterationCount::UntilLethal,
+        unbounded,
+        (1, 1),
+        vec![constant_of(&[P1, P0])],
+    );
+    assert!(
+        refused(&hostile),
+        "CR 732.2c: a proposal may not certify an announcement no index resolves. got {hostile:?}"
+    );
+
+    let head_only = declare_targets_verdict(
+        "p10-row1-positive",
+        IterationCount::UntilLethal,
+        unbounded,
+        (1, 1),
+        vec![constant_of(&[P1])],
+    );
+    assert!(
+        accepted(&head_only),
+        "PAIRED POSITIVE: the SAME declaration with its tail deleted is accepted on the same \
+         board through the same call, so the refusal above is the new clause and not a broken \
+         board. got {head_only:?}"
+    );
+
+    let unpublished_head = declare_targets_verdict(
+        "p10-row1-control",
+        IterationCount::UntilLethal,
+        unbounded,
+        (1, 1),
+        vec![constant_of(&[P0])],
+    );
+    assert!(
+        refused(&unpublished_head),
+        "CONTROL: a one-entry ranking states its head, so the new clause is silent on it — this \
+         is the pre-existing CR 608.2b value-legality refusal, and it is what shows the board \
+         really withholds this subject. got {unpublished_head:?}"
+    );
+}
+
+/// **Row 2** — the class, at both ends, on one board, with both axes pinned.
+///
+/// Declared count `Fixed(1)` throughout, so the validated range is 1 and every fattened step
+/// past index 0 is one the count does not reach. That placement is the discrimination: a
+/// conjunct written inside `validate_pins`' per-index loop never sees an unreached step's
+/// ranking and accepts every refusal leg here, while the count axis — refusing a step this
+/// count does not reach — refuses every acceptance leg.
+///
+/// # The quantifier positions each leg walks
+///
+/// The fattened step sits at the FIRST, an INTERIOR and the LAST position of a schedule, and a
+/// colliding pair of starts sits at the first, an interior and the last sorted window, so a walk
+/// restricted to any combination of extremal positions accepts a leg the shipped clause refuses.
+#[test]
+fn p10_row_2_every_schedule_arm_refuses_a_step_naming_more_than_its_head() {
+    // One expression per leg, differing from its paired positive in exactly one axis.
+    let verdict = |label: &str, positions: (u32, u32), pin| {
+        declare_targets_verdict(label, IterationCount::Fixed(1), 6, positions, vec![pin])
+    };
+    let p2 = PlayerId(2);
+    let p3 = PlayerId(3);
+
+    // ── The `Piecewise` arm. Every leg's paired positive deletes exactly the fattened tail. ──
+    for (label, fat, thin) in [
+        (
+            "piecewise-last",
+            piecewise_of(&[(0, &[P1]), (5, &[P1, P0])]),
+            piecewise_of(&[(0, &[P1]), (5, &[P1])]),
+        ),
+        (
+            "piecewise-first",
+            piecewise_of(&[(0, &[P1, P0]), (5, &[P1])]),
+            piecewise_of(&[(0, &[P1]), (5, &[P1])]),
+        ),
+        (
+            "piecewise-interior",
+            piecewise_of(&[(0, &[P1]), (5, &[P1, P0]), (9, &[P1])]),
+            piecewise_of(&[(0, &[P1]), (5, &[P1]), (9, &[P1])]),
+        ),
+        (
+            "round-robin-last",
+            round_robin_of(&[&[P1], &[P1, P0]]),
+            round_robin_of(&[&[P1], &[P1]]),
+        ),
+        (
+            "round-robin-first",
+            round_robin_of(&[&[P1, P0], &[P1]]),
+            round_robin_of(&[&[P1], &[P1]]),
+        ),
+        (
+            "round-robin-interior",
+            round_robin_of(&[&[P1], &[P1, P0], &[P1]]),
+            round_robin_of(&[&[P1], &[P1], &[P1]]),
+        ),
+    ] {
+        assert!(
+            refused(&verdict(label, (1, 1), fat)),
+            "{label}: a step naming more than its head is refused wherever it sits"
+        );
+        assert!(
+            accepted(&verdict(label, (1, 1), thin)),
+            "{label}: PAIRED POSITIVE — one-entry steps, the later step still unreached by this \
+             count, accepted. A count-axis conjunct refuses this, and a clause narrowed to what \
+             the respond-side projection can state refuses the rotation half"
+        );
+    }
+
+    // ── The distinct-starts clause. A segment sharing a start with a LATER-DECLARED one is
+    //    selected at no index at all, so it declares a subject no drive reads — while both
+    //    legs' index 0 resolves a PUBLISHED subject, so no value check can answer them apart.
+    for (label, collided, distinct) in [
+        (
+            "starts-adjacent",
+            piecewise_of(&[(0, &[P1]), (0, &[p2])]),
+            // The first segment's start RAISED above the second's: a descending pair, whose
+            // index 0 resolves the same seat the collided leg's does. An ordering check refuses
+            // it although the drive reads both its segments.
+            piecewise_of(&[(2, &[P1]), (0, &[p2])]),
+        ),
+        (
+            "starts-non-adjacent",
+            piecewise_of(&[(0, &[P1]), (2, &[p2]), (0, &[p3])]),
+            // Starts 0, 2, 1 — pairwise distinct and non-monotone. A clause comparing
+            // DECLARED-ORDER neighbours reads every pair distinct in the leg above too.
+            piecewise_of(&[(0, &[P1]), (2, &[p2]), (1, &[p3])]),
+        ),
+        (
+            "starts-interior-window",
+            piecewise_of(&[(0, &[P1]), (2, &[p2]), (2, &[p3]), (7, &[P1])]),
+            piecewise_of(&[(0, &[P1]), (2, &[p2]), (3, &[p3]), (7, &[P1])]),
+        ),
+    ] {
+        assert!(
+            refused(&verdict(label, (1, 1), collided)),
+            "{label}: a segment shadowed by a later one sharing its start is announced at no \
+             index, at no count, under no range"
+        );
+        assert!(
+            accepted(&verdict(label, (1, 1), distinct)),
+            "{label}: PAIRED POSITIVE — pairwise-distinct starts, nothing else changed"
+        );
+    }
+}
+
+/// **Row 2b** — the clause is applied to EVERY pin of a multi-position declaration.
+///
+/// Both legs stage a point whose published positions the declaration fills exactly, and the
+/// fattened pin sits at a position that is neither the first nor the last, so the clause
+/// hoisted out of the pin loop onto any combination of extremal pins accepts a board the
+/// shipped clause refuses.
+#[test]
+fn p10_row_2b_the_clause_reads_every_declared_pin_position() {
+    let p2 = PlayerId(2);
+    let p3 = PlayerId(3);
+    let verdict = |label: &str, positions: (u32, u32), targets| {
+        declare_targets_verdict(label, IterationCount::Fixed(1), 6, positions, targets)
+    };
+
+    let two_fat = verdict(
+        "p10-row2b-two-fat",
+        (2, 2),
+        vec![constant_of(&[P1]), constant_of(&[p2, p3])],
+    );
+    assert!(
+        refused(&two_fat),
+        "the SECOND of two declared pins names more than its head. got {two_fat:?}"
+    );
+    let two_thin = verdict(
+        "p10-row2b-two-thin",
+        (2, 2),
+        vec![constant_of(&[P1]), constant_of(&[p2])],
+    );
+    assert!(
+        accepted(&two_thin),
+        "PAIRED POSITIVE: the same two pins with the second's tail deleted. got {two_thin:?}"
+    );
+
+    let three_fat = verdict(
+        "p10-row2b-three-fat",
+        (3, 3),
+        vec![
+            constant_of(&[P1]),
+            constant_of(&[p2, P0]),
+            constant_of(&[p3]),
+        ],
+    );
+    assert!(
+        refused(&three_fat),
+        "the INTERIOR of three declared pins names more than its head. got {three_fat:?}"
+    );
+    let three_thin = verdict(
+        "p10-row2b-three-thin",
+        (3, 3),
+        vec![constant_of(&[P1]), constant_of(&[p2]), constant_of(&[p3])],
+    );
+    assert!(
+        accepted(&three_thin),
+        "PAIRED POSITIVE: the same three pins with the interior one's tail deleted. \
+         got {three_thin:?}"
+    );
+}
+
+/// **Row 7** — the rule is DECLARE-time, and a legacy declaration is not re-refused.
+///
+/// One value, two authorities. The `Constant` names its head plus a second subject the point
+/// DID publish, so no value-legality check can refuse it and the new clause is the only thing
+/// that can.
+#[test]
+fn p10_row_7_a_restored_multi_entry_ranking_still_loads_and_still_drives_head_only() {
+    use engine::analysis::decision_template::{
+        ConcreteDecision, ConcreteTarget, IterationIndex, PinnedDecision,
+    };
+
+    let p2 = PlayerId(2);
+
+    // ── LOAD half: the wire ingress `Ranking`'s `#[serde(try_from)]` shim runs. ──
+    let (runner, slots) = stage_sequenced_offer(
+        "p10-row7-load",
+        IterationCount::Fixed(3),
+        6,
+        vec![victims_point(1, 1)],
+    );
+    let mut carrying = runner.state().clone();
+    let declared = targets_template(
+        &slots[0],
+        IterationCount::Fixed(3),
+        vec![constant_of(&[P1, p2])],
+    );
+    carrying.waiting_for = WaitingFor::RespondToShortcut {
+        player: P1,
+        remaining_players: Vec::new(),
+        proposal: engine::analysis::loop_check::ShortcutProposal {
+            proposer: P0,
+            predicted_winner: Some(P0),
+            count: IterationCount::Fixed(3),
+            unbounded: Vec::new(),
+            win_kind: engine::analysis::loop_check::WinKind::Advantage,
+            template: Some(declared),
+            per_cycle: None,
+        },
+    };
+    let wire = serde_json::to_string(&carrying).expect("serialize the pending proposal");
+    let restored: GameState = serde_json::from_str(&wire).expect("a legacy declaration LOADS");
+    let WaitingFor::RespondToShortcut { proposal, .. } = &restored.waiting_for else {
+        panic!("the restored state still carries its pending proposal");
+    };
+    let template = proposal
+        .template
+        .as_ref()
+        .expect("the restored proposal still carries its declaration");
+    assert_eq!(
+        template.decisions,
+        vec![PinnedDecision::Targets {
+            slot: slots[0].clone(),
+            targets: vec![constant_of(&[P1, p2])],
+        }],
+        "reach-guard: the restored declaration still carries BOTH subjects — a round trip that \
+         dropped the tail would satisfy the head-only assertions below vacuously"
+    );
+    for i in 0..3 as IterationIndex {
+        let resolved = engine::analysis::decision_template::resolve(template, i, &restored)
+            .expect("the restored declaration still drives");
+        assert_eq!(
+            resolved,
+            vec![ConcreteDecision::Targets {
+                slot: slots[0].clone(),
+                targets: vec![ConcreteTarget::Player(P1)],
+            }],
+            "CR 732.2a: every index of the drive's range resolves the HEAD, at index {i}"
+        );
+    }
+
+    // ── DECLARE half: the identical value offered to the declare ingress at the tip. ──
+    let declared_now = declare_targets_verdict(
+        "p10-row7-declare",
+        IterationCount::Fixed(1),
+        6,
+        (1, 1),
+        vec![constant_of(&[P1, p2])],
+    );
+    assert!(
+        refused(&declared_now),
+        "the same value a save may still carry is refused at DECLARE. got {declared_now:?}"
+    );
+    let truncated = declare_targets_verdict(
+        "p10-row7-positive",
+        IterationCount::Fixed(1),
+        6,
+        (1, 1),
+        vec![constant_of(&[P1])],
+    );
+    assert!(
+        accepted(&truncated),
+        "SAME-CALL POSITIVE: that declaration truncated to its head. It is what tells this \
+         refusal from the others this ingress can produce. got {truncated:?}"
     );
 }

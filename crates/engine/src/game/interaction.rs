@@ -3085,8 +3085,9 @@ fn declared_object_candidate(
 /// in the order the drive reaches them, beside the iteration each step starts at.
 ///
 /// ONE rule for every schedule shape: `evaluate_schedule` resolves `Ranking::head` and never
-/// advances past it, so a ranking's tail is the NEXT episode's pre-declaration and no iteration
-/// announces it — reaching it mid-drive would be the conditional action the rule bars. A constant
+/// advances past it, so no iteration announces a ranking's tail — reaching it mid-drive would be
+/// the conditional action the rule bars, and `declaration_conforms` refuses a tail at declare
+/// time, leaving a decoded save as the only way one arrives here. A constant
 /// IS the one-step schedule starting at zero, so both shapes read through this one walk rather
 /// than through arms that can drift apart.
 ///
@@ -10173,14 +10174,24 @@ fn materialize_loop_shortcut_response(
         // sequence, so its `choice_ids` may exceed the point's `max`. Every other pin decodes
         // exactly as before.
         let sequenced = !pin.amounts.is_empty() || pin.choice_ids.len() > point.max as usize;
-        // A multi-position slot needs a per-position carrier a flat list cannot express, so
-        // refuse rather than mis-read. A nested carrier is a new exported type and its own
-        // design.
-        if sequenced
-            && !(matches!(point.kind, InteractionShortcutPointKind::Targets) && point.max == 1)
-        {
-            return Err(InteractionReasonCode::ConstraintUnsatisfied);
-        }
+        // CR 732.2a: a SEQUENCED pin is ONE target position's partition of a DECLARED count, and
+        // nothing else. A multi-position slot needs a per-position carrier a flat list cannot
+        // express; an until-lethal proposal has no count to partition, so a sequence there names
+        // announcements past the head that no drive ever reads (CR 732.2c). Both are refused
+        // rather than mis-read. Binding the count here carries "this can only be a `Fixed`
+        // partition" in the type instead of in a comment.
+        let sequenced_partition: Option<u32> = if sequenced {
+            match (&count, &point.kind) {
+                (IterationCount::Fixed(declared), InteractionShortcutPointKind::Targets)
+                    if point.max == 1 =>
+                {
+                    Some(*declared)
+                }
+                _ => return Err(InteractionReasonCode::ConstraintUnsatisfied),
+            }
+        } else {
+            None
+        };
         if pin.choice_ids.len() < point.min as usize
             || (!sequenced && pin.choice_ids.len() > point.max as usize)
             || (point.unique
@@ -10218,8 +10229,8 @@ fn materialize_loop_shortcut_response(
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let targets = if sequenced {
-                    vec![decode_sequenced_targets(&count, pin, subjects)?]
+                let targets = if let Some(declared) = sequenced_partition {
+                    vec![decode_sequenced_targets(declared, pin, subjects)?]
                 } else {
                     // CR 400.7 vs CR 601.2c: an OBJECT position keeps the identity spelling it
                     // already had, re-bound through `decision_template::resolve_source`
@@ -10389,31 +10400,25 @@ fn shortcut_announcement_subject(
     }
 }
 
-/// CR 732.2a + CR 601.2c: decode ONE SEQUENCED `Targets` pin — an ordered announcement
-/// sequence for a SINGLE target position — into the one `TargetPin` it names.
+/// CR 732.2a + CR 601.2c: decode ONE SEQUENCED `Targets` pin — a DECLARED count's partition
+/// across an ordered announcement sequence for a SINGLE target position — into the one
+/// `TargetPin` it names.
 ///
-/// The declared count IS the mode discriminant and also carries the number to partition. Its
-/// variant is decided by the OFFER: the count match above the pin loop maps a `Fixed` count
-/// spec to `Fixed` and an `UntilLethal` spec to `UntilLethal`, and refuses the mixed cell, so
-/// the client cannot choose the mode.
+/// ONE MODE. `declared` is the count to partition: `amounts` partitions the sequence
+/// one-for-one and in order, every part at least 1, summing to `declared`. Segment starts are
+/// the running prefix sums, so the pin is a `TargetSchedule::Piecewise`. Positive parts summing
+/// to `declared` put every segment start inside `0..declared`, which is the range
+/// `game::engine::shortcut_validated_range` validates, so this producer can never mint a
+/// `ScheduleExhausted`. An until-lethal proposal names no count to partition and is not
+/// sequenced at all — its caller refuses the shape before reaching here, and its submission
+/// decodes through the ordinary flat `Targets` arm.
 ///
-///   * `Fixed(n)` — `amounts` partitions the sequence one-for-one and in order, every part at
-///     least 1, summing to `n`. Segment starts are the running prefix sums, so the pin is a
-///     `TargetSchedule::Piecewise`. Positive parts summing to `n` put every segment start
-///     inside `0..n`, which is the range `game::engine::shortcut_validated_range` validates,
-///     so this producer can never mint a `ScheduleExhausted`.
-///   * `UntilLethal` — no declared count exists to partition, so `amounts` must be EMPTY and
-///     the pin is a `TargetSchedule::Constant` over the whole ranking. CR 732.2a: within one
-///     drive only `Ranking::head` resolves; the tail is the NEXT episode's pre-declaration,
-///     which is what keeps the declaration free of the conditional actions the rule bars.
-///
-/// `Ranking::new` validates the sequence for BOTH modes, and it is the only thing that can:
+/// `Ranking::new` validates the sequence, and it is the only thing that can:
 /// `loop_shortcut_projection` hard-codes `unique: false` into every `Targets` point it mints,
-/// so `point.unique` cannot refuse a duplicate for any member of this class. On the order-only
-/// mode the duplicate-free clause is the type's own rule, exactly on subject: a repeated entry
-/// in a preference ordering makes the tail unreachable. On the FIXED mode it is this ingress's
-/// deliberate restriction rather than a rule consequence — two disjoint `Piecewise` segments
-/// naming one seat are two announcements at two iterations, and the engine accepts that shape.
+/// so `point.unique` cannot refuse a duplicate for any member of this class. Here the
+/// duplicate-free clause is this ingress's deliberate restriction rather than a rule
+/// consequence — two disjoint `Piecewise` segments naming one seat are two announcements at two
+/// iterations, and the engine accepts that shape.
 /// The admitted set is compositions of the declared count into positive parts over a
 /// DUPLICATE-FREE subset of the published candidates. Non-contiguous allocations are foreclosed
 /// here, and an authoring surface built on this ingress inherits the foreclosure.
@@ -10421,49 +10426,39 @@ fn shortcut_announcement_subject(
 /// The result is ONE `TargetPin`, so `declaration_conforms`' `targets.len()` window needs no
 /// relaxation and none is made.
 fn decode_sequenced_targets(
-    declared: &IterationCount,
+    declared: u32,
     pin: &InteractionShortcutPin,
     subjects: Vec<AnnouncementSubject>,
 ) -> Result<TargetPin, InteractionReasonCode> {
     let sequence =
         Ranking::new(subjects).map_err(|_| InteractionReasonCode::ConstraintUnsatisfied)?;
-    match declared {
-        IterationCount::UntilLethal => {
-            if !pin.amounts.is_empty() {
-                return Err(InteractionReasonCode::ConstraintUnsatisfied);
-            }
-            Ok(TargetPin::Scheduled(TargetSchedule::Constant(sequence)))
-        }
-        IterationCount::Fixed(declared) => {
-            // One amount per announced subject, in the sequence's own order. This conjunct
-            // also refuses the amount-free sequence: `choice_ids` longer than the point's
-            // `max` with no declared lengths cannot partition a finite count.
-            if pin.amounts.len() != pin.choice_ids.len() {
-                return Err(InteractionReasonCode::ConstraintUnsatisfied);
-            }
-            let mut start = 0u32;
-            let mut segments = Vec::with_capacity(pin.amounts.len());
-            for (assignment, (choice_id, subject)) in pin
-                .amounts
-                .iter()
-                .zip(pin.choice_ids.iter().zip(sequence.iter()))
-            {
-                // A composition's parts are POSITIVE: a zero is not a part of the declared
-                // count, and it would also collide two segment starts.
-                if assignment.choice_id != *choice_id || assignment.amount == 0 {
-                    return Err(InteractionReasonCode::ConstraintUnsatisfied);
-                }
-                segments.push((start, Ranking::one(subject.clone())));
-                start = start
-                    .checked_add(assignment.amount)
-                    .ok_or(InteractionReasonCode::PayloadTooLarge)?;
-            }
-            if start != *declared {
-                return Err(InteractionReasonCode::ConstraintUnsatisfied);
-            }
-            Ok(TargetPin::Scheduled(TargetSchedule::Piecewise(segments)))
-        }
+    // One amount per announced subject, in the sequence's own order. This conjunct also refuses
+    // the amount-free sequence: `choice_ids` longer than the point's `max` with no declared
+    // lengths cannot partition a finite count.
+    if pin.amounts.len() != pin.choice_ids.len() {
+        return Err(InteractionReasonCode::ConstraintUnsatisfied);
     }
+    let mut start = 0u32;
+    let mut segments = Vec::with_capacity(pin.amounts.len());
+    for (assignment, (choice_id, subject)) in pin
+        .amounts
+        .iter()
+        .zip(pin.choice_ids.iter().zip(sequence.iter()))
+    {
+        // A composition's parts are POSITIVE: a zero is not a part of the declared count, and
+        // it would also collide two segment starts.
+        if assignment.choice_id != *choice_id || assignment.amount == 0 {
+            return Err(InteractionReasonCode::ConstraintUnsatisfied);
+        }
+        segments.push((start, Ranking::one(subject.clone())));
+        start = start
+            .checked_add(assignment.amount)
+            .ok_or(InteractionReasonCode::PayloadTooLarge)?;
+    }
+    if start != declared {
+        return Err(InteractionReasonCode::ConstraintUnsatisfied);
+    }
+    Ok(TargetPin::Scheduled(TargetSchedule::Piecewise(segments)))
 }
 
 fn decode_amount_assignments(
