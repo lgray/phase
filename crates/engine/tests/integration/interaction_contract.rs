@@ -6641,6 +6641,10 @@ fn generated_contract_and_projection_source_exclude_unstable_internal_strings() 
     assert!(!generated.contains("semanticCode"));
 
     let projection_source = include_str!("../../src/game/interaction.rs");
+    assert!(
+        projection_source.contains("Vec<(LoopShortcutPointProjection, Vec<u32>)>"),
+        "declared points and their segments accumulate as one paired vector, so no arm can publish a point without its segment"
+    );
     assert!(!projection_source.contains(":?}"));
     assert!(!projection_source.contains(".variant_name()"));
     assert!(!projection_source.contains("let semantic_code"));
