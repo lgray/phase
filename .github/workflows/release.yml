@@ -58,7 +58,15 @@ jobs:
             exit 1
           fi
 
-          echo "dispatch ref is tag '$REF_NAME' - accepted"
+          # A tag ref alone is not enough. The environment admits any tag matching
+          # its policy, but the steps below release `inputs.tag`, so a run started
+          # from v0.71.0 with tag=v0.72.0 is admitted and then publishes v0.72.0.
+          if [ "$REF_NAME" != "$INPUT_TAG" ]; then
+            echo "::error::This run was started from tag '$REF_NAME' but asks to release '$INPUT_TAG'. Release the tag you dispatch from: gh workflow run release.yml --ref '$INPUT_TAG'"
+            exit 1
+          fi
+
+          echo "dispatch ref is tag '$REF_NAME', matching the requested release - accepted"
 
       - uses: actions/checkout@v4
         with:
