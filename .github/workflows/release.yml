@@ -647,6 +647,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Same gate as build-web-image: the release environment admits tag refs
+    # only, so a wrong-ref run publishes neither image rather than half a pair.
+    environment: release
     env:
       RELEASE_TAG: ${{ needs.resolve-release-ref.outputs.release_tag }}
       RELEASE_SHA: ${{ needs.resolve-release-ref.outputs.release_sha }}
