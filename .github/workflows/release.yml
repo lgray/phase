@@ -38,6 +38,28 @@ jobs:
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       release_sha: ${{ steps.resolve.outputs.release_sha }}
     steps:
+      # A recovery dispatch must be started from the release tag itself. The
+      # `release` environment's deployment policy is matched against the run's
+      # GITHUB_REF, not against the `tag` input below, and that environment has
+      # no branch policy — so a dispatch from a branch is turned away there,
+      # several jobs later, by a rejection that does not name its own cause.
+      # Fail here instead, where the message can say what to do about it.
+      - name: Require a tag ref for recovery dispatches
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::Start this workflow from the release tag, not from $REF_TYPE '$REF_NAME'. Re-run it with: gh workflow run release.yml --ref '$INPUT_TAG'"
+            exit 1
+          fi
+
+          echo "dispatch ref is tag '$REF_NAME' - accepted"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
