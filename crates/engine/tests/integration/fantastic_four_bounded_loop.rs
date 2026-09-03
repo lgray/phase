@@ -7261,3 +7261,392 @@ fn both_answered_optional_decisions_reach_the_responder_with_their_own_answers()
         "and both boards name the same two decisions, so only the ANSWERS differ between them"
     );
 }
+
+/// CR 732.2a + CR 601.2c: whether an authored split is an ADMISSIBLE declaration of `count`
+/// over the announced-target decision's own candidates, read in the canonical published order.
+///
+/// Returns the conjunct that refused — the [`shortcut_elements_agree_modulo_ids`] idiom — so a
+/// caller asserts WHICH clause a constructed member trips rather than that something did. This
+/// is not the ingress's own condition: the ingress accepts members this refuses. It is what
+/// every leg of the composed row needs of the split it drives.
+///
+/// * `"dropped seat"` — the canonical element's own seats, each exactly once. Stated as a SET,
+///   so a REORDERING reaches the final clause instead of being refused here.
+/// * `"zero part"` — every part at least 1: the entries producer drops a family netting to
+///   zero, so a zero part publishes no magnitude and no per-seat decrease.
+/// * `"total"` — the parts total the declared count.
+/// * `"unedited"` — the sequence differs from the canonical one, else "edits the allocation
+///   away from the canonical split" is satisfied by re-sending it.
+/// * `"repeated part"` — pairwise-distinct parts, which is what makes the per-seat magnitudes
+///   distinguishable.
+/// * `"final segment length"` — a final part of at least 2. With positive parts totalling the
+///   count that is exactly "every segment START inside the window a drive of that count
+///   realizes"; a segment starting at the last index realizes nothing, which
+///   [`p4_row_1c_a_segment_starting_at_the_last_index_realizes_nothing_but_stays_announced`]
+///   drives.
+/// * `"leading-cycle seat"` — the final segment's seat is NOT the one the leading cycle
+///   resolves, which repays exactly the cycle that segment loses.
+fn authored_split_is_admissible(
+    canonical: &[(PlayerId, u32)],
+    authored: &[(PlayerId, u32)],
+    count: u32,
+    leading: PlayerId,
+) -> Result<(), &'static str> {
+    use std::collections::{BTreeSet, HashSet};
+
+    let seats_of = |split: &[(PlayerId, u32)]| -> BTreeSet<PlayerId> {
+        split.iter().map(|(seat, _)| *seat).collect()
+    };
+    if authored.len() != canonical.len() || seats_of(authored) != seats_of(canonical) {
+        return Err("dropped seat");
+    }
+    if authored.iter().any(|(_, part)| *part == 0) {
+        return Err("zero part");
+    }
+    if authored.iter().map(|(_, part)| *part).sum::<u32>() != count {
+        return Err("total");
+    }
+    if authored == canonical {
+        return Err("unedited");
+    }
+    let parts: Vec<u32> = authored.iter().map(|(_, part)| *part).collect();
+    if parts.iter().collect::<HashSet<_>>().len() != parts.len() {
+        return Err("repeated part");
+    }
+    let Some((final_seat, final_part)) = authored.last() else {
+        return Err("dropped seat");
+    };
+    if *final_part < 2 {
+        return Err("final segment length");
+    }
+    if *final_seat == leading {
+        return Err("leading-cycle seat");
+    }
+    Ok(())
+}
+
+/// **ONE CHAIN** — the published offer, the authored edit, the ingress, the responder's own
+/// projection and the committed drive are ONE object travelling ONE chain.
+///
+/// Every leg is already asserted by the row that built it — the ceiling by
+/// [`e1_a_narrowed_offer_publishes_its_bound_beside_an_untouched_infinity_channel`] and
+/// [`e7_the_published_bound_is_the_count_pickers_own_ceiling`], the token product by
+/// [`t3_the_published_token_rate_is_delivered_by_the_accepted_drive`], the full commit across
+/// an authored allocation by [`p4_row_1_an_allocation_of_the_published_ceiling_commits_its_whole_count`],
+/// the one-producer identity by [`the_responders_element_agrees_with_the_producers_other_two_call_sites`].
+/// What none of them holds is that those surfaces are the SAME object, so this is ONE test with
+/// ONE `load_f4()` and every leg reading what the previous leg produced.
+///
+/// No magnitude is transcribed: the board is re-dumpable by design, so a pinned figure would
+/// bind this row to one dump, and a re-dump the derivation cannot serve reds LOUDLY at the
+/// admissibility predicate rather than quietly at a leg.
+///
+/// # Discrimination, per leg
+///
+/// (a) revert `DerivedViews::bounded_loop_max_repetitions`' population ⇒ `None`. (b) drop the
+/// token term from `ResourceVector::period` ⇒ this guard reds directly, never as `0 == 0`.
+/// (c) stop publishing `allocation` ⇒ there is no split to select. (d) derive a same-total
+/// RE-COMPOSITION (two parts exchanged) instead of a transfer ⇒ the prefix-sum leg reds while
+/// every predicate clause, the total included, still passes. (e) fall back to the canonical allocation when a pin
+/// states `amounts` ⇒ the returned allocation is (c)'s; re-derive the entries at that call site
+/// instead of calling the shared producer ⇒ its magnitudes disagree with (f)'s. (f) publish the
+/// canonical split on the respond side ⇒ the agreement predicate returns
+/// `Err("allocation amounts")`. (g) revert the slot-attributed subtraction ⇒ the declaration
+/// truncates strictly short of its declared count. (h) point the conformance site back at the
+/// raw snapshot pair while leaving the mint fed ⇒ zero cycles commit, so this leg reds while
+/// (b) still passes.
+#[test]
+fn the_published_offer_the_authored_edit_and_the_committed_drive_are_one_chain() {
+    use engine::game::derived_views::derive_views;
+    use engine::game::interaction::preview_interaction;
+    use engine::types::interaction::{InteractionPreviewRequest, PreviewRequestId};
+
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+
+    // ── (a) THE BADGE. The open window's ceiling is the engine-published bound, and that bound
+    //    is the count picker's own — ONE value, which every leg below then runs on.
+    let (bound, per_cycle) = {
+        let (_, certificate, schema) = offer_parts(&state);
+        (
+            schema.max_iterations,
+            certificate
+                .per_cycle
+                .clone()
+                .expect("a bounded offer publishes its per-period signature"),
+        )
+    };
+    assert_eq!(
+        derive_views(&state, None).bounded_loop_max_repetitions,
+        Some(bound),
+        "CR 732.2a: the open window's ceiling is the schema's own bound {bound}"
+    );
+    assert_eq!(
+        bound, offer.max_count,
+        "CR 732.2a: the badge's bound and the count picker's published ceiling are ONE engine \
+         value, which is what makes every leg below run on the same count"
+    );
+    let count = offer.max_count;
+
+    // ── (b) THE RATES, asserted BEFORE anything multiplies by them, so no product below can
+    //    meet its clause as `0 == 0 * n`.
+    let token_rate = per_cycle.delta.tokens_created;
+    assert!(
+        token_rate > 0,
+        "ANTI-VACUITY: a ZERO published token rate FAILS this row rather than satisfying it. \
+         published delta={:?}",
+        per_cycle.delta
+    );
+    assert!(
+        offer.rate > 0,
+        "ANTI-VACUITY: the published per-cycle life rate is strictly positive, else every \
+         per-seat magnitude below degenerates to zero. published life={:?}",
+        per_cycle.delta.life
+    );
+
+    // ── (c) THE PUBLISHED ELEMENT, selected by its published count rather than by index.
+    let element = offer
+        .published_preview
+        .iter()
+        .find(|element| element.count == count)
+        .expect("the published preview list always samples the picker's own ceiling");
+    let canonical: Vec<(PlayerId, u32)> = element
+        .allocation
+        .iter()
+        .map(|assignment| {
+            let seat = f4_candidate_seat(&offer.offer_candidates, &assignment.choice_id)
+                .expect("every published allocation position names a seat");
+            (PlayerId(seat), assignment.amount)
+        })
+        .collect();
+    // Identity and ORDER against the offer's OWN published victims, so the arity this row runs
+    // at is the offer's rather than a transcribed number and a re-dump that moves the victim
+    // set flows through.
+    assert_eq!(
+        canonical.iter().map(|(seat, _)| *seat).collect::<Vec<_>>(),
+        offer.legal_seats,
+        "CR 601.2c: the count-keyed element allocates over the offer's own published legal \
+         victims, in published order. canonical={canonical:?}"
+    );
+    assert!(
+        canonical.len() > 1,
+        "reach-guard: more than one segment, which is what a per-seat comparison below needs. \
+         canonical={canonical:?}"
+    );
+
+    // ── (d) THE EDIT. Repetitions are TRANSFERRED from earlier segments to later ones until
+    //    the parts are strictly increasing in the canonical published order; the offsets sum to
+    //    zero, so the count is preserved by construction.
+    let spread = i64::try_from(canonical.len()).expect("a published arity fits an i64") - 1;
+    let authored: Vec<(PlayerId, u32)> = canonical
+        .iter()
+        .enumerate()
+        .map(|(index, (seat, part))| {
+            let shifted =
+                i64::from(*part) + 2 * i64::try_from(index).expect("an index fits an i64") - spread;
+            (*seat, u32::try_from(shifted).unwrap_or(0))
+        })
+        .collect();
+    let prefix_sums = |split: &[(PlayerId, u32)]| -> Vec<u32> {
+        split
+            .iter()
+            .scan(0u32, |running, (_, part)| {
+                *running += part;
+                Some(*running)
+            })
+            .collect()
+    };
+    let (authored_prefix, canonical_prefix) = (prefix_sums(&authored), prefix_sums(&canonical));
+    assert!(
+        authored_prefix
+            .iter()
+            .zip(&canonical_prefix)
+            .all(|(edited, published)| edited <= published)
+            && authored_prefix
+                .iter()
+                .zip(&canonical_prefix)
+                .any(|(edited, published)| edited < published),
+        "the edit MOVES repetitions from earlier segments to later ones: every prefix sum is at \
+         most the canonical's, and one is strictly less. A same-total re-composition over the \
+         same seats — two parts exchanged — preserves the total the predicate checks and fails \
+         here. canonical={canonical_prefix:?} authored={authored_prefix:?}"
+    );
+    assert_eq!(
+        authored_split_is_admissible(&canonical, &authored, count, offer.preannounced),
+        Ok(()),
+        "the derived split must be admissible; a re-dump this derivation cannot serve reds \
+         HERE. canonical={canonical:?} authored={authored:?} count={count}"
+    );
+
+    // Both refusals are REAL members the ingress accepts and commits, and each falsifies a
+    // named conjunct of (g). The admitted split above, run through the IDENTICAL predicate in
+    // this same invocation, is their positive control.
+    let mut trailing_one = authored.clone();
+    let last = trailing_one.len() - 1;
+    let moved = trailing_one[last].1 - 1;
+    trailing_one[last].1 = 1;
+    trailing_one[0].1 += moved;
+    assert_eq!(
+        authored_split_is_admissible(&canonical, &trailing_one, count, offer.preannounced),
+        Err("final segment length"),
+        "a split whose FINAL PART is 1 starts its last segment past the window a drive of \
+         {count} realizes, so its trailing seat realizes nothing. split={trailing_one:?}"
+    );
+    let mut swapped_seats: Vec<PlayerId> = authored.iter().map(|(seat, _)| *seat).collect();
+    let leading_index = swapped_seats
+        .iter()
+        .position(|seat| *seat == offer.preannounced)
+        .expect("the leading cycle's seat is one of the published legal victims");
+    swapped_seats.swap(leading_index, last);
+    let leading_last: Vec<(PlayerId, u32)> = swapped_seats
+        .into_iter()
+        .zip(authored.iter().map(|(_, part)| *part))
+        .collect();
+    assert_eq!(
+        authored_split_is_admissible(&canonical, &leading_last, count, offer.preannounced),
+        Err("leading-cycle seat"),
+        "a split whose FINAL SEGMENT is the leading cycle's seat has that cycle repay exactly \
+         the cycle the segment loses, so it realizes the declared split scaled. \
+         split={leading_last:?}"
+    );
+
+    // ── (e) THE ROUND-TRIP: what the proposer is shown back for the split just authored.
+    let submission = f4_allocation_submission(&offer, count, &authored);
+    let returned = preview_interaction(
+        &state,
+        offer.proposer,
+        &InteractionPreviewRequest {
+            request_id: PreviewRequestId("h1-one-chain".to_string()),
+            interaction_id: submission.interaction_id.clone(),
+            response: submission.response.clone(),
+        },
+    )
+    .shortcut_preview
+    .expect("the proposer's own authored declaration previews an element");
+    assert_eq!(
+        returned
+            .allocation
+            .iter()
+            .map(|assignment| (
+                f4_candidate_seat(&offer.offer_candidates, &assignment.choice_id).map(PlayerId),
+                assignment.amount
+            ))
+            .collect::<Vec<_>>(),
+        authored
+            .iter()
+            .map(|(seat, part)| (Some(*seat), *part))
+            .collect::<Vec<_>>(),
+        "CR 732.2a: the returned element states the allocation the player AUTHORED, not the \
+         canonical one it was derived from. canonical={canonical:?}"
+    );
+    assert_eq!(
+        f4_life_entries(&returned),
+        authored
+            .iter()
+            .map(|(seat, part)| (seat.0, -(offer.rate * i64::from(*part)) as i32))
+            .collect::<Vec<_>>(),
+        "CR 732.2a: the per-victim lines are the RETURNED element's own entries — the \
+         predictable result of the described sequence, the published rate {} times EACH seat's \
+         own segment",
+        offer.rate
+    );
+
+    // ── (f) SUBMISSION AND THE RESPOND BEAT.
+    assert!(
+        !offer.other_pins.is_empty(),
+        "reach-guard: the split travels ALONGSIDE a pin for every other non-read-only point, \
+         else that clause is vacuous on this board"
+    );
+    let (life_before, _, _, tokens_before) = commit_axes(&state);
+    let responder = f4_open_respond_window(&mut state, &offer, &submission);
+    let reply = f4_reply_at(&state, responder);
+    let published = reply
+        .declared
+        .as_ref()
+        .expect("CR 732.2b: the responding seat is published the declaration it is judging");
+    assert!(
+        published.allocation.len() > 1 && !published.entries.is_empty(),
+        "reach-guard: an equality between two empty or single-segment elements cannot satisfy \
+         the agreement below. allocation={:?} entries={:?}",
+        published.allocation,
+        published.entries
+    );
+    let magnitudes: Vec<i32> = f4_life_entries(published)
+        .into_iter()
+        .map(|(_, amount)| amount)
+        .collect();
+    assert_eq!(
+        magnitudes
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        magnitudes.len(),
+        "reach-guard: the compared per-seat magnitudes are PAIRWISE DISTINCT, so a uniform \
+         re-attribution cannot satisfy the agreement below. magnitudes={magnitudes:?}"
+    );
+    assert_eq!(
+        shortcut_elements_agree_modulo_ids(
+            (&returned, &offer.offer_candidates),
+            (published, &reply.candidates),
+        ),
+        Ok(()),
+        "CR 732.2c: the choices taken on acceptance are the ones this seat was SHOWN — the \
+         round-tripped element and the published one agree modulo the ids that rotate across \
+         the beat"
+    );
+
+    // ── (g) THE COMMIT.
+    assert!(
+        accept_all_opponents(&mut state) > 0,
+        "the CR 732.2c window must actually take responses"
+    );
+    let (life_after, _, _, tokens_after) = commit_axes(&state);
+    let losses: Vec<i64> = life_before
+        .iter()
+        .zip(&life_after)
+        .map(|(before, after)| i64::from(before - after))
+        .collect();
+    for (seat, _) in &authored {
+        assert!(
+            f4_loss(&state, &losses, *seat) > 0,
+            "CR 732.2a: every seat the declaration names takes repetitions. {seat:?} \
+             losses={losses:?}"
+        );
+    }
+    assert_eq!(
+        authored
+            .iter()
+            .map(|(seat, _)| f4_loss(&state, &losses, *seat))
+            .sum::<i64>(),
+        offer.rate * i64::from(count),
+        "CR 732.2a: the accepted drive commits EXACTLY {count} repetitions of the published \
+         per-cycle charge, and every legal victim is declared. losses={losses:?}"
+    );
+    assert_eq!(
+        f4_loss(&state, &losses, offer.proposer),
+        0,
+        "the proposer is not a published victim and loses nothing. losses={losses:?}"
+    );
+    let realized: Vec<i64> = authored
+        .iter()
+        .map(|(seat, _)| f4_loss(&state, &losses, *seat))
+        .collect();
+    let declared_scaled: Vec<i64> = authored
+        .iter()
+        .map(|(_, part)| offer.rate * i64::from(*part))
+        .collect();
+    assert_ne!(
+        realized, declared_scaled,
+        "CR 601.2c: the leading cycle resolves a target announced BEFORE the drive begins, so \
+         every segment boundary lands one cycle late while the total stays exact — the realized \
+         map is not the declared split scaled. realized={realized:?}"
+    );
+
+    // ── (h) THE TOKENS, at the very count this row committed.
+    assert_eq!(
+        (tokens_after - tokens_before) as i64,
+        token_rate * i64::from(count),
+        "CR 732.2a: the board mints the published per-cycle token rate {token_rate} on each of \
+         the {count} committed cycles: {tokens_before} -> {tokens_after} battlefield tokens"
+    );
+}
