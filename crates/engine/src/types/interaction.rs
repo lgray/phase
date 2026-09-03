@@ -916,11 +916,16 @@ pub struct InteractionShortcutPin {
     /// boundary while the total stays exact — so a segment starting at the last index is
     /// admitted and stays announced, yet realizes no repetition at all.
     ///
-    /// The offer's own published count decides which kind a sequence is. A FIXED
-    /// count is partitioned: `amounts` is non-empty and sums to the DECLARED count,
-    /// every part at least 1. An UNTIL-LETHAL offer declares ORDER ONLY and `amounts`
-    /// must be EMPTY, because there is no declared count to partition and an amount
-    /// there could only be a sentinel.
+    /// CR 732.2a + CR 732.2c: a proposal describes the choices acceptance then takes,
+    /// so a sequence is admissible only where the count it partitions is already known.
+    /// A pin is SEQUENCED on either limb — it carries `amounts`, or its `choice_ids`
+    /// outnumber the point's published `max` — and both limbs bind the same partition,
+    /// which only an `IterationCount::Fixed` can fill. Under a fixed count that
+    /// partition is `amounts`: one part per announced subject, in the sequence's own
+    /// order, every part at least 1, summing to the DECLARED count. An until-lethal
+    /// count has nothing to partition and refuses BOTH limbs — an empty `amounts` does
+    /// not rescue a longer `choice_ids` list — so no announcement order past the head
+    /// is declarable through this ingress.
     ///
     /// A sequenced pin is admissible only on a `Targets` point whose published `max`
     /// is 1: a multi-position slot needs a per-position carrier a flat list cannot
