@@ -66,14 +66,22 @@ else
   # disguise, as "Card database not loaded" from the engine worker.
   if [ -z "${CARD_DATA_URL:-}" ]; then
     meta_url="$DATA_BASE_URL/card-data-meta.json"
-    if ! meta=$(curl -fsSL "$meta_url"); then
+    if ! meta=$(curl -fsSL --connect-timeout 10 --max-time 60 "$meta_url"); then
       echo "ERROR: could not fetch $meta_url to resolve the card pool." >&2
       echo "  Set CARD_DATA_URL to a content-addressed card-data-<hash>.json, or" >&2
       echo "  generate a pool matching this checkout: ./scripts/gen-card-data.sh" >&2
       exit 2
     fi
-    if ! card_data_file=$(printf '%s' "$meta" | jq -re '.data_filename'); then
-      echo "ERROR: $meta_url has no .data_filename." >&2
+    if ! card_data_file=$(printf '%s' "$meta" | jq -er '
+      if (.data_filename | type) == "string"
+        and (.data_filename | test("^card-data-[0-9a-f]{16}\\.json$"))
+      then .data_filename
+      else error("invalid data_filename")
+      end
+    '); then
+      echo "ERROR: $meta_url has no valid content-addressed .data_filename." >&2
+      echo "  Set CARD_DATA_URL to a content-addressed card-data-<hash>.json, or" >&2
+      echo "  generate a pool matching this checkout: ./scripts/gen-card-data.sh" >&2
       exit 2
     fi
     export CARD_DATA_URL="$DATA_BASE_URL/$card_data_file"
