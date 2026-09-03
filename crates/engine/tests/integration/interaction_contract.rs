@@ -5026,6 +5026,98 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
     }
 }
 
+/// **CR 601.2c — a latched-constant pin publishes no point, and moves no allocation domain.**
+///
+/// A `ManaColor` pin is a constant the proposer produced, and a `ConvokeTaps` pin re-binds its
+/// creatures live each iteration; neither states an answer this projection publishes, so each is
+/// skipped like every other unstatable decision. Unlike a skipped announced-target decision, a
+/// skip here cannot re-domain the allocation — `allocation_point` names the first `Targets`
+/// point and neither pin is one — so the rest of the declaration is published unchanged. Both
+/// ends of the class are on the board: one pin AHEAD of the announced-target decision, one
+/// BEHIND it.
+///
+/// `materialize_loop_shortcut_response` mints both pins into a declared template, so a save or a
+/// wire restore carrying either reaches this walk.
+///
+/// # Discrimination
+///
+/// Publish a point from either arm ⇒ the statement list differs, and for the leading pin the
+/// allocation moves off the announced-target decision. Refuse from either arm ⇒ the board loses
+/// its points and its element.
+#[test]
+fn a_latched_constant_pin_publishes_no_point_and_disturbs_nothing_beside_it() {
+    use engine::analysis::decision_template::PinnedDecision;
+    use engine::types::mana::ManaColor;
+
+    const COUNT: u32 = 6;
+    const STARTS: [u32; 2] = [0, 2];
+
+    let window = |decisions: Vec<PinnedDecision>| {
+        respond_reply_of(&respond_window(
+            IterationCount::Fixed(COUNT),
+            Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+            decisions,
+        ))
+    };
+    let stated = || {
+        piecewise_pin(
+            preview_slot(0),
+            &STARTS,
+            &seat_subjects(&[R_FIRST, R_SECOND]),
+        )
+    };
+
+    // ── The paired positive: the announced-target decision on its own.
+    let alone = window(vec![stated()]);
+    assert_eq!(
+        alone.points.len(),
+        1,
+        "reach-guard: the statable decision publishes its statement point"
+    );
+    assert_eq!(
+        declared_amounts(
+            alone
+                .declared
+                .as_ref()
+                .expect("and the declared count is partitioned over it")
+        ),
+        segments_from(&STARTS, COUNT),
+        "ANTI-VACUITY: two segments, pairwise distinct — an empty partition could not \
+         satisfy the comparisons below"
+    );
+    assert_eq!(alone.allocation_group, Some(0));
+
+    // ── The same decision with a latched pin on either side of it.
+    let sandwiched = window(vec![
+        PinnedDecision::ManaColor {
+            slot: preview_slot(1),
+            color: ManaColor::Blue,
+        },
+        stated(),
+        PinnedDecision::ConvokeTaps {
+            slot: preview_slot(2),
+        },
+    ]);
+    assert_eq!(
+        sandwiched.points, alone.points,
+        "neither latched pin publishes a point, so the statement list is the one the \
+         announced-target decision produces alone"
+    );
+    assert_eq!(
+        sandwiched.candidates, alone.candidates,
+        "and no candidate is minted for a point that was never published"
+    );
+    assert_eq!(
+        sandwiched.declared, alone.declared,
+        "CR 601.2c: the partition is stated over the same decision, at the same magnitudes"
+    );
+    assert_eq!(
+        sandwiched.allocation_group, alone.allocation_group,
+        "a pin AHEAD of the announced-target decision publishes nothing, so it does not \
+         displace the index the allocation is stated over"
+    );
+}
+
 /// **CR 732.2b — the respond-side projection inherits the single redaction authority.**
 ///
 /// `opportunity_for_slot` reads `filtered_state.waiting_for`, so a template
