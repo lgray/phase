@@ -129,7 +129,7 @@ function shortcutReplyCandidates(
 
 /** Which control the offer's announced-target point opens, CARRYING the point it opens on, so
  *  routing, rendering and the dispatch cannot disagree about which point is answered. */
-type TargetsControl = { kind: "allocation" | "ranking"; point: InteractionShortcutPoint };
+type TargetsControl = { kind: "allocation" | "subject"; point: InteractionShortcutPoint };
 
 /** Positional equality of two allocations. Not `JSON.stringify`: stringify equality also depends
  *  on key insertion order, which would move the gate for a reason unrelated to the allocation. */
@@ -328,7 +328,7 @@ function DeclareShortcutOffer({
     allocationPoint === null
       ? null
       : spec?.count.type === "untilLethal"
-        ? { kind: "ranking", point: allocationPoint }
+        ? { kind: "subject", point: allocationPoint }
         : previewElements.length > 0
           ? { kind: "allocation", point: allocationPoint }
           : null;
@@ -389,9 +389,10 @@ function DeclareShortcutOffer({
   const [authored, setAuthored] = useState<{ count: number; raw: Record<string, string> } | null>(
     null,
   );
-  // CR 732.2a: an UntilLethal declaration states ORDER only — there is no declared count to
-  // partition. `null` = untouched, so the rows read the point's published candidate order.
-  const [order, setOrder] = useState<InteractionChoiceId[] | null>(null);
+  // CR 732.2c: an UntilLethal declaration announces ONE subject — the drive resolves it at every
+  // repetition and never advances past it, so a longer list would certify choices nobody takes.
+  // No default: `null` until the player selects, which is what disables Confirm.
+  const [subject, setSubject] = useState<InteractionChoiceId | null>(null);
   // CR 603.5: the optional "may", whose choice is made on resolution; pinning it declares the same
   // answer for every iteration. No client-side default — an unanswered point disables Confirm.
   const [mayPicks, setMayPicks] = useState<Record<number, InteractionChoiceId>>({});
@@ -418,8 +419,6 @@ function DeclareShortcutOffer({
     ? allocationRows.filter((r) => r.amount! > 0).map((r) => ({ choiceId: r.id, amount: r.amount! }))
     : [];
   const allocated = effective.reduce((sum, a) => sum + a.amount, 0);
-  const rankedOrder: InteractionChoiceId[] =
-    targetsControl?.kind === "ranking" ? (order ?? targetsControl.point.candidateIds) : [];
 
   const editRow = (id: InteractionChoiceId, next: string) => {
     if (chosen === null) return;
@@ -428,17 +427,6 @@ function DeclareShortcutOffer({
       raw: Object.fromEntries(
         (targetsControl?.point.candidateIds ?? []).map((c) => [c, c === id ? next : rowRaw(c)]),
       ),
-    });
-  };
-
-  const move = (from: number, to: number) => {
-    setOrder((prev) => {
-      const current = prev ?? rankedOrder;
-      if (to < 0 || to >= current.length) return prev;
-      const next = current.slice();
-      const [item] = next.splice(from, 1);
-      next.splice(to, 0, item);
-      return next;
     });
   };
 
@@ -453,7 +441,8 @@ function DeclareShortcutOffer({
   // game consequence. The engine remains the sole legality authority.
   const declarationComplete =
     mayPoints.every((p) => mayPicks[p.group] !== undefined) &&
-    (targetsControl?.kind !== "allocation" || (effective.length > 0 && allocated === chosen));
+    (targetsControl?.kind !== "allocation" || (effective.length > 0 && allocated === chosen)) &&
+    (targetsControl?.kind !== "subject" || subject !== null);
 
   const confirmDisabled =
     (countSpec !== null && chosen === null) || (pinRoute && !declarationComplete);
@@ -476,17 +465,27 @@ function DeclareShortcutOffer({
 
     // Only `targetsControl.point` can reach the `targets` arms — the group conjunct in
     // `renderable` is what guarantees it — so there is no second `targets` point for `effective`
-    // to leak onto. `amounts` is always written explicitly.
-    const pinFor = (p: InteractionShortcutPoint): InteractionShortcutPin =>
+    // to leak onto. `amounts` is always written explicitly. CR 732.2c: `null` on an unselected
+    // subject is the same type-level refusal arm the count uses above, so the dispatched id is
+    // the SELECTED value rather than an assertion, a default, a clamp or a fallback.
+    const pinFor = (p: InteractionShortcutPoint): InteractionShortcutPin | null =>
       p.kind === "mayChoice"
         ? { group: p.group, choiceIds: [mayPicks[p.group]], amounts: [] }
         : targetsControl?.kind === "allocation"
           ? { group: p.group, choiceIds: effective.map((a) => a.choiceId), amounts: effective }
-          : { group: p.group, choiceIds: rankedOrder, amounts: [] };
+          : subject === null
+            ? null
+            : { group: p.group, choiceIds: [subject], amounts: [] };
+
+    const pins = points.filter((p) => !p.readOnly).map(pinFor);
+    if (pins.includes(null)) return null;
 
     return {
       type: "shortcut",
-      data: { decision, pins: points.filter((p) => !p.readOnly).map(pinFor) },
+      data: {
+        decision,
+        pins: pins.filter((pin): pin is InteractionShortcutPin => pin !== null),
+      },
     };
   };
 
@@ -662,30 +661,29 @@ function DeclareShortcutOffer({
             </button>
           </div>
         )}
-        {pinRoute && targetsControl?.kind === "ranking" && (
+        {pinRoute && targetsControl?.kind === "subject" && (
           <div className="flex flex-col gap-2 rounded-lg bg-white/5 px-3 py-2">
             <p className="text-xs font-semibold tracking-wide text-slate-400 uppercase">
-              {t("comboShortcut.rankingTitle")}
+              {t("comboShortcut.announceTitle")}
             </p>
-            {rankedOrder.map((id, position) => {
-              const subject = candidateLabel(t, candidates, id);
+            {/* The domain is the point's published `candidateIds` and the bound is its published
+                `max`; the modal derives neither. */}
+            {targetsControl.point.candidateIds.map((id) => {
+              const label = candidateLabel(t, candidates, id);
+              const picked = subject === id;
               return (
-                <SubjectControl key={id} subject={subject}>
+                <SubjectControl key={id} subject={label}>
                   <button
-                    aria-label={t("comboShortcut.rankingMoveUp", { subject })}
-                    disabled={position === 0}
-                    onClick={() => move(position, position - 1)}
-                    className="min-h-8 rounded border border-white/10 px-2 text-white/80 transition hover:bg-white/10 disabled:opacity-30"
+                    onClick={() => setSubject(id)}
+                    aria-pressed={picked}
+                    aria-label={t("comboShortcut.announceAria", { subject: label })}
+                    className={`min-h-9 rounded-[12px] border px-3 py-1 text-sm font-semibold transition ${
+                      picked
+                        ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100"
+                        : "border-white/8 bg-white/5 text-slate-200 hover:bg-white/8"
+                    }`}
                   >
-                    ▲
-                  </button>
-                  <button
-                    aria-label={t("comboShortcut.rankingMoveDown", { subject })}
-                    disabled={position === rankedOrder.length - 1}
-                    onClick={() => move(position, position + 1)}
-                    className="min-h-8 rounded border border-white/10 px-2 text-white/80 transition hover:bg-white/10 disabled:opacity-30"
-                  >
-                    ▼
+                    {t("comboShortcut.announce")}
                   </button>
                 </SubjectControl>
               );

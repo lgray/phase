@@ -297,10 +297,10 @@ const confirmButton = () => screen.getByRole("button", { name: "Take the shortcu
 const allocationRow = (subject: string) =>
   screen.getByRole("spinbutton", { name: `Repetitions for ${subject}` });
 const countBox = () => screen.getByRole("spinbutton", { name: "Number of iterations" });
-/** The ranking ▲ control, whose accessible name names the row it moves — so the query matches the
- *  shape rather than a literal. `getAllByRole` returns DOM order, which is the rendered row order,
- *  and the anchors keep a row that lost its subject from still matching. */
-const MOVE_EARLIER = /^Move .+ earlier$/;
+/** The announce control, whose accessible name names the subject it announces — so the query
+ *  matches the shape rather than a literal. `getAllByRole` returns DOM order, which is the
+ *  rendered row order, and the anchors keep a control that lost its subject from still matching. */
+const ANNOUNCE = /^Announce .+$/;
 
 /** Every control this suite's DOM implementation scores focusable, paired with the name assistive
  *  technology announces for it. The population is a computed property — a non-negative `tabIndex`
@@ -1263,9 +1263,12 @@ describe("LoopShortcutModal", () => {
     }
   });
 
-  // P5-7: the order-only branch. An UntilLethal declaration states ORDER only, so `amounts` is
-  // empty and no allocation box renders.
-  it("declares order only on an UntilLethal offer carrying a targets point (P5-7)", () => {
+  // P5-7: the announce branch. CR 732.2c — an UntilLethal declaration names the ONE subject its
+  // drive resolves at every repetition, so `choiceIds` holds exactly the selected id, `amounts`
+  // is empty and no allocation box renders. The FIXED branch's own dispatch is asserted unchanged
+  // by the allocation rows earlier in this file, so this is a branch change and not a control
+  // deletion.
+  it("announces the one selected subject on an UntilLethal offer with a targets point (P5-7)", () => {
     seed(
       buildLoopShortcutWaitingFor(),
       {},
@@ -1281,12 +1284,21 @@ describe("LoopShortcutModal", () => {
     // The positive control for this query is P5-1, where it finds the boxes.
     expect(screen.queryAllByRole("spinbutton")).toHaveLength(0);
 
-    // Follow the ENTRY, not the row: move the third entry up, then up again from its NEW position.
-    // [k4,k5,k6] -> [k4,k6,k5] -> [k6,k4,k5], which is neither the published order nor a
-    // single-swap of it.
-    fireEvent.click(screen.getAllByRole("button", { name: MOVE_EARLIER })[2]);
-    fireEvent.click(screen.getAllByRole("button", { name: MOVE_EARLIER })[1]);
-    expect(screen.getAllByRole("button", { name: MOVE_EARLIER })[0]).toBeDisabled();
+    // NOTHING SELECTED: no client-side default, so Confirm refuses and nothing is dispatched.
+    expect(confirmButton()).toBeDisabled();
+    fireEvent.click(confirmButton());
+    expect(dispatchInteraction).not.toHaveBeenCalled();
+    expect(dispatchMock).not.toHaveBeenCalled();
+
+    // Select the SECOND published candidate. A control that ignored the selection and dispatched
+    // the head of `candidateIds` passes a first-candidate leg and fails this one.
+    const announce = screen.getAllByRole("button", { name: ANNOUNCE });
+    expect(announce).toHaveLength(3);
+    fireEvent.click(announce[1]);
+    expect(screen.getAllByRole("button", { name: ANNOUNCE })[1]).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
 
     fireEvent.click(confirmButton());
     expect(dispatchInteraction).toHaveBeenCalledWith({
@@ -1295,7 +1307,7 @@ describe("LoopShortcutModal", () => {
         type: "shortcut",
         data: {
           decision: { type: "acceptSuggested" },
-          pins: [{ group: 2, choiceIds: ["k6", "k4", "k5"], amounts: [] }],
+          pins: [{ group: 2, choiceIds: ["k5"], amounts: [] }],
         },
       },
     });
@@ -1478,12 +1490,12 @@ describe("LoopShortcutModal", () => {
   });
 
   // P5-13: offer rotation clears every new piece of state, through the existing `key={offerId}`.
-  // Two legs because the allocation and ranking controls are mutually exclusive on one offer: a
-  // Fixed offer carries allocation + may, an UntilLethal one carries ranking + may.
+  // Two legs because the allocation and announce controls are mutually exclusive on one offer: a
+  // Fixed offer carries allocation + may, an UntilLethal one carries announce + may.
   //
   // ⚠ Same warning as the rows above that assert offer A's typed count does not survive into
   // offer B: `view.rerender`, never a second `render`.
-  it("clears the allocation, the may pick and the order on a new offer (P5-13)", () => {
+  it("clears the allocation, the may pick and the announced subject on a new offer (P5-13)", () => {
     const fixedOffer = (interactionId: string) =>
       shortcutInteraction(
         {
@@ -1525,7 +1537,7 @@ describe("LoopShortcutModal", () => {
     );
     cleanup();
 
-    const rankingOffer = (interactionId: string) =>
+    const announceOffer = (interactionId: string) =>
       shortcutInteraction(
         {
           count: { type: "untilLethal" },
@@ -1534,15 +1546,21 @@ describe("LoopShortcutModal", () => {
         interactionId,
         [...mayCandidates("m0take", "m0dec"), seatCandidate("k4", 1), seatCandidate("k5", 2)],
       );
-    seed(buildLoopShortcutWaitingFor(), {}, rankingOffer("session.0.3"));
-    const rankingView = render(<DeclareShortcutModal />);
+    seed(buildLoopShortcutWaitingFor(), {}, announceOffer("session.0.3"));
+    const announceView = render(<DeclareShortcutModal />);
 
-    fireEvent.click(screen.getAllByRole("button", { name: MOVE_EARLIER })[1]);
-    expect(screen.getAllByText(/^P[23]$/).map((n) => n.textContent)).toEqual(["P3", "P2"]);
+    const pressed = () =>
+      screen
+        .getAllByRole("button", { name: ANNOUNCE })
+        .map((b) => b.getAttribute("aria-pressed"));
+    // Positive reach-guard: the selection actually LANDED, so "back to nothing selected" cannot
+    // pass on a control that never accepted input.
+    fireEvent.click(screen.getAllByRole("button", { name: ANNOUNCE })[1]);
+    expect(pressed()).toEqual(["false", "true"]);
 
-    seed(buildLoopShortcutWaitingFor(), {}, rankingOffer("session.0.4"));
-    rankingView.rerender(<DeclareShortcutModal />);
-    expect(screen.getAllByText(/^P[23]$/).map((n) => n.textContent)).toEqual(["P2", "P3"]);
+    seed(buildLoopShortcutWaitingFor(), {}, announceOffer("session.0.4"));
+    announceView.rerender(<DeclareShortcutModal />);
+    expect(pressed()).toEqual(["false", "false"]);
   });
 
   // P5-14: the seat gate runs ABOVE the routing branch, so a full three-point projection renders
@@ -1651,10 +1669,10 @@ describe("LoopShortcutModal", () => {
   });
 
   // P5-16: `targetsControl` is computed AFTER `allocationPoint` and is null when it is absent, so
-  // an UntilLethal offer with no targets point renders NO ranking control and still answers its
-  // may points. Together with P5-7 this shows the ranking control follows the POINT, not the
+  // an UntilLethal offer with no targets point renders NO announce control and still answers its
+  // may points. Together with P5-7 this shows the announce control follows the POINT, not the
   // count spec.
-  it("renders no ranking control on an UntilLethal offer with no targets point (P5-16)", () => {
+  it("renders no announce control on an UntilLethal offer with no targets point (P5-16)", () => {
     seed(
       buildLoopShortcutWaitingFor(),
       {},
@@ -1669,9 +1687,9 @@ describe("LoopShortcutModal", () => {
     );
     render(<DeclareShortcutModal />);
 
-    // Positive control for this query: P5-7, where it finds the ▲ buttons on an UntilLethal offer
-    // that DOES publish a targets point.
-    expect(screen.queryAllByRole("button", { name: MOVE_EARLIER })).toHaveLength(0);
+    // Positive control for this query: P5-7, where it finds the announce buttons on an
+    // UntilLethal offer that DOES publish a targets point.
+    expect(screen.queryAllByRole("button", { name: ANNOUNCE })).toHaveLength(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Take optional ability 1" }));
     fireEvent.click(screen.getByRole("button", { name: "Take optional ability 2" }));
@@ -1863,7 +1881,7 @@ describe("LoopShortcutModal", () => {
   // subject where a sighted player can read it. Every assertion is on rendered TEXT, never on an
   // accessible name: the accessible names carry the subject whether or not the visible text does,
   // so only a visible-text assertion discriminates on this property. All three members of the
-  // class are driven — allocation rows, may panels and ranking rows — which takes two offers,
+  // class are driven — allocation rows, may panels and announce rows — which takes two offers,
   // because allocation and ranking cannot coexist: the published count spec selects exactly one
   // `targetsControl` kind.
   it("renders every per-subject control's subject visibly (P5-20)", () => {
@@ -1911,7 +1929,7 @@ describe("LoopShortcutModal", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Take optional ability 1" })).toBeInTheDocument();
 
-    // B — the ranking member of the class, on the only offer shape that reaches it.
+    // B — the announce member of the class, on the only offer shape that reaches it.
     cleanup();
     seed(
       buildLoopShortcutWaitingFor(),
@@ -1932,8 +1950,8 @@ describe("LoopShortcutModal", () => {
     );
     render(<DeclareShortcutModal />);
 
-    // Reach-guard: the ranking panel is mounted, one row per candidate.
-    expect(screen.getAllByRole("button", { name: MOVE_EARLIER })).toHaveLength(3);
+    // Reach-guard: the announce panel is mounted, one row per candidate.
+    expect(screen.getAllByRole("button", { name: ANNOUNCE })).toHaveLength(3);
     for (const seat of ["P2", "P3", "P4"]) {
       expect(screen.getByText(seat), seat).toBeInTheDocument();
     }
@@ -1994,7 +2012,7 @@ describe("LoopShortcutModal", () => {
       allocationNames.length,
     );
 
-    // B — the ranking branch, whose two move buttons repeat once per row.
+    // B — the announce branch, whose selection button repeats once per row.
     cleanup();
     seed(
       buildLoopShortcutWaitingFor(),
@@ -2015,12 +2033,12 @@ describe("LoopShortcutModal", () => {
     );
     render(<DeclareShortcutModal />);
 
-    const rankingNames = controlNames();
-    expect(rankingNames).toEqual(
-      expect.arrayContaining(["Move P2 earlier", "Move P3 earlier", "Move P4 later"]),
+    const announceNames = controlNames();
+    expect(announceNames).toEqual(
+      expect.arrayContaining(["Announce P2", "Announce P3", "Announce P4"]),
     );
-    expect(rankingNames.filter((n) => n.length === 0)).toEqual([]);
-    expect(new Set(rankingNames).size, rankingNames.join(" | ")).toBe(rankingNames.length);
+    expect(announceNames.filter((n) => n.length === 0)).toEqual([]);
+    expect(new Set(announceNames).size, announceNames.join(" | ")).toBe(announceNames.length);
   });
 
   // P5-22: the may panel's ordinal counts the panels ON SCREEN, not the published points.
