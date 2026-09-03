@@ -1061,6 +1061,13 @@ pub enum InteractionResponseSpec {
     /// proposal is the partial statement this projection rules out. See
     /// `game::interaction::declared_sequence_preview`.
     ///
+    /// CR 601.2c: `allocation_group` names the `points` group `declared`'s allocation is stated
+    /// over — the announced-target decision the declared count is spread across. It is minted
+    /// from the same domain lookup as the allocation itself, so the two are published together
+    /// or not at all, and the allocated decision is identified by its published group rather
+    /// than by its position among the points. That decision's announcement order is the order
+    /// of the allocation's own entries; every other statement point states its order itself.
+    ///
     /// The docs live on the VARIANT rather than on the fields, for the reason the `Shortcut`
     /// variant above records: ts_rs emits field docs into the generated bindings as JSDoc but
     /// drops variant docs, and a comment block in the middle of a union keeps that file from
@@ -1072,6 +1079,8 @@ pub enum InteractionResponseSpec {
         points: Vec<InteractionShortcutPoint>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         declared: Option<InteractionShortcutPreview>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allocation_group: Option<u32>,
         confirm: ConfirmSemantics,
     },
 }

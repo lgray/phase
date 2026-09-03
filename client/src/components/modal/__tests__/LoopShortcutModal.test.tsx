@@ -155,6 +155,7 @@ function respondInteraction(
     maxIteration: 5,
     points: [],
     declared: null,
+    allocationGroup: null,
     confirm: "explicit",
     ...overrides,
   };
@@ -737,11 +738,21 @@ describe("LoopShortcutModal", () => {
   // T4 and T5 above stay UNMODIFIED: they seed `viewerInteraction: null`, which is the degrade
   // path, and they are the standing instrument that the base three lines are the shipped ones.
 
+  /** The allocation rows in render order. `getAllByText` throws on an empty match, which is the
+   *  query's own control against an assertion satisfied by rendering nothing. */
+  const allocationRows = () =>
+    screen.getAllByText(/^P\d+ — ×\d+$/).map((node) => node.textContent);
+
   // Every rendered magnitude is a direct read of a published entry. The discriminator is
   // the MUTATION: the same seed re-rendered with ONE published entry changed must render a
   // DIFFERENT specific string. A client-side recomputation reproduces the first value in both
   // renders and fails the second half. -13 and -29 are reachable by no arithmetic over the
   // other published fields (count 7, segments 2 and 5).
+  //
+  // CR 732.2a + CR 732.2b: the allocation rows are asserted IN ORDER — that order IS the
+  // announced sequence for the decision they partition, which is why the modal states no order
+  // lines beside them, and it is the object the responder names a place in. Distinct seats and
+  // distinct magnitudes, so a reversal is a different list.
   it("renders the published element's magnitude, and follows it when it changes", () => {
     const render_at = (amount: number) => {
       cleanup();
@@ -756,6 +767,7 @@ describe("LoopShortcutModal", () => {
               [amt("r0", 2), amt("r1", 5)],
               [{ family: "life", player: 1, amount }],
             ),
+            allocationGroup: 0,
           },
           [seatCandidate("r0", 1), seatCandidate("r1", 2)],
         ),
@@ -766,16 +778,14 @@ describe("LoopShortcutModal", () => {
     render_at(-13);
     expect(screen.getByText("-13 life — P2")).toBeInTheDocument();
     expect(screen.getByText("Proposed declaration:")).toBeInTheDocument();
-    expect(screen.getByText("P2 — ×2")).toBeInTheDocument();
-    expect(screen.getByText("P3 — ×5")).toBeInTheDocument();
+    expect(allocationRows()).toEqual(["P2 — ×2", "P3 — ×5"]);
 
     render_at(-29);
     expect(screen.getByText("-29 life — P2")).toBeInTheDocument();
     expect(screen.queryByText("-13 life — P2")).not.toBeInTheDocument();
     // The partition is unchanged, so the magnitude moved BECAUSE the published entry did —
     // not because anything the modal computes from the allocation did.
-    expect(screen.getByText("P2 — ×2")).toBeInTheDocument();
-    expect(screen.getByText("P3 — ×5")).toBeInTheDocument();
+    expect(allocationRows()).toEqual(["P2 — ×2", "P3 — ×5"]);
   });
 
   // The degrade half: a respond window whose spec carries NO declared sequence renders the base
@@ -811,10 +821,11 @@ describe("LoopShortcutModal", () => {
     expect(screen.queryByText(/ — ×/)).not.toBeInTheDocument();
   });
 
-  // Hostile: TWO announced-target decisions. The allocation is stated over the FIRST — so that
-  // decision's order is already the allocation lines' own order — and every LATER one carries no
-  // allocation and must state its order. A renderer reading only the first `targets` point shows
-  // the responder half the proposal, which is the object CR 732.2b gives them a right to shorten.
+  // Hostile: TWO announced-target decisions. The allocation is stated over the one the engine
+  // NAMES — so that decision's order is already the allocation lines' own order — and every other
+  // one carries no allocation and must state its order. A renderer reading only the first
+  // `targets` point shows the responder half the proposal, which is the object CR 732.2b gives
+  // them a right to shorten.
   it("states every announced-target decision, not just the first", () => {
     const points = [statementTargetsPoint(0, ["r0", "r1"]), statementTargetsPoint(1, ["r2", "r3"])];
     const candidates = [
@@ -827,7 +838,10 @@ describe("LoopShortcutModal", () => {
     seed(
       buildRespondToShortcutWaitingFor(),
       {},
-      respondInteraction({ points, declared: element(7, [amt("r0", 2), amt("r1", 5)]) }, candidates),
+      respondInteraction(
+        { points, declared: element(7, [amt("r0", 2), amt("r1", 5)]), allocationGroup: 0 },
+        candidates,
+      ),
     );
     render(<RespondToShortcutModal />);
 
@@ -854,6 +868,41 @@ describe("LoopShortcutModal", () => {
     expect(screen.getByText("2. P1")).toBeInTheDocument();
   });
 
+  // Hostile: the allocation is stated over the SECOND announced-target decision. Only the
+  // published group separates that from the first, so a renderer dropping the allocated decision
+  // by position states the wrong decision's order and withholds the right one's.
+  it("drops the order of the decision the engine names, not the first one", () => {
+    seed(
+      buildRespondToShortcutWaitingFor(),
+      {},
+      respondInteraction(
+        {
+          points: [
+            statementTargetsPoint(0, ["r0", "r1"]),
+            statementTargetsPoint(1, ["r2", "r3"]),
+          ],
+          declared: element(7, [amt("r2", 3), amt("r3", 4)]),
+          allocationGroup: 1,
+        },
+        [
+          seatCandidate("r0", 1),
+          seatCandidate("r1", 2),
+          seatCandidate("r2", 3),
+          seatCandidate("r3", 0),
+        ],
+      ),
+    );
+    render(<RespondToShortcutModal />);
+
+    expect(allocationRows()).toEqual(["P4 — ×3", "P1 — ×4"]);
+    // The decision with no allocation over it states its order...
+    expect(screen.getByText("1. P2")).toBeInTheDocument();
+    expect(screen.getByText("2. P3")).toBeInTheDocument();
+    // ...and the allocated one is not restated as an order beside its own partition.
+    expect(screen.queryByText("1. P4")).not.toBeInTheDocument();
+    expect(screen.queryByText("2. P1")).not.toBeInTheDocument();
+  });
+
   // Hostile: a declared element with EMPTY entries renders no preview block — the shared
   // `PreviewLines` already states nothing for one — but still states the partition. "Renders
   // nothing" cannot pass for "renders the right nothing".
@@ -865,6 +914,7 @@ describe("LoopShortcutModal", () => {
         {
           points: [statementTargetsPoint(0, ["r0", "r1"])],
           declared: element(7, [amt("r0", 2), amt("r1", 5)], []),
+          allocationGroup: 0,
         },
         [seatCandidate("r0", 1), seatCandidate("r1", 2)],
       ),

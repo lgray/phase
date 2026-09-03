@@ -3348,10 +3348,15 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
 /// partition with no entries instead — segment lengths are not magnitudes, and a responder
 /// judging accept-or-shorten against half the proposal is the partial statement this projection
 /// exists to rule out.
+///
+/// The domain's `group` travels OUT with the element, so a reader identifies which announced
+/// decision the allocation partitions instead of inferring it from the element's presence or
+/// from the point's position. One `Option` carries both, so the group cannot be published for
+/// an element that was refused, nor withheld from one that was stated.
 fn declared_sequence_preview(
     interaction_id: &InteractionId,
     declared: &DeclaredSequence,
-) -> Option<InteractionShortcutPreview> {
+) -> Option<(InteractionShortcutPreview, u32)> {
     // CR 601.2c: `allocation_point` is the single authority for WHICH announced-target point an
     // allocation is stated over, and the domain's `group`/`ids` are already that point's. Reading
     // the segments back by that same index is what makes the two halves of this element speak
@@ -3413,10 +3418,13 @@ fn declared_sequence_preview(
                     .is_some_and(|charge| !announced.contains(&charge.seat))
             })
         });
-    Some(shortcut_preview_element(
-        basis.as_ref().filter(|_| !charge_escapes_declaration),
-        count,
-        allocation,
+    Some((
+        shortcut_preview_element(
+            basis.as_ref().filter(|_| !charge_escapes_declaration),
+            count,
+            allocation,
+        ),
+        domain.group,
     ))
 }
 
@@ -7905,6 +7913,10 @@ fn opportunity_for_slot(
                     ),
                     None => (Vec::new(), Vec::new(), None),
                 };
+            // CR 601.2c: the element and the group of the announced-target decision it
+            // partitions leave the producer as one value, so no reader has to infer either from
+            // the other's presence.
+            let (declared, allocation_group) = declared.unzip();
             (
                 InteractionOpportunity {
                     interaction_id: slot.interaction_id.clone(),
@@ -7914,6 +7926,7 @@ fn opportunity_for_slot(
                             max_iteration: projection.max_iteration,
                             points,
                             declared,
+                            allocation_group,
                             confirm: ConfirmSemantics::Explicit,
                         },
                         candidates,

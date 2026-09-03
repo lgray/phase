@@ -3717,6 +3717,7 @@ fn respond_window(
 struct RespondReply {
     points: Vec<InteractionShortcutPoint>,
     declared: Option<InteractionShortcutPreview>,
+    allocation_group: Option<u32>,
     candidates: Vec<engine::types::interaction::InteractionChoice>,
 }
 
@@ -3729,9 +3730,13 @@ fn respond_reply_of(state: &GameState) -> RespondReply {
         );
     };
     let InteractionOpportunityResponse::Schema {
-        spec: InteractionResponseSpec::ShortcutReply {
-            points, declared, ..
-        },
+        spec:
+            InteractionResponseSpec::ShortcutReply {
+                points,
+                declared,
+                allocation_group,
+                ..
+            },
         candidates,
     } = &opportunity.response
     else {
@@ -3740,6 +3745,7 @@ fn respond_reply_of(state: &GameState) -> RespondReply {
     RespondReply {
         points: points.clone(),
         declared: declared.clone(),
+        allocation_group: *allocation_group,
         candidates: candidates.clone(),
     }
 }
@@ -4176,6 +4182,81 @@ fn the_declared_allocation_belongs_to_the_first_announced_target_decision() {
         "ANTI-VACUITY: the published order differs from itself reversed, so a producer that \
          sorted or reversed it fails and an empty-vs-empty comparison cannot satisfy the \
          equality above"
+    );
+}
+
+/// **CR 601.2c — the published group is the allocated decision's OWN group, not its position
+/// among the announced-target points.**
+///
+/// The two coincide on every declaration whose first decision is the announced-target one, which
+/// is why a reader that infers the allocated decision from a position is invisible on them. Here
+/// an OPTIONAL decision is answered first, so the decision the allocation partitions is published
+/// at group 1 while being the only `Targets` point — and the responder still has to be able to
+/// tell which decision's order the allocation already states.
+///
+/// # Discrimination
+///
+/// Number the allocation by its position among `Targets` points, or assume the allocated
+/// decision is always the first point ⇒ 0 is published and the equality fails. Drop the field ⇒
+/// the `Some` fails. The row asserts the group is NOT the first published point's, so a fixture
+/// edit that put the announced-target decision back in front takes the discrimination with it
+/// and says so.
+#[test]
+fn the_allocation_group_is_the_allocated_decisions_own_published_group() {
+    use engine::analysis::decision_template::{DecisionSlot, MayChoiceOption, PinnedDecision};
+    use engine::types::game_state::YieldTarget;
+
+    const COUNT: u32 = 6;
+    const STARTS: [u32; 2] = [0, 2];
+
+    let reply = respond_reply_of(&respond_window(
+        IterationCount::Fixed(COUNT),
+        Some(respond_period(&[(R_DRAINED, -5)], Vec::new())),
+        vec![
+            PinnedDecision::MayChoice {
+                slot: DecisionSlot::may(YieldTarget::ThisObject {
+                    source_id: ObjectId(9_317),
+                    incarnation: Some(1),
+                    trigger_description: None,
+                }),
+                take: MayChoiceOption::Take,
+            },
+            piecewise_pin(
+                preview_slot(0),
+                &STARTS,
+                &seat_subjects(&[R_FIRST, R_SECOND]),
+            ),
+        ],
+    ));
+    assert_eq!(
+        reply
+            .points
+            .iter()
+            .map(|point| point.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            InteractionShortcutPointKind::MayChoice,
+            InteractionShortcutPointKind::Targets,
+        ],
+        "reach-guard: the optional decision publishes AHEAD of the announced-target one, which \
+         is what separates a group from a position"
+    );
+    assert_eq!(
+        declared_amounts(
+            reply
+                .declared
+                .as_ref()
+                .expect("the announced-target decision partitions the declared count")
+        ),
+        segments_from(&STARTS, COUNT),
+        "reach-guard: the allocation is stated, so there is a group for it to be stated over"
+    );
+    assert_eq!(reply.allocation_group, Some(reply.points[1].group));
+    assert_ne!(
+        reply.allocation_group,
+        Some(reply.points[0].group),
+        "the named group is not the FIRST published point's, so a reader that dropped the first \
+         announced decision by position would drop the wrong one"
     );
 }
 
@@ -4673,6 +4754,14 @@ fn an_order_only_declaration_publishes_its_announcement_order_and_no_magnitude()
          and any magnitude here would be invented. got {:?}",
         order_only.declared
     );
+    // CR 601.2c: the element and the group it is stated over are published together, so a reader
+    // asks the group whether an allocation exists instead of inferring it from the element.
+    assert_eq!(counted.allocation_group, Some(0));
+    assert_eq!(
+        order_only.allocation_group, None,
+        "no partition is stated, so no announced decision is named as the one it partitions — \
+         and the order above is therefore this decision's to state"
+    );
 }
 
 /// **CR 601.2c — an unstatable announced-target decision costs one statement line, and refuses
@@ -5134,12 +5223,12 @@ where
     );
 }
 
-/// **The two carriers the respond-side spec gained are ADDITIVE, proven rather than asserted.**
+/// **The three carriers the respond-side spec gained are ADDITIVE, proven rather than asserted.**
 ///
 /// A `ShortcutReply` serialized before these fields existed still deserializes, and empty or
 /// absent ones are omitted from the emitted JSON — so no protocol version constant moves.
 ///
-/// REVERT-PROBES: drop `#[serde(default)]` on either carrier ⇒ its absent-key leg fails; drop
+/// REVERT-PROBES: drop `#[serde(default)]` on any carrier ⇒ its absent-key leg fails; drop
 /// `skip_serializing_if` ⇒ its omission leg fails.
 #[test]
 fn the_respond_side_points_and_declared_default_when_absent_and_are_omitted_when_empty() {
@@ -5166,18 +5255,20 @@ fn the_respond_side_points_and_declared_default_when_absent_and_are_omitted_when
         }],
     };
     let spec = |points: Vec<InteractionShortcutPoint>,
-                declared: Option<InteractionShortcutPreview>| {
+                declared: Option<InteractionShortcutPreview>,
+                allocation_group: Option<u32>| {
         InteractionResponseSpec::ShortcutReply {
             min_iteration: 0,
             max_iteration: 4,
             points,
             declared,
+            allocation_group,
             confirm: engine::types::interaction::ConfirmSemantics::Explicit,
         }
     };
 
     // The shape a save written before the declared-sequence fields existed carries: the two
-    // numbers and the confirm semantics, and neither of those keys.
+    // numbers and the confirm semantics, and none of those keys.
     let legacy = serde_json::json!({
         "type": "shortcutReply",
         "data": { "minIteration": 0, "maxIteration": 4, "confirm": "explicit" }
@@ -5185,19 +5276,27 @@ fn the_respond_side_points_and_declared_default_when_absent_and_are_omitted_when
     assert_eq!(
         serde_json::from_value::<InteractionResponseSpec>(legacy)
             .expect("a pre-field payload still deserializes"),
-        spec(Vec::new(), None),
+        spec(Vec::new(), None, None),
         "ADDITIVITY: the fields default, so no protocol version constant moves for them"
     );
 
     assert_defaulting_list_carrier(
         "/data/points",
-        &spec(vec![point.clone()], None),
-        &spec(Vec::new(), None),
+        &spec(vec![point.clone()], None, None),
+        &spec(Vec::new(), None, None),
     );
     assert_defaulting_option_carrier(
         "/data/declared",
-        &spec(Vec::new(), Some(element)),
-        &spec(Vec::new(), None),
+        &spec(Vec::new(), Some(element), None),
+        &spec(Vec::new(), None, None),
+    );
+    // A group of ZERO, deliberately: `skip_serializing_if = "Option::is_none"` keys on the
+    // option, so a carrier whose only populated fixture is a truthy number cannot tell it from
+    // one that skipped on the value.
+    assert_defaulting_option_carrier(
+        "/data/allocationGroup",
+        &spec(Vec::new(), None, Some(0)),
+        &spec(Vec::new(), None, None),
     );
 }
 

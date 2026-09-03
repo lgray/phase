@@ -783,13 +783,13 @@ export function RespondToShortcutModal() {
   // every per-seat magnitude and every answer are the engine's; this modal states them.
   const declared = spec?.declared ?? null;
   const points = spec?.points ?? [];
-  // CR 601.2c: a proposal may carry MORE THAN ONE announced-target decision, and the allocation
-  // is stated over the first in published order — the same rule `allocation_point` applies
-  // engine-side. That one's order is already stated by the allocation lines' own order, so it is
-  // dropped here when an allocation exists; every later decision has no allocation stated over it
-  // and states its order. Reading only the first would show the responder half the proposal.
-  const targetPoints = points.filter((p) => p.kind === "targets");
-  const orderPoints = declared === null ? targetPoints : targetPoints.slice(1);
+  // CR 601.2c: a proposal may carry MORE THAN ONE announced-target decision. The engine names
+  // the group its allocation is stated over; that decision's order is already the allocation
+  // lines' own order, so it is the one dropped here, and it is dropped by NAME rather than by
+  // position. No group is named exactly when no allocation is stated, and then every decision
+  // states its order — reading only the first would show the responder half the proposal.
+  const allocationGroup = spec?.allocationGroup ?? null;
+  const orderPoints = points.filter((p) => p.kind === "targets" && p.group !== allocationGroup);
   const allocation = declared?.allocation ?? [];
   const mayPoints = points.filter((p) => p.kind === "mayChoice");
   const showsDeclaration =
