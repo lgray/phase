@@ -38,39 +38,19 @@ jobs:
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       release_sha: ${{ steps.resolve.outputs.release_sha }}
     steps:
-      # A recovery dispatch must be started from the release tag itself. The
-      # `release` environment's deployment policy is matched against the run's
-      # GITHUB_REF, not against the `tag` input below, and that environment has
-      # no branch policy — so a dispatch from a branch is turned away there,
-      # several jobs later, by a rejection that does not name its own cause.
-      # Fail here instead, where the message can say what to do about it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Why a recovery dispatch must come from the tag it releases, and what
+      # goes wrong otherwise, is in the script.
       - name: Require a tag ref for recovery dispatches
         if: github.event_name == 'workflow_dispatch'
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-
-          if [ "$REF_TYPE" != "tag" ]; then
-            echo "::error::Start this workflow from the release tag, not from $REF_TYPE '$REF_NAME'. Re-run it with: gh workflow run release.yml --ref '$INPUT_TAG'"
-            exit 1
-          fi
-
-          # A tag ref alone is not enough. The environment admits any tag matching
-          # its policy, but the steps below release `inputs.tag`, so a run started
-          # from v0.71.0 with tag=v0.72.0 is admitted and then publishes v0.72.0.
-          if [ "$REF_NAME" != "$INPUT_TAG" ]; then
-            echo "::error::This run was started from tag '$REF_NAME' but asks to release '$INPUT_TAG'. Release the tag you dispatch from: gh workflow run release.yml --ref '$INPUT_TAG'"
-            exit 1
-          fi
-
-          echo "dispatch ref is tag '$REF_NAME', matching the requested release - accepted"
-
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        run: ./scripts/require-tag-ref-dispatch.sh
 
       - name: Resolve tag and commit
         id: resolve
