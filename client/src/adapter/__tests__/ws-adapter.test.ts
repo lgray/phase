@@ -7,7 +7,12 @@ import {
 } from "../ws-adapter";
 import { AdapterError, supportsMatchConcede, supportsServerRewind } from "../types";
 import type { FormatConfig, GameState } from "../types";
-import type { InteractionPreviewRequest } from "../generated/interaction";
+import type {
+  InteractionChoiceId,
+  InteractionId,
+  InteractionPreviewRequest,
+  PreviewRequestId,
+} from "../generated/interaction";
 import type { PhaseSocketTransport } from "../../services/openPhaseSocket";
 
 // Minimal mock WebSocket. Latest-constructed instance is exposed via
@@ -1765,25 +1770,26 @@ describe("WebSocketAdapter", () => {
      * NOT the candidate publication order, so a sort or a canonicalisation
      * anywhere in the adapter layer is caught rather than coinciding.
      */
+    const cid = (id: string) => id as InteractionChoiceId;
     const request = {
-      requestId: "preview-req-1",
-      interactionId: "interaction-1",
+      requestId: "preview-req-1" as PreviewRequestId,
+      interactionId: "interaction-1" as InteractionId,
       response: {
         type: "shortcut",
         data: {
           decision: { type: "fixed", data: { iterations: 6 } },
           pins: [{
             group: 0,
-            choiceIds: ["choice-c", "choice-a", "choice-b"],
+            choiceIds: [cid("choice-c"), cid("choice-a"), cid("choice-b")],
             amounts: [
-              { choiceId: "choice-c", amount: 3 },
-              { choiceId: "choice-a", amount: 1 },
-              { choiceId: "choice-b", amount: 2 },
+              { choiceId: cid("choice-c"), amount: 3 },
+              { choiceId: cid("choice-a"), amount: 1 },
+              { choiceId: cid("choice-b"), amount: 2 },
             ],
           }],
         },
       },
-    } as never as InteractionPreviewRequest;
+    } satisfies InteractionPreviewRequest;
 
     const answer = (requestId: string) => ({
       requestId,
@@ -1813,18 +1819,22 @@ describe("WebSocketAdapter", () => {
       const frame = sentPreviewFrame();
       expect(frame.type).toBe("PreviewInteraction");
       expect(frame.data.request).toEqual(request);
-      const pins = (frame.data.request.response as never as {
-        data: { pins: { choiceIds: string[]; amounts: { choiceId: string; amount: number }[] }[] };
-      }).data.pins;
+      const response = frame.data.request.response;
+      if (response.type !== "shortcut") throw new Error(`not a shortcut: ${response.type}`);
+      const pins = response.data.pins;
+      const amounts = pins[0].amounts;
+      // `amounts` is OPTIONAL on the wire, so its presence is an assertion rather than a shape
+      // the narrow gives for free.
+      if (amounts === undefined) throw new Error("the sent pin carries no amounts");
       // Reach guard: the asserted allocation has more than one segment, so an
       // adapter that dropped all but the first could not pass.
-      expect(pins[0].amounts.length).toBeGreaterThan(1);
-      expect(pins[0].amounts).toEqual([
+      expect(amounts.length).toBeGreaterThan(1);
+      expect(amounts).toEqual([
         { choiceId: "choice-c", amount: 3 },
         { choiceId: "choice-a", amount: 1 },
         { choiceId: "choice-b", amount: 2 },
       ]);
-      expect(pins[0].amounts.map((a) => a.choiceId)).toEqual(pins[0].choiceIds);
+      expect(amounts.map((a) => a.choiceId)).toEqual(pins[0].choiceIds);
 
       ws.dispatchSynthetic(
         "message",
@@ -1888,7 +1898,7 @@ describe("WebSocketAdapter", () => {
     it("rejects every in-flight preview when the socket closes, keeping answered ones", async () => {
       const answered = adapter.previewInteraction(request, 0);
       const unanswered = adapter.previewInteraction(
-        { ...request, requestId: "preview-req-2" } as InteractionPreviewRequest,
+        { ...request, requestId: "preview-req-2" as PreviewRequestId },
         0,
       );
 

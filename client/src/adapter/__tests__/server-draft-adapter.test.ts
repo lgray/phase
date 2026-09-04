@@ -5,7 +5,12 @@ import { ServerDraftAdapter } from "../server-draft-adapter";
 import { PROTOCOL_VERSION } from "../ws-adapter";
 import type { DraftPlayerView } from "../draft-adapter";
 import type { GameLogEntry, GameState, LegalActionsResult, ObjectAction } from "../types";
-import type { InteractionPreviewRequest } from "../generated/interaction";
+import type {
+  InteractionChoiceId,
+  InteractionId,
+  InteractionPreviewRequest,
+  PreviewRequestId,
+} from "../generated/interaction";
 
 // ── MockWebSocket (copied from ws-adapter.test.ts) ─────────────────────
 
@@ -832,25 +837,26 @@ describe("ServerDraftAdapter", () => {
      * NOT the candidate publication order, so a sort or a canonicalisation in
      * the adapter layer is caught rather than coinciding.
      */
+    const cid = (id: string) => id as InteractionChoiceId;
     const previewRequest = {
-      requestId: "preview-req-1",
-      interactionId: "interaction-1",
+      requestId: "preview-req-1" as PreviewRequestId,
+      interactionId: "interaction-1" as InteractionId,
       response: {
         type: "shortcut",
         data: {
           decision: { type: "fixed", data: { iterations: 6 } },
           pins: [{
             group: 0,
-            choiceIds: ["choice-c", "choice-a", "choice-b"],
+            choiceIds: [cid("choice-c"), cid("choice-a"), cid("choice-b")],
             amounts: [
-              { choiceId: "choice-c", amount: 3 },
-              { choiceId: "choice-a", amount: 1 },
-              { choiceId: "choice-b", amount: 2 },
+              { choiceId: cid("choice-c"), amount: 3 },
+              { choiceId: cid("choice-a"), amount: 1 },
+              { choiceId: cid("choice-b"), amount: 2 },
             ],
           }],
         },
       },
-    } as never as InteractionPreviewRequest;
+    } satisfies InteractionPreviewRequest;
 
     const previewAnswer = (requestId: string) => ({
       requestId,
@@ -902,7 +908,7 @@ describe("ServerDraftAdapter", () => {
     it("rejects in-flight previews on socket close, keeping answered ones", async () => {
       const answered = adapter.previewInteraction(previewRequest, 0);
       const unanswered = adapter.previewInteraction(
-        { ...previewRequest, requestId: "preview-req-2" } as InteractionPreviewRequest,
+        { ...previewRequest, requestId: "preview-req-2" as PreviewRequestId },
         0,
       );
 
