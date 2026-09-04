@@ -11,11 +11,14 @@
 # carrying a `deck_size`. The pristine root itself never has to be touched.
 #
 # THE REASON THAT STANDS IS THE PARSER-STATE ONE, and it was always the load-bearing
-# half. `dina_conqueror_4p` and `witherbloom_sprout_lumaret_simple_4p` differ from their
-# pristine regeneration in Priest of Forgotten Gods' `abilities` / `base_abilities` AST,
-# because the committed fixture carries a LATER parser state than the 2026-07-22/25
-# capture. Rerunning those from pristine would silently REVERT it. Stamping in place is
-# additive and cannot revert anything. The deck-size stage does not touch that ground.
+# half. A committed fixture can differ from its pristine regeneration inside an object's
+# `abilities` / `base_abilities` AST, because the fixture carries a LATER parser state
+# than the 2026-07-22/25 capture. WHICH objects and WHICH cards is a property of the
+# parser on the day, not of these files, so naming them here rots — read the divergence
+# off the artifacts with
+#   diff <(gzip -dc <fixture> | jq -S .gameState) <(unzip -p <dump> | jq -S .gameState)
+# Rerunning from pristine would silently REVERT that state. Stamping in place is additive
+# and cannot revert anything. The deck-size stage does not touch that ground.
 #
 # RESIDUAL: the exact per-fixture object difference is unmeasured here, and this file
 # does not quote one — a transcribed corpus figure rots, and the committed population is

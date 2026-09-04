@@ -17,12 +17,16 @@ use std::collections::BTreeSet;
 use std::io::Read;
 
 use engine::analysis::decision_template::{
-    AnnouncementSubject, DecisionSlot, IterationCount, PinnedDecision, TargetPin, TargetSchedule,
+    AnnouncementSubject, DecisionPoint, DecisionPointKind, DecisionSlot, IterationCount,
+    PinnedDecision, TargetPin, TargetSchedule,
 };
 use engine::game::engine::apply;
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
-use engine::types::game_state::{GameState, LoopDetectionMode, PersistedGameState, WaitingFor};
+use engine::types::game_state::{
+    GameState, LoopDetectionMode, PersistedGameState, WaitingFor, YieldTarget,
+};
+use engine::types::identifiers::ObjectId;
 use engine::types::PlayerId;
 
 /// The proposer and the seat the drive aimed every re-aimable choice at.
@@ -225,6 +229,27 @@ fn pinned_seats(decisions: &[PinnedDecision]) -> Vec<PlayerId> {
         .collect()
 }
 
+/// The published `Targets` slots the certificate never charges — empty on a self-consistent
+/// offer, and the containment holds in that direction ONLY.
+///
+/// CR 732.2a describes "a sequence of game choices", so only a CHOSEN announcement earns a
+/// decision point, while the charge model serves CR 704.5a — a player at 0 or less life
+/// loses whether or not anybody chose them. A withheld announcement is therefore charged
+/// and unpublished, and equality would red on that correct behavior. Non-`Targets` points
+/// are filtered out rather than compared: the charge model keys on ANNOUNCED targets, so
+/// their slots are legitimately absent from the charged set too.
+fn unbacked_published_target_slots(
+    charged: &BTreeSet<DecisionSlot>,
+    points: &[DecisionPoint],
+) -> BTreeSet<DecisionSlot> {
+    points
+        .iter()
+        .filter(|point| matches!(point.kind, DecisionPointKind::Targets { .. }))
+        .map(|point| point.slot.clone())
+        .filter(|slot| !charged.contains(slot))
+        .collect()
+}
+
 /// Rows 6 through 9, re-derived from the offer's own certificate on whichever board is
 /// handed in. No seat, magnitude or bound literal appears anywhere: the two boards differ
 /// in charge magnitude and in legal-target count, so a leg that quietly hardcoded either
@@ -298,14 +323,11 @@ fn assert_live_offer_is_self_consistent(state: &GameState, offer: LiveOffer) {
     }
     let charged_set: BTreeSet<DecisionSlot> =
         charged.iter().map(|(slot, _)| slot.clone()).collect();
-    let published_set: BTreeSet<DecisionSlot> = schema
-        .points
-        .iter()
-        .map(|point| point.slot.clone())
-        .collect();
-    assert_eq!(
-        charged_set, published_set,
-        "the charged slots and the schema's published decision points must be the same slots"
+    let unbacked = unbacked_published_target_slots(&charged_set, &schema.points);
+    assert!(
+        unbacked.is_empty(),
+        "the schema published a Targets point on a slot the certificate never charges: \
+         {unbacked:?}"
     );
 
     // Row 8 — a declaration IS published here, and its pin names the latched seat.
@@ -433,4 +455,57 @@ fn declarable_victims_are_empty_when_restored_and_populated_when_live() {
             "the live offer's are populated"
         );
     }
+}
+
+/// The containment, driven at the comparison itself. Both boards publish ONE `Targets`
+/// point against the ONE slot they charge, so no board here can separate a subset from an
+/// equality, and the direction would hold by cardinality rather than by rule.
+#[test]
+fn only_a_published_targets_slot_off_the_charged_set_is_unbacked() {
+    fn slot(source_id: u64) -> DecisionSlot {
+        DecisionSlot::target(YieldTarget::ThisObject {
+            source_id: ObjectId(source_id),
+            incarnation: Some(0),
+            trigger_description: None,
+        })
+    }
+    fn targets(slot: DecisionSlot) -> DecisionPoint {
+        DecisionPoint {
+            slot,
+            kind: DecisionPointKind::Targets {
+                legal_targets: Vec::new(),
+                min_targets: 1,
+                max_targets: 1,
+                ordered: false,
+            },
+        }
+    }
+
+    let published = slot(1);
+    let withheld = slot(2);
+    let uncharged = slot(3);
+    let charged: BTreeSet<DecisionSlot> = [published.clone(), withheld.clone()].into();
+
+    // A STRICT superset — a CR 732.2a withhold on a slot CR 704.5a still charges.
+    assert!(unbacked_published_target_slots(&charged, &[targets(published.clone())]).is_empty());
+
+    // The guarded direction: a published `Targets` point nothing charges.
+    assert_eq!(
+        unbacked_published_target_slots(
+            &charged,
+            &[targets(published.clone()), targets(uncharged.clone())]
+        ),
+        BTreeSet::from([uncharged.clone()])
+    );
+
+    // ADMITTED: the charge model does not key on a non-`Targets` point, so its slot is
+    // legitimately absent from the charged set.
+    assert!(unbacked_published_target_slots(
+        &charged,
+        &[DecisionPoint {
+            slot: uncharged,
+            kind: DecisionPointKind::MayChoice,
+        }]
+    )
+    .is_empty());
 }

@@ -9,9 +9,10 @@
 # fallback. Every pristine dump in this corpus predates that change and holds a bare
 # `"deck_size": N`, which the strict decoder REJECTS. `--deck-size
 # <Minimum|Exactly>:<count>` rewrites that bare value into
-# `{"type":"<variant>","data":<count>}` at EVERY depth this corpus carries
-# `format_config` at -- top level and beneath `gameState` -- on the filter tail SHARED
-# by the migration and both control regenerations.
+# `{"type":"<variant>","data":<count>}` at EVERY depth, on the filter tail SHARED
+# by the migration and both control regenerations. The predicate keys on the TRAILING KEY
+# at any path, so it is not keyed on an enumeration of the depths the corpus happens to
+# hold -- which is more than the self-tests below witness (see `deck_size_gate`).
 #
 # THE ENGINE STILL OWNS THE format->variant MAPPING, and the dump's shape does not
 # predict it: CR 903.13f(1) makes Commander Draft a command-zone format with a MINIMUM
@@ -321,8 +322,14 @@ trap cleanup_stage_files EXIT INT TERM
 # preflight above, so that arm would make every run of this script depend on a tool it
 # does not otherwise need. The option is recorded here rather than taken.
 #
-# Keyed on SHAPE AT EVERY DEPTH rather than a fixed path: this corpus carries
-# `format_config` under both envelopes (top level and beneath `gameState`).
+# Keyed on SHAPE AT EVERY DEPTH rather than a fixed path, and the depths are not a closed
+# pair -- regenerate the ones a `deck_size` is actually carried at with
+#   for f in $(git ls-files '*.json.gz'); do gzip -dc "$f" \
+#     | jq -r '[paths as $p | select($p[-1]=="deck_size")
+#               | ($p | map(if type=="number" then "N" else . end) | join("."))] | .[]'
+#   done | sort -u
+# and the same walk over `unzip -p` for the pristine dumps. The two corpora do not carry
+# the same set, and neither is the pair the self-tests below drive on.
 # ABSENCE IS LEGAL and passes: some committed fixtures carry no `deck_size` at any
 # depth, so keying on PRESENCE would fail exactly those spuriously. A transcribed
 # population figure rots — regenerate the two it would have quoted with
@@ -528,8 +535,10 @@ selftests() {
   # ACCEPTANCE on this input would assert the exact opposite of (c) — which stays
   # unconditional and is this leg's negative control on the identical bytes — and
   # `selftests` runs before `regenerate`, so the script would exit 1 before the gate ever
-  # spoke. Both depths this corpus carries `format_config` at, each driven through the
-  # same `transform` and the same `deck_size_gate` the production path uses.
+  # spoke. Two ENVELOPE shapes, each driven through the same `transform` and the same
+  # `deck_size_gate` the production path uses. They are WITNESSES that the walk is
+  # depth-agnostic, never the corpus's depth set: both corpora carry a `deck_size` deeper
+  # than either shape here, and `deck_size_gate` names the walk that regenerates them.
   if [ -n "$DECK_SIZE" ]; then
     for shape in '{"format_config":{"deck_size":100}}' \
                  '{"gameState":{"format_config":{"deck_size":100}}}'; do
@@ -541,7 +550,7 @@ selftests() {
       fi
       rm -f "$tmp/migrated.json.gz"
     done
-    echo "SELFTEST DECK_SIZE_MIGRATED=true (both format_config depths, driven through deck_size_gate)"
+    echo "SELFTEST DECK_SIZE_MIGRATED=true (both envelope shapes, driven through deck_size_gate)"
   fi
 
   echo "SELFTEST ATOMIC_ON_FAILURE=true ENVELOPE_PRESERVED=true DECK_SIZE_REFUSED=true (each with a positive control)"
@@ -568,7 +577,7 @@ if [ "$CONTROL_MODE" -eq 1 ]; then
   regenerate unpatched "$UNPATCHED"
 
   echo "CONTROL pristine=$(basename "$PRISTINE") sha256=$ACTUAL_SHA"
-  echo "CONTROL effect_kind=$EFFECT_KIND out=$OUT"
+  echo "CONTROL effect_kind=$EFFECT_KIND deck_size=${DECK_SIZE:-none} out=$OUT"
   echo "CONTROL jq=$JQ_VERSION gzip=$GZIP_VERSION"
 
   # ARM 1 — the patched regeneration reproduces the committed fixture.
@@ -674,8 +683,11 @@ regenerate patched "$OUT"
 OUT_SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"
 SLOTS="$(gzip -dc "$OUT" | jq -c '[.gameState.waiting_for.data.target_slots[]?.effect_kind]')"
 
-# 4. Record the provenance on stdout so a commit message can quote it.
+# 4. Record the provenance on stdout so a commit message can quote it. Both operator
+#    arguments are named, because the recipe is not recoverable from the artifact:
+#    `Minimum:100` and `Exactly:100` both satisfy `deck_size_gate` and produce
+#    DIFFERENT bytes. `deck_size=none` records that no `--deck-size` was passed.
 echo "MIGRATED pristine=$(basename "$PRISTINE") sha256=$ACTUAL_SHA"
-echo "MIGRATED effect_kind=$EFFECT_KIND stamped_slots=$SLOTS"
+echo "MIGRATED effect_kind=$EFFECT_KIND deck_size=${DECK_SIZE:-none} stamped_slots=$SLOTS"
 echo "MIGRATED out=$OUT sha256=$OUT_SHA"
 echo "MIGRATED jq=$JQ_VERSION gzip=$GZIP_VERSION"
