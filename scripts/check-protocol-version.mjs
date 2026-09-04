@@ -337,8 +337,12 @@ if (!p2pAdapterTestSource.includes(P2P_GATE)) {
 const gateLabel = "client/src/adapter/__tests__/p2p-adapter-multiplayer.test.ts";
 // The legs below deliberately scan the whole file rather than the block just
 // located: a require leg fails on absence, so a wider haystack can only admit and
-// never falsely refuse.
+// never falsely refuse. The prose leg is require-only for a second reason: this
+// title names the superseded version too, so a refuse leg would red a correct
+// title.
 for (const n of [W - 1, W]) {
   requirePattern(p2pAdapterTestSource, new RegExp(`setupFrameAt\\(${n}\\)`),
     `${gateLabel} setupFrameAt(${n})`);
+  requirePattern(p2pAdapterTestSource, new RegExp(`\\bv${n}\\b`),
+    `${gateLabel} v${n}`);
 }
