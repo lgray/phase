@@ -5685,9 +5685,24 @@ describe("P2P interaction preview", () => {
     });
     await adapter.initializeGame();
     await flushPromises();
+    mocks.previewInteraction.mockClear();
 
     await asker.simulateData({ type: "preview_interaction", request: request("req-1") as never });
     await flushPromises();
+
+    // The seat the preview was EVALUATED as, not merely the channel it was
+    // answered on: a preview bound to another seat reads that seat's hidden
+    // zones. Each seat is read off its own `game_setup` rather than assumed.
+    const assignedSeat = async (conn: FakeOpenableConnection) =>
+      (
+        (await conn.getSentMessages()).find(
+          (message) => (message as { type?: string }).type === "game_setup",
+        ) as { assignedPlayerId: number }
+      ).assignedPlayerId;
+    const askerSeat = await assignedSeat(asker);
+    expect(askerSeat).not.toBe(await assignedSeat(bystander));
+    expect(mocks.previewInteraction).toHaveBeenCalledOnce();
+    expect(mocks.previewInteraction).toHaveBeenCalledWith(request("req-1"), askerSeat);
 
     const answers = (await asker.getSentMessages()).filter(
       (message) => (message as { type?: string }).type === "interaction_preview",
