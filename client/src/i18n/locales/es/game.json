@@ -50,12 +50,12 @@
       "ExtraTurns": "This loop takes infinite extra turns.",
       "Advantage": "This loop generates unbounded advantage."
     },
-    "respondDeclaredTitle": "Proposed declaration:",
+    "respondDeclaredTitle": "Declaración propuesta:",
     "respondAllocationEntry": "{{subject}} — ×{{repetitions}}",
     "respondOrderEntry": "{{position}}. {{subject}}",
     "respondDecision": {
-      "take": "{{subject}} — taken each iteration",
-      "decline": "{{subject}} — declined each iteration"
+      "take": "{{subject}} — se acepta en cada iteración",
+      "decline": "{{subject}} — se rechaza en cada iteración"
     }
   },
   "precastShortcut": {
