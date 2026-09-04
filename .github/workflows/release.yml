@@ -1019,9 +1019,6 @@ jobs:
       CARD_DATA_HASH16: ${{ needs.build-wasm.outputs.card_data_hash16 }}
       DRAFT_POOLS_SHA256: ${{ needs.build-wasm.outputs.draft_pools_sha256 }}
       DRAFT_POOLS_HASH16: ${{ needs.build-wasm.outputs.draft_pools_hash16 }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      SERVER_ARTIFACT_MINISIGN_PRIVATE_KEY: ${{ secrets.SERVER_ARTIFACT_MINISIGN_PRIVATE_KEY }}
       WRANGLER_VERSION: "4.113.0"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -1045,6 +1042,12 @@ jobs:
         # Sign in this Ubuntu finisher so all three OS binaries use one trusted
         # signing path. The versioned manifest is immutable; its final PUT is
         # performed after its detached signature exists.
+        env:
+          # The CLOUDFLARE_* pair looks unused here: `wrangler r2 object put`
+          # reads both from the environment, so neither name appears below.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SERVER_ARTIFACT_MINISIGN_PRIVATE_KEY: ${{ secrets.SERVER_ARTIFACT_MINISIGN_PRIVATE_KEY }}
         run: |
           set -euo pipefail
 
