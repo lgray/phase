@@ -336,14 +336,21 @@ if (!p2pAdapterTestSource.includes(P2P_GATE)) {
   process.exit(1);
 }
 const gateLabel = "client/src/adapter/__tests__/p2p-adapter-multiplayer.test.ts";
-// The legs below deliberately scan the whole file rather than the block just
-// located: a require leg fails on absence, so a wider haystack can only admit and
-// never falsely refuse. The prose leg is require-only for a second reason: this
-// title names the superseded version too, so a refuse leg would red a correct
-// title.
-for (const n of [W - 1, W]) {
-  requirePattern(p2pAdapterTestSource, new RegExp(`setupFrameAt\\(${n}\\)`),
-    `${gateLabel} setupFrameAt(${n})`);
-  requirePattern(p2pAdapterTestSource, new RegExp(`\\bv${n}\\b`),
-    `${gateLabel} v${n}`);
-}
+// Scoped to the gate block: the anchor above to the next top-level `describe(`,
+// or EOF if this is the last one. The slice starts AT the anchor, so it can
+// never widen back to the whole file.
+const gateBlockStart = p2pAdapterTestSource.indexOf(P2P_GATE);
+const gateBlockEnd = p2pAdapterTestSource.indexOf("\ndescribe(", gateBlockStart);
+const gateBlock = p2pAdapterTestSource.slice(
+  gateBlockStart,
+  gateBlockEnd === -1 ? undefined : gateBlockEnd,
+);
+
+// Order binds each numeral to its role: refused named and sent before admitted.
+// Raw-source match: a comment in the block quoting an it(...) title passes the title leg.
+requirePattern(gateBlock,
+  new RegExp(`\\bit\\("[^"]*\\bv${W - 1}\\b[^"]*\\bv${W}\\b[^"]*"`),
+  `${gateLabel} an it(...) title naming refused v${W - 1} before admitted v${W}`);
+requirePattern(gateBlock,
+  new RegExp(`setupFrameAt\\(${W - 1}\\)[\\s\\S]*setupFrameAt\\(${W}\\)`),
+  `${gateLabel} refused setupFrameAt(${W - 1}) before admitted setupFrameAt(${W})`);
