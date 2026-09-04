@@ -10395,7 +10395,13 @@ fn shortcut_announcement_subject(
                 },
             ))
         }
-        _ => Err(InteractionReasonCode::InvalidAuthorityState),
+        LoopShortcutCandidateValue::ConvokeObject(_)
+        | LoopShortcutCandidateValue::Mode(_)
+        | LoopShortcutCandidateValue::May(_)
+        | LoopShortcutCandidateValue::Unless(_)
+        | LoopShortcutCandidateValue::ManaColor(_) => {
+            Err(InteractionReasonCode::InvalidAuthorityState)
+        }
     }
 }
 
