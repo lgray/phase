@@ -451,6 +451,11 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
 
+      - name: Install brotli
+        # apt runs maintainer scripts as root; keep it out of the upload step,
+        # which holds the R2 credentials.
+        run: command -v brotli >/dev/null || { sudo apt-get update && sudo apt-get install -y brotli; }
+
       - name: Upload data to R2
         # Single source of truth: data-files.json at the repo root drives this
         # loop, the verify step below, and vite.config.ts URL defines.
@@ -468,7 +473,6 @@ jobs:
           #
           # Compress into a temp dir, never client/public: content hashes and
           # release data manifests are over the original uncompressed bytes.
-          command -v brotli >/dev/null || { sudo apt-get update && sudo apt-get install -y brotli; }
           BRDIR="$(mktemp -d)"
 
           # Content-addressed card-data: immutable, year-long cache. The hash is
@@ -1038,6 +1042,14 @@ jobs:
       - name: Install pinned Wrangler
         run: npm install --global "wrangler@$WRANGLER_VERSION"
 
+      - name: Install minisign
+        # apt runs maintainer scripts as root; keep it out of any step that
+        # holds the signing key or the R2 token.
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
       - name: Sign slim server artifacts and publish release data manifest
         # Sign in this Ubuntu finisher so all three OS binaries use one trusted
         # signing path. The versioned manifest is immutable; its final PUT is
@@ -1050,9 +1062,6 @@ jobs:
           SERVER_ARTIFACT_MINISIGN_PRIVATE_KEY: ${{ secrets.SERVER_ARTIFACT_MINISIGN_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-
-          sudo apt-get update
-          sudo apt-get install -y minisign
 
           WORKSPACE_VERSION=$(awk '
             /^\[workspace\.package\]/ { in_workspace_package = 1; next }
