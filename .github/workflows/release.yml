@@ -1050,15 +1050,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y minisign
 
-      - name: Sign slim server artifacts and publish release data manifest
+      - name: Sign slim server artifacts and the release data manifest
         # Sign in this Ubuntu finisher so all three OS binaries use one trusted
-        # signing path. The versioned manifest is immutable; its final PUT is
-        # performed after its detached signature exists.
+        # signing path. Publishing is the step after this one, so the R2 token
+        # is never in scope for minisign and the signing key is gone — the EXIT
+        # trap below fires at the end of this step — before wrangler runs.
+        id: sign-release-artifacts
         env:
-          # The CLOUDFLARE_* pair looks unused here: `wrangler r2 object put`
-          # reads both from the environment, so neither name appears below.
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SERVER_ARTIFACT_MINISIGN_PRIVATE_KEY: ${{ secrets.SERVER_ARTIFACT_MINISIGN_PRIVATE_KEY }}
         run: |
           set -euo pipefail
@@ -1118,8 +1116,28 @@ jobs:
             }' > "$manifest"
           sign "$manifest"
 
-          wrangler r2 object put "phase-rs-data/desktop/$manifest.minisig" --file "$manifest.minisig" --remote --content-type application/octet-stream --cache-control "public, max-age=31536000, immutable"
-          wrangler r2 object put "phase-rs-data/desktop/$manifest" --file "$manifest" --remote --content-type application/json --cache-control "public, max-age=31536000, immutable"
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the release data manifest
+        # The versioned manifest is immutable, so its signature is uploaded
+        # first and the manifest itself last: a consumer that sees the manifest
+        # can always fetch the signature that verifies it.
+        env:
+          # Both look unused here: `wrangler r2 object put` reads them from the
+          # environment, so neither name appears below.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Read through the environment rather than interpolated into the
+          # script, so the value cannot be parsed as shell.
+          MANIFEST: ${{ steps.sign-release-artifacts.outputs.manifest }}
+        run: |
+          set -euo pipefail
+
+          test -s "$MANIFEST"
+          test -s "$MANIFEST.minisig"
+
+          wrangler r2 object put "phase-rs-data/desktop/$MANIFEST.minisig" --file "$MANIFEST.minisig" --remote --content-type application/octet-stream --cache-control "public, max-age=31536000, immutable"
+          wrangler r2 object put "phase-rs-data/desktop/$MANIFEST" --file "$MANIFEST" --remote --content-type application/json --cache-control "public, max-age=31536000, immutable"
 
       - name: Download shell updater migration bridge
         id: shell-updater-bridge
