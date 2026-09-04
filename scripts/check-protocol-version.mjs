@@ -322,10 +322,20 @@ requirePattern(serverCoreSource, new RegExp(`fn protocol_version_is_${P}(?![0-9]
 refusePattern(serverCoreSource, new RegExp(`protocol_version_is_${P - 1}(?![0-9])`),
   "crates/server-core/src/protocol.rs");
 
-requirePattern(p2pProtocolTestSource, new RegExp(`\\bv${W}\\b`),
-  `client/src/network/__tests__/protocol.test.ts v${W}`);
-refusePattern(p2pProtocolTestSource, new RegExp(`\\bv${W - 1}\\b`),
-  "client/src/network/__tests__/protocol.test.ts");
+// Both legs read the file's test TITLES, not its whole source, so coverage that legitimately
+// drives the superseded version in a body is not a bump leftover. Ceiling: double-quoted titles
+// only, so a backtick or single-quoted title falls out of the slice — admit-only, never a false
+// refusal, which is what makes the narrowing safe.
+const p2pProtocolTestTitles = [
+  ...p2pProtocolTestSource.matchAll(/\b(?:describe|it|test)\(\s*"([^"]*)"/g),
+]
+  .map((match) => match[1])
+  .join("\n");
+
+requirePattern(p2pProtocolTestTitles, new RegExp(`\\bv${W}\\b`),
+  `client/src/network/__tests__/protocol.test.ts titles v${W}`);
+refusePattern(p2pProtocolTestTitles, new RegExp(`\\bv${W - 1}\\b`),
+  "client/src/network/__tests__/protocol.test.ts titles");
 
 const P2P_GATE = 'describe("P2P wire-protocol version gate"';
 if (!p2pAdapterTestSource.includes(P2P_GATE)) {
