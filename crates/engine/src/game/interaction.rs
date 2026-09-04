@@ -10260,7 +10260,14 @@ fn materialize_loop_shortcut_response(
                     .iter()
                     .map(|index| match &projection.candidates[*index] {
                         LoopShortcutCandidateValue::Mode(mode) => Ok(*mode),
-                        _ => Err(InteractionReasonCode::InvalidAuthorityState),
+                        LoopShortcutCandidateValue::Target(TargetRef::Player(_))
+                        | LoopShortcutCandidateValue::Target(TargetRef::Object(_))
+                        | LoopShortcutCandidateValue::ConvokeObject(_)
+                        | LoopShortcutCandidateValue::May(_)
+                        | LoopShortcutCandidateValue::Unless(_)
+                        | LoopShortcutCandidateValue::ManaColor(_) => {
+                            Err(InteractionReasonCode::InvalidAuthorityState)
+                        }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 decisions.push(PinnedDecision::Mode {
