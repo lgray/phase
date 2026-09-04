@@ -3004,6 +3004,7 @@ fn preview_offer_with_points(
             per_cycle: per_cycle.map(|delta| engine::analysis::resource::PeriodicDelta {
                 frames_per_period: 1,
                 delta,
+                declarable_victims: Vec::new(),
                 victim_slot,
             }),
         },
@@ -3786,6 +3787,7 @@ fn respond_period(
     engine::analysis::resource::PeriodicDelta {
         frames_per_period: 1,
         delta,
+        declarable_victims: Vec::new(),
         victim_slot,
     }
 }

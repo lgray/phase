@@ -2908,6 +2908,7 @@ fn certified_bounded_cycle_offer<'a>(
                 frames_per_period: span,
                 delta,
                 victim_slot: Vec::new(),
+                declarable_victims: Vec::new(),
             },
         ));
         break;
@@ -2995,6 +2996,7 @@ fn certified_bounded_cycle_offer<'a>(
                     frames_per_period: k,
                     delta,
                     victim_slot: Vec::new(),
+                    declarable_victims: Vec::new(),
                 },
             )
         }
@@ -3096,6 +3098,10 @@ fn certified_bounded_cycle_offer<'a>(
         .iter()
         .map(|(slot, _)| (slot.clone(), worst_seat_life_loss))
         .collect();
+    // CR 704.5a: the SAME seat set `elimination_bounds` is handed two statements below,
+    // carried on the certificate so the per-cycle conformance check confines its lift to what
+    // the bound actually reserved instead of re-deriving a domain from the driven board.
+    periodic.declarable_victims = declarable_victims.clone();
     // `.cloned()`, not `.copied()`: `(DecisionSlot, i64)` is not `Copy`.
     let slot_magnitude: std::collections::BTreeMap<DecisionSlot, i64> =
         periodic.victim_slot.iter().cloned().collect();

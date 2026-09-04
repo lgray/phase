@@ -4461,6 +4461,166 @@ fn an_order_pin_is_not_an_answer_to_the_f4_offers_published_choices() {
     );
 }
 
+/// **The reserved victim domain the offer publishes GATES the committed drive — driven on the
+/// real 4-player dump.**
+///
+/// CR 704.5a: `elimination_bounds` reserved elimination headroom only for the seats in
+/// `declarable_victims`, and the per-cycle conformance check confines its lift to them. The two
+/// arms differ in EXACTLY that field — board, schema, declaration and count are identical.
+///
+/// | arm | `per_cycle.declarable_victims` | expected |
+/// |---|---|---|
+/// | **live** | what the mint published | the full declared count of `N` cycles commits |
+/// | **staged** | the proposer's own seat, which the live domain EXCLUDES | truncates at the first re-aimed cycle |
+///
+/// # Why the declaration RE-AIMS, and why that doubles as the reach-guard
+///
+/// MEASURED on this dump: with the conformant [`f4_pin_template`] the observed cycle is
+/// BYTE-IDENTICAL to the published period, so `conforms` decides on its leading equality and
+/// never consults the domain — the two arms would then be indistinguishable for a reason that
+/// has nothing to do with this check. A CR 601.2c re-aim onto another declarable victim is what
+/// makes the lift decide the verdict, and it is the shape
+/// [`t1_a_victim_changing_declaration_commits_its_whole_count_on_the_seats_it_declared`]
+/// already drives. The live arm asserts the re-aimed seat absorbs a STRICTLY POSITIVE share of
+/// the count — an outcome byte-equality cannot produce — so the lift is measured to have run
+/// rather than assumed. Only the first cycle charges the published seat: its Torch target was
+/// announced before the grant, so the schedule cannot re-aim it.
+///
+/// The staged value is read off the board rather than invented: the reach-guards assert the
+/// live domain is non-empty and EXCLUDES the proposer's own seat, so `[proposer]` is an
+/// out-of-domain singleton this offer itself makes constructible. Both arms are asserted
+/// ACCEPTED at declare, so what separates them is the DRIVE's per-cycle check.
+///
+/// REVERT-PROBE: drop `slot_charged_life`'s domain filter ⇒ the staged arm commits the same `N`
+/// cycles as the live one and the two arms stop being distinguishable. That the staged arm
+/// commits its ONE byte-identical cycle is also what proves the refusal is the domain's and not
+/// a blanket one.
+#[test]
+fn u2_the_published_victim_domain_gates_the_committed_drive() {
+    const N: u32 = 3;
+    let mut outcomes = vec![];
+    for stage_to_proposer in [false, true] {
+        let mut state = load_f4();
+        drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+        let (proposer, certificate, schema) = offer_parts(&state);
+        let schema = schema.clone();
+        let per_cycle = certificate
+            .per_cycle
+            .clone()
+            .expect("a bounded offer publishes its per-period signature");
+
+        assert!(
+            !per_cycle.declarable_victims.is_empty()
+                && !per_cycle.declarable_victims.contains(&proposer),
+            "REACH-GUARD: the LIVE domain must be non-empty and must EXCLUDE the proposer's own \
+             seat, else `[proposer]` below is not an out-of-domain value. got {:?}, proposer \
+             {proposer:?}",
+            per_cycle.declarable_victims
+        );
+        assert!(
+            per_cycle.victim_slot.iter().any(|(_, m)| *m > 0),
+            "REACH-GUARD: a charged slot with a strictly positive CR 704.5a magnitude, else the \
+             lift is the identity whatever the domain. got {:?}",
+            per_cycle.victim_slot
+        );
+
+        let (published_seat, life_rate) = per_cycle
+            .delta
+            .life
+            .iter()
+            .find(|(_, magnitude)| **magnitude < 0)
+            .map(|(seat, magnitude)| (*seat, -*magnitude))
+            .expect("REACH-GUARD: the published period must charge some seat a life LOSS");
+        let re_aimed = *per_cycle
+            .declarable_victims
+            .iter()
+            .find(|seat| **seat != published_seat)
+            .expect(
+                "REACH-GUARD: a SECOND declarable victim must exist, else the re-aim below \
+                 names the published seat again and the observed cycle stays byte-identical",
+            );
+
+        if stage_to_proposer {
+            match &mut state.waiting_for {
+                WaitingFor::LoopShortcut { certificate, .. } => {
+                    certificate
+                        .per_cycle
+                        .as_mut()
+                        .expect("the signature the reach-guards above just read")
+                        .declarable_victims = vec![proposer];
+                }
+                other => panic!("expected the CR 732.2a bounded offer, got {other:?}"),
+            }
+        }
+
+        let life_before = life_by_seat(&state);
+        apply(
+            &mut state,
+            proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(N),
+                template: Some(f4_scheduled_template(
+                    &schema,
+                    proposer,
+                    N,
+                    &[(0, re_aimed)],
+                )),
+            },
+        )
+        .expect("the declaration is dispatched");
+        assert!(
+            matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+            "staged={stage_to_proposer}: BOTH arms must be ACCEPTED at declare — the domain is \
+             read by the DRIVE's per-cycle check, never by the declare firewall — else the \
+             zero-commit below is a declare-time refusal. got {:?}",
+            state.waiting_for
+        );
+        assert!(
+            accept_all_opponents(&mut state) > 0,
+            "the CR 732.2c window must actually take responses"
+        );
+
+        let life_after = life_by_seat(&state);
+        outcomes.push((
+            life_of(&life_before, published_seat) - life_of(&life_after, published_seat),
+            life_of(&life_before, re_aimed) - life_of(&life_after, re_aimed),
+            life_rate,
+        ));
+    }
+
+    let (live_published_loss, live_re_aimed_loss, life_rate) = outcomes[0];
+    assert!(
+        life_rate > 0,
+        "ANTI-VACUITY: the published per-cycle life LOSS must be strictly positive, else every \
+         relation below degenerates to `0 == 0 * {N}`"
+    );
+    assert!(
+        live_re_aimed_loss > 0,
+        "REACH-GUARD: the re-aim must actually MOVE the charge off the published seat, else \
+         every observed cycle stays byte-identical to the published period and `conforms` \
+         decides on its leading equality without ever consulting the domain. published seat \
+         lost {live_published_loss}, re-aimed seat lost {live_re_aimed_loss}"
+    );
+    assert_eq!(
+        live_published_loss + live_re_aimed_loss,
+        life_rate * i64::from(N),
+        "LIVE: with the domain the mint published, every cycle conforms — the cycle whose \
+         target was announced before the grant charges the published seat, the re-aimed \
+         remainder is admitted by the domain-confined lift, and the full declared count of {N} \
+         commits across the two"
+    );
+    let (staged_published_loss, staged_re_aimed_loss, _) = outcomes[1];
+    assert_eq!(
+        (staged_published_loss, staged_re_aimed_loss),
+        (life_rate, 0),
+        "CR 704.5a: with the domain staged to a seat this cycle's bound reserved nothing for, \
+         only the byte-identical first cycle survives — its leading equality needs no lift — \
+         and the first RE-AIMED cycle is refused, because neither side's loss is liftable so \
+         the residues differ. The drive truncates there and the re-aimed seat is never charged. \
+         live was ({live_published_loss}, {live_re_aimed_loss})"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // U1 / U2 — the per-cycle accounting is victim-invariant and carries the token axis
 // ─────────────────────────────────────────────────────────────────────────────────────────

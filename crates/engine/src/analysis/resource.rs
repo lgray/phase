@@ -621,16 +621,31 @@ pub struct PeriodicDelta {
     /// therefore CORRECT and expected, not a schema/certificate mismatch. Deriving this from
     /// the published points instead let the withhold silently raise the bound.
     pub victim_slot: Vec<(DecisionSlot, i64)>,
+    /// CR 704.5a: the seats [`ResourceVector::elimination_bounds`] RESERVED elimination
+    /// headroom for — the very `declarable_victims` argument it was handed, carried here so
+    /// the two consumers of one certificate read ONE set instead of deriving two. Sorted and
+    /// deduped at the mint; CR 115.2 keeps it to player targets. EMPTY for the untargeted
+    /// class, whose victims are already seat-keyed in `delta.life`.
+    ///
+    /// SNAPSHOTTED at the offer beat, deliberately not live: the bound the table accepted was
+    /// computed against this set, and a later board is not what was agreed.
+    ///
+    /// `#[serde(default)]`, and the direction is the point. A signature persisted before this
+    /// field existed deserializes EMPTY, which makes the lift in [`slot_charged_life`] the
+    /// identity and [`PeriodicDelta::conforms`] plain equality — the drive truncates to manual
+    /// play rather than commit a relocation it cannot attribute.
+    #[serde(default)]
+    pub declarable_victims: Vec<PlayerId>,
 }
 
 impl PeriodicDelta {
     /// CR 732.2a: whether one committed repetition matches this signature closely enough that
     /// the bound divided out of it still describes the drive.
     ///
-    /// The comparison is by TOTAL rather than per seat — this predicate reads no seat set.
-    /// That shape is CR 732.2a plus an engine choice, not a CR 704 consequence: the rule fixes
-    /// the SEQUENCE OF CHOICES, and this type carries no per-slot victim identity a seat-aware
-    /// check could be written against. Two conjuncts license it:
+    /// The comparison is by TOTAL within the reserved seat DOMAIN
+    /// ([`PeriodicDelta::declarable_victims`]) rather than per slot: CR 732.2a fixes the
+    /// SEQUENCE OF CHOICES, and this type carries the bound's union-flat domain, not the
+    /// per-slot victim identity a slot-wise check would need. Two conjuncts license it:
     ///
     /// * MAGNITUDE. Every [`PeriodicDelta::victim_slot`] entry carries the same magnitude
     ///   ([`ResourceVector::worst_seat_life_loss`]). CR 704.5a: a player at 0 or less life
@@ -639,8 +654,8 @@ impl PeriodicDelta {
     ///   entries and requires equal totals, so no conforming observation charges a DECLARABLE
     ///   VICTIM above what was already reserved for it. The conclusion stops where the
     ///   reservation does: a seat that is not a declarable victim takes `elimination_bounds`'
-    ///   `else` arm and reserves nothing, and this conjunct says nothing about it — see the
-    ///   admission below.
+    ///   `else` arm and reserves nothing, and this conjunct says nothing about it — which is
+    ///   why the lift is confined to the domain.
     /// * SEAT. Sized by `pins`, not by `victim_slot.len()`. CR 732.2a specifies a sequence of
     ///   CHOICES, and `victim_slot` is ANNOUNCED rather than published — a CR 601.2c target
     ///   another player announces is charged but publishes no decision point, so no pin exists
@@ -651,13 +666,13 @@ impl PeriodicDelta {
     ///   counts: `validate_pins` is what makes a pin mean a confined seat, and it enforces that
     ///   only for a pin whose kind matches its published point's.
     ///
-    /// Admitted: the same total on a different seat. The declared re-aim is the licensed route;
-    /// a relocation of the lifted entry with another cause is admitted too, since telling them
-    /// apart needs per-slot victim identity this type does not carry. That admission INCLUDES a
-    /// relocation onto a seat no bound reserved for — a seat outside `declarable_victims` — so
-    /// neither conjunct above excludes it; closing it needs the per-slot victim identity, not a
-    /// narrower comparison. With no counted slot the lift is the identity and this is plain
-    /// equality.
+    /// Admitted: the same total on a different seat INSIDE [`PeriodicDelta::declarable_victims`].
+    /// That is the CR 601.2c declared re-aim, and a relocation with some other cause onto an
+    /// in-domain seat rides with it, since telling the two apart needs per-slot victim identity
+    /// this type does not carry. Refused: a relocation onto a seat OUTSIDE the domain — CR 704.5a
+    /// reserved no headroom there, so that loss is not liftable, it stays in the residue and the
+    /// residues differ. With no counted slot, or an empty domain, the lift is the identity and
+    /// this is plain equality.
     pub(crate) fn conforms(
         &self,
         observed: &ResourceVector,
@@ -676,27 +691,39 @@ impl PeriodicDelta {
         // The leading equality is not an optimization: it is what keeps a byte-identical cycle
         // conforming when the lift is undefined, so a period whose two seats simply lose the
         // same amount is not aborted for the tie alone.
+        let domain = self.declarable_victims.as_slice();
         self.delta == *observed
-            || slot_charged_life(&self.delta, slots)
-                .zip(slot_charged_life(observed, slots))
+            || slot_charged_life(&self.delta, slots, domain)
+                .zip(slot_charged_life(observed, slots, domain))
                 .is_some_and(|(a, b)| a == b)
     }
 }
 
-/// The delta with up to `slots` per-seat life LOSSES — the largest first — lifted off, and their
-/// total. Fewer losses than `slots` lifts only what is there; a non-loss is never lifted, so a
-/// period that only GAINS life has an empty lift and compares as plain equality; `slots == 0` is
-/// the identity.
+/// The delta with up to `slots` per-seat life LOSSES — the largest first, and only on seats in
+/// `domain` — lifted off, and their total. Fewer losses than `slots` lifts only what is there; a
+/// non-loss is never lifted, so a period that only GAINS life has an empty lift and compares as
+/// plain equality; `slots == 0` and an EMPTY `domain` are both the identity.
 ///
-/// `None` when the selection is NOT FORCED: if the `slots`-th largest loss ties the next, which
-/// entry is removed is decided by the tie-break rather than by the board, and a relocation between
-/// the tied seats would leave the residue unmoved. The caller refuses on `None`, so the drive
-/// truncates rather than commit a divergence it cannot see.
-fn slot_charged_life(delta: &ResourceVector, slots: usize) -> Option<(ResourceVector, i64)> {
+/// CR 704.5a: `domain` is the seat set the bound reserved elimination headroom for
+/// ([`PeriodicDelta::declarable_victims`]). A loss on a seat outside it is never lifted, so it
+/// stays in the residue and a relocation onto such a seat separates the two sides.
+///
+/// `None` when the selection is NOT FORCED: if the `slots`-th largest IN-DOMAIN loss ties the
+/// next, which entry is removed is decided by the tie-break rather than by the board, and a
+/// relocation between the tied seats would leave the residue unmoved. The caller refuses on
+/// `None`, so the drive truncates rather than commit a divergence it cannot see. The domain
+/// filter runs BEFORE the tie check, so a tie SPANNING the domain boundary is not ambiguous —
+/// only one member is liftable — and the out-of-domain member must then match byte-exactly in
+/// the residue.
+fn slot_charged_life(
+    delta: &ResourceVector,
+    slots: usize,
+    domain: &[PlayerId],
+) -> Option<(ResourceVector, i64)> {
     let mut losses: Vec<(PlayerId, i64)> = delta
         .life
         .iter()
-        .filter(|&(_, magnitude)| *magnitude < 0)
+        .filter(|&(seat, magnitude)| *magnitude < 0 && domain.contains(seat))
         .map(|(seat, magnitude)| (*seat, *magnitude))
         .collect();
     // Most negative first; the seat key only states the intent the tie refusal below supplies.
@@ -18500,6 +18527,7 @@ mod tests {
             frames_per_period: 2,
             delta,
             victim_slot: vec![(slot.clone(), 1)],
+            declarable_victims: vec![PlayerId(1)],
         };
         let json = serde_json::to_string(&populated)
             .expect("a populated PeriodicDelta must serialize (engine-wasm PANICS otherwise)");
@@ -18681,6 +18709,7 @@ mod tests {
                 frames_per_period: 2,
                 delta,
                 victim_slot: vec![],
+                declarable_victims: vec![],
             }),
         };
         let wait = WaitingFor::RespondToShortcut {
@@ -30676,6 +30705,11 @@ mod tests {
         }
     }
 
+    /// The CR 704.5a reserved domain the rows that predate it name their seats from. Wide
+    /// enough to cover every seat those rows use, so none of them asserts on the domain axis —
+    /// `conforms_refuses_a_relocation_outside_the_reserved_domain` is where that axis lives.
+    const SEATS: &[u8] = &[0, 1, 2, 3, 4, 5];
+
     /// A period delta carrying the SIGNED life entries given — a loss is negative, a gain
     /// positive — and nothing else.
     fn victim_life(entries: &[(u8, i64)]) -> ResourceVector {
@@ -30686,14 +30720,19 @@ mod tests {
         v
     }
 
+    /// `domain` is the CR 704.5a seat set the bound reserved for. Every row states it, so no
+    /// row inherits a domain from a default and the out-of-domain axis is asserted only where
+    /// it is the subject.
     fn charged_signature(
         delta: ResourceVector,
         victim_slot: &[(DecisionSlot, i64)],
+        domain: &[u8],
     ) -> PeriodicDelta {
         PeriodicDelta {
             frames_per_period: 1,
             delta,
             victim_slot: victim_slot.to_vec(),
+            declarable_victims: domain.iter().copied().map(PlayerId).collect(),
         }
     }
 
@@ -30739,7 +30778,7 @@ mod tests {
     fn conforms_refuses_everything_the_bound_did_not_reserve() {
         let charged = DecisionSlot::target(charged_source(0));
         let pins = [aimed_pin(charged.clone())];
-        let expected = charged_signature(victim_life(&[(1, -3)]), &[(charged.clone(), 3)]);
+        let expected = charged_signature(victim_life(&[(1, -3)]), &[(charged.clone(), 3)], SEATS);
 
         // (a) THE LICENCE'S ADMITTED CLASS — the same total on a DIFFERENT seat.
         assert!(
@@ -30777,7 +30816,11 @@ mod tests {
 
         // (e) AN UNLIFTED SEAT'S MAGNITUDE CHANGES while the lifted total is unchanged. Both
         // residues carry the SAME KEY SET, so only a value comparison separates them.
-        let two_seat = charged_signature(victim_life(&[(1, -5), (2, -1)]), &[(charged.clone(), 5)]);
+        let two_seat = charged_signature(
+            victim_life(&[(1, -5), (2, -1)]),
+            &[(charged.clone(), 5)],
+            SEATS,
+        );
         assert!(
             !two_seat.conforms(&victim_life(&[(3, -5), (2, -2)]), &pins),
             "the larger loss relocates (that is the lift) while the SMALLER, unlifted seat also \
@@ -30836,14 +30879,14 @@ mod tests {
 
         // (i) THE UNTARGETED CLASS: no charged slot, so nothing may be lifted however the
         // declaration is pinned — those victims are already seat-keyed in `delta.life`.
-        let untargeted = charged_signature(delta.clone(), &[]);
+        let untargeted = charged_signature(delta.clone(), &[], SEATS);
         assert!(
             !untargeted.conforms(&observed, &[aimed_pin(charged.clone())]),
             "an EMPTY `victim_slot` sizes the lift at zero whatever the pins say"
         );
 
         // (ii) THE POSITIVE for every negative below, on the same delta pair.
-        let charged_sig = charged_signature(delta.clone(), &[(charged.clone(), 3)]);
+        let charged_sig = charged_signature(delta.clone(), &[(charged.clone(), 3)], SEATS);
         assert!(
             charged_sig.conforms(&observed, &[aimed_pin(charged.clone())]),
             "a charged slot pinned by a `Targets` pin naming it is exactly the confined re-aim"
@@ -30890,7 +30933,11 @@ mod tests {
         // (vi) TWO PINS NAMING ONE CHARGED SLOT — `validate_pins` carries no duplicate-slot
         // rejection, so a pin-side count sizes the lift at two and takes the smaller seat off
         // both sides; a `victim_slot`-side count leaves it in the residue, where it separates.
-        let two_seat = charged_signature(victim_life(&[(1, -5), (2, -1)]), &[(charged.clone(), 5)]);
+        let two_seat = charged_signature(
+            victim_life(&[(1, -5), (2, -1)]),
+            &[(charged.clone(), 5)],
+            SEATS,
+        );
         assert!(
             !two_seat.conforms(
                 &victim_life(&[(3, -5), (4, -1)]),
@@ -30898,6 +30945,146 @@ mod tests {
             ),
             "one charged slot is one lifted entry however many pins name it, so the second \
              losing seat stays in the residue and its relocation is refused"
+        );
+    }
+
+    /// **T10** — the lift is confined to the seats the bound reserved elimination headroom for.
+    ///
+    /// CR 704.5a: `elimination_bounds` charges `declared_life_magnitude` to every seat in
+    /// `declarable_victims` and reserves nothing outside it, so a lifted loss relocating onto an
+    /// out-of-domain seat charges headroom no bound ever set aside. CR 601.2c: the declared
+    /// re-aim WITHIN that domain stays admitted.
+    ///
+    /// Two charged slots, and the moved loss is the LARGER one, so the lift is what selects it.
+    ///
+    /// # Discrimination
+    ///
+    /// (a) reds if the domain filter is dropped — (c) runs that pre-repair predicate explicitly
+    /// by widening the domain over the same signature and observation, so the refusal in (a) is
+    /// attributable to the DOMAIN rather than to the delta. (b) is the paired positive: it reds
+    /// if the filter refuses more than the out-of-domain relocation.
+    #[test]
+    fn conforms_refuses_a_relocation_outside_the_reserved_domain() {
+        let first = DecisionSlot::target(charged_source(0));
+        let second = DecisionSlot::target(charged_source(1));
+        let pins = [aimed_pin(first.clone()), aimed_pin(second.clone())];
+        let slots = [(first, 5), (second, 1)];
+        let signature =
+            |domain: &[u8]| charged_signature(victim_life(&[(1, -5), (2, -1)]), &slots, domain);
+        let relocated = victim_life(&[(4, -5), (2, -1)]);
+
+        // (a) the larger loss lands on seat 4, which the bound reserved nothing for.
+        assert!(
+            !signature(&[1, 2, 3]).conforms(&relocated, &pins),
+            "CR 704.5a: a seat outside `declarable_victims` is charged headroom no bound \
+             reserved, so its loss is not liftable and stays in the residue"
+        );
+        // (b) PAIRED POSITIVE — the same relocation onto an IN-domain seat.
+        assert!(
+            signature(&[1, 2, 3]).conforms(&victim_life(&[(3, -5), (2, -1)]), &pins),
+            "CR 601.2c: the declaration may aim the announced slot at any seat the bound \
+             reserved for, so the in-domain re-aim is still admitted"
+        );
+        // (c) THE PRE-REPAIR CONTROL: widen the domain over seat 4 and (a)'s observation is
+        //     admitted again by the same signature on the same call.
+        assert!(
+            signature(&[1, 2, 3, 4]).conforms(&relocated, &pins),
+            "the refusal in (a) is the DOMAIN's — widening it to cover seat 4 admits the \
+             identical observation"
+        );
+    }
+
+    /// **T11** — the domain filter runs BEFORE the tie check, so a tie SPANNING the domain
+    /// boundary is not an ambiguous cut.
+    ///
+    /// CR 704.5a: only an in-domain loss is liftable, so where the tie's other member lies
+    /// outside the domain exactly one candidate remains and the cut is FORCED. That is the one
+    /// direction narrowing the lift RELAXES, and its soundness condition — the out-of-domain
+    /// member must then match byte-exactly in the residue — ships beside it.
+    ///
+    /// # Discrimination
+    ///
+    /// (a) reds if the domain filter is moved AFTER the tie check: the boundary-spanning tie
+    /// then returns `None` and the forced cut is refused. (b) reds if the domain narrowed the
+    /// RESIDUE as well as the lift candidates, or if the forced cut lifted the out-of-domain
+    /// member with it.
+    #[test]
+    fn slot_charged_life_resolves_a_tie_that_spans_the_domain_boundary() {
+        let charged = DecisionSlot::target(charged_source(0));
+        let pins = [aimed_pin(charged.clone())];
+        // Seats 1 and 4 tie at the maximum; only seat 1 lies in the reserved domain.
+        let tied_across = charged_signature(
+            victim_life(&[(1, -4), (4, -4)]),
+            &[(charged, 4)],
+            &[1, 2, 3],
+        );
+
+        // (a) THE FORCED CUT: one liftable candidate, re-aimed inside the domain.
+        assert!(
+            tied_across.conforms(&victim_life(&[(3, -4), (4, -4)]), &pins),
+            "with the other tied member outside the domain the lift has exactly one candidate, \
+             so the cut is forced by the board and the in-domain re-aim conforms"
+        );
+        // (b) THE SOUNDNESS CONDITION: the out-of-domain member moves instead.
+        assert!(
+            !tied_across.conforms(&victim_life(&[(1, -4), (5, -4)]), &pins),
+            "CR 704.5a: no bound reserved for the out-of-domain seat, so its loss stays in the \
+             residue and relocating it separates the two sides"
+        );
+    }
+
+    /// **T12** — a signature deserialized without a domain fails CLOSED.
+    ///
+    /// `#[serde(default)]` gives a pre-field snapshot an EMPTY `declarable_victims`, so the
+    /// lift has no candidate: the tie guard cannot fire, the residue is the whole delta and the
+    /// charge is 0, which makes `conforms` plain equality. The drive truncates to manual play
+    /// rather than commit a relocation it cannot attribute.
+    ///
+    /// # Discrimination
+    ///
+    /// (a) reds if an absent domain defaults to "every seat" instead of the empty set — the
+    /// fail-OPEN direction. (b) is the paired positive on the same observation and the same
+    /// pins, so (a) cannot pass on an always-refusing predicate. (c) reds if the degenerate
+    /// domain stopped admitting the byte-identical period.
+    #[test]
+    fn conforms_fails_closed_on_a_signature_deserialized_without_a_domain() {
+        let charged = DecisionSlot::target(charged_source(0));
+        let pins = [aimed_pin(charged.clone())];
+        let populated = charged_signature(victim_life(&[(1, -3)]), &[(charged, 3)], &[1, 2]);
+
+        let mut json = serde_json::to_value(&populated).expect("a PeriodicDelta serializes");
+        assert!(
+            json.as_object_mut()
+                .expect("a struct serializes as a JSON object")
+                .remove("declarable_victims")
+                .is_some(),
+            "REACH-GUARD: the field must be PRESENT to be removed, else both arms below read \
+             the same value and the row measures nothing"
+        );
+        let restored: PeriodicDelta =
+            serde_json::from_value(json).expect("the absent field takes its serde default");
+        assert!(
+            restored.declarable_victims.is_empty(),
+            "the forward-compat default is the EMPTY domain, not every seat"
+        );
+
+        let re_aim = victim_life(&[(2, -3)]);
+        // (a) the in-domain re-aim the populated signature admits is REFUSED without provenance.
+        assert!(
+            !restored.conforms(&re_aim, &pins),
+            "with no domain the lift is the identity, so `conforms` is plain equality and a \
+             relocation the signature cannot attribute truncates the drive"
+        );
+        // (b) PAIRED POSITIVE on the same observation and the same pins.
+        assert!(
+            populated.conforms(&re_aim, &pins),
+            "the identical re-aim IS admitted once the domain is carried, so (a) is the missing \
+             provenance rather than an always-refusing predicate"
+        );
+        // (c) the byte-identical period still drives.
+        assert!(
+            restored.conforms(&restored.delta.clone(), &pins),
+            "plain equality still admits the very period the offer published"
         );
     }
 
@@ -30986,6 +31173,7 @@ mod tests {
         let expected = charged_signature(
             victim_life(&[(1, -2), (2, -2)]),
             &[(first.clone(), 2), (second.clone(), 2)],
+            SEATS,
         );
 
         assert!(
@@ -31026,7 +31214,7 @@ mod tests {
         let charged = DecisionSlot::target(charged_source(0));
         let pins = [aimed_pin(charged.clone())];
         let sign = |entries: &[(u8, i64)]| {
-            charged_signature(victim_life(entries), &[(charged.clone(), 3)])
+            charged_signature(victim_life(entries), &[(charged.clone(), 3)], SEATS)
         };
 
         // (a) two seats at the same maximum, one re-aimed to a third seat.
@@ -31071,14 +31259,18 @@ mod tests {
 
         // (f) THE ADMITTED MEMBER, shipped rather than claimed away: the UNIQUE maximal loss
         // belongs to a seat the declaration did not name, the pinned slot's smaller charge sits
-        // in the residue, and that maximal seat CHANGES. Neither licence conjunct covers it —
-        // the receiving seat need not be a declarable victim, and the reservation the magnitude
-        // conjunct appeals to is quantified over declarable victims — and a victim-INVARIANT
-        // predicate cannot tell it from the licensed re-aim. Closing it needs the per-slot
-        // victim identity `victim_slot` does not carry, which is the per-victim allocation
-        // carrier a later phase lands; nothing here asserts a refusal.
-        let undeclared_max =
-            charged_signature(victim_life(&[(1, -7), (2, -2)]), &[(charged.clone(), 2)]);
+        // in the residue, and that maximal seat CHANGES to another seat INSIDE the reserved
+        // domain. The magnitude conjunct's reservation is quantified over declarable victims and
+        // both seats are ones, so it does not separate them, and a predicate that is
+        // victim-invariant WITHIN the domain cannot tell this from the licensed re-aim. Closing
+        // it needs the per-slot victim identity `victim_slot` does not carry. The out-of-domain
+        // end of the same shape IS refused — see
+        // `conforms_refuses_a_relocation_outside_the_reserved_domain`.
+        let undeclared_max = charged_signature(
+            victim_life(&[(1, -7), (2, -2)]),
+            &[(charged.clone(), 2)],
+            SEATS,
+        );
         assert!(
             undeclared_max.conforms(&victim_life(&[(4, -7), (2, -2)]), &pins),
             "ADMITTED: the lift takes the unique maximum, which here belongs to a seat the \

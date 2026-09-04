@@ -6567,6 +6567,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
             frames_per_period: frames,
             delta: Default::default(),
             victim_slot: vec![],
+            declarable_victims: vec![],
         };
         v["waiting_for"]["data"]["certificate"]["per_cycle"] =
             serde_json::to_value(&period).expect("a PeriodicDelta serializes");
@@ -6620,6 +6621,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
                     frames_per_period: frames,
                     delta: Default::default(),
                     victim_slot: vec![],
+                    declarable_victims: vec![],
                 }),
             },
         };
@@ -14098,6 +14100,7 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
         frames_per_period,
         delta,
         victim_slot,
+        declarable_victims,
     }) = per_cycle
     else {
         panic!(
@@ -14111,9 +14114,10 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
          resolution and the lose-life one"
     );
     assert!(
-        victim_slot.is_empty(),
-        "no decision slot is attributed a per-period life swing on this untargeted drain; \
-         got {victim_slot:?}"
+        victim_slot.is_empty() && declarable_victims.is_empty(),
+        "an untargeted drain announces no CR 601.2c target, so it attributes no per-period \
+         life swing to a decision slot and reserves no CR 704.5a victim domain; got \
+         {victim_slot:?} / {declarable_victims:?}"
     );
     let mut expected_delta = ResourceVector::default();
     expected_delta.life.insert(P0, 1);
