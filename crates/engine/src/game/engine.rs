@@ -7091,21 +7091,16 @@ fn handle_declare_shortcut(
     //
     // SLOT-ADDRESSING is this path's term throughout, in `pin_slot`'s own sense: a pin that
     // CARRIES an explicit `DecisionSlot` (`Targets` / `Mode` / `MayChoice` / `UnlessBreak` /
-    // `ManaColor` / `ConvokeTaps`) and is therefore looked up against `schema.points`. It does
-    // NOT mean "resolves to a slot" — `pin_slot` synthesizes one for `Order` too, which is
-    // precisely the hole disclosed below.
+    // `ManaColor` / `ConvokeTaps`) and is therefore looked up against `schema.points`.
+    // `pin_slot` synthesizes no slot for `Order`, so the term is exact rather than approximate.
     //
-    // ⚠ NOT CLOSED FOR `PinnedDecision::Order`, AND THE HOLE IS NOT CONFINED TO AN
-    // EXPOSED-NOTHING OFFER. Two measured facts compose. (1) `validate_pins`' `Order` arm
-    // returns without reaching `UnexposedSlot`, so an ORDER-ONLY template pins a CR 603.3b
-    // trigger ordering the offer published none of and is admitted. (2) `pin_slot` addresses an
-    // `Order` pin at sub-index 0 — the same sub-index `DecisionSlot::target` hard-codes — while
-    // `predictability_gate` compares SLOTS and never KINDS, so that one pin also SATISFIES
-    // COVERAGE for a published `Targets` point on the same source. A NON-EMPTY schema is
-    // therefore declarable by a template answering none of its published choices, and
-    // `PinnedDecision` derives `Deserialize` and rides `GameAction::DeclareShortcut` verbatim,
-    // so the shape arrives from the wire. Closing it needs an ordering decision point in the
-    // schema and a kind-aware coverage comparison, not another predicate here.
+    // CLOSED FOR `PinnedDecision::Order`, ON EVERY SCHEMA SIZE. `pin_slot` returns `None` for
+    // an ordering pin, so it covers no published point — coverage is kind-aware via
+    // `pin_answers_point` — and `validate_pins` refuses it outright as `NotALoopDecision`
+    // (CR 603.3b: trigger ordering is a different decision kind from the CR 732.2a
+    // per-iteration choices a loop declaration answers). `PinnedDecision` derives
+    // `Deserialize` and rides `GameAction::DeclareShortcut` verbatim, so that refusal is what
+    // stands between the wire and `proposal.template`.
     //
     // Only the `None` arm's re-derivation test is conditioned on the schema having points: an
     // offer publishing none exposes nothing to re-derive.
@@ -18351,9 +18346,8 @@ mod bounded_declaration_tests {
                     DecisionKind::LoopChoice,
                 ),
             };
-            let required: Vec<_> = schema.points.iter().map(|p| p.slot.clone()).collect();
             assert!(
-                predictability_gate(&as_published, &required).is_ok(),
+                predictability_gate(&as_published, &schema.points).is_ok(),
                 "[{label}] reach-guard: COVERAGE passes on this template — every published slot \
                  is pinned — so the handler's verdict below is the VALUE half's"
             );
@@ -20112,9 +20106,9 @@ mod stage2_injector_tests {
     /// # What this does NOT measure
     ///
     /// ACCEPTANCE. Whether `mixed_no_order` is *submittable* is `declaration_conforms`'
-    /// question; no row here asks it, and the answer is not always yes (an `Order` pin can be
-    /// the sole cover of a required point, in which case dropping it fails
-    /// `predictability_gate` — pre-existing and zone-independent).
+    /// question, and no row here asks it. `mixed` itself is not submittable — `validate_pins`
+    /// refuses its `Order` element as `NotALoopDecision` (CR 603.3b) — which is why these rows
+    /// drive `resolve` directly.
     ///
     /// REVERT-PROBES: reverting the `Order` arm to `resolve_source` ⇒ rows **R** and **P**
     /// fail; **N**, **N2** and **P-minus** are deliberately revert-insensitive.

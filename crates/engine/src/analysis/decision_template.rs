@@ -780,12 +780,8 @@ fn resolve_pin(
         // NOT re-bind, the `Result` collect fails the whole template at every consumer; this
         // commit changes which sources re-bind, never that disposition. Where the same
         // template minus its `Order` pins is itself submittable, that drive was therefore
-        // already expressible by omitting them. It is NOT always submittable: `pin_slot`
-        // addresses an `Order` pin to `{source, index 0}` and `validate_pins`' `Order` arm is
-        // the one arm that checks nothing, so an `Order` pin can be the sole cover of a
-        // required point, and dropping it then fails `predictability_gate`. That shape is
-        // pre-existing and zone-independent — this commit changes only which sources can be
-        // spelled into it, never the shape itself.
+        // already expressible by omitting them — and since `validate_pins` refuses an `Order`
+        // pin outright (CR 603.3b), omitting them is the only submittable spelling.
         //
         // No template's ACCEPTANCE changes here: `declaration_conforms` is
         // `predictability_gate` + `validate_pins`, and neither reaches `resolve_pin`. What
@@ -1183,33 +1179,78 @@ fn schedule_announces_every_declared_subject(schedule: &TargetSchedule) -> bool 
 /// make reactively is one they cannot pin, which surfaces HERE as an unpinned slot.
 /// Per-iteration legality (CR 608.2b) is [`resolve`]'s re-check, run for each iteration
 /// up to the count by the caller (later phase).
+/// Coverage is per published POINT and KIND-AWARE ([`pin_answers_point`]), not per slot: a
+/// pin of a different CR choice kind at a point's slot leaves that point unpinned.
 pub fn predictability_gate(
     template: &DecisionTemplate,
-    required_slots: &[DecisionSlot],
+    required: &[DecisionPoint],
 ) -> Result<(), PredictabilityViolation> {
-    for slot in required_slots {
-        if !template.decisions.iter().any(|pin| &pin_slot(pin) == slot) {
-            return Err(PredictabilityViolation::UnpinnedChoice { slot: slot.clone() });
+    for point in required {
+        if !template
+            .decisions
+            .iter()
+            .any(|pin| pin_answers_point(pin, point))
+        {
+            return Err(PredictabilityViolation::UnpinnedChoice {
+                slot: point.slot.clone(),
+            });
         }
     }
     Ok(())
 }
 
-/// The slot a pin addresses. Exhaustive over `PinnedDecision` (no wildcard): an `Order`
-/// pin raises exactly one ordering decision per source, addressed by that source at
-/// sub-index 0; the other kinds carry an explicit slot.
-fn pin_slot(pin: &PinnedDecision) -> DecisionSlot {
+/// The loop-declaration slot a pin addresses, or `None` when it addresses none.
+///
+/// CR 603.3b: an `Order` pin is a choice about the APNAP order simultaneously-triggered
+/// abilities are put on the stack in — not one of the per-iteration choices a CR 732.2a
+/// shortcut declaration answers — so it addresses no slot here. Synthesizing
+/// `{source, index: 0}` for it collided with the sub-index [`DecisionSlot::target`]
+/// reserves, which let one ordering pin cover a published targeting point.
+fn pin_slot(pin: &PinnedDecision) -> Option<&DecisionSlot> {
     match pin {
-        PinnedDecision::Order { source, .. } => DecisionSlot {
-            source: source.clone(),
-            index: 0,
-        },
+        PinnedDecision::Order { .. } => None,
         PinnedDecision::Targets { slot, .. }
         | PinnedDecision::Mode { slot, .. }
         | PinnedDecision::MayChoice { slot, .. }
         | PinnedDecision::UnlessBreak { slot, .. }
         | PinnedDecision::ManaColor { slot, .. }
-        | PinnedDecision::ConvokeTaps { slot } => slot.clone(),
+        | PinnedDecision::ConvokeTaps { slot } => Some(slot),
+    }
+}
+
+/// CR 732.2a: whether `pin` answers `point` — same slot AND the 1:1 kind peer
+/// [`DecisionPointKind`]'s own doc asserts. Exhaustive and wildcard-free over the
+/// pin x point-kind product, so a new variant on either enum build-breaks into an explicit
+/// decision instead of silently satisfying coverage.
+fn pin_answers_point(pin: &PinnedDecision, point: &DecisionPoint) -> bool {
+    if pin_slot(pin) != Some(&point.slot) {
+        return false;
+    }
+    match (pin, &point.kind) {
+        (PinnedDecision::Targets { .. }, DecisionPointKind::Targets { .. })
+        | (PinnedDecision::Mode { .. }, DecisionPointKind::Mode { .. })
+        | (PinnedDecision::MayChoice { .. }, DecisionPointKind::MayChoice)
+        | (PinnedDecision::UnlessBreak { .. }, DecisionPointKind::UnlessBreak)
+        | (PinnedDecision::ManaColor { .. }, DecisionPointKind::ManaColor { .. })
+        | (PinnedDecision::ConvokeTaps { .. }, DecisionPointKind::ConvokeTaps { .. }) => true,
+        // A right-slot pin of the wrong kind answers a different question than the point
+        // asks. `Order` is unreachable here (`pin_slot` returned `None` above) and is listed
+        // so the product stays total.
+        (
+            PinnedDecision::Order { .. }
+            | PinnedDecision::Targets { .. }
+            | PinnedDecision::Mode { .. }
+            | PinnedDecision::MayChoice { .. }
+            | PinnedDecision::UnlessBreak { .. }
+            | PinnedDecision::ManaColor { .. }
+            | PinnedDecision::ConvokeTaps { .. },
+            DecisionPointKind::Targets { .. }
+            | DecisionPointKind::Mode { .. }
+            | DecisionPointKind::MayChoice
+            | DecisionPointKind::UnlessBreak
+            | DecisionPointKind::ManaColor { .. }
+            | DecisionPointKind::ConvokeTaps { .. },
+        ) => false,
     }
 }
 
@@ -1241,6 +1282,10 @@ pub enum PinValidation {
     IllegalPinValue { slot: DecisionSlot },
     /// CR 700.2: a `Mode` pin names an index outside the slot's `available_modes`.
     IllegalModeIndex { slot: DecisionSlot },
+    /// CR 603.3b + CR 732.2a: the pin is a trigger-ordering choice, which is not one of the
+    /// per-iteration choices a loop declaration answers. It addresses no slot, so it carries
+    /// the source rather than a [`DecisionSlot`].
+    NotALoopDecision { source: DecisionSource },
 }
 
 /// Map a resolved concrete target to its wire-side [`TargetRef`] peer (the read-side
@@ -1276,7 +1321,8 @@ pub(crate) fn resolve_target_ref(
 /// COVERS the drive is the CALLER's obligation, discharged by
 /// `game::engine::shortcut_validated_range`, which reads the range off the declared count
 /// rather than off the schedule's own length. EXHAUSTIVE over [`PinnedDecision`] with no
-/// wildcard: `Order` (CR 603.3b trigger-ordering) is not a loop-declaration point;
+/// wildcard: `Order` (CR 603.3b trigger-ordering) is not a loop-declaration point and is
+/// refused as `NotALoopDecision`;
 /// `ConvokeTaps` must still address an exposed matching point even though its concrete taps are
 /// re-bound live by `select_convoke_taps`. Runs once at declare (the board is frozen through Accept); the drive's
 /// per-iteration [`resolve`] is the runtime CR 608.2b backstop.
@@ -1421,8 +1467,14 @@ pub fn validate_pins(
                     return Err(PinValidation::IllegalPinValue { slot: slot.clone() });
                 }
             }
-            // CR 603.3b: trigger-ordering pins are not loop-declaration points.
-            PinnedDecision::Order { .. } => {}
+            // CR 603.3b: a trigger-ordering pin is not a loop-declaration point, so it can
+            // never be a legal answer here. Refused rather than ignored, which is what keeps
+            // it out of `proposal.template`, where `resolve` would still resolve it.
+            PinnedDecision::Order { source, .. } => {
+                return Err(PinValidation::NotALoopDecision {
+                    source: source.clone(),
+                })
+            }
         }
     }
     Ok(())
@@ -1430,8 +1482,8 @@ pub fn validate_pins(
 
 /// CR 732.2a: THE SINGLE AUTHORITY for *"is this declaration a legal answer to this offer's
 /// schema?"* — [`predictability_gate`]'s COVERAGE half and [`validate_pins`]' VALUE half, run
-/// together against a `required` slot list derived HERE from `schema.points` rather than by
-/// each caller.
+/// together against `schema.points` itself rather than against a slot projection each caller
+/// derives.
 ///
 /// Three sites ask that question — `game::engine::handle_declare_shortcut` (the declare
 /// firewall), `game::interaction::materialize_loop_shortcut_response` (the human ingress) and
@@ -1467,8 +1519,7 @@ pub fn declaration_conforms(
     validated_range: IterationIndex,
     state: &GameState,
 ) -> bool {
-    let required: Vec<DecisionSlot> = schema.points.iter().map(|p| p.slot.clone()).collect();
-    predictability_gate(template, &required).is_ok()
+    predictability_gate(template, &schema.points).is_ok()
         && validate_pins(schema, template, validated_range, state).is_ok()
 }
 
@@ -2187,7 +2238,21 @@ mod tests {
             source: this_obj(71, None),
             index: 0,
         };
-        let required = vec![slot_a.clone(), slot_b.clone()];
+        let required = vec![
+            DecisionPoint {
+                slot: slot_a.clone(),
+                kind: DecisionPointKind::MayChoice,
+            },
+            DecisionPoint {
+                slot: slot_b.clone(),
+                kind: DecisionPointKind::Targets {
+                    legal_targets: vec![],
+                    min_targets: 0,
+                    max_targets: 0,
+                    ordered: false,
+                },
+            },
+        ];
 
         // Pins only slot_a ⇒ slot_b is unpinned.
         let partial = DecisionTemplate {
@@ -2226,6 +2291,74 @@ mod tests {
         assert!(
             predictability_gate(&full, &required).is_ok(),
             "a fully-pinned template passes the gate"
+        );
+    }
+
+    /// T8b (CR 732.2a): COVERAGE is KIND-AWARE. A pin at a published point's slot whose CR
+    /// choice kind is not that point's answers a different question, and an ordering pin
+    /// (CR 603.3b) answers no loop-declaration point at all — both leave the point unpinned.
+    ///
+    /// Asserted on `predictability_gate` DIRECTLY, so no leg can be satisfied by
+    /// `validate_pins` instead.
+    #[test]
+    fn gate_coverage_is_kind_aware() {
+        let slot = DecisionSlot::target(this_obj(80, None));
+        let required = vec![DecisionPoint {
+            slot: slot.clone(),
+            kind: DecisionPointKind::Targets {
+                legal_targets: vec![],
+                min_targets: 1,
+                max_targets: 1,
+                ordered: false,
+            },
+        }];
+        let template = |decisions| DecisionTemplate {
+            owner: PlayerId(0),
+            decisions,
+            replay: ReplayMode::Static,
+            key: tri_key(),
+        };
+
+        // PAIRED POSITIVE on the same point and the same call.
+        assert!(
+            predictability_gate(
+                &template(vec![PinnedDecision::Targets {
+                    slot: slot.clone(),
+                    targets: vec![],
+                }]),
+                &required
+            )
+            .is_ok(),
+            "the point's own kind at the point's own slot is its answer"
+        );
+
+        // CR 603.5 vs CR 601.2c: another choice kind at the SAME slot.
+        assert_eq!(
+            predictability_gate(
+                &template(vec![PinnedDecision::MayChoice {
+                    slot: slot.clone(),
+                    take: MayChoiceOption::Take,
+                }]),
+                &required
+            )
+            .unwrap_err(),
+            PredictabilityViolation::UnpinnedChoice { slot: slot.clone() },
+            "a `may` answer names no target, so the published targeting point stays unpinned"
+        );
+
+        // CR 603.3b: an ordering pin on the point's own SOURCE — the shape that used to cover
+        // it, because `pin_slot` synthesized `{source, index 0}` for it.
+        assert_eq!(
+            predictability_gate(
+                &template(vec![PinnedDecision::Order {
+                    source: slot.source.clone(),
+                    pos: 0,
+                }]),
+                &required
+            )
+            .unwrap_err(),
+            PredictabilityViolation::UnpinnedChoice { slot },
+            "an ordering pin addresses no loop-declaration slot, so it covers nothing"
         );
     }
 

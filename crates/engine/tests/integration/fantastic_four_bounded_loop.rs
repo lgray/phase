@@ -2289,9 +2289,8 @@ fn d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
              proposer, `replay.count` == the offer's own suggestion"
         );
 
-        let required: Vec<_> = schema.points.iter().map(|p| p.slot.clone()).collect();
         assert!(
-            predictability_gate(&declaration, &required).is_ok(),
+            predictability_gate(&declaration, &schema.points).is_ok(),
             "[{label}] the published declaration covers every published slot — the coverage half \
              of the declare-time firewall"
         );
@@ -4179,9 +4178,9 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
 ///
 /// CR 732.2a: a shortcut proposal describes a sequence of choices that may legally be taken.
 /// An offer publishing no decision point states no such choice, so a template naming one is not
-/// a legal answer to it. The title says SLOT-ADDRESSING because the fourth arm below measures
-/// the kind that escapes: `validate_pins`' `PinnedDecision::Order` arm returns before
-/// `UnexposedSlot`, so an ordering pin is admitted here.
+/// a legal answer to it. The title says SLOT-ADDRESSING because the fourth arm below carries a
+/// pin that addresses no slot at all: a CR 603.3b ordering pin, refused by `validate_pins` as
+/// `NotALoopDecision` rather than as `UnexposedSlot`.
 ///
 /// The two sets diverge by construction and legitimately so: `victim_slot` is derived from the
 /// period's ANNOUNCED targets, which CR 704.5a charges whoever announces them, while
@@ -4197,14 +4196,14 @@ fn c2_r4b_a_points_empty_offer_is_gated_by_the_owner_firewall_alone() {
 /// | **matched positive** | empty | `RespondToShortcut` — the staged offer accepts |
 /// | **charged slot** | a `Targets` pin naming a `victim_slot` entry | `Priority` |
 /// | **unknown slot** | a `Targets` pin naming neither a point nor a charged slot | `Priority` |
-/// | **ordering pin** | an `Order` pin on the charged slot's source | `RespondToShortcut` |
+/// | **ordering pin** | an `Order` pin on the charged slot's source | `Priority` |
 ///
 /// The positive is asserted FIRST and is what makes the two refusals attributable to the pin
 /// rather than to the staged offer refusing everything. The second refusal is the class end the
 /// first does not reach: the guard is keyed to what the offer PUBLISHED, not to what the
 /// certificate CHARGES, so a pin naming neither is refused by the same predicate. The fourth
-/// arm is the other end — the member the title's SLOT-ADDRESSING qualifier excludes, run here
-/// so the qualifier is a measurement rather than a hedge.
+/// arm is the other end — the member the title's SLOT-ADDRESSING qualifier excludes, refused on
+/// its own axis so the qualifier stays a measurement rather than a hedge.
 ///
 /// REVERT-PROBE: skip `declaration_conforms` when `offer.schema.points.is_empty()` ⇒ both
 /// refusals open APNAP and carry the fabricated pin into `proposal.template`.
@@ -4341,13 +4340,124 @@ fn a_slot_addressing_pin_naming_a_slot_the_offer_never_published_is_refused() {
         }])
         .waiting_for
         .variant_name(),
+        "Priority",
+        "CR 603.3b: an ordering pin is a choice about the APNAP order triggered abilities are \
+         put on the stack in, not one of the CR 732.2a per-iteration choices a loop \
+         declaration answers, so `validate_pins` refuses it as `NotALoopDecision` — on an \
+         offer publishing nothing exactly as on one publishing a point"
+    );
+}
+
+/// **An `Order` pin is not an answer to the F4 offer's published choices — on the LIVE,
+/// NON-EMPTY schema.**
+///
+/// CR 732.2a: a shortcut proposal describes the sequence of choices that will be taken.
+/// CR 603.3b: an `Order` pin is a choice about the APNAP order simultaneously triggered
+/// abilities are put on the stack in — a different decision kind, which this offer publishes
+/// no point for and which the drive never reads.
+///
+/// Three arms on one live offer, one axis apart — the declaration's `decisions`:
+///
+/// | arm | `decisions` | expected |
+/// |---|---|---|
+/// | **paired positive** | the conformant [`f4_pin_template`] set | `RespondToShortcut` |
+/// | **swapped** | the same, `Targets` pin replaced by an `Order` pin on that source | `Priority` |
+/// | **extra** | the conformant set PLUS an `Order` pin on that source | `Priority` |
+///
+/// SWAPPED is the whole-defect member: before the repair the ordering pin COVERED the published
+/// `Targets` point — `pin_slot` synthesized `{source, index 0}` for it and the gate compared
+/// slots without kinds — while `validate_pins` checked nothing, so a declaration answering none
+/// of the offer's published choices was accepted. EXTRA is the VALUE half alone, and the
+/// multi-authority member coverage cannot reach: the conformant pins beside it already satisfy
+/// coverage, so only `validate_pins`' refusal can reject it.
+///
+/// REVERT-PROBE, MEASURED per half rather than assumed. SWAPPED opens APNAP only under the FULL
+/// pre-repair — `pin_slot` fabricating the `Order` slot AND `validate_pins`' `Order { .. } => {}`
+/// arm — because either half alone still refuses it. EXTRA opens APNAP under the value half
+/// alone. The coverage half alone is isolated in-crate, by
+/// `analysis::decision_template::tests::gate_coverage_is_kind_aware`.
+#[test]
+fn an_order_pin_is_not_an_answer_to_the_f4_offers_published_choices() {
+    use engine::analysis::decision_template::PinnedDecision;
+
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    let schema = schema.clone();
+
+    let target_source = schema
+        .points
+        .iter()
+        .find(|p| matches!(p.kind, DecisionPointKind::Targets { .. }))
+        .map(|p| p.slot.source.clone())
+        .expect(
+            "REACH-GUARD: the live schema must publish a `Targets` point, else the swap below \
+             is a refusal on an EMPTY schema rather than on a published choice",
+        );
+
+    let conformant = f4_pin_template(&schema, proposer, 1);
+    let declare = |decisions: Vec<PinnedDecision>| {
+        let mut probe = state.clone();
+        let mut template = conformant.clone();
+        template.decisions = decisions;
+        apply(
+            &mut probe,
+            proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(1),
+                template: Some(template),
+            },
+        )
+        .expect("dispatched — a refusal is a HANDBACK, not an error");
+        probe
+    };
+
+    assert_eq!(
+        declare(conformant.decisions.clone())
+            .waiting_for
+            .variant_name(),
         "RespondToShortcut",
-        "CR 603.3b: MEASURED, NOT ENDORSED — `validate_pins`' `Order` arm returns before \
-         `UnexposedSlot`, so an ordering pin naming a slot the offer published no point for is \
-         ADMITTED. This is the member the title's SLOT-ADDRESSING qualifier excludes; the \
-         disclosure on `handle_declare_shortcut`'s pin block states what closing it takes. \
-         When that ordering decision point lands this arm goes red: re-key it onto the \
-         refusal, do not delete it"
+        "PAIRED POSITIVE, same offer and same call: the conformant declaration still opens the \
+         CR 732.2b APNAP window, so the two refusals below are keyed to the ordering pin"
+    );
+
+    let ordering = PinnedDecision::Order {
+        source: target_source,
+        pos: 0,
+    };
+    let swapped: Vec<PinnedDecision> = conformant
+        .decisions
+        .iter()
+        .map(|pin| match pin {
+            PinnedDecision::Targets { .. } => ordering.clone(),
+            other => other.clone(),
+        })
+        .collect();
+    assert!(
+        swapped
+            .iter()
+            .any(|p| matches!(p, PinnedDecision::Order { .. }))
+            && !swapped
+                .iter()
+                .any(|p| matches!(p, PinnedDecision::Targets { .. })),
+        "REACH-GUARD: the swap must have replaced the `Targets` pin, else SWAPPED is the \
+         conformant arm again. got {swapped:?}"
+    );
+    assert_eq!(
+        declare(swapped).waiting_for.variant_name(),
+        "Priority",
+        "CR 732.2a: an ordering pin covers no published targeting point, so that choice is \
+         unpinned, the declaration hands back to manual play and no `ShortcutProposal` is \
+         built to carry the pin into the drive"
+    );
+
+    let mut extra = conformant.decisions.clone();
+    extra.push(ordering);
+    assert_eq!(
+        declare(extra).waiting_for.variant_name(),
+        "Priority",
+        "CR 603.3b: coverage is already satisfied by the conformant pins beside it, so only \
+         `validate_pins`' `NotALoopDecision` refusal can reject this declaration"
     );
 }
 
