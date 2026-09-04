@@ -36632,8 +36632,8 @@ mod tests {
     ///   head-only shape `evaluate_schedule` uses to RESOLVE, and therefore the plausible
     ///   wrong reading ⇒ arm (b)'s same-head/different-tail pair compares EQUAL ⇒ no latch ⇒
     ///   **arm (b) FAILS while arms (a) and (c) stay green**, because (a)'s heads already
-    ///   differ. The tail is the NEXT episode's pre-declaration, so two proposals agreeing
-    ///   only about this episode are not the same answer;
+    ///   differ. The recorded answer is the whole announcement sequence, so two proposals
+    ///   agreeing only on the head are not the same answer;
     /// * hand-write `impl PartialEq for AnnouncementSubject` with `(Seat(_), Seat(_)) => true`
     ///   ⇒ two DIFFERENT seats compare equal ⇒ arm (a)'s own reach-guard fires first and
     ///   names the vacuity by hand, which is the reach-guard doing its job rather than the
@@ -36687,8 +36687,8 @@ mod tests {
 
         // ── (b) SAME head, DIFFERENT tail ⇒ still Conflicted ──
         //
-        // The tail is a pre-declaration for the NEXT episode (CR 732.2a), not decoration, so
-        // two proposals that agree only about this episode are not the same answer. This is
+        // The recorded answer is the whole announcement sequence (CR 732.2a), not just the
+        // head, so two proposals that agree only on the head are not the same answer. This is
         // the arm a head-only equality would lose.
         let slot_b = DecisionSlot::target(journal_source(914));
         let head1_tail2 = ranked(vec![seat(1), seat(2)]);
@@ -36703,8 +36703,8 @@ mod tests {
         assert_eq!(
             state.loop_answer(&slot_b, PlayerId(0)),
             Some(LoopAnswer::Conflicted),
-            "equality over a `Ranking` is STRUCTURAL, not head-only: the tail is the next \
-             episode's pre-declaration, so differing tails are differing answers"
+            "equality over a `Ranking` is STRUCTURAL, not head-only: the recorded answer is \
+             the whole announcement sequence, so differing tails are differing answers"
         );
 
         // ── (c) the SAME ranking twice ⇒ still Uniform ──

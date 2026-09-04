@@ -2667,7 +2667,7 @@ fn shortcut_preview_entries(
 /// interior is thinned by a stride wide enough that the whole sample fits under
 /// `MAX_SHORTCUT_PREVIEW_ELEMENTS`; the length guard, not the stride, is what enforces the cap.
 ///
-/// `k` starts at 1 rather than 0 deliberately: at 0 the loop regenerates `min` itself, and the
+/// `step` starts at 1 rather than 0 deliberately: at 0 the loop regenerates `min` itself, and the
 /// explicit `min` seed would then be unfalsifiable.
 ///
 /// The exhaustive match is also the offer's single finite-count gate — `UntilLethal` names no
