@@ -2635,7 +2635,7 @@ fn shortcut_preview_entries(
             .into_iter()
             .map(|(key, per_cycle)| (key, per_cycle.saturating_mul(i64::from(count))))
             .collect();
-    // CR 704.5a: the announced slot charges a LIFE magnitude, so the re-attribution moves the
+    // CR 119.3: the announced slot charges a LIFE magnitude, so the re-attribution moves the
     // `Life` family and nothing else. `DamageDealt`, `LibraryDelta` and `Poison` are seat-keyed
     // by `payload_seat` too, and keep the seat it gave them.
     if let Some(split) = victim {
@@ -2734,7 +2734,7 @@ fn canonical_allocation(ids: &[InteractionChoiceId], count: u32) -> Vec<AmountAs
         .collect()
 }
 
-/// CR 704.5a: the life magnitude one repetition charges through an announced slot, and the
+/// CR 119.3: the life magnitude one repetition charges through an announced slot, and the
 /// single seat that magnitude currently lands on.
 #[derive(Debug, Clone, Copy)]
 struct VictimCharge {
@@ -2742,7 +2742,7 @@ struct VictimCharge {
     seat: PlayerId,
 }
 
-/// CR 704.5a: what the period charges through THIS announced slot, or `None` when the period
+/// CR 119.3: what the period charges through THIS announced slot, or `None` when the period
 /// does not say.
 ///
 /// **A `victim_slot` magnitude is an aggregate, not a per-slot charge.** Every entry carries
@@ -2771,7 +2771,7 @@ struct VictimCharge {
 /// the charged seat's life by dropping that axis and re-adding `rate` once per allocated cycle.
 /// The substitution preserves the period's life total exactly when `rate` is the seat's whole
 /// loss; under any other charge the published magnitudes total less than the drain the
-/// declaration takes, and CR 704.5a is the number the player is deciding on. The equality is
+/// declaration takes, and CR 119.3 is the number the player is deciding on. The equality is
 /// tested on the already-identified seat rather than used to pick one — filtering the life map
 /// by it would name whichever seat happened to match the aggregate.
 fn victim_charge(
@@ -2794,7 +2794,7 @@ fn victim_charge(
         .then_some(VictimCharge { rate, seat: *seat })
 }
 
-/// CR 704.5a: how one element's count spreads the charged life magnitude over the seats the
+/// CR 119.3: how one element's count spreads the charged life magnitude over the seats the
 /// declaration allocates it to.
 ///
 /// `cycles` is never empty — the one constructor filters that case away — so "a split with no
@@ -2854,7 +2854,7 @@ fn allocation_point<'a>(
     Some((u32::try_from(index).ok()?, point))
 }
 
-/// CR 704.5a: the seats a point's candidates name, in published order, or `None` when any
+/// CR 119.3: the seats a point's candidates name, in published order, or `None` when any
 /// candidate is not a player.
 ///
 /// Exhaustive over the candidate kinds so a new one must decide for itself rather than being
@@ -3397,7 +3397,7 @@ fn declared_sequence_preview(
         })
         .collect();
 
-    // CR 704.5a: the period charges this announced slot's life to whoever the DECLARATION names.
+    // CR 119.3: the period charges this announced slot's life to whoever the DECLARATION names.
     //
     // `victim_charge` refuses for FOUR reasons: no `victim_slot` entry for this point's slot; a
     // life map naming zero or several losing seats; a losing seat the seats-in-hand do not name;
@@ -3480,20 +3480,19 @@ fn loop_shortcut_projection(
     }
     let count = match schema.iteration_count {
         crate::analysis::decision_template::IterationCount::Fixed(suggested) => {
-            // CR 732.2a (MagicCompRules.txt:6372): the picker's ceiling is the offer's own
-            // CR 704 bound, never the raw global safety limit — a count above it would
-            // specify a sequence containing an elimination, which is a conditional action.
-            // The engine owns this number; the frontend renders it. An unnarrowed offer
-            // states `MAX_SHORTCUT_CYCLES`; a bounded offer states less. Either way this is
-            // the offer's own bound, clamped at the same authority.
+            // CR 732.2a: the picker's ceiling is the offer's own CR 704 bound, never the raw
+            // global safety limit — a count above it would specify a sequence containing an
+            // elimination, which is a conditional action. The engine owns this number; the
+            // frontend renders it. An unnarrowed offer states `MAX_SHORTCUT_CYCLES`; a bounded
+            // offer states less. Either way this is the offer's own bound, clamped at the same
+            // authority.
             //
-            // CR 704.5a (MagicCompRules.txt:5492): `elimination_bounds` returns `0` to
-            // mean "no legal repetition exists and the caller must not offer". A
-            // published offer carrying
-            // `0` is an authority violation, not a number to repair — clamping it to `1`
-            // renders a one-iteration offer whose single iteration eliminates a player
-            // mid-proposal. Reject it in EVERY build: a `debug_assert!` disappears from
-            // release, which is precisely where the clamp is what the player sees.
+            // CR 704.5a: `elimination_bounds` returns `0` to mean "no legal repetition exists and
+            // the caller must not offer". A published offer carrying `0` is an authority
+            // violation, not a number to repair — clamping it to `1` renders a one-iteration
+            // offer whose single iteration eliminates a player mid-proposal. Reject it in EVERY
+            // build: a `debug_assert!` disappears from release, which is precisely where the
+            // clamp is what the player sees.
             //
             // THIS GUARD IS ALSO LOAD-BEARING AGAINST A PANIC, not merely against a bad
             // offer. With the lower clamp replaced by `.min(MAX_SHORTCUT_CYCLES)` below,

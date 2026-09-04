@@ -9740,7 +9740,7 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
         stated.sort_unstable();
         assert_eq!(
             stated, expected,
-            "CR 704.5a: with no announced slot to charge, every life seat keeps the seat \
+            "CR 119.3: with no announced slot to charge, every life seat keeps the seat \
              `payload_seat` gave it at the raw product of its own count {}",
             element.count
         );
