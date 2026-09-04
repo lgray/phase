@@ -130,6 +130,34 @@ impl SessionActionError {
     }
 }
 
+/// The refusals a read-only preview can produce.
+///
+/// Deliberately narrower than [`SessionActionError`]: a preview is answered on
+/// its own request-correlated channel, and every refusal here carries a message
+/// the transport attaches to that request. There is no request-level variant, so
+/// the uncorrelated `RequestRejected` answer — which settles no pending preview
+/// promise — cannot be written at a preview transport arm.
+#[derive(Debug)]
+pub enum PreviewRefusal {
+    Operational(String),
+    Rejected(ActionRejection),
+}
+
+impl From<String> for PreviewRefusal {
+    fn from(value: String) -> Self {
+        Self::Operational(value)
+    }
+}
+
+impl PreviewRefusal {
+    fn into_legacy_reason(self) -> String {
+        match self {
+            Self::Operational(reason) => reason,
+            Self::Rejected(rejection) => rejection.message,
+        }
+    }
+}
+
 /// The server-visible result of driving the native AI after an authoritative
 /// transition. A non-empty `failure` is terminal for the AI driver, but does
 /// not discard transitions that were already committed before that failure.
@@ -1668,7 +1696,7 @@ impl SessionManager {
         action: &GameAction,
     ) -> Result<Vec<ObjectId>, String> {
         self.preview_mana_payment_with_rejection(game_code, player_token, action)
-            .map_err(SessionActionError::into_legacy_reason)
+            .map_err(PreviewRefusal::into_legacy_reason)
     }
 
     /// Viewer-safe preview form for the Full transport.
@@ -1677,7 +1705,7 @@ impl SessionManager {
         game_code: &str,
         player_token: &str,
         action: &GameAction,
-    ) -> Result<Vec<ObjectId>, SessionActionError> {
+    ) -> Result<Vec<ObjectId>, PreviewRefusal> {
         let session = self
             .sessions
             .get(game_code)
@@ -1692,7 +1720,7 @@ impl SessionManager {
             player,
             action,
         )
-        .map_err(SessionActionError::Rejected)
+        .map_err(PreviewRefusal::Rejected)
     }
 
     /// Answers the preview a player authored without moving the authenticated
@@ -1713,7 +1741,7 @@ impl SessionManager {
         game_code: &str,
         player_token: &str,
         request: &InteractionPreviewRequest,
-    ) -> Result<InteractionPreview, SessionActionError> {
+    ) -> Result<InteractionPreview, PreviewRefusal> {
         let session = self
             .sessions
             .get(game_code)
@@ -1730,7 +1758,7 @@ impl SessionManager {
         // because a preview answered mid-vote describes a board the vote is
         // about to discard.
         if session.pending_takeback.is_some() {
-            return Err(SessionActionError::Rejected(ActionRejection::new(
+            return Err(PreviewRefusal::Rejected(ActionRejection::new(
                 engine::types::action_rejection::ActionRejectionCode::ActionNotAllowed,
             )));
         }
@@ -7010,7 +7038,7 @@ mod tests {
             .expect_err("an unknown token is not a seat");
         assert!(matches!(
             unknown,
-            SessionActionError::Operational(ref reason) if reason == "Invalid player token"
+            PreviewRefusal::Operational(ref reason) if reason == "Invalid player token"
         ));
     }
 
@@ -7036,7 +7064,7 @@ mod tests {
             .preview_interaction_with_rejection(&code, acting_token, &request)
             .expect_err("the table is voting; the preview waits");
         match refused {
-            SessionActionError::Rejected(rejection) => assert_eq!(
+            PreviewRefusal::Rejected(rejection) => assert_eq!(
                 rejection.code,
                 engine::types::action_rejection::ActionRejectionCode::ActionNotAllowed
             ),
@@ -7060,7 +7088,7 @@ mod tests {
             .preview_interaction_with_rejection(&code, acting_token, &request)
             .expect_err("a faulted driver fences the whole session");
         match faulted {
-            SessionActionError::Operational(reason) => assert!(
+            PreviewRefusal::Operational(reason) => assert!(
                 reason.contains("Native AI driver fault"),
                 "the fault's own message must ride the operational channel: {reason}"
             ),

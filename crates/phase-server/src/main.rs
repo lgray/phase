@@ -75,7 +75,7 @@ use server_core::protocol::{
 use server_core::resolve_deck;
 use server_core::seat_mutation_wire_guard::guard_seat_mutation;
 use server_core::session::{
-    ActionResult, FullRuntime, GameSession, HostingMode, RevisionedActionResult,
+    ActionResult, FullRuntime, GameSession, HostingMode, PreviewRefusal, RevisionedActionResult,
     SessionActionError, SessionManager,
 };
 use server_core::spectator_wire_guard::{
@@ -5700,16 +5700,13 @@ async fn handle_preview_interaction(
                 // own channel, identical to what the local WASM seat gets.
                 match mgr.preview_interaction_with_rejection(&game_code, &player_token, &request) {
                     Ok(preview) => ServerMessage::InteractionPreview { preview },
-                    Err(SessionActionError::Rejected(rejection)) => {
+                    Err(PreviewRefusal::Rejected(rejection)) => {
                         ServerMessage::InteractionPreviewFailed {
                             request_id,
                             message: rejection.message,
                         }
                     }
-                    Err(SessionActionError::RequestRejected(reason)) => {
-                        ServerMessage::RequestRejected { reason }
-                    }
-                    Err(SessionActionError::Operational(error)) => {
+                    Err(PreviewRefusal::Operational(error)) => {
                         ServerMessage::InteractionPreviewFailed {
                             request_id,
                             message: error,
@@ -6803,16 +6800,13 @@ async fn handle_client_message(
                                     request_id,
                                     source_ids,
                                 },
-                                Err(SessionActionError::Rejected(rejection)) => {
+                                Err(PreviewRefusal::Rejected(rejection)) => {
                                     ServerMessage::ManaPaymentPreviewRejected {
                                         request_id,
                                         rejection,
                                     }
                                 }
-                                Err(SessionActionError::RequestRejected(reason)) => {
-                                    ServerMessage::RequestRejected { reason }
-                                }
-                                Err(SessionActionError::Operational(error)) => {
+                                Err(PreviewRefusal::Operational(error)) => {
                                     ServerMessage::ManaPaymentPreviewFailed {
                                         request_id,
                                         message: error,
