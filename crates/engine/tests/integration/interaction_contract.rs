@@ -8279,7 +8279,7 @@ fn f4_drive_one_beat(state: &mut GameState) {
 /// The offer beat is SEARCHED, never hardcoded. The proposer-only opportunity asserted below is
 /// this helper's own liveness control: an unbound probe can read zero opportunities, and every
 /// row built on this board would then be vacuous rather than negative.
-fn f4_offer_board() -> (GameState, PlayerId) {
+pub(crate) fn f4_offer_board() -> (GameState, PlayerId) {
     use std::io::Read;
 
     let gz: &[u8] = include_bytes!("../fixtures/fantastic_four_bounded_loop_4p.json.gz");

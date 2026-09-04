@@ -163,14 +163,19 @@ describe("shared adapter contract fixtures", () => {
     // nothing on its own — the values are what tie this end to the Rust row.
     const submission = readFixture<InteractionSubmission>("shortcut_allocation_submission.json");
 
-    expect(submission.interactionId).toBe("i-1");
+    expect(submission.interactionId).toBe("i-1.0.1");
     expect(submission.response.type).toBe("shortcut");
     if (submission.response.type !== "shortcut") return;
     expect(submission.response.data.decision).toEqual({
       type: "fixed",
       data: { iterations: 18 },
     });
+    // Every answerable point the offer publishes, not just the allocation: the
+    // Rust row drives this same payload through production submission, which
+    // refuses a partial pin set.
     expect(submission.response.data.pins).toEqual([
+      { group: 0, choiceIds: ["i-1.0.1.k0"], amounts: [] },
+      { group: 1, choiceIds: ["i-1.0.1.k2"], amounts: [] },
       {
         group: 2,
         choiceIds: ["i-1.0.1.k4", "i-1.0.1.k5", "i-1.0.1.k6"],
