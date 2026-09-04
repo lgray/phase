@@ -5026,27 +5026,28 @@ fn an_unstatable_target_decision_refuses_only_when_the_skip_moves_the_domain() {
     }
 }
 
-/// **CR 601.2c — a latched-constant pin publishes no point, and moves no allocation domain.**
+/// **CR 601.2c — a pin carrying nothing this projection states publishes no point, and moves no
+/// allocation domain.**
 ///
-/// A `ManaColor` pin is a constant the proposer produced, and a `ConvokeTaps` pin re-binds its
-/// creatures live each iteration; neither states an answer this projection publishes, so each is
-/// skipped like every other unstatable decision. Unlike a skipped announced-target decision, a
-/// skip here cannot re-domain the allocation — `allocation_point` names the first `Targets`
-/// point and neither pin is one — so the rest of the declaration is published unchanged. Both
-/// ends of the class are on the board: one pin AHEAD of the announced-target decision, one
-/// BEHIND it.
+/// Four pin kinds reach this walk with no statement in them: a `ManaColor` constant the proposer
+/// produced, a `ConvokeTaps` pin whose creatures re-bind live each iteration, and the `Mode` and
+/// `UnlessBreak` answers this projection has no statement vocabulary for. Each is skipped like
+/// every other unstatable decision. Unlike a skipped announced-target decision, a skip here
+/// cannot re-domain the allocation — `allocation_point` names the first `Targets` point and none
+/// of the four is one — so the rest of the declaration is published unchanged. All four are on
+/// the board, two AHEAD of the announced-target decision and two BEHIND it.
 ///
-/// `materialize_loop_shortcut_response` mints both pins into a declared template, so a save or a
-/// wire restore carrying either reaches this walk.
+/// `materialize_loop_shortcut_response` mints all four into a declared template, so a save or a
+/// wire restore carrying any of them reaches this walk.
 ///
 /// # Discrimination
 ///
-/// Publish a point from either arm ⇒ the statement list differs, and for the leading pin the
-/// allocation moves off the announced-target decision. Refuse from either arm ⇒ the board loses
+/// Publish a point from any of the four arms ⇒ the statement list differs, and for a leading pin
+/// the allocation moves off the announced-target decision. Refuse from any arm ⇒ the board loses
 /// its points and its element.
 #[test]
-fn a_latched_constant_pin_publishes_no_point_and_disturbs_nothing_beside_it() {
-    use engine::analysis::decision_template::PinnedDecision;
+fn a_pin_stating_nothing_publishes_no_point_and_disturbs_nothing_beside_it() {
+    use engine::analysis::decision_template::{PinnedDecision, UnlessPaymentOption};
     use engine::types::mana::ManaColor;
 
     const COUNT: u32 = 6;
@@ -5087,20 +5088,28 @@ fn a_latched_constant_pin_publishes_no_point_and_disturbs_nothing_beside_it() {
     );
     assert_eq!(alone.allocation_group, Some(0));
 
-    // ── The same decision with a latched pin on either side of it.
+    // ── The same decision with two statement-less pins on either side of it.
     let sandwiched = window(vec![
         PinnedDecision::ManaColor {
             slot: preview_slot(1),
             color: ManaColor::Blue,
         },
+        PinnedDecision::Mode {
+            slot: preview_slot(3),
+            indices: vec![0],
+        },
         stated(),
+        PinnedDecision::UnlessBreak {
+            slot: preview_slot(4),
+            pay: UnlessPaymentOption::Pay,
+        },
         PinnedDecision::ConvokeTaps {
             slot: preview_slot(2),
         },
     ]);
     assert_eq!(
         sandwiched.points, alone.points,
-        "neither latched pin publishes a point, so the statement list is the one the \
+        "none of the four publishes a point, so the statement list is the one the \
          announced-target decision produces alone"
     );
     assert_eq!(
@@ -8621,6 +8630,117 @@ fn an_authored_split_is_previewed_per_declared_seat() {
              canonical and every authored shape; {name} moved one"
         );
     }
+}
+
+/// **Row 3** — the two confirmable shapes the rows above never state: a pin that partitions
+/// NOTHING, and a count taken from the offer's own suggestion rather than from the request.
+///
+/// A `Targets` pin carrying empty `amounts` names WHO without partitioning anything — the shape
+/// the count-only arm submits. CR 732.2a leaves that declaration stated with no magnitude rather
+/// than substituting the canonical order for an allocation nobody authored, and it is a legal
+/// answer throughout: the absence is the producer's, not a refusal's.
+///
+/// # Discrimination
+///
+/// Mint an element for the empty pin — `canonical_allocation(&basis.ids, count)` is the natural
+/// wrong answer — and leg 1's absence flips. Bind the `AcceptSuggested` count to anything but the
+/// window's own suggestion and leg 2's count equality fails.
+#[test]
+fn an_unpartitioned_pin_states_no_magnitude_and_accept_suggested_states_the_offered_count() {
+    let (state, proposer) = f4_offer_board();
+    let view = viewer_interaction(&state, proposer);
+    let interaction_id = view.opportunities[0].interaction_id.clone();
+    let points = shortcut_points(&view);
+    let point = f4_allocation_point(&points);
+    let (count_spec, _published) = f4_published(&view);
+    let InteractionShortcutCountSpec::Fixed {
+        min,
+        max,
+        suggested,
+    } = count_spec
+    else {
+        panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
+    };
+    assert!(
+        point.min <= 1 && point.max == 1 && point.candidate_ids.len() > 1,
+        "reach-guard: ONE choice id must satisfy the announced point unpartitioned — otherwise \
+         leg 1 is refused for its ARITY and never reaches the producer — and a second candidate \
+         is what makes leg 2's split observable; min={} max={} candidates={}",
+        point.min,
+        point.max,
+        point.candidate_ids.len()
+    );
+
+    // ── LEG 1's PAIRED POSITIVE: the same declaration WITH its partition stated.
+    let partitioned = f4_preview(
+        &state,
+        proposer,
+        &interaction_id,
+        max,
+        f4_pins(&points, &[(0, max)]),
+    );
+    assert_eq!(partitioned.status, InteractionPreviewStatus::Confirmable);
+    assert!(
+        partitioned
+            .shortcut_preview
+            .is_some_and(|element| !element.entries.is_empty()),
+        "paired positive: the partitioned sibling states its magnitudes, so leg 1's absence is \
+         about the empty `amounts` and not about this board"
+    );
+
+    // ── LEG 1: the same pin, its partition cleared.
+    let unpartitioned: Vec<InteractionShortcutPin> = f4_pins(&points, &[(0, max)])
+        .into_iter()
+        .map(|mut pin| {
+            if pin.group == point.group {
+                pin.amounts.clear();
+            }
+            pin
+        })
+        .collect();
+    let preview = f4_preview(&state, proposer, &interaction_id, max, unpartitioned);
+    assert_eq!(
+        preview.status,
+        InteractionPreviewStatus::Confirmable,
+        "an unpartitioned declaration is a legal answer, not a refusal"
+    );
+    assert!(
+        preview.shortcut_preview.is_none(),
+        "CR 732.2a: a pin stating no split states no magnitude — an element here is one the \
+         engine invented from the canonical order"
+    );
+
+    // ── LEG 2: the count the OFFER suggests, which the request never names.
+    assert!(
+        suggested > 1 && suggested >= min,
+        "reach-guard: the suggestion must sit inside the window and above its floor, else the \
+         two-segment split below is refused; min={min} max={max} suggested={suggested}"
+    );
+    let accepted = preview_interaction(
+        &state,
+        proposer,
+        &InteractionPreviewRequest {
+            request_id: PreviewRequestId("accept-suggested".to_string()),
+            interaction_id: interaction_id.clone(),
+            response: InteractionResponse::Shortcut {
+                decision: InteractionShortcutDecision::AcceptSuggested,
+                pins: f4_pins(&points, &[(0, suggested - 1), (1, 1)]),
+            },
+        },
+    );
+    assert_eq!(accepted.status, InteractionPreviewStatus::Confirmable);
+    let element = accepted
+        .shortcut_preview
+        .expect("accepting the suggestion is confirmable, so it carries its previewed element");
+    assert_eq!(
+        element.count, suggested,
+        "CR 732.2a: accepting the suggestion states the count the OFFER published"
+    );
+    assert!(
+        !element.entries.is_empty() && element.allocation.len() > 1,
+        "paired positive: the accepted element states magnitudes over more than one segment, so \
+         the count equality above is not read off an empty element"
+    );
 }
 
 /// **Row 4** — a declaration the ingress REFUSES carries no magnitude, each refusal asserted by
