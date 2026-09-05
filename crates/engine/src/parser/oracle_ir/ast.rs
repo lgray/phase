@@ -3336,8 +3336,8 @@ mod duration_distribution_tests_7923 {
     }
 
     /// **V-U1e's MANDATORY hostile rows.** A link carrying its OWN, NARROWER printed
-    /// window under a WIDER outer stated duration must keep the printed one (CR
-    /// 611.2a — yield to explicit).
+    /// window under a WIDER outer stated duration must keep the printed one
+    /// (CR 611.2a — yield to explicit).
     ///
     /// The `PreventDamage` row is THE discriminating one and is constructed DIRECTLY,
     /// not drawn from the corpus: measured, ZERO printed-window `PreventDamage` nodes

@@ -344,8 +344,8 @@ pub(crate) struct AbilityShellIr {
     ///
     /// Everything else on this shell partitions along the seam CR 602.1 draws —
     /// cost before the colon, activation instructions after it. `optional` does
-    /// not: CR 608.2d places the choice *"while applying the effect"*, which is CR
-    /// 608.2 resolution, the half this type deliberately leaves to
+    /// not: CR 608.2d places the choice *"while applying the effect"*, which is
+    /// CR 608.2 resolution, the half this type deliberately leaves to
     /// [`EffectChainIr`]. So its presence here is an explicit, named exception
     /// rather than an extension of the partition, and this doc block is where the
     /// exception is justified.

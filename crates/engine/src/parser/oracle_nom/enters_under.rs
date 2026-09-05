@@ -190,8 +190,8 @@ pub(crate) fn fold_control_clauses(span: &str) -> Option<ControlClausePossessor>
     })
 }
 
-/// CR 608.2c: map a relative-player parse scope to a `ControllerRef` the CR
-/// 110.2a binding may legally use. EXHAUSTIVE, NO WILDCARD, FAIL-CLOSED — a
+/// CR 608.2c: map a relative-player parse scope to a `ControllerRef` the
+/// CR 110.2a binding may legally use. EXHAUSTIVE, NO WILDCARD, FAIL-CLOSED — a
 /// future `ControllerRef` variant is a compile error here rather than a
 /// silently-admitted controller binding.
 ///
@@ -334,8 +334,8 @@ pub(crate) fn bind_control_clause(
         // explicit battlefield-entry controller.
         (ControlClausePossessor::You, _) => EntersUnderSpec::Override(ControllerRef::You),
         // CR 110.2: `Default` is the existing IR spelling for the resolver's
-        // per-moved-object owner behavior. It must not be collapsed to the CR
-        // 110.2a instructed-player default.
+        // per-moved-object owner behavior. It must not be collapsed to the
+        // CR 110.2a instructed-player default.
         (ControlClausePossessor::Owner, _) => EntersUnderSpec::Default,
         // CR 400.1 + CR 400.3 + CR 404.1 + CR 108.3: a card in a graveyard
         // is in ITS OWNER'S graveyard, so the clause's own owner NP and the
