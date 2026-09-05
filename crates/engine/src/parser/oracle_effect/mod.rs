@@ -17888,11 +17888,11 @@ fn try_parse_verb_and_target<'a>(
         };
         return match dest {
             Some(d) if d.zone == Zone::Battlefield => {
-                // CR 110.2a + CR 608.2c:
-                // bind the raw control clause BEFORE either struct literal —
-                // the `target,` field shorthand MOVES `target`, so a `&target`
-                // borrow inside the literal would not compile. `d.control` is
-                // `Copy`, so reading it here does not disturb `d`.
+                // CR 110.2a + CR 608.2c: bind the raw control clause BEFORE
+                // either struct literal — the `target,` field shorthand MOVES
+                // `target`, so a `&target` borrow inside the literal would not
+                // compile. `d.control` is `Copy`, so reading it here does not
+                // disturb `d`.
                 let enters_under = bind_control_clause(
                     d.control,
                     name_entry_control_antecedent(Some(&target), ctx),
@@ -17958,8 +17958,8 @@ fn try_parse_verb_and_target<'a>(
                             target,
                             origin,
                             destination: Zone::Hand,
-                            // CR 110.2: controller
-                            // semantics apply only while an object is a permanent.
+                            // CR 110.2: controller semantics apply only while an
+                            // object is a permanent.
                             enters_under: EntersUnderSpec::Default,
                             enter_tapped: false,
                             enter_with_counters: vec![],
@@ -17995,8 +17995,8 @@ fn try_parse_verb_and_target<'a>(
                             target,
                             origin,
                             destination: d.zone,
-                            // CR 110.2: controller
-                            // semantics apply only while an object is a permanent.
+                            // CR 110.2: controller semantics apply only while an
+                            // object is a permanent.
                             enters_under: EntersUnderSpec::Default,
                             enter_tapped: false,
                             enter_with_counters: vec![],
@@ -37447,13 +37447,12 @@ fn try_parse_put_zone_change(lower: &str, text: &str) -> Option<Effect> {
         .map(|(effect, _, _)| effect)
 }
 
-/// The third tuple element is the CR 110.2a
-/// battlefield-entry control spec. It is returned ALONGSIDE the `Effect` rather
-/// than folded into `Effect::ChangeZone.enters_under` because the `Effect` field
-/// is a collapsed `Option<ControllerRef>` with no room for the fail-closed
-/// `UnboundAnaphor` state; `parse_put_ast` stores the full spec on the IR and
-/// the lowering site decides between a bound controller and an honest
-/// `Effect::unimplemented`.
+/// The third tuple element is the CR 110.2a battlefield-entry control spec. It
+/// is returned ALONGSIDE the `Effect` rather than folded into
+/// `Effect::ChangeZone.enters_under` because the `Effect` field is a collapsed
+/// `Option<ControllerRef>` with no room for the fail-closed `UnboundAnaphor`
+/// state; `parse_put_ast` stores the full spec on the IR and the lowering site
+/// decides between a bound controller and an honest `Effect::unimplemented`.
 fn try_parse_put_zone_change_parts(
     lower: &str,
     text: &str,
@@ -37662,14 +37661,14 @@ fn try_parse_put_zone_change_parts(
                 let origin_text = format!("{}{}", before.lower, after.lower);
                 infer_origin_zone(&origin_text)
             };
-            // CR 110.2a: the SAME span as the
-            // single-literal `scan_contains_phrase(after_put_tp.lower, "under
-            // your control")` boolean this replaces — no reach change. The
-            // fold's `You`-wins priority makes it byte-for-byte non-regressive
-            // (both walk word boundaries over the identical span and both
-            // return `You` when that clause is present anywhere in it); the only
-            // delta is that a third-person anaphor is now bound (CR 608.2c)
-            // or failed closed instead of silently dropped.
+            // CR 110.2a: the SAME span as the single-literal
+            // `scan_contains_phrase(after_put_tp.lower, "under your control")`
+            // boolean this replaces — no reach change. The fold's `You`-wins
+            // priority makes it byte-for-byte non-regressive (both walk word
+            // boundaries over the identical span and both return `You` when that
+            // clause is present anywhere in it); the only delta is that a
+            // third-person anaphor is now bound (CR 608.2c) or failed closed
+            // instead of silently dropped.
             let enters_under_spec = bind_control_clause(
                 fold_control_clauses(after_put_tp.lower),
                 name_entry_control_antecedent(Some(&target), ctx),

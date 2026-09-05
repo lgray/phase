@@ -1152,9 +1152,8 @@ pub enum StaticMode {
     ///
     /// `frequency`: None = all activations; Some(OncePerTurn) = first per turn.
     ///
-    /// Parser-complete structured gap; runtime hook deferred.
-    /// CR 702.29a, CR 702.122a,
-    /// CR 118.9.
+    /// Parser-complete structured gap; runtime hook deferred. CR 702.29a, CR 702.122a, CR
+    /// 118.9.
     AlternativeKeywordCost {
         keyword: KeywordKind,
         cost: AbilityCost,
