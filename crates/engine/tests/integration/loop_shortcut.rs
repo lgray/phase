@@ -7067,7 +7067,8 @@ fn dump_drive_one_beat(
     let Some(action) = chosen else {
         return Err(format!("empty action list at {:?}", state.waiting_for));
     };
-    apply(state, who, action.clone())
+    let actor = engine::game::turn_control::authorized_submitter_for_player(state, who);
+    apply(state, actor, action.clone())
         .map(|r| r.events)
         .map_err(|e| format!("apply err ({action:?}): {e:?}"))
 }
@@ -7848,7 +7849,8 @@ fn combat_drive_one_beat(state: &mut GameState) -> Result<Vec<GameEvent>, String
                 .filter(|(n, _)| *n > 0)
                 .map(|(_, a)| a.clone());
             if let Some(action) = biggest {
-                return apply(state, who, action.clone())
+                let actor = engine::game::turn_control::authorized_submitter_for_player(state, who);
+                return apply(state, actor, action.clone())
                     .map(|r| r.events)
                     .map_err(|e| format!("apply err ({action:?}): {e:?}"));
             }

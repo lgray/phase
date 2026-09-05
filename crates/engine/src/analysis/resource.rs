@@ -7639,7 +7639,8 @@ mod tests {
         let Some(action) = chosen.cloned() else {
             return Err(format!("empty action list at {:?}", state.waiting_for));
         };
-        crate::game::engine::apply(state, who, action.clone())
+        let actor = crate::game::turn_control::authorized_submitter_for_player(state, who);
+        crate::game::engine::apply(state, actor, action.clone())
             .map(|_| ())
             .map_err(|e| format!("apply err ({action:?}): {e:?}"))
     }
