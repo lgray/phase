@@ -462,7 +462,7 @@ minimize re-reads.
 ## CR Numbers (all grep-verified against `docs/MagicCompRules.txt`)
 
 - **CR 702.40** — Storm keyword ability. ✓ (phantom keyword to drop)
-- **CR 201.5 / 201.5b** — a name reference on an object means just that object (lines 1320/1325). ✓
+- **CR 201.5 / 201.5b** — a name reference on an object means just that object. ✓
   (memory note "CR 201.4" is imprecise — 201.4 is "choose a card name"; the correct rule is 201.5.)
 - **CR 400.7** — object becomes a new object on zone change; entered-battlefield look-back basis. ✓
 - **CR 302.6** — summoning sickness / "since their most recent turn began". ✓ (existing `ParsedCondition::SourceEnteredThisTurn` cites this)
