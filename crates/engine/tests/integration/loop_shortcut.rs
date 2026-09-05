@@ -13662,6 +13662,111 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
     }
 }
 
+/// **R28-d — the GLOBAL count cap, re-checked at CONSUMPTION.**
+///
+/// `handle_declare_shortcut` refuses an over-cap `Fixed` before the proposal is built and its
+/// own note records that the drive helpers do NOT re-check — so the cap was defended at declare
+/// and only at declare. A RESTORED `WaitingFor::RespondToShortcut` never passes that declare,
+/// for exactly the reason the sibling `owner` row above exists: the untrusted-restore scrubber
+/// rewrites only the two pre-cast waits. A hand-edited count therefore reached
+/// `materialize_fixed_shortcut` through one Accept — a `GameState` clone plus a drive per cycle,
+/// which is the vector the declare site calls the catastrophic remote one.
+///
+/// The cap is read as `ShortcutDecisionSchema::default().max_iterations`, which IS
+/// `MAX_SHORTCUT_CYCLES` (`default_max_iterations`) — the const itself is `pub(crate)` and
+/// invisible across this boundary. Reading it rather than hard-coding `u32::MAX` puts the
+/// refused arm on the BOUNDARY member `cap + 1`, where an off-by-one in the comparison shows.
+///
+/// * **(a)** `Fixed(cap + 1)` ⇒ refused: manual handback, ZERO cycles committed.
+/// * **(b)** `Fixed(1)`, the same construction differing only in the count ⇒ DRIVES. Without
+///   (b), (a)'s no-delta observation is satisfied by a fixture that never reached the guard.
+///
+/// VACUITY TRAP, inherited from `over_cap_fixed_count_hands_back_with_no_drive`: a handback
+/// lands on `WaitingFor::Priority` and so does a stop-short drive, so `waiting_for` is an
+/// invariant here, not the discriminator. The DRIVE is — hence the life-delta assertions.
+///
+/// REVERT-PROBE: delete the `match proposal.count { …Fixed(n) => n > MAX_SHORTCUT_CYCLES, … }`
+/// disjunct from `apply_confirmed_shortcut`'s guard ⇒ (a) drives and its no-delta assertion
+/// FAILS, while (b) stays green.
+#[test]
+fn r28_d_a_restored_over_cap_count_is_refused_at_consumption() {
+    let cap = ShortcutDecisionSchema::default().max_iterations;
+    for count in [cap + 1, 1] {
+        let over_cap = count > cap;
+        let (mut runner, slot, _bond, _h, lives) = r5_reach_offer();
+        runner
+            .act(GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(1),
+                template: Some(r5_pin_template(slot.clone(), P1, 1)),
+            })
+            .expect("declare opens APNAP");
+
+        // Tamper the persisted wait exactly as a hand-edited dump would, AFTER the declare
+        // firewall has run and passed on the honest value — so nothing below is attributable
+        // to it.
+        let WaitingFor::RespondToShortcut { proposal, .. } = &mut runner.state_mut().waiting_for
+        else {
+            panic!("count={count}: APNAP must be open");
+        };
+        proposal.count = IterationCount::Fixed(count);
+
+        // `PersistedGameState::Raw` is the untrusted branch — the one the scrubber runs on.
+        let payload = serde_json::to_value(runner.state()).expect("state serializes");
+        let restored: GameState =
+            serde_json::from_value::<engine::types::game_state::PersistedGameState>(payload)
+                .unwrap_or_else(|error| {
+                    panic!("count={count}: decodes through the production boundary: {error}")
+                })
+                .into_game_state()
+                .expect("persisted test snapshot satisfies the checked restore contract");
+
+        // The tampered count SURVIVES the decode. Without this the scrubber could be doing the
+        // refusing and (a) would measure something else entirely.
+        let WaitingFor::RespondToShortcut { proposal, .. } = &restored.waiting_for else {
+            panic!(
+                "count={count}: the restore must NOT drop the wait; got {:?}",
+                restored.waiting_for
+            );
+        };
+        assert_eq!(
+            proposal.count,
+            IterationCount::Fixed(count),
+            "count={count}: the tampered count reaches `apply_confirmed_shortcut` unchanged"
+        );
+
+        let mut restored_runner = GameRunner::from_state(restored);
+        accept_all_opponents(&mut restored_runner);
+
+        let after: Vec<i32> = restored_runner
+            .state()
+            .players
+            .iter()
+            .map(|p| p.life)
+            .collect();
+        if over_cap {
+            assert_eq!(
+                after, lives,
+                "count={count}: (a) ZERO cycles committed — the cap fired before the first \
+                 clone, which is the discriminator a handback alone cannot be"
+            );
+            assert!(
+                matches!(
+                    restored_runner.state().waiting_for,
+                    WaitingFor::Priority { .. }
+                ),
+                "count={count}: (a) CR 800.4a manual handback, got {:?}",
+                restored_runner.state().waiting_for
+            );
+        } else {
+            assert_ne!(
+                after, lives,
+                "count={count}: (b) a legal count still DRIVES — without this (a)'s no-delta \
+                 assertion is vacuous"
+            );
+        }
+    }
+}
+
 // ─────── AI1 — the AI's bounded-declare candidate withdraws on a 0→1 schema ───────
 
 /// **AI1 — the generator's `Fixed(max)` candidate is keyed to the PUBLISHED PIN SET, measured

@@ -4339,6 +4339,32 @@ fn apply_confirmed_shortcut(
             .template
             .as_ref()
             .is_some_and(|t| t.owner != proposal.proposer)
+        // IMPLEMENTATION BUDGET BOUND (see `MAX_SHORTCUT_CYCLES`), deliberately NOT labelled
+        // as a CR 732.2a constraint for the same reason the declare-site arm is not: the rules
+        // place no ceiling on a shortcut's repetitions, so this ceiling is ours. That arm
+        // refuses an over-cap `Fixed` before the proposal is built, and its own note records
+        // that the drive helpers do NOT re-check — which leaves the restore ingress undefended,
+        // exactly as it left the `owner` firewall above undefended. A tampered `Fixed(4e9)`
+        // riding a restored `RespondToShortcut` reaches `materialize_fixed_shortcut` through
+        // one Accept: a GameState clone plus a drive per cycle. Re-check the GLOBAL cap here,
+        // at the one point every confirmed drive passes through.
+        //
+        // GLOBAL CAP ONLY. The per-offer `schema.max_iterations` is not re-checkable at this
+        // seam — the offer is gone by consumption and the proposal never carried the bound, and
+        // a bound copied onto the proposal would be tampered by the same serde that tampered
+        // the count, so that gate could not fail in the direction it guards.
+        //
+        // EXHAUSTIVE, no wildcard, for the reason the declare-site match states: a future
+        // `IterationCount` variant carrying its own unbounded count must build-break here and
+        // force a bound decision rather than silently regress this cap.
+        || match proposal.count {
+            crate::analysis::decision_template::IterationCount::Fixed(n) => {
+                n > MAX_SHORTCUT_CYCLES
+            }
+            // Bounded elsewhere by the same constant: `apply_until_lethal_shortcut` drives
+            // `shortcut_drive_period` cycles, which clamps to `MAX_SHORTCUT_CYCLES`.
+            crate::analysis::decision_template::IterationCount::UntilLethal => false,
+        }
     {
         priority::reset_priority(state);
         // CR 800.4a: priority passes to the next player in turn order still in the game.
@@ -19325,6 +19351,125 @@ mod stage2_injector_tests {
                 .iter()
                 .any(|p| p.id == player && p.is_eliminated)),
             "CR 800.4a: priority is seated at a living seat; got {:?}",
+            state.waiting_for
+        );
+    }
+
+    /// The same decline on a MULTI-CYCLE period — the shape that separates "declines" from
+    /// "had no second cycle to take".
+    ///
+    /// [`until_lethal_declines_to_materialize_a_removal`] pins its seats with
+    /// `TargetPin::Player`, so `shortcut_drive_period` reads 1 and the drive holds exactly one
+    /// cycle. Routing `SeatLeft` to `running = *s` instead of the fallback therefore leaves that
+    /// row green: the post-removal board has one untouched opponent, so it names no faller,
+    /// `live_mandatory_loop_winner` returns `None`, and the tail falls back anyway. This row
+    /// respells the SAME rig's pins as a length-2 `RoundRobin` naming the same seat at every
+    /// index — the period `shortcut_validated_range`'s `UntilLethal` arm admits — so the drive
+    /// does hold a second cycle, and leg (c) measures that the second cycle CROWNS. That is what
+    /// makes leg (d)'s restored board a decision rather than an absence.
+    ///
+    /// REVERT-PROBE: route `apply_until_lethal_shortcut`'s `SeatLeft` to `running = *s` ⇒ the
+    /// drive continues into that crowning cycle ⇒ (d) reads `GameOver { winner: Some(P0) }` with
+    /// two seats eliminated and FAILS, while the length-1 sibling row stays green.
+    #[test]
+    fn until_lethal_declines_a_removal_it_could_have_driven_past() {
+        use crate::analysis::decision_template::{AnnouncementSubject, Ranking};
+
+        let (committed, boundary, template, cap) = two_drainer_rig();
+
+        // The rig's own pins, respelled at length 2. Rewritten from the rig's template rather
+        // than rebuilt from seat literals, so the driven seats are the sibling row's by
+        // construction and only the schedule LENGTH differs.
+        let mut sched = template;
+        for decision in &mut sched.decisions {
+            let PinnedDecision::Targets { targets, .. } = decision else {
+                panic!("the rig pins targets only")
+            };
+            for pin in targets.iter_mut() {
+                let &mut TargetPin::Player(seat) = pin else {
+                    panic!("the rig pins seats")
+                };
+                *pin = TargetPin::Scheduled(TargetSchedule::RoundRobin(vec![
+                    Ranking::one(AnnouncementSubject::Seat(seat)),
+                    Ranking::one(AnnouncementSubject::Seat(seat)),
+                ]));
+            }
+        }
+
+        // (a) REACH-GUARD: the drive really does hold a second cycle.
+        assert_eq!(
+            shortcut_drive_period(Some(&sched)),
+            2,
+            "this rig exists for the period the length-1 sibling cannot have"
+        );
+
+        // (b) REACH-GUARD: cycle 0 still removes a seat, with survivors.
+        let CycleOutcome::SeatLeft { state: driven, .. } =
+            drive_one_shortcut_cycle(&committed, &boundary, Some(&sched), 0, cap, None)
+        else {
+            panic!("reach-guard: the respelled pins must drive the sibling row's removal")
+        };
+        assert_eq!(
+            driven.players.iter().filter(|p| p.is_eliminated).count(),
+            1,
+            "exactly one seat leaves"
+        );
+        assert!(
+            driven.players.iter().filter(|p| !p.is_eliminated).count() >= 2,
+            "CR 104.2a: two or more players remain, so cycle 0 crowns nobody"
+        );
+
+        // (c) THE DISCRIMINATOR: the cycle the fallback gives up WOULD have crowned. Without
+        //     this leg, (d) is satisfied by any drive that merely stops.
+        let follow = drive_one_shortcut_cycle(&driven, &boundary, Some(&sched), 1, cap, None);
+        assert!(
+            matches!(follow, CycleOutcome::CrossLethal { winner: Some(w), .. } if w == P0),
+            "reach-guard: driving on past the removal reaches the crown that (d) says this \
+             route declines"
+        );
+
+        // (d) THE SUBJECT: the route restores the offer board rather than taking that crown.
+        let mut state = committed.clone();
+        let proposal = crate::analysis::loop_check::ShortcutProposal {
+            proposer: P0,
+            predicted_winner: Some(P0),
+            count: IterationCount::UntilLethal,
+            unbounded: Vec::new(),
+            win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
+            template: Some(sched),
+            per_cycle: None,
+        };
+        let mut result = crate::types::game_state::ActionResult {
+            events: Vec::new(),
+            waiting_for: state.waiting_for.clone(),
+            log_entries: Vec::new(),
+        };
+        apply_until_lethal_shortcut(&mut state, &mut result, &proposal);
+
+        assert_eq!(
+            state
+                .players
+                .iter()
+                .map(|p| (p.id, p.life))
+                .collect::<Vec<_>>(),
+            committed
+                .players
+                .iter()
+                .map(|p| (p.id, p.life))
+                .collect::<Vec<_>>(),
+            "CR 732.2a: the certificate cannot vouch for the cycle past the removal, so the \
+             offer board is restored whole — every life as it was"
+        );
+        assert!(
+            state.players.iter().all(|p| !p.is_eliminated),
+            "no seat is eliminated on the restored board"
+        );
+        assert!(
+            matches!(state.waiting_for, WaitingFor::Priority { player } if !state
+                .players
+                .iter()
+                .any(|p| p.id == player && p.is_eliminated)),
+            "CR 800.4a: the crown is given up for a handback at a living seat; got {:?}",
             state.waiting_for
         );
     }
