@@ -3074,62 +3074,57 @@ fn certified_bounded_cycle_offer<'a>(
     // announcing player makes no choice. The bound answers CR 704.5a ("if a player has 0 or
     // less life, that player loses the game"), and a forced victim loses that life exactly as
     // a chosen one does. Deriving the bound from `points` therefore made the CR 732.2a
-    // withhold drop the forced victim out of `declarable_victims`, charging it bare
-    // `observed_life_loss` instead of `observed_life_loss.max(0) + declared_life_magnitude` —
-    // so `max_iterations` GREW, and the offer stated more legal repetitions than are legal.
-    // Measured on an ordinary forced 2p targeted drain: 9 charged vs 19 uncharged; on a
-    // victim whose measured period NETS A LIFE GAIN the uncharged form leaves
-    // `elimination_bounds`' `narrow` guard (`magnitude > 0`) unfired and DISARMS the life
-    // axis at `MAX_SHORTCUT_CYCLES` entirely.
+    // withhold drop the forced victim out of the charged set entirely, so no slot reached it
+    // and it took the bare `observed_life_loss` — `max_iterations` GREW, and the offer stated
+    // more legal repetitions than are legal.
+    //
+    // ON AN ORDINARY FORCED 2p TARGETED DRAIN THE TWO DERIVATIONS NOW AGREE, and that is the
+    // charge model working rather than the withhold ceasing to matter: a forced announcement
+    // has ONE legal target by definition, the window settles the slot's aim on that seat, and
+    // the aim subtraction removes exactly the observed loss the slot itself caused — so the
+    // charged and the uncharged answer are the SAME number there. What the withhold still
+    // moves is every other shape: a victim whose measured period NETS A LIFE GAIN (uncharged,
+    // its magnitude is negative, `elimination_bounds`' `narrow` guard (`magnitude > 0`) never
+    // fires and the life axis is DISARMED at MAX_SHORTCUT_CYCLES entirely), and every seat a
+    // charged slot merely REACHES, which carries no observed loss to subtract from.
     //
     // `bounded_cycle_charged_targets_for_window` reads the SAME acceptance authority the
     // point mint does (`entry_announces`), so the charged SLOT set is a superset of the
     // published `Targets` slots by construction: on a board where every announcement is the
     // proposer's own choice — every tracked dump today — this derivation is value-identical to
     // the one it replaces. ⚠ THE SUPERSET IS OVER SLOTS ONLY. A repeated slot's per-slot LEGAL
-    // set is what `declarable_victims` below reads, and the two mints keep different frames of
+    // set is what each charge's reach carries, and the two mints keep different frames of
     // a repeat, so that set is made a superset separately, by the charging mint's UNION dedup
     // (see its doc for the monotonicity proof). Claiming the per-slot legal set is a superset
     // "by construction" from the shared acceptance authority alone is FALSE.
-    let charged_targets = bounded_cycle_charged_targets_for_window(&touch, proposer);
-    // `declarable_victims` is the union of those announcements' legal PLAYER sets — EMPTY for
-    // the untargeted class, where the victims are already in `delta.life`.
-    let declarable_victims: Vec<PlayerId> = {
-        let mut v: Vec<PlayerId> = charged_targets
-            .iter()
-            .flat_map(|(_, victims)| victims.iter().copied())
-            .collect();
-        v.sort_unstable();
-        v.dedup();
-        v
-    };
-    // CR 119.3: what ONE repetition charges to whichever seat a slot's pin names. The
-    // max-vs-sum reasoning, the gain clamp and the fail-closed direction live on the
-    // function; `elimination_bounds` then sums the charged slots per declarable victim.
-    // Extracted rather than inlined so the fork has a callable seam. ⚠ THE "`victim_slot` IS
+    //
+    // CR 119.3: what ONE repetition charges to whichever seat a slot's declaration names. The
+    // max-vs-sum reasoning, the gain clamp and the fail-closed direction live on
+    // `worst_seat_life_loss`; `elimination_bounds` then charges each seat every slot that
+    // REACHES it and subtracts what the window saw a slot aim AT it. ⚠ THE "`victim_slot` IS
     // EMPTY ON EVERY TRAJECTORY THAT OFFERS TODAY" NOTE THAT STOOD HERE IS FALSIFIED, and is
     // replaced rather than softened: the answer-beat sampling site in `apply_action` announces
     // the entries a FORCED pre-priority window puts on the stack, and a CR 608.2b `Targets`
     // declaration is exactly the shape that resolves across one. On the F4 boards the
     // announcement carries Torch's target slot, so this value is NOT dropped — it reaches
     // `elimination_bounds` in production and `r1_the_bounded_offer_fires_on_the_real_f4_dump`
-    // re-derives the published bound with a non-zero declared term.
-    let worst_seat_life_loss: i64 = periodic.delta.worst_seat_life_loss();
-    periodic.victim_slot = charged_targets
+    // re-derives the published bound from it.
+    let charged = bounded_cycle_charged_targets_for_window(
+        &touch,
+        proposer,
+        periodic.delta.worst_seat_life_loss(),
+    );
+    // The certificate's published magnitude per charged slot — wire shape unchanged.
+    periodic.victim_slot = charged
         .iter()
-        .map(|(slot, _)| (slot.clone(), worst_seat_life_loss))
+        .map(|charge| (charge.slot.clone(), charge.magnitude))
         .collect();
-    // CR 704.5a: the SAME seat set `elimination_bounds` is handed two statements below,
-    // carried on the certificate so the per-cycle conformance check confines its lift to what
-    // the bound actually reserved instead of re-deriving a domain from the driven board.
-    periodic.declarable_victims = declarable_victims.clone();
-    // `.cloned()`, not `.copied()`: `(DecisionSlot, i64)` is not `Copy`.
-    let slot_magnitude: std::collections::BTreeMap<DecisionSlot, i64> =
-        periodic.victim_slot.iter().cloned().collect();
-    let max_iterations =
-        periodic
-            .delta
-            .elimination_bounds(state, &declarable_victims, &slot_magnitude);
+    // CR 704.5a: the SAME seat set `elimination_bounds` reserves headroom for, folded from the
+    // SAME charges by their own authority, so the per-cycle conformance check confines its
+    // lift to what the bound actually reserved and the two cannot be derived apart.
+    periodic.declarable_victims =
+        crate::analysis::resource::SlotCharge::declarable_victims(&charged);
+    let max_iterations = periodic.delta.elimination_bounds(state, &charged);
     // A bound of 0 states no legal repetition. A bound AT the cap states no narrowing at all
     // — this producer's whole claim is that it measured a CR 704.5a / CR 704.5c / CR 104.3c
     // threshold inside the loop, so an unnarrowed result belongs to another seam. Checking
@@ -3507,7 +3502,7 @@ pub(crate) struct EntryPinSlots {
 /// much?* — and shapes the bound. A forced announcement is not a choice, so it is withheld
 /// from the schema; its victim still loses the life, so it is still charged. Deriving the
 /// bound from the PUBLISHED point set made the CR 732.2a withhold silently drop the forced
-/// victim into `elimination_bounds`' cheaper arm and RAISE `max_iterations`.
+/// victim out of every charge's reach and RAISE `max_iterations`.
 pub(crate) struct AnnouncedTarget {
     /// CR 115.2 target choice — `index: 0`, the same key a published point carries, so a
     /// charge and a publication of the same announcement can never land on different slots.
@@ -3916,16 +3911,16 @@ fn entry_announces(
     // choice the proposer makes" while reading one of the three axes. This is not a repair of
     // a defect this commit introduced.
     //
-    // ⚠ WITHHELD FROM THE SCHEMA IS NOT UNCHARGED, and the two used to be the same act.
-    // CR 119.3 asks which seat loses how much life, and a forced victim loses it exactly as
-    // a chosen one does — nobody having made the choice changes who pays, not how much.
-    // Reporting the shape here rather than dropping the announcement is what lets
-    // [`bounded_cycle_charged_targets_for_window`] charge it while
+    // ⚠ WITHHOLDING AN ANNOUNCEMENT FROM THE SCHEMA STILL CHARGES ITS VICTIM, and the two
+    // used to be the same act. CR 119.3 asks which seat loses how much life, and a forced
+    // victim loses it exactly as a chosen one does — nobody having made the choice changes
+    // who pays, not how much. Reporting the shape here rather than dropping the announcement
+    // is what lets [`bounded_cycle_charged_targets_for_window`] charge it while
     // [`entry_publishes_pin_slots`] still withholds it. Before, the shape was destroyed at
     // this line and the CR 704.5a bound — derived from the surviving PUBLISHED points — read
-    // the withhold as "no victim", charging bare `observed_life_loss` instead of
-    // `observed_life_loss.max(0) + declared_life_magnitude`, so `max_iterations` GREW: the
-    // offer stated more legal repetitions than CR 732.2a permits.
+    // the withhold as "no victim", so no slot reached that seat and it took the bare
+    // `observed_life_loss` with no reach term at all, and `max_iterations` GREW: the offer
+    // stated more legal repetitions than CR 732.2a permits.
     let announcement = if slot.chooser.is_some_and(|chooser| chooser != proposer)
         || !ability.target_selection_mode.is_chosen()
         || crate::analysis::resource::forced_unique_targeting(state, ability)
@@ -4091,21 +4086,26 @@ pub(crate) fn bounded_cycle_pin_slots_for_window(
     points
 }
 
-/// CR 119.3: what ONE CERTIFIED PERIOD CHARGES — the announcement slot of every accepted
-/// entry, paired with the seats that announcement may name, whether or not CR 732.2a
-/// publishes it as a decision point.
+/// CR 119.3: what ONE CERTIFIED PERIOD CHARGES — one
+/// [`crate::analysis::resource::SlotCharge`] per announcement slot of every accepted entry,
+/// carrying the caller's per-period `magnitude`, the seats that announcement may name, and the
+/// seat the window observed it name, whether or not CR 732.2a publishes it as a decision point.
+///
+/// `magnitude` is the slot-independent `ResourceVector::worst_seat_life_loss` of the certified
+/// period, passed in rather than re-derived here: this reader holds the announcements, not the
+/// delta, and one producer keeps the charge and the certificate's published `victim_slot` from
+/// disagreeing about how much a slot costs.
 ///
 /// DELIBERATELY NOT A FILTER OVER [`bounded_cycle_pin_slots_for_window`]'s OUTPUT, and that
 /// is the entire reason this exists as its own reader. Publication answers CR 732.2a — "a
 /// sequence of game choices, for all players" — so a FORCED announcement publishes nothing.
-/// Charging answers CR 119.3 — "if an effect causes a player to gain life or
-/// lose life, that player's life total is adjusted accordingly" — and the victim
-/// loses that life whether or not anybody chose it. Deriving the bound from the
-/// published set therefore let the CR 732.2a withhold silently drop a forced victim
-/// into `ResourceVector::elimination_bounds`' cheaper `observed_life_loss` arm,
-/// RAISING `max_iterations`: the offer would state more legal repetitions than CR 732.2a
-/// permits, on the very operator whose job is to prove the proposed sequence "may be legally
-/// taken based on the current game state".
+/// Charging answers CR 119.3 — "if an effect causes a player to gain life or lose life, that
+/// player's life total is adjusted accordingly" — and the victim loses that life whether or
+/// not anybody chose it. Deriving the bound from the published set therefore let the
+/// CR 732.2a withhold silently drop a forced victim out of every charge's reach, leaving it
+/// the bare `observed_life_loss`, RAISING `max_iterations`: the offer would state more legal
+/// repetitions than CR 732.2a permits, on the very operator whose job is to prove the
+/// proposed sequence "may be legally taken based on the current game state".
 ///
 /// SAME ACCEPTANCE AUTHORITY as the publication mint — both read [`entry_announces`] — so
 /// the charged SLOT set is a superset of the published `Targets` slots by construction, never
@@ -4123,20 +4123,48 @@ pub(crate) fn bounded_cycle_pin_slots_for_window(
 /// announcement, so its slot is charged ONCE however many entries carry it. On a repeat the
 /// victim lists are UNIONED rather than first-wins.
 ///
-/// # Why the union is MONOTONE — it can only tighten the bound, never loosen it
+/// # THE OBSERVED AIM, and when it is withdrawn
 ///
-/// The union changes exactly one input to
-/// [`crate::analysis::resource::ResourceVector::elimination_bounds`]:
-/// `declarable_victims` (its caller's flat union over these victim lists) can only GAIN
-/// members. It cannot change `slot_magnitude`, which is keyed by SLOT and whose value is the
-/// slot-independent `worst_seat_life_loss` — the union adds no slot. And for the one seat `p`
-/// a union adds, that function's per-seat life magnitude moves from `observed_life_loss` to
-/// `observed_life_loss.max(0) + S`, where `S = declared_life_magnitude >= 0` by construction
-/// (its initializer filters `*m > 0` and sums; the empty sum is `0`). For `observed >= 0` that
-/// is `observed + S >= observed`; for `observed < 0` it is `S >= 0 > observed`. So the
-/// magnitude never decreases, and `narrow` — `bound.min(headroom.max(0) / magnitude)` over a
-/// non-negative numerator, fired only when `magnitude > 0` — is monotone non-increasing in its
-/// divisor. Hence the bound can only SHRINK. That is this repo's fail-closed direction.
+/// Beside the reach, each charge carries the seat the window observed the announcement NAME
+/// ([`crate::analysis::resource::SlotCharge::aimed_at`], CR 601.2c reached for a triggered
+/// ability via CR 603.3d), read from the announcing entry's own `ability().targets`. It is
+/// `Some(seat)` only when that slice is exactly one `TargetRef::Player` whose seat lies in
+/// THAT frame's projected reach; every other shape — no target, an object target, several
+/// targets, or a seat the frame's own legality authority excludes — yields `None`.
+///
+/// WITHDRAWAL, not first-wins: on a repeated slot the reach unions, and the aim is set to
+/// `None` the moment a later frame's aim differs from the one recorded. "Agree or nothing" is
+/// the fail-closed direction, because an aim can only ever REDUCE a charge.
+///
+/// # THE UPSTREAM INVARIANT the reach-scoped operator depends on
+///
+/// A projected reach is never EMPTY, and this function does not enforce it — the push below is
+/// unconditional, so a reach-less charge would be charged to nobody, which is fail-OPEN.
+/// [`entry_announces`] admits an announcement only when its slot is non-optional and EVERY
+/// legal target is a `TargetRef::Player`, and `game::ability_utils::build_target_slots` refuses
+/// to build a non-optional slot with an empty legal set at all, so the shape is unconstructible
+/// upstream: a board on which CR 702.11c hexproof removes EVERY opponent from an
+/// opponent-controlled source's legal set builds no slot, announces nothing and charges
+/// nothing. Were either conjunct to change, this push is the site that needs a guard.
+///
+/// # Why the union and the aim are MONOTONE — they can only tighten the bound, never loosen it
+///
+/// The union and the withdrawal move exactly two fields of the charges
+/// [`crate::analysis::resource::ResourceVector::elimination_bounds`] reads. A union can only
+/// ADD members to one charge's `reaches`; it adds no charge, and it cannot change a
+/// `magnitude`, which is the slot-independent `worst_seat_life_loss` this function is handed.
+/// For the one seat `p` a union adds, that function's per-seat life magnitude gains `p`'s
+/// share of `reachable_charge` and loses nothing, since `observed_aim` is keyed on `aimed_at`
+/// and the union does not touch it. A withdrawal drops a term from `observed_aim`, which the
+/// operator SUBTRACTS, so it too can only raise the magnitude. And `narrow` —
+/// `bound.min(headroom.max(0) / magnitude)` over a non-negative numerator, fired only when
+/// `magnitude > 0` — is monotone non-increasing in its divisor. Hence the bound can only
+/// SHRINK. That is this repo's fail-closed direction.
+///
+/// The CR 732.2a withhold's fail-open on the bound survives only where the withheld slot's
+/// magnitude is not already inside the observed loss on the seat it reaches: once the window
+/// settles an aim there, the two terms are the same drain and charging the slot no longer
+/// moves the bound.
 ///
 /// # Reachability of the shape this closes: NARROW, AND NOT CLOSED
 ///
@@ -4154,12 +4182,10 @@ pub(crate) fn bounded_cycle_pin_slots_for_window(
 pub(crate) fn bounded_cycle_charged_targets_for_window(
     touch: &crate::analysis::resource::PeriodTouch<'_>,
     proposer: PlayerId,
-) -> Vec<(
-    crate::analysis::decision_template::DecisionSlot,
-    Vec<PlayerId>,
-)> {
-    use crate::analysis::decision_template::DecisionSlot;
-    let mut charged: Vec<(DecisionSlot, Vec<PlayerId>)> = Vec::new();
+    magnitude: i64,
+) -> Vec<crate::analysis::resource::SlotCharge> {
+    use crate::analysis::resource::SlotCharge;
+    let mut charged: Vec<SlotCharge> = Vec::new();
     for (frame, entry) in &touch.announced {
         let Some(target) = entry_announces(frame, entry, proposer).and_then(|a| a.target) else {
             continue;
@@ -4167,7 +4193,7 @@ pub(crate) fn bounded_cycle_charged_targets_for_window(
         // CR 115.2: an object target is not a seat any CR 704 loss threshold applies to, so
         // only players are collected — the same projection the bound always applied to the
         // published set, moved to the authority that owns the legal set.
-        let victims: Vec<PlayerId> = target
+        let mut reaches: Vec<PlayerId> = target
             .legal_targets
             .iter()
             .filter_map(|t| match t {
@@ -4175,18 +4201,35 @@ pub(crate) fn bounded_cycle_charged_targets_for_window(
                 _ => None,
             })
             .collect();
-        // UNION, NOT FIRST-WINS. `position` (not `iter_mut().find`) so the immutable probe's
-        // borrow ends before the `None` arm pushes.
-        match charged.iter().position(|(slot, _)| *slot == target.slot) {
+        reaches.sort_unstable();
+        reaches.dedup();
+        // CR 601.2c (reached for a triggered ability via CR 603.3d): the seat this frame's
+        // announcement actually NAMED, read from the announcing entry rather than re-derived.
+        // The catch-all arm is the fail-CLOSED one: a shape this reader does not understand —
+        // and a seat outside the frame's own legal set, which is no attribution at all — is
+        // `None` rather than a guess.
+        let aimed_at = match entry.ability().map(|ability| ability.targets.as_slice()) {
+            Some([TargetRef::Player(seat)]) if reaches.contains(seat) => Some(*seat),
+            _ => None,
+        };
+        // UNION the reach, WITHDRAW a disagreeing aim. `position` (not `iter_mut().find`) so
+        // the immutable probe's borrow ends before the `None` arm pushes.
+        match charged.iter().position(|charge| charge.slot == target.slot) {
             Some(i) => {
-                let seats = &mut charged[i].1;
-                for victim in victims {
-                    if !seats.contains(&victim) {
-                        seats.push(victim);
-                    }
+                let seats = &mut charged[i].reaches;
+                seats.extend(reaches);
+                seats.sort_unstable();
+                seats.dedup();
+                if charged[i].aimed_at != aimed_at {
+                    charged[i].aimed_at = None;
                 }
             }
-            None => charged.push((target.slot, victims)),
+            None => charged.push(SlotCharge {
+                slot: target.slot,
+                magnitude,
+                reaches,
+                aimed_at,
+            }),
         }
     }
     charged

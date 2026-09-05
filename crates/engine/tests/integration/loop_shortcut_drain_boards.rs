@@ -197,6 +197,89 @@ pub(crate) fn drive_to_live_declarable_offer(state: &mut GameState) -> LiveOffer
     );
 }
 
+/// CR 704.5a: re-derive a live offer's `max_iterations` from PUBLISHED data alone — the
+/// certificate's `per_cycle` delta, its `victim_slot` magnitudes and its `declarable_victims`,
+/// plus the live board's lives and libraries — and the seat the caller's own drive aimed at.
+///
+/// The aim is the ONE input that is not on the certificate: a `NotProposerChoice` announcement
+/// publishes no declaration at all, so it comes from the test's own record of what it drove —
+/// a stronger source than the engine's, because it is not produced by the code under test.
+///
+/// The reach comes from `per_cycle.declarable_victims`, which IS the single charged slot's
+/// reach whenever exactly one slot is charged. Every precondition that makes that reading true
+/// is asserted loudly rather than assumed, so a board this helper cannot answer for fails as a
+/// FIXTURE GAP and not as a wrong bound.
+pub(crate) fn rederive_live_offer_bound(state: &GameState, aimed_at: PlayerId) -> u32 {
+    let WaitingFor::LoopShortcut { certificate, .. } = &state.waiting_for else {
+        panic!("not at an offer: {:?}", state.waiting_for);
+    };
+    let per_cycle = certificate
+        .per_cycle
+        .as_ref()
+        .expect("a bounded offer publishes its per-cycle signature");
+
+    assert_eq!(
+        per_cycle.victim_slot.len(),
+        1,
+        "FIXTURE GAP: this helper reads `declarable_victims` as the ONE charged slot's reach, \
+         which is only the same set while exactly one slot is charged; got {:?}",
+        per_cycle.victim_slot
+    );
+    let magnitude = per_cycle.victim_slot[0].1;
+    let reaches = &per_cycle.declarable_victims;
+    assert!(
+        !reaches.is_empty(),
+        "FIXTURE GAP: a RESTORED offer's `declarable_victims` deserialize empty, so no row may \
+         hand this helper one — drive to a live offer first"
+    );
+    assert!(
+        reaches.contains(&aimed_at),
+        "FIXTURE GAP: the drive's aimed seat {aimed_at:?} must lie inside the charged slot's \
+         reach {reaches:?}, else the caller and the offer disagree about what was announced"
+    );
+
+    let ceiling = i64::from(crate::fantastic_four_bounded_loop::MAX_SHORTCUT_CYCLES_MIRROR);
+    let mut bound = ceiling;
+    for player in state.players.iter().filter(|p| !p.is_eliminated) {
+        assert_eq!(
+            per_cycle.delta.poison.get(&player.id).copied().unwrap_or(0),
+            0,
+            "FIXTURE GAP: this helper re-derives the CR 704.5a life and CR 104.3c library axes \
+             only, so a living seat carrying a poison delta is a board it cannot answer for"
+        );
+        // CR 704.5a headroom is `life - 1`: a seat at exactly 0 has already lost, so a legal
+        // shortcut stops one point above it. The charge is the slot's magnitude on every seat
+        // it REACHES, less what the window saw it aim AT that seat.
+        let observed = -per_cycle.delta.life.get(&player.id).copied().unwrap_or(0);
+        let aim = if player.id == aimed_at {
+            magnitude.max(0)
+        } else {
+            0
+        };
+        let reach = if reaches.contains(&player.id) {
+            magnitude.max(0)
+        } else {
+            0
+        };
+        let life_magnitude = (observed - aim).max(0) + reach;
+        if life_magnitude > 0 {
+            bound = bound.min((player.life as i64 - 1).max(0) / life_magnitude);
+        }
+        // CR 104.3c + CR 121.4: an empty library is only lethal on the next draw, so the
+        // library axis divides the whole remaining library.
+        let drain = -per_cycle
+            .delta
+            .library_delta
+            .get(&player.id)
+            .copied()
+            .unwrap_or(0);
+        if drain > 0 {
+            bound = bound.min(player.library.len() as i64 / drain);
+        }
+    }
+    bound.clamp(0, ceiling) as u32
+}
+
 /// The `DecisionSlot`s the certificate charges, and the magnitude charged to each.
 fn charged_slots(state: &GameState) -> Vec<(DecisionSlot, i64)> {
     let WaitingFor::LoopShortcut { certificate, .. } = &state.waiting_for else {
@@ -341,10 +424,19 @@ fn assert_live_offer_is_self_consistent(state: &GameState, offer: LiveOffer) {
         "the published declaration pins the seat the drive aimed at"
     );
 
-    // Row 9 — the two published count fields agree. Whether the BOUND'S VALUE is correct
-    // is DEFERRED(phase 2); this asserts only the relation, off the bound itself.
+    // Row 9 — the two published count fields agree, and the bound's VALUE is the one
+    // `rederive_live_offer_bound` computes from this offer's own published data and the seat
+    // the drive latched. Dropping the aim subtraction moves the published bound off this
+    // re-derivation on every board that charges an aimed slot.
     let bound = schema.max_iterations;
     assert_eq!(schema.iteration_count, IterationCount::Fixed(bound));
+    assert_eq!(
+        bound,
+        rederive_live_offer_bound(state, offer.aimed_at),
+        "CR 704.5a: `max_iterations` is the MIN over every living seat's headroom divided by \
+         what one repetition charges it — the slot's magnitude on every seat it reaches, less \
+         what the window saw it aim at that seat"
+    );
 }
 
 /// Row 5 — the control pair. Each board is the other's control, and the difference is
