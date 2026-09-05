@@ -8,6 +8,8 @@
 mod source_census;
 
 mod abigale_integration;
+mod ability_block_display_clone_gate;
+mod ability_cost_block_readout;
 mod abundance_optional_draw_replacement;
 mod action_rejection;
 mod ad_nauseam_repeat;
@@ -1075,6 +1077,7 @@ mod skitterfang_reflexive_without_counter;
 mod skullwinder_chosen_opponent;
 mod slaughter_the_strong_total_power_4380;
 mod slitherwisp_flash_spell_cast_trigger;
+mod sliver_overlord_activation_offer;
 mod sliver_static_grants;
 mod smaug_noncombat_damage_treasure;
 mod snow_mana_production;
