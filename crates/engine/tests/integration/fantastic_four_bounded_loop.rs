@@ -316,6 +316,25 @@ fn drive_f4_to_offer_at(state: &mut GameState, cap: u32, seat: PlayerId) -> Opti
     None
 }
 
+/// The tracked F4 dump driven to its bounded offer once per process, handed out as an owned
+/// clone. Nextest runs one test per process, so this collapses the repeated identical drives
+/// INSIDE a test and shares nothing across tests.
+///
+/// Eligible only where the pre-drive board is the unmodified fixture and the drive takes the
+/// default seat and cap: a case that edits the board first, drives at another seat or cap, or
+/// wants a second INDEPENDENT execution of the drive, loads and drives its own. Callers pass the
+/// clone straight to `f4_allocation_offer`, whose drive then finds the offer already standing and
+/// returns at beat 0.
+fn f4_at_offer() -> GameState {
+    static MEMO: std::sync::OnceLock<GameState> = std::sync::OnceLock::new();
+    MEMO.get_or_init(|| {
+        let mut state = load_f4();
+        drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+        state
+    })
+    .clone()
+}
+
 fn offer_parts(
     state: &GameState,
 ) -> (
@@ -5890,7 +5909,7 @@ fn p4_row_1b_an_authored_non_canonical_distribution_is_accepted() {
 
     // ── (a) UNEQUAL PARTS over all three victims ──
     {
-        let mut state = load_f4();
+        let mut state = f4_at_offer();
         let offer = f4_allocation_offer(&mut state);
         let count = offer.max_count;
         assert!(
@@ -5922,7 +5941,7 @@ fn p4_row_1b_an_authored_non_canonical_distribution_is_accepted() {
 
     // ── (b) A PROPER SUBSET omitting the PRE-ANNOUNCED seat ──
     {
-        let mut state = load_f4();
+        let mut state = f4_at_offer();
         let offer = f4_allocation_offer(&mut state);
         let count = offer.max_count;
         let declared: Vec<PlayerId> = offer
@@ -5972,7 +5991,7 @@ fn p4_row_1b_an_authored_non_canonical_distribution_is_accepted() {
     // exception does not excuse. Without it the conjunct ranges over the empty set across the
     // whole matrix: row (1) declares every victim, and arm (b)'s only omission is excused.
     {
-        let mut state = load_f4();
+        let mut state = f4_at_offer();
         let offer = f4_allocation_offer(&mut state);
         let count = offer.max_count;
         let omitted = *offer
@@ -6019,7 +6038,7 @@ fn p4_row_1b_an_authored_non_canonical_distribution_is_accepted() {
 
     // The omitted seat's zero in (c) is an AXIS, not a dead reading: the same seat reads a
     // strictly positive loss under row (1)'s allocation on the same board.
-    let mut control = load_f4();
+    let mut control = f4_at_offer();
     let control_offer = f4_allocation_offer(&mut control);
     assert_eq!(
         control_offer.max_count, count_probe,
@@ -6076,7 +6095,7 @@ fn p4_row_1b_an_authored_non_canonical_distribution_is_accepted() {
 #[test]
 fn p4_row_1c_a_segment_starting_at_the_last_index_realizes_nothing_but_stays_announced() {
     let drive = |allocation_of: &dyn Fn(&F4Allocation) -> Vec<(PlayerId, u32)>| {
-        let mut state = load_f4();
+        let mut state = f4_at_offer();
         let offer = f4_allocation_offer(&mut state);
         let count = offer.max_count;
         let allocation = allocation_of(&offer);
@@ -7227,7 +7246,7 @@ fn the_responders_element_agrees_with_the_producers_other_two_call_sites() {
 
     // ── MAIN LEG: the proposer's own preview of this declaration, through `preview_interaction`,
     //    the responder's published element for the same declaration.
-    let mut state = load_f4();
+    let mut state = f4_at_offer();
     let offer = f4_allocation_offer(&mut state);
     let allocation: Vec<(PlayerId, u32)> =
         offer.legal_seats.iter().copied().zip(SEGMENTS).collect();
@@ -7285,7 +7304,7 @@ fn the_responders_element_agrees_with_the_producers_other_two_call_sites() {
 
     // ── SECOND LEG: when the declaration IS the canonical split at a count the offer publishes
     //    an element for, the responder's element agrees with THAT element too.
-    let mut canonical_state = load_f4();
+    let mut canonical_state = f4_at_offer();
     let canonical_offer = f4_allocation_offer(&mut canonical_state);
     let sampled = canonical_offer
         .published_preview
