@@ -252,12 +252,14 @@ fn f4_drive_one_beat(state: &mut GameState) -> Result<(), String> {
 
 fn f4_drive_one_beat_at(state: &mut GameState, seat: PlayerId) -> Result<(), String> {
     // CR 117.3d: at a priority window this policy always passes, so dispatch the pass instead of
-    // enumerating the whole per-viewer candidate set to find it. The gate is the enumerator's own
-    // hatch predicate, so this arm stays inside the subset that hatch asserts equivalent to a
-    // simulated pass; every other shape falls through to the enumerating path below.
+    // enumerating the whole per-viewer candidate set to find it. This reproduces both halves of the
+    // enumerator's hatch — its structural predicate and the submitter identity it authorizes (CR
+    // 723.5) — so this arm stays inside the subset that hatch asserts equivalent to a simulated
+    // pass; every other shape falls through to the enumerating path below.
     if let WaitingFor::Priority { player } = state.waiting_for {
         if engine::game::priority::pass_priority_structurally_legal(state, player) {
-            return apply(state, player, GameAction::PassPriority)
+            let actor = engine::game::turn_control::authorized_submitter_for_player(state, player);
+            return apply(state, actor, GameAction::PassPriority)
                 .map(|_| ())
                 .map_err(|e| format!("apply err (PassPriority): {e:?}"));
         }
