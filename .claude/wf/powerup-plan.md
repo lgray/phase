@@ -186,7 +186,7 @@ The **parser is the detector** throughout.
 > Verification cadence per CLAUDE.md: `cargo fmt --all` directly; everything else via Tilt (`tilt logs clippy/test-engine`, `./scripts/tilt-wait.sh`). Do NOT run `cargo build/clippy/test` directly.
 
 ### Step 1 — Add `AbilityTag::PowerUp` + `keyword_str()` (gate (a))
-- **`types/ability.rs:11645`** — add to `AbilityTag` (after `Backup`): `/// CR 602.5b + CR 602.1: This ability originated from a Power-up keyword definition.\nPowerUp,`. (Re-grep `602.5b` and `602.1` before writing — verified `MagicCompRules.txt:2541`, `:2510`.)
+- **`types/ability.rs:11645`** — add to `AbilityTag` (after `Backup`): `/// CR 602.5b + CR 602.1: This ability originated from a Power-up keyword definition.\nPowerUp,`. (Re-grep `602.5b` and `602.1` before writing.)
 - **`restrictions.rs:577-589`** — extract the tag→keyword `match` into a method `AbilityTag::keyword_str(self) -> &'static str` on the enum (`types/ability.rs`), add `PowerUp => "power-up"`, replace the inlined match with `tag.keyword_str()`. The wildcard-free match forces the new arm (compiler-enforced).
 - No change to `emit_keyword_ability_event_if_tagged` (`casting_targets.rs:657`) — the generic path emits `KeywordAbilityActivated { ability_tag: PowerUp, .. }` (Cycling is the only special-case).
 
