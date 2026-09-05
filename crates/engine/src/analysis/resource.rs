@@ -1123,16 +1123,43 @@ impl ResourceVector {
     /// CR 732.2a + CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: the largest number of
     /// times this per-period delta may legally be repeated in one shortcut proposal.
     ///
-    /// `N` is the largest count such that after each of the `N` cycles **no living player
-    /// has crossed a CR 704 loss threshold**, and it stops STRICTLY SHORT of one.
-    /// CR 732.2a forbids a shortcut containing a conditional action and requires its ending
-    /// point to be a place a player would receive priority; CR 704.3 checks state-based
-    /// actions at every such point, so a mid-sequence CR 704.5a death makes the remaining
-    /// declared choices unmakeable (CR 800.4a removes the seat). Each axis below is
-    /// therefore `headroom / magnitude`, headroom measured to one short of its threshold.
+    /// `N` is the largest count whose sequence **contains no CR 704 threshold crossing
+    /// except as its final iteration**. CR 732.2a forbids a shortcut containing a
+    /// conditional action and requires its ending point to be a place a player would
+    /// receive priority; CR 704.3 checks state-based actions at every such point, so a
+    /// MID-sequence CR 704.5a death makes the REMAINING declared choices unmakeable
+    /// (CR 800.4a removes the seat). A crossing on the FINAL iteration has no remaining
+    /// choices, and CR 704.3's own sweep is a place a player has priority, so it is an
+    /// ending point CR 732.2a admits rather than a conditional action.
     ///
-    /// Clamped to `MAX_SHORTCUT_CYCLES`. A return of `0` means no legal repetition exists
-    /// and the caller must not offer; callers require `N >= 1`.
+    /// # The reduction, and why one seat's crossing is licensed while two are not
+    ///
+    /// [`ResourceVector::seat_headroom_bound`] gives each living seat its STRICT value —
+    /// `headroom / magnitude`, headroom measured to one short of its threshold — and `floor`
+    /// is their minimum, which is the whole answer while more than one seat sits at it.
+    /// When EXACTLY ONE seat `p*` sits at `floor`, every other consumed seat `q` has
+    /// `strict(q) >= floor + 1`, hence `(floor + 1) * magnitude(q) <= headroom(q)`: at the
+    /// relieved count `q` is still strictly inside its threshold. So at most one seat can
+    /// cross, and it crosses on the final iteration. With two or more seats at `floor` the
+    /// relieved count admits two crossings, and the bound stays at `floor`, where none
+    /// crosses.
+    ///
+    /// The `+ 1` is one addition on the REDUCED value rather than per-axis arithmetic,
+    /// because every axis divides a headroom measured one short of its own threshold and
+    /// `floor((L - 1) / m) + 1 == ceil(L / m)` for `L >= 1, m >= 1` — the least count past
+    /// the threshold. A new axis added to the per-seat reduction inherits the relief with no
+    /// edit here.
+    ///
+    /// The relief is refused when it would produce `MAX_SHORTCUT_CYCLES` itself: that value
+    /// is the offer gate's *no axis narrowed* sentinel (`ShortcutDecisionSchema::is_bounded`
+    /// reads `max_iterations < MAX_SHORTCUT_CYCLES`), so minting it would make a narrowed
+    /// board look unbounded and suppress its own offer.
+    ///
+    /// Clamped to `MAX_SHORTCUT_CYCLES`. A return of `0` now means **two or more** seats
+    /// cross on the first iteration, so there is still no legal repetition and the caller
+    /// must not offer; callers require `N >= 1`. A single seat crossing on iteration 1
+    /// publishes `1` — a one-iteration proposal whose single, final iteration is its ending
+    /// point.
     ///
     /// # What `charges` buys, and the one direction it is not fail-closed
     ///
@@ -1158,83 +1185,114 @@ impl ResourceVector {
     pub(crate) fn elimination_bounds(&self, state: &GameState, charges: &[SlotCharge]) -> u32 {
         let cap = crate::game::engine::MAX_SHORTCUT_CYCLES as i64;
 
-        let mut bound = cap;
+        // CR 800.4a: an ELIMINATED seat has left the game and is not in the population, so a
+        // corpse at 1 life cannot pin the bound to zero.
+        let strict: Vec<i64> = state
+            .players
+            .iter()
+            .filter(|p| !p.is_eliminated)
+            .filter_map(|p| self.seat_headroom_bound(p, charges))
+            .collect();
+
+        // No axis consumes any living seat ⇒ nothing narrowed. The cap is what an
+        // un-narrowed reduction has always published, and `is_bounded()` reads it as "this
+        // producer stated no CR 704 threshold".
+        let Some(&floor) = strict.iter().min() else {
+            return cap as u32;
+        };
+        let relieved = floor + 1;
+        if strict.iter().filter(|b| **b == floor).count() == 1 && relieved < cap {
+            relieved.clamp(0, cap) as u32
+        } else {
+            floor.clamp(0, cap) as u32
+        }
+    }
+
+    /// CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: ONE seat's strict headroom in whole
+    /// repetitions — the largest count after which this seat has crossed no threshold.
+    ///
+    /// `None` when no axis consumes the seat, which is what the `filter_map` in
+    /// [`ResourceVector::elimination_bounds`] reads as "not in the reduction". A sentinel
+    /// would be wrong here: `MAX_SHORTCUT_CYCLES` is the offer gate's *un-narrowed* marker,
+    /// and an unconsumed seat contributing it by accident is exactly the collision the
+    /// caller's relief guard has to refuse.
+    fn seat_headroom_bound(
+        &self,
+        p: &crate::types::player::Player,
+        charges: &[SlotCharge],
+    ) -> Option<i64> {
+        let mut bound: Option<i64> = None;
         let mut narrow = |headroom: i64, magnitude: i64| {
             if magnitude > 0 {
-                bound = bound.min(headroom.max(0) / magnitude);
+                let n = headroom.max(0) / magnitude;
+                bound = Some(bound.map_or(n, |b: i64| b.min(n)));
             }
         };
 
-        for p in &state.players {
-            // UNIFORM over EVERY living player, including the proposer: `net_progress_for`
-            // reads only the proposer's mana and life, so a proposer who drains themselves is
-            // bounded here like anyone else. NOT bounded by this operator: intra-cycle dips —
-            // a period that drains 5 and lifelinks 7 reports a NET -2 while dipping below
-            // `life - 5` mid-cycle. That blindness is a property of the NET input; the
-            // backstops are conformance and the live elimination guard during the drive.
-            //
-            // Per-cycle magnitude constancy is a PREMISE, not a proof — the bound
-            // extrapolates one measured period. Do NOT add a monotone-magnitude conjunct to
-            // "fix" it; that would reject every 2-frame window.
-            //
-            // CR 800.4a: an ELIMINATED seat has left the game and contributes no term, so a
-            // corpse at 1 life cannot pin the bound to zero.
-            if p.is_eliminated {
-                continue;
-            }
-            // CR 119.3: a negative life delta is the per-period loss.
-            let observed_life_loss = -self.life.get(&p.id).copied().unwrap_or(0);
-            // CR 601.2c (reached for a triggered ability via CR 603.3d): what the window saw
-            // announced AT this seat, and what may still be re-aimed ONTO it.
-            let observed_aim: i64 = charges
-                .iter()
-                .filter(|charge| charge.aimed_at == Some(p.id))
-                .map(|charge| charge.magnitude.max(0))
-                .sum();
-            let reachable_charge: i64 = charges
-                .iter()
-                .filter(|charge| charge.reaches.contains(&p.id))
-                .map(|charge| charge.magnitude.max(0))
-                .sum();
-            // CR 119.3 + CR 732.2a: the UNATTRIBUTED observed loss and every reaching slot's
-            // magnitude combine ADDITIVELY. Collapsing the two terms to their MAXIMUM stays
-            // refused, and the aim subtraction is exactly what re-scopes that refusal rather
-            // than lifting it: on an unattributed slot `(o - 0).max(0) + m` is `o + m`, so a
-            // victim carrying an untargeted drain of 1 AND a re-aimable slot of magnitude 1
-            // still loses 2 per period, where the maximum is 1 and permits the in-proposal
-            // elimination CR 732.2a forbids. On an AIMED slot the two terms are the same
-            // drain, and `(o - m).max(0) + m` IS `max(o, m)` — the very identity forbidden
-            // for the unattributed case, computed here only because the window proved the
-            // attribution.
-            //
-            // `.max(0)` IS NOT OPTIONAL, and it now clamps for two reasons.
-            // `observed_life_loss` negates `self.life`, a per-period NET delta, so a victim
-            // who nets a life GAIN yields a negative value; unclamped, the sum can be <= 0,
-            // `narrow` never fires (its guard is `magnitude > 0`), and the life axis is
-            // silently DISARMED at MAX_SHORTCUT_CYCLES. CR 119.3 — each gain and loss adjusts
-            // the total as it happens — is why a net gain must not credit against a reaching
-            // slot's magnitude. The second reason is the subtraction itself: an aim may exceed
-            // the aimed seat's own observed loss, and the excess must not become a credit.
-            //
-            // A seat NO charge reaches takes the bare `observed_life_loss`: both sums are
-            // zero, and `narrow`'s `magnitude > 0` guard makes the clamp unobservable there.
-            let life_magnitude = (observed_life_loss - observed_aim).max(0) + reachable_charge;
-            narrow(p.life as i64 - 1, life_magnitude);
-            // CR 704.5c (ten or more poison counters lose): a positive poison delta is the
-            // per-period gain.
-            narrow(
-                9 - p.poison_counters as i64,
-                self.poison.get(&p.id).copied().unwrap_or(0),
-            );
-            // CR 104.3c + CR 121.4 (drawing from an empty library loses): a negative
-            // library delta is the per-period drain.
-            narrow(
-                p.library.len() as i64,
-                -self.library_delta.get(&p.id).copied().unwrap_or(0),
-            );
-        }
+        // UNIFORM over EVERY living player, including the proposer: `net_progress_for`
+        // reads only the proposer's mana and life, so a proposer who drains themselves is
+        // bounded here like anyone else. NOT bounded by this operator: intra-cycle dips —
+        // a period that drains 5 and lifelinks 7 reports a NET -2 while dipping below
+        // `life - 5` mid-cycle. That blindness is a property of the NET input; the
+        // backstops are conformance and the live elimination guard during the drive.
+        //
+        // Per-cycle magnitude constancy is a PREMISE, not a proof — the bound
+        // extrapolates one measured period. Do NOT add a monotone-magnitude conjunct to
+        // "fix" it; that would reject every 2-frame window.
+        //
+        // CR 119.3: a negative life delta is the per-period loss.
+        let observed_life_loss = -self.life.get(&p.id).copied().unwrap_or(0);
+        // CR 601.2c (reached for a triggered ability via CR 603.3d): what the window saw
+        // announced AT this seat, and what may still be re-aimed ONTO it.
+        let observed_aim: i64 = charges
+            .iter()
+            .filter(|charge| charge.aimed_at == Some(p.id))
+            .map(|charge| charge.magnitude.max(0))
+            .sum();
+        let reachable_charge: i64 = charges
+            .iter()
+            .filter(|charge| charge.reaches.contains(&p.id))
+            .map(|charge| charge.magnitude.max(0))
+            .sum();
+        // CR 119.3 + CR 732.2a: the UNATTRIBUTED observed loss and every reaching slot's
+        // magnitude combine ADDITIVELY. Collapsing the two terms to their MAXIMUM stays
+        // refused, and the aim subtraction is exactly what re-scopes that refusal rather
+        // than lifting it: on an unattributed slot `(o - 0).max(0) + m` is `o + m`, so a
+        // victim carrying an untargeted drain of 1 AND a re-aimable slot of magnitude 1
+        // still loses 2 per period, where the maximum is 1 and permits the in-proposal
+        // elimination CR 732.2a forbids. On an AIMED slot the two terms are the same
+        // drain, and `(o - m).max(0) + m` IS `max(o, m)` — the very identity forbidden
+        // for the unattributed case, computed here only because the window proved the
+        // attribution.
+        //
+        // `.max(0)` IS NOT OPTIONAL, and it now clamps for two reasons.
+        // `observed_life_loss` negates `self.life`, a per-period NET delta, so a victim
+        // who nets a life GAIN yields a negative value; unclamped, the sum can be <= 0,
+        // `narrow` never fires (its guard is `magnitude > 0`), and the life axis is
+        // silently DISARMED — a seat no other axis consumes then drops out of the
+        // reduction entirely. CR 119.3 — each gain and loss adjusts
+        // the total as it happens — is why a net gain must not credit against a reaching
+        // slot's magnitude. The second reason is the subtraction itself: an aim may exceed
+        // the aimed seat's own observed loss, and the excess must not become a credit.
+        //
+        // A seat NO charge reaches takes the bare `observed_life_loss`: both sums are
+        // zero, and `narrow`'s `magnitude > 0` guard makes the clamp unobservable there.
+        let life_magnitude = (observed_life_loss - observed_aim).max(0) + reachable_charge;
+        narrow(p.life as i64 - 1, life_magnitude);
+        // CR 704.5c (ten or more poison counters lose): a positive poison delta is the
+        // per-period gain.
+        narrow(
+            9 - p.poison_counters as i64,
+            self.poison.get(&p.id).copied().unwrap_or(0),
+        );
+        // CR 104.3c + CR 121.4 (drawing from an empty library loses): a negative
+        // library delta is the per-period drain.
+        narrow(
+            p.library.len() as i64,
+            -self.library_delta.get(&p.id).copied().unwrap_or(0),
+        );
 
-        bound.clamp(0, cap) as u32
+        bound
     }
 
     /// CR 732.2a: **controller-scoped** net-progress — the single authority shared
@@ -9865,7 +9923,8 @@ mod tests {
     /// * **(A) the ordinary forced drain** — P1 loses 1 per period. A forced announcement has
     ///   ONE legal target, the window sees the slot aim there, and the aim subtraction removes
     ///   exactly the observed loss the slot caused: P1's magnitude is `(1 - 1).max(0) + 1 = 1`
-    ///   over headroom `7 - 1`, so **6** — the SAME value the uncharged derivation gives.
+    ///   over headroom `7 - 1`, a strict **6** carried to P1's own crossing at **7** — the
+    ///   SAME value the uncharged derivation gives.
     ///   `Ordering::Equal`, and the arm is still discriminating in both directions: dropping
     ///   the aim subtraction moves the charged bound off the uncharged value it must now
     ///   equal, while dropping the reach term disarms the life axis entirely.
@@ -9873,9 +9932,11 @@ mod tests {
     ///   loses 2. This is the shape where the defect is worst rather than merely loose:
     ///   uncharged, P1's magnitude is `-1`, `elimination_bounds`' `narrow` guard
     ///   (`magnitude > 0`) never fires and P1's life axis is DISARMED outright, leaving only
-    ///   the proposer's `20 / 2 = 10`. Charged, the aim subtraction has nothing to take —
+    ///   the proposer's own term. Charged, the aim subtraction has nothing to take —
     ///   `(-1 - 2).max(0)` is already zero on a net gain — so P1 is charged the bare reach
-    ///   term `2` over headroom `7 - 1`, giving **3**. `Ordering::Less`, which pins the
+    ///   term `2` over headroom `7 - 1`, a strict 3 carried to P1's crossing at **4**.
+    ///   Uncharged, only the proposer's own strict 10 survives, carried to **11**.
+    ///   `Ordering::Less`, which pins the
     ///   DIRECTION: a charge may only shrink the bound. Case (o) of
     ///   `elimination_bounds_conventions` guards that clamp in isolation; this row is what
     ///   proves a real production derivation still REACHES it on a forced board.
@@ -9886,10 +9947,10 @@ mod tests {
     ///   equal ⇒ the VICTIM-SET assertions below, not the equality, are what reject it.
     /// * *republish the forced point* (revert the sibling row's withhold): the two derivations
     ///   coincide again and equality holds ⇒ the withhold reach-guard rejects it.
-    /// * *charge the victim but not the magnitude* (or vice versa): arm (B)'s bound leaves 3 ⇒
+    /// * *charge the victim but not the magnitude* (or vice versa): arm (B)'s bound leaves 4 ⇒
     ///   the exact-value assertions reject it.
     /// * *drop the aim subtraction*: arm (A)'s P1 is charged `1 + 1 = 2` and its bound falls
-    ///   to 3 ⇒ the exact-value assertion rejects it AND the ORDER assertion reads `Less`
+    ///   to 4 ⇒ the exact-value assertion rejects it AND the ORDER assertion reads `Less`
     ///   where `Equal` is required.
     ///
     /// REVERT-PROBE: RE-CONFLATE the two questions inside the charging mint — add
@@ -9976,15 +10037,15 @@ mod tests {
             (
                 "(A) ordinary forced drain",
                 life_delta(&[(PlayerId(1), -1)]),
-                6,
-                6,
+                7,
+                7,
                 Ordering::Equal,
             ),
             (
                 "(B) victim nets a life GAIN",
                 life_delta(&[(PlayerId(1), 1), (PlayerId(0), -2)]),
-                3,
-                10,
+                4,
+                11,
                 Ordering::Less,
             ),
         ] {
@@ -10040,10 +10101,9 @@ mod tests {
             assert_eq!(
                 expected.cmp(&uncharged),
                 relation,
-                "{label}: fixture guard — the two derivations must stand in the arm's own \
-                 relation. `Equal` is the aimed single-reach class, where the subtraction \
-                 removes exactly the drain the slot caused; `Less` pins the direction a \
-                 charge may move the bound at all"
+                "{label}: a consistency check on THIS ARM'S OWN TABLE, not on the operator — \
+                 the two assertions above are what read the engine. It fails when an arm's \
+                 declared relation drifts from the two values it names"
             );
         }
     }
@@ -10284,10 +10344,12 @@ mod tests {
         // ── And the bound really moves, so the union is not a cosmetic set difference ───
         assert_eq!(
             delta.elimination_bounds(&current, &charged),
-            3,
+            4,
             "the charged slot REACHES P2, so P2's life magnitude is `observed 1 + reach 1 = \
              2` over CR 704.5a headroom `7 - 1` — the aim lands on P1, which carries no \
-             observed loss, so the subtraction clamps to zero and takes nothing"
+             observed loss, so the subtraction clamps to zero and takes nothing. P2 is the \
+             unique binding seat, so the published count is its own crossing, one past that \
+             strict 3"
         );
         let first_wins = vec![SlotCharge {
             reaches: vec![PlayerId(1)],
@@ -10295,7 +10357,7 @@ mod tests {
         }];
         assert_eq!(
             delta.elimination_bounds(&current, &first_wins),
-            6,
+            7,
             "fixture guard — the two reaches must actually disagree on this board, else the \
              assertion above cannot discriminate: first-wins leaves P2 unreached and charges \
              it the bare observed 1"
@@ -10706,10 +10768,11 @@ mod tests {
             per_cycle.victim_slot
         );
         assert_eq!(
-            schema.max_iterations, 10,
+            schema.max_iterations, 11,
             "CR 704.5a: headroom `21 - 1` over the charged magnitude \
-             `(observed 2 - aim 2).max(0) + reach 2`. Dropping the aim subtraction charges \
-             `2 + 2` and reads 5, refusing repetitions the window itself measured as one drain"
+             `(observed 2 - aim 2).max(0) + reach 2` is a strict 10, carried to the victim's \
+             own crossing at 11. Dropping the aim subtraction charges `2 + 2` and reads 6, \
+             refusing repetitions the window itself measured as one drain"
         );
     }
 
@@ -15378,6 +15441,14 @@ mod tests {
     /// case by case. Every case names the WRONG implementation it kills, so this row is a
     /// battery of discriminators rather than one assertion repeated.
     ///
+    /// The published count REACHES the first crossing when exactly one seat holds the
+    /// binding value, so every case whose board has a unique binding seat asserts
+    /// `ceil(headroom_to_threshold / magnitude)` and each names the form that identity now
+    /// kills. A case whose comment still named the strict form would have stopped
+    /// discriminating; the set that moved is whatever
+    /// `cargo test -p phase-engine --lib -- analysis::resource::tests::elimination_bounds`
+    /// reports, not a letter list maintained by hand.
+    ///
     /// The four real fixture bounds (dump B/C/D/F4) are deliberately NOT asserted here.
     /// They are shipped-state values while a real `max_iterations` is computed at the OFFER
     /// beat, dozens of beats later, where the lives differ — a literal measured in a
@@ -15391,93 +15462,109 @@ mod tests {
         // `Typed{controller: Opponent}` enumerates.
         const OPPONENTS: &[u8] = &[1, 2, 3];
 
-        // (a) life 40, Δ2 ⇒ 19. Kills `floor(life / Δ)` (= 20): at 20 cycles the victim is
-        //     at exactly 0 and CR 704.5a has already removed them mid-proposal.
-        //     THE ONLY CASE THAT KILLS `floor(life/Δ)` — never drop it.
+        // (a) life 40, Δ2 ⇒ 20, the cycle at which the victim reaches exactly 0. Kills
+        //     `floor((life - 1) / Δ) + 1` computed over the UN-decremented headroom
+        //     (`floor(life / Δ) + 1` = 21), which would carry the victim a whole cycle PAST
+        //     the threshold. Δ divides `life` here, so this board cannot separate
+        //     `floor(life/Δ)` from `ceil(life/Δ)`; (b) is the case that does.
         assert_eq!(
             life_loss_delta(&[(1, 2)]).elimination_bounds(&bound_board(&[40, 40]), &[]),
-            19
+            20
         );
-        // (b) life 39, Δ2 ⇒ 19. Kills `ceil`: 38/2 = 19 exactly, so a ceiling would say 20.
+        // (b) life 39, Δ2 ⇒ 20. Kills the STRICT form `floor((life - 1) / Δ)` (= 19), which
+        //     stops one cycle short of the crossing this bound is now allowed to reach.
+        //     THE ONLY CASE THAT SEPARATES the two — 38/2 is exact, so 39 is the odd life
+        //     that makes `ceil(39/2) = 20` differ from `floor(39/2) = 19`.
         assert_eq!(
             life_loss_delta(&[(1, 2)]).elimination_bounds(&bound_board(&[40, 39]), &[]),
-            19
+            20
         );
-        // (c) poison 0, Δ5 ⇒ 1. Kills `(10 - poison) / Δ` (= 2): CR 704.5c loses at TEN, so
-        //     the headroom is 9, and 2 cycles would already have delivered 10.
+        // (c) poison 0, Δ5 ⇒ 2, the cycle that delivers the tenth counter. Kills the strict
+        //     `(9 - poison) / Δ` (= 1). CR 704.5c loses at TEN, so the headroom is 9 and the
+        //     relief lands exactly on the crossing rather than a cycle past it.
         {
             let mut v = ResourceVector::default();
             v.poison.insert(PlayerId(1), 5);
-            assert_eq!(v.elimination_bounds(&bound_board(&[40, 40]), &[]), 1);
+            assert_eq!(v.elimination_bounds(&bound_board(&[40, 40]), &[]), 2);
         }
-        // (d) library 8, Δ2 ⇒ 4. Kills `(L - 1) / Δ` (= 3): CR 104.3c/CR 121.4 lose on the
-        //     DRAW FROM EMPTY, not on reaching one card, so all 8 cards may legally go.
+        // (d) library 8, Δ2 ⇒ 5, the cycle that draws from the emptied library. Kills the
+        //     `(L - 1) / Δ` headroom (= 3, or 4 relieved): CR 104.3c/CR 121.4 lose on the
+        //     DRAW FROM EMPTY, not on reaching one card, so all 8 cards may legally go and
+        //     the crossing is one cycle beyond them.
         {
             let mut state = bound_board(&[40, 40]);
             state.players[1].library = (0..8).map(|i| ObjectId(1000 + i)).collect();
             let mut v = ResourceVector::default();
             v.library_delta.insert(PlayerId(1), -2);
-            assert_eq!(v.elimination_bounds(&state, &[]), 4);
+            assert_eq!(v.elimination_bounds(&state, &[]), 5);
         }
-        // (e) two living at 40 and 12, Δ1 each ⇒ 11. Kills max-instead-of-min.
+        // (e) two living at 40 and 12, Δ1 each ⇒ 12. Kills max-instead-of-min (which would
+        //     answer 40). The 12-life seat is the unique binding one, so the relief applies
+        //     to ITS crossing and the 40-life seat is still at 28 there.
         assert_eq!(
             life_loss_delta(&[(0, 1), (1, 1)]).elimination_bounds(&bound_board(&[40, 12]), &[]),
-            11
+            12
         );
-        // (f) life 5000, Δ1 ⇒ 1000. Kills a missing clamp to MAX_SHORTCUT_CYCLES.
+        // (f) life 5000, Δ1 ⇒ 1000. Kills a missing clamp to MAX_SHORTCUT_CYCLES. MEASURED
+        //     UNCHANGED by the relief: the strict value is far above the cap, so the relief
+        //     would mint a value at or past the sentinel and is refused.
         assert_eq!(
             life_loss_delta(&[(1, 1)]).elimination_bounds(&bound_board(&[40, 5000]), &[]),
             crate::game::engine::MAX_SHORTCUT_CYCLES
         );
         // (g) CR 800.4a: an ELIMINATED seat at life 1 must not lower N — PAIRED with the
-        //     same seat un-eliminated, which DOES, so the zero has a non-zero control.
+        //     same seat un-eliminated, which DOES, so each value has the other as its
+        //     control. Kills a reduction that keeps corpses in the population.
         {
             let mut alive = bound_board(&[40, 1, 40]);
             let delta = life_loss_delta(&[(1, 1), (2, 1)]);
             assert_eq!(
                 delta.elimination_bounds(&alive, &[]),
-                0,
-                "control: while that seat is IN the game it pins the bound to 0"
+                1,
+                "control: while that seat is IN the game it holds the bound to its own \
+                 single, final iteration"
             );
             alive.players[1].is_eliminated = true;
             assert_eq!(
                 delta.elimination_bounds(&alive, &[]),
-                39,
-                "an eliminated seat has left the game and constrains nothing"
+                40,
+                "an eliminated seat has left the game and constrains nothing, so the 40-life \
+                 seat becomes the unique binding one"
             );
         }
-        // (h) the PROPOSER at life 3 losing 1/cycle ⇒ N <= 2. Kills the deleted
+        // (h) the PROPOSER at life 3 losing 1/cycle ⇒ N <= 3. Kills the deleted
         //     `p == proposer => unbounded` special case: `net_progress_for` reads only the
         //     proposer's mana and life, so it cannot see this at all.
-        assert!(life_loss_delta(&[(0, 1)]).elimination_bounds(&bound_board(&[3, 40]), &[]) <= 2);
-        // (i) the PROPOSER gaining 3 poison/cycle from 0 ⇒ N <= 3. Same defect on the axis
+        assert!(life_loss_delta(&[(0, 1)]).elimination_bounds(&bound_board(&[3, 40]), &[]) <= 3);
+        // (i) the PROPOSER gaining 3 poison/cycle from 0 ⇒ N <= 4. Same defect on the axis
         //     `net_progress_for` is entirely blind to.
         {
             let mut v = ResourceVector::default();
             v.poison.insert(PlayerId(0), 3);
-            assert!(v.elimination_bounds(&bound_board(&[40, 40]), &[]) <= 3);
+            assert!(v.elimination_bounds(&bound_board(&[40, 40]), &[]) <= 4);
         }
         // (j) observed drain on P3 only, lives P1/P2/P3 = 12/13/28, ONE announced slot of
-        //     magnitude 1 reaching every opponent and UNATTRIBUTED ⇒ 11. Kills the
-        //     observed-victim-only bound (which returns 27, P3's own headroom): the
-        //     declaration may aim the slot at P1 instead. Paired with the untargeted twin.
+        //     magnitude 1 reaching every opponent and UNATTRIBUTED ⇒ 12. Kills the
+        //     observed-victim-only bound (which returns 28, P3's own crossing): the
+        //     declaration may aim the slot at P1 instead, and P1 crosses first. Paired with
+        //     the untargeted twin.
         {
             let board = bound_board(&[69, 12, 13, 28]);
             let delta = life_loss_delta(&[(3, 1)]);
             assert_eq!(
                 delta.elimination_bounds(&board, &slot_charges(&[(1, OPPONENTS, None)])),
-                11
+                12
             );
             assert_eq!(
                 delta.elimination_bounds(&board, &[]),
-                27,
+                28,
                 "with NO charged slot only the observed victim constrains the bound"
             );
         }
         // (k) TWO announced slots, each magnitude 1, both reaching any opponent and both
-        //     UNATTRIBUTED ⇒ each reached seat's magnitude is 2 ⇒ N == 5. Kills a per-slot
-        //     (non-aggregated) bound, which returns 11 and would let a both-slots-on-P1
-        //     declaration kill P1 at cycle 6 — inside the proposal.
+        //     UNATTRIBUTED ⇒ each reached seat's magnitude is 2 ⇒ N == 6, P1's own crossing.
+        //     Kills a per-slot (non-aggregated) bound, which returns 12 and would leave a
+        //     both-slots-on-P1 declaration with six more repetitions after P1 has left.
         {
             let board = bound_board(&[69, 12, 13, 28]);
             assert_eq!(
@@ -15485,47 +15572,50 @@ mod tests {
                     &board,
                     &slot_charges(&[(1, OPPONENTS, None), (1, OPPONENTS, None)])
                 ),
-                5
+                6
             );
         }
-        // (l) a 12-life seat at Δ1 ⇒ N == 11, and cycle TWELVE is the killing cycle. The
-        //     off-by-one stated as an arithmetic identity, not a comment.
+        // (l) a 12-life seat at Δ1 ⇒ N == 12, and cycle N ITSELF is the killing cycle. The
+        //     boundary stated as an arithmetic identity, not a comment.
         {
             let board = bound_board(&[40, 12]);
             let n = life_loss_delta(&[(1, 1)]).elimination_bounds(&board, &[]);
-            assert_eq!(n, 11);
+            assert_eq!(n, 12);
             assert_eq!(
-                board.players[1].life as i64 - (i64::from(n) + 1),
+                board.players[1].life as i64 - i64::from(n),
                 0,
-                "cycle N+1 = 12 is the one that reaches 0 life (CR 704.5a)"
+                "cycle N = 12 is the one that reaches 0 life (CR 704.5a), and it is the \
+                 sequence's final iteration"
             );
         }
         // (m) the dump-C shape: ONE slot of magnitude 1 over every opponent, lives
         //     77/20/20/16, and an OBSERVED loss of 1 on P3, UNATTRIBUTED — the window did
-        //     not see this slot aim anywhere. ⇒ N == 7. The two terms may still be the same
+        //     not see this slot aim anywhere. ⇒ N == 8. The two terms may still be the same
         //     drain, but nothing measured says so, and an unobserved aim may not be
         //     subtracted from an observed loss, so P3 is charged `(1 - 0).max(0) + 1 == 2`
         //     over its headroom of 15. That errs toward REFUSAL, which is this repo's
         //     convention. The AIMED sibling — where the window did settle it — is
         //     `elimination_bounds_charges_an_aimed_slot_once`, on this very board.
-        //     Its untargeted twin stays at 15, so the pair DISCRIMINATES (7 vs 15).
+        //     Its untargeted twin stays at 16, so the pair DISCRIMINATES (8 vs 16).
         //     REVERT-PROBE: subtract unconditionally (ignore `aimed_at`) ⇒ this assertion
-        //     flips 7 → 15 ⇒ FAILS.
+        //     flips 8 → 16 ⇒ FAILS.
         {
             let board = bound_board(&[77, 20, 20, 16]);
             let delta = life_loss_delta(&[(3, 1)]);
             assert_eq!(
                 delta.elimination_bounds(&board, &slot_charges(&[(1, OPPONENTS, None)])),
-                7,
+                8,
                 "the slot magnitude and the observed loss may be the SAME drain, but no \
                  observed aim says so, so the unattributed slot is charged on top: \
-                 `(1 - 0).max(0) + 1 == 2` over P3's headroom of 15 gives 7"
+                 `(1 - 0).max(0) + 1 == 2` over P3's headroom of 15 gives a strict 7, and P3 \
+                 is the unique binding seat, so the published crossing is 8"
             );
             assert_eq!(
                 delta.elimination_bounds(&board, &[]),
-                15,
+                16,
                 "untargeted twin: with no charged slot no reach term exists, so the board \
-                 still bounds at 15 — this is what makes the pair discriminating"
+                 still bounds at P3's own crossing, 16 — this is what makes the pair \
+                 discriminating"
             );
         }
         // (n) lives in its OWN #[test] below — see
@@ -15535,15 +15625,17 @@ mod tests {
         //     per period (`life_loss_delta` with a NEGATIVE loss), so
         //     `observed_life_loss = -2`, while ONE announced slot of magnitude 1 REACHES
         //     them, unattributed. The reaching slot still constrains: charged magnitude is
-        //     `(-2 - 0).max(0) + 1 == 1` ⇒ `(10 - 1) / 1 == 9`.
+        //     `(-2 - 0).max(0) + 1 == 1` ⇒ a strict `(10 - 1) / 1 == 9`, and P1 is the only
+        //     consumed seat, so the published crossing is 10.
         //
-        //     Without `.max(0)` the charge is `-2 + 1 == -1`, so
-        //     `elimination_bounds`' `narrow` closure never fires for P1 (its guard is
-        //     `magnitude > 0`) and the bound stays at MAX_SHORTCUT_CYCLES — the life axis
-        //     silently DISARMED on exactly the input that needs it. Asserting the cap here
-        //     would lock that fail-open in behind a green test.
-        //     REVERT-PROBE: delete `.max(0)` from `elimination_bounds`' `life_magnitude`
-        //     operator ⇒ this assertion flips 9 → MAX_SHORTCUT_CYCLES ⇒ FAILS.
+        //     Without `.max(0)` the charge is `-2 + 1 == -1`, so `seat_headroom_bound`'s
+        //     `narrow` closure never fires for P1 (its guard is `magnitude > 0`), P1 leaves
+        //     the reduction as `None`, NO living seat is consumed at all, and the bound
+        //     stays at MAX_SHORTCUT_CYCLES — the life axis silently DISARMED on exactly the
+        //     input that needs it. Asserting the cap here would lock that fail-open in
+        //     behind a green test.
+        //     REVERT-PROBE: delete `.max(0)` from `seat_headroom_bound`'s `life_magnitude`
+        //     operator ⇒ this assertion flips 10 → MAX_SHORTCUT_CYCLES ⇒ FAILS.
         //
         //     NOT bounded by the clamp, disclosed: intra-cycle dips. `self.life` is a
         //     per-period NET delta, so a period draining 5 and lifelinking 7 also reports
@@ -15557,11 +15649,127 @@ mod tests {
             assert!(!delta.life.contains_key(&PlayerId(0)));
             assert_eq!(
                 delta.elimination_bounds(&board, &slot_charges(&[(1, &[1], None)])),
-                9,
+                10,
                 "a NET-GAIN victim is still bounded by the slot that reaches it: the \
                  observed term is clamped to 0 and cannot credit against the reach term"
             );
         }
+    }
+
+    /// CR 732.2a + CR 704.5a: **the relief's lemma guard, both ends of the class.** The bound
+    /// reaches the first crossing only when the crossing is unique; a board where two seats
+    /// cross together admits two eliminations at the relieved count, and the reduction refuses
+    /// it. The three arms are the same board shape with the second seat's life moved, so the
+    /// only thing that changes between them is how many seats hold the binding value.
+    ///
+    /// REVERT-PROBE: delete the `count() == 1` conjunct ⇒ ⓑ publishes 12 and ⓒ publishes 1,
+    /// each licensing two crossings ⇒ both FAIL. Delete the `+ 1` ⇒ ⓐ and ⓓ publish 11 ⇒ both
+    /// FAIL.
+    #[test]
+    fn elimination_bounds_relieve_only_a_unique_crossing() {
+        let delta = life_loss_delta(&[(1, 1), (2, 1)]);
+
+        // ⓐ ONE seat at the binding value ⇒ the published count IS its crossing.
+        let one = bound_board(&[40, 12, 40]);
+        assert_eq!(delta.elimination_bounds(&one, &[]), 12);
+
+        // ⓑ TWO seats at the binding value ⇒ back to the strict headroom value, where
+        //   neither crosses. The admitted member the class must refuse.
+        let two = bound_board(&[40, 12, 12]);
+        assert_eq!(delta.elimination_bounds(&two, &[]), 11);
+        assert!(
+            two.players[1].life as i64 - 11 > 0 && two.players[2].life as i64 - 11 > 0,
+            "the refused value leaves BOTH tied seats alive, which is what makes it the right \
+             fallback rather than an arbitrary one"
+        );
+
+        // ⓒ the ZERO end, and it is the member the offer gate's `1..MAX_SHORTCUT_CYCLES`
+        //   range refuses: two seats already at their last legal step. Both hold the binding
+        //   value, so the relief does not fire and the published count states that no
+        //   repetition is legal at all. The single-seat twin of this board is
+        //   `game::engine::bounded_offer_conjunct_tests::a_bound_of_zero_mints_no_bounded_offer`'s
+        //   ⓑ, which publishes 1 and mints.
+        let zero = bound_board(&[40, 1, 1]);
+        assert_eq!(delta.elimination_bounds(&zero, &[]), 0);
+
+        // ⓓ the other end: two seats ONE crossing apart. The relief fires, and the proof
+        //   obligation is the SURVIVOR's headroom, not the faller's.
+        let apart = bound_board(&[40, 12, 13]);
+        let n = i64::from(delta.elimination_bounds(&apart, &[]));
+        assert_eq!(n, 12);
+        assert_eq!(
+            apart.players[1].life as i64 - n,
+            0,
+            "CR 704.5a: the unique binding seat crosses on the final iteration"
+        );
+        assert!(
+            apart.players[2].life as i64 - n > 0,
+            "CR 732.2a: every OTHER consumed seat is still strictly inside its threshold at \
+             the relieved count — one crossing, and it is the last one"
+        );
+    }
+
+    /// CR 732.2a: **the relief never mints the offer gate's un-narrowed sentinel.**
+    /// `ShortcutDecisionSchema::is_bounded()` reads `max_iterations < MAX_SHORTCUT_CYCLES`, so
+    /// a relief that produced the cap itself would make a narrowed board look unbounded and
+    /// suppress its own offer. Both legs derive their lives from the constant.
+    ///
+    /// REVERT-PROBE: delete the `relieved < cap` conjunct ⇒ ⓐ publishes the sentinel and its
+    /// `is_bounded()` clause flips. Delete the `+ 1` ⇒ ⓑ publishes one lower ⇒ FAILS. The two
+    /// legs fail under different edits, which is what makes the guard's boundary tested rather
+    /// than stated.
+    #[test]
+    fn elimination_bounds_refuse_a_relief_that_would_mint_the_sentinel() {
+        let cap = crate::game::engine::MAX_SHORTCUT_CYCLES;
+        let delta = life_loss_delta(&[(1, 1)]);
+
+        // ⓐ strict value one below the sentinel ⇒ the relief is refused.
+        let at = bound_board(&[40, cap as i32]);
+        let published = delta.elimination_bounds(&at, &[]);
+        assert_eq!(published, cap - 1);
+        assert!(
+            published < cap,
+            "the predicate `is_bounded()` reads, stated against the constant it reads"
+        );
+
+        // ⓑ one step lower ⇒ the relieved value is still below the sentinel and DOES fire.
+        //   The two legs land on the SAME published number by opposite routes — ⓐ refused at
+        //   its strict value, ⓑ relieved up to it — which is why each fails under a different
+        //   edit and neither carries the other.
+        let below = bound_board(&[40, cap as i32 - 1]);
+        assert_eq!(
+            delta.elimination_bounds(&below, &[]),
+            cap - 1,
+            "strict {} relieved to {}, still below the sentinel",
+            cap - 2,
+            cap - 1
+        );
+    }
+
+    /// CR 732.2a: **no living seat is consumed ⇒ nothing narrowed.** The reduction's empty
+    /// exit, which the offer gate reads as "this producer stated no CR 704 threshold". Paired
+    /// with the same board carrying one consumed seat, so the cap is a measured absence of
+    /// narrowing rather than a function that returned its default.
+    ///
+    /// REVERT-PROBE: replace the empty exit's `cap` with a `0`/`unwrap_or_default` fold ⇒ ⓐ
+    /// publishes 0 and the offer gate refuses every un-narrowed cycle at the wrong conjunct.
+    #[test]
+    fn elimination_bounds_publish_the_cap_when_no_seat_is_consumed() {
+        let board = bound_board(&[40, 40]);
+
+        // ⓐ a delta with no loss axis at all and no charged slot: nothing consumes a seat.
+        assert_eq!(
+            ResourceVector::default().elimination_bounds(&board, &[]),
+            crate::game::engine::MAX_SHORTCUT_CYCLES
+        );
+
+        // ⓑ the control: one consumed seat on the SAME board narrows below the cap.
+        assert!(
+            life_loss_delta(&[(1, 1)]).elimination_bounds(&board, &[])
+                < crate::game::engine::MAX_SHORTCUT_CYCLES,
+            "control: the cap above is an empty reduction, not a board this function cannot \
+             narrow on"
+        );
     }
 
     /// **V1** — CR 704.5a + CR 601.2c: **an AIMED slot is charged ONCE.** Where the detection
@@ -15571,8 +15779,10 @@ mod tests {
     /// ONE BOARD, ONE INSTRUMENT, TWO ARMS. Case (m)'s own board — one slot of magnitude 1
     /// reaching every opponent, an observed loss of 1 on P3 — asserted with the aim settled on
     /// P3 and with it unattributed. The two results must DIFFER, and each is its own headroom
-    /// division: attributed, P3 is charged `(1 - 1).max(0) + 1 == 1` over `16 - 1`; otherwise
-    /// `(1 - 0).max(0) + 1 == 2` over the same headroom.
+    /// division carried to P3's own crossing: attributed, P3 is charged
+    /// `(1 - 1).max(0) + 1 == 1` over `16 - 1`; otherwise `(1 - 0).max(0) + 1 == 2` over the
+    /// same headroom. P3 binds uniquely in both arms, so each published value is its strict
+    /// division plus one.
     ///
     /// REVERT-PROBE: delete the `- observed_aim` term ⇒ the two arms collapse to one value ⇒
     /// the inequality FLIPS. The unattributed arm is the sibling that stays green under it and
@@ -15596,16 +15806,16 @@ mod tests {
         );
         assert_eq!(
             i64::from(aimed),
-            headroom / charged_aimed,
+            headroom / charged_aimed + 1,
             "CR 601.2c: the window saw this slot announce P3, so P3's observed loss of 1 IS \
              the slot's magnitude and is charged once — `(1 - 1).max(0) + 1` over headroom \
-             {headroom}"
+             {headroom}, carried to P3's own crossing"
         );
         assert_eq!(
             i64::from(unattributed),
-            headroom / charged_unattributed,
+            headroom / charged_unattributed + 1,
             "and with no observed aim the slot is charged ON TOP of P3's observed loss — \
-             `(1 - 0).max(0) + 1` over the same headroom"
+             `(1 - 0).max(0) + 1` over the same headroom, again carried to the crossing"
         );
     }
 
@@ -15615,10 +15825,11 @@ mod tests {
     ///
     /// The board is V1's with P2 starved to 2 life. P2 carries NO observed loss at all and the
     /// aim is on P3, so P2's whole magnitude is the reach term: `(0 - 0).max(0) + 1 == 1` over
-    /// headroom `2 - 1`, which is the tightest division on the board and binds at **1**.
+    /// headroom `2 - 1`, the tightest division on the board — a strict 1 carried to P2's own
+    /// crossing at **2**.
     ///
     /// REVERT-PROBE: narrow `reaches` to the aimed seat alone ⇒ P2 is charged nothing, its
-    /// life axis never narrows, and the bound jumps to the aimed seat's own 15 ⇒ FLIPS.
+    /// life axis never narrows, and the bound jumps to the aimed seat's own 16 ⇒ FLIPS.
     /// PAIRED SIBLING: the same board with P2's life restored, where the aimed seat binds
     /// instead — the pair is what shows WHICH term moved.
     #[test]
@@ -15636,20 +15847,20 @@ mod tests {
         );
         assert_eq!(
             delta.elimination_bounds(&starved, &charges),
-            1,
+            2,
             "CR 732.2a: the declaration may re-aim this slot at P2 in every repetition, so \
              P2 is charged the slot's magnitude over its own headroom of 1 — and P2 is not \
              the seat the window saw the slot aim at"
         );
         assert_eq!(
             delta.elimination_bounds(&restored, &charges),
-            15,
+            16,
             "PAIRED SIBLING: with P2's headroom restored the AIMED seat binds instead, which \
              is what attributes the value above to the reach term rather than to the board"
         );
         assert_eq!(
             delta.elimination_bounds(&starved, &slot_charges(&[(1, &[3], Some(3))])),
-            15,
+            16,
             "REVERT-PROBE, run: a reach narrowed to the aimed seat alone charges P2 nothing \
              and the bound jumps back to the aimed seat's own division"
         );
@@ -15664,14 +15875,14 @@ mod tests {
     /// exceed what the seat it aimed at actually lost: P1 loses 1 per period while P2 loses 3,
     /// and the single slot aimed at P1 therefore carries magnitude 3. P1's charge is
     /// `(1 - 3).max(0) + 3 == 3`, not 4 — the clamp discards the excess instead of crediting
-    /// it — over headroom `16 - 1`, giving **5**.
+    /// it — over headroom `16 - 1`, a strict 5 carried to P1's own crossing at **6**.
     ///
     /// UNIT rather than driven, because the shape is off the measured production population:
     /// every charging offer either test target mints has `aim == observed`.
     ///
     /// REVERT-PROBE: make the subtraction fail-closed in the other direction — refuse to
     /// subtract where `aim > observed` — ⇒ P1 is charged `1 + 3 == 4` and the bound falls to
-    /// 3, the UNATTRIBUTED arm's own value ⇒ the pair collapses and FLIPS. That pair is what
+    /// 4, the UNATTRIBUTED arm's own value ⇒ the pair collapses and FLIPS. That pair is what
     /// shows the subtraction ran and how far.
     #[test]
     fn elimination_bounds_aims_over_the_observed_loss_absorb_it_whole() {
@@ -15686,14 +15897,14 @@ mod tests {
 
         assert_eq!(
             delta.elimination_bounds(&board, &slot_charges(&[(3, &[1], Some(1))])),
-            5,
+            6,
             "CR 704.5a: the attribution absorbs P1's whole observed loss and its charge is \
              the bare magnitude 3 over headroom 15 — not 4, which the excess would give if \
              the clamp credited it"
         );
         assert_eq!(
             delta.elimination_bounds(&board, &slot_charges(&[(3, &[1], None)])),
-            3,
+            4,
             "PAIRED SIBLING: unattributed, P1 is charged `observed 1 + reach 3 == 4` over the \
              same headroom — the pair is what shows the subtraction ran, and how far"
         );
@@ -15706,47 +15917,51 @@ mod tests {
     /// MIXED-LOSS regression, and **the admitted-member hunt**: the member this class must
     /// still refuse after the aim subtraction exists. The observed drain and the announced
     /// slot are DIFFERENT losses (an untargeted 1 plus a re-aimable 1 the window never saw
-    /// aim anywhere), so P1's true per-period loss is 2 against a headroom of 1 ⇒ NO legal
-    /// repetition exists. `max` would return 1 here, offering one iteration that takes P1
-    /// from 2 to 0 — an in-proposal elimination (CR 704.5a), exactly the conditional action
-    /// CR 732.2a forbids.
+    /// aim anywhere), so P1's true per-period loss is 2 against a headroom of 1 ⇒ a strict 0,
+    /// published as the single iteration that crossing takes. `max` would charge 1 per period
+    /// and publish 2 — a proposal whose FIRST iteration takes P1 from 2 to 0 with a SECOND
+    /// still declared, i.e. a MID-sequence elimination (CR 704.5a) and exactly the conditional
+    /// action CR 732.2a forbids.
     ///
     /// The AIMED sibling is the class BOUNDARY rather than a second verdict: with the aim
-    /// settled on P1 the observed 1 IS the slot, the subtraction removes it, and 1 is the
-    /// correct answer on that board. Both arms run here so the refusal is attributable to the
-    /// missing attribution rather than to the board.
+    /// settled on P1 the observed 1 IS the slot, the subtraction removes it, and 2 is the
+    /// correct answer on that board — P1 crosses on the second and final iteration. Both arms
+    /// run here so the refusal is attributable to the missing attribution rather than to the
+    /// board.
     ///
     /// REVERT-PROBE (a): restore `observed_life_loss.max(reach term)` ⇒ the subject assertion
-    /// flips 0 → 1. REVERT-PROBE (b): drop the `aimed_at` conjunct so every reaching charge is
+    /// flips 1 → 2. REVERT-PROBE (b): drop the `aimed_at` conjunct so every reaching charge is
     /// subtracted ⇒ the same flip. The positive control above them still passes under both,
     /// isolating the flip to the operator.
     #[test]
     fn elimination_bounds_mixed_loss_charges_both_terms() {
         let board = bound_board(&[40, 2]);
         let delta = life_loss_delta(&[(1, 1)]);
-        // PAIRED POSITIVE CONTROL, first: the same board with NO charged slot bounds
-        // at 1, so the instrument provably returns non-zero here and the 0 below is a
-        // VERDICT rather than a dead path.
+        // PAIRED POSITIVE CONTROL, first: the same board with NO charged slot bounds at 2,
+        // so the instrument provably returns a LARGER count here and the value below is a
+        // verdict about the charge rather than a dead path.
         assert_eq!(
             delta.elimination_bounds(&board, &[]),
-            1,
+            2,
             "positive control: with no charged slot the observed drain of 1 over P1's \
-             headroom of 1 permits exactly one repetition"
+             headroom of 1 admits one repetition inside the threshold and a second that \
+             crosses it — the sequence's final iteration"
         );
         assert_eq!(
             delta.elimination_bounds(&board, &slot_charges(&[(1, &[1], None)])),
-            0,
+            1,
             "MIXED LOSS: an untargeted drain of 1 AND a re-aimable slot of magnitude 1 the \
              window never saw aim anywhere cost P1 2 per period against a headroom of 1, so \
-             no legal repetition exists; subtracting an unobserved aim returns 1 and permits \
-             an in-proposal elimination"
+             the FIRST iteration is already the crossing one and the sequence stops there; \
+             subtracting an unobserved aim charges 1, publishes 2, and declares a second \
+             repetition after P1 has left"
         );
         assert_eq!(
             delta.elimination_bounds(&board, &slot_charges(&[(1, &[1], Some(1))])),
-            1,
+            2,
             "THE CLASS BOUNDARY: with the aim settled on P1 the observed 1 IS this slot, so \
-             charging it once is correct and one repetition is legal. The refusal above is \
-             about the missing attribution, not about the board"
+             charging it once is correct and P1 crosses on the second, FINAL iteration. The \
+             tighter count above is about the missing attribution, not about the board"
         );
     }
 

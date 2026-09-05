@@ -822,12 +822,12 @@ fn non_pass_actions(state: &GameState, seat: PlayerId) -> Vec<String> {
 /// drain. Stage 2 answers `Accept`.
 ///
 /// **V5 — bounded offers are NOT exempt.** MEASURED on this board: the offer
-/// mints at beat 21 carrying `predicted_winner: None` and
-/// `IterationCount::Fixed(25)`. It is the BOUNDED class, not the `UntilLethal`
-/// class the synthetic rows use, and `predicted_winner: None` additionally
-/// proves arm (A) cannot be what produces the `Accept` below — only arm (B)
-/// can. Re-introducing an `UntilLethal`-only gate makes this row return
-/// `Shorten` and fail.
+/// mints at beat 21 carrying `predicted_winner: None` and a FINITE
+/// `IterationCount::Fixed` count equal to the schema's own ceiling. It is the
+/// BOUNDED class, not the `UntilLethal` class the synthetic rows use, and
+/// `predicted_winner: None` additionally proves arm (A) cannot be what produces
+/// the `Accept` below — only arm (B) can. Re-introducing an `UntilLethal`-only
+/// gate makes this row return `Shorten` and fail.
 ///
 /// **Why the flip set is exactly {P2}, asserted rather than asserted-about.**
 /// P1 and P3 are polled on the same board and hold nothing, so they answer at
@@ -870,9 +870,10 @@ fn v1_live_path_fetchland_seat_accepts_on_the_real_4p_board() {
     );
     assert_eq!(
         schema.iteration_count,
-        IterationCount::Fixed(25),
+        IterationCount::Fixed(schema.max_iterations),
         "V5: a FINITE count is the point — stage 2 takes the identical rule for it and for \
-         the UntilLethal class"
+         the UntilLethal class. The bounded producer mints the count FROM its own ceiling, so \
+         this re-derives the class instead of pinning whatever the ceiling happens to be"
     );
 
     // ── the row: P2, whose only action is its own fetchland ──
@@ -995,7 +996,8 @@ fn v1_positive_control_interactive_seat_still_shortens_on_the_real_4p_board() {
 ///
 /// The previously-tracked `dina_conqueror_4p` board is the same matchup at a
 /// beat where NO seat holds any meaningful priority action. MEASURED: the offer
-/// mints at beat 19 with `predicted_winner: None`, `IterationCount::Fixed(30)`,
+/// mints at beat 19 with `predicted_winner: None`, a FINITE
+/// `IterationCount::Fixed` count equal to the schema's own ceiling,
 /// and all three polled seats (P1, P2, P3) enumerate exactly
 /// `["PassPriority"]` — length one, NOT empty; it is
 /// `has_meaningful_priority_action` returning false that produces the Accept,
@@ -1021,7 +1023,11 @@ fn v1_control_quiet_board_is_unchanged_and_cannot_discriminate() {
         unreachable!()
     };
     assert_eq!(predicted_winner, None, "bounded class (offer beat {beat})");
-    assert_eq!(schema.iteration_count, IterationCount::Fixed(30));
+    assert_eq!(
+        schema.iteration_count,
+        IterationCount::Fixed(schema.max_iterations),
+        "the bounded producer mints its count FROM its own ceiling"
+    );
 
     for seat in [P1, P2, P3] {
         let polled = declare_and_poll(&board, seat);

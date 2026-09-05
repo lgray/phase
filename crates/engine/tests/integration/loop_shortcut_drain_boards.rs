@@ -209,6 +209,25 @@ pub(crate) fn drive_to_live_declarable_offer(state: &mut GameState) -> LiveOffer
 /// reach whenever exactly one slot is charged. Every precondition that makes that reading true
 /// is asserted loudly rather than assumed, so a board this helper cannot answer for fails as a
 /// FIXTURE GAP and not as a wrong bound.
+/// CR 732.2a + CR 704.5a: the published count, given every living seat's STRICT headroom in
+/// whole repetitions. Mirrors `ResourceVector::elimination_bounds`' final reduction so the
+/// three test-side re-derivations of that function share one statement of it instead of three.
+///
+/// The strict minimum is the answer while more than one seat holds it; when exactly one does,
+/// the count reaches that seat's own crossing, unless doing so would mint the offer gate's
+/// un-narrowed sentinel.
+pub(crate) fn relieve_strict_bound(strict: &[i64], ceiling: i64) -> i64 {
+    let Some(&floor) = strict.iter().min() else {
+        return ceiling;
+    };
+    let relieved = floor + 1;
+    if strict.iter().filter(|b| **b == floor).count() == 1 && relieved < ceiling {
+        relieved.clamp(0, ceiling)
+    } else {
+        floor.clamp(0, ceiling)
+    }
+}
+
 pub(crate) fn rederive_live_offer_bound(state: &GameState, aimed_at: PlayerId) -> u32 {
     let WaitingFor::LoopShortcut { certificate, .. } = &state.waiting_for else {
         panic!("not at an offer: {:?}", state.waiting_for);
@@ -239,17 +258,25 @@ pub(crate) fn rederive_live_offer_bound(state: &GameState, aimed_at: PlayerId) -
     );
 
     let ceiling = i64::from(crate::fantastic_four_bounded_loop::MAX_SHORTCUT_CYCLES_MIRROR);
-    let mut bound = ceiling;
+    let mut strict: Vec<i64> = Vec::new();
     for player in state.players.iter().filter(|p| !p.is_eliminated) {
+        let mut seat: Option<i64> = None;
+        let mut narrow = |headroom: i64, magnitude: i64| {
+            if magnitude > 0 {
+                let n = headroom.max(0) / magnitude;
+                seat = Some(seat.map_or(n, |b: i64| b.min(n)));
+            }
+        };
         assert_eq!(
             per_cycle.delta.poison.get(&player.id).copied().unwrap_or(0),
             0,
             "FIXTURE GAP: this helper re-derives the CR 704.5a life and CR 104.3c library axes \
              only, so a living seat carrying a poison delta is a board it cannot answer for"
         );
-        // CR 704.5a headroom is `life - 1`: a seat at exactly 0 has already lost, so a legal
-        // shortcut stops one point above it. The charge is the slot's magnitude on every seat
-        // it REACHES, less what the window saw it aim AT that seat.
+        // CR 704.5a headroom is `life - 1`: a seat at exactly 0 has already lost, so the seat's
+        // STRICT value stops one point above it — `relieve_strict_bound` below is what carries a
+        // lone faller to its own crossing. The charge is the slot's magnitude on every seat it
+        // REACHES, less what the window saw it aim AT that seat.
         let observed = -per_cycle.delta.life.get(&player.id).copied().unwrap_or(0);
         let aim = if player.id == aimed_at {
             magnitude.max(0)
@@ -262,9 +289,7 @@ pub(crate) fn rederive_live_offer_bound(state: &GameState, aimed_at: PlayerId) -
             0
         };
         let life_magnitude = (observed - aim).max(0) + reach;
-        if life_magnitude > 0 {
-            bound = bound.min((player.life as i64 - 1).max(0) / life_magnitude);
-        }
+        narrow(player.life as i64 - 1, life_magnitude);
         // CR 104.3c + CR 121.4: an empty library is only lethal on the next draw, so the
         // library axis divides the whole remaining library.
         let drain = -per_cycle
@@ -273,11 +298,10 @@ pub(crate) fn rederive_live_offer_bound(state: &GameState, aimed_at: PlayerId) -
             .get(&player.id)
             .copied()
             .unwrap_or(0);
-        if drain > 0 {
-            bound = bound.min(player.library.len() as i64 / drain);
-        }
+        narrow(player.library.len() as i64, drain);
+        strict.extend(seat);
     }
-    bound.clamp(0, ceiling) as u32
+    relieve_strict_bound(&strict, ceiling) as u32
 }
 
 /// The `DecisionSlot`s the certificate charges, and the magnitude charged to each.

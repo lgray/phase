@@ -1172,8 +1172,10 @@ fn schedule_announces_every_declared_subject(schedule: &TargetSchedule) -> bool 
 /// determines the next action a player takes". Pins fix every free choice BEFORE the offer is made,
 /// so the sequence the table accepts is the sequence that runs. The two companion gates are
 /// `game::engine::try_offer_object_growth_shortcut`'s static rejection of coin flip / die roll /
-/// random discard, and `analysis::resource::elimination_bounds` stopping the count strictly short
-/// of every CR 704 loss threshold. "No conditional on a prior
+/// random discard, and `analysis::resource::elimination_bounds` admitting no CR 704 threshold
+/// crossing except as the sequence's FINAL iteration — a MID-sequence death is what makes the
+/// remaining declared choices unmakeable, and a final-iteration crossing has none. "No conditional
+/// on a prior
 /// iteration's outcome" needs NO runtime check — it is unrepresentable in
 /// [`TargetSchedule`] by construction (see the type doc); a choice a player could only
 /// make reactively is one they cannot pin, which surfaces HERE as an unpinned slot.

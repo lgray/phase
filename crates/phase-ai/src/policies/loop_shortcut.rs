@@ -232,12 +232,15 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // `proposal.predicted_winner`, unlike both `UntilLethal` crown gates. Such a
             // declare by a faller proposer is a committed self-loss, exactly what the
             // `UntilLethal` arm above rejects. On a BOUNDED offer that hazard is discharged by
-            // `elimination_bounds`' contract rather than by an AI-side computation: it narrows to
-            // `min over living seats of (life - 1) / per-cycle loss` with FLOOR division, so
-            // `n * loss <= life - 1` for every seat and every `n` within `max_iterations`.
+            // the `loop_shortcut_declare_eliminates_proposer` arm BELOW, which asks
+            // `cycles_to_proposer_elimination` of the proposer alone. It is NOT discharged by
+            // `elimination_bounds`' contract: that bound admits a crossing as the sequence's
+            // FINAL iteration, so `max_iterations` can equal the proposer's own fatal count and
+            // `Fixed(max_iterations)` — the AI's only bounded candidate — can name it. That
+            // arm's two limits are stated where it sits, not assumed away here.
             //
-            // ⚠ THAT PREMISE WAS FALSE WHEN THIS ARM SHIPPED, and it is stated here only because
-            // it has since been made true and RE-MEASURED. At `c6d834040`
+            // ⚠ AN EARLIER FORM OF THIS ARM ALSO RESTED ON A DRIVE THAT DID NOT HONOUR THE
+            // PUBLISHED BOUND, which is why the delimiter's history is kept here. At `c6d834040`
             // `materialize_fixed_shortcut` had no cycle delimiter for the basis-B class, so the
             // drive ran to the beat cap and `Fixed(1)` on a bounded 3p/4p drain eliminated the
             // whole table — the arithmetic above described a bound the drive never honoured. Fix
@@ -268,7 +271,9 @@ impl TacticalPolicy for LoopShortcutPolicy {
             ),
 
             // CR 732.2a: within the offered bound on a bounded offer ⇒ committed board
-            // progress that eliminates nobody. Game-deciding ⇒ critical band, via the
+            // progress that eliminates at most the binding seat, and only on the sequence's
+            // FINAL iteration. Never the proposer — the arm above is what refuses that.
+            // Game-deciding ⇒ critical band, via the
             // auto-banding `PolicyVerdict::score` (NEVER `preference`, whose `debug_assert!`
             // band domain panics on this field's default). Both declare kinds route through
             // the one reused config field on purpose: the winning arm above and this one are
@@ -285,15 +290,22 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // DECIDING side's job, and nothing was doing it: a bounded offer always carries
             // `predicted_winner: None`, so the "hands somebody else the win" arm above is
             // structurally unreachable here, and the AI's only bounded candidate is
-            // `Fixed(max_iterations)` — the maximum, never a smaller n. A self-mill period whose
-            // binding seat is the proposer therefore scored CRITICAL for running the proposer's
-            // own library to exactly 0.
+            // `Fixed(max_iterations)` — the maximum, never a smaller n, and now a count the
+            // producer carries all the way to the binding seat's own crossing. A self-mill
+            // period whose binding seat is the proposer therefore scored CRITICAL for running
+            // the proposer's own library to exactly 0.
             //
             // This arm asks the question the producer declines to ask, on the proposer's behalf
             // only, and REJECTS rather than dropping to `na()`: neutral would still leave the
             // declare competing on other policies' scores, and the domination argument here is
             // the same shape as the zero-count arm's — a declare that eliminates the declarer is
             // weakly dominated by declining, which rolls back to exactly where a decline lands.
+            //
+            // IT IS THE WHOLE DISCHARGE ON A BOUNDED OFFER, and its two limits are named rather
+            // than hidden: `cycles_to_proposer_elimination` reads the raw net
+            // `period.delta.life[proposer]` and carries no `SlotCharge` term, so it UNDER-counts
+            // a slot the declaration could re-aim ONTO the proposer; and it is proposer-only by
+            // construction. Both are true of it today and neither is widened here.
             (_, IterationCount::Fixed(n))
                 if cycles_to_proposer_elimination(ctx.state, certificate, *proposer)
                     .is_some_and(|fatal| i64::from(*n) >= fatal) =>
@@ -832,6 +844,61 @@ mod tests {
         );
     }
 
+    /// CR 704.5a: **the multi-authority pair — the same declared count, on two boards that
+    /// differ only in WHICH seat the period drains.**
+    ///
+    /// The engine publishes a legal bound either way; the AI must refuse only the board where
+    /// the seat the bound's arithmetic names is the PROPOSER. That refusal is now load-bearing
+    /// rather than redundant: the published bound reaches the binding seat's own crossing, so
+    /// `max_iterations` can EQUAL `cycles_to_proposer_elimination`, and the AI's only bounded
+    /// candidate is `Fixed(max_iterations)`. Both boards assert that equality (or its absence)
+    /// off the predicate itself, so the row states the re-attribution instead of assuming it.
+    ///
+    /// REVERT-PROBE: delete the `n >= fatal` guard arm ⇒ the proposer-as-faller board falls
+    /// through to `loop_shortcut_bounded_declare_progress` and SCORES ⇒ the first assertion
+    /// FAILS while the opponent sibling stays green.
+    #[test]
+    fn loop_shortcut_declare_at_the_bound_is_refused_only_when_the_proposer_is_the_faller() {
+        // 20 life at 2 per cycle: the strict headroom is 9 and the crossing is 10, which is
+        // the count the producer now publishes for a board with one binding seat.
+        const BOUND: u32 = 10;
+
+        let proposer_falls = bounded_offer_with_period(BOUND, periodic(&[], &[(P0, -2)]));
+        let opponent_falls = bounded_offer_with_period(BOUND, periodic(&[], &[(P1, -2)]));
+
+        assert_eq!(
+            cycles_to_proposer_elimination(&proposer_falls, certificate_of(&proposer_falls), P0),
+            Some(i64::from(BOUND)),
+            "REACH-GUARD: the declared MAXIMUM must be exactly the proposer's fatal count, or \
+             this row is the over-bound case and not the at-the-bound one"
+        );
+        assert_eq!(
+            cycles_to_proposer_elimination(&opponent_falls, certificate_of(&opponent_falls), P0),
+            None,
+            "REACH-GUARD: the sibling board must charge the proposer NOTHING, so the two arms \
+             differ in the faller's identity and in nothing else"
+        );
+
+        assert_eq!(
+            kind_of(&verdict_for(
+                &proposer_falls,
+                &declare(IterationCount::Fixed(BOUND))
+            )),
+            "loop_shortcut_declare_eliminates_proposer",
+            "the engine may legally publish a count whose final iteration removes the \
+             proposer; declining is the AI's own job"
+        );
+        assert_eq!(
+            kind_of(&verdict_for(
+                &opponent_falls,
+                &declare(IterationCount::Fixed(BOUND))
+            )),
+            "loop_shortcut_bounded_declare_progress",
+            "PAIRED POSITIVE: the same declare at the same count on a board whose faller is an \
+             opponent still scores — without it the refusal above could be a blanket one"
+        );
+    }
+
     /// The predicate is a MINIMUM across the surviving axes, and poison is one of them
     /// (CR 704.5c: ten or more poison counters is a loss). Life is left untouched here, so the
     /// ONLY binding axis is poison — a min that silently dropped it would score this offer.
@@ -861,9 +928,8 @@ mod tests {
 
     /// CR 732.2a — the BOUNDED branch, both halves, on ONE schema differing only in `n`.
     ///
-    /// (i) `Fixed(4)` with `max_iterations == 10` ⇒ committed progress that eliminates nobody
-    /// (`elimination_bounds`' contract), so the critical band `PolicyVerdict::score` routes
-    /// `8.0` to. (ii) `Fixed(11)` ⇒ the engine hands it back fail-closed with ZERO committed
+    /// (i) `Fixed(4)` with `max_iterations == 10` ⇒ committed progress well inside every
+    /// seat's headroom, so the critical band `PolicyVerdict::score` routes `8.0` to. (ii) `Fixed(11)` ⇒ the engine hands it back fail-closed with ZERO committed
     /// cycles and the CR 732.2b window spent, i.e. weakly dominated by declining.
     ///
     /// REVERT-PROBES, each flipping a DIFFERENT subset so neither dominates the other:

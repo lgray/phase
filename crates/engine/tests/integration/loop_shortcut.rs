@@ -9634,17 +9634,25 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
          LOSING life per cycle, else the CR 704.5a headroom term never narrows and the bound \
          below would be the safety cap for the wrong reason; measured {losses:?}"
     );
-    let expected_bound = losses
+    let strict: Vec<i64> = losses
         .iter()
         .filter(|(_, _, loss)| *loss > 0)
         .map(|(_, life, loss)| (life - 1) / loss)
-        .min()
-        .expect("at least one seat is losing life, asserted above");
+        .collect();
+    assert!(
+        !strict.is_empty(),
+        "at least one seat is losing life, asserted above"
+    );
+    let expected_bound = crate::loop_shortcut_drain_boards::relieve_strict_bound(
+        &strict,
+        i64::from(crate::fantastic_four_bounded_loop::MAX_SHORTCUT_CYCLES_MIRROR),
+    );
     assert_eq!(
         i64::from(schema.max_iterations),
         expected_bound,
-        "CR 704.5a: the published bound must equal `min over living seats of (life - 1) / \
-         per-cycle loss`, recomputed here from the offer-beat board {losses:?} at beat {beat}"
+        "CR 704.5a: the published bound is the strict per-seat headroom minimum, carried to \
+         the binding seat's own crossing when exactly one seat holds it. Recomputed here from \
+         the offer-beat board {losses:?} at beat {beat}"
     );
     assert_eq!(
         schema.iteration_count,
@@ -10223,7 +10231,7 @@ fn drive_scenario_to_bounded_offer(runner: &mut GameRunner, cap: usize) -> Optio
 /// `ai_bounded_declare_candidate_is_generated_legal_and_drives`,
 /// `bounded_fixed_count_commits_exactly_n_periods`,
 /// `bounded_fixed_drive_stops_at_the_first_lethal_cycle`,
-/// `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`,
+/// `bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat`,
 /// `a_cycle_that_does_not_match_the_published_period_is_dropped`,
 /// `declared_count_above_the_offered_bound_is_handed_back`,
 /// `until_lethal_against_a_bounded_offer_is_rejected`,
@@ -10239,7 +10247,7 @@ fn drive_scenario_to_bounded_offer(runner: &mut GameRunner, cap: usize) -> Optio
 /// `until_lethal_against_a_bounded_offer_is_rejected`,
 /// `bounded_fixed_count_commits_exactly_n_periods` (which loops that dump AND two
 /// `bloodloop_state` boards, so it is the one MIXED row), and
-/// `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`. The remaining five are
+/// `bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat`. The remaining five are
 /// `GameScenario` builds only — this row inline, the other four via `bloodloop_state`. Counted
 /// by resolving every fixture-loading call site in this file to its enclosing test fn, NOT by
 /// grep hit count: these very sentences add doc-comment hits for the names they list.
@@ -10574,7 +10582,7 @@ fn multiplayer_pure_life_drain_offers_at_three_and_four_players() {
         );
 
         // The bound, RECOMPUTED from the offer-beat board.
-        let expected_bound = state
+        let strict: Vec<i64> = state
             .players
             .iter()
             .filter(|p| !p.is_eliminated)
@@ -10582,13 +10590,21 @@ fn multiplayer_pure_life_drain_offers_at_three_and_four_players() {
                 let loss = -per_cycle.delta.life.get(&p.id).copied().unwrap_or(0);
                 (loss > 0).then(|| (p.life as i64 - 1) / loss)
             })
-            .min()
-            .expect("at least one seat is losing life, asserted above");
+            .collect();
+        assert!(
+            !strict.is_empty(),
+            "{seats}p: at least one seat is losing life, asserted above"
+        );
+        let expected_bound = crate::loop_shortcut_drain_boards::relieve_strict_bound(
+            &strict,
+            i64::from(crate::fantastic_four_bounded_loop::MAX_SHORTCUT_CYCLES_MIRROR),
+        );
         assert_eq!(
             i64::from(schema.max_iterations),
             expected_bound,
-            "{seats}p: CR 704.5a — the published bound must equal `min over living seats of \
-             (life - 1) / per-cycle loss`, recomputed here from the offer-beat board"
+            "{seats}p: CR 704.5a — the published bound is the strict per-seat headroom \
+             minimum, carried to the binding seat's own crossing when exactly one seat holds \
+             it; recomputed here from the offer-beat board"
         );
         assert!(
             schema.is_bounded(),
@@ -11246,13 +11262,15 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
                 );
             }
 
-            // ── the bound's own contract: CR 704.5a headroom is `life - 1`, so no seat may
-            //    be eliminated by a within-bound count ──
+            // ── the bound's own contract: a count strictly BELOW the bound crosses no
+            //    threshold at all, and the bound itself crosses at most one — this sweep runs
+            //    at `n = 1..3` under a `bound >= 3` reach-guard, so every seat survives ──
             assert_eq!(
                 state.players.iter().filter(|p| p.is_eliminated).count(),
                 0,
-                "{name} n={n}: CR 704.5a — `min over living seats of (life - 1) / loss` \
-                 reserves one point of headroom, so a within-bound drive eliminates nobody"
+                "{name} n={n}: CR 704.5a — a count strictly below the published bound leaves \
+                 every seat inside its own headroom, and the bound is measured far above the \
+                 counts this sweep drives"
             );
             assert!(
                 state.players.iter().all(|p| p.life > 0),
@@ -11730,7 +11748,7 @@ fn an_aborted_until_lethal_drive_discards_only_the_proposers_own_driving_period(
 ///   its board genuinely RECURS, so `loop_states_equal_modulo_resources(boundary, &norm)` is a
 ///   working delimiter on its own and lands on the same two-frame cycle. (The same probe flips
 ///   five other rows in this module, including
-///   `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle` — the basis-B fixtures, whose
+///   `bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat` — the basis-B fixtures, whose
 ///   boards never recur, are the ones that need the delimiter to exist at all.)
 ///
 /// So this row's discrimination rests ENTIRELY on ⓐ — which is the point: ⓐ is the only edit
@@ -11789,7 +11807,8 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
         assert_eq!(
             state.players.iter().filter(|p| p.is_eliminated).count(),
             0,
-            "n={n}: CR 704.5a — a within-bound drive eliminates nobody"
+            "n={n}: CR 704.5a — this sweep's counts sit strictly below the published bound, \
+             which is where no seat crosses any threshold"
         );
         assert!(
             matches!(state.waiting_for, WaitingFor::Priority { .. }),
@@ -11822,13 +11841,12 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 ///
 /// # Why the offer has to be doctored, and why that is the honest construction
 ///
-/// A within-bound count can NEVER cross a CR 704.5a threshold: `elimination_bounds` narrows to
-/// `min over living seats of (life - 1) / per-cycle loss` with FLOOR division, so `n * loss <=
-/// life - 1` for every seat and every legal `n`. MEASURED at the bound on both fixtures after
-/// this round's fix — bloodloop3 `n = 16` lands `[20, 1, 1]`, dina `n = 30` lands
-/// `[79, 5, 1, 6]`, zero eliminations in both. The bounded class therefore cannot reach its
-/// own cross-lethal arm through an undoctored offer, and a mirror row built on one would be
-/// unbuildable rather than merely weak.
+/// `elimination_bounds` admits a CR 704.5a crossing only as the sequence's FINAL iteration, and
+/// only when exactly ONE seat sits at the strict floor. The fixture below is SYMMETRIC, so that
+/// conjunct never fires and its published bound stays strictly short — `n * loss <= life - 1`
+/// for every seat at every legal `n`. Such a board cannot reach its own CROSS-LETHAL arm through
+/// an undoctored offer, and a mirror row built on one would be unbuildable rather than merely
+/// weak.
 ///
 /// So this row is a HOSTILE fixture: it widens `schema.max_iterations` on the offer the engine
 /// wrote — simulating a producer whose bound is WRONG — and then declares a count that arithmetic
@@ -11841,17 +11859,21 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 /// drive's every beat goes through `pass_priority_once_with_pipeline`, so CR 704.5a ("if a
 /// player has 0 or less life, that player loses the game") is applied INSIDE the drive.
 ///
-/// # SCOPE — this row covers the TOTAL-WIPE arm ONLY (fix round 2, MED-1)
+/// # SCOPE — this row covers the TOTAL-WIPE arm ONLY
 ///
-/// bloodloop3 seats its two opponents at EQUAL life (17/17 at the offer beat, measured), so they
-/// cross 0 on the SAME cycle, CR 104.2a crowns, and the drive takes `CycleOutcome::CrossLethal`.
-/// The fixture is structurally incapable of a partial wipe: a symmetric fixture collapses every
-/// partial case into a total case. The other arm — one seat crosses while ≥2 players survive, no
-/// `GameOver`, `CycleOutcome::Abort`, the crossing cycle rolling back whole while prior
-/// conforming cycles stay committed — behaves DIFFERENTLY
-/// and has its own row, [`bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`], which
-/// carries the arm-asymmetry table. Both arms are out of contract for any legitimately-derived
-/// bound; each is reachable only under a doctored one.
+/// bloodloop3 seats its two opponents at EQUAL life at the offer beat, so they cross 0 on the
+/// SAME cycle, CR 104.2a crowns, and the drive takes `CycleOutcome::CrossLethal`. The fixture is
+/// structurally incapable of a terminal single-seat crossing: a symmetric fixture collapses
+/// every such case into a total one. That symmetry is also what holds this board's PUBLISHED
+/// BOUND still — with two seats at the binding value the relief's one-faller conjunct does not
+/// fire, so the bound stays at the strict headroom value, which is why ⓐ's doctoring below is
+/// still a no-op here. The other arm — one seat crosses while ≥2 players survive, no
+/// `GameOver`, `CycleOutcome::SeatLeft`, the crossing cycle COMMITTING and that one seat
+/// leaving the game while the survivors keep an intact loop — behaves DIFFERENTLY
+/// and has its own row, [`bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat`], which
+/// carries the arm-asymmetry table. On the bound side the two boards differ too: two tied
+/// seats here hold the relief off, while a unique binding seat there carries the count to its
+/// own crossing.
 ///
 /// # The MATCHED PAIR, on the same doctored offer
 ///
@@ -11863,24 +11885,29 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 /// the loop until something dies — which is exactly what `c6d834040` did. ⓐ is what forces the
 /// stop point to be `n`-sensitive.
 ///
-/// ⚠ ⓐ's DOCTORING IS A NO-OP ON THIS FIXTURE, and that is stated rather than dressed up (fix
-/// round 2, LOW-1). bloodloop3's honest bound is 16 and `cycles_to_lethal - 1 = 17 - 1 = 16`, so
-/// `schema.max_iterations = survivor_n` writes back the value already present — asserted below,
-/// so a fixture drift cannot silently turn it into a real widening. ⓐ is therefore an
-/// AT-THE-BOUND instance of [`bounded_fixed_count_commits_exactly_n_periods`], not an
-/// independent stop-short observation. The pair's stop-short content rests entirely on ⓑ's
-/// clause (b).
+/// ⚠ ⓐ's DOCTORING IS A NO-OP ON THIS FIXTURE, and that is stated rather than dressed up. On a
+/// SYMMETRIC board the published bound equals `cycles_to_lethal - 1`, because the one-faller
+/// conjunct refuses the relief and the strict headroom value stands — so
+/// `schema.max_iterations = survivor_n` writes back the value already present. It is asserted
+/// below rather than assumed, so a fixture drift into asymmetry cannot silently turn it into a
+/// real widening. ⓐ is therefore an AT-THE-BOUND instance of
+/// [`bounded_fixed_count_commits_exactly_n_periods`], not an independent stop-short
+/// observation. The pair's stop-short content rests entirely on ⓑ's clause (b).
 ///
 /// # What flips
 ///
 /// * delete the frame delimiter from `drive_one_shortcut_cycle` ⇒ arm ⓐ runs to lethal instead
-///   of stopping at 16 periods ⇒ its zero-elimination assertion FAILS. (Arm ⓑ does NOT flip:
+///   of stopping one period short ⇒ its zero-elimination assertion FAILS. (Arm ⓑ does NOT flip:
 ///   the unbounded HEAD drive coincidentally halts at the same lethal board. Stated so the
 ///   pair's discrimination is not overclaimed — ⓐ carries it.)
+/// * delete the relief's `count() == 1` conjunct ⇒ this symmetric board's bound rises by one to
+///   a count at which BOTH opponents cross together, ⓐ's `schema.max_iterations` assertion
+///   FAILS, and the offer becomes a two-death proposal. That is what makes the refusal of this
+///   board's relief a tested property rather than a stated one.
 /// * a blind implementation that ran all `2 * cycles_to_lethal` periods and reconciled the
-///   deaths afterwards would leave the opponents at `17 - 34 = -17`; ⓑ's (b) pins the stop
-///   point to `ceil(life / loss)` periods, derived from the published δ, so an overshoot of
-///   even one cycle FAILS.
+///   deaths afterwards would overshoot every opponent's threshold; ⓑ's (b) pins the stop point
+///   to `ceil(life / loss)` periods, derived from the published δ, so an overshoot of even one
+///   cycle FAILS.
 #[test]
 fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
     let mut state = bloodloop_state(3);
@@ -12001,14 +12028,12 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
     // (c) EXACTLY the seats the published period drains — never a full-`n` overshoot that takes
     //     the proposer down too, and never a subset that leaves a drained seat alive.
     //
-    //     ⚠ THIS CLAIM IS PER-ARM (fix round 2, MED-1). It holds on the `CycleOutcome::
-    //     CrossLethal` arm, which is the only arm this symmetric fixture can reach: the crossing
-    //     cycle COMMITS and the eliminated set is exactly the victims. On the `Abort` arm — one
-    //     seat crosses while ≥2 survive — the eliminated set is EMPTY, and empty because the
-    //     crossing cycle was rolled back whole, not because nobody crossed. Same surface
-    //     reading, two different facts; conflating them is what let this doc ship a claim
-    //     measurement contradicts. The Abort arm's own row is
-    //     `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`.
+    //     ⚠ THIS CLAIM IS PER-ARM. It holds on the `CycleOutcome::CrossLethal` arm, which is
+    //     the only arm this symmetric fixture can reach: the crossing cycle COMMITS and the
+    //     eliminated set is exactly the victims. On the `SeatLeft` arm — one seat crosses while
+    //     ≥2 survive — the crossing cycle also commits, but the eliminated set is that ONE seat
+    //     rather than every drained one. Same surface reading, two different facts. That arm's
+    //     own row is `bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat`.
     assert_eq!(
         eliminated,
         victims,
@@ -12037,70 +12062,66 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
     }
 }
 
-/// FIX ROUND 2 (MED-1) — THE OTHER LETHAL ARM. A crossing that eliminates ONE seat while
-/// **≥2 players survive** raises no `GameOver`, so the drive does not cross-lethal: it ABORTS.
-/// The crossing cycle rolls back whole, the cycles before it stay committed, and every seat is
-/// still alive at handback.
+/// THE TERMINAL CYCLE. A crossing that eliminates ONE seat while **≥2 players survive** raises
+/// no `GameOver` (CR 104.2a crowns nobody), so the drive does not cross-lethal. It COMMITS that
+/// cycle and STOPS at the priority window the removal was observed at — CR 732.2a's ending
+/// point, reached rather than manufactured, because CR 704.3 + CR 117.5 run the state-based
+/// sweep every time a player would get priority.
 ///
 /// # The arm asymmetry, stated so a future drive learns it from the doc and not by accident
 ///
 /// | arm | trigger | outcome |
 /// |---|---|---|
-/// | **total wipe** | every remaining opponent crosses 0 on the same cycle ⇒ `WaitingFor::GameOver` | `CycleOutcome::CrossLethal` — **the crossing cycle COMMITS**, the game ends |
-/// | **partial crossing** | one seat crosses 0 while **≥2** players survive ⇒ no `GameOver` | `CycleOutcome::Abort` — **the crossing cycle rolls back WHOLE; prior conforming cycles STAY COMMITTED**; priority handback |
+/// | **total wipe** | every remaining opponent crosses 0 on the same cycle ⇒ `WaitingFor::GameOver` | `CycleOutcome::CrossLethal` — the crossing cycle COMMITS, the game ends |
+/// | **terminal crossing** | one seat crosses 0 while **≥2** players survive ⇒ no `GameOver` | `CycleOutcome::SeatLeft` — the crossing cycle COMMITS, that seat is eliminated, priority is handed back at a living seat |
+/// | **abort** | beat cap, unpinned prompt, engine error | `CycleOutcome::Abort` — that cycle rolls back whole, prior conforming cycles stay committed |
 ///
-/// Both arms are **out of contract for any legitimately-derived bound**. `elimination_bounds`
-/// narrows to `min over living seats of (life - 1) / per-cycle loss` with FLOOR division, so
-/// `n * loss <= life - 1` for every seat at every legal `n` and a within-bound drive can never
-/// reach either arm. Each is therefore reachable only under a **doctored** bound — which is what
-/// both this row and [`bounded_fixed_drive_stops_at_the_first_lethal_cycle`] construct.
+/// The terminal crossing is IN CONTRACT for a legitimately-derived bound, and that is what this
+/// row is now about: `elimination_bounds` admits a CR 704 crossing as the sequence's FINAL
+/// iteration, so the honest bound IS the first crossing and the honest count is what eliminates
+/// the seat. The counts past it are the hostile arms — they must land on the SAME board, which
+/// is what separates "stops at the boundary" from "ran `n` cycles".
 ///
-/// The `Abort` is the DESIGNED behaviour and this row asserts it rather than a wish. The property
-/// it buys is **no half-applied period, ever**: the out-of-contract cycle is refused ATOMICALLY,
-/// while conforming work already done is NOT discarded. That is strictly better than a
-/// whole-drive rollback — materializing a partial elimination would leave the remaining
-/// repetitions bounded by a δ the board stops moving (the surviving seats' per-cycle drain
-/// changes the moment a drain target leaves the game), and discarding the conforming prefix
-/// would throw away cycles the table's own agreed bound covers. See
-/// `materialize_fixed_shortcut`'s `CycleOutcome::Abort` arm.
-///
-/// MEASURED SHAPE of that split on this fixture: honest bound 30, doctored `n` at or past the
-/// first crossing (31) ⇒ **30 periods committed**, cycle 30 refused, nobody eliminated. The
-/// assertions below bind to exactly that: `first_crossing - 1` periods, not zero and not `n`.
+/// The atomic per-cycle property survives as **no half-applied period except the terminal one,
+/// whose remainder is unmakeable**. Measured on this board, the terminal cycle IS partial: the
+/// drained seats take the full count of losses while the proposer's own lifelink gain lands one
+/// fewer time, because that trigger is still on the stack at the ending point. That is what
+/// CR 732.2a asks for — the sequence stops at a priority window and what is unresolved is live
+/// for manual play.
 ///
 /// # Why this row had to exist separately — the fixture-symmetry trap
 ///
-/// [`bounded_fixed_drive_stops_at_the_first_lethal_cycle`] is the mirror for the same
-/// stop-short property, but its bloodloop3 fixture seats **two opponents at equal life** (17/17,
-/// measured), so they cross on the SAME cycle and it can only ever exhibit the total-wipe arm.
-/// A symmetric fixture collapses every partial case into a total case; the partial arm — the one
-/// real multiplayer boards take, since equal life totals are the exception — had no fixture at
-/// all. This row's dina 4p dump is ASYMMETRIC by measurement (opponents at 35/31/36, all draining
-/// 1 per period ⇒ first crossings 35/31/36), and the reach-guards below FAIL if that ever drifts
-/// into symmetry, which is what stops this row from silently becoming a second copy of the mirror.
+/// [`bounded_fixed_drive_stops_at_the_first_lethal_cycle`] is the mirror for the total-wipe arm,
+/// but its bloodloop3 fixture seats **two opponents at equal life**, so they cross on the SAME
+/// cycle and it can only ever exhibit that arm — and, on the bound side, its two tied seats are
+/// exactly the case the relief's one-faller conjunct refuses. A symmetric fixture collapses
+/// every terminal case into a total case. This row's dina 4p dump is ASYMMETRIC by measurement,
+/// and the reach-guards below FAIL if that ever drifts into symmetry, which is what stops this
+/// row from silently becoming a second copy of the mirror.
 ///
 /// # What is asserted, and what is deliberately NOT
 ///
-/// Every quantity is derived from the certificate the ENGINE published and the offer-beat board.
-/// The row asserts the OBSERVABLE outcome: exactly `first_crossing - 1` periods committed, zero
-/// eliminations, every seat above 0, handback to ordinary priority.
+/// Every quantity is derived from the certificate the ENGINE published and the offer-beat board;
+/// no count is pinned as a literal. The row asserts the OBSERVABLE outcome: the honest bound is
+/// the first crossing, exactly one seat is eliminated and it is the unique first crosser, every
+/// survivor is above 0, the detection window is cleared, and the drive hands back to ordinary
+/// priority rather than ending the game.
 ///
-/// It does NOT assert "the conformance check never fired", because a conformance drop at the same
-/// cycle index and an `Abort` at that index leave IDENTICAL final states — both `break 'cycles`
-/// onto the same rollback. That distinction was settled by a REVERT-PROBE instead: deleting the
-/// conformance check from `materialize_fixed_shortcut` leaves this row GREEN and unchanged, so
-/// the stop is the `Abort`, not the conformance drop. Asserting it from the state would have been
-/// an unfalsifiable claim.
+/// It does NOT assert "the conformance check never fired". The terminal arm does not run one, so
+/// there is nothing to distinguish from the state.
 ///
 /// # REVERT-PROBES
 ///
+/// * delete the `SeatLeft` arm from `drive_one_shortcut_cycle` ⇒ the crossing cycle reaches
+///   `Abort` and rolls back ⇒ the elimination assertion FAILS and the committed-delta
+///   `assert_eq!` reads one period short.
+/// * restore the strict headroom floor (delete the relief's `+ 1`) ⇒ the published bound is one
+///   lower than the first crossing ⇒ the bound assertion FAILS.
 /// * delete `|| frames_per_period.is_some_and(|k| frames_this_cycle >= k)` from
 ///   `drive_one_shortcut_cycle` ⇒ the dina drive commits ZERO (`Abort` at cycle 0) ⇒ the
 ///   committed-delta `assert_eq!` FAILS.
-/// * MUST-NOT-FLIP: deleting the conformance check leaves this row green (measured) — it is the
-///   `Abort` arm, not the conformance arm.
 #[test]
-fn bounded_fixed_drive_rolls_back_a_partial_crossing_cycle() {
+fn bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat() {
     let mut state = restore_dump(&gunzip_dump(include_bytes!(
         "../fixtures/dina_conqueror_4p.json.gz"
     )));
@@ -12162,18 +12183,26 @@ fn bounded_fixed_drive_rolls_back_a_partial_crossing_cycle() {
          routes the drive to the CrossLethal arm; got {survivors} survivors at the first crossing"
     );
 
-    // The honest bound is exactly one period short of that crossing — the CR 704.5a headroom
-    // term (`life - 1`) with floor division. Asserted, not assumed: it is what makes the
-    // doctoring below a REAL widening rather than a re-write of the value already present.
+    // The honest bound REACHES that crossing: exactly one seat holds the binding value here, so
+    // the reduction carries the count to its final iteration. Asserted, not assumed — it is
+    // what makes the elimination below the HONEST count's own behaviour rather than a doctored
+    // one, and it is what the `over > 0` arms are widened from.
     assert_eq!(
         i64::from(honest_bound),
-        first_crossing - 1,
-        "`elimination_bounds` reserves one point of headroom, so the honest bound sits one \
-         period below the first crossing; bound {honest_bound}, crossings {crossings:?}"
+        first_crossing,
+        "`elimination_bounds` admits the crossing as the sequence's FINAL iteration when \
+         exactly one seat holds the binding value; bound {honest_bound}, crossings {crossings:?}"
     );
 
-    // Three doctored bounds: at the crossing, and comfortably past it. All three must stop at
-    // the same place — a drive that stopped `n`-relative rather than at the boundary would not.
+    // The detection window is LIVE at the offer beat, so the emptiness asserted after the drive
+    // is a CLEARED ring and not an absent one.
+    assert!(
+        !state.loop_detect_ring.is_empty(),
+        "REACH-GUARD: the offer this drive produced was certified against a populated ring"
+    );
+
+    // The honest count, and two comfortably past it. All three must land on the SAME board — a
+    // drive that stopped `n`-relative rather than at the boundary would not.
     for over in [0u32, 3, 9] {
         let mut doctored = state.clone();
         let n = u32::try_from(first_crossing).expect("fits") + over;
@@ -12184,8 +12213,8 @@ fn bounded_fixed_drive_rolls_back_a_partial_crossing_cycle() {
 
         r6a_declare_and_accept_all(&mut doctored, proposer, n);
 
-        // (a) NOBODY is eliminated — by ROLLBACK, not because nobody crossed. `n >= first
-        //     crossing` means the arithmetic says a seat must die; the drive refuses the cycle.
+        // (a) EXACTLY the unique first crosser is eliminated. Not zero (the terminal cycle
+        //     COMMITS) and not the whole table (that is the mirror row's arm).
         assert_eq!(
             doctored
                 .players
@@ -12193,20 +12222,31 @@ fn bounded_fixed_drive_rolls_back_a_partial_crossing_cycle() {
                 .filter(|p| p.is_eliminated)
                 .map(|p| p.id)
                 .collect::<Vec<_>>(),
-            Vec::<PlayerId>::new(),
-            "n={n}: the crossing cycle is rolled back whole, so the eliminated set is EMPTY — \
-             which is a different fact from 'nobody crossed'; lives {:?}",
+            first_victims,
+            "n={n}: CR 704.5a + CR 800.4a — the sequence's final iteration carries exactly the \
+             seat the arithmetic named past its threshold, and the drive stops there; lives \
+             {:?}",
             doctored.players.iter().map(|p| p.life).collect::<Vec<_>>()
         );
         assert!(
-            doctored.players.iter().all(|p| p.life > 0),
-            "n={n}: every seat is above the CR 704.5a threshold; lives {:?}",
+            doctored
+                .players
+                .iter()
+                .filter(|p| !p.is_eliminated)
+                .all(|p| p.life > 0),
+            "n={n}: every SURVIVING seat is above the CR 704.5a threshold, which is the \
+             one-crossing lemma the relief rests on; lives {:?}",
             doctored.players.iter().map(|p| p.life).collect::<Vec<_>>()
         );
 
-        // (b) EXACTLY `first_crossing - 1` periods committed: every cycle before the crossing
-        //     one, and none of it. Derived from the published δ, never from a literal.
+        // (b) EXACTLY `first_crossing` periods of drain committed on every drained seat: every
+        //     cycle up to and including the crossing one. Derived from the published δ, never
+        //     from a literal.
         for (seat, l0) in &lives_before {
+            let loss = -per_cycle.delta.life.get(seat).copied().unwrap_or(0);
+            if loss <= 0 {
+                continue;
+            }
             let committed = l0
                 - doctored
                     .players
@@ -12216,36 +12256,36 @@ fn bounded_fixed_drive_rolls_back_a_partial_crossing_cycle() {
                     .life as i64;
             assert_eq!(
                 committed,
-                (first_crossing - 1) * -per_cycle.delta.life.get(seat).copied().unwrap_or(0),
-                "n={n} {seat:?}: the drive commits every period up to the crossing cycle and \
-                 rolls that one back; lives {:?}",
+                first_crossing * loss,
+                "n={n} {seat:?}: the drive commits every period up to AND INCLUDING the \
+                 crossing cycle, then stops at that cycle's own priority window; lives {:?}",
                 doctored.players.iter().map(|p| p.life).collect::<Vec<_>>()
             );
         }
 
-        // (c) NOT the CrossLethal arm. `GameOver` here would mean the partial crossing crowned
+        // (c) NOT the CrossLethal arm. `GameOver` here would mean a terminal crossing crowned
         //     someone, which is the confusion this row exists to keep separate.
-        assert_eq!(
-            doctored.waiting_for,
-            WaitingFor::Priority { player: proposer },
+        assert!(
+            matches!(doctored.waiting_for, WaitingFor::Priority { player }
+                if !doctored.players.iter().any(|p| p.id == player && p.is_eliminated)),
             "n={n}: CR 104.2a — a player wins only once ALL their opponents have left, and this \
-             crossing eliminates at most one of three, so there is no winner to crown and the \
-             aborted drive hands back ordinary priority rather than ending the game"
+             crossing eliminates one of three, so there is no winner to crown; CR 800.4a seats \
+             the handback at a living player. got {:?}",
+            doctored.waiting_for
         );
 
-        // (d) R3-a's ABORT ARM — the drive-end seam is the CR 732.2a ending point for this
-        //     entry path too, and it discards the detection window before handing back.
-        //     MEASURED: this fixture enters that seam with a LIVE ring (`ring=16`), so the
-        //     emptiness below is a CLEARED ring and not an absent one. Its journal is
-        //     ALREADY empty there (`answers=0`) — the populated-journal half of the same
-        //     seam is pinned on the f4 dump by
+        // (d) R3-a's TERMINAL ARM — the drive-end seam is the CR 732.2a ending point for this
+        //     entry path too, and it discards the detection window before handing back. The
+        //     offer-beat guard above is what makes the emptiness a CLEARED ring rather than an
+        //     absent one. The populated-JOURNAL half of the same seam is pinned on the f4 dump
+        //     by
         //     `fantastic_four_bounded_loop::r3a_the_accepted_drive_ends_at_the_priority_point_with_the_window_cleared`,
         //     the only fixture measured reaching this seam with answers recorded.
         assert!(
             doctored.loop_detect_ring.is_empty(),
-            "n={n}: CR 732.2a — the aborted drive ends at the priority handback with the \
-             detection window DISCARDED, so a later beat re-detects genuinely instead of this \
-             same `apply()` re-offering the interrupted loop; ring still carries {} sample(s)",
+            "n={n}: CR 732.2a — the drive ends at the priority handback with the detection \
+             window DISCARDED, so a later beat re-detects genuinely instead of this same \
+             `apply()` re-offering the interrupted loop; ring still carries {} sample(s)",
             doctored.loop_detect_ring.len()
         );
         assert_eq!(
@@ -12253,27 +12293,27 @@ fn bounded_fixed_drive_rolls_back_a_partial_crossing_cycle() {
             0,
             "n={n}: CR 603.5 — the recorded `may` answers describe the window that just ended, \
              and the same seam drops them together with the ring. ⚠ FORWARD TRIPWIRE, not a \
-             co-equal half of that claim: MEASURED non-discriminating on THIS fixture — under a \
-             mutant neutering only the seam's `loop_answer_journal = None` this clause stays \
-             green (the journal already reads 0 when this fixture reaches the seam) while the \
-             f4 row fails `left: 3, right: 0`. It earns its place by failing if a future writer \
-             ever populates the journal on this entry path and the seam stops clearing it; the \
-             DISCRIMINATING statement of the journal half is the f4 row named above"
+             co-equal half of that claim: the journal already reads 0 when this fixture reaches \
+             the seam, so a mutant neutering only `loop_answer_journal = None` leaves this \
+             clause green while the f4 row fails. It earns its place by failing if a future \
+             writer ever populates the journal on this entry path and the seam stops clearing \
+             it; the DISCRIMINATING statement of the journal half is the f4 row named above"
         );
     }
 }
 
 /// FIX ROUND 1 (HIGH-3) — the conformance check `PeriodicDelta`'s doc has always specified
 /// ("so a bounded drive can check that each committed cycle actually conformed") and which
-/// nothing implemented. A committed cycle whose measured resource delta differs from the
+/// nothing implemented. A RECURRED cycle whose measured resource delta differs from the
 /// published signature is DROPPED WHOLE and the drive hands back to manual play.
 ///
 /// # Why it is load-bearing rather than belt-and-braces
 ///
-/// `elimination_bounds` divided the CR 704.5a headroom (`life - 1`) by `per_cycle.delta` to
-/// produce the count the table agreed to. If a committed cycle moves a different amount, that
-/// division no longer describes the drive, and the remaining repetitions can carry a seat past
-/// the threshold INSIDE the proposal — the exact conditional action CR 732.2a forbids.
+/// `elimination_bounds` divides the CR 704.5a headroom by `per_cycle.delta` to produce the count
+/// the table agreed to. If a committed cycle moves a different amount, that division no longer
+/// describes the drive, and the REMAINING repetitions can carry a seat past the threshold
+/// mid-sequence — the exact conditional action CR 732.2a forbids. The terminal cycle is the one
+/// arm the check does not govern, because it has no remaining repetitions to protect.
 ///
 /// # The hostile fixture
 ///
@@ -12451,8 +12491,10 @@ fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
     assert_eq!(
         state.players.iter().filter(|p| p.is_eliminated).count(),
         0,
-        "CR 704.5a: the offered bound reserves `life - 1` of headroom, so the AI's own \
-         maximal legal declaration still eliminates nobody"
+        "CR 704.5a: bloodloop3 seats its two opponents at EQUAL life, so they hold the binding \
+         value together, the relief's one-faller conjunct refuses, and the published bound \
+         stays one period short of their shared crossing — which is why the AI's own maximal \
+         legal declaration still eliminates nobody ON THIS BOARD"
     );
 }
 

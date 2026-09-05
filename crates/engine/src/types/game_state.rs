@@ -25777,8 +25777,11 @@ impl GameState {
     ///    every free choice BEFORE the offer, and `DecisionTemplate`'s schedules are pure functions
     ///    of (iteration index, live legal set) — never of a prior iteration's outcome, which makes
     ///    a react-to-what-happened choice unrepresentable rather than merely unused. With the
-    ///    coin/die/random rejection at the offer gate and `elimination_bounds` stopping short of
-    ///    every CR 704 threshold, predictability holds BY CONSTRUCTION.
+    ///    coin/die/random rejection at the offer gate and `elimination_bounds` admitting no
+    ///    CR 704 threshold crossing except as the sequence's FINAL iteration — where no declared
+    ///    choice remains to be made unmakeable — predictability holds BY CONSTRUCTION. The
+    ///    primary statement of that property is `elimination_bounds`' own doc; this is a
+    ///    restatement of it.
     /// 3. THE COUNT — CR 732.2a lets a proposal be "a loop that repeats a specified number of
     ///    times", and the proposer is who specifies it. The collapse prompt (`game::turns`) is that
     ///    specification, bounded above by what the table accepted; `SubmitPayAmount` rejects any
@@ -25806,6 +25809,13 @@ impl GameState {
     ///     observers fire exactly as they would in manual play.
     /// (c) BECAME OBSERVED IN-WINDOW → `engine_resolution_choices::boundary_declines` → manual
     ///     play, where the player performs the actions.
+    /// (d) DRAIN PATH → the bounded-cycle certificate producer
+    ///     (`game::engine::try_offer_bounded_cycle_shortcut`) and the interactive loop bridge
+    ///     (`game::engine::interactive_loop_bridge`) both materialize through
+    ///     `materialize_fixed_shortcut` / `apply_until_lethal_shortcut`, which LITERALLY PERFORM
+    ///     the iterations beat by beat through `pass_priority_once_with_pipeline`. Identity holds
+    ///     the way it holds on route (b), and for the same reason: nothing is elided that
+    ///     performance would not produce.
     ///
     /// Route (c) is the one the review indicted, and it is the route that ENFORCES CR 732.2c rather
     /// than departing from it. Once an observer appears, the other two options both break the
