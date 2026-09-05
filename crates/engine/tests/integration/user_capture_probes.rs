@@ -148,6 +148,19 @@ struct MintFrame {
 /// Generic mandatory-chain beat: pass at `Priority`, otherwise take the first legal action.
 /// The Dina chain opens no player choices, so no preference ordering is needed.
 fn dina_drive_one_beat(state: &mut GameState) -> Result<String, String> {
+    // CR 117.3d: at a priority window this policy always passes, so dispatch the pass instead of
+    // enumerating the whole per-viewer candidate set to find it. The gate is the enumerator's own
+    // hatch predicate, so this arm stays inside the subset that hatch asserts equivalent to a
+    // simulated pass; every other shape falls through to the enumerating path below.
+    if let WaitingFor::Priority { player } = state.waiting_for {
+        if engine::game::priority::pass_priority_structurally_legal(state, player) {
+            let action = GameAction::PassPriority;
+            let label = format!("{action:?}");
+            return apply(state, player, action)
+                .map(|_| label)
+                .map_err(|e| format!("apply err (PassPriority): {e:?}"));
+        }
+    }
     let who = state
         .waiting_for
         .acting_player()
