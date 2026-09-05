@@ -44,8 +44,7 @@ use crate::types::ability::{ControllerRef, FilterProp, TargetFilter};
 /// this out of a `&'static [(...)]` destination table row by value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub(crate) enum ControlClausePossessor {
-    /// CR 109.5: `"under your control"` — the
-    /// resolving player.
+    /// CR 109.5: `"under your control"` — the resolving player.
     You,
     /// CR 110.2: `"under its/their/his/her owner's control"` — explicitly
     /// names the moved object's owner. The existing `None` carrier preserves
