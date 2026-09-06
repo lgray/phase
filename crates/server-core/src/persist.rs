@@ -35,6 +35,9 @@ pub struct PersistedSession {
     /// Each seat's unresolved deck form, re-resolved on restore. `#[serde(default)]`
     /// is the migration mechanism, as for `state_revision` and `ranked`: a
     /// pre-field snapshot restores with no seat decks and refuses to start.
+    /// Empty for a started snapshot, which nothing re-resolves. On the wire
+    /// that still differs from a pre-field snapshot — the key is written, not
+    /// omitted — but the two are load-equivalent, both resizing to all-`None`.
     #[serde(default)]
     pub deck_choices: Vec<Option<DeckChoice>>,
     pub display_names: Vec<String>,

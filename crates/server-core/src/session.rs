@@ -1370,7 +1370,18 @@ impl GameSession {
             next_ai_driver_fault_id: self.next_ai_driver_fault_id,
             state: PersistedGameState::capture(self.state.clone()),
             player_tokens: self.player_tokens.clone(),
-            deck_choices: self.deck_choices.clone(),
+            // A started session's choices are never consulted again: the
+            // renumbering that copies them sits behind a reducer that refuses
+            // every mutation on a started room, and the seat projections fall
+            // back to `Random` for a seat with no recorded choice, which is
+            // what every recipient saw before the field existed. This snapshot
+            // is rewritten after every action, so keeping each seat's card-name
+            // list in it is write amplification.
+            deck_choices: if self.game_started {
+                Vec::new()
+            } else {
+                self.deck_choices.clone()
+            },
             display_names: self.display_names.clone(),
             timer_seconds: self.timer_seconds,
             player_count: self.player_count,
@@ -1459,47 +1470,56 @@ impl GameSession {
         // to `player_count` so a pre-field snapshot yields all-`None`.
         let mut deck_choices: Vec<Option<DeckChoice>> = ps.deck_choices;
         deck_choices.resize(pc, None);
-        let decks: Vec<Option<PlayerDeckPayload>> = deck_choices
-            .iter()
-            .enumerate()
-            .map(|(seat, choice)| {
-                let data = match choice.as_ref()? {
-                    DeckChoice::DeckList(data) => (**data).clone(),
-                    // A static table under a case-folded name match — the same
-                    // function the create path resolves `Named` through. A
-                    // build that renamed or dropped the deck leaves the seat
-                    // empty, so log it: otherwise `start_game`'s refusal names
-                    // a seat with nothing tying it to the vanished name.
-                    DeckChoice::Named(name) => {
-                        match crate::starter_decks::find_starter_deck(name) {
-                            Some(data) => data,
-                            None => {
-                                warn!(
-                                    seat,
-                                    deck = %name,
-                                    "restored seat names a starter deck this build no longer has; seat left empty"
-                                );
-                                return None;
+        // A started session never reaches `start_game` again — the seat
+        // reducer refuses every mutation once `game_started` — and `decks`
+        // has no other reader, so re-resolving here is dead work whose only
+        // visible effect is a warning about a seat the running game never
+        // consults.
+        let decks: Vec<Option<PlayerDeckPayload>> = if ps.game_started {
+            vec![None; pc]
+        } else {
+            deck_choices
+                .iter()
+                .enumerate()
+                .map(|(seat, choice)| {
+                    let data = match choice.as_ref()? {
+                        DeckChoice::DeckList(data) => (**data).clone(),
+                        // A static table under a case-folded name match — the same
+                        // function the create path resolves `Named` through. A
+                        // build that renamed or dropped the deck leaves the seat
+                        // empty, so log it: otherwise `start_game`'s refusal names
+                        // a seat with nothing tying it to the vanished name.
+                        DeckChoice::Named(name) => {
+                            match crate::starter_decks::find_starter_deck(name) {
+                                Some(data) => data,
+                                None => {
+                                    warn!(
+                                        seat,
+                                        deck = %name,
+                                        "restored seat names a starter deck this build no longer has; seat left empty"
+                                    );
+                                    return None;
+                                }
                             }
                         }
+                        // Re-drawing would hand the seat a different deck, so the
+                        // seat stays empty and `start_game` refuses the table.
+                        DeckChoice::Random => return None,
+                    };
+                    match crate::resolve_deck(db, &data) {
+                        Ok(payload) => Some(payload),
+                        Err(error) => {
+                            warn!(
+                                seat,
+                                error = %error,
+                                "restored seat deck failed to re-resolve; seat left empty"
+                            );
+                            None
+                        }
                     }
-                    // Re-drawing would hand the seat a different deck, so the
-                    // seat stays empty and `start_game` refuses the table.
-                    DeckChoice::Random => return None,
-                };
-                match crate::resolve_deck(db, &data) {
-                    Ok(payload) => Some(payload),
-                    Err(error) => {
-                        warn!(
-                            seat,
-                            error = %error,
-                            "restored seat deck failed to re-resolve; seat left empty"
-                        );
-                        None
-                    }
-                }
-            })
-            .collect();
+                })
+                .collect()
+        };
         let ai_session = if ps.game_started {
             Some(AiSession::arc_from_game(&state))
         } else {
@@ -8175,6 +8195,26 @@ mod tests {
             main_deck_names(session.decks[1].as_ref().unwrap())
         );
     }
+    /// The pregame leg is the control: a `to_persisted` that dropped the field
+    /// outright would satisfy the started leg on its own.
+    #[test]
+    fn a_started_sessions_snapshot_carries_no_deck_choices() {
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mut mgr, code) = seated_room(&db, &data);
+        assert!(mgr
+            .sessions
+            .get(&code)
+            .unwrap()
+            .to_persisted()
+            .deck_choices
+            .iter()
+            .any(Option::is_some));
+
+        let session = mgr.sessions.get_mut(&code).unwrap();
+        session.start_game(&db).expect("a fully decked room starts");
+        assert!(session.to_persisted().deck_choices.is_empty());
+    }
 
     #[test]
     fn seat_ai_records_the_choice_it_was_given() {
@@ -8297,6 +8337,62 @@ mod tests {
                 "restored seat dealt an empty library"
             );
         }
+    }
+
+    #[test]
+    fn a_started_session_restores_without_re_resolving_its_seat_decks() {
+        // A started session reaches neither reader of `decks` again:
+        // `start_game` has already run, and the renumbering that copies the
+        // array is behind a reducer that refuses a started room. Rebuilding it
+        // on restore is work nothing consults, and it can log a seat as empty
+        // while the running game is perfectly healthy. The pregame half is the
+        // control: without it a restore that resolved nothing at all would pass
+        // this row.
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+
+        let (mut mgr, code) = seated_room(&db, &data);
+        mgr.sessions
+            .get_mut(&code)
+            .unwrap()
+            .start_game(&db)
+            .expect("the room starts");
+        let restored_started = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+        assert!(
+            restored_started.decks.iter().all(Option::is_none),
+            "a started session re-resolved decks that nothing will read"
+        );
+
+        let (pregame_mgr, pregame_code) = seated_room(&db, &data);
+        let restored_pregame =
+            round_trip_through_disk(pregame_mgr.sessions.get(&pregame_code).unwrap(), &db);
+        assert!(
+            restored_pregame.decks.iter().all(Option::is_some),
+            "a pregame restore must still resolve every seat"
+        );
+    }
+
+    /// The restore guard's live population is a snapshot written before
+    /// `to_persisted` began emptying the field, which carries the started flag
+    /// *and* every seat's choice. `to_persisted` can no longer produce that
+    /// shape, so the row that discriminates the guard builds it directly.
+    #[test]
+    fn a_started_snapshot_that_still_carries_choices_restores_without_re_resolving() {
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mgr, code) = seated_room(&db, &data);
+
+        let mut persisted = mgr.sessions.get(&code).unwrap().to_persisted();
+        // Reach guard: the pregame snapshot really carries the choices, so an
+        // all-`None` restore below cannot come from an empty list.
+        assert!(persisted.deck_choices.iter().any(Option::is_some));
+        persisted.game_started = true;
+
+        let restored = GameSession::from_persisted(persisted, &db).expect("the snapshot restores");
+        assert!(
+            restored.decks.iter().all(Option::is_none),
+            "a started restore re-resolved decks that nothing will read"
+        );
     }
 
     #[test]
