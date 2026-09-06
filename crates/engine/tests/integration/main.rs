@@ -1188,6 +1188,7 @@ mod trk_compound_short_names;
 mod true_conviction_double_keyword_grant;
 mod turn_based_draw_step_miracle_offer;
 mod turn_control_priority_softlock;
+mod turn_control_semantic_owner;
 mod twice_instead_repeat_for;
 mod twilight_prophet_upkeep_drain_1375;
 mod typhoon_per_opponent_island_count;

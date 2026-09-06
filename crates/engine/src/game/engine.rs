@@ -1392,7 +1392,8 @@ fn apply_action_boundary_core(
     stack_resolution_limit: Option<u32>,
 ) -> Result<RawActionApplication, EngineError> {
     let lifecycle = super::lifecycle::enter_action_frame();
-    if let Err(error) = mana_sources::preflight_tap_land_action(state, semantic_owner, &action) {
+    if let Err(error) = mana_sources::preflight_tap_land_action(state, authenticated_actor, &action)
+    {
         lifecycle.discard();
         return Err(error);
     }
@@ -7404,14 +7405,7 @@ fn check_actor_authorization(
     actor: PlayerId,
     action: &GameAction,
 ) -> Result<(), EngineError> {
-    if action.is_actor_scoped_preference()
-        || matches!(
-            action,
-            GameAction::Debug(_)
-                | GameAction::GrantDebugPermission { .. }
-                | GameAction::RevokeDebugPermission { .. }
-        )
-    {
+    if action.is_submitter_scoped() {
         return Ok(());
     }
     if let GameAction::RevokeResolveAllConsent {
@@ -7447,14 +7441,21 @@ fn check_actor_authorization(
     Ok(())
 }
 
-/// Engine-internal convenience: apply `action` as the player the engine is
-/// currently waiting on. Intended for simulation (AI search, legal-action
+/// Engine-internal convenience: apply `action` on behalf of the player the
+/// engine is currently waiting on, submitted by whoever is authorized to
+/// submit for that player. Intended for simulation (AI search, legal-action
 /// probing) and tests — *not* for transport adapters, which must pass a
 /// transport-authenticated `actor` to [`apply`] directly.
 ///
-/// For [`GameAction::Concede`] the concede payload's `player_id` is used as
-/// the actor, so tests can concede any player without first maneuvering the
-/// `WaitingFor` state onto that player.
+/// CR 723.3 + CR 723.5: under a player-control effect those are two different
+/// players, so both halves of the action boundary are derived here from one
+/// authority instead of being collapsed onto the submitter. [`apply`] and
+/// [`apply_for_simulation`] remain the collapsed forms, for callers that hold
+/// a trusted actor and no owner information to split from.
+///
+/// For [`GameAction::Concede`] the concede payload's `player_id` fills both
+/// halves (CR 723.6), so tests can concede any player without first
+/// maneuvering the `WaitingFor` state onto that player.
 pub fn apply_as_current(
     state: &mut GameState,
     action: GameAction,
@@ -7487,21 +7488,40 @@ fn apply_as_current_with_mode(
     action: GameAction,
     mode: PublicFinalizeMode,
 ) -> Result<ActionResult, EngineError> {
-    let actor = match &action {
-        GameAction::Concede { player_id } => *player_id,
-        // CR 103.5: For simultaneous-decision states, pick the first pending
-        // player as the simulation representative. `authorized_submitters`
-        // returns the full set; `first()` is deterministic (seat-ordered).
+    let (authenticated_actor, semantic_owner) = match &action {
+        // CR 723.6: the controller of another player can't make that player
+        // concede, so a concession is its own submitter and its own owner.
+        GameAction::Concede { player_id } => (*player_id, *player_id),
         _ => {
-            let submitters = turn_control::authorized_submitters(state);
-            submitters.first().copied().ok_or_else(|| {
+            // CR 103.5: For simultaneous-decision states, pick the first
+            // pending player as the simulation representative. `acting_players`
+            // returns the full set; `first()` is deterministic (seat-ordered).
+            let acting = state.waiting_for.acting_players();
+            let owner = *acting.first().ok_or_else(|| {
                 EngineError::InvalidAction(
                     "apply_as_current: no authorized submitter (game over?)".to_string(),
                 )
-            })?
+            })?;
+            // CR 723.3 + CR 723.5: the controller makes the controlled player's
+            // choices, but only control of the player changes — the decision
+            // seat the reducer keys stays the controlled player.
+            let submitter = turn_control::authorized_submitter_for_player(state, owner);
+            if action.is_submitter_scoped() {
+                // CR 723.5b: an action naming the submitting seat rather than a
+                // decision slot is not a choice control redirects.
+                (submitter, submitter)
+            } else {
+                (submitter, owner)
+            }
         }
     };
-    apply_action_boundary(state, actor, action, mode)
+    apply_action_boundary_for_semantic_owner(
+        state,
+        authenticated_actor,
+        semantic_owner,
+        action,
+        mode,
+    )
 }
 
 /// The action boundary at which a typed cost-move root is allowed to resume.
@@ -10066,7 +10086,9 @@ fn apply_action(
             {
                 return Err(EngineError::NotYourPriority);
             }
-            handle_untap_land_for_mana(state, state.priority_player, object_id, &mut events)?;
+            // CR 723.5a: the tap booked to the seat, so the undo must look it up
+            // there rather than under its authorized submitter.
+            handle_untap_land_for_mana(state, *player, object_id, &mut events)?;
             WaitingFor::Priority { player: *player }
         }
         (
@@ -10143,13 +10165,16 @@ fn apply_action(
                 // allows undo — painlands (damage on resolution), pay-life
                 // sources, and sacrifice sources all commit irreversible
                 // state atomically with CR 605.3b resolution.
+                // CR 723.5a: a controller spends only the controlled player's
+                // resources, so the tap books to the seat holding priority, not
+                // to the player authorized to submit for it.
                 if is_land
                     && mana_sources::object_mana_ability_penalty(state, source_id, &ability_def)
                         .is_undoable()
                 {
                     state
                         .lands_tapped_for_mana
-                        .entry(state.priority_player)
+                        .entry(*player)
                         .or_default()
                         .push(source_id);
                 }
@@ -12290,7 +12315,9 @@ fn apply_action(
             },
             GameAction::UntapLandForMana { object_id },
         ) => {
-            handle_untap_land_for_mana(state, state.priority_player, object_id, &mut events)?;
+            // CR 723.5a: this arm's paired tap keys the seat, so its undo must
+            // too — the submitter may be a different player under turn control.
+            handle_untap_land_for_mana(state, *player, object_id, &mut events)?;
             WaitingFor::ManaPayment {
                 player: *player,
                 convoke_mode: *convoke_mode,
