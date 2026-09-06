@@ -1077,16 +1077,26 @@ impl GameSession {
                 }
             }
         }
+        // `removed_ai` carries pre-renumbering indices while the arrays above
+        // are already renumbered, so the raw index has to be mapped before it
+        // is cleared — clearing it directly wipes whichever seat shifted down
+        // into the vacated slot. A `Remove` maps its own seat to `None`, and
+        // the renumbering has already dropped that entry, so there is nothing
+        // left to clear; the in-place transitions (an AI seat turned back into
+        // a waiting one, or swapped for another AI) map to themselves.
         for &seat_idx in &delta.removed_ai {
-            if seat_idx as usize >= self.decks.len() {
+            let Some(new_idx) = old_to_new.get(seat_idx as usize).copied().flatten() else {
+                continue;
+            };
+            if new_idx >= self.decks.len() {
                 continue;
             }
             if !delta
                 .new_ai
                 .iter()
-                .any(|(new_idx, _, _)| *new_idx == seat_idx)
+                .any(|(new_ai_idx, _, _)| *new_ai_idx as usize == new_idx)
             {
-                self.clear_seat_deck(seat_idx as usize);
+                self.clear_seat_deck(new_idx);
             }
         }
 
@@ -8042,6 +8052,17 @@ mod tests {
             )
             .expect("commander supports four seats");
         let db = lands_db();
+        // The removed seat must itself be an AI: the reducer only reports a
+        // seat in `removed_ai` when it was one, and that list is the input to
+        // the cleanup pass that renumbering can put out of step. Removing a
+        // waiting seat here would leave that pass untaken and the row would
+        // hold with the arrays misaligned.
+        run_seat_mutation(
+            &mut mgr,
+            &code,
+            &db,
+            seat_ai_at(1, list_choice("Mountain", 1)),
+        );
         run_seat_mutation(
             &mut mgr,
             &code,
