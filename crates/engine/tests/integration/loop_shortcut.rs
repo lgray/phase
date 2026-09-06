@@ -13754,7 +13754,8 @@ fn r28_d_a_restored_over_cap_count_is_refused_at_consumption() {
                     restored_runner.state().waiting_for,
                     WaitingFor::Priority { .. }
                 ),
-                "count={count}: (a) CR 800.4a manual handback, got {:?}",
+                "count={count}: (a) control comes back at a priority wait rather than \
+                 mid-drive, got {:?}",
                 restored_runner.state().waiting_for
             );
         } else {

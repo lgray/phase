@@ -19377,9 +19377,12 @@ mod stage2_injector_tests {
 
         let (committed, boundary, template, cap) = two_drainer_rig();
 
-        // The rig's own pins, respelled at length 2. Rewritten from the rig's template rather
-        // than rebuilt from seat literals, so the driven seats are the sibling row's by
-        // construction and only the schedule LENGTH differs.
+        // The rig's own pins, respelled at length 2 — rewritten from the rig's template rather
+        // than rebuilt from seat literals, so the seats named stay the rig's. The respelling is
+        // not length-only: `TargetPin::Player` resolves as a CHOICE, on existence alone, while a
+        // scheduled `AnnouncementSubject::Seat` resolves as a CR 601.2c TARGET, on a live ability
+        // instance plus `player_is_legal_target`. Leg (b) therefore measures which seat departs
+        // instead of assuming the class change left that unmoved.
         let mut sched = template;
         for decision in &mut sched.decisions {
             let PinnedDecision::Targets { targets, .. } = decision else {
@@ -19409,10 +19412,18 @@ mod stage2_injector_tests {
         else {
             panic!("reach-guard: the respelled pins must drive the sibling row's removal")
         };
+        let gone: Vec<PlayerId> = driven
+            .players
+            .iter()
+            .filter(|p| p.is_eliminated)
+            .map(|p| p.id)
+            .collect();
         assert_eq!(
-            driven.players.iter().filter(|p| p.is_eliminated).count(),
-            1,
-            "exactly one seat leaves"
+            gone,
+            vec![P2],
+            "the seat that leaves is the one the SECOND drainer's pin names, as it is under the \
+             sibling row's CHOICE-class spelling; lives {:?}",
+            driven.players.iter().map(|p| p.life).collect::<Vec<_>>()
         );
         assert!(
             driven.players.iter().filter(|p| !p.is_eliminated).count() >= 2,
