@@ -14,12 +14,19 @@ export const KEEPALIVE_INTERVAL_MS = 5000;
  * and a keepalive belongs to a socket's owner rather than to how it was opened.
  *
  * The stopper is idempotent, so a per-socket close handler and an owner-level
- * teardown may both call it.
+ * teardown may both call it. The ping also stops itself once the socket is
+ * past OPEN: a connection can reach CLOSED without ever emitting `close`, and
+ * an owner that installed only a close listener would otherwise leak the
+ * interval for the life of the page.
  */
 export function startSocketKeepalive(
   ws: Pick<PhaseSocketTransport, "send" | "readyState">,
 ): () => void {
   const timer = setInterval(() => {
+    if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
+      clearInterval(timer);
+      return;
+    }
     if (ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ type: "Ping", data: { timestamp: Date.now() } }));
   }, KEEPALIVE_INTERVAL_MS);
