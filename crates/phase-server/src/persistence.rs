@@ -1223,6 +1223,7 @@ mod tests {
                 next_ai_driver_fault_id: 1,
                 state: PersistedGameState::capture(GameState::new_two_player(7)),
                 player_tokens: vec!["player-0".to_string(), "player-1".to_string()],
+                deck_choices: vec![None, None],
                 display_names: vec!["P0".to_string(), "P1".to_string()],
                 timer_seconds: None,
                 player_count: 2,

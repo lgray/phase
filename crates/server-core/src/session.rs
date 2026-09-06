@@ -366,6 +366,51 @@ pub enum HostingMode {
     SingleUser,
 }
 
+/// One AI seat's complete installation, as the shell resolved it. A 3-tuple
+/// structurally cannot carry the choice beside the payload, which is how the
+/// two installers came to record a deck no provenance described.
+#[derive(Debug, Clone)]
+pub struct AiSeatSetup {
+    pub seat_index: u8,
+    pub difficulty: AiDifficulty,
+    /// What the host asked for; echoed back on every slot broadcast.
+    pub choice: DeckChoice,
+    pub resolved: PlayerDeckPayload,
+}
+
+/// Why a table refused to start.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StartGameError {
+    Bracket(CedhBracketError),
+    /// A seat reached the start with no deck — a restored seat whose choice
+    /// could not be re-resolved, or an AI seat whose deck failed resolution.
+    /// Dealing it an empty library would eliminate that player on their first
+    /// draw (CR 704.5b).
+    SeatDeckMissing {
+        seat_index: u8,
+    },
+}
+
+impl From<CedhBracketError> for StartGameError {
+    fn from(inner: CedhBracketError) -> Self {
+        StartGameError::Bracket(inner)
+    }
+}
+
+impl std::fmt::Display for StartGameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartGameError::Bracket(inner) => write!(f, "Cannot start cEDH game: {inner}"),
+            StartGameError::SeatDeckMissing { seat_index } => write!(
+                f,
+                "Seat {seat_index} has no deck; the host must set one before starting"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StartGameError {}
+
 pub struct GameSession {
     pub game_code: String,
     /// Per-game JSON debug log sink (issue #7978), copied from the owning
@@ -1000,11 +1045,19 @@ impl GameSession {
             // The resolver (`ServerDeckResolver::resolve` in phase-server)
             // has already validated these names against the same `db`, so
             // this should never error in practice. The `Err` arm exists as
-            // defense-in-depth — if it does fire, log loudly: `start_game`
-            // below would otherwise substitute an empty deck and silently
-            // eliminate the player on their first draw step (CR 704.5b).
-            self.decks[*seat_idx as usize] = match crate::resolve_deck(db, &deck_data) {
-                Ok(payload) => Some(payload),
+            // defense-in-depth — if it does fire, log loudly: the seat keeps no
+            // deck, and `start_game` below then refuses the whole table with
+            // `SeatDeckMissing`, naming this seat rather than the deck that
+            // caused it.
+            // The reducer compared its `SetKind` against this seat's stored
+            // choice, so store back exactly what it wrote — a `Random` request
+            // recorded as the resolved list would never short-circuit again.
+            let choice = match new_state.seats.get(*seat_idx as usize) {
+                Some(SeatKind::Ai { deck, .. }) => deck.clone(),
+                _ => DeckChoice::Random,
+            };
+            match crate::resolve_deck(db, &deck_data) {
+                Ok(payload) => self.set_seat_deck(*seat_idx as usize, payload, Some(choice)),
                 Err(err) => {
                     warn!(
                         seat = *seat_idx,
@@ -1046,13 +1099,21 @@ impl GameSession {
         self.advance_state_revision();
     }
 
-    pub fn start_game(&mut self, db: &CardDatabase) -> Result<(), CedhBracketError> {
+    pub fn start_game(&mut self, db: &CardDatabase) -> Result<(), StartGameError> {
         // A faulted game is never restarted in place: doing so would create a
         // new playable state behind the durable terminal fault record. This
         // stays first: the fault is terminal and dominant, and the no-op
         // contract is what the start arms are written against.
         if self.ai_driver_fault.is_some() {
             return Ok(());
+        }
+        // CR 704.5b: a seat with no deck would be dealt an empty library and
+        // lose on its first draw. Ahead of the cEDH gate, which filters `decks`
+        // to its `Some` entries and would otherwise validate a short table.
+        if let Some(seat_index) = self.decks.iter().position(Option::is_none) {
+            return Err(StartGameError::SeatDeckMissing {
+                seat_index: seat_index as u8,
+            });
         }
         // Gate: if any AI seat is configured for cEDH difficulty, validate that
         // every submitted deck is declared at the cEDH bracket tier before
@@ -1363,6 +1424,51 @@ impl GameSession {
             .collect();
 
         let pc = ps.player_count as usize;
+        // One loop over the persisted provenance, both seat kinds. Normalized
+        // to `player_count` so a pre-field snapshot yields all-`None`.
+        let mut deck_choices: Vec<Option<DeckChoice>> = ps.deck_choices;
+        deck_choices.resize(pc, None);
+        let decks: Vec<Option<PlayerDeckPayload>> = deck_choices
+            .iter()
+            .enumerate()
+            .map(|(seat, choice)| {
+                let data = match choice.as_ref()? {
+                    DeckChoice::DeckList(data) => (**data).clone(),
+                    // A static table under a case-folded name match — the same
+                    // function the create path resolves `Named` through. A
+                    // build that renamed or dropped the deck leaves the seat
+                    // empty, so log it: otherwise `start_game`'s refusal names
+                    // a seat with nothing tying it to the vanished name.
+                    DeckChoice::Named(name) => {
+                        match crate::starter_decks::find_starter_deck(name) {
+                            Some(data) => data,
+                            None => {
+                                warn!(
+                                    seat,
+                                    deck = %name,
+                                    "restored seat names a starter deck this build no longer has; seat left empty"
+                                );
+                                return None;
+                            }
+                        }
+                    }
+                    // Re-drawing would hand the seat a different deck, so the
+                    // seat stays empty and `start_game` refuses the table.
+                    DeckChoice::Random => return None,
+                };
+                match crate::resolve_deck(db, &data) {
+                    Ok(payload) => Some(payload),
+                    Err(error) => {
+                        warn!(
+                            seat,
+                            error = %error,
+                            "restored seat deck failed to re-resolve; seat left empty"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
         let ai_session = if ps.game_started {
             Some(AiSession::arc_from_game(&state))
         } else {
@@ -1591,7 +1697,8 @@ impl SessionManager {
             state,
             player_tokens,
             connected,
-            decks,
+            decks: vec![None; pc],
+            deck_choices: vec![None; pc],
             display_names,
             reservations: HashMap::new(),
             timer_seconds,
@@ -6065,6 +6172,7 @@ mod tests {
                     ..Default::default()
                 }),
             ],
+            deck_choices: vec![None, None],
             display_names: vec!["Host".to_string(), "AI (CEDH)".to_string()],
             reservations: HashMap::new(),
             timer_seconds: None,
@@ -6090,7 +6198,12 @@ mod tests {
 
         // The gate must reject with DeckNotCedh.
         assert!(
-            matches!(result, Err(CedhBracketError::DeckNotCedh { .. })),
+            matches!(
+                result,
+                Err(StartGameError::Bracket(
+                    CedhBracketError::DeckNotCedh { .. }
+                ))
+            ),
             "expected DeckNotCedh, got: {:?}",
             result
         );
@@ -8115,6 +8228,258 @@ mod tests {
         });
     }
 
+    #[test]
+    fn a_restored_room_keeps_every_seats_deck_and_deals_real_libraries() {
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mgr, code) = seated_room(&db, &data);
+
+        let mut restored = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+
+        assert!(restored.decks.iter().all(Option::is_some), "restored decks");
+        restored.start_game(&db).expect("a restored room starts");
+        for player in &restored.state.players {
+            assert!(
+                !player.library.is_empty(),
+                "restored seat dealt an empty library"
+            );
+        }
+    }
+
+    #[test]
+    fn a_live_room_still_starts_and_deals_cards() {
+        // The paired positive control for the refusal rows below, which a
+        // guard that refused everything would satisfy vacuously.
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mut mgr, code) = seated_room(&db, &data);
+
+        let session = mgr.sessions.get_mut(&code).unwrap();
+        session.start_game(&db).expect("a live room starts");
+
+        for player in &session.state.players {
+            assert!(!player.library.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_restored_cedh_table_still_starts() {
+        let db = lands_db();
+        let mut data = name_deck("Forest", 40);
+        data.bracket_tier = CommanderBracketTier::Cedh;
+        let (mut mgr, code) = hosted_room(&db, &data);
+        install_ai_seat(
+            &mut mgr,
+            &code,
+            &db,
+            AiDifficulty::CEDH,
+            DeckChoice::DeckList(Box::new(data.clone())),
+            &data,
+        );
+
+        let mut restored = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+
+        assert_eq!(restored.start_game(&db), Ok(()));
+    }
+
+    #[test]
+    fn a_restored_non_cedh_deck_under_a_cedh_seat_is_still_refused() {
+        // Reach guard for the row above: the bracket gate really does run on
+        // the restored path rather than being skipped.
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mut mgr, code) = hosted_room(&db, &data);
+        install_ai_seat(
+            &mut mgr,
+            &code,
+            &db,
+            AiDifficulty::CEDH,
+            DeckChoice::DeckList(Box::new(data.clone())),
+            &data,
+        );
+
+        let mut restored = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+
+        assert!(matches!(
+            restored.start_game(&db),
+            Err(StartGameError::Bracket(
+                CedhBracketError::DeckNotCedh { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn a_restored_ai_seat_keeps_its_deck_and_its_choice() {
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let ai_data = name_deck("Mountain", 40);
+        let (mut mgr, code) = hosted_room(&db, &data);
+        install_ai_seat(
+            &mut mgr,
+            &code,
+            &db,
+            AiDifficulty::Easy,
+            DeckChoice::DeckList(Box::new(ai_data.clone())),
+            &ai_data,
+        );
+
+        let restored = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+
+        assert_eq!(
+            restored.player_slot_info()[1].kind,
+            SeatKind::Ai {
+                difficulty: AiDifficulty::Easy,
+                deck: DeckChoice::DeckList(Box::new(ai_data)),
+            }
+        );
+        assert!(restored.decks[1].is_some());
+    }
+
+    #[test]
+    fn a_restored_named_seat_resolves_to_its_starter_deck() {
+        let starter = crate::starter_decks::find_starter_deck("Red Deck Wins")
+            .expect("the starter table names this deck");
+        let mut names = starter.main_deck.clone();
+        names.push("Forest".to_string());
+        let db = db_with_names(&names);
+        let data = name_deck("Forest", 40);
+        let (mut mgr, code) = hosted_room(&db, &data);
+        install_ai_seat(
+            &mut mgr,
+            &code,
+            &db,
+            AiDifficulty::Easy,
+            DeckChoice::Named("Red Deck Wins".to_string()),
+            &starter,
+        );
+
+        let restored = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+
+        assert_eq!(
+            main_deck_names(restored.decks[1].as_ref().expect("named seat restored")),
+            main_deck_names(&crate::resolve_deck(&db, &starter).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_restored_named_deck_this_build_dropped_leaves_its_seat_empty() {
+        // The negative twin of the row above: same install, a name the
+        // starter table does not carry.
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mut mgr, code) = hosted_room(&db, &data);
+        // Reach guard: the miss is the table's, not a typo that any name
+        // would produce.
+        assert!(crate::starter_decks::find_starter_deck("Red Deck Wins").is_some());
+        assert!(crate::starter_decks::find_starter_deck("Retired Precon").is_none());
+        install_ai_seat(
+            &mut mgr,
+            &code,
+            &db,
+            AiDifficulty::Easy,
+            DeckChoice::Named("Retired Precon".to_string()),
+            &data,
+        );
+
+        let mut restored = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+
+        assert!(restored.decks[1].is_none());
+        assert_eq!(
+            restored.start_game(&db),
+            Err(StartGameError::SeatDeckMissing { seat_index: 1 })
+        );
+    }
+
+    #[test]
+    fn a_restored_deck_whose_cards_are_gone_leaves_its_seat_empty() {
+        // The restore loop's own re-resolution `Err` arm — distinct from
+        // `apply_seat_delta`'s, which the live-path row below drives.
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mgr, code) = hosted_room(&db, &data);
+
+        // Same snapshot, restored against a build whose database no longer
+        // carries the recorded names.
+        let mut restored =
+            round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &CardDatabase::default());
+
+        assert!(restored.decks[0].is_none());
+        assert_eq!(
+            restored.start_game(&db),
+            Err(StartGameError::SeatDeckMissing { seat_index: 0 })
+        );
+        // Paired positive control: the same snapshot against the database it
+        // was recorded on restores the seat, so the row above measures the
+        // missing cards and not a broken round trip.
+        let intact = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+        assert!(intact.decks[0].is_some());
+    }
+
+    #[test]
+    fn a_restored_random_choice_invents_no_deck_and_the_guard_refuses() {
+        // Not `lands_db`: a re-draw there would fail to resolve anyway, and
+        // the row would pass without measuring the refusal to re-draw.
+        let db = every_starter_db();
+        let data = name_deck("Forest", 40);
+        let (mut mgr, code) = hosted_room(&db, &data);
+        install_ai_seat(
+            &mut mgr,
+            &code,
+            &db,
+            AiDifficulty::Easy,
+            DeckChoice::Random,
+            &data,
+        );
+
+        let mut restored = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+
+        assert!(
+            restored.decks[1].is_none(),
+            "re-drawing would hand the seat a different deck"
+        );
+        assert_eq!(
+            restored.start_game(&db),
+            Err(StartGameError::SeatDeckMissing { seat_index: 1 })
+        );
+    }
+
+    #[test]
+    fn a_legacy_snapshot_without_deck_choices_still_loads() {
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mgr, code) = seated_room(&db, &data);
+        let mut json: serde_json::Value =
+            serde_json::to_value(mgr.sessions.get(&code).unwrap().to_persisted()).unwrap();
+        // Reach guard: the key really was there to remove.
+        assert!(json.get("deck_choices").is_some());
+        json.as_object_mut().unwrap().remove("deck_choices");
+
+        let persisted: crate::persist::PersistedSession =
+            serde_json::from_value(json).expect("a pre-field snapshot still decodes");
+        let restored = GameSession::from_persisted(persisted, &db).unwrap();
+
+        assert!(restored.decks.iter().all(Option::is_none));
+        assert_eq!(restored.deck_choices.len(), restored.player_count as usize);
+    }
+
+    #[test]
+    fn the_start_guard_refuses_instead_of_dealing_empty_libraries() {
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mgr, code) = seated_room(&db, &data);
+        let mut restored = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+        restored.clear_seat_deck(0);
+
+        let result = restored.start_game(&db);
+
+        assert_eq!(
+            result,
+            Err(StartGameError::SeatDeckMissing { seat_index: 0 })
+        );
+        assert!(!restored.game_started);
+        assert!(restored.state.players.iter().all(|p| p.library.is_empty()));
+    }
+
     /// The provenance parameter on `create_game` is load-bearing. A seat filled
     /// through it with `None` holds a deck for as long as the process lives and
     /// holds nothing after a restart, because `from_persisted` rebuilds `decks`
@@ -8150,6 +8515,73 @@ mod tests {
         assert_eq!(
             restored.start_game(&db),
             Err(StartGameError::SeatDeckMissing { seat_index: 0 })
+        );
+    }
+
+    #[test]
+    fn a_faulted_session_is_still_a_no_op_even_with_a_missing_seat_deck() {
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mgr, code) = seated_room(&db, &data);
+        let mut restored = round_trip_through_disk(mgr.sessions.get(&code).unwrap(), &db);
+        restored.clear_seat_deck(0);
+        restored.ai_driver_fault = Some(AiDriverFault {
+            id: 1,
+            after_state_revision: restored.state_revision,
+            cause: AiDriverFailure::ActionSafetyCapReached { limit: 1 },
+        });
+
+        // The fault is terminal and dominant: what the two start arms
+        // broadcast for a faulted room must not change.
+        assert_eq!(restored.start_game(&db), Ok(()));
+    }
+
+    #[test]
+    fn an_ai_deck_that_fails_re_resolution_refuses_to_start() {
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mut mgr, code) = hosted_room(&db, &data);
+        // A database that no longer holds the AI seat's card drives
+        // `apply_seat_delta`'s resolution `Err` arm.
+        let empty_db = CardDatabase::default();
+        run_seat_mutation(
+            &mut mgr,
+            &code,
+            &empty_db,
+            seat_ai_at(1, list_choice("Mountain", 1)),
+        );
+
+        let session = mgr.sessions.get_mut(&code).unwrap();
+
+        assert!(session.decks[1].is_none());
+        assert_eq!(
+            session.start_game(&db),
+            Err(StartGameError::SeatDeckMissing { seat_index: 1 })
+        );
+    }
+
+    #[test]
+    fn the_bracket_message_is_unchanged_and_is_not_reused() {
+        let bracket = StartGameError::Bracket(CedhBracketError::DeckNotCedh {
+            seat_index: 0,
+            actual_tier: CommanderBracketTier::Core,
+        });
+        let inner = CedhBracketError::DeckNotCedh {
+            seat_index: 0,
+            actual_tier: CommanderBracketTier::Core,
+        };
+
+        let rendered = bracket.to_string();
+        assert!(
+            rendered.starts_with("Cannot start cEDH game: "),
+            "{rendered}"
+        );
+        assert!(rendered.contains(&inner.to_string()), "{rendered}");
+        assert!(
+            !StartGameError::SeatDeckMissing { seat_index: 1 }
+                .to_string()
+                .contains("cEDH"),
+            "a missing deck must not be reported as a bracket violation"
         );
     }
 }

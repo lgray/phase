@@ -5559,11 +5559,10 @@ impl DeckResolver for ServerDeckResolver<'_> {
         // The reducer stays at the name-only layer (see `DeckResolver` docs),
         // but we MUST still validate the names against the card database here
         // — otherwise a deck containing unresolvable names propagates through
-        // `apply_seat_delta` as `None`, and `start_game` silently substitutes
-        // an empty `PlayerDeckPayload` (see `Session::start_game`). The result
-        // is CR 704.5b losing every player on their first draw step with no
-        // user-visible error. Validating here causes the reducer to return
-        // `Err`, which phase-server then surfaces to the client.
+        // `apply_seat_delta` as `None` and `start_game` refuses the whole
+        // table with `SeatDeckMissing`, naming a seat rather than the deck
+        // that caused it. Validating here causes the reducer to return `Err`,
+        // which phase-server then surfaces to the client.
         server_core::resolve_deck(self.db, &deck)?;
         Ok(engine::game::deck_loading::PlayerDeckList {
             main_deck: deck.main_deck,
@@ -8702,11 +8701,13 @@ async fn handle_client_message(
                                 persist_full_session_async(game_db, session);
                                 // Capture the message so we can fan it out to all connected
                                 // players after the state lock releases (mirrors seat-delta path).
-                                bracket_broadcast =
-                                    Some(format!("Cannot start cEDH game: {bracket_err}"));
+                                // `Display` carries the cEDH prefix on that arm,
+                                // so the bracket message is unchanged while a
+                                // missing-deck refusal reports itself honestly.
+                                bracket_broadcast = Some(start_err.to_string());
                                 // Evaluate to Err so the outer match join_outcome sends an Error
                                 // message to the client via the existing Err(e) arm.
-                                Err(format!("Cannot start cEDH game: {bracket_err}"))
+                                Err(start_err.to_string())
                             } else {
                                 // Persist updated session (now has the new player and is started)
                                 persist_full_session_async(game_db, session);
@@ -9933,7 +9934,7 @@ async fn handle_client_message(
                         Ok(()) => None,
                         Err(start_err) => {
                             started = false;
-                            Some(format!("Cannot start cEDH game: {bracket_err}"))
+                            Some(start_err.to_string())
                         }
                     }
                 } else {
