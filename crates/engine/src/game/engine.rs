@@ -3106,10 +3106,12 @@ fn certified_bounded_cycle_offer<'a>(
     // has ONE legal target by definition, the window settles the slot's aim on that seat, and
     // the aim subtraction removes exactly the observed loss the slot itself caused — so the
     // charged and the uncharged answer are the SAME number there. What the withhold still
-    // moves is every other shape: a victim whose measured period NETS A LIFE GAIN (uncharged,
-    // its magnitude is negative, `elimination_bounds`' `narrow` guard (`magnitude > 0`) never
-    // fires and the life axis is DISARMED at MAX_SHORTCUT_CYCLES entirely), and every seat a
-    // charged slot merely REACHES, which carries no observed loss to subtract from.
+    // moves is every other shape: a seat the accumulation saw lose NOTHING inside the period
+    // (uncharged, its divisor entry is 0, `elimination_bounds`' `narrow` guard (`magnitude > 0`)
+    // never fires and its life axis is DISARMED), and every seat a charged slot merely REACHES,
+    // which carries no observed loss to subtract from. A victim whose period NETS A LIFE GAIN is
+    // not that shape: `seat_life_charges` reads the accumulation's non-positive entries, so the
+    // losses its own frames carried arm its axis whether or not a slot reaches it.
     //
     // `bounded_cycle_charged_targets_for_window` reads the SAME acceptance authority the
     // point mint does (`entry_announces`), so the charged SLOT set is a superset of the
@@ -4187,7 +4189,7 @@ pub(crate) fn bounded_cycle_pin_slots_for_window(
 /// # Why the union and the aim are MONOTONE — they can only tighten the bound, never loosen it
 ///
 /// The union and the withdrawal move exactly two fields of the charges
-/// [`crate::analysis::resource::ResourceVector::elimination_bounds`] reads. A union can only
+/// [`crate::analysis::resource::ResourceVector::seat_life_charges`] reads. A union can only
 /// ADD members to one charge's `reaches`; it adds no charge, and it cannot change a
 /// `magnitude`, which is the slot-independent `worst_seat_life_loss` this function is handed.
 /// For the one seat `p` a union adds, that function's per-seat life magnitude gains `p`'s
@@ -4430,7 +4432,7 @@ fn apply_confirmed_shortcut(
 /// (`live_mandatory_loop_winner`) on the driven states. Crowns ONLY when that authority
 /// names the proposer as the sole determinate winner; every other outcome (a subset-lethal
 /// loop with >1 non-faller, an Advantage token-growth loop with no faller, an aborted drive)
-/// falls back to manual play (CR 800.4a) — no wrong crown.
+/// falls back to manual play — no wrong crown.
 ///
 /// F2 hardening (crown SELF-soundness — a GameOver path must not depend on a future
 /// hard-gated PR): for the ≥2-faller case, RE-VERIFY the offer's own
@@ -4636,7 +4638,7 @@ fn crown_until_lethal(
     match_flow::handle_game_over_transition(state);
 }
 
-/// CR 800.4a: the E1 crown refused (no determinate winner / aborted drive) ⇒ roll back to the
+/// CR 732.2a: the E1 crown refused (no determinate winner / aborted drive) ⇒ roll back to the
 /// pre-drive committed board and hand priority to the living seat for manual play. Clears the
 /// loop-detect ring so this same `apply()` does not instantly re-offer the (now-declined)
 /// loop; a later beat re-detects genuinely. Mirrors the `materialize_fixed_shortcut` abort
@@ -5188,7 +5190,7 @@ fn slot_source_prompted(
 /// (CR 732.2a "a specified number of times" places no upper bound relative to the
 /// board). Any unexpected prompt / stale-incarnation replay failure (CR 400.7) /
 /// runaway beat count ⇒ abort to manual play: roll back to the last fully-committed
-/// cycle and hand priority to the living seat (CR 800.4a) — exactly the pre-4b
+/// cycle and hand priority to the living seat — exactly the pre-4b
 /// decline-stub behavior, never a wrong crown.
 fn materialize_fixed_shortcut(
     state: &mut GameState,
@@ -6718,7 +6720,7 @@ enum LoopCollapseRoute {
 /// pile (the HUD / battlefield render the marked axis as `∞`). For a mana engine the axes are
 /// `Mana(_)`, feeding the existing infinite-mana pool reseed. Every OFFERED growth loop is
 /// certified-unbounded, so `proposal.unbounded` is non-empty (an empty set is a harmless no-op).
-/// Then consume the recast context + hand priority to the living seat (CR 800.4a) — exactly as the
+/// Then consume the recast context + hand priority to the living seat — exactly as the
 /// old drive did — so this same `apply()` does not instantly re-offer; a later manual recast
 /// re-arms the context and a later beat re-detects genuinely.
 fn materialize_object_growth_shortcut(
@@ -7086,7 +7088,7 @@ pub(crate) fn drive_persistent_axis_collapse(
         work.priority_player = controller;
         work.waiting_for = WaitingFor::Priority { player: controller };
         if drive_loop_sequence_iteration(&mut work, seq, i, &expected_defs).is_err() {
-            break; // commit the successful prefix (CR 800.4a hands priority back)
+            break; // commit the successful prefix; the caller hands priority back
         }
         committed = work;
     }
@@ -7150,7 +7152,7 @@ struct LoopShortcutOffer<'a> {
     declaration: Option<&'a crate::analysis::decision_template::DecisionTemplate>,
 }
 
-/// CR 732.2a + CR 800.4a: reject a
+/// CR 732.2a: reject a
 /// shortcut declaration and hand priority back to the next living seat — the manual-play
 /// handback every reject path in `handle_declare_shortcut` lands on. Single
 /// authority: a SEVENTH reject path added later cannot forget to sync
@@ -22288,7 +22290,7 @@ mod stage2_injector_tests {
             if owner == P1 {
                 assert!(
                     matches!(state.waiting_for, WaitingFor::Priority { .. }),
-                    "(b2) CR 732.2a + CR 603.5 + CR 800.4a: a declaration whose `owner` is not \
+                    "(b2) CR 732.2a + CR 603.5: a declaration whose `owner` is not \
                      the engine-issued proposer hands priority back; got {:?}",
                     state.waiting_for
                 );
@@ -24065,6 +24067,155 @@ mod bounded_offer_conjunct_tests {
              which is exactly what `analysis::resource::auto_may_answer_for` and \
              `engine::entry_publishes_pin_slots` used to do, each with a DIFFERENT omission. \
              Found {outside:#?}"
+        );
+    }
+    /// CR 119.3 + CR 704.5a — THE MINT'S LIFE TERMS ARE THE FRAME-WISE ACCUMULATION'S, NEVER
+    /// THE PERIOD'S ENDPOINT PAIR'S.
+    ///
+    /// Step (7) sources two published terms from that accumulation in two separate calls —
+    /// `victim_slot`'s magnitude through `ResourceVector::worst_seat_life_loss` and
+    /// `seat_life_charge` through `ResourceVector::seat_life_charges` — so both are asserted,
+    /// while `delta` is asserted to still carry the endpoint pair `PeriodicDelta::conforms`
+    /// and `game::interaction::victim_charge` compare against.
+    ///
+    /// THE TWO BOARDS PUBLISH THE SAME CHARGE OFF DIFFERENT NET DELTAS, which is the whole
+    /// discrimination: legs `-5, +3` and legs `-2, -3` have equal frame-wise negative-part
+    /// sums (5) and unequal endpoint pairs (-2 and -5). Only the second is a board the two
+    /// derivations agree on, so it is also the control that keeps this row from passing on any
+    /// derivation that merely shrinks every bound.
+    ///
+    /// Basis B, because the frames carry a stack the live board does not, so no basis-A
+    /// disjunct matches; the certification is asserted rather than assumed.
+    ///
+    /// REVERT-PROBE: source either term from `periodic.delta` ⇒ the sign-mixed board's
+    /// magnitude reads 2, its charge 4 and its bound 3, while the control is unmoved ⇒ FLIPS.
+    #[test]
+    fn the_bound_charges_the_frame_wise_loss_not_the_period_endpoint_pair() {
+        use crate::analysis::resource::PeriodCertification;
+        use crate::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
+        use crate::types::ability::{
+            ControllerRef, Effect, QuantityExpr, ResolvedAbility, TargetFilter, TypedFilter,
+        };
+        use crate::types::game_state::{StackEntry, StackEntryKind};
+        use crate::types::identifiers::{CardId, ObjectId};
+
+        // A `k = 2` ring whose victim's successive frame deltas are `legs` repeated twice, each
+        // frame announcing ONE `target opponent` drain — a NEW stack entry per frame, which is
+        // what `certified_period_touch` reads as an announcement.
+        let board = |legs: [i32; 2]| {
+            let mut state = ring_state(5, move |frame, i| {
+                let offset: i32 = (0..i).map(|j| legs[j % 2]).sum();
+                let victim = frame
+                    .players
+                    .iter_mut()
+                    .find(|p| p.id == P1)
+                    .expect("seat exists");
+                victim.life += offset;
+                let src = ObjectId(940);
+                let mut source = crate::game::game_object::GameObject::new(
+                    src,
+                    CardId(0),
+                    P0,
+                    "Drainer".to_string(),
+                    crate::types::zones::Zone::Battlefield,
+                );
+                source.incarnation = 3;
+                frame.objects.insert(src, source);
+                frame.stack.push_back(StackEntry {
+                    id: ObjectId(950 + i as u64),
+                    source_id: src,
+                    controller: P0,
+                    kind: StackEntryKind::TriggeredAbility {
+                        source_id: src,
+                        ability: Box::new(ResolvedAbility::new(
+                            Effect::LoseLife {
+                                amount: QuantityExpr::Fixed { value: 1 },
+                                target: Some(TargetFilter::Typed(TypedFilter {
+                                    type_filters: vec![],
+                                    controller: Some(ControllerRef::Opponent),
+                                    properties: vec![],
+                                })),
+                            },
+                            vec![],
+                            src,
+                            P0,
+                        )),
+                        condition: None,
+                        trigger_event: None,
+                        description: None,
+                        source_name: String::new(),
+                        subject_match_count: None,
+                        die_result: None,
+                        provenance: None,
+                    },
+                });
+            });
+            // The headroom the bound divides: 11 life is 10 to the CR 704.5a threshold, so the
+            // frame-wise divisor (10) and the endpoint-pair one (4) yield different counts.
+            state
+                .players
+                .iter_mut()
+                .find(|p| p.id == P1)
+                .expect("seat exists")
+                .life = 11;
+            state
+        };
+
+        let measure = |legs: [i32; 2]| {
+            let state = board(legs);
+            let (outcome, meter) =
+                try_offer_bounded_cycle_shortcut_metered(&state, false, ProbeCap::Shipped);
+            let Ok(WaitingFor::LoopShortcut {
+                schema,
+                certificate,
+                ..
+            }) = outcome
+            else {
+                panic!("legs {legs:?} must mint a bounded offer; got {outcome:?}");
+            };
+            let per_cycle = certificate
+                .per_cycle
+                .expect("a bounded offer states its period");
+            assert_eq!(
+                meter.certification,
+                Some(PeriodCertification::ResourceSignatureOnly),
+                "REACH-GUARD: this fixture must certify through basis B — basis A wins whenever \
+                 it certifies, and its window would hand the accumulation different frames"
+            );
+            assert_eq!(
+                per_cycle.frames_per_period, 2,
+                "REACH-GUARD: a single-frame period is one on which the two derivations agree \
+                 BY CONSTRUCTION"
+            );
+            assert_eq!(
+                per_cycle.victim_slot.len(),
+                1,
+                "REACH-GUARD: an empty charged set takes `elimination_bounds`' unreached arm \
+                 and would pass on any derivation"
+            );
+            (
+                per_cycle.delta.life.get(&P1).copied(),
+                per_cycle.victim_slot[0].1,
+                per_cycle.seat_life_charge.clone(),
+                schema.max_iterations,
+            )
+        };
+
+        // CR 119.3: what one repetition TAKES from the seat is 5 on both boards; what it leaves
+        // behind is -2 on one and -5 on the other.
+        assert_eq!(
+            measure([-5, 3]),
+            (Some(-2), 5, vec![(P1, 10)], 2),
+            "a period whose legs carry both signs charges the negative parts (5), publishes the \
+             reaching slot's magnitude plus the seat's own unattributed loss (10) as the CR \
+             704.5a divisor, and still states the endpoint pair (-2) as the delta a committed \
+             cycle is checked against"
+        );
+        assert_eq!(
+            measure([-2, -3]),
+            (Some(-5), 5, vec![(P1, 10)], 2),
+            "CONTROL: with no sign mix the accumulation and the endpoint pair agree, so this \
+             board is indifferent to which one the mint reads"
         );
     }
 }

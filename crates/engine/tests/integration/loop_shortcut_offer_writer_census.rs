@@ -291,12 +291,17 @@ fn census(needle: &str) -> Vec<Hit> {
 ///   `engine/src/analysis/resource.rs` — A READ, NOT A WRITER: it destructures
 ///   the offer it minted to assert an EMPTY `schema.points` beside a
 ///   `victim_slot` that still names the forced victim.
-/// * 17 ⇒ the pinned value: the CR 732.2a declaration change's two in-crate
+/// * 17 ⇒ 21: the CR 732.2a declaration change's two in-crate
 ///   rows spell the anchor FOUR
 ///   times between them — `game/visibility.rs` row D5-h's mint and its projection
 ///   read, and `ai_support/candidates.rs` row D6-n's mint and its reach-guard read.
+/// * 21 ⇒ the pinned value: the frame-wise charge row
+///   `the_bound_charges_the_frame_wise_loss_not_the_period_endpoint_pair` in
+///   `engine/src/game/engine.rs` — A READ: it destructures the offer it minted
+///   through the production seam to assert the published `victim_slot` magnitude
+///   and `seat_life_charge` divisor.
 ///
-/// All five are in a `#[cfg(test)]` scope — mints and reads both — which is the
+/// All six are in a `#[cfg(test)]` scope — mints and reads both — which is the
 /// benign case this row's own failure message names: a test fixture cannot make
 /// the period machinery certify. The PRODUCTION half is UNCHANGED across all five
 /// — and so is the per-file multiset below, which is the half §10 ruling condition
@@ -341,7 +346,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
 
     assert_eq!(
         (production.len(), in_test.len()),
-        (23, 21),
+        (23, 22),
         "CR 732.2a OFFER-WRITER SURFACE CHANGED (not re-measured — this number is an \
          INVARIANCE pin over the whole 5d U-series).\n\
          The three CERTIFICATION-PATH writers are `reconcile_terminal_result` (object-growth \
@@ -397,6 +402,14 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          offer the period machinery can certify. PRODUCTION STAYED AT 22 with an IDENTICAL \
          per-file multiset — C2b adds the field INSIDE existing literals and patterns and \
          introduces no new production anchor line.\n\
+         SIXTH ADJUDICATION, 21 => 22: the frame-wise charge row \
+         `the_bound_charges_the_frame_wise_loss_not_the_period_endpoint_pair` in \
+         `engine/src/game/engine.rs`, whose `WaitingFor::LoopShortcut` DESTRUCTURE reads the \
+         offer it minted through `try_offer_bounded_cycle_shortcut_metered` to assert that the \
+         published `victim_slot` magnitude and `seat_life_charge` divisor come from the \
+         period's frame-wise accumulation while `delta` still carries the endpoint pair. A \
+         READ, not a writer, in a `#[cfg(test)]` scope. PRODUCTION AND THE PER-FILE MULTISET \
+         ARE BOTH UNMOVED — the row adds no production anchor line.\n\
          measured per-file production multiset: {multiset:?}\n\
          production: {production:?}\n\
          test: {in_test:?}"

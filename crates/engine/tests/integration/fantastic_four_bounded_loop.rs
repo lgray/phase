@@ -3090,8 +3090,9 @@ fn u6_the_declare_owner_firewall_holds_on_the_real_f4_offer() {
 // B5f — the DECLARED term is load-bearing on a real board, in both directions
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
-/// §4 B5f — **`elimination_bounds`'s REACH term can suppress an offer that is otherwise legal,
-/// and the suppression is measured ONE LIFE POINT WIDE on the user's own board.**
+/// §4 B5f — **the REACH term `seat_life_charges` puts in the divisor can suppress an offer that
+/// is otherwise legal, and the suppression is measured ONE LIFE POINT WIDE on the user's own
+/// board.**
 ///
 /// CR 704.5a (a seat at 0 or less life has lost) + CR 732.2a (a shortcut describes a sequence
 /// that "may be legally taken", so every legal declaration must fit the bound, not only the one
@@ -3125,7 +3126,7 @@ fn u6_the_declare_owner_firewall_holds_on_the_real_f4_offer() {
 /// floor P2's alone, the relief applies and the same board OFFERS. Both legs hold P2 at 1, so
 /// the pair is about the term charged to a seat with no loss of its own, not about the board.
 ///
-/// REVERT-PROBE (DROP): delete the reach term from `elimination_bounds` ⇒ neither P2 nor P3 is
+/// REVERT-PROBE (DROP): delete the reach term from `seat_life_charges` ⇒ neither P2 nor P3 is
 /// charged at all, their life axes never narrow, and (β) OFFERS at the aimed seat's own bound
 /// ⇒ FLIPS.
 /// REVERT-PROBE (RESTORE THE OLD SUM): charge `observed.max(0) + reach` with no aim subtraction

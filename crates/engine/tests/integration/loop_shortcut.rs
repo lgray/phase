@@ -3574,7 +3574,7 @@ fn object_growth_51st_accept_marks_unbounded_and_mints_no_tokens() {
         .is_some(),
         "CR 702.27a: Sprout Swarm must still be in P0's hand after accept"
     );
-    // (3) priority handed back to a living seat (CR 800.4a) — the protocol closed cleanly.
+    // (3) priority handed back to a living seat — the protocol closed cleanly.
     assert!(
         matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
         "priority handed back after accept, got {:?}",

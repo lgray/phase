@@ -588,8 +588,8 @@ mod map_key_pairs {
 ///
 /// The `Vec` victim term (rather than a `BTreeMap` keyed by [`DecisionSlot`]) is
 /// deliberate: a struct map key hits exactly the `serde_json` restriction
-/// [`map_key_pairs`] exists for, and the single consumer
-/// ([`ResourceVector::elimination_bounds`]) collects at its call site.
+/// [`map_key_pairs`] exists for, and the single consumer of the published per-slot value
+/// (`game::interaction`'s `victim_charge`) looks its slot up at its call site.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeriodicDelta {
     /// How many RETAINED RING FRAMES one repetition spans — the certifying prior's ring index
@@ -624,11 +624,11 @@ pub struct PeriodicDelta {
     /// the published points instead let the withhold silently raise the bound.
     pub victim_slot: Vec<(DecisionSlot, i64)>,
     /// CR 704.5a: the seats [`ResourceVector::elimination_bounds`] RESERVED elimination
-    /// headroom for — the union of the reaches of the very [`SlotCharge`]s it was handed,
-    /// folded by [`SlotCharge::declarable_victims`] and carried here so the two consumers of
-    /// one certificate read ONE set instead of deriving two. Sorted and deduped by that fold;
-    /// CR 115.2 keeps it to player targets. EMPTY for the untargeted class, whose victims are
-    /// already seat-keyed in `delta.life`.
+    /// headroom for — the union of the reaches of the [`SlotCharge`]s that produced the
+    /// divisor it was handed, taken by [`SlotCharge::declarable_victims`] and carried here so
+    /// the two consumers of one certificate read ONE set instead of deriving two. Sorted and
+    /// deduped by that fold; CR 115.2 keeps it to player targets. EMPTY for the untargeted
+    /// class, whose victims are already seat-keyed in `delta.life`.
     ///
     /// A UNION, so it is not per-slot: with two charged slots of different reaches this set
     /// still names every seat some slot can be re-aimed onto, while `elimination_bounds`
@@ -661,10 +661,11 @@ pub struct PeriodicDelta {
     /// key on is already published: the reach union by `declarable_victims`, the rest by
     /// `delta.life`.
     ///
-    /// `#[serde(default)]`, and the direction is the point. A signature persisted before this
-    /// field existed deserializes EMPTY, which disarms every seat's life axis in a reduction
-    /// taken over it — fail-closed, and never a value the mint reads, since the mint derives
-    /// this field in the same call that consumes it.
+    /// `#[serde(default)]`. A signature persisted before this field existed deserializes
+    /// EMPTY, which disarms every seat's life axis and therefore WIDENS any reduction taken
+    /// over it — up to `MAX_SHORTCUT_CYCLES` when no other axis consumes a seat. Fail-closed
+    /// AT THE MINT, which never reads a deserialized value: it derives this field in the same
+    /// call that consumes it.
     #[serde(default)]
     pub seat_life_charge: Vec<(PlayerId, i64)>,
 }
@@ -680,9 +681,10 @@ impl PeriodicDelta {
     ///
     /// * MAGNITUDE. Every [`PeriodicDelta::victim_slot`] entry carries the same magnitude
     ///   ([`ResourceVector::worst_seat_life_loss`]). CR 704.5a: a player at 0 or less life
-    ///   loses the game, so [`ResourceVector::elimination_bounds`] RESERVED, PER SEAT, the
-    ///   total of that maximum over the charged slots whose REACH contains that seat — not a
-    ///   flat `victim_slot.len()` multiple on every declarable victim, which is the same
+    ///   loses the game, so [`ResourceVector::elimination_bounds`] RESERVED, PER SEAT, what
+    ///   [`ResourceVector::seat_life_charges`] totalled from that maximum over the charged
+    ///   slots whose REACH contains that seat — not a flat `victim_slot.len()` multiple on
+    ///   every declarable victim, which is the same
     ///   number only while every charged slot reaches every seat in the domain. The lift takes
     ///   at most `slots` entries and requires equal totals, so no conforming observation
     ///   charges a seat above what was already reserved for IT. What closes the per-seat form
@@ -786,9 +788,10 @@ fn slot_charged_life(
 ///
 /// MINT-LOCAL BY DESIGN, and the absence of serde derives is the design rather than an
 /// omission: `game::engine::bounded_cycle_charged_targets_for_window` builds these values and
-/// [`ResourceVector::elimination_bounds`] consumes them inside one call of
-/// `game::engine::try_offer_bounded_cycle_shortcut`. Nothing here reaches the wire —
-/// [`PeriodicDelta`]'s published `victim_slot` keeps its `(slot, magnitude)` shape, and a
+/// [`ResourceVector::seat_life_charges`] and [`SlotCharge::declarable_victims`] consume them
+/// inside one call of `game::engine::try_offer_bounded_cycle_shortcut`. Nothing here reaches
+/// the wire — [`PeriodicDelta`]'s published `victim_slot` keeps its `(slot, magnitude)` shape,
+/// and a
 /// `Serialize` derive would be the first step toward publishing a seat identity CR 732.2a
 /// deliberately withholds for a non-`Chosen` announcement.
 ///
@@ -1164,6 +1167,7 @@ impl ResourceVector {
 
     /// CR 119.3: the per-period life loss ONE published pin slot may charge to whichever
     /// seat its declaration names — the [`SlotCharge::magnitude`] term
+    /// [`ResourceVector::seat_life_charges`] folds into the divisor
     /// [`ResourceVector::elimination_bounds`] divides the headroom by.
     ///
     /// **MAX over seats, not SUM, and not the observed spread.** A pin is a
@@ -10273,7 +10277,7 @@ mod tests {
     /// because publication skips a `NotProposerChoice` frame and charging does not. First-wins
     /// charging would let a NARROW earlier frame's legal set stand for a slot the schema
     /// publishes from a WIDER later one: the schema states the client may pin P2,
-    /// `declarable_victims` reads `[P1]`, `elimination_bounds` never charges P2, and
+    /// `declarable_victims` reads `[P1]`, `seat_life_charges` never charges P2, and
     /// `max_iterations` GROWS. That is the fail-OPEN direction, on the operator whose whole job
     /// is proving the proposed sequence "may be legally taken based on the current game state".
     ///
@@ -10596,7 +10600,7 @@ mod tests {
     /// * *withhold by legal-set size* — arm (a1)/(b) have TWO legal opponents and are still
     ///   withheld; arm (c) has the same two and publishes. Size cannot separate them.
     /// * *withhold, and also stop charging* — every arm asserts the CR 119.3 charge survives
-    ///   with the full legal player set, which is the half `elimination_bounds` reads.
+    ///   with the full legal player set, which is the half `seat_life_charges` reads.
     /// * *key the chooser on presence rather than on the SEAT* — not discriminated here and
     ///   deliberately so: `collect_target_slots` already drops a chooser equal to the
     ///   ability's controller, so on these fixtures `is_some()` and `is_some_and(!= proposer)`
@@ -10802,7 +10806,7 @@ mod tests {
     ///
     /// REVERT-PROBE: restore step (7)'s published-point derivation ⇒ `victim_slot` is empty
     /// ⇒ the non-empty assertion FLIPS. REVERT-PROBE (AIM): drop the `- observed_aim` term
-    /// from `elimination_bounds` ⇒ `max_iterations` reads 5 ⇒ the value assertion FLIPS.
+    /// from `seat_life_charges` ⇒ `max_iterations` reads 5 ⇒ the value assertion FLIPS.
     #[test]
     fn the_bounded_offer_charges_a_forced_victim_it_publishes_no_point_for() {
         use crate::game::engine::{
@@ -15465,7 +15469,7 @@ mod tests {
     /// the answer-beat sampling site in `apply_action` announces the entries a FORCED
     /// pre-priority window puts on the stack, so a CR 608.2b `Targets` declaration is
     /// announced like any other and on the F4 boards `points` carries Torch's `Targets`
-    /// point. That value reaches `elimination_bounds` in production;
+    /// point. That value reaches the bound through `seat_life_charges` in production;
     /// `r1_the_bounded_offer_fires_on_the_real_f4_dump` re-derives the published bound with a
     /// non-zero declared term, and
     /// `b5f_the_declared_term_can_suppress_an_otherwise_legal_offer` measures it flipping a
@@ -32212,9 +32216,10 @@ mod tests {
 
     /// **T10** — the lift is confined to the seats the bound reserved elimination headroom for.
     ///
-    /// CR 704.5a: `elimination_bounds` charges each seat the total magnitude of the slots whose
-    /// reach contains it, and reserves nothing for a seat no slot reaches, so a lifted loss
-    /// relocating onto an out-of-domain seat charges headroom no bound ever set aside.
+    /// CR 704.5a: `seat_life_charges` charges each seat the total magnitude of the slots whose
+    /// reach contains it and nothing for a seat no slot reaches, and `elimination_bounds`
+    /// reserves headroom against that divisor, so a lifted loss relocating onto an
+    /// out-of-domain seat charges headroom no bound ever set aside.
     /// CR 601.2c: the declared re-aim WITHIN that domain stays admitted.
     ///
     /// Two charged slots, and the moved loss is the LARGER one, so the lift is what selects it.
@@ -32414,9 +32419,10 @@ mod tests {
 
     /// **T7** — multi-slot semantics are pinned, not left open.
     ///
-    /// CR 704.5a: `elimination_bounds` reserved each seat the total magnitude of the slots
-    /// REACHING it, and both slots here reach the seat, so two slots' charges landing on ONE
-    /// seat are inside the reservation and must conform. A different TOTAL is not.
+    /// CR 704.5a: the divisor `seat_life_charges` produced gave each seat the total magnitude
+    /// of the slots REACHING it and `elimination_bounds` reserved against that, and both slots
+    /// here reach the seat, so two slots' charges landing on ONE seat are inside the
+    /// reservation and must conform. A different TOTAL is not.
     ///
     /// The tracked boards publish either an empty `victim_slot` or a single entry, so this
     /// two-slot branch is reachable only at the building-block level.
