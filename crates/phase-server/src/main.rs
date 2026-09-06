@@ -9967,7 +9967,7 @@ async fn handle_client_message(
                 current_players,
                 max_players,
                 public_before,
-                bracket_error,
+                start_error,
             ) = {
                 let mut mgr = state.lock().await;
                 if !full_socket_is_current_while_state_locked(&mgr, connections, identity, tx).await
@@ -10042,9 +10042,10 @@ async fn handle_client_message(
                 // seat), per the `GameSession` contract; it does not belong on the
                 // host's seat-editing path.
                 let mut started = delta.now_started;
-                // Collect a bracket-violation message to broadcast after releasing the state lock.
-                // start_game guarantees no mutation on Err, so session state is untouched.
-                let bracket_error: Option<String> = if started {
+                // Collect a refused-start message to broadcast after releasing the state lock.
+                // `start_game` mutates nothing on Err, and `apply_seat_delta` above no longer
+                // commits the reducer's started flag, so a refusal leaves the room editable.
+                let start_error: Option<String> = if started {
                     match session.start_game(db) {
                         Ok(()) => None,
                         Err(start_err) => {
@@ -10074,7 +10075,7 @@ async fn handle_client_message(
                     current_players,
                     max_players,
                     public_before,
-                    bracket_error,
+                    start_error,
                 )
             };
 
@@ -10089,8 +10090,8 @@ async fn handle_client_message(
                         }
                     }
 
-                    // If the start was blocked by a bracket violation, notify all players.
-                    if let Some(ref err_msg) = bracket_error {
+                    // If the start was refused, notify all players.
+                    if let Some(ref err_msg) = start_error {
                         let msg = ServerMessage::error(err_msg.clone());
                         for sender in players.values() {
                             let _ = sender.send(msg.clone());

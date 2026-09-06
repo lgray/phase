@@ -1091,7 +1091,12 @@ impl GameSession {
         }
 
         self.ai_configs = next_ai_configs;
-        self.game_started = new_state.game_started;
+        // `new_state.game_started` is deliberately not copied back. The reducer
+        // sets it as soon as it accepts a `Start`, but only a successful
+        // `start_game` may commit it: a room the start guard refuses would
+        // otherwise be left flagged as started, and the reducer refuses every
+        // mutation on a started room, so the host could neither repair the seat
+        // nor start. For every other mutation the copy was a no-op.
 
         if old_player_count != new_player_count {
             self.rebuild_pregame_state(new_player_count);
@@ -8507,6 +8512,45 @@ mod tests {
         );
         assert!(!restored.game_started);
         assert!(restored.state.players.iter().all(|p| p.library.is_empty()));
+    }
+
+    /// The reducer flags the seat state as started the moment it accepts a
+    /// `Start`, and the host's start path applies that delta before calling
+    /// `start_game`. Committing the flag there would leave a room the guard
+    /// refuses flagged as started, which the reducer then refuses to edit.
+    #[test]
+    fn a_start_the_guard_refuses_leaves_the_room_editable() {
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let (mut mgr, code) = seated_room(&db, &data);
+        mgr.sessions.get_mut(&code).unwrap().clear_seat_deck(1);
+
+        let delta = run_seat_mutation(&mut mgr, &code, &db, SeatMutation::Start);
+        assert!(
+            delta.now_started,
+            "the reducer accepts Start on a full room"
+        );
+        let session = mgr.sessions.get_mut(&code).unwrap();
+        assert_eq!(
+            session.start_game(&db),
+            Err(StartGameError::SeatDeckMissing { seat_index: 1 })
+        );
+        assert!(
+            !session.game_started,
+            "a refused start must not flag the room"
+        );
+
+        // Repairing the named seat and starting is the control: a flag that is
+        // never set at all would satisfy the assertion above on its own.
+        run_seat_mutation(
+            &mut mgr,
+            &code,
+            &db,
+            seat_ai_at(1, list_choice("Forest", 40)),
+        );
+        let session = mgr.sessions.get_mut(&code).unwrap();
+        assert_eq!(session.start_game(&db), Ok(()));
+        assert!(session.game_started);
     }
 
     /// The provenance parameter on `create_game` is load-bearing. A seat filled
