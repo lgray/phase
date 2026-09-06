@@ -1212,7 +1212,15 @@ pub fn apply_verified_ai_priority_pass_with_rejection(
     })
 }
 
-pub(crate) fn apply_interaction_for_simulation(
+/// Simulation counterpart of [`apply_interaction`]: `authenticated_actor` is
+/// the trusted submitting connection and `semantic_owner` is the player whose
+/// decision slot the action names, which differ when another player controls
+/// that player's decisions. Runs in `DeferredDisplay` mode, so it skips the
+/// board-global mana-availability sweep for throwaway states no client
+/// renders. Simulation callers with no such split want
+/// [`apply_for_simulation`], the collapsed form that forwards one actor into
+/// both slots.
+pub fn apply_interaction_for_simulation(
     state: &mut GameState,
     authenticated_actor: PlayerId,
     semantic_owner: PlayerId,
