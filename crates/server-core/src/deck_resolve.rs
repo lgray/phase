@@ -110,10 +110,12 @@ fn round_trip_name(db: &CardDatabase, face: &CardFace) -> String {
         return face.name.clone();
     };
     match db.get_face_by_name(&face.name) {
-        Some(found) if found.scryfall_oracle_id.as_deref() != Some(oracle_id) => {
-            format!("{} [{}]", face.name.to_lowercase(), oracle_id)
-        }
-        _ => face.name.clone(),
+        // The bare name leads back to this exact face.
+        Some(found) if found.scryfall_oracle_id.as_deref() == Some(oracle_id) => face.name.clone(),
+        // Either another entry holds the short name, or no entry holds it at
+        // all. Both mean the bare name does not lead back here, and the
+        // oracle-id key is what does.
+        Some(_) | None => format!("{} [{}]", face.name.to_lowercase(), oracle_id),
     }
 }
 
@@ -430,6 +432,47 @@ mod tests {
             bare.main_deck[0].card.scryfall_oracle_id.as_deref(),
             Some(WINNER)
         );
+    }
+
+    #[test]
+    fn round_trip_name_uses_the_oracle_id_key_when_nothing_holds_the_bare_name() {
+        // `oracle_gen` files a face that cannot claim the short name under
+        // `<lowercased name> [<oracle id>]`. When no entry holds the bare name
+        // at all, that key is the only way back to this face.
+        let oracle_id = "oracle-Shifty Face";
+        let storage_key = format!("shifty face [{oracle_id}]");
+        let entries: serde_json::Map<String, Value> = [(storage_key.clone(), card("Shifty Face"))]
+            .into_iter()
+            .collect();
+        let db = CardDatabase::from_json_str(&Value::Object(entries).to_string())
+            .expect("fixture database parses");
+
+        let face = db
+            .get_face_by_name(&storage_key)
+            .expect("the oracle-id key resolves");
+        // Reach guard: the branch under test is only entered when the bare-name
+        // lookup misses, so a fixture that still answered it would pass
+        // vacuously.
+        assert!(
+            db.get_face_by_name("Shifty Face").is_none(),
+            "fixture precondition: no entry holds the bare name"
+        );
+
+        let emitted = round_trip_name(&db, face);
+        assert_eq!(emitted, storage_key);
+        assert!(
+            db.get_face_by_name(&emitted).is_some(),
+            "the emitted name must resolve back to a face, or the seat loses its deck on restore"
+        );
+    }
+
+    #[test]
+    fn round_trip_name_keeps_the_bare_name_when_it_leads_back() {
+        // Control for the case above: the common face still round-trips under
+        // its short name, so the oracle-id form stays confined to the miss.
+        let db = db_from(&["Forest"]);
+        let face = db.get_face_by_name("Forest").expect("bare name resolves");
+        assert_eq!(round_trip_name(&db, face), "Forest");
     }
 
     #[test]
