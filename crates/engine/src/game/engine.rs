@@ -2853,11 +2853,19 @@ fn certified_bounded_cycle_offer<'a>(
 
     // Written as an explicit newest-first walk rather than `find_map` because the candidate
     // body now threads `&mut verdicts` and carries an owned per-candidate `PeriodTouch` out.
+    // The fifth member is the period's FRAMES, newest last — carried OUT of the match because
+    // each basis' far end is its own (basis A's is the live board, basis B's the newest
+    // retained frame) and only the arm that matched knows which. Deriving it at step (7)
+    // would have to guess the basis, which this function's standing prohibition forbids.
+    // The members are pairwise distinct types, so a named carrier would prevent no mis-pass,
+    // and the tuple is destructured at exactly one site.
+    #[allow(clippy::type_complexity)]
     let mut basis_a: Option<(
         &GameState,
         Vec<DecisionPoint>,
         PeriodTouch<'_>,
         PeriodicDelta,
+        Vec<&'a GameState>,
     )> = None;
     // The walk itself — its ORDER, its span arithmetic and its degenerate-pair filter — lives
     // in `candidate_windows`, so the rows that need production's candidates take THE SAME
@@ -2915,6 +2923,14 @@ fn certified_bounded_cycle_offer<'a>(
         // dies on `net_progress_for` is not the certificate the mint carries forward, and a
         // meter that named it would attribute the offer to a pair the walk discarded.
         *cert_out = Some(cert);
+        // The walk's own window ends at the newest RETAINED frame while this basis' endpoint
+        // pair ends at the live board, so the live board is appended: without it the walk
+        // would not telescope to the pair it replaces.
+        let period_frames: Vec<&GameState> = window
+            .iter()
+            .copied()
+            .chain(std::iter::once(state))
+            .collect();
         basis_a = Some((
             prior,
             points,
@@ -2930,7 +2946,9 @@ fn certified_bounded_cycle_offer<'a>(
                 delta,
                 victim_slot: Vec::new(),
                 declarable_victims: Vec::new(),
+                seat_life_charge: Vec::new(),
             },
+            period_frames,
         ));
         break;
     }
@@ -2984,7 +3002,7 @@ fn certified_bounded_cycle_offer<'a>(
     // fixture publishes.) The only sound attribution is a discriminating probe: force
     // `ring_delta_signature` to return `None` (basis B's sole entry point is the `None =>`
     // arm below) — the rows that survive are basis A, the rows that fail are basis B.
-    let (cert_prior, points, touch, mut periodic) = match basis_a {
+    let (cert_prior, points, touch, mut periodic, period_frames) = match basis_a {
         Some(hit) => hit,
         None => {
             let (k, delta) = crate::analysis::resource::ring_delta_signature(state)
@@ -3009,6 +3027,9 @@ fn certified_bounded_cycle_offer<'a>(
                 certified_period_touch(window, state, PeriodCertification::ResourceSignatureOnly);
             *cert_out = Some(PeriodCertification::ResourceSignatureOnly);
             let points = bounded_cycle_pin_slots_for_window(&touch, proposer);
+            // This basis' window already ends at the newest retained frame its endpoint pair
+            // used, so nothing is appended and the walk has exactly `k` legs.
+            let period_frames: Vec<&GameState> = window.to_vec();
             (
                 cert_prior,
                 points,
@@ -3018,7 +3039,9 @@ fn certified_bounded_cycle_offer<'a>(
                     delta,
                     victim_slot: Vec::new(),
                     declarable_victims: Vec::new(),
+                    seat_life_charge: Vec::new(),
                 },
+                period_frames,
             )
         }
     };
@@ -3099,9 +3122,14 @@ fn certified_bounded_cycle_offer<'a>(
     // "by construction" from the shared acceptance authority alone is FALSE.
     //
     // CR 119.3: what ONE repetition charges to whichever seat a slot's declaration names. The
-    // max-vs-sum reasoning, the gain clamp and the fail-closed direction live on
-    // `worst_seat_life_loss`; `elimination_bounds` then charges each seat every slot that
-    // REACHES it and subtracts what the window saw a slot aim AT it. ⚠ THE "`victim_slot` IS
+    // magnitude is read off the FRAME-WISE accumulation, not off `periodic.delta`: the delta is
+    // a state DIFFERENCE, so a loss an offsetting gain cancels inside the period is invisible to
+    // it, and CR 704.3 checks CR 704.5a at every frame boundary. `periodic.delta` stays the
+    // published endpoint pair all the same, because `conforms` and `game::interaction`'s reader
+    // compare against it. The max-vs-sum reasoning and the fail-closed direction live on
+    // `worst_seat_life_loss`, the gain clamp and the aim subtraction on `seat_life_charges`,
+    // which charges each seat every slot that REACHES it and subtracts what the window saw a
+    // slot aim AT it. ⚠ THE "`victim_slot` IS
     // EMPTY ON EVERY TRAJECTORY THAT OFFERS TODAY" NOTE THAT STOOD HERE IS FALSIFIED, and is
     // replaced rather than softened: the answer-beat sampling site in `apply_action` announces
     // the entries a FORCED pre-priority window puts on the stack, and a CR 608.2b `Targets`
@@ -3109,10 +3137,11 @@ fn certified_bounded_cycle_offer<'a>(
     // announcement carries Torch's target slot, so this value is NOT dropped — it reaches
     // `elimination_bounds` in production and `r1_the_bounded_offer_fires_on_the_real_f4_dump`
     // re-derives the published bound from it.
+    let frame_wise = periodic.delta.with_frame_wise_life_loss(&period_frames);
     let charged = bounded_cycle_charged_targets_for_window(
         &touch,
         proposer,
-        periodic.delta.worst_seat_life_loss(),
+        frame_wise.worst_seat_life_loss(),
     );
     // The certificate's published magnitude per charged slot — wire shape unchanged.
     periodic.victim_slot = charged
@@ -3124,7 +3153,15 @@ fn certified_bounded_cycle_offer<'a>(
     // lift to what the bound actually reserved and the two cannot be derived apart.
     periodic.declarable_victims =
         crate::analysis::resource::SlotCharge::declarable_victims(&charged);
-    let max_iterations = periodic.delta.elimination_bounds(state, &charged);
+    // CR 119.3 + CR 704.5a: the per-seat divisor, published and then HANDED to the reduction,
+    // so the bound cannot be divided by anything other than what the certificate states.
+    periodic.seat_life_charge = frame_wise.seat_life_charges(&charged);
+    // On `periodic.delta` rather than on `frame_wise`: with the life term supplied, `self`
+    // contributes only the poison and library axes the accumulation leaves untouched, which is
+    // the shape a re-derivation at consumption will have too.
+    let max_iterations = periodic
+        .delta
+        .elimination_bounds(state, &periodic.seat_life_charge);
     // A bound of 0 states no legal repetition. A bound AT the cap states no narrowing at all
     // — this producer's whole claim is that it measured a CR 704.5a / CR 704.5c / CR 104.3c
     // threshold inside the loop, so an unnarrowed result belongs to another seam. Checking
@@ -19421,8 +19458,9 @@ mod stage2_injector_tests {
         assert_eq!(
             gone,
             vec![P2],
-            "the seat that leaves is the one the SECOND drainer's pin names, as it is under the \
-             sibling row's CHOICE-class spelling; lives {:?}",
+            "the seat that leaves is the one the SECOND drainer's pin names, as it is under \
+             `drive_one_cycle_reaches_injector_for_3p_targeted`'s CHOICE-class spelling of \
+             this same rig; lives {:?}",
             driven.players.iter().map(|p| p.life).collect::<Vec<_>>()
         );
         assert!(
@@ -23594,8 +23632,16 @@ mod bounded_offer_conjunct_tests {
     /// `certified_period_touch` window inside `certified_bounded_cycle_offer` is sliced from
     /// the evaluable one.
     ///
+    /// It also pins WHICH FRAMES each basis hands the frame-wise life accumulation. That is a
+    /// structural arm rather than a behavioural one because no board in the walked population
+    /// distinguishes appending the live frame from not appending it — the appended leg measured
+    /// EMPTY on both committed drain boards — so the carrier is pinned by exact count over the
+    /// mint's own source instead.
+    ///
     /// REVERT-PROBE: point `ring_live` at `&f.normalized` (rounds 13–33's carrier) ⇒ the
-    /// `&f.live` count goes 1 → 0 ⇒ FLIPS.
+    /// `&f.live` count goes 1 → 0 ⇒ FLIPS. Drop the live board from basis A's frame vector ⇒
+    /// its statement stops naming it. Append it on basis B too ⇒ that statement starts naming
+    /// it. Rename or delete either binding ⇒ the exact count reds.
     #[test]
     fn the_period_touch_window_is_carried_by_the_live_half() {
         let src = include_str!("engine.rs");
@@ -23673,6 +23719,49 @@ mod bounded_offer_conjunct_tests {
                 lines[*producer].trim()
             );
         }
+
+        // THE FRAME VECTORS, located by the BINDING's own name — which every revert that keeps
+        // the two bases leaves standing. The EXACT COUNT is the reach-guard: a locator that
+        // stopped finding a binding fails on the count instead of passing over an empty search.
+        let frame_bindings = engine_code_hits(&lines, certified, "let period_frames");
+        assert_eq!(
+            frame_bindings.len(),
+            2,
+            "each basis binds EXACTLY ONE frame vector for the life accumulation; found {}",
+            frame_bindings.len()
+        );
+        // A binding's whole statement, joined through its terminating `;` — the vector's
+        // construction can wrap, and a line-oriented read would miss the appended frame.
+        let statement = |start: usize| {
+            let mut joined = String::new();
+            for line in &lines[start..=certified.1] {
+                let code = crate::source_census::code(line);
+                joined.push_str(code.trim());
+                if code.trim_end().ends_with(';') {
+                    break;
+                }
+                joined.push(' ');
+            }
+            joined
+        };
+        // Assembled at runtime so this row's own source cannot be read by its own instrument.
+        let live_board = format!("{}tate", 's');
+        assert!(
+            statement(frame_bindings[0]).contains(&live_board),
+            "basis A's window ends at the newest RETAINED frame while its endpoint pair ends at \
+             the LIVE board, so its frame vector must append that board or the walk does not \
+             telescope to the pair it replaces; line {} reads `{}`",
+            frame_bindings[0] + 1,
+            statement(frame_bindings[0])
+        );
+        assert!(
+            !statement(frame_bindings[1]).contains(&live_board),
+            "basis B's window already ends at the newest retained frame its endpoint pair used, \
+             so appending the live board would give its walk a leg the certificate does not \
+             cover; line {} reads `{}`",
+            frame_bindings[1] + 1,
+            statement(frame_bindings[1])
+        );
     }
 
     // ───────────────────────────────────────────────────────────────────────────────────

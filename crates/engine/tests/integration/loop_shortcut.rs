@@ -6582,6 +6582,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
             delta: Default::default(),
             victim_slot: vec![],
             declarable_victims: vec![],
+            seat_life_charge: vec![],
         };
         v["waiting_for"]["data"]["certificate"]["per_cycle"] =
             serde_json::to_value(&period).expect("a PeriodicDelta serializes");
@@ -6636,6 +6637,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
                     delta: Default::default(),
                     victim_slot: vec![],
                     declarable_victims: vec![],
+                    seat_life_charge: vec![],
                 }),
             },
         };
@@ -11279,8 +11281,8 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
             );
             assert!(
                 matches!(state.waiting_for, WaitingFor::Priority { .. }),
-                "{name} n={n}: a completed finite drive hands back to ordinary priority \
-                 (CR 800.4a living seat), not a terminal state; got {:?}",
+                "{name} n={n}: a completed finite drive hands back to ordinary priority, \
+                 not a terminal state; got {:?}",
                 state.waiting_for
             );
 
@@ -12378,8 +12380,8 @@ fn a_cycle_that_does_not_match_the_published_period_is_dropped() {
     );
     assert!(
         matches!(state.waiting_for, WaitingFor::Priority { .. }),
-        "a non-conforming drive falls closed to manual play (CR 800.4a living seat), it does \
-         not crown and does not wedge; got {:?}",
+        "a non-conforming drive falls closed to manual play, it does not crown and does not \
+         wedge; got {:?}",
         state.waiting_for
     );
     assert_eq!(
@@ -13406,7 +13408,7 @@ fn r28_a_declared_template_owning_another_seat_is_refused_at_declare() {
             // (a) refused into the manual handback.
             assert!(
                 matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
-                "(a) CR 800.4a: a wrong-`owner` declaration hands priority back, got {:?}",
+                "(a) a wrong-`owner` declaration hands priority back, got {:?}",
                 runner.state().waiting_for
             );
             assert!(
@@ -13644,7 +13646,7 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
                         restored_runner.state().waiting_for,
                         WaitingFor::Priority { .. }
                     ),
-                    "{label}: (c) CR 800.4a manual handback, got {:?}",
+                    "{label}: (c) manual handback, got {:?}",
                     restored_runner.state().waiting_for
                 );
                 assert_eq!(
@@ -14279,6 +14281,7 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
         delta,
         victim_slot,
         declarable_victims,
+        seat_life_charge,
     }) = per_cycle
     else {
         panic!(
@@ -14302,6 +14305,21 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
     expected_delta.life.insert(P1, -1);
     expected_delta.life.insert(P2, -1);
     expected_delta.life.insert(P3, -1);
+    assert_eq!(
+        *seat_life_charge,
+        expected_delta
+            .life
+            .iter()
+            .filter(|(_, magnitude)| **magnitude < 0)
+            .map(|(seat, magnitude)| (*seat, -*magnitude))
+            .collect::<Vec<_>>(),
+        "CR 119.3 + CR 704.5a: the per-seat divisor the bound was taken over — one POSITIVE \
+         magnitude for each seat this period drains, keyed on the seat CR 119.3 attributes the \
+         loss to, and no entry at all for the controller the period leaves GAINING. \
+         Re-derived from this row's own expected signature rather than pinned, so a divisor \
+         carrying the delta's negative convention, one keyed on the gaining seat, and an \
+         empty one each fail here"
+    );
     assert_eq!(
         *delta, expected_delta,
         "EXACT per-period signature: +1 to the controller, -1 to each opponent, and every \

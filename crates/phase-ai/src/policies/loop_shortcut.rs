@@ -688,6 +688,7 @@ mod tests {
             },
             victim_slot: vec![],
             declarable_victims: vec![],
+            seat_life_charge: vec![],
         }
     }
 
@@ -704,6 +705,7 @@ mod tests {
             },
             victim_slot: vec![],
             declarable_victims: vec![],
+            seat_life_charge: vec![],
         }
     }
 

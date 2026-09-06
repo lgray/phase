@@ -643,6 +643,30 @@ pub struct PeriodicDelta {
     /// play rather than commit a relocation it cannot attribute.
     #[serde(default)]
     pub declarable_victims: Vec<PlayerId>,
+    /// CR 119.3 + CR 704.5a: per seat, the life magnitude
+    /// [`ResourceVector::elimination_bounds`] reserved that seat's elimination headroom
+    /// against — the very slice the mint's own bound was divided by, produced by
+    /// [`ResourceVector::seat_life_charges`] from the period's frame-wise accumulation and the
+    /// charges it was handed.
+    ///
+    /// POSITIVE MAGNITUDES, not deltas: `delta.life`'s negative-as-loss convention is a
+    /// *delta* convention and this is a divisor. Sorted by seat at the mint.
+    ///
+    /// SNAPSHOTTED at the offer beat, deliberately not live, for the reason
+    /// [`PeriodicDelta::declarable_victims`] is: the bound the table accepted was computed
+    /// against these magnitudes, and a later board is not what was agreed.
+    ///
+    /// Publishing it crosses NO NEW SEAT IDENTITY — which is why [`SlotCharge`]'s own stated
+    /// reason for carrying no `Serialize` derive does not reach here. Every seat this field can
+    /// key on is already published: the reach union by `declarable_victims`, the rest by
+    /// `delta.life`.
+    ///
+    /// `#[serde(default)]`, and the direction is the point. A signature persisted before this
+    /// field existed deserializes EMPTY, which disarms every seat's life axis in a reduction
+    /// taken over it — fail-closed, and never a value the mint reads, since the mint derives
+    /// this field in the same call that consumes it.
+    #[serde(default)]
+    pub seat_life_charge: Vec<(PlayerId, i64)>,
 }
 
 impl PeriodicDelta {
@@ -756,9 +780,9 @@ fn slot_charged_life(
     Some((residue, charged))
 }
 
-/// CR 704.5a: what ONE announcement slot charges over one certified period — the life
-/// magnitude, the seats its announcement may name, and the seat the detection window
-/// observed it naming.
+/// CR 119.3: what ONE announcement slot charges over one certified period — the life
+/// magnitude adjusting the total of whichever seat its declaration names, the seats that
+/// announcement may name, and the seat the detection window observed it naming.
 ///
 /// MINT-LOCAL BY DESIGN, and the absence of serde derives is the design rather than an
 /// omission: `game::engine::bounded_cycle_charged_targets_for_window` builds these values and
@@ -779,9 +803,10 @@ pub(crate) struct SlotCharge {
     /// slots.
     pub(crate) slot: DecisionSlot,
     /// CR 119.3: the per-period life loss one repetition of this slot may adjust its named
-    /// seat's total by — [`ResourceVector::worst_seat_life_loss`] at the mint, whose
-    /// MAX-over-seats contract is what makes it an upper bound on this slot's own gross
-    /// per-period contribution.
+    /// seat's total by — at the mint, the per-seat sum of the period's FRAME-WISE negative
+    /// parts, maxed over seats ([`ResourceVector::with_frame_wise_life_loss`] then
+    /// [`ResourceVector::worst_seat_life_loss`]). At least the net term it replaces, at most
+    /// true gross: a loss an offsetting gain cancels inside one frame is still folded away.
     pub(crate) magnitude: i64,
     /// CR 115.2: the seats this slot's announcement may legally name, sorted and deduped. A
     /// slot announced twice in one window reaches the UNION of its frames' legal sets.
@@ -934,6 +959,41 @@ impl ResourceVector {
             .filter(|id| after.objects.get(id).is_some_and(|o| o.is_token))
             .count() as i64;
         v
+    }
+
+    /// CR 119.3: this vector with its `life` axis replaced by each seat's per-period life
+    /// LOSS — the sum of the NEGATIVE PARTS of `frames`' successive deltas. What one period
+    /// takes from a seat, never the balance it leaves behind.
+    ///
+    /// A sibling of [`ResourceVector::period`], and every leg is measured through that very
+    /// call, so a walk and the endpoint pair it replaces cannot measure life two ways. Every
+    /// other axis is `self`'s: only life has an intra-period reading that a two-snapshot
+    /// difference cannot express.
+    ///
+    /// The legs TELESCOPE — their signed `life` terms sum to `period(first, last)`'s, a seat
+    /// absent from one leg's map contributing zero there — so a walk in which no seat's legs
+    /// carry BOTH signs reproduces what the endpoint pair yields under the clamp, at any leg
+    /// count, and a single-leg walk reproduces it exactly. Indifference is a property of
+    /// per-seat sign-monotonicity, never of the leg count.
+    ///
+    /// Entries keep `life`'s NEGATIVE-as-loss convention, which
+    /// [`ResourceVector::worst_seat_life_loss`]' `(-n).max(0)` fold and
+    /// [`ResourceVector::seat_life_charges`]' negation both consume; a seat the walk saw lose
+    /// nothing carries no entry at all.
+    pub(crate) fn with_frame_wise_life_loss(&self, frames: &[&GameState]) -> ResourceVector {
+        let mut life: BTreeMap<PlayerId, i64> = BTreeMap::new();
+        for leg in frames.windows(2) {
+            for (seat, magnitude) in Self::period(leg[0], leg[1]).life {
+                let loss = (-magnitude).max(0);
+                if loss > 0 {
+                    *life.entry(seat).or_insert(0) -= loss;
+                }
+            }
+        }
+        ResourceVector {
+            life,
+            ..self.clone()
+        }
     }
 
     /// Iterate every scalar component of this vector as a signed value, paired
@@ -1120,6 +1180,88 @@ impl ResourceVector {
         self.life.values().map(|&n| (-n).max(0)).max().unwrap_or(0)
     }
 
+    /// CR 119.3 + CR 704.5a: the per-seat life magnitude one repetition may adjust each seat's
+    /// total by — the divisor [`ResourceVector::elimination_bounds`] reserves elimination
+    /// headroom against, over the union of this vector's own life keys and every charge's
+    /// reach.
+    ///
+    /// **Entries are POSITIVE MAGNITUDES, not deltas.** `life`'s negative-as-loss convention
+    /// is a *delta* convention; a divisor is not a delta. A non-positive result is dropped —
+    /// that seat is simply not in the reduction. The `BTreeSet` union orders the result, so
+    /// the value has one spelling and needs no second sort.
+    ///
+    /// # What an aim buys, and the one direction it is not fail-closed
+    ///
+    /// Each [`SlotCharge`] carries the seats its announcement may REACH and the seat the
+    /// window OBSERVED it aim at. An observed aim at `p` ATTRIBUTES `min(observed(p),
+    /// magnitude)` of `p`'s observed loss to that slot — which is what the subtraction below
+    /// performs, since `(observed - aim).max(0)` is `observed - min(observed, aim)` — so a
+    /// drain the window measured once is no longer charged twice. A slot the window did NOT
+    /// see aim at `p` contributed nothing there, so subtracting would credit `p` for a loss it
+    /// never took; that slot stays charged additively.
+    ///
+    /// CR 119.3 + CR 732.2a: the UNATTRIBUTED observed loss and every reaching slot's
+    /// magnitude combine ADDITIVELY. Collapsing the two terms to their MAXIMUM stays refused,
+    /// and the aim subtraction is exactly what re-scopes that refusal rather than lifting it:
+    /// on an unattributed slot `(o - 0).max(0) + m` is `o + m`, so a victim carrying an
+    /// untargeted drain of 1 AND a re-aimable slot of magnitude 1 still loses 2 per period,
+    /// where the maximum is 1 and permits the in-proposal elimination CR 732.2a forbids. On an
+    /// AIMED slot the two terms are the same drain, and `(o - m).max(0) + m` IS `max(o, m)` —
+    /// the very identity forbidden for the unattributed case, computed here only because the
+    /// window proved the attribution.
+    ///
+    /// Because the magnitude is a deliberate over-estimate, `0 < observed(p) < magnitude`
+    /// makes the attribution absorb `p`'s WHOLE observed loss, including any component the
+    /// aimed slot did not cause, and the charge falls to the bare magnitude. That is the one
+    /// direction in which this subtraction is not fail-closed;
+    /// `elimination_bounds_aims_over_the_observed_loss_absorb_it_whole` pins it.
+    ///
+    /// `.max(0)` IS NOT OPTIONAL, and it clamps for two reasons. The mint hands this the
+    /// frame-wise accumulation ([`ResourceVector::with_frame_wise_life_loss`]), whose entries
+    /// are non-positive by construction, so there the first reason is unreachable — but the
+    /// operator is total over `ResourceVector`, and a caller handing it a NET delta has a seat
+    /// that nets a life GAIN yield a negative `observed_life_loss`; unclamped, the sum can be
+    /// `<= 0`, the entry is dropped, and that seat's life axis is silently DISARMED. CR 119.3
+    /// — each gain and loss adjusts the total as it happens — is why a net gain must not
+    /// credit against a reaching slot's magnitude. The second reason is the subtraction
+    /// itself: an aim may exceed the aimed seat's own observed loss, and the excess must not
+    /// become a credit.
+    ///
+    /// A seat NO charge reaches takes the bare `observed_life_loss`: both sums are zero.
+    pub(crate) fn seat_life_charges(&self, charges: &[SlotCharge]) -> Vec<(PlayerId, i64)> {
+        let seats: BTreeSet<PlayerId> = self
+            .life
+            .keys()
+            .copied()
+            .chain(
+                charges
+                    .iter()
+                    .flat_map(|charge| charge.reaches.iter().copied()),
+            )
+            .collect();
+        seats
+            .into_iter()
+            .filter_map(|seat| {
+                // CR 119.3: a negative life entry is the per-period loss.
+                let observed_life_loss = -self.life.get(&seat).copied().unwrap_or(0);
+                // CR 601.2c (reached for a triggered ability via CR 603.3d): what the window
+                // saw announced AT this seat, and what may still be re-aimed ONTO it.
+                let observed_aim: i64 = charges
+                    .iter()
+                    .filter(|charge| charge.aimed_at == Some(seat))
+                    .map(|charge| charge.magnitude.max(0))
+                    .sum();
+                let reachable_charge: i64 = charges
+                    .iter()
+                    .filter(|charge| charge.reaches.contains(&seat))
+                    .map(|charge| charge.magnitude.max(0))
+                    .sum();
+                let magnitude = (observed_life_loss - observed_aim).max(0) + reachable_charge;
+                (magnitude > 0).then_some((seat, magnitude))
+            })
+            .collect()
+    }
+
     /// CR 732.2a + CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: the largest number of
     /// times this per-period delta may legally be repeated in one shortcut proposal.
     ///
@@ -1161,28 +1303,29 @@ impl ResourceVector {
     /// publishes `1` — a one-iteration proposal whose single, final iteration is its ending
     /// point.
     ///
-    /// # What `charges` buys, and the one direction it is not fail-closed
+    /// # What `seat_life_charge` buys, and the one direction it is not fail-closed
     ///
-    /// Each [`SlotCharge`] carries the seats its announcement may REACH and the seat the
-    /// window OBSERVED it aim at. An observed aim at `p` ATTRIBUTES `min(observed(p),
-    /// magnitude)` of `p`'s observed loss to that slot — which is what the subtraction below
-    /// performs, since `(observed - aim).max(0)` is `observed - min(observed, aim)` — so a
-    /// drain the window measured once is no longer charged twice. A slot the window did NOT
-    /// see aim at `p` contributed nothing there, so subtracting would credit `p` for a loss it
-    /// never took; that slot stays charged additively.
+    /// It is the per-seat life divisor, produced by [`ResourceVector::seat_life_charges`] and
+    /// by nothing else — the mint hands this call the very slice it publishes on
+    /// [`PeriodicDelta::seat_life_charge`], so the bound and the published divisor cannot be
+    /// derived apart. A seat with no entry contributes no life narrowing.
     ///
     /// The property, stated over the attribution rather than as a closed form (the closed form
     /// holds only at cardinality one): the charge on a seat is at least the largest per-period
-    /// life loss any legal declaration can inflict on it, in both branches of the clamp. Its
-    /// premise ships with it rather than under it and is
-    /// [`ResourceVector::worst_seat_life_loss`]' own contract, not something proved here —
-    /// that MAX-over-seats magnitude is at least each charged slot's own gross per-period
-    /// contribution. Because it is a deliberate over-estimate, `0 < observed(p) < magnitude`
-    /// makes the attribution absorb `p`'s WHOLE observed loss, including any component the
-    /// aimed slot did not cause, and the charge falls to the bare magnitude. That is the one
-    /// direction in which this subtraction is not fail-closed;
-    /// `elimination_bounds_aims_over_the_observed_loss_absorb_it_whole` pins it.
-    pub(crate) fn elimination_bounds(&self, state: &GameState, charges: &[SlotCharge]) -> u32 {
+    /// life loss any legal declaration can inflict on it, in both branches of that producer's
+    /// clamp. Its premise ships with it rather than under it and is the magnitude's actual
+    /// contract, not something proved here — the per-seat sum of the period's FRAME-WISE
+    /// negative parts, maxed over seats ([`ResourceVector::with_frame_wise_life_loss`] then
+    /// [`ResourceVector::worst_seat_life_loss`]): at least the net term it replaces, at most
+    /// true gross. It under-states gross for a loss an offsetting gain cancels INSIDE one
+    /// frame, and for a CR 704.3 sweep the ring never recorded; both under-state in the same
+    /// direction as the net term did, so a published bound can only shrink. The one direction
+    /// the producer's aim subtraction is not fail-closed is stated on it.
+    pub(crate) fn elimination_bounds(
+        &self,
+        state: &GameState,
+        seat_life_charge: &[(PlayerId, i64)],
+    ) -> u32 {
         let cap = crate::game::engine::MAX_SHORTCUT_CYCLES as i64;
 
         // CR 800.4a: an ELIMINATED seat has left the game and is not in the population, so a
@@ -1191,7 +1334,7 @@ impl ResourceVector {
             .players
             .iter()
             .filter(|p| !p.is_eliminated)
-            .filter_map(|p| self.seat_headroom_bound(p, charges))
+            .filter_map(|p| self.seat_headroom_bound(p, seat_life_charge))
             .collect();
 
         // No axis consumes any living seat ⇒ nothing narrowed. The cap is what an
@@ -1219,7 +1362,7 @@ impl ResourceVector {
     fn seat_headroom_bound(
         &self,
         p: &crate::types::player::Player,
-        charges: &[SlotCharge],
+        seat_life_charge: &[(PlayerId, i64)],
     ) -> Option<i64> {
         let mut bound: Option<i64> = None;
         let mut narrow = |headroom: i64, magnitude: i64| {
@@ -1231,53 +1374,24 @@ impl ResourceVector {
 
         // UNIFORM over EVERY living player, including the proposer: `net_progress_for`
         // reads only the proposer's mana and life, so a proposer who drains themselves is
-        // bounded here like anyone else. NOT bounded by this operator: intra-cycle dips —
-        // a period that drains 5 and lifelinks 7 reports a NET -2 while dipping below
-        // `life - 5` mid-cycle. That blindness is a property of the NET input; the
-        // backstops are conformance and the live elimination guard during the drive.
+        // bounded here like anyone else. What this operator can still miss is a loss an
+        // offsetting gain cancels INSIDE one frame, and a CR 704.3 sweep no ring frame
+        // recorded — a property of the DIVISOR it is handed, which the mint derives frame by
+        // frame ([`ResourceVector::with_frame_wise_life_loss`]) rather than from the period's
+        // endpoint pair; the remaining backstop is the live elimination guard during the
+        // drive.
         //
         // Per-cycle magnitude constancy is a PREMISE, not a proof — the bound
         // extrapolates one measured period. Do NOT add a monotone-magnitude conjunct to
         // "fix" it; that would reject every 2-frame window.
         //
-        // CR 119.3: a negative life delta is the per-period loss.
-        let observed_life_loss = -self.life.get(&p.id).copied().unwrap_or(0);
-        // CR 601.2c (reached for a triggered ability via CR 603.3d): what the window saw
-        // announced AT this seat, and what may still be re-aimed ONTO it.
-        let observed_aim: i64 = charges
+        // CR 119.3 + CR 704.5a: the seat's own entry in the published divisor, or nothing —
+        // an absent seat is one `seat_life_charges` measured no positive per-period life
+        // magnitude for, and `narrow`'s `magnitude > 0` guard leaves its life axis unarmed.
+        let life_magnitude = seat_life_charge
             .iter()
-            .filter(|charge| charge.aimed_at == Some(p.id))
-            .map(|charge| charge.magnitude.max(0))
-            .sum();
-        let reachable_charge: i64 = charges
-            .iter()
-            .filter(|charge| charge.reaches.contains(&p.id))
-            .map(|charge| charge.magnitude.max(0))
-            .sum();
-        // CR 119.3 + CR 732.2a: the UNATTRIBUTED observed loss and every reaching slot's
-        // magnitude combine ADDITIVELY. Collapsing the two terms to their MAXIMUM stays
-        // refused, and the aim subtraction is exactly what re-scopes that refusal rather
-        // than lifting it: on an unattributed slot `(o - 0).max(0) + m` is `o + m`, so a
-        // victim carrying an untargeted drain of 1 AND a re-aimable slot of magnitude 1
-        // still loses 2 per period, where the maximum is 1 and permits the in-proposal
-        // elimination CR 732.2a forbids. On an AIMED slot the two terms are the same
-        // drain, and `(o - m).max(0) + m` IS `max(o, m)` — the very identity forbidden
-        // for the unattributed case, computed here only because the window proved the
-        // attribution.
-        //
-        // `.max(0)` IS NOT OPTIONAL, and it now clamps for two reasons.
-        // `observed_life_loss` negates `self.life`, a per-period NET delta, so a victim
-        // who nets a life GAIN yields a negative value; unclamped, the sum can be <= 0,
-        // `narrow` never fires (its guard is `magnitude > 0`), and the life axis is
-        // silently DISARMED — a seat no other axis consumes then drops out of the
-        // reduction entirely. CR 119.3 — each gain and loss adjusts
-        // the total as it happens — is why a net gain must not credit against a reaching
-        // slot's magnitude. The second reason is the subtraction itself: an aim may exceed
-        // the aimed seat's own observed loss, and the excess must not become a credit.
-        //
-        // A seat NO charge reaches takes the bare `observed_life_loss`: both sums are
-        // zero, and `narrow`'s `magnitude > 0` guard makes the clamp unobservable there.
-        let life_magnitude = (observed_life_loss - observed_aim).max(0) + reachable_charge;
+            .find(|(seat, _)| *seat == p.id)
+            .map_or(0, |(_, magnitude)| *magnitude);
         narrow(p.life as i64 - 1, life_magnitude);
         // CR 704.5c (ten or more poison counters lose): a positive poison delta is the
         // per-period gain.
@@ -10078,9 +10192,9 @@ mod tests {
                  bounds are computed with is the observed one and not a default"
             );
 
-            let forced_bound = delta.elimination_bounds(&forced, &forced_charges);
-            let chosen_bound = delta.elimination_bounds(&chosen, &chosen_charges);
-            let uncharged_bound = delta.elimination_bounds(&forced, &[]);
+            let forced_bound = bound_with(&delta, &forced, &forced_charges);
+            let chosen_bound = bound_with(&delta, &chosen, &chosen_charges);
+            let uncharged_bound = bound_with(&delta, &forced, &[]);
             assert_eq!(
                 forced_bound, chosen_bound,
                 "{label}: CR 704.5a — the bound must not move because CR 732.2a declined to \
@@ -10343,7 +10457,7 @@ mod tests {
 
         // ── And the bound really moves, so the union is not a cosmetic set difference ───
         assert_eq!(
-            delta.elimination_bounds(&current, &charged),
+            bound_with(&delta, &current, &charged),
             4,
             "the charged slot REACHES P2, so P2's life magnitude is `observed 1 + reach 1 = \
              2` over CR 704.5a headroom `7 - 1` — the aim lands on P1, which carries no \
@@ -10356,7 +10470,7 @@ mod tests {
             ..charged[0].clone()
         }];
         assert_eq!(
-            delta.elimination_bounds(&current, &first_wins),
+            bound_with(&delta, &current, &first_wins),
             7,
             "fixture guard — the two reaches must actually disagree on this board, else the \
              assertion above cannot discriminate: first-wins leaves P2 unreached and charges \
@@ -15336,6 +15450,13 @@ mod tests {
             .collect()
     }
 
+    /// The mint's own composition: derive the per-seat divisor from the very charges a row
+    /// states, then hand THAT to the reduction — so a row keeps stating a `SlotCharge`'s reach
+    /// and aim while `elimination_bounds` reads what production hands it.
+    fn bound_with(delta: &ResourceVector, state: &GameState, charges: &[SlotCharge]) -> u32 {
+        delta.elimination_bounds(state, &delta.seat_life_charges(charges))
+    }
+
     /// CR 119.3: the MAX-vs-SUM fork in `victim_slot`'s magnitude
     /// derivation, whose wrong answer surfaces in playtesting as a wrong elimination bound
     /// rather than as a failure.
@@ -15468,7 +15589,7 @@ mod tests {
         //     the threshold. Δ divides `life` here, so this board cannot separate
         //     `floor(life/Δ)` from `ceil(life/Δ)`; (b) is the case that does.
         assert_eq!(
-            life_loss_delta(&[(1, 2)]).elimination_bounds(&bound_board(&[40, 40]), &[]),
+            bound_with(&life_loss_delta(&[(1, 2)]), &bound_board(&[40, 40]), &[]),
             20
         );
         // (b) life 39, Δ2 ⇒ 20. Kills the STRICT form `floor((life - 1) / Δ)` (= 19), which
@@ -15476,7 +15597,7 @@ mod tests {
         //     THE ONLY CASE THAT SEPARATES the two — 38/2 is exact, so 39 is the odd life
         //     that makes `ceil(39/2) = 20` differ from `floor(39/2) = 19`.
         assert_eq!(
-            life_loss_delta(&[(1, 2)]).elimination_bounds(&bound_board(&[40, 39]), &[]),
+            bound_with(&life_loss_delta(&[(1, 2)]), &bound_board(&[40, 39]), &[]),
             20
         );
         // (c) poison 0, Δ5 ⇒ 2, the cycle that delivers the tenth counter. Kills the strict
@@ -15485,7 +15606,7 @@ mod tests {
         {
             let mut v = ResourceVector::default();
             v.poison.insert(PlayerId(1), 5);
-            assert_eq!(v.elimination_bounds(&bound_board(&[40, 40]), &[]), 2);
+            assert_eq!(bound_with(&v, &bound_board(&[40, 40]), &[]), 2);
         }
         // (d) library 8, Δ2 ⇒ 5, the cycle that draws from the emptied library. Kills the
         //     `(L - 1) / Δ` headroom (= 3, or 4 relieved): CR 104.3c/CR 121.4 lose on the
@@ -15496,20 +15617,24 @@ mod tests {
             state.players[1].library = (0..8).map(|i| ObjectId(1000 + i)).collect();
             let mut v = ResourceVector::default();
             v.library_delta.insert(PlayerId(1), -2);
-            assert_eq!(v.elimination_bounds(&state, &[]), 5);
+            assert_eq!(bound_with(&v, &state, &[]), 5);
         }
         // (e) two living at 40 and 12, Δ1 each ⇒ 12. Kills max-instead-of-min (which would
         //     answer 40). The 12-life seat is the unique binding one, so the relief applies
         //     to ITS crossing and the 40-life seat is still at 28 there.
         assert_eq!(
-            life_loss_delta(&[(0, 1), (1, 1)]).elimination_bounds(&bound_board(&[40, 12]), &[]),
+            bound_with(
+                &life_loss_delta(&[(0, 1), (1, 1)]),
+                &bound_board(&[40, 12]),
+                &[]
+            ),
             12
         );
         // (f) life 5000, Δ1 ⇒ 1000. Kills a missing clamp to MAX_SHORTCUT_CYCLES. MEASURED
         //     UNCHANGED by the relief: the strict value is far above the cap, so the relief
         //     would mint a value at or past the sentinel and is refused.
         assert_eq!(
-            life_loss_delta(&[(1, 1)]).elimination_bounds(&bound_board(&[40, 5000]), &[]),
+            bound_with(&life_loss_delta(&[(1, 1)]), &bound_board(&[40, 5000]), &[]),
             crate::game::engine::MAX_SHORTCUT_CYCLES
         );
         // (g) CR 800.4a: an ELIMINATED seat at life 1 must not lower N — PAIRED with the
@@ -15519,14 +15644,14 @@ mod tests {
             let mut alive = bound_board(&[40, 1, 40]);
             let delta = life_loss_delta(&[(1, 1), (2, 1)]);
             assert_eq!(
-                delta.elimination_bounds(&alive, &[]),
+                bound_with(&delta, &alive, &[]),
                 1,
                 "control: while that seat is IN the game it holds the bound to its own \
                  single, final iteration"
             );
             alive.players[1].is_eliminated = true;
             assert_eq!(
-                delta.elimination_bounds(&alive, &[]),
+                bound_with(&delta, &alive, &[]),
                 40,
                 "an eliminated seat has left the game and constrains nothing, so the 40-life \
                  seat becomes the unique binding one"
@@ -15535,13 +15660,13 @@ mod tests {
         // (h) the PROPOSER at life 3 losing 1/cycle ⇒ N <= 3. Kills the deleted
         //     `p == proposer => unbounded` special case: `net_progress_for` reads only the
         //     proposer's mana and life, so it cannot see this at all.
-        assert!(life_loss_delta(&[(0, 1)]).elimination_bounds(&bound_board(&[3, 40]), &[]) <= 3);
+        assert!(bound_with(&life_loss_delta(&[(0, 1)]), &bound_board(&[3, 40]), &[]) <= 3);
         // (i) the PROPOSER gaining 3 poison/cycle from 0 ⇒ N <= 4. Same defect on the axis
         //     `net_progress_for` is entirely blind to.
         {
             let mut v = ResourceVector::default();
             v.poison.insert(PlayerId(0), 3);
-            assert!(v.elimination_bounds(&bound_board(&[40, 40]), &[]) <= 4);
+            assert!(bound_with(&v, &bound_board(&[40, 40]), &[]) <= 4);
         }
         // (j) observed drain on P3 only, lives P1/P2/P3 = 12/13/28, ONE announced slot of
         //     magnitude 1 reaching every opponent and UNATTRIBUTED ⇒ 12. Kills the
@@ -15552,11 +15677,11 @@ mod tests {
             let board = bound_board(&[69, 12, 13, 28]);
             let delta = life_loss_delta(&[(3, 1)]);
             assert_eq!(
-                delta.elimination_bounds(&board, &slot_charges(&[(1, OPPONENTS, None)])),
+                bound_with(&delta, &board, &slot_charges(&[(1, OPPONENTS, None)])),
                 12
             );
             assert_eq!(
-                delta.elimination_bounds(&board, &[]),
+                bound_with(&delta, &board, &[]),
                 28,
                 "with NO charged slot only the observed victim constrains the bound"
             );
@@ -15568,7 +15693,8 @@ mod tests {
         {
             let board = bound_board(&[69, 12, 13, 28]);
             assert_eq!(
-                ResourceVector::default().elimination_bounds(
+                bound_with(
+                    &ResourceVector::default(),
                     &board,
                     &slot_charges(&[(1, OPPONENTS, None), (1, OPPONENTS, None)])
                 ),
@@ -15579,7 +15705,7 @@ mod tests {
         //     boundary stated as an arithmetic identity, not a comment.
         {
             let board = bound_board(&[40, 12]);
-            let n = life_loss_delta(&[(1, 1)]).elimination_bounds(&board, &[]);
+            let n = bound_with(&life_loss_delta(&[(1, 1)]), &board, &[]);
             assert_eq!(n, 12);
             assert_eq!(
                 board.players[1].life as i64 - i64::from(n),
@@ -15603,7 +15729,7 @@ mod tests {
             let board = bound_board(&[77, 20, 20, 16]);
             let delta = life_loss_delta(&[(3, 1)]);
             assert_eq!(
-                delta.elimination_bounds(&board, &slot_charges(&[(1, OPPONENTS, None)])),
+                bound_with(&delta, &board, &slot_charges(&[(1, OPPONENTS, None)])),
                 8,
                 "the slot magnitude and the observed loss may be the SAME drain, but no \
                  observed aim says so, so the unattributed slot is charged on top: \
@@ -15611,7 +15737,7 @@ mod tests {
                  is the unique binding seat, so the published crossing is 8"
             );
             assert_eq!(
-                delta.elimination_bounds(&board, &[]),
+                bound_with(&delta, &board, &[]),
                 16,
                 "untargeted twin: with no charged slot no reach term exists, so the board \
                  still bounds at P3's own crossing, 16 — this is what makes the pair \
@@ -15628,19 +15754,20 @@ mod tests {
         //     `(-2 - 0).max(0) + 1 == 1` ⇒ a strict `(10 - 1) / 1 == 9`, and P1 is the only
         //     consumed seat, so the published crossing is 10.
         //
-        //     Without `.max(0)` the charge is `-2 + 1 == -1`, so `seat_headroom_bound`'s
-        //     `narrow` closure never fires for P1 (its guard is `magnitude > 0`), P1 leaves
-        //     the reduction as `None`, NO living seat is consumed at all, and the bound
-        //     stays at MAX_SHORTCUT_CYCLES — the life axis silently DISARMED on exactly the
-        //     input that needs it. Asserting the cap here would lock that fail-open in
-        //     behind a green test.
-        //     REVERT-PROBE: delete `.max(0)` from `seat_headroom_bound`'s `life_magnitude`
-        //     operator ⇒ this assertion flips 10 → MAX_SHORTCUT_CYCLES ⇒ FAILS.
+        //     Without `.max(0)` the charge is `-2 + 1 == -1`, so the divisor drops P1
+        //     entirely (its entries are the positive ones), `seat_headroom_bound`'s `narrow`
+        //     closure never fires for it, P1 leaves the reduction as `None`, NO living seat
+        //     is consumed at all, and the bound stays at MAX_SHORTCUT_CYCLES — the life axis
+        //     silently DISARMED on exactly the input that needs it. Asserting the cap here
+        //     would lock that fail-open in behind a green test.
+        //     REVERT-PROBE: delete `.max(0)` from `seat_life_charges`' `magnitude` operator
+        //     ⇒ this assertion flips 10 → MAX_SHORTCUT_CYCLES ⇒ FAILS.
         //
-        //     NOT bounded by the clamp, disclosed: intra-cycle dips. `self.life` is a
-        //     per-period NET delta, so a period draining 5 and lifelinking 7 also reports
-        //     `observed = -2` while dipping below `life - 5` mid-cycle. That blindness is a
-        //     property of the INPUT.
+        //     NOT bounded by the clamp, disclosed: a loss an offsetting gain cancels inside
+        //     ONE frame. This row hands the divisor a hand-built NET delta, where a period
+        //     draining 5 and lifelinking 7 also reports `observed = -2`; the mint hands it
+        //     the frame-wise accumulation instead, which separates those two at every frame
+        //     boundary but not within one. That blindness is a property of the INPUT.
         {
             let board = bound_board(&[40, 10]);
             let delta = life_loss_delta(&[(1, -2)]);
@@ -15648,7 +15775,7 @@ mod tests {
             // below cannot be the cap-or-not for an unrelated seat's reason.
             assert!(!delta.life.contains_key(&PlayerId(0)));
             assert_eq!(
-                delta.elimination_bounds(&board, &slot_charges(&[(1, &[1], None)])),
+                bound_with(&delta, &board, &slot_charges(&[(1, &[1], None)])),
                 10,
                 "a NET-GAIN victim is still bounded by the slot that reaches it: the \
                  observed term is clamped to 0 and cannot credit against the reach term"
@@ -15671,12 +15798,12 @@ mod tests {
 
         // ⓐ ONE seat at the binding value ⇒ the published count IS its crossing.
         let one = bound_board(&[40, 12, 40]);
-        assert_eq!(delta.elimination_bounds(&one, &[]), 12);
+        assert_eq!(bound_with(&delta, &one, &[]), 12);
 
         // ⓑ TWO seats at the binding value ⇒ back to the strict headroom value, where
         //   neither crosses. The admitted member the class must refuse.
         let two = bound_board(&[40, 12, 12]);
-        assert_eq!(delta.elimination_bounds(&two, &[]), 11);
+        assert_eq!(bound_with(&delta, &two, &[]), 11);
         assert!(
             two.players[1].life as i64 - 11 > 0 && two.players[2].life as i64 - 11 > 0,
             "the refused value leaves BOTH tied seats alive, which is what makes it the right \
@@ -15690,12 +15817,12 @@ mod tests {
         //   `game::engine::bounded_offer_conjunct_tests::a_bound_of_zero_mints_no_bounded_offer`'s
         //   ⓑ, which publishes 1 and mints.
         let zero = bound_board(&[40, 1, 1]);
-        assert_eq!(delta.elimination_bounds(&zero, &[]), 0);
+        assert_eq!(bound_with(&delta, &zero, &[]), 0);
 
         // ⓓ the other end: two seats ONE crossing apart. The relief fires, and the proof
         //   obligation is the SURVIVOR's headroom, not the faller's.
         let apart = bound_board(&[40, 12, 13]);
-        let n = i64::from(delta.elimination_bounds(&apart, &[]));
+        let n = i64::from(bound_with(&delta, &apart, &[]));
         assert_eq!(n, 12);
         assert_eq!(
             apart.players[1].life as i64 - n,
@@ -15725,7 +15852,7 @@ mod tests {
 
         // ⓐ strict value one below the sentinel ⇒ the relief is refused.
         let at = bound_board(&[40, cap as i32]);
-        let published = delta.elimination_bounds(&at, &[]);
+        let published = bound_with(&delta, &at, &[]);
         assert_eq!(published, cap - 1);
         assert!(
             published < cap,
@@ -15738,7 +15865,7 @@ mod tests {
         //   edit and neither carries the other.
         let below = bound_board(&[40, cap as i32 - 1]);
         assert_eq!(
-            delta.elimination_bounds(&below, &[]),
+            bound_with(&delta, &below, &[]),
             cap - 1,
             "strict {} relieved to {}, still below the sentinel",
             cap - 2,
@@ -15759,20 +15886,20 @@ mod tests {
 
         // ⓐ a delta with no loss axis at all and no charged slot: nothing consumes a seat.
         assert_eq!(
-            ResourceVector::default().elimination_bounds(&board, &[]),
+            bound_with(&ResourceVector::default(), &board, &[]),
             crate::game::engine::MAX_SHORTCUT_CYCLES
         );
 
         // ⓑ the control: one consumed seat on the SAME board narrows below the cap.
         assert!(
-            life_loss_delta(&[(1, 1)]).elimination_bounds(&board, &[])
+            bound_with(&life_loss_delta(&[(1, 1)]), &board, &[])
                 < crate::game::engine::MAX_SHORTCUT_CYCLES,
             "control: the cap above is an empty reduction, not a board this function cannot \
              narrow on"
         );
     }
 
-    /// **V1** — CR 704.5a + CR 601.2c: **an AIMED slot is charged ONCE.** Where the detection
+    /// **V1** — CR 119.3 + CR 601.2c: **an AIMED slot is charged ONCE.** Where the detection
     /// window saw a slot announce a seat, that seat's observed loss already contains the
     /// slot's magnitude, so charging both terms in full counts one drain twice.
     ///
@@ -15796,8 +15923,8 @@ mod tests {
         let charged_aimed: i64 = 1;
         let charged_unattributed: i64 = 2;
 
-        let aimed = delta.elimination_bounds(&board, &slot_charges(&[(1, OPPONENTS, Some(3))]));
-        let unattributed = delta.elimination_bounds(&board, &slot_charges(&[(1, OPPONENTS, None)]));
+        let aimed = bound_with(&delta, &board, &slot_charges(&[(1, OPPONENTS, Some(3))]));
+        let unattributed = bound_with(&delta, &board, &slot_charges(&[(1, OPPONENTS, None)]));
 
         assert_ne!(
             aimed, unattributed,
@@ -15819,7 +15946,7 @@ mod tests {
         );
     }
 
-    /// **V4** — CR 704.5a + CR 732.2a: **the REACH term charges a slot to a seat it can name
+    /// **V4** — CR 119.3 + CR 732.2a: **the REACH term charges a slot to a seat it can name
     /// but was not observed naming.** CR 732.2a describes a sequence that "may be legally
     /// taken", so every legal declaration must fit the bound, not only the one the window saw.
     ///
@@ -15846,27 +15973,27 @@ mod tests {
              observed term's and not the reach term's"
         );
         assert_eq!(
-            delta.elimination_bounds(&starved, &charges),
+            bound_with(&delta, &starved, &charges),
             2,
             "CR 732.2a: the declaration may re-aim this slot at P2 in every repetition, so \
              P2 is charged the slot's magnitude over its own headroom of 1 — and P2 is not \
              the seat the window saw the slot aim at"
         );
         assert_eq!(
-            delta.elimination_bounds(&restored, &charges),
+            bound_with(&delta, &restored, &charges),
             16,
             "PAIRED SIBLING: with P2's headroom restored the AIMED seat binds instead, which \
              is what attributes the value above to the reach term rather than to the board"
         );
         assert_eq!(
-            delta.elimination_bounds(&starved, &slot_charges(&[(1, &[3], Some(3))])),
+            bound_with(&delta, &starved, &slot_charges(&[(1, &[3], Some(3))])),
             16,
             "REVERT-PROBE, run: a reach narrowed to the aimed seat alone charges P2 nothing \
              and the bound jumps back to the aimed seat's own division"
         );
     }
 
-    /// **V10** — CR 704.5a + CR 119.3: **the one direction this subtraction is not
+    /// **V10** — CR 119.3: **the one direction this subtraction is not
     /// fail-closed, pinned rather than left to be discovered.** Where the observed aim exceeds
     /// the aimed seat's own observed loss, the attribution absorbs that seat's WHOLE observed
     /// loss and its charge falls to the bare magnitude.
@@ -15896,14 +16023,14 @@ mod tests {
         );
 
         assert_eq!(
-            delta.elimination_bounds(&board, &slot_charges(&[(3, &[1], Some(1))])),
+            bound_with(&delta, &board, &slot_charges(&[(3, &[1], Some(1))])),
             6,
-            "CR 704.5a: the attribution absorbs P1's whole observed loss and its charge is \
+            "CR 119.3: the attribution absorbs P1's whole observed loss and its charge is \
              the bare magnitude 3 over headroom 15 — not 4, which the excess would give if \
              the clamp credited it"
         );
         assert_eq!(
-            delta.elimination_bounds(&board, &slot_charges(&[(3, &[1], None)])),
+            bound_with(&delta, &board, &slot_charges(&[(3, &[1], None)])),
             4,
             "PAIRED SIBLING: unattributed, P1 is charged `observed 1 + reach 3 == 4` over the \
              same headroom — the pair is what shows the subtraction ran, and how far"
@@ -15941,14 +16068,14 @@ mod tests {
         // so the instrument provably returns a LARGER count here and the value below is a
         // verdict about the charge rather than a dead path.
         assert_eq!(
-            delta.elimination_bounds(&board, &[]),
+            bound_with(&delta, &board, &[]),
             2,
             "positive control: with no charged slot the observed drain of 1 over P1's \
              headroom of 1 admits one repetition inside the threshold and a second that \
              crosses it — the sequence's final iteration"
         );
         assert_eq!(
-            delta.elimination_bounds(&board, &slot_charges(&[(1, &[1], None)])),
+            bound_with(&delta, &board, &slot_charges(&[(1, &[1], None)])),
             1,
             "MIXED LOSS: an untargeted drain of 1 AND a re-aimable slot of magnitude 1 the \
              window never saw aim anywhere cost P1 2 per period against a headroom of 1, so \
@@ -15957,11 +16084,396 @@ mod tests {
              repetition after P1 has left"
         );
         assert_eq!(
-            delta.elimination_bounds(&board, &slot_charges(&[(1, &[1], Some(1))])),
+            bound_with(&delta, &board, &slot_charges(&[(1, &[1], Some(1))])),
             2,
             "THE CLASS BOUNDARY: with the aim settled on P1 the observed 1 IS this slot, so \
              charging it once is correct and P1 crosses on the second, FINAL iteration. The \
              tighter count above is about the missing attribution, not about the board"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // Rig C1 — the frame-wise life charge: what it moves, and what it must leave alone.
+    // ─────────────────────────────────────────────────────────────────────────────────────
+
+    /// A ring whose frame `i` gives seat `s` the life `lives[i][s]`, everything else held
+    /// identical, so the frame-deltas are exactly the successive differences. Both halves are
+    /// built the way `record_loop_detect_sample` builds them, so the fixture cannot diverge
+    /// from production's construction.
+    fn c1_ring(lives: &[&[i32]]) -> GameState {
+        let mut state = bound_board(lives[0]);
+        for frame_lives in lives {
+            let frame = bound_board(frame_lives);
+            state
+                .loop_detect_ring
+                .push_back(std::sync::Arc::new(crate::types::LoopDetectSample {
+                    normalized: frame.normalize_for_loop(),
+                    live: frame.loop_detect_live_sample(),
+                }));
+        }
+        state
+    }
+
+    /// Step (7)'s own pair on a certified ring: the endpoint delta the certificate publishes,
+    /// and the frame-wise accumulation over the frames the certified `k` names. `k` is derived
+    /// by `ring_delta_signature`, never a literal, and the frames are the ring slice basis B
+    /// hands the accumulation.
+    fn c1_derivations(ring: &GameState) -> (ResourceVector, ResourceVector) {
+        let (k, delta) = ring_delta_signature(ring)
+            .expect("reach-guard: the rig's ring must certify a period, or no row below has one");
+        let live: Vec<&GameState> = ring.loop_detect_ring.iter().map(|f| &f.live).collect();
+        let frames = &live[live.len() - 1 - k as usize..];
+        assert_eq!(
+            frames.len(),
+            k as usize + 1,
+            "reach-guard: the walk must have exactly `k` legs, as basis B's window does"
+        );
+        let frame_wise = delta.with_frame_wise_life_loss(frames);
+        (delta, frame_wise)
+    }
+
+    /// **V1 — CR 119.3 + CR 704.5a: a within-period sign mix on the seat the MAX selects
+    /// SHRINKS the published bound, and the same board without the gain does not move.**
+    ///
+    /// P1's two legs run `-5` then `+2`: the endpoint pair reports `-3` and cannot see the
+    /// crossing at `-5`, which CR 704.3 checks at the frame boundary between them. P3 is the
+    /// IN-BOARD CONTROL — monotone and reached by no charge — so its divisor entry is identical
+    /// under both derivations, which is what attributes the flip to the mix rather than to the
+    /// board.
+    ///
+    /// REVERT-PROBE: source the reduction's life term from `periodic.delta` instead of the
+    /// accumulation ⇒ the mixed arm publishes 5 where 4 is asserted, while the control sibling
+    /// is indifferent.
+    #[test]
+    fn frame_wise_life_charge_shrinks_the_bound_on_a_mix_the_max_selects() {
+        let mixed = c1_ring(&[
+            &[40, 100, 100, 100],
+            &[40, 95, 99, 96],
+            &[40, 97, 98, 96],
+            &[40, 92, 97, 92],
+            &[40, 94, 96, 92],
+        ]);
+        let (delta, frame_wise) = c1_derivations(&mixed);
+        assert_eq!(
+            delta.life.get(&PlayerId(1)).copied(),
+            Some(-3),
+            "the endpoint pair nets P1 at -3 across the period"
+        );
+        assert_eq!(
+            frame_wise.life.get(&PlayerId(1)).copied(),
+            Some(-5),
+            "CR 119.3: the period TOOK 5 from P1 and gave 2 back, and what one repetition \
+             charges is the 5"
+        );
+        assert_eq!(
+            delta.life.get(&PlayerId(3)).copied(),
+            frame_wise.life.get(&PlayerId(3)).copied(),
+            "IN-BOARD CONTROL: the monotone seat's life term is identical under both \
+             derivations, so anything that moves below is the mix's doing and not the board's"
+        );
+
+        // One re-aimable slot reaching the mixed seat and one flat-loss seat; P3 is reached by
+        // nothing.
+        let charge =
+            |v: &ResourceVector| slot_charges(&[(v.worst_seat_life_loss(), &[1, 2], Some(1))]);
+        let board = bound_board(&[40, 21, 29, 21]);
+        let net_bound = delta.elimination_bounds(&board, &delta.seat_life_charges(&charge(&delta)));
+        let frame_wise_bound =
+            delta.elimination_bounds(&board, &frame_wise.seat_life_charges(&charge(&frame_wise)));
+        for (label, bound) in [("endpoint", net_bound), ("frame-wise", frame_wise_bound)] {
+            assert!(
+                (1..crate::game::engine::MAX_SHORTCUT_CYCLES).contains(&bound),
+                "reach-guard: the {label} bound must be a NARROWED count, or step (7)'s own \
+                 range refusal would suppress the offer and neither value below is a bound; \
+                 got {bound}"
+            );
+        }
+        assert_eq!(
+            net_bound, 5,
+            "the endpoint derivation authorises five repetitions"
+        );
+        assert_eq!(
+            frame_wise_bound, 4,
+            "CR 704.5a: charging what the period TAKES from P1 removes the fifth — the seat \
+             whose gain the net term credited it with cannot survive it"
+        );
+
+        // ── THE CONTROL SIBLING: the same board with P1's gain removed. ──
+        let flat = c1_ring(&[
+            &[40, 100, 100, 100],
+            &[40, 95, 99, 96],
+            &[40, 95, 98, 96],
+            &[40, 90, 97, 92],
+            &[40, 90, 96, 92],
+        ]);
+        let (flat_delta, flat_frame_wise) = c1_derivations(&flat);
+        assert_eq!(
+            flat_delta.life, flat_frame_wise.life,
+            "with no seat carrying both signs across its legs the two derivations agree \
+             POINTWISE, which is the indifference every unmoved board below rests on"
+        );
+        assert_eq!(
+            flat_delta
+                .elimination_bounds(&board, &flat_delta.seat_life_charges(&charge(&flat_delta))),
+            flat_frame_wise.elimination_bounds(
+                &board,
+                &flat_frame_wise.seat_life_charges(&charge(&flat_frame_wise))
+            ),
+            "and the bound they divide out is the same number"
+        );
+    }
+
+    /// **V2 — CR 732.2a: the class's admitted member. A sign mix on a seat the MAX-over-seats
+    /// fold does NOT select moves neither the magnitude nor the bound.**
+    ///
+    /// P1 carries the mix and the SMALLER gross; P2's flat loss is what the fold selects. Each
+    /// charge's aim is settled on its own seat, so neither seat's divisor entry is the other's.
+    ///
+    /// REVERT-PROBE: drop the MAX-over-seats fold and charge each seat its own frame-wise loss ⇒
+    /// this row moves, while V1 — whose mix sits on the selected seat — does not.
+    #[test]
+    fn frame_wise_life_charge_leaves_a_mix_the_max_does_not_select_alone() {
+        let ring = c1_ring(&[
+            &[40, 100, 100],
+            &[40, 98, 96],
+            &[40, 99, 96],
+            &[40, 97, 92],
+            &[40, 98, 92],
+        ]);
+        let (delta, frame_wise) = c1_derivations(&ring);
+        assert_ne!(
+            delta.life.get(&PlayerId(1)).copied(),
+            frame_wise.life.get(&PlayerId(1)).copied(),
+            "reach-guard: the mixed seat's own life term MUST differ between the derivations, \
+             else 'nothing moved anywhere' satisfies this row without a mix in it"
+        );
+        assert_eq!(
+            delta.worst_seat_life_loss(),
+            frame_wise.worst_seat_life_loss(),
+            "CR 732.2a: the fold selects the seat with the largest loss, and that is the \
+             MONOTONE seat here, so the magnitude is unmoved"
+        );
+
+        let charges = |v: &ResourceVector| {
+            let m = v.worst_seat_life_loss();
+            slot_charges(&[(m, &[1], Some(1)), (m, &[2], Some(2))])
+        };
+        let board = bound_board(&[40, 21, 13]);
+        let net_bound =
+            delta.elimination_bounds(&board, &delta.seat_life_charges(&charges(&delta)));
+        let frame_wise_bound =
+            delta.elimination_bounds(&board, &frame_wise.seat_life_charges(&charges(&frame_wise)));
+        assert!(
+            (1..crate::game::engine::MAX_SHORTCUT_CYCLES).contains(&net_bound),
+            "reach-guard: a NARROWED count, not the un-narrowed sentinel; got {net_bound}"
+        );
+        assert_eq!(
+            net_bound, frame_wise_bound,
+            "the bound is unmoved because the fold never read the mixed seat"
+        );
+    }
+
+    /// **V3 — CR 704.5a: the reduction's seat SET changes, not only its divisor.**
+    ///
+    /// P1's period NETS A LIFE GAIN while its frames carry a loss. Under the endpoint term the
+    /// clamp drops P1 out of the divisor entirely and its life axis is DISARMED; under the
+    /// frame-wise term P1 is charged what the period took from it and becomes the argmin. The
+    /// magnitude is equal under both derivations, so the flip is the SET's and not the divisor's.
+    ///
+    /// The two `seat_headroom_bound` calls share one `self`, so the only thing that differs
+    /// between them is the divisor they are handed.
+    ///
+    /// REVERT-PROBE: source the life term from `periodic.delta` ⇒ P1 drops back out, the argmin
+    /// changes hands and the published bound reads 14.
+    #[test]
+    fn frame_wise_life_charge_readmits_a_seat_whose_period_nets_a_gain() {
+        let ring = c1_ring(&[
+            &[40, 100, 100],
+            &[40, 97, 97],
+            &[40, 102, 97],
+            &[40, 99, 94],
+            &[40, 104, 94],
+        ]);
+        let (delta, frame_wise) = c1_derivations(&ring);
+        assert_eq!(
+            delta.life.get(&PlayerId(1)).copied(),
+            Some(2),
+            "the endpoint pair reports P1 a net GAINER over the period"
+        );
+        assert_eq!(
+            frame_wise.life.get(&PlayerId(1)).copied(),
+            Some(-3),
+            "CR 119.3: and the period still took 3 from P1, at a boundary CR 704.3 checks"
+        );
+        assert_eq!(
+            delta.worst_seat_life_loss(),
+            frame_wise.worst_seat_life_loss(),
+            "the MAGNITUDE is equal under both derivations, so what moves below is the seat \
+             set and not the number the headroom is divided by"
+        );
+
+        let board = bound_board(&[40, 7, 40]);
+        let net_divisor = delta.seat_life_charges(&[]);
+        let frame_wise_divisor = frame_wise.seat_life_charges(&[]);
+        assert!(
+            net_divisor.iter().any(|(seat, _)| *seat == PlayerId(2)),
+            "reach-guard: a second consumed seat keeps the reduction non-empty under BOTH \
+             divisors, so the bound below is a narrowing and not the un-narrowed cap"
+        );
+        assert_eq!(
+            delta.seat_headroom_bound(&board.players[1], &net_divisor),
+            None,
+            "CR 704.5a: with the net term P1 reserves no headroom at all — the clamp disarms \
+             its life axis and it leaves the reduction"
+        );
+        assert_eq!(
+            delta.seat_headroom_bound(&board.players[1], &frame_wise_divisor),
+            Some(2),
+            "under the frame-wise term P1 is back in the reduction at `(7 - 1) / 3`"
+        );
+
+        let net_bound = delta.elimination_bounds(&board, &net_divisor);
+        let frame_wise_bound = delta.elimination_bounds(&board, &frame_wise_divisor);
+        for (label, bound) in [("endpoint", net_bound), ("frame-wise", frame_wise_bound)] {
+            assert!(
+                (1..crate::game::engine::MAX_SHORTCUT_CYCLES).contains(&bound),
+                "reach-guard: the {label} bound must be a NARROWED count; got {bound}"
+            );
+        }
+        assert_eq!(net_bound, 14, "the endpoint derivation bounds on P2 alone");
+        assert_eq!(
+            frame_wise_bound, 3,
+            "CR 704.5a: P1 is the argmin once it is charged what the period takes from it"
+        );
+    }
+
+    /// **V4a — CR 119.3: the walk TELESCOPES to the endpoint pair, including for a seat absent
+    /// from one leg's map, and every leg is load-bearing.**
+    ///
+    /// Half one: the legs' SIGNED life terms sum to `ResourceVector::period(first, last)`'s on a
+    /// rig where each leg's map names only one of the two seats. Half two: the accumulation over
+    /// the frames MINUS the last one differs, on a rig whose sign mix straddles that leg.
+    ///
+    /// REVERT-PROBE: sum the legs' signed values instead of their negative parts ⇒ half two reds
+    /// (P1 reads -9 where -13 is asserted, P2 drops out) while half one stays green.
+    #[test]
+    fn frame_wise_life_charge_telescopes_and_reads_every_leg() {
+        // ── HALF ONE: the telescoping, with a seat absent from each leg's own map. ──
+        let disjoint = [
+            bound_board(&[40, 100, 100]),
+            bound_board(&[40, 95, 100]),
+            bound_board(&[40, 95, 103]),
+        ];
+        let legs: Vec<BTreeMap<PlayerId, i64>> = disjoint
+            .windows(2)
+            .map(|leg| ResourceVector::period(&leg[0], &leg[1]).life)
+            .collect();
+        assert_eq!(
+            legs,
+            vec![
+                BTreeMap::from([(PlayerId(1), -5)]),
+                BTreeMap::from([(PlayerId(2), 3)]),
+            ],
+            "reach-guard: each leg's map is NON-EMPTY, they DIFFER, and each names a seat the \
+             other omits — a walk that produced one leg, or two equal ones, cannot pass here"
+        );
+        let mut summed: BTreeMap<PlayerId, i64> = BTreeMap::new();
+        for leg in &legs {
+            for (seat, magnitude) in leg {
+                *summed.entry(*seat).or_insert(0) += magnitude;
+            }
+        }
+        assert_eq!(
+            summed,
+            ResourceVector::period(&disjoint[0], &disjoint[2]).life,
+            "CR 119.3: the legs sum to the endpoint pair, so a walk with no per-seat sign mix \
+             reproduces what the pair reports at any leg count"
+        );
+
+        // ── HALF TWO: every leg is read. P2's sign mix straddles the LAST leg. ──
+        let straddle = [
+            bound_board(&[40, 100, 100]),
+            bound_board(&[40, 96, 104]),
+            bound_board(&[40, 91, 100]),
+        ];
+        let frames: Vec<&GameState> = straddle.iter().collect();
+        let whole = ResourceVector::default().with_frame_wise_life_loss(&frames);
+        let truncated =
+            ResourceVector::default().with_frame_wise_life_loss(&frames[..frames.len() - 1]);
+        assert_eq!(
+            whole.life,
+            BTreeMap::from([(PlayerId(1), -9), (PlayerId(2), -4)]),
+            "both legs' negative parts are accumulated"
+        );
+        assert_eq!(
+            truncated.life,
+            BTreeMap::from([(PlayerId(1), -4)]),
+            "the truncated walk states its OWN result, so 'it returned nothing' cannot satisfy \
+             the inequality below"
+        );
+        assert_ne!(
+            whole.life, truncated.life,
+            "dropping the last leg changes the accumulation, so no leg is decorative"
+        );
+    }
+
+    /// **V5 — CR 119.3: the admitted member the class must REFUSE. A single-LEG accumulation
+    /// publishes exactly what the endpoint pair does.**
+    ///
+    /// Two seats losing DISTINCT amounts and a third GAINING: the shape a derivation that summed
+    /// across seats would move, and that a single-seat life map cannot show.
+    ///
+    /// REVERT-PROBE: sum across seats instead of maxing ⇒ the magnitude reads 4, P1's divisor
+    /// entry rises to 4 and the published bound falls to 5.
+    #[test]
+    fn frame_wise_life_charge_is_the_endpoint_pair_on_a_single_leg() {
+        let one_leg = [
+            bound_board(&[40, 100, 100, 100]),
+            bound_board(&[40, 97, 99, 102]),
+        ];
+        let frames: Vec<&GameState> = one_leg.iter().collect();
+        let delta = ResourceVector::period(&one_leg[0], &one_leg[1]);
+        let frame_wise = delta.with_frame_wise_life_loss(&frames);
+        assert_eq!(
+            delta.life,
+            BTreeMap::from([(PlayerId(1), -3), (PlayerId(2), -1), (PlayerId(3), 2)]),
+            "reach-guard: TWO seats lose DISTINCT amounts and a third gains"
+        );
+        assert_eq!(
+            frame_wise.life,
+            BTreeMap::from([(PlayerId(1), -3), (PlayerId(2), -1)]),
+            "the gaining seat is absent from the accumulation's map — a gain contributes \
+             nothing, it does not become a negative entry"
+        );
+        assert_eq!(
+            delta.worst_seat_life_loss(),
+            frame_wise.worst_seat_life_loss(),
+            "CR 732.2a: over ONE leg the negative-part sum IS the clamped endpoint fold"
+        );
+
+        let charges =
+            |v: &ResourceVector| slot_charges(&[(v.worst_seat_life_loss(), &[1], Some(1))]);
+        let board = bound_board(&[40, 21, 13, 15]);
+        let net_divisor = delta.seat_life_charges(&charges(&delta));
+        let frame_wise_divisor = frame_wise.seat_life_charges(&charges(&frame_wise));
+        assert_eq!(
+            net_divisor, frame_wise_divisor,
+            "and the per-seat divisor is the same value, gaining seat dropped by both"
+        );
+        let bound = delta.elimination_bounds(&board, &frame_wise_divisor);
+        assert!(
+            (1..crate::game::engine::MAX_SHORTCUT_CYCLES).contains(&bound),
+            "reach-guard: 'unchanged' is asserted at a NARROWED count, not at the un-narrowed \
+             sentinel where every derivation agrees; got {bound}"
+        );
+        assert_eq!(
+            bound,
+            delta.elimination_bounds(&board, &net_divisor),
+            "CR 704.5a: a single-leg period publishes exactly the bound it publishes today"
+        );
+        assert_eq!(
+            bound, 7,
+            "P1's `(21 - 1) / 3` is the argmin, relieved by one"
         );
     }
 
@@ -19275,6 +19787,7 @@ mod tests {
             delta,
             victim_slot: vec![(slot.clone(), 1)],
             declarable_victims: vec![PlayerId(1)],
+            seat_life_charge: vec![(PlayerId(1), 3)],
         };
         let json = serde_json::to_string(&populated)
             .expect("a populated PeriodicDelta must serialize (engine-wasm PANICS otherwise)");
@@ -19457,6 +19970,7 @@ mod tests {
                 delta,
                 victim_slot: vec![],
                 declarable_victims: vec![],
+                seat_life_charge: vec![],
             }),
         };
         let wait = WaitingFor::RespondToShortcut {
@@ -31480,6 +31994,7 @@ mod tests {
             delta,
             victim_slot: victim_slot.to_vec(),
             declarable_victims: domain.iter().copied().map(PlayerId).collect(),
+            seat_life_charge: Vec::new(),
         }
     }
 
