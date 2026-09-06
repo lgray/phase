@@ -3333,7 +3333,7 @@ mod restored_full_startup_tests {
     #[test]
     fn startup_restore_keeps_ordinary_priority_as_a_revision_preserving_noop() {
         let mut source_manager = SessionManager::new();
-        let (game_code, _) = source_manager.create_game(PlayerDeckPayload::default());
+        let (game_code, _) = source_manager.create_game(PlayerDeckPayload::default(), None);
         let source = source_manager
             .sessions
             .get(&game_code)
@@ -3363,7 +3363,7 @@ mod restored_full_startup_tests {
     #[test]
     fn startup_game_over_uses_terminal_persistence_instead_of_exposure() {
         let mut source_manager = SessionManager::new();
-        let (game_code, token) = source_manager.create_game(PlayerDeckPayload::default());
+        let (game_code, token) = source_manager.create_game(PlayerDeckPayload::default(), None);
         let source = source_manager
             .sessions
             .get_mut(&game_code)
@@ -4133,6 +4133,19 @@ async fn broadcast_player_count(lobby_subscribers: &SharedLobbySubscribers, coun
     }
 }
 
+/// The single place a `PlayerSlotsUpdate` is built: the message is rebuilt per
+/// recipient, so no send site can skip `slots_for_recipient`.
+fn send_player_slots<'a>(
+    recipients: impl IntoIterator<Item = (&'a PlayerId, &'a mpsc::UnboundedSender<ServerMessage>)>,
+    slots: &[server_core::PlayerSlotInfo],
+) {
+    for (pid, sender) in recipients {
+        let _ = sender.send(ServerMessage::PlayerSlotsUpdate {
+            slots: GameSession::slots_for_recipient(slots, *pid),
+        });
+    }
+}
+
 /// Send PlayerSlotsUpdate to all connected players in a game.
 async fn broadcast_player_slots(
     state: &SharedState,
@@ -4146,12 +4159,9 @@ async fn broadcast_player_slots(
             None => return,
         }
     };
-    let msg = ServerMessage::PlayerSlotsUpdate { slots };
     let conns = connections.lock().await;
     if let Some(players) = conns.get(game_code) {
-        for sender in players.values() {
-            let _ = sender.send(msg.clone());
-        }
+        send_player_slots(players.iter(), &slots);
     }
 }
 
@@ -4594,6 +4604,8 @@ fn persist_full_session_async(game_db: &SharedGameDb, session: &GameSession) {
 /// Session-configuration inputs for [`create_and_connect_multiplayer_session`].
 struct MultiplayerSessionRequest {
     resolved: engine::game::deck_loading::PlayerDeckPayload,
+    /// The host's submitted card-name list — seat 0's deck provenance.
+    host_choice: seat_reducer::types::DeckChoice,
     display_name: String,
     timer_seconds: Option<u32>,
     pc: u8,
@@ -4601,15 +4613,85 @@ struct MultiplayerSessionRequest {
     format_config: Option<engine::types::format::FormatConfig>,
     start_when_full: bool,
     ranked: bool,
-    ai_requests: Vec<(
-        u8,
-        phase_ai::config::AiDifficulty,
-        engine::game::deck_loading::PlayerDeckPayload,
-    )>,
+    ai_requests: Vec<server_core::session::AiSeatSetup>,
     public: bool,
     password: Option<String>,
     host_tx: mpsc::UnboundedSender<ServerMessage>,
     context: ServerContext,
+}
+
+/// The single authority for what deck each AI seat gets and what choice
+/// describes it. `Err` refuses the create, matching every other deck failure
+/// in the handler this replaces the inline loop in — a seat whose deck cannot
+/// be resolved has no honest provenance to record.
+fn ai_seat_setups(
+    db: &engine::database::CardDatabase,
+    ai_seats: &[server_core::protocol::AiSeatRequest],
+    pc: u8,
+    format_config: Option<&engine::types::format::FormatConfig>,
+    match_type: engine::types::match_config::MatchType,
+) -> Result<Vec<server_core::session::AiSeatSetup>, String> {
+    use seat_reducer::types::DeckChoice;
+
+    let mut setups = Vec::new();
+    for seat in ai_seats {
+        if seat.seat_index == 0 || seat.seat_index >= pc {
+            continue;
+        }
+        let effective = match &seat.deck {
+            Some(DeckChoice::DeckList(deck)) => deck.as_ref().clone(),
+            Some(DeckChoice::Named(name)) => named_starter_or_random(name),
+            Some(DeckChoice::Random) | None => match &seat.deck_name {
+                Some(name) if name.eq_ignore_ascii_case("random") => {
+                    server_core::starter_decks::random_starter_deck()
+                }
+                Some(name) => named_starter_or_random(name),
+                None => server_core::starter_decks::random_starter_deck(),
+            },
+        };
+        if let Some(fc) = format_config {
+            if let Err(reasons) = validate_name_deck_for_format_full(
+                db,
+                &effective.main_deck,
+                &effective.sideboard,
+                &effective.commander,
+                &effective.companion,
+                &effective.planar_deck,
+                &effective.scheme_deck,
+                &effective.signature_spell,
+                // Constructed play: no draft, no concession.
+                &[],
+                fc,
+                Some(match_type),
+                usize::from(pc),
+            ) {
+                return Err(format!(
+                    "AI deck for seat {} not legal for {}: {}",
+                    seat.seat_index,
+                    fc.format.label(),
+                    reasons.join("; ")
+                ));
+            }
+        }
+        let resolved = resolve_deck(db, &effective)?;
+        setups.push(server_core::session::AiSeatSetup {
+            seat_index: seat.seat_index,
+            difficulty: seat.difficulty,
+            // The deck the seat actually got. `seat.deck` would report
+            // `Random` for a seat holding a named starter — a field whose whole
+            // purpose is the choice, naming something that is not it.
+            choice: DeckChoice::DeckList(Box::new(effective)),
+            resolved,
+        });
+    }
+    Ok(setups)
+}
+
+fn named_starter_or_random(name: &str) -> engine::starter_decks::DeckData {
+    server_core::starter_decks::find_starter_deck(name).unwrap_or_else(|| {
+        warn!(deck = %name, "unknown AI deck name, using random");
+        server_core::starter_decks::random_starter_deck()
+    })
 }
 
 /// Phases 1–2 of the `CreateGameWithSettings` full multiplayer path.
@@ -4630,6 +4712,7 @@ async fn create_and_connect_multiplayer_session(
 ) -> Result<(String, String, PlayerId, u32, server_core::FullSessionKey), String> {
     let MultiplayerSessionRequest {
         resolved,
+        host_choice,
         display_name,
         timer_seconds,
         pc,
@@ -4662,6 +4745,7 @@ async fn create_and_connect_multiplayer_session(
         }
         let (game_code, player_token) = mgr.create_game_n_players(
             resolved,
+            Some(host_choice),
             display_name.clone(),
             timer_seconds,
             pc,
@@ -4680,19 +4764,8 @@ async fn create_and_connect_multiplayer_session(
         if let Some(session) = mgr.sessions.get_mut(&game_code) {
             session.start_when_full = start_when_full;
             session.ranked = ranked;
-            for (seat_index, difficulty, deck) in &ai_requests {
-                let seat = *seat_index as usize;
-                session.display_names[seat] = format!("AI ({difficulty:?})");
-                session.connected[seat] = true;
-                session.decks[seat] = Some(deck.clone());
-                let pid = PlayerId(*seat_index);
-                session.ai_seats.insert(pid);
-                let config = phase_ai::config::create_config_for_players(
-                    *difficulty,
-                    phase_ai::config::Platform::Native,
-                    pc,
-                );
-                session.ai_configs.insert(pid, config);
+            for setup in ai_requests {
+                session.seat_ai(setup);
             }
         }
 
@@ -7038,7 +7111,12 @@ async fn handle_client_message(
                 }
                 return;
             }
-            let (game_code, player_token) = mgr.create_game(resolved);
+            // Seat 0's provenance, not just its resolved deck: a restart
+            // rebuilds `decks` from `deck_choices` alone, and seat 0 is
+            // immutable, so a host seat recorded without its submitted list
+            // restores empty and no reseat can ever refill it.
+            let (game_code, player_token) =
+                mgr.create_game(resolved, Some(DeckChoice::DeckList(Box::new(deck))));
             let full_key = match game_db.create_full_session_key(&game_code) {
                 Ok(key) => key,
                 Err(error) => {
@@ -7136,7 +7214,15 @@ async fn handle_client_message(
             };
 
             let mut mgr = state.lock().await;
-            match mgr.join_game(&game_code, resolved) {
+            // Same provenance record as `JoinGameWithPassword` below: a seat
+            // filled without its submitted list restores empty on restart.
+            match mgr.join_game_with_name_and_reservation(
+                &game_code,
+                resolved,
+                Some(DeckChoice::DeckList(Box::new(deck))),
+                String::new(),
+                None,
+            ) {
                 Ok((player_token, _filtered_state)) => {
                     mgr.set_card_names(&game_code, db.card_names());
                     let session = mgr.sessions.get_mut(&game_code).unwrap();
@@ -7538,8 +7624,7 @@ async fn handle_client_message(
                     }
 
                     // Send current room state
-                    let slots_msg = ServerMessage::PlayerSlotsUpdate { slots: slot_info };
-                    let _ = tx.send(slots_msg);
+                    send_player_slots(std::iter::once((&player, tx)), &slot_info);
                 }
 
                 ReconnectOutcome::InGame {
@@ -7811,68 +7896,22 @@ async fn handle_client_message(
                 }
             }
 
-            let mut ai_requests = Vec::new();
-            for seat in &ai_seats {
-                if seat.seat_index == 0 || seat.seat_index >= pc {
-                    continue;
+            let ai_requests = match ai_seat_setups(
+                db,
+                &ai_seats,
+                pc,
+                format_config.as_ref(),
+                match_config.match_type,
+            ) {
+                Ok(setups) => setups,
+                Err(reason) => {
+                    let msg = ServerMessage::error(reason);
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = socket.send(Message::text(json)).await;
+                    }
+                    return;
                 }
-                let ai_deck_data = match &seat.deck {
-                    Some(DeckChoice::DeckList(deck)) => deck.as_ref().clone(),
-                    Some(DeckChoice::Named(name)) => {
-                        server_core::starter_decks::find_starter_deck(name).unwrap_or_else(|| {
-                            warn!(deck = %name, "unknown AI deck name, using random");
-                            server_core::starter_decks::random_starter_deck()
-                        })
-                    }
-                    Some(DeckChoice::Random) | None => match &seat.deck_name {
-                        Some(name) if name.eq_ignore_ascii_case("random") => {
-                            server_core::starter_decks::random_starter_deck()
-                        }
-                        Some(name) => server_core::starter_decks::find_starter_deck(name)
-                            .unwrap_or_else(|| {
-                                warn!(deck = %name, "unknown AI deck name, using random");
-                                server_core::starter_decks::random_starter_deck()
-                            }),
-                        None => server_core::starter_decks::random_starter_deck(),
-                    },
-                };
-                if let Some(ref fc) = format_config {
-                    if let Err(reasons) = validate_name_deck_for_format_full(
-                        db,
-                        &ai_deck_data.main_deck,
-                        &ai_deck_data.sideboard,
-                        &ai_deck_data.commander,
-                        &ai_deck_data.companion,
-                        &ai_deck_data.planar_deck,
-                        &ai_deck_data.scheme_deck,
-                        &ai_deck_data.signature_spell,
-                        // Constructed play, as above: no draft, no concession.
-                        &[],
-                        fc,
-                        Some(match_config.match_type),
-                        usize::from(pc),
-                    ) {
-                        let msg = ServerMessage::error(format!(
-                            "AI deck for seat {} not legal for {}: {}",
-                            seat.seat_index,
-                            fc.format.label(),
-                            reasons.join("; ")
-                        ));
-                        if let Ok(json) = serde_json::to_string(&msg) {
-                            let _ = socket.send(Message::text(json)).await;
-                        }
-                        return;
-                    }
-                }
-                let ai_resolved = match resolve_deck(db, &ai_deck_data) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        error!(error = %e, "AI deck resolve failed, cloning host deck");
-                        resolved.clone()
-                    }
-                };
-                ai_requests.push((seat.seat_index, seat.difficulty, ai_resolved));
-            }
+            };
 
             if !ai_requests.is_empty() && ai_requests.len() as u8 == pc - 1 {
                 // --- AI game path: create, start, and run initial AI actions ---
@@ -7896,6 +7935,7 @@ async fn handle_client_message(
                     }
                     let (game_code, player_token) = match mgr.create_game_with_ai(
                         resolved,
+                        DeckChoice::DeckList(Box::new(deck)),
                         display_name.clone(),
                         timer_seconds,
                         match_config,
@@ -8022,6 +8062,7 @@ async fn handle_client_message(
                         game_db,
                         MultiplayerSessionRequest {
                             resolved,
+                            host_choice: DeckChoice::DeckList(Box::new(deck)),
                             display_name: display_name.clone(),
                             timer_seconds,
                             pc,
@@ -8633,6 +8674,7 @@ async fn handle_client_message(
                 match mgr.join_game_with_name_and_reservation(
                     &game_code,
                     resolved,
+                    Some(DeckChoice::DeckList(Box::new(deck))),
                     display_name,
                     reservation_token.clone(),
                 ) {
@@ -8652,7 +8694,7 @@ async fn handle_client_message(
                         let public_before =
                             session.lobby_meta.as_ref().is_some_and(|meta| meta.public);
                         if should_start {
-                            if let Err(bracket_err) = session.start_game(db.as_ref()) {
+                            if let Err(start_err) = session.start_game(db.as_ref()) {
                                 // start_game guarantees no mutation on Err, so the session still
                                 // holds the joining player. We keep them seated — rolling back
                                 // would require deleting their deck/token which is more invasive.
@@ -8741,17 +8783,22 @@ async fn handle_client_message(
                     }
 
                     // Notify all connected players about the updated room state
-                    let slots_msg = ServerMessage::PlayerSlotsUpdate { slots: slot_info };
                     let slot_senders = {
                         let conns = connections.lock().await;
                         conns
                             .get(&game_code)
-                            .map(|players| players.values().cloned().collect::<Vec<_>>())
+                            .map(|players| {
+                                players
+                                    .iter()
+                                    .map(|(pid, sender)| (*pid, sender.clone()))
+                                    .collect::<Vec<_>>()
+                            })
                             .unwrap_or_default()
                     };
-                    for sender in slot_senders {
-                        let _ = sender.send(slots_msg.clone());
-                    }
+                    send_player_slots(
+                        slot_senders.iter().map(|(pid, sender)| (pid, sender)),
+                        &slot_info,
+                    );
 
                     let updated = {
                         let mut lob_guard = lobby.lock().await;
@@ -9884,7 +9931,7 @@ async fn handle_client_message(
                 let bracket_error: Option<String> = if started {
                     match session.start_game(db.as_ref()) {
                         Ok(()) => None,
-                        Err(bracket_err) => {
+                        Err(start_err) => {
                             started = false;
                             Some(format!("Cannot start cEDH game: {bracket_err}"))
                         }
@@ -9934,12 +9981,7 @@ async fn handle_client_message(
                         }
                     }
 
-                    let msg = ServerMessage::PlayerSlotsUpdate {
-                        slots: slot_info.clone(),
-                    };
-                    for sender in players.values() {
-                        let _ = sender.send(msg.clone());
-                    }
+                    send_player_slots(players.iter(), &slot_info);
                 }
             }
 
@@ -10847,7 +10889,7 @@ mod state_transport_derived_tests {
         #[tokio::test]
         async fn resolve_all_handler_sends_the_final_snapshot_before_its_acknowledgement() {
             let mut manager = SessionManager::new();
-            let (game_code, player_token) = manager.create_game(PlayerDeckPayload::default());
+            let (game_code, player_token) = manager.create_game(PlayerDeckPayload::default(), None);
             let ai_player = PlayerId(1);
             let session = manager
                 .sessions
@@ -11020,7 +11062,7 @@ mod state_transport_derived_tests {
         #[tokio::test]
         async fn resolve_all_limit_rejection_keeps_request_correlation() {
             let mut manager = SessionManager::new();
-            let (game_code, player_token) = manager.create_game(PlayerDeckPayload::default());
+            let (game_code, player_token) = manager.create_game(PlayerDeckPayload::default(), None);
             let state: SharedState = Arc::new(Mutex::new(manager));
             let draft_state: SharedDraftState = Arc::new(Mutex::new(DraftSessionManager::new()));
             let connections: SharedConnections = Arc::new(Mutex::new(HashMap::new()));
@@ -11273,9 +11315,9 @@ mod interaction_preview_route_tests {
         ),
     ) {
         let mut manager = SessionManager::new();
-        let (game_code, token0) = manager.create_game(PlayerDeckPayload::default());
+        let (game_code, token0) = manager.create_game(PlayerDeckPayload::default(), None);
         let (token1, _) = manager
-            .join_game(&game_code, PlayerDeckPayload::default())
+            .join_game(&game_code, PlayerDeckPayload::default(), None)
             .expect("the second seat joins and starts the game");
         let (acting_token, other_token, witness) =
             live_witness(&manager, &game_code, &token0, &token1);
@@ -11635,7 +11677,7 @@ mod full_socket_authority_tests {
 
     fn test_session() -> (SharedState, SharedConnections, String, String) {
         let mut manager = SessionManager::new();
-        let (game_code, player_token) = manager.create_game(PlayerDeckPayload::default());
+        let (game_code, player_token) = manager.create_game(PlayerDeckPayload::default(), None);
         (
             Arc::new(Mutex::new(manager)),
             Arc::new(Mutex::new(HashMap::new())),
@@ -11853,7 +11895,7 @@ mod full_socket_authority_tests {
         let (state, connections, game_x, token_x) = test_session();
         let (game_y, token_y) = {
             let mut manager = state.lock().await;
-            manager.create_game(PlayerDeckPayload::default())
+            manager.create_game(PlayerDeckPayload::default(), None)
         };
         let (x_tx, _x_rx) = mpsc::unbounded_channel();
         let mut identity_x = empty_identity();
@@ -11924,7 +11966,8 @@ mod full_socket_authority_tests {
                 .expect("open game database"),
         );
         let mut original_manager = SessionManager::new();
-        let (game_code, player_token) = original_manager.create_game(PlayerDeckPayload::default());
+        let (game_code, player_token) =
+            original_manager.create_game(PlayerDeckPayload::default(), None);
         {
             let session = original_manager
                 .sessions
@@ -12149,6 +12192,7 @@ mod draft_socket_authority_tests {
                 let (game_code, _host_token) = games
                     .create_game_n_players(
                         engine::game::deck_loading::PlayerDeckPayload::default(),
+                        None,
                         "Alice".to_string(),
                         None,
                         2,
@@ -12160,6 +12204,7 @@ mod draft_socket_authority_tests {
                     .join_game_with_name(
                         &game_code,
                         engine::game::deck_loading::PlayerDeckPayload::default(),
+                        None,
                         "Bob".to_string(),
                     )
                     .expect("join draft match game");
@@ -13721,11 +13766,14 @@ mod game_submission_tests {
             timer_seconds: None,
             player_count: 2,
             match_config: Default::default(),
+            // An explicit empty list, matching the host's `DeckData::default()`:
+            // this harness runs on an empty `CardDatabase`, where a random
+            // starter deck resolves to nothing and the create is refused.
             ai_seats: vec![AiSeatRequest {
                 seat_index: 1,
                 difficulty: phase_ai::config::AiDifficulty::Easy,
                 deck_name: None,
-                deck: None,
+                deck: Some(DeckChoice::DeckList(Box::default())),
             }],
             format_config: None,
             room_name: None,
@@ -15396,7 +15444,7 @@ mod issue_4548_deadlock_tests {
 
         let game_code = {
             let mut mgr = state.lock().await;
-            let (code, _token) = mgr.create_game(PlayerDeckPayload::default());
+            let (code, _token) = mgr.create_game(PlayerDeckPayload::default(), None);
             code
         }; // state lock released here — matches the fixed handler path
 
@@ -15422,7 +15470,7 @@ mod issue_4548_deadlock_tests {
 
         let game_code = {
             let mut mgr = state.lock().await;
-            let (code, _token) = mgr.create_game(PlayerDeckPayload::default());
+            let (code, _token) = mgr.create_game(PlayerDeckPayload::default(), None);
             code
         };
 
@@ -15467,6 +15515,7 @@ mod issue_4548_deadlock_tests {
                 &game_db,
                 MultiplayerSessionRequest {
                     resolved: PlayerDeckPayload::default(),
+                    host_choice: seat_reducer::types::DeckChoice::Random,
                     display_name: "Alice".to_string(),
                     timer_seconds: None,
                     pc: 2,
@@ -15495,6 +15544,200 @@ mod issue_4548_deadlock_tests {
         .expect(
             "create_and_connect_multiplayer_session must release state+connections before returning",
         );
+    }
+}
+
+#[cfg(test)]
+mod ai_seat_setup_tests {
+    use engine::database::CardDatabase;
+    use engine::types::match_config::MatchType;
+    use phase_ai::config::AiDifficulty;
+    use seat_reducer::types::DeckChoice;
+    use server_core::protocol::AiSeatRequest;
+
+    use super::ai_seat_setups;
+
+    fn db_with(names: &[&str]) -> CardDatabase {
+        let entries: serde_json::Map<String, serde_json::Value> = names
+            .iter()
+            .map(|name| {
+                (
+                    name.to_lowercase(),
+                    serde_json::json!({
+                        "name": name,
+                        "mana_cost": { "type": "NoCost" },
+                        "card_type": {
+                            "supertypes": [], "core_types": ["Land"], "subtypes": []
+                        },
+                        "power": null,
+                        "toughness": null,
+                        "loyalty": null,
+                        "defense": null,
+                        "oracle_text": null,
+                        "abilities": [],
+                        "triggers": [],
+                        "static_abilities": [],
+                        "replacements": [],
+                        "keywords": []
+                    }),
+                )
+            })
+            .collect();
+        CardDatabase::from_json_str(&serde_json::Value::Object(entries).to_string())
+            .expect("fixture database parses")
+    }
+
+    fn list(names: &[&str]) -> DeckChoice {
+        DeckChoice::DeckList(Box::new(engine::starter_decks::DeckData {
+            main_deck: names.iter().map(|n| n.to_string()).collect(),
+            ..Default::default()
+        }))
+    }
+
+    fn request(deck: Option<DeckChoice>, deck_name: Option<&str>) -> AiSeatRequest {
+        AiSeatRequest {
+            seat_index: 1,
+            difficulty: AiDifficulty::Easy,
+            deck_name: deck_name.map(str::to_string),
+            deck,
+        }
+    }
+
+    #[test]
+    fn a_resolvable_ai_deck_is_set_up_with_the_choice_that_describes_it() {
+        // The paired positive control for the refusal below, which a function
+        // that refused everything would satisfy vacuously.
+        let db = db_with(&["Forest"]);
+
+        let setups = ai_seat_setups(
+            &db,
+            &[request(Some(list(&["Forest"])), None)],
+            2,
+            None,
+            MatchType::Bo1,
+        )
+        .expect("a resolvable deck is accepted");
+
+        assert_eq!(setups.len(), 1);
+        let DeckChoice::DeckList(recorded) = &setups[0].choice else {
+            panic!("expected a recorded list, got {:?}", setups[0].choice);
+        };
+        assert_eq!(
+            server_core::deck_resolve::resolve_deck(&db, recorded)
+                .expect("the recorded choice re-resolves")
+                .main_deck
+                .len(),
+            setups[0].resolved.main_deck.len()
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_ai_deck_refuses_the_create() {
+        let db = db_with(&["Forest"]);
+
+        let result = ai_seat_setups(
+            &db,
+            &[request(Some(list(&["Nonexistent Card"])), None)],
+            2,
+            None,
+            MatchType::Bo1,
+        );
+
+        // No setup is produced: the seat cannot be installed with a deck no
+        // recorded choice describes.
+        assert!(result.is_err(), "expected a refusal, got {result:?}");
+    }
+
+    #[test]
+    fn a_deck_name_only_request_records_the_named_deck() {
+        let starter = server_core::starter_decks::find_starter_deck("Red Deck Wins")
+            .expect("the starter table names this deck");
+        let names: Vec<&str> = starter.main_deck.iter().map(String::as_str).collect();
+        let db = db_with(&names);
+
+        let setups = ai_seat_setups(
+            &db,
+            &[request(None, Some("Red Deck Wins"))],
+            2,
+            None,
+            MatchType::Bo1,
+        )
+        .expect("a named starter deck resolves");
+
+        assert_eq!(setups.len(), 1);
+        assert_eq!(
+            setups[0].choice,
+            DeckChoice::DeckList(Box::new(starter)),
+            "the recorded choice must be the deck the seat actually got, not `Random`"
+        );
+    }
+}
+
+#[cfg(test)]
+mod player_slots_projection_tests {
+    use super::*;
+    use engine::game::deck_loading::PlayerDeckPayload;
+    use engine::types::format::FormatConfig;
+    use phase_ai::config::AiDifficulty;
+    use server_core::session::AiSeatSetup;
+    use server_core::SeatKind;
+
+    fn ai_seat_deck(msg: Option<ServerMessage>) -> DeckChoice {
+        match msg {
+            Some(ServerMessage::PlayerSlotsUpdate { slots }) => match &slots[1].kind {
+                SeatKind::Ai { deck, .. } => deck.clone(),
+                other => panic!("seat 1 is not an AI seat: {other:?}"),
+            },
+            other => panic!("expected PlayerSlotsUpdate, got {other:?}"),
+        }
+    }
+
+    /// The host matches an AI seat's recorded list against its local catalog to
+    /// decide the seat is already dealt; no other client surface reads it.
+    #[tokio::test]
+    async fn a_guest_receives_random_where_the_host_receives_the_ai_seats_list() {
+        let installed = DeckChoice::DeckList(Box::new(engine::starter_decks::DeckData {
+            main_deck: vec!["Forest".to_string()],
+            ..Default::default()
+        }));
+        let state: SharedState = Arc::new(Mutex::new(SessionManager::new()));
+        let connections: SharedConnections = Arc::new(Mutex::new(HashMap::new()));
+
+        let game_code = {
+            let mut mgr = state.lock().await;
+            let (code, _token) = mgr
+                .create_game_n_players(
+                    PlayerDeckPayload::default(),
+                    None,
+                    String::new(),
+                    None,
+                    3,
+                    engine::types::match_config::MatchConfig::default(),
+                    Some(FormatConfig::commander()),
+                )
+                .expect("commander seats three");
+            mgr.sessions.get_mut(&code).unwrap().seat_ai(AiSeatSetup {
+                seat_index: 1,
+                difficulty: AiDifficulty::Medium,
+                choice: installed.clone(),
+                resolved: PlayerDeckPayload::default(),
+            });
+            code
+        };
+
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel();
+        let (guest_tx, mut guest_rx) = mpsc::unbounded_channel();
+        {
+            let mut conns = connections.lock().await;
+            let room = conns.entry(game_code.clone()).or_default();
+            room.insert(PlayerId(0), host_tx);
+            room.insert(PlayerId(2), guest_tx);
+        }
+
+        broadcast_player_slots(&state, &connections, &game_code).await;
+
+        assert_eq!(ai_seat_deck(host_rx.recv().await), installed);
+        assert_eq!(ai_seat_deck(guest_rx.recv().await), DeckChoice::Random);
     }
 }
 
@@ -16492,7 +16735,7 @@ mod metrics_tests {
     use phase_ai::config::AiDifficulty;
     use server_core::draft_session::DraftSessionManager;
     use server_core::protocol::{AiSeatRequest, ClientMessage, DeckData, ServerMessage};
-    use server_core::session::SessionManager;
+    use server_core::session::{GameSession, SessionManager};
     use tokio::sync::{mpsc, Mutex};
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -16564,9 +16807,9 @@ mod metrics_tests {
 
         let (occupied, abandoned, empty) = {
             let mut mgr = state.sessions.lock().await;
-            let (a, _) = mgr.create_game(PlayerDeckPayload::default());
-            let (b, _) = mgr.create_game(PlayerDeckPayload::default());
-            let (c, _) = mgr.create_game(PlayerDeckPayload::default());
+            let (a, _) = mgr.create_game(PlayerDeckPayload::default(), None);
+            let (b, _) = mgr.create_game(PlayerDeckPayload::default(), None);
+            let (c, _) = mgr.create_game(PlayerDeckPayload::default(), None);
             (a, b, c)
         };
 
@@ -16606,7 +16849,7 @@ mod metrics_tests {
 
         let code = {
             let mut mgr = state.sessions.lock().await;
-            let (code, _) = mgr.create_game(PlayerDeckPayload::default());
+            let (code, _) = mgr.create_game(PlayerDeckPayload::default(), None);
             code
         };
 
@@ -16995,15 +17238,18 @@ mod metrics_tests {
 
     /// Every full-mode creation path must check capacity under the same lock
     /// acquisition that inserts the session. All three are driven here over the
-    /// real websocket route, because each reaches a different insert:
-    /// `create_game`, `create_game_with_ai`, and `create_game_n_players`.
+    /// real websocket route, because each reaches a different check: the one in
+    /// the `CreateGame` arm, the one in `create_and_connect_multiplayer_session`,
+    /// and the one in the AI branch of `CreateGameWithSettings`. Two of them
+    /// share an insert (`create_game_n_players`), so the insert does not
+    /// identify the path — the check does.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_creates_cannot_exceed_the_game_cap() {
         const RACERS: u64 = 8;
         for path in [
-            "create_game",
-            "create_game_n_players",
-            "create_game_with_ai",
+            "create_game_arm",
+            "create_and_connect_multiplayer_session",
+            "create_game_with_settings_ai_branch",
         ] {
             let temp = tempfile::tempdir().expect("temp dir");
             let context = ServerContext {
@@ -17021,15 +17267,18 @@ mod metrics_tests {
             let deck = DeckData::default();
             let requests = (0..RACERS)
                 .map(|racer| match path {
-                    "create_game" => ClientMessage::CreateGame { deck: deck.clone() },
-                    "create_game_with_ai" => settings_request(
+                    "create_game_arm" => ClientMessage::CreateGame { deck: deck.clone() },
+                    "create_game_with_settings_ai_branch" => settings_request(
                         &format!("racer{racer}"),
                         deck.clone(),
+                        // Empty list for the same reason as the AI-game
+                        // harness above: this server has an empty card
+                        // database, so only an empty deck resolves.
                         vec![AiSeatRequest {
                             seat_index: 1,
                             difficulty: AiDifficulty::Medium,
                             deck_name: None,
-                            deck: None,
+                            deck: Some(seat_reducer::types::DeckChoice::DeckList(Box::default())),
                         }],
                     ),
                     _ => settings_request(&format!("racer{racer}"), deck.clone(), Vec::new()),
@@ -17062,7 +17311,7 @@ mod metrics_tests {
             // path if seat validation ever rejected the request.
             assert_eq!(
                 survivor,
-                usize::from(path == "create_game_with_ai"),
+                usize::from(path == "create_game_with_settings_ai_branch"),
                 "{path}: wrong creation path ran"
             );
             assert_eq!(
@@ -17071,6 +17320,80 @@ mod metrics_tests {
                 "{path}"
             );
         }
+    }
+
+    /// Snapshot a live room and rebuild it the way a process restart does.
+    async fn restart(sessions: &super::SharedState, game_code: &str) -> GameSession {
+        let persisted = {
+            let mgr = sessions.lock().await;
+            mgr.sessions
+                .get(game_code)
+                .expect("the room is live")
+                .to_persisted()
+        };
+        GameSession::from_persisted(persisted, &CardDatabase::default())
+            .expect("the snapshot restores")
+    }
+
+    /// Both legacy seat installs must record the unresolved deck they were
+    /// filled from: a restart rebuilds `decks` from `deck_choices` alone, and a
+    /// seat with no provenance restores empty and `start_game` refuses the
+    /// table. Driven over the socket rather than against the setters, because
+    /// the setters were already correct and these two entry points were not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn legacy_create_and_join_record_their_seats_deck_provenance() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let state = app_state(&temp, ServerContext::default());
+        let sessions = state.sessions.clone();
+        let (addr, server) = spawn(state).await;
+
+        let mut host = connect_and_hello(&addr).await;
+        let created = send_create(
+            &mut host,
+            ClientMessage::CreateGame {
+                deck: DeckData::default(),
+            },
+        )
+        .await;
+        let ServerMessage::GameCreated { game_code, .. } = created else {
+            panic!("CreateGame did not create a room: {created:?}");
+        };
+
+        // Seat 1 is the one nobody filled. A host recorded without its list
+        // names seat 0 here instead, and seat 0 is `SeatImmutable` — no reseat
+        // can clear it, so that room never starts again.
+        assert_eq!(
+            restart(&sessions, &game_code)
+                .await
+                .start_game(&CardDatabase::default()),
+            Err(server_core::session::StartGameError::SeatDeckMissing { seat_index: 1 }),
+            "the host seat lost its deck across a restart"
+        );
+
+        let mut guest = connect_and_hello(&addr).await;
+        let joined = send_create(
+            &mut guest,
+            ClientMessage::JoinGame {
+                game_code: game_code.clone(),
+                deck: DeckData::default(),
+            },
+        )
+        .await;
+        assert!(
+            !matches!(joined, ServerMessage::Error { .. }),
+            "JoinGame was refused: {joined:?}"
+        );
+
+        // With both seats recorded the restored room is startable — the row
+        // above is the paired control proving this one is not vacuous.
+        assert_eq!(
+            restart(&sessions, &game_code)
+                .await
+                .start_game(&CardDatabase::default()),
+            Ok(())
+        );
+
+        server.abort();
     }
 
     /// A reservation whose upgrade never reaches `handle_socket` has to be

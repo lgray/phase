@@ -391,7 +391,17 @@ pub struct GameSession {
     /// Player tokens indexed by seat (0..player_count). Empty string = seat not yet claimed.
     pub player_tokens: Vec<String>,
     pub connected: Vec<bool>,
-    pub decks: Vec<Option<PlayerDeckPayload>>,
+    /// Private so every write is confined to this module. Production writes
+    /// both arrays in lockstep: the initializer that creates them empty, the
+    /// two per-seat writers, the seat renumbering that replaces both in one
+    /// loop, and the restore that rebuilds them together. Privacy is what
+    /// makes that a compiler check.
+    decks: Vec<Option<PlayerDeckPayload>>,
+    /// The unresolved form each `decks` entry was resolved from: an AI seat's
+    /// `DeckChoice` as the host picked it, a human seat's submitted list.
+    /// Snapshotted with the payload it describes, never live. `None` means no
+    /// provenance was recorded, which leaves that seat unrestorable.
+    deck_choices: Vec<Option<DeckChoice>>,
     pub display_names: Vec<String>,
     /// Pre-deck seat reservations keyed by reservation token. Reservations
     /// are in-memory only; stale public reservations expire, and private-room
@@ -526,6 +536,61 @@ impl GameSession {
         self.state_revision
     }
 
+    /// Installs a seat's deck and the provenance that describes it.
+    ///
+    /// `choice` is `None` only where no unresolved form was available; that
+    /// seat then has nothing to restore from and `start_game` refuses it.
+    fn set_seat_deck(
+        &mut self,
+        seat: usize,
+        resolved: PlayerDeckPayload,
+        choice: Option<DeckChoice>,
+    ) {
+        self.decks[seat] = Some(resolved);
+        self.deck_choices[seat] = choice;
+    }
+
+    /// Empties both arrays together: a seat with no deck has no provenance.
+    fn clear_seat_deck(&mut self, seat: usize) {
+        self.decks[seat] = None;
+        self.deck_choices[seat] = None;
+    }
+
+    /// What an AI seat is playing, for the two projections. Read only from
+    /// their `Ai` arms — the human `SeatKind` variants have no deck field, so
+    /// a human seat's recorded list structurally cannot reach the wire.
+    fn ai_deck_choice(&self, pid: PlayerId) -> DeckChoice {
+        self.deck_choices
+            .get(pid.0 as usize)
+            .cloned()
+            .flatten()
+            .unwrap_or(DeckChoice::Random)
+    }
+
+    /// The single authority for seating an AI: display name, connection,
+    /// difficulty config and deck all land together, so no caller can install
+    /// a deck the recorded choice does not describe.
+    pub fn seat_ai(&mut self, setup: AiSeatSetup) {
+        let AiSeatSetup {
+            seat_index,
+            difficulty,
+            choice,
+            resolved,
+        } = setup;
+        let seat = seat_index as usize;
+        let pid = PlayerId(seat_index);
+        self.display_names[seat] = format!("AI ({difficulty:?})");
+        self.connected[seat] = true;
+        self.ai_seats.insert(pid);
+        let config = phase_ai::config::create_config_for_players(
+            difficulty,
+            Platform::Native,
+            self.player_count,
+        );
+        self.ai_configs.insert(pid, config);
+        self.set_seat_deck(seat, resolved, Some(choice));
+    }
+
     /// Builds the only persistence payload for an active Full runtime.
     /// Snapshot generation and revision therefore cannot be supplied by a
     /// transport caller independently of the authoritative session.
@@ -618,7 +683,7 @@ impl GameSession {
                         .unwrap_or(AiDifficulty::Medium);
                     SeatKind::Ai {
                         difficulty,
-                        deck: DeckChoice::Random,
+                        deck: self.ai_deck_choice(pid),
                     }
                 } else if claimed {
                     SeatKind::JoinedHuman
@@ -644,6 +709,32 @@ impl GameSession {
             .collect()
     }
 
+    /// The wire view a given recipient may see. An AI seat's recorded deck is
+    /// the host's working state — the host matches it against its local catalog
+    /// to decide whether the seat still needs a real list — and no other client
+    /// surface reads it, so every other recipient sees `Random`.
+    pub fn slots_for_recipient(
+        slots: &[PlayerSlotInfo],
+        recipient: PlayerId,
+    ) -> Vec<PlayerSlotInfo> {
+        let host_recipient = slots
+            .iter()
+            .any(|slot| slot.player_id == recipient.0 && matches!(slot.kind, SeatKind::HostHuman));
+        if host_recipient {
+            return slots.to_vec();
+        }
+        slots
+            .iter()
+            .cloned()
+            .map(|mut slot| {
+                if let SeatKind::Ai { deck, .. } = &mut slot.kind {
+                    *deck = DeckChoice::Random;
+                }
+                slot
+            })
+            .collect()
+    }
+
     pub fn seat_state(&self) -> SeatState {
         SeatState {
             seats: (0..self.player_count as usize)
@@ -659,7 +750,7 @@ impl GameSession {
                             .unwrap_or(AiDifficulty::Medium);
                         SeatKind::Ai {
                             difficulty,
-                            deck: DeckChoice::Random,
+                            deck: self.ai_deck_choice(pid),
                         }
                     } else if !self.player_tokens[i].is_empty() {
                         SeatKind::JoinedHuman
@@ -813,6 +904,7 @@ impl GameSession {
         let mut next_tokens = vec![String::new(); new_player_count as usize];
         let mut next_connected = vec![false; new_player_count as usize];
         let mut next_decks = vec![None; new_player_count as usize];
+        let mut next_deck_choices = vec![None; new_player_count as usize];
         let mut next_names = vec![String::new(); new_player_count as usize];
         let mut next_reservations = HashMap::new();
 
@@ -827,6 +919,9 @@ impl GameSession {
             next_tokens[new_idx] = self.player_tokens[old_idx].clone();
             next_connected[new_idx] = self.connected[old_idx];
             next_decks[new_idx] = self.decks[old_idx].clone();
+            // Same loop, so a `Remove` renumbers deck and provenance
+            // identically and a surviving seat cannot inherit a neighbour's.
+            next_deck_choices[new_idx] = self.deck_choices[old_idx].clone();
             next_names[new_idx] = self.display_names[old_idx].clone();
         }
 
@@ -846,6 +941,7 @@ impl GameSession {
         self.player_tokens = next_tokens;
         self.connected = next_connected;
         self.decks = next_decks;
+        self.deck_choices = next_deck_choices;
         self.display_names = next_names;
         self.reservations = next_reservations;
         self.ai_seats.clear();
@@ -857,7 +953,7 @@ impl GameSession {
                 SeatKind::WaitingHuman => {
                     self.player_tokens[seat_idx].clear();
                     self.connected[seat_idx] = false;
-                    self.decks[seat_idx] = None;
+                    self.clear_seat_deck(seat_idx);
                     self.reservations
                         .retain(|_, reservation| reservation.seat_index != seat_idx);
                     if seat_idx != 0 {
@@ -914,12 +1010,13 @@ impl GameSession {
                         seat = *seat_idx,
                         error = %err,
                         "AI deck failed re-resolution at apply_seat_delta despite \
-                         passing the resolver gate; seat will start with an empty \
-                         library — investigate the resolver/DB mismatch",
+                         passing the resolver gate; seat has no deck and \
+                         `start_game` will refuse the table — investigate the \
+                         resolver/DB mismatch",
                     );
-                    None
+                    self.clear_seat_deck(*seat_idx as usize);
                 }
-            };
+            }
         }
         for &seat_idx in &delta.removed_ai {
             if seat_idx as usize >= self.decks.len() {
@@ -930,7 +1027,7 @@ impl GameSession {
                 .iter()
                 .any(|(new_idx, _, _)| *new_idx == seat_idx)
             {
-                self.decks[seat_idx as usize] = None;
+                self.clear_seat_deck(seat_idx as usize);
             }
         }
 
@@ -951,7 +1048,9 @@ impl GameSession {
 
     pub fn start_game(&mut self, db: &CardDatabase) -> Result<(), CedhBracketError> {
         // A faulted game is never restarted in place: doing so would create a
-        // new playable state behind the durable terminal fault record.
+        // new playable state behind the durable terminal fault record. This
+        // stays first: the fault is terminal and dominant, and the no-op
+        // contract is what the start arms are written against.
         if self.ai_driver_fault.is_some() {
             return Ok(());
         }
@@ -1182,6 +1281,7 @@ impl GameSession {
             next_ai_driver_fault_id: self.next_ai_driver_fault_id,
             state: PersistedGameState::capture(self.state.clone()),
             player_tokens: self.player_tokens.clone(),
+            deck_choices: self.deck_choices.clone(),
             display_names: self.display_names.clone(),
             timer_seconds: self.timer_seconds,
             player_count: self.player_count,
@@ -1280,7 +1380,8 @@ impl GameSession {
             state,
             player_tokens: ps.player_tokens,
             connected: vec![false; pc],
-            decks: vec![None; pc],
+            decks,
+            deck_choices,
             display_names: ps.display_names,
             reservations: HashMap::new(),
             timer_seconds: ps.timer_seconds,
@@ -1395,27 +1496,39 @@ impl SessionManager {
     }
 
     /// Create a new game session (2-player default). Returns (game_code, player_token).
-    pub fn create_game(&mut self, deck: PlayerDeckPayload) -> (String, String) {
-        self.create_game_n_players(deck, String::new(), None, 2, MatchConfig::default(), None)
-            .expect("the standard format must be supported")
-    }
-
-    /// Create a new game session with lobby settings (2-player default). Returns (game_code, player_token).
-    pub fn create_game_with_settings(
+    ///
+    /// `deck_choice` is seat 0's provenance, forwarded verbatim to
+    /// `create_game_n_players`. It is a parameter rather than a hardcoded
+    /// `None` so a caller has to state that intent: a seat installed without
+    /// provenance cannot be rebuilt after a restart, and seat 0 is
+    /// `SeatImmutable`, so no later reseat can repair it.
+    pub fn create_game(
         &mut self,
         deck: PlayerDeckPayload,
-        display_name: String,
-        timer_seconds: Option<u32>,
-        match_config: MatchConfig,
+        deck_choice: Option<DeckChoice>,
     ) -> (String, String) {
-        self.create_game_n_players(deck, display_name, timer_seconds, 2, match_config, None)
-            .expect("the standard format must be supported")
+        self.create_game_n_players(
+            deck,
+            deck_choice,
+            String::new(),
+            None,
+            2,
+            MatchConfig::default(),
+            None,
+        )
+        .expect("the standard format must be supported")
     }
 
     /// Create a new N-player game session. Returns (game_code, player_token).
+    ///
+    /// `deck_choice` is the unresolved form `deck` was resolved from, recorded
+    /// as seat 0's provenance so a restart can rebuild it. `None` leaves the
+    /// host seat unrestorable and is only for callers with no such form.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_game_n_players(
         &mut self,
         deck: PlayerDeckPayload,
+        deck_choice: Option<DeckChoice>,
         display_name: String,
         timer_seconds: Option<u32>,
         player_count: u8,
@@ -1434,8 +1547,6 @@ impl SessionManager {
         player_tokens[0] = player_token.clone();
         let mut connected = vec![false; pc];
         connected[0] = true;
-        let mut decks = vec![None; pc];
-        decks[0] = Some(deck);
         let mut display_names = vec![String::new(); pc];
         display_names[0] = display_name;
 
@@ -1471,7 +1582,7 @@ impl SessionManager {
         bind_interaction_session(&mut state, &game_code);
 
         let rewind_game_number = state.game_number;
-        let session = GameSession {
+        let mut session = GameSession {
             game_code: game_code.clone(),
             full_runtime: None,
             state_revision: 0,
@@ -1500,6 +1611,9 @@ impl SessionManager {
             turn_rewind_history: VecDeque::new(),
             rewind_game_number,
         };
+        // Seat 0 is installed the way every other seat is, through the
+        // per-seat setter, rather than seeded into the struct literal.
+        session.set_seat_deck(0, deck, deck_choice);
 
         self.token_to_game
             .insert(player_token.clone(), game_code.clone());
@@ -1515,19 +1629,24 @@ impl SessionManager {
         &mut self,
         game_code: &str,
         deck: PlayerDeckPayload,
+        deck_choice: Option<DeckChoice>,
     ) -> Result<(String, GameState), String> {
-        self.join_game_with_name(game_code, deck, String::new())
+        self.join_game_with_name(game_code, deck, deck_choice, String::new())
     }
 
     /// Join an existing game with a display name. Returns (player_token, initial_state_for_joiner) on success.
     /// Assigns the first open seat and starts the game when the last seat is filled.
+    ///
+    /// `deck_choice` is the joining seat's provenance, carrying the same
+    /// obligation as on `create_game`: `None` leaves that seat unrestorable.
     pub fn join_game_with_name(
         &mut self,
         game_code: &str,
         deck: PlayerDeckPayload,
+        deck_choice: Option<DeckChoice>,
         display_name: String,
     ) -> Result<(String, GameState), String> {
-        self.join_game_with_name_and_reservation(game_code, deck, display_name, None)
+        self.join_game_with_name_and_reservation(game_code, deck, deck_choice, display_name, None)
     }
 
     pub fn reserve_seat(
@@ -1584,10 +1703,13 @@ impl SessionManager {
         changed
     }
 
+    /// `deck_choice` is the unresolved form `deck` was resolved from — see
+    /// [`SessionManager::create_game_n_players`].
     pub fn join_game_with_name_and_reservation(
         &mut self,
         game_code: &str,
         deck: PlayerDeckPayload,
+        deck_choice: Option<DeckChoice>,
         display_name: String,
         reservation_token: Option<String>,
     ) -> Result<(String, GameState), String> {
@@ -1618,7 +1740,7 @@ impl SessionManager {
         let player_id = PlayerId(seat as u8);
         session.player_tokens[seat] = player_token.clone();
         session.connected[seat] = true;
-        session.decks[seat] = Some(deck);
+        session.set_seat_deck(seat, deck, deck_choice);
         session.display_names[seat] = if display_name.is_empty() {
             reservation
                 .as_ref()
@@ -1652,14 +1774,18 @@ impl SessionManager {
     ///
     /// The host occupies seat 0. AI players are placed in the requested seats with
     /// their decks, configs, and display names. The game starts immediately.
+    ///
+    /// `host_choice` is seat 0's provenance as the caller received it. Seat 0 is
+    /// `SeatImmutable`, so a restart rebuilds it from this value alone.
     #[allow(clippy::too_many_arguments)]
     pub fn create_game_with_ai(
         &mut self,
         host_deck: PlayerDeckPayload,
+        host_choice: DeckChoice,
         display_name: String,
         timer_seconds: Option<u32>,
         match_config: MatchConfig,
-        ai_requests: Vec<(u8, AiDifficulty, PlayerDeckPayload)>,
+        ai_requests: Vec<AiSeatSetup>,
         card_names: Vec<String>,
         format_config: Option<FormatConfig>,
         db: &CardDatabase,
@@ -1667,6 +1793,7 @@ impl SessionManager {
         let total_players = 1 + ai_requests.len() as u8;
         let (game_code, player_token) = self.create_game_n_players(
             host_deck,
+            Some(host_choice),
             display_name,
             timer_seconds,
             total_players,
@@ -1675,25 +1802,18 @@ impl SessionManager {
         )?;
 
         let session = self.sessions.get_mut(&game_code).unwrap();
-        for (seat_index, difficulty, deck) in &ai_requests {
-            let seat = *seat_index as usize;
-            session.display_names[seat] = format!("AI ({difficulty:?})");
-            session.connected[seat] = true;
-            session.decks[seat] = Some(deck.clone());
-            let pid = PlayerId(*seat_index);
-            session.ai_seats.insert(pid);
-            let config = phase_ai::config::create_config_for_players(
-                *difficulty,
-                Platform::Native,
-                total_players,
-            );
-            session.ai_configs.insert(pid, config);
+        for setup in ai_requests {
+            session.seat_ai(setup);
         }
 
         session.state.all_card_names = card_names.into();
-        session
-            .start_game(db)
-            .expect("start_game in tests should not hit cEDH validation");
+        // Both arms are reachable from `CreateGameWithSettings`: a cEDH AI seat
+        // with a non-cEDH deck, and a seat left deckless. Refuse the create
+        // rather than panicking the connection task.
+        if let Err(error) = session.start_game(db) {
+            self.remove_game(&game_code);
+            return Err(error.to_string());
+        }
 
         Ok((game_code, player_token))
     }
@@ -2423,10 +2543,28 @@ mod tests {
         }
     }
 
+    /// An AI seat whose recorded choice re-resolves to the payload it is
+    /// installed with, so a test that round-trips it gets the same cards.
+    fn ai_setup(
+        seat_index: u8,
+        difficulty: AiDifficulty,
+        resolved: PlayerDeckPayload,
+    ) -> AiSeatSetup {
+        AiSeatSetup {
+            seat_index,
+            difficulty,
+            choice: DeckChoice::DeckList(Box::new(crate::deck_resolve::deck_data_from_payload(
+                &CardDatabase::default(),
+                &resolved,
+            ))),
+            resolved,
+        }
+    }
+
     #[test]
     fn create_game_returns_code_and_token() {
         let mut mgr = SessionManager::new();
-        let (code, token) = mgr.create_game(make_deck());
+        let (code, token) = mgr.create_game(make_deck(), None);
         assert_eq!(code.len(), 6);
         assert_eq!(token.len(), 32);
     }
@@ -2434,7 +2572,7 @@ mod tests {
     #[test]
     fn full_persist_snapshot_roundtrips_exact_generation_and_revision() {
         let mut manager = SessionManager::new();
-        let (game_code, _) = manager.create_game(make_deck());
+        let (game_code, _) = manager.create_game(make_deck(), None);
         let snapshot = FullPersistSnapshot {
             key: FullSessionKey {
                 game_code,
@@ -2454,8 +2592,8 @@ mod tests {
     #[test]
     fn create_then_join_works() {
         let mut mgr = SessionManager::new();
-        let (code, _token1) = mgr.create_game(make_deck());
-        let result = mgr.join_game(&code, make_deck());
+        let (code, _token1) = mgr.create_game(make_deck(), None);
+        let result = mgr.join_game(&code, make_deck(), None);
         assert!(result.is_ok());
         let (token2, _state) = result.unwrap();
         assert_eq!(token2.len(), 32);
@@ -2468,7 +2606,7 @@ mod tests {
     #[test]
     fn created_session_binds_interaction_authority() {
         let mut mgr = SessionManager::new();
-        let (code, _token) = mgr.create_game(make_deck());
+        let (code, _token) = mgr.create_game(make_deck(), None);
 
         assert_eq!(
             mgr.sessions
@@ -2490,8 +2628,8 @@ mod tests {
     #[test]
     fn bound_session_does_not_report_authority_unbound() {
         let mut mgr = SessionManager::new();
-        let (code, _token) = mgr.create_game(make_deck());
-        mgr.join_game(&code, make_deck())
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        mgr.join_game(&code, make_deck(), None)
             .expect("second seat joins");
 
         let state = mgr.sessions.get(&code).unwrap().state.clone();
@@ -2534,7 +2672,7 @@ mod tests {
     #[test]
     fn restored_session_rebinds_interaction_authority() {
         let mut mgr = SessionManager::new();
-        let (code, _token) = mgr.create_game(make_deck());
+        let (code, _token) = mgr.create_game(make_deck(), None);
         mgr.sessions
             .get_mut(&code)
             .unwrap()
@@ -2557,7 +2695,7 @@ mod tests {
     #[test]
     fn persisted_session_with_limited_range_is_rejected() {
         let mut mgr = SessionManager::new();
-        let (code, _token) = mgr.create_game(make_deck());
+        let (code, _token) = mgr.create_game(make_deck(), None);
         let mut persisted = mgr.sessions.get(&code).unwrap().to_persisted();
         let mut state = persisted
             .state
@@ -2584,6 +2722,7 @@ mod tests {
             let (code, _) = mgr
                 .create_game_n_players(
                     make_deck(),
+                    None,
                     "Host".to_string(),
                     None,
                     2,
@@ -2607,6 +2746,7 @@ mod tests {
         let (code, _) = mgr
             .create_game_n_players(
                 make_deck(),
+                None,
                 "Host".to_string(),
                 None,
                 4,
@@ -2642,6 +2782,7 @@ mod tests {
         assert!(mgr
             .create_game_n_players(
                 make_deck(),
+                None,
                 "Host".to_string(),
                 None,
                 2,
@@ -2673,6 +2814,7 @@ mod tests {
         let (code, _) = mgr
             .create_game_n_players(
                 make_deck(),
+                None,
                 "Host".to_string(),
                 None,
                 2,
@@ -2722,6 +2864,7 @@ mod tests {
         let (code, _) = mgr
             .create_game_n_players(
                 make_deck(),
+                None,
                 "Host".to_string(),
                 None,
                 2,
@@ -2759,24 +2902,24 @@ mod tests {
     #[test]
     fn join_nonexistent_game_fails() {
         let mut mgr = SessionManager::new();
-        let result = mgr.join_game("NOPE00", make_deck());
+        let result = mgr.join_game("NOPE00", make_deck(), None);
         assert!(result.is_err());
     }
 
     #[test]
     fn join_full_game_fails() {
         let mut mgr = SessionManager::new();
-        let (code, _) = mgr.create_game(make_deck());
-        let _ = mgr.join_game(&code, make_deck());
-        let result = mgr.join_game(&code, make_deck());
+        let (code, _) = mgr.create_game(make_deck(), None);
+        let _ = mgr.join_game(&code, make_deck(), None);
+        let result = mgr.join_game(&code, make_deck(), None);
         assert!(result.is_err());
     }
 
     #[test]
     fn unindex_tokens_removes_only_named_tokens() {
         let mut mgr = SessionManager::new();
-        let (code, token1) = mgr.create_game(make_deck());
-        let (token2, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token1) = mgr.create_game(make_deck(), None);
+        let (token2, _) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         assert_eq!(mgr.game_for_token(&token1), Some(code.as_str()));
         assert_eq!(mgr.game_for_token(&token2), Some(code.as_str()));
@@ -2804,8 +2947,8 @@ mod tests {
         }
 
         let mut mgr = SessionManager::new();
-        let (code, token1) = mgr.create_game(make_deck());
-        let (token2, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token1) = mgr.create_game(make_deck(), None);
+        let (token2, _) = mgr.join_game(&code, make_deck(), None).unwrap();
         let db = engine::database::CardDatabase::default();
         let resolver = UnusedResolver;
         let ctx = seat_reducer::types::ReducerCtx {
@@ -2837,8 +2980,8 @@ mod tests {
     #[test]
     fn remove_game_clears_token_index() {
         let mut mgr = SessionManager::new();
-        let (code, token1) = mgr.create_game(make_deck());
-        let (token2, _state) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token1) = mgr.create_game(make_deck(), None);
+        let (token2, _state) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         // While the game exists, both players' tokens resolve to it.
         assert_eq!(mgr.game_for_token(&token1), Some(code.as_str()));
@@ -2863,8 +3006,8 @@ mod tests {
     #[test]
     fn action_from_wrong_player_rejected() {
         let mut mgr = SessionManager::new();
-        let (code, token1) = mgr.create_game(make_deck());
-        let (token2, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token1) = mgr.create_game(make_deck(), None);
+        let (token2, _) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         // Determine which player has priority
         let session = mgr.sessions.get(&code).unwrap();
@@ -2890,9 +3033,9 @@ mod tests {
     #[test]
     fn open_games_lists_waiting_sessions() {
         let mut mgr = SessionManager::new();
-        let (code1, _) = mgr.create_game(make_deck());
-        let (code2, _) = mgr.create_game(make_deck());
-        let _ = mgr.join_game(&code1, make_deck());
+        let (code1, _) = mgr.create_game(make_deck(), None);
+        let (code2, _) = mgr.create_game(make_deck(), None);
+        let _ = mgr.join_game(&code1, make_deck(), None);
 
         let open = mgr.open_games();
         assert_eq!(open.len(), 1);
@@ -2902,8 +3045,8 @@ mod tests {
     #[test]
     fn disconnect_and_reconnect_works() {
         let mut mgr = SessionManager::new();
-        let (code, token1) = mgr.create_game(make_deck());
-        let _ = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token1) = mgr.create_game(make_deck(), None);
+        let _ = mgr.join_game(&code, make_deck(), None).unwrap();
 
         mgr.handle_disconnect(&code, PlayerId(0));
         let result = mgr.handle_reconnect(&code, &token1);
@@ -2913,8 +3056,8 @@ mod tests {
     #[test]
     fn reconnect_restores_between_games_waiting_state() {
         let mut mgr = SessionManager::new();
-        let (code, token0) = mgr.create_game(make_deck());
-        let _ = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token0) = mgr.create_game(make_deck(), None);
+        let _ = mgr.join_game(&code, make_deck(), None).unwrap();
 
         let session = mgr.sessions.get_mut(&code).unwrap();
         session.state.match_phase = engine::types::match_config::MatchPhase::BetweenGames;
@@ -2960,8 +3103,8 @@ mod tests {
     // have Priority-phase waiting state. Returns (mgr, code, token0, token1).
     fn setup_two_player_game() -> (SessionManager, String, String, String) {
         let mut mgr = SessionManager::new();
-        let (code, token0) = mgr.create_game(make_deck());
-        let (token1, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token0) = mgr.create_game(make_deck(), None);
+        let (token1, _) = mgr.join_game(&code, make_deck(), None).unwrap();
         // Advance through mulligan decisions until both players have kept hands.
         // We loop at most 20 times to avoid infinite loops in unexpected states.
         for _ in 0..20 {
@@ -3010,8 +3153,8 @@ mod tests {
 
         let mut mgr = SessionManager::new();
         mgr.game_log = std::sync::Arc::new(GameFileCache::new(games_dir.clone()));
-        let (code, token0) = mgr.create_game(make_deck());
-        let (token1, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token0) = mgr.create_game(make_deck(), None);
+        let (token1, _) = mgr.join_game(&code, make_deck(), None).unwrap();
         for _ in 0..20 {
             let session = mgr.sessions.get(&code).unwrap();
             match &session.state.waiting_for.clone() {
@@ -3081,10 +3224,11 @@ mod tests {
         let (code, _token) = mgr
             .create_game_with_ai(
                 make_deck(),
+                DeckChoice::Random,
                 "Host".to_string(),
                 None,
                 MatchConfig::default(),
-                vec![(1, AiDifficulty::Easy, make_deck())],
+                vec![ai_setup(1, AiDifficulty::Easy, make_deck())],
                 Vec::new(),
                 None,
                 &db,
@@ -3122,10 +3266,11 @@ mod tests {
         let (code, _token) = mgr
             .create_game_with_ai(
                 make_deck(),
+                DeckChoice::Random,
                 "Host".to_string(),
                 None,
                 MatchConfig::default(),
-                vec![(1, AiDifficulty::Easy, make_deck())],
+                vec![ai_setup(1, AiDifficulty::Easy, make_deck())],
                 Vec::new(),
                 None,
                 &db,
@@ -3794,10 +3939,11 @@ mod tests {
         let (code, _token) = mgr
             .create_game_with_ai(
                 make_deck(),
+                DeckChoice::Random,
                 "Host".to_string(),
                 None,
                 MatchConfig::default(),
-                vec![(1, AiDifficulty::Easy, make_deck())],
+                vec![ai_setup(1, AiDifficulty::Easy, make_deck())],
                 Vec::new(),
                 None,
                 &db,
@@ -3902,6 +4048,7 @@ mod tests {
         let (code, _token0) = mgr
             .create_game_n_players(
                 make_deck(),
+                None,
                 "Host".to_string(),
                 None,
                 3,
@@ -3909,8 +4056,8 @@ mod tests {
                 None,
             )
             .expect("supported format config");
-        let (_token1, _) = mgr.join_game(&code, make_deck()).unwrap();
-        let (_token2, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (_token1, _) = mgr.join_game(&code, make_deck(), None).unwrap();
+        let (_token2, _) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         // Retroactively mark seat 2 as AI-controlled (server-side bookkeeping
         // only — the engine state itself has no notion of AI seats), and
@@ -4828,6 +4975,7 @@ mod tests {
         let sandbox_config = FormatConfig::commander().with_sandbox();
         mgr.create_game_n_players(
             make_deck(),
+            None,
             "Host".to_string(),
             None,
             2,
@@ -5099,7 +5247,7 @@ mod tests {
     #[test]
     fn non_sandbox_game_has_empty_debug_permitted() {
         let mut mgr = SessionManager::new();
-        let (code, _token) = mgr.create_game(make_deck());
+        let (code, _token) = mgr.create_game(make_deck(), None);
         let session = mgr.sessions.get(&code).unwrap();
         assert!(!session.state.format_config.allow_debug_actions);
         assert!(!session.state.debug_mode);
@@ -5109,7 +5257,7 @@ mod tests {
     #[test]
     fn non_sandbox_rejects_debug_action() {
         let mut mgr = SessionManager::new();
-        let (code, token) = mgr.create_game(make_deck());
+        let (code, token) = mgr.create_game(make_deck(), None);
         let result = mgr.handle_action(
             &code,
             &token,
@@ -5136,10 +5284,11 @@ mod tests {
         let (code, _token) = mgr
             .create_game_with_ai(
                 make_deck(),
+                DeckChoice::Random,
                 "Host".to_string(),
                 None,
                 MatchConfig::default(),
-                vec![(1, AiDifficulty::Easy, make_deck())],
+                vec![ai_setup(1, AiDifficulty::Easy, make_deck())],
                 Vec::new(),
                 None,
                 &db,
@@ -5198,10 +5347,11 @@ mod tests {
         let (code, host_token) = mgr
             .create_game_with_ai(
                 make_deck(),
+                DeckChoice::Random,
                 "Host".to_string(),
                 None,
                 MatchConfig::default(),
-                vec![(1, AiDifficulty::Easy, make_deck())],
+                vec![ai_setup(1, AiDifficulty::Easy, make_deck())],
                 Vec::new(),
                 None,
                 &db,
@@ -5278,6 +5428,7 @@ mod tests {
         let (code, _host) = mgr
             .create_game_n_players(
                 make_deck(),
+                None,
                 "Host".to_string(),
                 None,
                 3,
@@ -5287,7 +5438,7 @@ mod tests {
             .expect("supported format config");
         // Seat 1 joins; seat 2 is left waiting, because the reducer rejects
         // removing a claimed seat (`SeatClaimed`).
-        mgr.join_game(&code, make_deck()).unwrap();
+        mgr.join_game(&code, make_deck(), None).unwrap();
 
         // Premise: nothing is seeded before the rebuild, so the assertion
         // below cannot be satisfied by leftovers from game creation.
@@ -5598,7 +5749,7 @@ mod tests {
         use engine::types::zones::Zone;
 
         let mut mgr = SessionManager::new();
-        let (code, token) = mgr.create_game(make_deck());
+        let (code, token) = mgr.create_game(make_deck(), None);
 
         let mut state = GameState::new_two_player(7);
         let bearer = engine::game::zones::create_object(
@@ -5709,7 +5860,7 @@ mod tests {
         let mut mgr = SessionManager::new();
         let (code, host_token) = create_sandbox_game(&mut mgr);
         let (guest_token, _state) = mgr
-            .join_game_with_name(&code, make_deck(), "Guest".to_string())
+            .join_game_with_name(&code, make_deck(), None, "Guest".to_string())
             .expect("guest joins");
 
         // Host revokes the guest's default permission.
@@ -5737,7 +5888,7 @@ mod tests {
         let mut mgr = SessionManager::new();
         let (code, host_token) = create_sandbox_game(&mut mgr);
         let (guest_token, _state) = mgr
-            .join_game_with_name(&code, make_deck(), "Guest".to_string())
+            .join_game_with_name(&code, make_deck(), None, "Guest".to_string())
             .expect("guest joins");
 
         mgr.handle_action(
@@ -5775,7 +5926,7 @@ mod tests {
         let mut mgr = SessionManager::new();
         let (code, host_token) = create_sandbox_game(&mut mgr);
         let (guest_token, _state) = mgr
-            .join_game_with_name(&code, make_deck(), "Guest".to_string())
+            .join_game_with_name(&code, make_deck(), None, "Guest".to_string())
             .expect("guest joins");
 
         // Host grants debug permission to seat 1.
@@ -5823,7 +5974,7 @@ mod tests {
         let mut mgr = SessionManager::new();
         let (code, _host_token) = create_sandbox_game(&mut mgr);
         let (guest_token, _state) = mgr
-            .join_game_with_name(&code, make_deck(), "Guest".to_string())
+            .join_game_with_name(&code, make_deck(), None, "Guest".to_string())
             .expect("guest joins");
 
         let result = mgr.handle_action(
@@ -5857,7 +6008,7 @@ mod tests {
     #[test]
     fn grant_outside_sandbox_is_rejected() {
         let mut mgr = SessionManager::new();
-        let (code, token) = mgr.create_game(make_deck());
+        let (code, token) = mgr.create_game(make_deck(), None);
         let result = mgr.handle_action(
             &code,
             &token,
@@ -5960,8 +6111,8 @@ mod tests {
         use engine::types::zones::Zone;
 
         let mut mgr = SessionManager::new();
-        let (code, token0) = mgr.create_game(make_deck());
-        let (token1, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token0) = mgr.create_game(make_deck(), None);
+        let (token1, _) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         let session = mgr.sessions.get_mut(&code).unwrap();
         // Make the scry the responsibility of the NON-active player so that
@@ -6033,8 +6184,8 @@ mod tests {
         use engine::types::zones::Zone;
 
         let mut mgr = SessionManager::new();
-        let (code, token0) = mgr.create_game(make_deck());
-        let (token1, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token0) = mgr.create_game(make_deck(), None);
+        let (token1, _) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         let session = mgr.sessions.get_mut(&code).unwrap();
         let dig_player = PlayerId(if session.state.active_player == PlayerId(0) {
@@ -6112,8 +6263,8 @@ mod tests {
         use engine::types::zones::Zone;
 
         let mut mgr = SessionManager::new();
-        let (code, token0) = mgr.create_game(make_deck());
-        let (token1, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token0) = mgr.create_game(make_deck(), None);
+        let (token1, _) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         let session = mgr.sessions.get_mut(&code).unwrap();
         let bottom_player = PlayerId(if session.state.active_player == PlayerId(0) {
@@ -6192,8 +6343,8 @@ mod tests {
         use engine::types::zones::Zone;
 
         let mut mgr = SessionManager::new();
-        let (code, token0) = mgr.create_game(make_deck());
-        let (token1, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token0) = mgr.create_game(make_deck(), None);
+        let (token1, _) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         let session = mgr.sessions.get_mut(&code).unwrap();
         let bottom_player = PlayerId(if session.state.active_player == PlayerId(0) {
@@ -6277,8 +6428,8 @@ mod tests {
         use engine::types::zones::Zone;
 
         let mut mgr = SessionManager::new();
-        let (code, token0) = mgr.create_game(make_deck());
-        let (token1, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token0) = mgr.create_game(make_deck(), None);
+        let (token1, _) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         let session = mgr.sessions.get_mut(&code).unwrap();
         let bottom_player = PlayerId(if session.state.active_player == PlayerId(0) {
@@ -6349,8 +6500,8 @@ mod tests {
         use engine::types::zones::Zone;
 
         let mut mgr = SessionManager::new();
-        let (code, token0) = mgr.create_game(make_deck());
-        let (token1, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token0) = mgr.create_game(make_deck(), None);
+        let (token1, _) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         let session = mgr.sessions.get_mut(&code).unwrap();
         let bottom_player = PlayerId(if session.state.active_player == PlayerId(0) {
@@ -6436,8 +6587,8 @@ mod tests {
         use engine::types::zones::Zone;
 
         let mut mgr = SessionManager::new();
-        let (code, token0) = mgr.create_game(make_deck());
-        let (token1, _) = mgr.join_game(&code, make_deck()).unwrap();
+        let (code, token0) = mgr.create_game(make_deck(), None);
+        let (token1, _) = mgr.join_game(&code, make_deck(), None).unwrap();
 
         let session = mgr.sessions.get_mut(&code).unwrap();
         // The attacker's controller assigns combat damage. Make that the
@@ -6576,6 +6727,7 @@ mod tests {
         let (code, token0) = mgr
             .create_game_n_players(
                 make_deck(),
+                None,
                 "Host".to_string(),
                 None,
                 3,
@@ -6583,8 +6735,8 @@ mod tests {
                 Some(FormatConfig::standard()),
             )
             .expect("supported format config");
-        let _ = mgr.join_game(&code, make_deck()).unwrap();
-        let _ = mgr.join_game(&code, make_deck()).unwrap();
+        let _ = mgr.join_game(&code, make_deck(), None).unwrap();
+        let _ = mgr.join_game(&code, make_deck(), None).unwrap();
 
         let attacks = {
             let session = mgr.sessions.get_mut(&code).unwrap();
@@ -6711,9 +6863,9 @@ mod tests {
 
     fn started_two_seat_game() -> (SessionManager, String, String, String) {
         let mut mgr = SessionManager::new();
-        let (code, token0) = mgr.create_game(make_deck());
+        let (code, token0) = mgr.create_game(make_deck(), None);
         let (token1, _) = mgr
-            .join_game(&code, make_deck())
+            .join_game(&code, make_deck(), None)
             .expect("second seat joins");
         (mgr, code, token0, token1)
     }
@@ -7121,7 +7273,7 @@ mod tests {
     /// the human's Resolve All has exactly one representative left to ask.
     fn ai_table_awaiting_one_consent() -> (SessionManager, String, PlayerId) {
         let mut mgr = SessionManager::new();
-        let (game_code, _token) = mgr.create_game(make_deck());
+        let (game_code, _token) = mgr.create_game(make_deck(), None);
         let ai_player = PlayerId(1);
         let session = mgr
             .sessions
@@ -7493,6 +7645,131 @@ mod tests {
         assert_eq!(restored.state_revision, revision_before);
     }
 
+    // ── Seat deck provenance, persistence revision, and restore ────────────
+
+    use engine::game::bracket_estimate::CommanderBracketTier;
+
+    /// A minimal card entry for every name a fixture deck uses, so
+    /// `resolve_deck` succeeds against a database this test owns.
+    fn db_with_names(names: &[String]) -> CardDatabase {
+        let entries: serde_json::Map<String, serde_json::Value> = names
+            .iter()
+            .map(|name| {
+                (
+                    name.to_lowercase(),
+                    serde_json::json!({
+                        "name": name,
+                        "mana_cost": { "type": "NoCost" },
+                        "card_type": {
+                            "supertypes": [], "core_types": ["Land"], "subtypes": []
+                        },
+                        "power": null,
+                        "toughness": null,
+                        "loyalty": null,
+                        "defense": null,
+                        "oracle_text": null,
+                        "abilities": [],
+                        "triggers": [],
+                        "static_abilities": [],
+                        "replacements": [],
+                        "keywords": []
+                    }),
+                )
+            })
+            .collect();
+        CardDatabase::from_json_str(&serde_json::Value::Object(entries).to_string())
+            .expect("fixture database parses")
+    }
+
+    fn lands_db() -> CardDatabase {
+        db_with_names(&["Forest".to_string(), "Mountain".to_string()])
+    }
+
+    /// Every starter deck resolves against this database, so a restore that
+    /// re-drew one would produce a real deck rather than failing to resolve.
+    fn every_starter_db() -> CardDatabase {
+        let mut names = vec!["Forest".to_string(), "Mountain".to_string()];
+        for deck_name in crate::starter_decks::starter_deck_names() {
+            names.extend(
+                crate::starter_decks::find_starter_deck(deck_name)
+                    .expect("the table names this deck")
+                    .main_deck,
+            );
+        }
+        db_with_names(&names)
+    }
+
+    fn name_deck(name: &str, count: usize) -> crate::starter_decks::DeckData {
+        crate::starter_decks::DeckData {
+            main_deck: vec![name.to_string(); count],
+            ..Default::default()
+        }
+    }
+
+    fn list_choice(name: &str, count: usize) -> DeckChoice {
+        DeckChoice::DeckList(Box::new(name_deck(name, count)))
+    }
+
+    /// Stands in for `phase-server`'s `ServerDeckResolver`. A `DeckList` maps
+    /// to its own names; the starter table's decks are not in these fixture
+    /// databases, and these rows assert what the session RECORDS as the
+    /// choice, not what the resolver produced from it.
+    struct NameListResolver;
+
+    impl seat_reducer::types::DeckResolver for NameListResolver {
+        fn resolve(
+            &self,
+            choice: &DeckChoice,
+        ) -> Result<engine::game::deck_loading::PlayerDeckList, String> {
+            let main_deck = match choice {
+                DeckChoice::DeckList(data) => data.main_deck.clone(),
+                DeckChoice::Named(_) | DeckChoice::Random => vec!["Forest".to_string()],
+            };
+            Ok(engine::game::deck_loading::PlayerDeckList {
+                main_deck,
+                ..Default::default()
+            })
+        }
+    }
+
+    fn run_seat_mutation(
+        mgr: &mut SessionManager,
+        code: &str,
+        db: &CardDatabase,
+        mutation: SeatMutation,
+    ) -> SeatDelta {
+        let resolver = NameListResolver;
+        let ctx = seat_reducer::types::ReducerCtx {
+            platform: Platform::Native,
+            deck_resolver: &resolver,
+        };
+        let mut seat_state = mgr.sessions.get(code).unwrap().seat_state();
+        let delta = seat_reducer::apply(&mut seat_state, mutation, &ctx).expect("legal mutation");
+        mgr.sessions
+            .get_mut(code)
+            .unwrap()
+            .apply_seat_delta(seat_state, &delta, db);
+        delta
+    }
+
+    fn seat_ai_at(seat_index: u8, deck: DeckChoice) -> SeatMutation {
+        SeatMutation::SetKind {
+            seat_index,
+            kind: SeatKind::Ai {
+                difficulty: AiDifficulty::Easy,
+                deck,
+            },
+        }
+    }
+
+    fn main_deck_names(payload: &PlayerDeckPayload) -> Vec<String> {
+        payload
+            .main_deck
+            .iter()
+            .flat_map(|entry| std::iter::repeat_n(entry.card.name.clone(), entry.count as usize))
+            .collect()
+    }
+
     #[test]
     fn a_seat_edit_advances_the_persistence_revision() {
         let mut mgr = SessionManager::new();
@@ -7541,5 +7818,338 @@ mod tests {
             .apply_seat_delta(seat_state, &SeatDelta::empty(), &db);
 
         assert!(mgr.sessions.get(&code).unwrap().state_revision > before);
+    }
+
+    #[test]
+    fn both_projections_echo_the_installed_ai_deck() {
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        let db = lands_db();
+        let choice = list_choice("Mountain", 1);
+
+        run_seat_mutation(&mut mgr, &code, &db, seat_ai_at(1, choice.clone()));
+
+        let session = mgr.sessions.get(&code).unwrap();
+        let expected = SeatKind::Ai {
+            difficulty: AiDifficulty::Easy,
+            deck: choice,
+        };
+        assert_eq!(session.player_slot_info()[1].kind, expected, "wire view");
+        assert_eq!(session.seat_state().seats[1], expected, "reducer input");
+    }
+
+    #[test]
+    fn re_sending_the_same_ai_seat_yields_an_empty_delta() {
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        let db = lands_db();
+        let choice = list_choice("Mountain", 1);
+        run_seat_mutation(&mut mgr, &code, &db, seat_ai_at(1, choice.clone()));
+
+        // The loop the client's promote-on-non-DeckList effect drives: with the
+        // choice echoed back, the reducer's `current == kind` short-circuit
+        // fires and the seat is not torn down and re-resolved.
+        let delta = run_seat_mutation(&mut mgr, &code, &db, seat_ai_at(1, choice));
+
+        assert!(delta.new_ai.is_empty(), "new_ai: {:?}", delta.new_ai);
+        assert!(
+            delta.removed_ai.is_empty(),
+            "removed_ai: {:?}",
+            delta.removed_ai
+        );
+        assert!(
+            delta.mutated_seats.is_empty(),
+            "mutated_seats: {:?}",
+            delta.mutated_seats
+        );
+    }
+
+    #[test]
+    fn a_named_ai_deck_choice_is_not_coerced_to_a_list() {
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        let db = lands_db();
+        let choice = DeckChoice::Named("Red Deck Wins".to_string());
+
+        run_seat_mutation(&mut mgr, &code, &db, seat_ai_at(1, choice.clone()));
+
+        assert_eq!(
+            mgr.sessions.get(&code).unwrap().player_slot_info()[1].kind,
+            SeatKind::Ai {
+                difficulty: AiDifficulty::Easy,
+                deck: choice,
+            }
+        );
+    }
+
+    #[test]
+    fn removing_a_seat_renumbers_deck_and_choice_together() {
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr
+            .create_game_n_players(
+                make_deck(),
+                None,
+                "Host".to_string(),
+                None,
+                4,
+                MatchConfig::default(),
+                Some(FormatConfig::commander()),
+            )
+            .expect("commander supports four seats");
+        let db = lands_db();
+        run_seat_mutation(
+            &mut mgr,
+            &code,
+            &db,
+            seat_ai_at(2, list_choice("Forest", 1)),
+        );
+        run_seat_mutation(
+            &mut mgr,
+            &code,
+            &db,
+            seat_ai_at(3, list_choice("Mountain", 1)),
+        );
+
+        run_seat_mutation(&mut mgr, &code, &db, SeatMutation::Remove { seat_index: 1 });
+
+        let session = mgr.sessions.get(&code).unwrap();
+        // Each survivor keeps its OWN pairing, not a neighbour's.
+        for (seat, name) in [(1usize, "Forest"), (2usize, "Mountain")] {
+            assert_eq!(
+                session.deck_choices[seat],
+                Some(list_choice(name, 1)),
+                "seat {seat} choice"
+            );
+            assert_eq!(
+                main_deck_names(session.decks[seat].as_ref().expect("seat has a deck")),
+                vec![name.to_string()],
+                "seat {seat} resolved deck"
+            );
+        }
+    }
+
+    #[test]
+    fn turning_an_ai_seat_back_into_a_waiting_seat_clears_both_arrays() {
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        let db = lands_db();
+        run_seat_mutation(
+            &mut mgr,
+            &code,
+            &db,
+            seat_ai_at(1, list_choice("Forest", 1)),
+        );
+        // Reach guard: the seat really held a deck before the transition.
+        assert!(mgr.sessions.get(&code).unwrap().decks[1].is_some());
+
+        run_seat_mutation(
+            &mut mgr,
+            &code,
+            &db,
+            SeatMutation::SetKind {
+                seat_index: 1,
+                kind: SeatKind::WaitingHuman,
+            },
+        );
+
+        let session = mgr.sessions.get(&code).unwrap();
+        assert!(session.decks[1].is_none());
+        assert!(session.deck_choices[1].is_none());
+    }
+
+    #[test]
+    fn a_human_seats_choice_is_recorded_but_never_reaches_the_wire() {
+        let db = lands_db();
+        let data = name_deck("Forest", 8);
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        mgr.join_game_with_name_and_reservation(
+            &code,
+            crate::resolve_deck(&db, &data).unwrap(),
+            Some(DeckChoice::DeckList(Box::new(data.clone()))),
+            "Guest".to_string(),
+            None,
+        )
+        .expect("seat 1 is open");
+
+        let session = mgr.sessions.get(&code).unwrap();
+        assert_eq!(
+            session.deck_choices[1],
+            Some(DeckChoice::DeckList(Box::new(data)))
+        );
+        // The human variants carry no deck field, so the recorded list is
+        // structurally unable to reach a slot broadcast.
+        assert_eq!(session.player_slot_info()[1].kind, SeatKind::JoinedHuman);
+    }
+
+    #[test]
+    fn a_human_seats_recorded_choice_re_resolves_to_its_payload() {
+        let db = lands_db();
+        let data = name_deck("Forest", 8);
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        mgr.join_game_with_name_and_reservation(
+            &code,
+            crate::resolve_deck(&db, &data).unwrap(),
+            Some(DeckChoice::DeckList(Box::new(data))),
+            "Guest".to_string(),
+            None,
+        )
+        .unwrap();
+
+        let session = mgr.sessions.get(&code).unwrap();
+        let Some(DeckChoice::DeckList(recorded)) = session.deck_choices[1].clone() else {
+            panic!(
+                "expected a recorded list, got {:?}",
+                session.deck_choices[1]
+            );
+        };
+        assert_eq!(
+            main_deck_names(&crate::resolve_deck(&db, &recorded).unwrap()),
+            main_deck_names(session.decks[1].as_ref().unwrap())
+        );
+    }
+
+    #[test]
+    fn seat_ai_records_the_choice_it_was_given() {
+        let db = lands_db();
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        let data = name_deck("Mountain", 3);
+
+        mgr.sessions.get_mut(&code).unwrap().seat_ai(AiSeatSetup {
+            seat_index: 1,
+            difficulty: AiDifficulty::Hard,
+            choice: DeckChoice::DeckList(Box::new(data.clone())),
+            resolved: crate::resolve_deck(&db, &data).unwrap(),
+        });
+
+        assert_eq!(
+            mgr.sessions.get(&code).unwrap().player_slot_info()[1].kind,
+            SeatKind::Ai {
+                difficulty: AiDifficulty::Hard,
+                deck: DeckChoice::DeckList(Box::new(data)),
+            }
+        );
+    }
+
+    #[test]
+    fn create_game_with_ai_records_the_host_choice_it_was_given() {
+        let db = engine::database::CardDatabase::default();
+        let mut mgr = SessionManager::new();
+        let asked_for = DeckChoice::Named("Sworn to Darkness".to_string());
+
+        let (code, _token) = mgr
+            .create_game_with_ai(
+                make_deck(),
+                asked_for.clone(),
+                "Host".to_string(),
+                None,
+                MatchConfig::default(),
+                vec![ai_setup(1, AiDifficulty::Easy, make_deck())],
+                Vec::new(),
+                None,
+                &db,
+            )
+            .expect("supported format config");
+
+        assert_eq!(
+            mgr.sessions.get(&code).unwrap().deck_choices[0],
+            Some(asked_for)
+        );
+    }
+
+    // ── Restore ────────────────────────────────────────────────────────────
+
+    /// A two-seat room with only the host seated, its deck recorded the way
+    /// the create path records it.
+    fn hosted_room(
+        db: &CardDatabase,
+        data: &crate::starter_decks::DeckData,
+    ) -> (SessionManager, String) {
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr
+            .create_game_n_players(
+                crate::resolve_deck(db, data).unwrap(),
+                Some(DeckChoice::DeckList(Box::new(data.clone()))),
+                "Host".to_string(),
+                None,
+                2,
+                MatchConfig::default(),
+                None,
+            )
+            .unwrap();
+        (mgr, code)
+    }
+
+    /// `hosted_room` with the second seat joined, both decks re-resolvable.
+    fn seated_room(
+        db: &CardDatabase,
+        data: &crate::starter_decks::DeckData,
+    ) -> (SessionManager, String) {
+        let (mut mgr, code) = hosted_room(db, data);
+        mgr.join_game_with_name_and_reservation(
+            &code,
+            crate::resolve_deck(db, data).unwrap(),
+            Some(DeckChoice::DeckList(Box::new(data.clone()))),
+            "Guest".to_string(),
+            None,
+        )
+        .unwrap();
+        (mgr, code)
+    }
+
+    fn install_ai_seat(
+        mgr: &mut SessionManager,
+        code: &str,
+        db: &CardDatabase,
+        difficulty: AiDifficulty,
+        choice: DeckChoice,
+        data: &crate::starter_decks::DeckData,
+    ) {
+        mgr.sessions.get_mut(code).unwrap().seat_ai(AiSeatSetup {
+            seat_index: 1,
+            difficulty,
+            choice,
+            resolved: crate::resolve_deck(db, data).unwrap(),
+        });
+    }
+
+    /// The provenance parameter on `create_game` is load-bearing. A seat filled
+    /// through it with `None` holds a deck for as long as the process lives and
+    /// holds nothing after a restart, because `from_persisted` rebuilds `decks`
+    /// from `deck_choices` alone. Seat 0 is `SeatImmutable`, so no later reseat
+    /// can repair it and the room never starts again.
+    #[test]
+    fn a_host_seat_created_without_provenance_is_refused_after_a_restart() {
+        let db = lands_db();
+        let data = name_deck("Forest", 40);
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(crate::resolve_deck(&db, &data).unwrap(), None);
+        mgr.join_game_with_name_and_reservation(
+            &code,
+            crate::resolve_deck(&db, &data).unwrap(),
+            Some(DeckChoice::DeckList(Box::new(data.clone()))),
+            "Guest".to_string(),
+            None,
+        )
+        .unwrap();
+
+        let live = mgr.sessions.get(&code).unwrap();
+        // Both seats hold a deck right now and only seat 0 lacks the
+        // provenance to rebuild it, so the refusal below is that loss and not
+        // an empty create.
+        assert!(live.decks.iter().all(Option::is_some));
+        assert!(live.deck_choices[0].is_none());
+        assert!(live.deck_choices[1].is_some());
+
+        let mut restored = round_trip_through_disk(live, &db);
+
+        assert!(restored.decks[0].is_none());
+        assert!(restored.decks[1].is_some());
+        assert_eq!(
+            restored.start_game(&db),
+            Err(StartGameError::SeatDeckMissing { seat_index: 0 })
+        );
     }
 }
