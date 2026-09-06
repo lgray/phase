@@ -940,6 +940,13 @@ impl GameSession {
         if old_player_count != new_player_count {
             self.rebuild_pregame_state(new_player_count);
         }
+
+        // This method writes the session's own durable fields, so the snapshot
+        // that follows needs a revision of its own or `save_full_session`'s
+        // fence rejects it. Unconditional, including for a no-op delta:
+        // `record_ai_driver_fault` already allocates for durability without a
+        // state transition to render.
+        self.advance_state_revision();
     }
 
     pub fn start_game(&mut self, db: &CardDatabase) -> Result<(), CedhBracketError> {
@@ -1620,6 +1627,10 @@ impl SessionManager {
         } else {
             display_name
         };
+        // Writes `player_tokens`, `display_names` and `deck_choices` — all
+        // persisted, so the following snapshot needs its own revision to clear
+        // the fence.
+        session.advance_state_revision();
 
         self.token_to_game
             .insert(player_token.clone(), game_code.to_string());
@@ -7480,5 +7491,55 @@ mod tests {
         assert_eq!(resumed.state_revision, None);
         assert!(resumed.broadcast.is_none());
         assert_eq!(restored.state_revision, revision_before);
+    }
+
+    #[test]
+    fn a_seat_edit_advances_the_persistence_revision() {
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        let db = lands_db();
+        let before = mgr.sessions.get(&code).unwrap().state_revision;
+
+        run_seat_mutation(
+            &mut mgr,
+            &code,
+            &db,
+            seat_ai_at(1, list_choice("Forest", 1)),
+        );
+
+        assert!(
+            mgr.sessions.get(&code).unwrap().state_revision > before,
+            "a seat edit writes persisted fields, so it must allocate a revision"
+        );
+    }
+
+    #[test]
+    fn a_join_advances_the_persistence_revision() {
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        let before = mgr.sessions.get(&code).unwrap().state_revision;
+
+        mgr.join_game(&code, make_deck(), None)
+            .expect("seat 1 is open");
+
+        assert!(mgr.sessions.get(&code).unwrap().state_revision > before);
+    }
+
+    #[test]
+    fn a_no_op_seat_edit_still_allocates_a_revision() {
+        let mut mgr = SessionManager::new();
+        let (code, _token) = mgr.create_game(make_deck(), None);
+        let db = lands_db();
+        let before = mgr.sessions.get(&code).unwrap().state_revision;
+
+        // The durability contract, not a state transition: an empty delta
+        // still produces a snapshot that must clear the persistence fence.
+        let seat_state = mgr.sessions.get(&code).unwrap().seat_state();
+        mgr.sessions
+            .get_mut(&code)
+            .unwrap()
+            .apply_seat_delta(seat_state, &SeatDelta::empty(), &db);
+
+        assert!(mgr.sessions.get(&code).unwrap().state_revision > before);
     }
 }
