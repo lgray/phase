@@ -583,7 +583,7 @@ impl DraftSessionManager {
         &mut self,
         draft_code: &str,
         game_mgr: &mut SessionManager,
-        db: &engine::database::CardDatabase,
+        db: &std::sync::Arc<engine::database::CardDatabase>,
         round: u8,
     ) -> Result<Vec<DraftMatchSpawn>, String> {
         let session = self
@@ -1363,7 +1363,12 @@ mod tests {
 
         let mut game_mgr = SessionManager::new();
         let spawns = draft_mgr
-            .spawn_match_games_for_round(&code, &mut game_mgr, &CardDatabase::default(), 1)
+            .spawn_match_games_for_round(
+                &code,
+                &mut game_mgr,
+                &std::sync::Arc::new(CardDatabase::default()),
+                1,
+            )
             .expect("missing deck submissions should skip only the incomplete pairing");
 
         assert!(spawns.is_empty());
