@@ -9,7 +9,9 @@
 //! bounds the redirect: an action that names the submitting seat is not a
 //! choice control redirects.
 
-use engine::game::engine::{apply_as_current, apply_interaction_for_simulation};
+use engine::game::engine::{
+    apply, apply_as_current, apply_for_simulation, apply_interaction_for_simulation,
+};
 use engine::game::mana_sources::activatable_mana_actions_for_player;
 use engine::game::public_state::sync_waiting_for;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
@@ -17,7 +19,10 @@ use engine::game::turn_control::authorized_submitter_for_player;
 use engine::game::EngineError;
 use engine::types::ability::{AbilityCost, Effect, ResolvedAbility};
 use engine::types::actions::{DebugAction, GameAction};
-use engine::types::game_state::{AutoPassMode, TurnBoundary, WaitingFor};
+use engine::types::game_state::{
+    ActionResult, AutoPassMode, AutoPassRequest, CastPaymentMode, GameState,
+    StackResolutionSession, TurnBoundary, WaitingFor,
+};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard};
 use engine::types::phase::{Phase, PhaseStop, PhaseStopScope};
@@ -102,6 +107,16 @@ fn land_board(seats: u8, controller: Option<PlayerId>) -> (GameRunner, ObjectId)
     (runner, forest)
 }
 
+type CollapsedApply = fn(&mut GameState, PlayerId, GameAction) -> Result<ActionResult, EngineError>;
+
+/// The two entrypoints that fill the reducer's owner slot with the
+/// authenticated submitter, so a reduction keyed to that slot answers them
+/// differently from the split forms.
+const COLLAPSED_FORMS: [(&str, CollapsedApply); 2] = [
+    ("apply", apply),
+    ("apply_for_simulation", apply_for_simulation),
+];
+
 /// The tap action the engine itself enumerates for `seat` — never hand-built.
 fn engine_authored_tap(runner: &GameRunner, seat: PlayerId, land: ObjectId) -> GameAction {
     activatable_mana_actions_for_player(runner.state(), seat)
@@ -156,6 +171,66 @@ fn self_control_clears_the_same_seat_as_no_control() {
     apply_as_current(runner.state_mut(), GameAction::PassPriority)
         .expect("a self-controlling seat passes its own priority");
 
+    assert_eq!(tracked_seats(&runner), vec![P0, P2, P3]);
+}
+
+/// CR 723.5a: the collapsed entrypoints clear the manual mana tracking of the
+/// seat whose priority was passed, not of the player who submitted the pass.
+#[test]
+fn a_collapsed_pass_clears_the_controlled_seats_mana_tracking() {
+    for (form, collapsed) in COLLAPSED_FORMS {
+        let mut runner = four_player_board_with_every_seat_tracked(Some(P0));
+        assert_seat_submits_through(&runner, P1, P0);
+        assert_eq!(tracked_seats(&runner), vec![P0, P1, P2, P3]);
+
+        collapsed(runner.state_mut(), P0, GameAction::PassPriority)
+            .expect("the controller passes the controlled seat's priority");
+
+        assert_eq!(
+            tracked_seats(&runner),
+            vec![P0, P2, P3],
+            "{form} must clear the passing seat's tracking and only that seat's"
+        );
+    }
+}
+
+/// Reach guard: with no control effect the same board and the same call through
+/// each collapsed form clear the same seat, so the row above pins the redirect.
+#[test]
+fn a_collapsed_pass_clears_its_own_seats_mana_tracking_without_control() {
+    for (form, collapsed) in COLLAPSED_FORMS {
+        let mut runner = four_player_board_with_every_seat_tracked(None);
+        assert_seat_submits_through(&runner, P1, P1);
+
+        collapsed(runner.state_mut(), P1, GameAction::PassPriority)
+            .expect("the seat passes its own priority");
+
+        assert_eq!(tracked_seats(&runner), vec![P0, P2, P3], "{form}");
+    }
+}
+
+/// CR 723.5: the controlled seat is not its own authorized submitter, so a
+/// collapsed form refuses its pass before any tracking is cleared.
+#[test]
+fn the_controlled_seat_may_not_submit_its_own_pass_through_a_collapsed_form() {
+    let mut runner = four_player_board_with_every_seat_tracked(Some(P0));
+    assert_seat_submits_through(&runner, P1, P0);
+
+    assert!(
+        matches!(
+            apply(runner.state_mut(), P1, GameAction::PassPriority),
+            Err(EngineError::WrongPlayer)
+        ),
+        "the controlled seat is not its own authorized submitter"
+    );
+    assert_eq!(
+        tracked_seats(&runner),
+        vec![P0, P1, P2, P3],
+        "a refused pass clears nothing"
+    );
+
+    apply(runner.state_mut(), P0, GameAction::PassPriority)
+        .expect("the same board accepts the authorized submitter's pass");
     assert_eq!(tracked_seats(&runner), vec![P0, P2, P3]);
 }
 
@@ -450,6 +525,96 @@ fn an_unlatched_search_choice_discharges_the_searchers_preference() {
     assert!(runner.state().auto_pass.contains_key(&P0));
 }
 
+/// CR 723.2 + CR 723.5: the collapsed entrypoint discharges the preference of
+/// the searcher whose prompt it is, not of the agent's controller who submitted
+/// the choice.
+#[test]
+fn a_collapsed_latched_search_choice_discharges_the_searchers_preference() {
+    let (mut runner, found) = opposition_agent_search(true);
+    assert!(
+        runner.state().turn_decision_controller.is_none(),
+        "the latch must redirect with no turn-control field set"
+    );
+    assert_seat_submits_through(&runner, P1, P0);
+    seed_auto_pass(&mut runner);
+
+    apply(
+        runner.state_mut(),
+        P0,
+        GameAction::SelectCards { cards: vec![found] },
+    )
+    .expect("the agent's controller submits the searcher's choice");
+
+    assert!(
+        !runner.state().auto_pass.contains_key(&P1),
+        "the searcher's own preference is the one the choice discharges"
+    );
+    assert!(
+        runner.state().auto_pass.contains_key(&P0),
+        "the submitting controller's preference is untouched"
+    );
+}
+
+/// Reach guard: the same tutor with no agent discharges the same seat through
+/// the same entrypoint, so the row above pins the latch and not the tutor.
+#[test]
+fn a_collapsed_unlatched_search_choice_discharges_the_searchers_preference() {
+    let (mut runner, found) = opposition_agent_search(false);
+    assert_seat_submits_through(&runner, P1, P1);
+    seed_auto_pass(&mut runner);
+
+    apply(
+        runner.state_mut(),
+        P1,
+        GameAction::SelectCards { cards: vec![found] },
+    )
+    .expect("the searcher submits its own choice");
+
+    assert!(!runner.state().auto_pass.contains_key(&P1));
+    assert!(runner.state().auto_pass.contains_key(&P0));
+}
+
+/// CR 723.5b: a preference names its submitting seat, so it returns from the
+/// reducer ahead of the prompt-keyed discharge even while the latch redirects.
+#[test]
+fn a_collapsed_preference_leaves_both_seats_modes_standing_under_a_latch() {
+    let (mut runner, found) = opposition_agent_search(true);
+    assert_seat_submits_through(&runner, P1, P0);
+    seed_auto_pass(&mut runner);
+
+    apply(
+        runner.state_mut(),
+        P0,
+        GameAction::SetPhaseStops {
+            stops: one_phase_stop(),
+        },
+    )
+    .expect("a preference is legal in every state");
+
+    assert!(
+        runner.state().auto_pass.contains_key(&P0),
+        "a preference discharges no auto-pass mode at all"
+    );
+    assert!(runner.state().auto_pass.contains_key(&P1));
+    assert_eq!(
+        runner.state().phase_stops.get(&P0),
+        Some(&one_phase_stop()),
+        "the submitting connection owns the preference"
+    );
+    assert!(!runner.state().phase_stops.contains_key(&P1));
+
+    // Positive control on this exact board: a prompt-keyed action does reach
+    // the discharge, so the modes left standing above are not an inert board.
+    apply(
+        runner.state_mut(),
+        P0,
+        GameAction::SelectCards { cards: vec![found] },
+    )
+    .expect("the agent's controller submits the searcher's choice");
+    assert!(!runner.state().auto_pass.contains_key(&P1));
+    assert!(runner.state().auto_pass.contains_key(&P0));
+}
+
 fn one_phase_stop() -> Vec<PhaseStop> {
     vec![PhaseStop {
         phase: Phase::End,
@@ -639,4 +804,251 @@ fn a_debug_permission_grant_is_authorized_against_the_submitting_host() {
     .expect("the host grants debug permission while controlling another player");
 
     assert!(runner.state().debug_permitted.contains(&P1));
+}
+
+const TEST_LIFE_GAIN: &str = "You gain 1 life.";
+
+/// Latch CR 723 control at the window the drive already opened.
+/// `install_priority` would replace it with a fresh `Priority` window, which is
+/// the state the stack-resolution-session rows exist to avoid.
+fn latch_control(runner: &mut GameRunner, controller: Option<PlayerId>) {
+    let state = runner.state_mut();
+    state.turn_decision_controller = controller;
+    let standing = state.waiting_for.clone();
+    sync_waiting_for(state, &standing);
+}
+
+fn live_session(runner: &GameRunner) -> &StackResolutionSession {
+    runner
+        .state()
+        .stack_resolution_session
+        .as_ref()
+        .expect("the row needs a live stack-resolution session")
+}
+
+/// Drive to `ManaPayment { player: P1 }` over a two-entry stack with a live
+/// stack-resolution session armed by `arming_seat` and a standing auto-pass mode
+/// held by P0, then latch `controller`. Returns the tap the engine itself
+/// enumerates for P1 at that window.
+///
+/// The arming seat selects which reader of the session key the row moves. When
+/// P0 arms, it is a representative and the session's own mode is its standing
+/// mode, so the membership branch decides. When another seat arms, P0 takes a
+/// turn-boundary mode first because the session's restore baseline snapshots
+/// `state.auto_pass` as it installs, so only a mode already standing is carried;
+/// neither key is then a representative.
+fn stack_session_at_mana_payment(
+    arming_seat: PlayerId,
+    controller: Option<PlayerId>,
+) -> (GameRunner, GameAction) {
+    let mut scenario = GameScenario::new_n_player(3, 42);
+    scenario.at_phase(Phase::PreCombatMain);
+    let forest = scenario.add_basic_land(P1, ManaColor::Green);
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(P1, "Test Lifegain", true, TEST_LIFE_GAIN)
+        .with_mana_cost(ManaCost::Cost {
+            shards: vec![ManaCostShard::Green],
+            generic: 0,
+        })
+        .id();
+    let filler_a = scenario.add_bolt_to_hand(P0);
+    let filler_b = scenario.add_bolt_to_hand(P0);
+    let mut runner = scenario.build();
+    runner.state_mut().active_player = P1;
+    runner.cast(filler_a).target_player(P1).commit();
+    runner.cast(filler_b).target_player(P1).commit();
+
+    if arming_seat != P0 {
+        apply(
+            runner.state_mut(),
+            P0,
+            GameAction::SetAutoPass {
+                mode: AutoPassRequest::UntilTurnBoundary {
+                    until: TurnBoundary::EndOfCurrentTurn,
+                },
+            },
+        )
+        .expect("P0 takes a standing mode ahead of the session");
+    }
+    for _ in 0..4 {
+        match runner.state().waiting_for {
+            WaitingFor::Priority { player } if player == arming_seat => break,
+            WaitingFor::Priority { player } => {
+                apply(runner.state_mut(), player, GameAction::PassPriority)
+                    .expect("a seat passes its own priority");
+            }
+            ref other => panic!("expected a priority window, got {other:?}"),
+        }
+    }
+    apply(
+        runner.state_mut(),
+        arming_seat,
+        GameAction::SetAutoPass {
+            mode: AutoPassRequest::UntilStackEmpty,
+        },
+    )
+    .expect("the arming seat opens a stack-resolution session");
+    assert_eq!(
+        live_session(&runner).representatives,
+        [arming_seat].into_iter().collect(),
+        "the arming seat is the session's sole representative"
+    );
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1),
+        "the arming pass must land on the casting seat's window, got {:?}",
+        runner.state().waiting_for
+    );
+
+    let card_id = runner.state().objects[&spell].card_id;
+    apply(
+        runner.state_mut(),
+        P1,
+        GameAction::CastSpell {
+            object_id: spell,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Manual,
+        },
+    )
+    .expect("the casting seat opens a manual payment window");
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::ManaPayment { player, .. } if player == P1),
+        "the row needs a non-Priority window, got {:?}",
+        runner.state().waiting_for
+    );
+    assert!(
+        runner.state().stack_resolution_session.is_some(),
+        "the session must still be live at the payment window"
+    );
+    assert!(
+        runner.state().auto_pass.contains_key(&P0),
+        "P0 must hold the standing mode this row watches"
+    );
+
+    latch_control(&mut runner, controller);
+    let tap = engine_authored_tap(&runner, P1, forest);
+    (runner, tap)
+}
+
+/// CR 723.3 + CR 723.5: the controlled seat's payment is that seat's action, so
+/// it revokes no frozen authorization belonging to the player who submitted it.
+#[test]
+fn a_controlled_payment_leaves_the_submitters_own_session_standing() {
+    let (mut runner, tap) = stack_session_at_mana_payment(P0, Some(P0));
+    assert_seat_submits_through(&runner, P1, P0);
+    assert!(
+        live_session(&runner).representatives.contains(&P0),
+        "the submitter is a representative, so the membership branch decides this row"
+    );
+
+    let mut hostile = runner.state().clone();
+    assert!(
+        matches!(
+            apply(&mut hostile, P1, tap.clone()),
+            Err(EngineError::WrongPlayer)
+        ),
+        "the controlled seat is not its own authorized submitter"
+    );
+
+    apply(runner.state_mut(), P0, tap).expect("the controller pays for the controlled seat");
+
+    assert!(
+        runner.state().stack_resolution_session.is_some(),
+        "the seat's payment must not tear down the submitter's session"
+    );
+    assert!(
+        matches!(
+            runner.state().auto_pass.get(&P0),
+            Some(AutoPassMode::UntilStackEmpty { .. })
+        ),
+        "the submitter keeps the mode it armed, got {:?}",
+        runner.state().auto_pass.get(&P0)
+    );
+}
+
+/// Reach guard: uncontrolled, the same route and the same tap leave the same
+/// session and mode standing, so the row above pins the redirect.
+#[test]
+fn an_uncontrolled_payment_leaves_the_representatives_session_standing() {
+    let (mut runner, tap) = stack_session_at_mana_payment(P0, None);
+    assert_seat_submits_through(&runner, P1, P1);
+
+    apply(runner.state_mut(), P1, tap).expect("the seat pays its own cost");
+
+    assert!(runner.state().stack_resolution_session.is_some());
+    assert!(matches!(
+        runner.state().auto_pass.get(&P0),
+        Some(AutoPassMode::UntilStackEmpty { .. })
+    ));
+}
+
+/// CR 723.3 + CR 723.5: with both keys outside the session's representatives
+/// only the key itself can move, and the controlled seat's payment strips
+/// neither the submitter's standing mode nor the baseline entry a later
+/// teardown must give back.
+#[test]
+fn a_controlled_payment_leaves_a_nonrepresentative_submitters_mode_and_baseline() {
+    let (mut runner, tap) = stack_session_at_mana_payment(P2, Some(P0));
+    assert_seat_submits_through(&runner, P1, P0);
+    let representatives = &live_session(&runner).representatives;
+    assert!(
+        !representatives.contains(&P0) && !representatives.contains(&P1),
+        "neither key is a representative, so the membership branch is held still"
+    );
+    assert!(
+        live_session(&runner)
+            .auto_pass_overlay
+            .baseline
+            .contains_key(&P0),
+        "the baseline must carry P0's pre-session mode for this row to watch it"
+    );
+
+    let mut hostile = runner.state().clone();
+    assert!(
+        matches!(
+            apply(&mut hostile, P1, tap.clone()),
+            Err(EngineError::WrongPlayer)
+        ),
+        "the controlled seat is not its own authorized submitter"
+    );
+
+    apply(runner.state_mut(), P0, tap).expect("the controller pays for the controlled seat");
+
+    assert!(
+        matches!(
+            runner.state().auto_pass.get(&P0),
+            Some(AutoPassMode::UntilTurnBoundary { .. })
+        ),
+        "the submitter's standing mode is not the paying seat's to revoke"
+    );
+    assert!(
+        live_session(&runner)
+            .auto_pass_overlay
+            .baseline
+            .contains_key(&P0),
+        "stripping the baseline would leave a mode no teardown could restore"
+    );
+    assert!(
+        !live_session(&runner).representatives.contains(&P0),
+        "the session stays live with its representatives unchanged"
+    );
+}
+
+/// Reach guard: uncontrolled, the same route leaves the same mode and baseline
+/// entry standing, so the row above pins the redirect and not the route.
+#[test]
+fn an_uncontrolled_payment_leaves_a_nonrepresentatives_mode_and_baseline() {
+    let (mut runner, tap) = stack_session_at_mana_payment(P2, None);
+    assert_seat_submits_through(&runner, P1, P1);
+
+    apply(runner.state_mut(), P1, tap).expect("the seat pays its own cost");
+
+    assert!(matches!(
+        runner.state().auto_pass.get(&P0),
+        Some(AutoPassMode::UntilTurnBoundary { .. })
+    ));
+    assert!(live_session(&runner)
+        .auto_pass_overlay
+        .baseline
+        .contains_key(&P0));
 }

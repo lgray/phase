@@ -1821,6 +1821,11 @@ impl GameAction {
     /// objects. A UI preference mutates the submitter's own slot and a debug
     /// capability grant authorizes the submitting connection — neither is such
     /// a choice, so controlling a player must not redirect either one.
+    ///
+    /// Not `game::interaction::action_preserves_interaction`, whose
+    /// near-identical list answers a different question: this one decides
+    /// whether an action may skip the seat check, that one whether an action
+    /// leaves an open interaction standing. The two lists may diverge.
     pub fn is_submitter_scoped(&self) -> bool {
         self.is_actor_scoped_preference()
             || matches!(

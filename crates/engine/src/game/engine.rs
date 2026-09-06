@@ -7450,8 +7450,8 @@ fn check_actor_authorization(
 /// CR 723.3 + CR 723.5: under a player-control effect those are two different
 /// players, so both halves of the action boundary are derived here from one
 /// authority instead of being collapsed onto the submitter. [`apply`] and
-/// [`apply_for_simulation`] remain the collapsed forms, for callers that hold
-/// a trusted actor and no owner information to split from.
+/// [`apply_for_simulation`] remain the collapsed forms because a transport has
+/// no *trusted* owner to pass, not because none exists.
 ///
 /// For [`GameAction::Concede`] the concede payload's `player_id` fills both
 /// halves (CR 723.6), so tests can concede any player without first
@@ -9846,9 +9846,10 @@ fn apply_action(
         state.loop_answer_journal = None;
     }
 
-    // Keep the semantic owner of the prompt before reducing it. Under turn
-    // control this can differ from the authenticated submitter; a successful
-    // action discharges a shortened shortcut only for that owner.
+    // The prompt's semantic owner: the seat `state.waiting_for` names, or the
+    // authenticated submitter where it names no single seat. Under turn control
+    // the two can differ. The simultaneous mulligan arms below do not read it —
+    // they resolve their per-player state from the `actor` parameter.
     let semantic_actor = state.waiting_for.acting_player().unwrap_or(actor);
     let action_for_divergence = action.clone();
 
@@ -9857,9 +9858,11 @@ fn apply_action(
     // seat, not necessarily to its authenticated submitter. In
     // particular, a turn controller can act for P0; tearing down P2's
     // representative instead would leave P0's frozen cohort live and let the
-    // boundary runner resolve an entry after P0 deliberately acted. Outside a
-    // Priority window retain the authenticated actor: simultaneous mulligan
-    // variants have no single semantic priority seat.
+    // boundary runner resolve an entry after P0 deliberately acted.
+    // CR 723.3 + CR 723.5: outside a Priority window the prompt's own seat owns
+    // the preference, which is what `semantic_actor` names; its
+    // `unwrap_or(actor)` fallback keeps the authenticated actor wherever
+    // `state.waiting_for` names no single seat.
     // CR 117.6 + CR 805.5b: Canonicalize that seat before consulting a
     // session, because a shared team's representative owns its priority pass.
     let session_preference_owner = match (&state.waiting_for, &action) {
@@ -9870,7 +9873,7 @@ fn apply_action(
         (WaitingFor::Priority { player }, _) => {
             super::topology::priority_pass_representative(state, *player)
         }
-        _ => actor,
+        _ => semantic_actor,
     };
     match &action {
         GameAction::SetAutoPass { .. }
@@ -9909,6 +9912,8 @@ fn apply_action(
 
     // Clear manual mana-tap tracking when the player commits to a non-mana action.
     // ActivateAbility is handled per-arm (only non-mana abilities clear tracking).
+    // CR 723.5a: the tracking records whose resources were spent, so it is keyed
+    // to the seat that spent them, as the insert side already is.
     match &action {
         GameAction::PassPriority
         | GameAction::PlayLand { .. }
@@ -9924,7 +9929,7 @@ fn apply_action(
         | GameAction::RollPlanarDie
         | GameAction::PayUnlessCost { .. }
         | GameAction::PayCombatTax { .. } => {
-            state.lands_tapped_for_mana.remove(&actor);
+            state.lands_tapped_for_mana.remove(&semantic_actor);
         }
         _ => {}
     }
@@ -11588,7 +11593,7 @@ fn apply_action(
             WaitingFor::PrecastCopyShortcutOffer { .. }
             | WaitingFor::RespondToPrecastCopyShortcut { .. },
             GameAction::PrecastCopyShortcut { epoch, response },
-        ) => super::precast_copy_shortcut::handle(state, actor, epoch, response, &mut events)?,
+        ) => super::precast_copy_shortcut::handle(state, epoch, response, &mut events)?,
         // CR 732.2b/c: an opponent answers the loop-shortcut offer.
         (
             WaitingFor::RespondToShortcut {
