@@ -44,6 +44,7 @@ import {
   type ReconnectHandle,
   type ReconnectState,
 } from "../services/openPhaseSocket";
+import { startSocketKeepalive } from "../services/socketKeepalive";
 import {
   SERVER_PRESETS,
   isValidWebSocketUrl,
@@ -105,6 +106,11 @@ type HostingStatus = "idle" | "connecting" | "waiting";
 
 // Module-level WebSocket ref (non-serializable, lives outside store)
 let hostWs: PhaseSocketTransport | null = null;
+// Stops the keepalive on whichever hosting socket is current. The two
+// store-owned teardowns below have no per-socket closure to read; the socket's
+// own `onclose` uses its closure's stopper instead, so a superseded socket
+// closing late cannot silence its replacement.
+let hostPingStop: (() => void) | null = null;
 // Module-level broker client for P2P LobbyOnly hosting. Survives page
 // navigations so the lobby entry stays alive while the tile is showing.
 let activeBroker: BrokerClient | null = null;
@@ -990,6 +996,10 @@ function closeHostWebSocket(): void {
     clearTimeout(hostReconnectTimer);
     hostReconnectTimer = null;
   }
+  if (hostPingStop) {
+    hostPingStop();
+    hostPingStop = null;
+  }
   if (hostWs) {
     hostWs.close();
     hostWs = null;
@@ -1488,6 +1498,12 @@ function handleServerHostMessage(
     clearPregameHostMetadataFromWsSession();
     ws.close();
     hostWs = null;
+    // This arm performs the handoff itself and never routes through
+    // `closeHostWebSocket`, so the keepalive has to be stopped here.
+    if (hostPingStop) {
+      hostPingStop();
+      hostPingStop = null;
+    }
     const gameId = crypto.randomUUID();
     saveActiveGame({ id: gameId, mode: "online", difficulty: "" });
     useGameStore.setState({ gameId });
@@ -1566,6 +1582,8 @@ async function openServerHostSocket(
 
   set({ serverInfo: socket.serverInfo });
   hostWs = socket.ws;
+  const stopPing = startSocketKeepalive(socket.ws);
+  hostPingStop = stopPing;
 
   socket.ws.onmessage = (event) => {
     const msg = JSON.parse(event.data as string) as {
@@ -1581,6 +1599,7 @@ async function openServerHostSocket(
     }
   };
   socket.ws.onclose = () => {
+    stopPing();
     if (!gameStartedFired && hostWs === socket.ws) {
       hostWs = null;
       onReopen();
@@ -2387,6 +2406,13 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
               // joining open their own sockets and keep the exact-match window.
               return openPhaseSocket(url, { surface: "lobby" })
                 .then((socket) => {
+                  // This socket is idle in both directions between room
+                  // churn, so the edge closes it and `withReconnect` re-dials
+                  // — blanking the visible player count each cycle.
+                  const stopKeepalive = startSocketKeepalive(socket.ws);
+                  socket.ws.addEventListener("close", stopKeepalive, {
+                    once: true,
+                  });
                   // FIRST attempt only. `scheduleRetry` bumps the index before
                   // re-invoking this factory, and a successful open resets it
                   // to 0 — so a re-dial always arrives as `attempt >= 1` and
