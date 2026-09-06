@@ -8758,9 +8758,9 @@ async fn handle_client_message(
                 },
             }
 
-            // Collects a bracket-violation message to broadcast after the state lock releases and
+            // Collects a refused-start message to broadcast after the state lock releases and
             // after the joiner receives their direct error (mirrors the seat-delta path).
-            let mut bracket_broadcast: Option<String> = None;
+            let mut start_error_broadcast: Option<String> = None;
 
             let join_outcome = {
                 let mut mgr = state.lock().await;
@@ -8786,34 +8786,40 @@ async fn handle_client_message(
                         let should_start = session.is_full() && session.start_when_full;
                         let public_before =
                             session.lobby_meta.as_ref().is_some_and(|meta| meta.public);
-                        if should_start {
-                            if let Err(start_err) = session.start_game(db) {
-                                // start_game guarantees no mutation on Err, so the session still
-                                // holds the joining player. We keep them seated — rolling back
-                                // would require deleting their deck/token which is more invasive.
-                                // The host can correct the deck(s) and trigger a new start.
-                                persist_full_session_async(game_db, session);
-                                // Capture the message so we can fan it out to all connected
-                                // players after the state lock releases (mirrors seat-delta path).
-                                // `Display` carries the cEDH prefix on that arm,
-                                // so the bracket message is unchanged while a
-                                // missing-deck refusal reports itself honestly.
-                                bracket_broadcast = Some(start_err.to_string());
-                                // Evaluate to Err so the outer match join_outcome sends an Error
-                                // message to the client via the existing Err(e) arm.
-                                Err(start_err.to_string())
-                            } else {
-                                // Persist updated session (now has the new player and is started)
-                                persist_full_session_async(game_db, session);
-                                Ok(JoinOutcome::Started {
-                                    player_token,
-                                    joiner,
-                                    public_before,
-                                })
-                            }
+                        let started = should_start
+                            && match session.start_game(db) {
+                                Ok(()) => true,
+                                Err(start_err) => {
+                                    // A refused start writes nothing: `start_game` returns
+                                    // ahead of its first mutation on both Err arms, and
+                                    // `apply_seat_delta` withholds the reducer's started
+                                    // flag. So the room is still pregame and the joiner —
+                                    // already holding a token, deck and display name — is
+                                    // a waiting player, indistinguishable from one who
+                                    // joined a room that was not yet full.
+                                    //
+                                    // Whether the refusal can be cleared depends on the
+                                    // seat it names: seat 0 is `SeatImmutable`, and only
+                                    // `SeatKind::Ai` carries a rewritable deck, so a
+                                    // human seat's deck is fixed at join.
+                                    //
+                                    // The message is fanned out to the whole room after
+                                    // the state lock releases (mirrors the seat-delta
+                                    // path). `Display` carries the cEDH prefix on that
+                                    // arm, so the bracket message is unchanged while a
+                                    // missing-deck refusal reports itself honestly.
+                                    start_error_broadcast = Some(start_err.to_string());
+                                    false
+                                }
+                            };
+                        persist_full_session_async(game_db, session);
+                        if started {
+                            Ok(JoinOutcome::Started {
+                                player_token,
+                                joiner,
+                                public_before,
+                            })
                         } else {
-                            // Persist updated session (now has the new player, not yet started)
-                            persist_full_session_async(game_db, session);
                             match session.full_runtime.as_ref() {
                                 Some(runtime) => Ok(JoinOutcome::Waiting {
                                     player_token,
@@ -9006,11 +9012,12 @@ async fn handle_client_message(
                 }
             }
 
-            // If a cEDH bracket violation blocked the auto-start, fan the error out to all
-            // players already connected to the room. The joiner's socket is not yet registered
-            // in `connections` (registration only happens on Ok arms above), so this broadcast
-            // naturally excludes them — they already received the direct error above.
-            if let Some(err_msg) = bracket_broadcast {
+            // If the auto-start was refused, fan the error out to every player
+            // connected to the room. The joiner is one of them: `attach_full_seat`
+            // on the `JoinOutcome::Waiting` arm registered their sender, so this is
+            // the single delivery of the refusal to them — the room-wide message and
+            // their own notice are the same message, not a duplicate pair.
+            if let Some(err_msg) = start_error_broadcast {
                 let conns = connections.lock().await;
                 if let Some(players) = conns.get(&game_code) {
                     let msg = ServerMessage::error(err_msg);
@@ -14391,6 +14398,201 @@ mod game_submission_tests {
             ServerMessage::ActionFailed { message } => assert_eq!(message, "Not in a game"),
             other => panic!("a pre-session condition must settle the action promise: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod refused_auto_start_join_tests {
+    use super::issue_4548_full_create_tests::{recv_server_message, spawn_full_mode_server};
+    use super::*;
+    use futures_util::SinkExt;
+    use server_core::protocol::{AiSeatRequest, DeckData};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+    type TestSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+    async fn connect_and_hello(url: &str) -> TestSocket {
+        let (mut socket, _) = tokio_tungstenite::connect_async(url)
+            .await
+            .expect("connect");
+        assert!(matches!(
+            recv_server_message(&mut socket).await,
+            ServerMessage::ServerHello { .. }
+        ));
+        send(
+            &mut socket,
+            &ClientMessage::ClientHello {
+                client_version: env!("CARGO_PKG_VERSION").to_string(),
+                build_commit: build_commit().to_string(),
+                protocol_version: PROTOCOL_VERSION,
+                lobby_protocol_version: Some(LOBBY_PROTOCOL_VERSION),
+                wire_formats: Vec::new(),
+            },
+        )
+        .await;
+        socket
+    }
+
+    async fn send(socket: &mut TestSocket, message: &ClientMessage) {
+        socket
+            .send(WsMessage::Text(
+                serde_json::to_string(message)
+                    .expect("client message json")
+                    .into(),
+            ))
+            .await
+            .expect("send client message");
+    }
+
+    /// Everything the socket says before it goes quiet. The handler's reply to
+    /// a refused auto-start is several messages long and the assertions are
+    /// about which ones are present, so collecting the whole burst reports a
+    /// missing message as a listing rather than as a hung receive.
+    async fn drain(socket: &mut TestSocket) -> Vec<ServerMessage> {
+        let mut received = Vec::new();
+        while let Ok(message) =
+            tokio::time::timeout(Duration::from_millis(750), recv_server_message(socket)).await
+        {
+            received.push(message);
+        }
+        received
+    }
+
+    /// A join that fills the room and then has its auto-start refused must
+    /// still hand the joiner their seat.
+    ///
+    /// The refusal is the cEDH bracket gate in `GameSession::start_game`: seat 1
+    /// runs at cEDH difficulty while no deck at the table is declared at that
+    /// bracket tier. The gate returns before `start_game` writes anything, so
+    /// the room is pregame with the joiner seated — and a joiner who never
+    /// learns their token can neither reconnect nor free the seat they hold.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_refused_auto_start_still_attaches_the_joiner_to_their_seat() {
+        let (url, server, _temp_dir, app_state) = spawn_full_mode_server().await;
+
+        let mut host = connect_and_hello(&url).await;
+        send(
+            &mut host,
+            &ClientMessage::CreateGameWithSettings {
+                deck: DeckData::default(),
+                display_name: "Alice".to_string(),
+                public: false,
+                password: None,
+                timer_seconds: None,
+                // Three seats with one AI leaves a human seat open, so the
+                // create path does not take its own start-immediately branch.
+                player_count: 3,
+                match_config: Default::default(),
+                ai_seats: vec![AiSeatRequest {
+                    seat_index: 1,
+                    difficulty: phase_ai::config::AiDifficulty::CEDH,
+                    deck_name: None,
+                    // An explicit empty list: this harness runs on an empty
+                    // `CardDatabase`, where a random starter deck resolves to
+                    // nothing and the create is refused.
+                    deck: Some(DeckChoice::DeckList(Box::default())),
+                }],
+                format_config: None,
+                room_name: None,
+                host_peer_id: None,
+                draft_metadata: None,
+                start_when_full: true,
+                ranked: false,
+            },
+        )
+        .await;
+
+        let game_code = drain(&mut host)
+            .await
+            .into_iter()
+            .find_map(|message| match message {
+                ServerMessage::GameCreated { game_code, .. } => Some(game_code),
+                ServerMessage::Error { message, .. } => panic!("create was refused: {message}"),
+                _ => None,
+            })
+            .expect("the create reported a game code");
+
+        let mut guest = connect_and_hello(&url).await;
+        send(
+            &mut guest,
+            &ClientMessage::JoinGameWithPassword {
+                game_code: game_code.clone(),
+                deck: DeckData::default(),
+                display_name: "Bob".to_string(),
+                password: None,
+                reservation_token: None,
+            },
+        )
+        .await;
+        let replies = drain(&mut guest).await;
+
+        let attached = replies.iter().find_map(|message| match message {
+            ServerMessage::SessionAttached {
+                game_code,
+                player_id,
+                player_token,
+                ..
+            } => Some((game_code.clone(), *player_id, player_token.clone())),
+            _ => None,
+        });
+        let refusal = replies.iter().find_map(|message| match message {
+            ServerMessage::Error { message, .. } => Some(message.clone()),
+            _ => None,
+        });
+
+        let (full, arms_auto_start, pregame, seat_of_token) = {
+            let mgr = app_state.sessions.lock().await;
+            let session = mgr.sessions.get(&game_code).expect("the room is live");
+            (
+                session.is_full(),
+                session.start_when_full,
+                session.is_pregame(),
+                attached
+                    .as_ref()
+                    .and_then(|(_, _, token)| session.player_for_token(token)),
+            )
+        };
+        server.abort();
+
+        // A `StateUpdate` carries the whole GameState, so failures report the
+        // burst by message type rather than by value.
+        let kinds = replies
+            .iter()
+            .map(|message| {
+                serde_json::to_value(message).expect("server message json")["type"]
+                    .as_str()
+                    .expect("tagged server message")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+
+        // Reach guard: these two are exactly the handler's `should_start`, so a
+        // run where the auto-start was never attempted fails here instead of
+        // passing the assertions below for the wrong reason.
+        assert!(
+            full && arms_auto_start,
+            "the join did not arm an auto-start (full: {full}, start_when_full: {arms_auto_start})"
+        );
+        // The tier the estimator reports for an unbracketed deck is incidental;
+        // the gate and the seat it names are the reach guard.
+        let refusal = refusal.unwrap_or_default();
+        assert!(
+            refusal.starts_with("Cannot start cEDH game: seat 0 is not declared cEDH"),
+            "the bracket gate did not refuse the start (got {refusal:?} out of {kinds:?})"
+        );
+        assert!(pregame, "a refused start left the room flagged as started");
+
+        let (attached_code, player_id, _) = attached.unwrap_or_else(|| {
+            panic!("the joiner holds a seat they were never given: no SessionAttached in {kinds:?}")
+        });
+        assert_eq!(attached_code, game_code);
+        assert_eq!(player_id, PlayerId(2));
+        assert_eq!(
+            seat_of_token,
+            Some(PlayerId(2)),
+            "the token the joiner was handed does not resolve to their seat"
+        );
     }
 }
 
