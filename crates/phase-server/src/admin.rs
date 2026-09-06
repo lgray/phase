@@ -104,14 +104,12 @@ pub async fn admin_delete_draft(
                     specs.remove(game_code);
                 }
             }
-            let announce = {
-                let mut lob_guard = app_state.lobby.lock().await;
-                crate::delist_destroyed_sessions(
-                    lob_guard.lobby_mut(),
-                    std::iter::once(code.as_str()),
-                )
-            };
-            crate::announce_delisted(&app_state.lobby_subscribers, announce).await;
+            crate::delist_and_announce(
+                &app_state.lobby,
+                &app_state.lobby_subscribers,
+                std::iter::once(code.as_str()),
+            )
+            .await;
             // Delete from persistence
             let _ = app_state.game_db.delete_draft_session(&code);
             info!(draft = %code, "admin force-deleted draft session");

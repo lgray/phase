@@ -2360,20 +2360,11 @@ async fn serve() {
                         })
                         .collect::<Vec<_>>()
                 };
-                // Its own `bg_lobby` scope: the branch below holds
+                // Nothing else is held here: the branch below takes
                 // `bg_game_spectators` at its end and the lobby-expiry branch
-                // takes `bg_lobby` before `bg_state`, so this takes the lobby
-                // lock nested under neither.
-                {
-                    let announce = {
-                        let mut lob_guard = bg_lobby.lock().await;
-                        delist_destroyed_sessions(
-                            lob_guard.lobby_mut(),
-                            removed.iter().map(|session| session.game_code.as_str()),
-                        )
-                    };
-                    announce_delisted(&bg_lobby_subs, announce).await;
-                }
+                // takes `bg_lobby` before `bg_state`, so the lobby lock this
+                // call takes is nested under neither.
+                delist_removed_sessions(&bg_lobby, &bg_lobby_subs, &removed).await;
                 {
                     let conns = bg_connections.lock().await;
                     for session in &removed {
@@ -2830,9 +2821,10 @@ mod lifecycle_tests {
     use url::Url;
 
     use super::{
-        bootstrap_required, build_state_update_message, origin_is_allowed, prune_game_connections,
-        select_card_data_source, validate_public_url, CardDataSource, Cli, ServerMessage,
-        SharedConnections,
+        bootstrap_required, build_state_update_message, delist_removed_sessions, origin_is_allowed,
+        prune_game_connections, select_card_data_source, validate_public_url, CardDataSource, Cli,
+        RegisterGameRequest, ServerMessage, SharedConnections, SharedLobby, SharedLobbySubscribers,
+        SysEnv,
     };
 
     /// CR 118.3 + CR 117.1 — matrix row 21 (actor axis), at a REAL
@@ -3114,6 +3106,83 @@ mod lifecycle_tests {
         let conns = connections.lock().await;
         assert!(!conns.contains_key("EXPIRED"));
         assert!(conns.contains_key("ACTIVE"));
+    }
+
+    #[tokio::test]
+    async fn delist_removed_sessions_delists_every_removed_room_and_leaves_the_rest() {
+        // The reaper hands this helper every session it removed in one tick,
+        // which is more than one, so a single-room fixture would admit a
+        // projection that stranded all but the first.
+        use engine::game::deck_loading::PlayerDeckPayload;
+        let mut mgr = server_core::session::SessionManager::new();
+        let (code_a, _) = mgr.create_game(PlayerDeckPayload::default(), None);
+        let (code_b, _) = mgr.create_game(PlayerDeckPayload::default(), None);
+        let (kept_code, _) = mgr.create_game(PlayerDeckPayload::default(), None);
+
+        let lobby: SharedLobby = Arc::new(Mutex::new(Broker::new()));
+        {
+            let mut lob = lobby.lock().await;
+            for code in [&code_a, &code_b, &kept_code] {
+                lob.lobby_mut().register_game(
+                    code,
+                    RegisterGameRequest {
+                        host_name: "Host".to_string(),
+                        public: true,
+                        ..Default::default()
+                    },
+                    &SysEnv,
+                );
+            }
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let subscribers: SharedLobbySubscribers = Arc::new(Mutex::new(vec![tx]));
+
+        // Reach guard: all three rooms really are listed, so the assertions
+        // below cannot pass against a lobby that was never populated.
+        {
+            let lob = lobby.lock().await;
+            for code in [&code_a, &code_b, &kept_code] {
+                assert!(
+                    lob.lobby().has_game(code),
+                    "fixture did not register {code}"
+                );
+            }
+        }
+
+        let removed: Vec<_> = [&code_a, &code_b]
+            .into_iter()
+            .map(|code| mgr.remove_game(code).expect("the session is removed"))
+            .collect();
+        delist_removed_sessions(&lobby, &subscribers, &removed).await;
+
+        {
+            let lob = lobby.lock().await;
+            for code in [&code_a, &code_b] {
+                assert!(
+                    !lob.lobby().has_game(code),
+                    "a removed session must not stay listed: {code}"
+                );
+            }
+            assert!(
+                lob.lobby().has_game(&kept_code),
+                "a session the reaper did not remove must stay listed"
+            );
+        }
+
+        let mut announced = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                ServerMessage::LobbyGameRemoved { game_code } => announced.push(game_code),
+                other => panic!("expected only LobbyGameRemoved, got {other:?}"),
+            }
+        }
+        announced.sort();
+        let mut expected = vec![code_a, code_b];
+        expected.sort();
+        assert_eq!(
+            announced, expected,
+            "every removed public room announces once"
+        );
     }
 
     // -- Tournament reaper fan-out -----------------------------------------
@@ -4205,6 +4274,37 @@ fn delist_destroyed_sessions<'a>(
         lob.unregister_game(code);
     }
     announce
+}
+
+/// Takes the lobby lock alone and drops the guard before awaiting the
+/// subscriber fan-out, so a caller must hold neither the lobby lock nor any
+/// lock the loops order after it.
+async fn delist_and_announce<'a>(
+    lobby: &SharedLobby,
+    subscribers: &SharedLobbySubscribers,
+    codes: impl Iterator<Item = &'a str>,
+) {
+    let announce = {
+        let mut lob_guard = lobby.lock().await;
+        delist_destroyed_sessions(lob_guard.lobby_mut(), codes)
+    };
+    announce_delisted(subscribers, announce).await;
+}
+
+/// Delists the sessions the reaper removed. Projecting them onto their game
+/// codes inside the helper puts that step under test and leaves the wider
+/// `expired` list the removals were filtered from unable to typecheck here.
+async fn delist_removed_sessions(
+    lobby: &SharedLobby,
+    subscribers: &SharedLobbySubscribers,
+    removed: &[server_core::session::GameSession],
+) {
+    delist_and_announce(
+        lobby,
+        subscribers,
+        removed.iter().map(|session| session.game_code.as_str()),
+    )
+    .await;
 }
 
 /// Fans out one `LobbyGameRemoved` per code returned by
@@ -9117,14 +9217,12 @@ async fn handle_client_message(
                             }
                             connections.lock().await.remove(&game_code);
                             game_spectators.lock().await.remove(&game_code);
-                            let announce = {
-                                let mut lob_guard = lobby.lock().await;
-                                delist_destroyed_sessions(
-                                    lob_guard.lobby_mut(),
-                                    std::iter::once(game_code.as_str()),
-                                )
-                            };
-                            announce_delisted(lobby_subscribers, announce).await;
+                            delist_and_announce(
+                                lobby,
+                                lobby_subscribers,
+                                std::iter::once(game_code.as_str()),
+                            )
+                            .await;
                             error!(game = %game_code, "terminal preparation did not leave this Full key active; retaining in-memory retirement");
                             let _ = tx.send(ServerMessage::error(error));
                             return;
@@ -9136,14 +9234,12 @@ async fn handle_client_message(
                             // read failure to the committing client.
                             connections.lock().await.remove(&game_code);
                             game_spectators.lock().await.remove(&game_code);
-                            let announce = {
-                                let mut lob_guard = lobby.lock().await;
-                                delist_destroyed_sessions(
-                                    lob_guard.lobby_mut(),
-                                    std::iter::once(game_code.as_str()),
-                                )
-                            };
-                            announce_delisted(lobby_subscribers, announce).await;
+                            delist_and_announce(
+                                lobby,
+                                lobby_subscribers,
+                                std::iter::once(game_code.as_str()),
+                            )
+                            .await;
                             error!(game = %game_code, %error, "terminal delivery preparation failed after terminal commit");
                             let _ = tx.send(ServerMessage::error(error));
                             return;
@@ -9207,14 +9303,12 @@ async fn handle_client_message(
 
             connections.lock().await.remove(&game_code);
             game_spectators.lock().await.remove(&game_code);
-            let announce = {
-                let mut lob_guard = lobby.lock().await;
-                delist_destroyed_sessions(
-                    lob_guard.lobby_mut(),
-                    std::iter::once(game_code.as_str()),
-                )
-            };
-            announce_delisted(lobby_subscribers, announce).await;
+            delist_and_announce(
+                lobby,
+                lobby_subscribers,
+                std::iter::once(game_code.as_str()),
+            )
+            .await;
 
             let msg = ServerMessage::GameAbandoned { game_code };
             if let Ok(json) = serde_json::to_string(&msg) {
@@ -16152,22 +16246,22 @@ mod delist_tests {
         assert!(lob.has_game("PUB001"));
     }
 
-    /// A draft code and its match codes live on the same registry, so one call
-    /// clears both kinds of subject.
+    /// The multi-code axis: one call clears every code it is handed and returns
+    /// only the ones that were publicly listed.
     #[test]
-    fn a_draft_code_and_its_match_codes_go_through_one_call() {
+    fn one_call_delists_every_code_and_announces_only_the_public_ones() {
         let mut lob = LobbyManager::new();
-        register(&mut lob, "DRAFT1", true);
-        register(&mut lob, "MATCH1", true);
-        register(&mut lob, "MATCH2", false);
+        register(&mut lob, "PUBA01", true);
+        register(&mut lob, "PUBB01", true);
+        register(&mut lob, "PRIVC1", false);
 
-        let codes = ["DRAFT1", "MATCH1", "MATCH2"];
+        let codes = ["PUBA01", "PUBB01", "PRIVC1"];
         let announce = delist_destroyed_sessions(&mut lob, codes.iter().copied());
 
         assert!(codes.iter().all(|code| !lob.has_game(code)));
         assert_eq!(
             announce,
-            vec!["DRAFT1".to_string(), "MATCH1".to_string()],
+            vec!["PUBA01".to_string(), "PUBB01".to_string()],
             "only the public entries are announced"
         );
     }
