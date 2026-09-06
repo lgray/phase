@@ -386,6 +386,12 @@ pub enum StartGameError {
     /// could not be re-resolved, or an AI seat whose deck failed resolution.
     /// Dealing it an empty library would eliminate that player on their first
     /// draw (CR 704.5b).
+    ///
+    /// The message names the seat but prescribes no remedy, because whether one
+    /// exists depends on the seat: the host can re-set an AI seat, and can kick a
+    /// joined human's seat back to open for someone who brings a deck. Seat 0 is
+    /// `SeatImmutable` and its deck is written only at create, so a re-resolution
+    /// failure there is the one that leaves a room nobody can start.
     SeatDeckMissing {
         seat_index: u8,
     },
@@ -403,7 +409,7 @@ impl std::fmt::Display for StartGameError {
             StartGameError::Bracket(inner) => write!(f, "Cannot start cEDH game: {inner}"),
             StartGameError::SeatDeckMissing { seat_index } => write!(
                 f,
-                "Seat {seat_index} has no deck; the host must set one before starting"
+                "Seat {seat_index} has no deck; the game cannot start until it does"
             ),
         }
     }
@@ -1107,9 +1113,11 @@ impl GameSession {
         if self.ai_driver_fault.is_some() {
             return Ok(());
         }
-        // CR 704.5b: a seat with no deck would be dealt an empty library and
-        // lose on its first draw. Ahead of the cEDH gate, which filters `decks`
-        // to its `Some` entries and would otherwise validate a short table.
+        // CR 704.5b: a seat with no recorded deck would be dealt an empty
+        // library and lose on its first draw. The subject is the absent record,
+        // not deck contents: a submitted list that is empty still records a deck
+        // and passes here. Ahead of the cEDH gate, which filters `decks` to its
+        // `Some` entries and would otherwise validate a short table.
         if let Some(seat_index) = self.decks.iter().position(Option::is_none) {
             return Err(StartGameError::SeatDeckMissing {
                 seat_index: seat_index as u8,
