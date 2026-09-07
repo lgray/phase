@@ -168,6 +168,125 @@ struct CatalogFile {
     token: Vec<TokenPreset>,
 }
 
+/// What `tokens-gen` did with one `known-tokens.overlay.toml` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverlayRowOutcome {
+    /// Nothing in the generated catalog claims this token; the row is in.
+    Applied,
+    /// The row is in, but a generated preset shares its set and token name
+    /// without sharing a source card. Either MTGJSON published this token
+    /// without linking it back to the card that creates it — in which case the
+    /// row is now stale — or the name simply collides. A human decides which.
+    AppliedShadowed { by_id: String },
+    /// MTGJSON now ships this token; the generated preset wins and the row is
+    /// dropped. Delete it from the overlay.
+    Superseded { by_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayRowReport {
+    pub overlay_id: String,
+    pub set_code: String,
+    pub display_name: String,
+    pub outcome: OverlayRowOutcome,
+}
+
+/// The overlay row's `source_card_refs` entries that name a Scryfall oracle id.
+fn row_source_oracle_ids(row: &TokenPreset) -> impl Iterator<Item = &str> {
+    row.source_card_refs
+        .iter()
+        .filter_map(|source_ref| source_ref.scryfall_oracle_id.as_deref())
+}
+
+/// Same set and same token name, case-insensitively — the same case folding
+/// `known_token_body_by_name_for_source` already applies to display names.
+fn names_same_token(a: &TokenPreset, b: &TokenPreset) -> bool {
+    a.set_code == b.set_code
+        && a.body
+            .display_name
+            .eq_ignore_ascii_case(&b.body.display_name)
+}
+
+/// Merge hand-authored presets into a generated catalog.
+///
+/// `known-tokens.toml` is rewritten whole on every regen, so a row MTGJSON has
+/// no source for cannot survive in it; `known-tokens.overlay.toml` is the
+/// authored input that does. A row is superseded when the catalog already holds
+/// a preset with the same `id` — the identity `PRESETS` requires to be unique —
+/// or with the same token *identity*: same set, same display name (case
+/// insensitively) and a shared `source_card_refs` `scryfall_oracle_id`. An
+/// overlay row's own `id` is a placeholder the real MTGJSON entry will not
+/// share, so the id leg alone cannot supersede anything; the creating card is
+/// what makes the name leg an identity rather than a label.
+///
+/// The scan runs over the growing output, so overlay rows deduplicate against
+/// each other exactly as they do against generated data.
+///
+/// Returns the merged catalog in ascending-`id` order — the order `tokens-gen`
+/// serializes and `catalog_is_ordered_and_self_consistent` asserts — with one
+/// report per overlay row.
+pub fn merge_overlay(
+    generated: Vec<TokenPreset>,
+    overlay: Vec<TokenPreset>,
+) -> Result<(Vec<TokenPreset>, Vec<OverlayRowReport>), String> {
+    let mut presets = generated;
+    let mut reports = Vec::with_capacity(overlay.len());
+
+    for row in overlay {
+        // A row with no source-card oracle id can never be superseded, so it
+        // would outlive the data it stands in for. Refuse it at the boundary.
+        if row_source_oracle_ids(&row).next().is_none() {
+            return Err(format!(
+                "overlay row `{}` ({} / {}) carries no `source_card_refs` entry with a \
+                 `scryfall_oracle_id`; a hand-authored row must name the card it stands in \
+                 for, since that reference is what lets MTGJSON's entry supersede the row",
+                row.id, row.set_code, row.body.display_name
+            ));
+        }
+
+        let mut superseded_by: Option<String> = None;
+        let mut shadowed_by: Option<String> = None;
+        for preset in &presets {
+            let same_name = names_same_token(preset, &row);
+            if preset.id == row.id
+                || (same_name
+                    && row_source_oracle_ids(&row)
+                        .any(|oracle_id| token_preset_has_source_ref(preset, oracle_id, None)))
+            {
+                superseded_by = Some(preset.id.clone());
+                break;
+            }
+            if same_name && shadowed_by.is_none() {
+                shadowed_by = Some(preset.id.clone());
+            }
+        }
+
+        let overlay_id = row.id.clone();
+        let set_code = row.set_code.clone();
+        let display_name = row.body.display_name.clone();
+        let outcome = match superseded_by {
+            Some(by_id) => OverlayRowOutcome::Superseded { by_id },
+            None => {
+                let outcome = match shadowed_by {
+                    Some(by_id) => OverlayRowOutcome::AppliedShadowed { by_id },
+                    None => OverlayRowOutcome::Applied,
+                };
+                presets.push(row);
+                outcome
+            }
+        };
+        reports.push(OverlayRowReport {
+            overlay_id,
+            set_code,
+            display_name,
+            outcome,
+        });
+    }
+
+    presets.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok((presets, reports))
+}
+
 /// Embedded catalog data: `data/known-tokens.toml` converted to JSON in
 /// `OUT_DIR` by `build.rs` (structural conversion — same serde shape).
 static PRESETS: LazyLock<Vec<TokenPreset>> = LazyLock::new(|| {
@@ -788,5 +907,262 @@ mod tests {
             .expect("exact create-token lookup may use name-only source context");
 
         assert_eq!(image.preset_id, FANATIC_OF_RHONAS_PRESET_ID);
+    }
+
+    /// Builds a merge-level preset. Nothing here names a card: the merge's
+    /// population is every row the overlay will ever hold.
+    fn merge_preset(
+        id: &str,
+        set: &str,
+        name: &str,
+        source_oracle_id: Option<&str>,
+    ) -> TokenPreset {
+        TokenPreset {
+            id: id.to_string(),
+            category: TokenCategory::Creature,
+            fidelity: PresetFidelity::Full,
+            pt_provenance: TokenPtProvenance::FixedOrAbsent,
+            body: TokenCharacteristics {
+                display_name: name.to_string(),
+                power: Some(1),
+                toughness: Some(1),
+                core_types: vec![CoreType::Creature],
+                subtypes: vec![name.to_string()],
+                supertypes: Vec::new(),
+                colors: vec![ManaColor::Green],
+                keywords: Vec::new(),
+            },
+            source_card_names: Vec::new(),
+            source_card_refs: source_oracle_id
+                .map(|oracle_id| {
+                    vec![TokenSourceRef {
+                        card_name: format!("{name} Maker"),
+                        face_name: None,
+                        scryfall_oracle_id: Some(oracle_id.to_string()),
+                        scryfall_id: None,
+                    }]
+                })
+                .unwrap_or_default(),
+            token_image_ref: None,
+            set_code: set.to_string(),
+            set_name: String::new(),
+            collector_number: None,
+            released_at: None,
+            type_line: String::new(),
+            rules_text: None,
+        }
+    }
+
+    const MAKER_ORACLE_ID: &str = "11111111-1111-1111-1111-111111111111";
+    const OTHER_MAKER_ORACLE_ID: &str = "22222222-2222-2222-2222-222222222222";
+
+    #[test]
+    fn overlay_row_matching_nothing_is_merged_in_id_order() {
+        let generated = vec![
+            merge_preset("id-a", "AAA", "Beast", Some(MAKER_ORACLE_ID)),
+            merge_preset("id-c", "CCC", "Horror", Some(MAKER_ORACLE_ID)),
+        ];
+        let row = merge_preset("id-b", "BBB", "Wurm", Some(MAKER_ORACLE_ID));
+
+        let (presets, reports) = merge_overlay(generated, vec![row]).expect("row is valid");
+
+        // Present and positioned, not merely "not dropped".
+        let ids: Vec<&str> = presets.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["id-a", "id-b", "id-c"]);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].outcome, OverlayRowOutcome::Applied);
+        assert_eq!(reports[0].overlay_id, "id-b");
+    }
+
+    #[test]
+    fn mtgjson_supersedes_an_overlay_row_when_it_publishes_that_token() {
+        // MTGJSON publishes the token under its own uuid and links it back to
+        // the same creating card the overlay row names.
+        let generated = vec![merge_preset(
+            "mtgjson-id",
+            "FRA",
+            "Wurm",
+            Some(MAKER_ORACLE_ID),
+        )];
+        let row = merge_preset("placeholder-id", "FRA", "Wurm", Some(MAKER_ORACLE_ID));
+
+        let (presets, reports) = merge_overlay(generated, vec![row]).expect("row is valid");
+
+        let wurms: Vec<&TokenPreset> = presets
+            .iter()
+            .filter(|p| p.body.display_name == "Wurm")
+            .collect();
+        assert_eq!(wurms.len(), 1, "an id-only key would leave two");
+        // The surviving id is the generated one, so "everything is superseded"
+        // still fails this.
+        assert_eq!(wurms[0].id, "mtgjson-id");
+        assert_eq!(
+            reports[0].outcome,
+            OverlayRowOutcome::Superseded {
+                by_id: "mtgjson-id".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_generated_preset_sharing_the_overlay_row_id_supersedes_it() {
+        // Same id, different set *and* name: only the id leg can fire, and it
+        // must — a duplicate id panics the `PRESETS` `LazyLock` for every
+        // consumer.
+        let generated = vec![merge_preset(
+            "shared-id",
+            "AAA",
+            "Beast",
+            Some(MAKER_ORACLE_ID),
+        )];
+        let row = merge_preset("shared-id", "BBB", "Wurm", Some(MAKER_ORACLE_ID));
+
+        let (presets, reports) = merge_overlay(generated, vec![row]).expect("row is valid");
+
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].body.display_name, "Beast");
+        assert_eq!(
+            reports[0].outcome,
+            OverlayRowOutcome::Superseded {
+                by_id: "shared-id".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_same_named_token_from_a_different_card_does_not_supersede() {
+        // The admitted member the key must refuse: a same-named token published
+        // in the same set by a *different* card. The loose `(set, name)` key
+        // drops the hand-authored row here.
+        let mut generated = merge_preset("mtgjson-id", "FRA", "Wurm", Some(OTHER_MAKER_ORACLE_ID));
+        generated.body.power = Some(9);
+        generated.body.toughness = Some(9);
+        let row = merge_preset("placeholder-id", "FRA", "Wurm", Some(MAKER_ORACLE_ID));
+
+        let (presets, reports) = merge_overlay(vec![generated], vec![row]).expect("row is valid");
+
+        // Positive reach-guard for the negative claim: the row is *present*.
+        assert_eq!(presets.len(), 2);
+        assert!(presets.iter().any(|p| p.id == "placeholder-id"));
+        assert!(presets.iter().any(|p| p.id == "mtgjson-id"));
+        assert_eq!(
+            reports[0].outcome,
+            OverlayRowOutcome::AppliedShadowed {
+                by_id: "mtgjson-id".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn neither_a_different_set_nor_a_different_name_supersedes() {
+        // Both near-misses share the source card, so only `set_code` and
+        // `display_name` keep them from superseding.
+        let generated = vec![
+            merge_preset("other-set", "XXX", "Wurm", Some(MAKER_ORACLE_ID)),
+            merge_preset("other-name", "FRA", "Beast", Some(MAKER_ORACLE_ID)),
+        ];
+        let row = merge_preset("placeholder-id", "FRA", "Wurm", Some(MAKER_ORACLE_ID));
+
+        let (presets, reports) = merge_overlay(generated, vec![row]).expect("row is valid");
+
+        assert_eq!(presets.len(), 3);
+        // Not even shadowed: `names_same_token` needs both legs.
+        assert_eq!(reports[0].outcome, OverlayRowOutcome::Applied);
+    }
+
+    #[test]
+    fn overlay_rows_deduplicate_against_each_other_on_both_legs() {
+        // The merge scans its own growing output, so the overlay cannot emit a
+        // duplicate id on its own. One member at *each* key leg.
+        let id_leg = vec![
+            merge_preset("dup-id", "AAA", "Beast", Some(MAKER_ORACLE_ID)),
+            merge_preset("dup-id", "BBB", "Wurm", Some(MAKER_ORACLE_ID)),
+        ];
+        let (presets, reports) = merge_overlay(Vec::new(), id_leg).expect("rows are valid");
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].body.display_name, "Beast");
+        assert_eq!(
+            reports[1].outcome,
+            OverlayRowOutcome::Superseded {
+                by_id: "dup-id".to_string()
+            }
+        );
+
+        let name_leg = vec![
+            merge_preset("first-id", "FRA", "Wurm", Some(MAKER_ORACLE_ID)),
+            merge_preset("second-id", "FRA", "Wurm", Some(MAKER_ORACLE_ID)),
+        ];
+        let (presets, reports) = merge_overlay(Vec::new(), name_leg).expect("rows are valid");
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].id, "first-id");
+        assert_eq!(
+            reports[1].outcome,
+            OverlayRowOutcome::Superseded {
+                by_id: "first-id".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn an_overlay_row_without_a_source_card_reference_is_rejected() {
+        // Two members of the refused class: no `source_card_refs` at all, and a
+        // ref that names a card but carries no `scryfall_oracle_id`.
+        let no_refs = merge_preset("no-refs-id", "FRA", "Wurm", None);
+        let err = merge_overlay(Vec::new(), vec![no_refs]).expect_err("must be refused");
+        assert!(err.contains("no-refs-id"), "error must name the row: {err}");
+
+        let mut no_oracle_id = merge_preset("no-oracle-id", "FRA", "Wurm", None);
+        no_oracle_id.source_card_refs = vec![TokenSourceRef {
+            card_name: "Wurm Maker".to_string(),
+            face_name: None,
+            scryfall_oracle_id: None,
+            scryfall_id: Some("not-an-oracle-id".to_string()),
+        }];
+        let err = merge_overlay(Vec::new(), vec![no_oracle_id]).expect_err("must be refused");
+        assert!(
+            err.contains("no-oracle-id"),
+            "error must name the row: {err}"
+        );
+
+        // Positive control: the identical list *with* the reference is accepted,
+        // so the `Err` legs above are the guard firing and not a merge that
+        // refuses everything.
+        let valid = merge_preset("valid-id", "FRA", "Wurm", Some(MAKER_ORACLE_ID));
+        let (presets, _) = merge_overlay(Vec::new(), vec![valid]).expect("valid row is accepted");
+        assert_eq!(presets.len(), 1);
+    }
+
+    #[test]
+    fn committed_overlay_rows_are_present_in_the_catalog() {
+        let overlay: CatalogFile =
+            toml::from_str(include_str!("../../data/known-tokens.overlay.toml"))
+                .expect("known-tokens.overlay.toml parses as a catalog file");
+
+        // Live-instrument control: a membership loop over an empty list confirms
+        // nothing, so an emptied overlay must red here rather than pass vacuously.
+        assert!(
+            !overlay.token.is_empty(),
+            "known-tokens.overlay.toml holds no rows: either a row was lost, or the \
+             file has outlived its purpose and it plus this test should be retired"
+        );
+
+        let mut seen = std::collections::HashSet::new();
+        for row in &overlay.token {
+            assert!(
+                seen.insert(row.id.as_str()),
+                "known-tokens.overlay.toml: duplicate row id `{}`",
+                row.id
+            );
+            assert_eq!(
+                known_token_preset_by_id(&row.id),
+                Some(row),
+                "overlay row `{}` ({} / {}) is missing from or differs in known-tokens.toml. \
+                 Two repairs: re-run `tokens-gen` if the catalog lost the row, or delete the \
+                 row from the overlay if `tokens-gen` reported it superseded.",
+                row.id,
+                row.set_code,
+                row.body.display_name
+            );
+        }
     }
 }
