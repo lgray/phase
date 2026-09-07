@@ -22,10 +22,18 @@ fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 4 }
 
 # `loop_shortcut::an_evicting_beat_mints_without_growing_the_ring` drives a four-player
-# Commander dump through production `apply()` until the loop-detect ring evicts, stopping at
-# that witness (the first evicting beat, index 72) rather than at its 120-beat cap. Its cost is
-# `apply()` itself: the drive already takes the priority fast path, so the only beats still
-# paying an enumeration are the non-priority windows, and there is no test-side reduction left.
+# Commander dump with a large stack through production `apply()` until the loop-detect ring
+# evicts, stopping at that first evicting beat rather than at its 120-beat cap. Profiled: the
+# test-side work (the per-beat snapshot clone and the ring-membership scans) is negligible, and
+# the cost is overwhelmingly the CR 732.2a shortcut detector's per-beat sampling and reconcile
+# inside `apply()` — not the driver, and not the surviving per-viewer enumeration on the
+# non-priority windows. Re-derive that attribution rather than trusting this sentence: drive the
+# same fixture under `LoopDetectionMode::Off` and compare against `Interactive` over the same
+# beat sequence.
+# The fixture cannot be swapped for a cheaper one: no other tracked dump that `restore_dump`
+# accepts reaches `LOOP_DETECT_RING_CAP`, so this is the only board that reaches the eviction
+# route at all. Re-derive by driving each accepted dump through `dump_drive_one_beat` with
+# `LoopDetectionMode::Interactive` and printing its maximum ring.
 # Alone on an idle machine it runs about 112s; a CI shard runs it beside three other test
 # threads, and there it landed past the 240s kill (PR #8301, shard 2/4). Re-time it alone before
 # assuming this override is still earned:
