@@ -11901,7 +11901,7 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 /// below rather than assumed, so a fixture drift into asymmetry cannot silently turn it into a
 /// real widening. ⓐ is therefore an AT-THE-BOUND instance of
 /// [`bounded_fixed_count_commits_exactly_n_periods`], not an independent stop-short
-/// observation. The pair's stop-short content rests entirely on ⓑ's clause (b).
+/// observation.
 ///
 /// # What flips
 ///
@@ -11914,10 +11914,6 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 ///   a count at which BOTH opponents cross together, ⓐ's `schema.max_iterations` assertion
 ///   FAILS, and the offer becomes a two-death proposal. That is what makes the refusal of this
 ///   board's relief a tested property rather than a stated one.
-/// * a blind implementation that ran all `2 * cycles_to_lethal` periods and reconciled the
-///   deaths afterwards would overshoot every opponent's threshold; ⓑ's (b) pins the stop point
-///   to `ceil(life / loss)` periods, derived from the published δ, so an overshoot of even one
-///   cycle FAILS.
 #[test]
 fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
     let mut state = bloodloop_state(3);
@@ -12075,13 +12071,14 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
 ///
 /// # Why this row had to exist separately — the fixture-symmetry trap
 ///
-/// [`bounded_fixed_drive_stops_at_the_first_lethal_cycle`] is the mirror for the total-wipe arm,
-/// but its bloodloop3 fixture seats **two opponents at equal life**, so they cross on the SAME
-/// cycle and it can only ever exhibit that arm — and, on the bound side, its two tied seats are
-/// exactly the case the relief's one-faller conjunct refuses. A symmetric fixture collapses
-/// every terminal case into a total case. This row's dina 4p dump is ASYMMETRIC by measurement,
-/// and the reach-guards below FAIL if that ever drifts into symmetry, which is what stops this
-/// row from silently becoming a second copy of the mirror.
+/// [`the_honest_count_reaches_the_cross_lethal_arm_when_the_crossing_takes_the_last_opponent`]
+/// is the mirror for the total-wipe arm, but its board seats **a single opponent**, so that
+/// seat's crossing always takes the last one and it can only ever exhibit that arm. A fixture
+/// whose crossing leaves no opponent standing — a symmetric board whose opponents cross
+/// together, or a two-seat board with only one to cross — collapses every terminal case into a
+/// total case. This row's dina 4p dump is ASYMMETRIC by measurement, and the reach-guards below
+/// FAIL if that ever drifts into symmetry, which is what stops this row from silently becoming
+/// a second copy of the mirror.
 ///
 /// # What is asserted, and what is deliberately NOT
 ///

@@ -5529,7 +5529,8 @@ fn materialize_fixed_shortcut(
             // drain target leaves the game, and the terminal cycle has no remaining
             // repetitions. What is unresolved at the ending point is live on the stack for
             // manual play, which is what CR 732.2a asks of an ending point. Rows:
-            // `bounded_fixed_drive_stops_at_the_first_lethal_cycle` (total wipe) and
+            // `the_honest_count_reaches_the_cross_lethal_arm_when_the_crossing_takes_the_last_opponent`
+            // (total wipe) and
             // `bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat`
             // (terminal).
             CycleOutcome::SeatLeft {
