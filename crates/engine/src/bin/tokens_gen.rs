@@ -19,20 +19,14 @@ use std::str::FromStr;
 
 use engine::database::mtgjson::{SetFile, SetToken};
 use engine::game::token_presets::{
-    merge_overlay, OverlayRowOutcome, PredefinedTokenKind, PresetFidelity, TokenCategory,
-    TokenPreset, TokenPtProvenance, TokenSourceRef,
+    merge_overlay, parse_overlay, serialize_catalog, OverlayRowOutcome, PredefinedTokenKind,
+    PresetFidelity, TokenCategory, TokenPreset, TokenPtProvenance, TokenSourceRef,
 };
 use engine::types::card::TokenImageRef;
 use engine::types::card_type::{CoreType, Supertype};
 use engine::types::keywords::Keyword;
 use engine::types::mana::ManaColor;
 use engine::types::proposed_event::TokenCharacteristics;
-use serde::{Deserialize, Serialize};
-
-#[derive(Serialize, Deserialize)]
-struct CatalogFile {
-    token: Vec<TokenPreset>,
-}
 
 #[derive(Default, Clone)]
 struct SourceCardIndex {
@@ -119,10 +113,10 @@ fn generate(input: &PathBuf, overlay: &PathBuf, output: &PathBuf) -> Result<usiz
 
     let overlay_raw = fs::read_to_string(overlay)
         .map_err(|e| format!("read overlay {}: {e}", overlay.display()))?;
-    let overlay_file: CatalogFile = toml::from_str(&overlay_raw)
+    let overlay_rows = parse_overlay(&overlay_raw)
         .map_err(|e| format!("parse overlay {}: {e}", overlay.display()))?;
     let generated_count = presets.len();
-    let (presets, reports) = merge_overlay(presets, overlay_file.token)?;
+    let (presets, reports) = merge_overlay(presets, overlay_rows)?;
 
     let mut applied = 0usize;
     let mut shadowed = 0usize;
@@ -138,16 +132,18 @@ fn generate(input: &PathBuf, overlay: &PathBuf, output: &PathBuf) -> Result<usiz
                 applied += 1;
                 shadowed += 1;
                 eprintln!(
-                    "{row} kept, but generated preset `{by_id}` shares its set and token name \
-                     without sharing a source card — check whether MTGJSON now ships this \
-                     token; if so delete the row from {}",
+                    "{row} kept, but catalog row `{by_id}` shares its token name and one half \
+                     of the key that would retire it — its set, or its source card, not both. \
+                     Either MTGJSON now ships this token, or {} names it twice; delete the \
+                     stale row",
                     overlay.display()
                 );
             }
             OverlayRowOutcome::Superseded { by_id } => {
                 superseded += 1;
                 eprintln!(
-                    "{row} superseded by generated preset `{by_id}`; delete it from {}",
+                    "{row} superseded by catalog row `{by_id}`; if that row is a generated \
+                     preset, MTGJSON now ships this token — delete the row from {}",
                     overlay.display()
                 );
             }
@@ -158,15 +154,13 @@ fn generate(input: &PathBuf, overlay: &PathBuf, output: &PathBuf) -> Result<usiz
          shadowed), {superseded} superseded"
     );
 
-    let toml = toml::to_string_pretty(&CatalogFile {
-        token: presets.clone(),
-    })
-    .map_err(|e| format!("serialize toml: {e}"))?;
+    let count = presets.len();
+    let toml = serialize_catalog(presets).map_err(|e| format!("serialize toml: {e}"))?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     fs::write(output, toml).map_err(|e| format!("write {}: {e}", output.display()))?;
-    Ok(presets.len())
+    Ok(count)
 }
 
 fn build_source_index(set_files: &[SetFile]) -> SourceCardIndex {

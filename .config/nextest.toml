@@ -30,10 +30,11 @@ slow-timeout = { period = "60s", terminate-after = 4 }
 # non-priority windows. Re-derive that attribution rather than trusting this sentence: drive the
 # same fixture under `LoopDetectionMode::Off` and compare against `Interactive` over the same
 # beat sequence.
-# The fixture cannot be swapped for a cheaper one: no other tracked dump that `restore_dump`
-# accepts reaches `LOOP_DETECT_RING_CAP`, so this is the only board that reaches the eviction
-# route at all. Re-derive by driving each accepted dump through `dump_drive_one_beat` with
-# `LoopDetectionMode::Interactive` and printing its maximum ring.
+# No cheaper stand-in exists among the tracked fixtures: driven to 120 beats under a forced
+# `LoopDetectionMode::Interactive`, no other dump in `crates/engine/tests/fixtures` that
+# `restore_dump` accepts reaches `LOOP_DETECT_RING_CAP` — forced because several of those dumps
+# carry `loop_detection: Off`. Re-derive over that same population and beat bound: drive each
+# accepted dump through `dump_drive_one_beat` and print its maximum ring.
 # Alone on an idle machine it runs about 112s; a CI shard runs it beside three other test
 # threads, and there it landed past the 240s kill (PR #8301, shard 2/4). Re-time it alone before
 # assuming this override is still earned:
