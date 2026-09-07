@@ -13,9 +13,10 @@
 
 use std::sync::LazyLock;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::types::card::TokenImageRef;
+use crate::types::card_type::CoreType;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
 use crate::types::proposed_event::TokenCharacteristics;
@@ -125,12 +126,10 @@ impl TokenPtProvenance {
 /// A single debug-spawnable preset. `body` is shared with `TokenSpec`'s
 /// characteristics — single source of truth on the body shape.
 ///
-/// `deny_unknown_fields`: every optional field here is `serde(default)`, so a
-/// misspelled key in the hand-authored overlay would otherwise deserialize to
-/// the default and lose the authored value silently — the exact data loss the
-/// overlay exists to prevent.
+/// Unknown keys are refused by `deserialize_catalog`, not by per-struct serde
+/// attributes: the file's shape is a tree of nested tables, and an attribute
+/// list only covers the ones someone remembered to name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TokenPreset {
     pub id: String,
     pub category: TokenCategory,
@@ -159,7 +158,6 @@ pub struct TokenPreset {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TokenSourceRef {
     pub card_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -173,19 +171,78 @@ pub struct TokenSourceRef {
 /// The shape of `known-tokens.toml` and of the hand-authored overlay beside
 /// it: one authority for the catalog file, on both serde sides.
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct CatalogFile {
     token: Vec<TokenPreset>,
 }
 
-/// Read catalog rows from a catalog file's TOML (`tokens-gen --overlay`).
-pub fn parse_overlay(raw: &str) -> Result<Vec<TokenPreset>, String> {
-    toml::from_str::<CatalogFile>(raw)
-        .map(|file| file.token)
-        .map_err(|e| e.to_string())
+/// Deserialize a catalog file, refusing it if serde ignored any key.
+///
+/// Every field in the file is optional or defaulted, so a misspelled key would
+/// otherwise deserialize to its default and lose the authored value. The check
+/// names no table, so it covers every table serde itself walks, including any
+/// added to the shape later. It is blind where a type deserializes through a
+/// self-describing capture instead: `Keyword` reads a `serde_json::Value`, so
+/// an unknown key inside a parameterized keyword payload is never reported —
+/// issue #7234's drift class, unreachable while every keyword in the committed
+/// catalog is a plain string.
+fn deserialize_catalog<'de, D>(deserializer: D) -> Result<CatalogFile, String>
+where
+    D: Deserializer<'de>,
+{
+    let mut ignored: Vec<String> = Vec::new();
+    let file: CatalogFile =
+        serde_ignored::deserialize(deserializer, |path| ignored.push(path.to_string()))
+            .map_err(|e| e.to_string())?;
+    if ignored.is_empty() {
+        return Ok(file);
+    }
+    // Every ignored key, not just the first: a hand-edited row usually carries
+    // its typos together, and one regen per typo is a bad loop to be in.
+    let named: Vec<String> = ignored
+        .iter()
+        .map(|path| match row_id_for_path(&file, path) {
+            Some(id) => format!("`{path}` (row `{id}`)"),
+            None => format!("`{path}`"),
+        })
+        .collect();
+    Err(format!(
+        "unknown key(s) {} — a key serde does not recognize keeps its default, \
+         silently dropping what was authored",
+        named.join(", ")
+    ))
 }
 
-/// Render catalog rows back into a catalog file's TOML (`tokens-gen --output`).
+/// The `id` of the row an ignored key sits under, for the error message.
+fn row_id_for_path<'a>(file: &'a CatalogFile, path: &str) -> Option<&'a str> {
+    // `serde_ignored` renders a sequence index as a dotted segment: `token.3.body.powr`.
+    let index: usize = path
+        .strip_prefix("token.")?
+        .split('.')
+        .next()?
+        .parse()
+        .ok()?;
+    file.token.get(index).map(|row| row.id.as_str())
+}
+
+/// Read a catalog file from the JSON `build.rs` converts the committed TOML
+/// into. `.end()` because a `&mut Deserializer` stops after the first document
+/// and would otherwise accept whatever follows a truncated or double-written
+/// artifact — the plain `serde_json::from_slice` this replaced did reject it.
+fn parse_catalog_json(raw: &[u8]) -> Result<CatalogFile, String> {
+    let mut deserializer = serde_json::Deserializer::from_slice(raw);
+    let file = deserialize_catalog(&mut deserializer)?;
+    deserializer.end().map_err(|e| e.to_string())?;
+    Ok(file)
+}
+
+/// Read catalog rows from a catalog file's TOML (`tokens-gen --overlay`).
+pub fn parse_overlay(raw: &str) -> Result<Vec<TokenPreset>, String> {
+    deserialize_catalog(toml::Deserializer::new(raw)).map(|file| file.token)
+}
+
+/// Render catalog rows back into a catalog file's TOML (`tokens-gen --output`),
+/// in the order given: `merge_overlay` owns the id-ascending order that
+/// `catalog_is_ordered_and_self_consistent` asserts.
 pub fn serialize_catalog(token: Vec<TokenPreset>) -> Result<String, String> {
     toml::to_string_pretty(&CatalogFile { token }).map_err(|e| e.to_string())
 }
@@ -244,13 +301,17 @@ fn names_same_token(a: &TokenPreset, b: &TokenPreset) -> bool {
     a.set_code.trim().eq_ignore_ascii_case(b.set_code.trim()) && same_display_name(a, b)
 }
 
-/// Why no generated preset could ever supersede this hand-authored row, if none
-/// could. An overlay `id` is a placeholder the real MTGJSON entry will not
-/// share, so supersession rides entirely on the token-identity key: set code,
-/// display name, and a shared source-card oracle id. A row that leaves any leg
-/// of that key blank is unretirable by construction — it would outlive the
-/// MTGJSON data it stands in for, with nothing able to report it stale.
-fn unsupersedable_reason(row: &TokenPreset) -> Option<&'static str> {
+/// Why this hand-authored row must be refused at the boundary, if it must.
+///
+/// Two classes. A row that leaves any leg of the token-identity key blank — set
+/// code, display name, or a shared source-card oracle id — is unretirable by
+/// construction: an overlay `id` is a placeholder the real MTGJSON entry will
+/// not share, so supersession rides entirely on that key, and such a row would
+/// outlive the MTGJSON data it stands in for with nothing able to report it
+/// stale. A creature row with no P/T is the other: CR 208.1 gives every
+/// creature a power and a toughness, and serde reads an omitted one as `None`,
+/// so the row would merge P/T-less rather than fail.
+fn boundary_refusal_reason(row: &TokenPreset) -> Option<&'static str> {
     if row.set_code.trim().is_empty() {
         return Some("names no `set_code`");
     }
@@ -259,6 +320,17 @@ fn unsupersedable_reason(row: &TokenPreset) -> Option<&'static str> {
     }
     if row_source_oracle_ids(row).next().is_none() {
         return Some("carries no `source_card_refs` entry with a non-blank `scryfall_oracle_id`");
+    }
+    // CR 208.1: a creature card carries both. Only a source-defined or dynamic
+    // P/T may leave them out, because the creating card supplies them instead.
+    if row.body.core_types.contains(&CoreType::Creature)
+        && !row.pt_provenance.is_source_defined_or_dynamic()
+        && (row.body.power.is_none() || row.body.toughness.is_none())
+    {
+        return Some(
+            "is a creature body missing `body.power` or `body.toughness` without declaring a \
+             source-defined or dynamic `pt_provenance`",
+        );
     }
     None
 }
@@ -275,7 +347,7 @@ fn unsupersedable_reason(row: &TokenPreset) -> Option<&'static str> {
 /// placeholder the real MTGJSON entry will not share, so the id leg alone
 /// cannot supersede anything; the creating card is what makes the name leg an
 /// identity rather than a label. A row leaving any leg of that key blank is
-/// refused — see `unsupersedable_reason`.
+/// refused — see `boundary_refusal_reason`.
 ///
 /// The scan runs over the growing output, so overlay rows deduplicate against
 /// each other exactly as they do against generated data.
@@ -291,7 +363,7 @@ pub fn merge_overlay(
     let mut reports = Vec::with_capacity(overlay.len());
 
     for row in overlay {
-        if let Some(reason) = unsupersedable_reason(&row) {
+        if let Some(reason) = boundary_refusal_reason(&row) {
             return Err(format!(
                 "overlay row `{}` ({} / {}) {reason}, so no generated preset could ever \
                  supersede it; a hand-authored row must name its set, its token, and the \
@@ -357,8 +429,8 @@ pub fn merge_overlay(
 /// `OUT_DIR` by `build.rs` (structural conversion — same serde shape).
 static PRESETS: LazyLock<Vec<TokenPreset>> = LazyLock::new(|| {
     let raw = include_bytes!(concat!(env!("OUT_DIR"), "/known-tokens.json"));
-    let parsed: CatalogFile =
-        serde_json::from_slice(raw).expect("build.rs-converted known-tokens.json well-formed");
+    let parsed = parse_catalog_json(raw)
+        .expect("build.rs-converted known-tokens.json well-formed and free of unknown keys");
     // Duplicate-id assertion: every preset must be addressable by a unique
     // stable id (used by the FE for selection state and React keys).
     let mut seen = std::collections::HashSet::new();
@@ -670,7 +742,12 @@ fn token_preset_has_source_ref(
     source_face: Option<&str>,
 ) -> bool {
     preset.source_card_refs.iter().any(|source_ref| {
-        source_ref.scryfall_oracle_id.as_deref() == Some(oracle_id)
+        // Folded like both name legs of the key. Every id the catalog carries is
+        // lowercase, so this can only admit an authored id typed in upper hex.
+        source_ref
+            .scryfall_oracle_id
+            .as_deref()
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(oracle_id))
             && source_face.is_none_or(|face| {
                 source_ref
                     .face_name
@@ -1210,10 +1287,11 @@ mod tests {
     }
 
     #[test]
-    fn no_overlay_row_can_outlive_the_mtgjson_entry_that_would_retire_it() {
-        // Every row here is driven against the one MTGJSON entry that retires a
-        // well-formed row, so a member that survives the merge is a row nothing
-        // could ever retire.
+    fn an_overlay_row_that_leaves_a_key_leg_blank_is_refused() {
+        // Every row is driven against the one MTGJSON entry that retires a
+        // well-formed row: the first two legs are the control showing that entry
+        // really does retire, so a blank-leg row surviving the merge would be one
+        // whose key can never match anything MTGJSON publishes.
         let mtgjson = || {
             vec![merge_preset(
                 "mtgjson-id",
@@ -1270,6 +1348,277 @@ mod tests {
                 .expect_err("a row no MTGJSON entry could retire must be refused");
             assert!(err.contains(&id), "error must name the row: {err}");
         }
+    }
+
+    /// One catalog row exercising every nested table the file's shape has:
+    /// the row itself, `[token.body]`, `[token.token_image_ref]`,
+    /// `[token.pt_provenance.*]` and `[[token.source_card_refs]]`.
+    const PROBE_ROW: &str = r#"
+[[token]]
+id = "probe-id"
+category = "Creature"
+fidelity = "Full"
+set_code = "FRA"
+
+[token.pt_provenance.SourceDefinedOrDynamic]
+power = "*"
+toughness = "*"
+
+[token.body]
+display_name = "Wurm"
+power = 1
+toughness = 1
+core_types = ["Creature"]
+subtypes = ["Wurm"]
+supertypes = []
+colors = ["Green"]
+keywords = []
+
+[token.token_image_ref]
+scryfall_id = "probe-scryfall-id"
+preset_id = "probe-id"
+
+[[token.source_card_refs]]
+card_name = "Wurm Maker"
+scryfall_oracle_id = "11111111-1111-1111-1111-111111111111"
+"#;
+
+    #[test]
+    fn a_misspelled_key_in_any_table_is_refused_rather_than_silently_dropped() {
+        // Live control: the unmutated row parses, so every `Err` below is the
+        // check firing and not a fixture that never parsed.
+        let parsed = parse_overlay(PROBE_ROW).expect("the probe row parses");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].body.power, Some(1));
+        assert!(parsed[0].token_image_ref.is_some());
+
+        // A member in each table of the shape, with the dotted path the error
+        // must name. The provenance leg is refused by `toml`'s own struct-variant
+        // table check rather than by the ignored-key callback; both are refusals,
+        // which is the property under test.
+        // Each member either renames an optional key or adds one; renaming a
+        // required key would red as `missing field` and prove nothing about
+        // unknown keys. The expected text cannot be produced by the correct
+        // spelling — `toughnes` alone is a substring of `toughness`.
+        for (needle, replacement, expected) in [
+            ("set_code = ", "set_cod = ", "token.0.set_cod"),
+            ("power = 1", "powr = 1", "token.0.body.powr"),
+            (
+                "preset_id = \"probe-id\"",
+                "preset_id = \"probe-id\"\nfacename = \"x\"",
+                "token.0.token_image_ref.?.facename",
+            ),
+            (
+                "toughness = \"*\"",
+                "toughnes = \"*\"",
+                "unexpected keys in table: toughnes",
+            ),
+        ] {
+            let mutated = PROBE_ROW.replacen(needle, replacement, 1);
+            assert_ne!(
+                mutated, PROBE_ROW,
+                "the `{needle}` mutation matched nothing"
+            );
+            let err = parse_overlay(&mutated).expect_err(
+                "an unrecognized key keeps its default, so without this check the authored \
+                 value is dropped and the row merges anyway",
+            );
+            assert!(
+                err.contains(expected),
+                "error must name `{expected}`: {err}"
+            );
+        }
+    }
+
+    /// `PROBE_ROW` in the JSON shape `build.rs` writes the committed catalog
+    /// into, so the JSON parse site is exercised on the same nested tables.
+    fn probe_row_json() -> String {
+        let token = parse_overlay(PROBE_ROW).expect("the probe row parses");
+        serde_json::to_string(&CatalogFile { token }).expect("a catalog file serializes as JSON")
+    }
+
+    #[test]
+    fn catalog_json_with_an_unknown_key_is_refused() {
+        // This proves `parse_catalog_json` refuses unknown keys on a JSON
+        // deserializer. It cannot prove the `PRESETS` site calls it: that
+        // artifact is `include_bytes!`d at compile time and no test can mutate
+        // it. `build.rs` converts through a tolerant `toml::Value`, so this
+        // function is the only unknown-key guard the embedded catalog has.
+        let json = probe_row_json();
+        // Live control: the unmutated document parses.
+        assert_eq!(
+            parse_catalog_json(json.as_bytes())
+                .expect("the probe document parses")
+                .token
+                .len(),
+            1
+        );
+
+        let mutated = json.replacen(r#""power":1"#, r#""powr":1"#, 1);
+        assert_ne!(mutated, json, "the `power` mutation matched nothing");
+        let Err(err) = parse_catalog_json(mutated.as_bytes()) else {
+            panic!("a plain `serde_json::from_slice` here accepts the unknown key");
+        };
+        assert!(err.contains("token.0.body.powr"), "{err}");
+    }
+
+    #[test]
+    fn catalog_json_with_trailing_bytes_is_refused() {
+        let json = probe_row_json();
+        // Live control: the same document without the appended bytes parses.
+        assert!(parse_catalog_json(json.as_bytes()).is_ok());
+
+        let appended = format!("{json}{json}");
+        let Err(err) = parse_catalog_json(appended.as_bytes()) else {
+            panic!("without `.end()` a `&mut Deserializer` stops after the first document");
+        };
+        assert!(err.contains("trailing"), "{err}");
+    }
+
+    #[test]
+    fn every_ignored_key_is_named_not_just_the_first() {
+        let mutated =
+            PROBE_ROW
+                .replacen("set_code = ", "set_cod = ", 1)
+                .replacen("power = 1", "powr = 1", 1);
+        let err = parse_overlay(&mutated).expect_err("both keys are unknown");
+        assert!(err.contains("token.0.set_cod"), "{err}");
+        assert!(err.contains("token.0.body.powr"), "{err}");
+        assert!(
+            err.contains("probe-id"),
+            "the error must name the row: {err}"
+        );
+    }
+
+    #[test]
+    fn the_committed_catalog_and_overlay_pass_the_same_check() {
+        // The embedded catalog is loaded through `deserialize_catalog`, so its
+        // presence here *is* the zero-ignored-keys result over the real corpus.
+        let presets = known_token_presets();
+        assert!(!presets.is_empty(), "the catalog loaded empty");
+        // The corpus must actually contain the nested tables, or this control
+        // walks a shape the check was never exercised against.
+        assert!(
+            presets.iter().any(|p| p.token_image_ref.is_some()),
+            "no `[token.token_image_ref]` table in the corpus"
+        );
+        assert!(
+            presets
+                .iter()
+                .any(|p| p.pt_provenance.is_source_defined_or_dynamic()),
+            "no `[token.pt_provenance.SourceDefinedOrDynamic]` table in the corpus"
+        );
+        assert!(
+            !parse_overlay(include_str!("../../data/known-tokens.overlay.toml"))
+                .expect("the committed overlay passes the same check")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_upper_case_source_oracle_id_still_matches_the_generated_preset() {
+        let upper = MAKER_ORACLE_ID.to_ascii_uppercase();
+        let mtgjson = merge_preset("mtgjson-id", "ZZZ", "Wurm", Some(MAKER_ORACLE_ID));
+
+        // Same set: comparing oracle ids with `==` reports `AppliedShadowed`
+        // here, leaving the placeholder beside the token MTGJSON already ships.
+        let row = merge_preset("placeholder-id", "ZZZ", "Wurm", Some(&upper));
+        let (_, reports) = merge_overlay(vec![mtgjson.clone()], vec![row]).expect("row is valid");
+        assert_eq!(
+            reports[0].outcome,
+            OverlayRowOutcome::Superseded {
+                by_id: "mtgjson-id".to_string()
+            }
+        );
+
+        // Mis-keyed set as well: with `==` neither leg matches and the outcome
+        // is a silent `Applied` — the orphan the fold exists to prevent.
+        let row = merge_preset("placeholder-id", "TZZZ", "Wurm", Some(&upper));
+        let (_, reports) = merge_overlay(vec![mtgjson], vec![row]).expect("row is valid");
+        assert_eq!(
+            reports[0].outcome,
+            OverlayRowOutcome::AppliedShadowed {
+                by_id: "mtgjson-id".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_creature_row_without_p_t_is_refused_unless_its_source_defines_them() {
+        // One member per term of the disjunction: an omitted `power`, and an
+        // omitted `toughness` with the power present.
+        let mut no_power = merge_preset("no-power-row", "FRA", "Wurm", Some(MAKER_ORACLE_ID));
+        no_power.body.power = None;
+        let mut no_toughness =
+            merge_preset("no-toughness-row", "FRA", "Wurm", Some(MAKER_ORACLE_ID));
+        no_toughness.body.toughness = None;
+        for row in [no_power.clone(), no_toughness] {
+            let id = row.id.clone();
+            let err = merge_overlay(Vec::new(), vec![row]).expect_err(
+                "serde reads an omitted P/T key as `None`, so without this leg the row merges \
+                 P/T-less instead of failing",
+            );
+            assert!(err.contains(&id), "error must name the row: {err}");
+        }
+
+        // Live control: the same row accepted once the creating card is declared
+        // as the P/T source, so the refusal is the missing P/T and not the shape.
+        let mut source_defined = no_power;
+        source_defined.pt_provenance = TokenPtProvenance::SourceDefinedOrDynamic {
+            power: Some("*".to_string()),
+            toughness: Some("*".to_string()),
+        };
+        let (presets, _) =
+            merge_overlay(Vec::new(), vec![source_defined]).expect("a declared P/T source is fine");
+        assert_eq!(presets.len(), 1);
+    }
+
+    #[test]
+    fn committed_overlay_rows_merge_clean_against_the_catalog() {
+        let overlay = parse_overlay(include_str!("../../data/known-tokens.overlay.toml"))
+            .expect("known-tokens.overlay.toml parses as a catalog file");
+        let overlay_ids: Vec<&str> = overlay.iter().map(|row| row.id.as_str()).collect();
+        let generated: Vec<TokenPreset> = known_token_presets()
+            .iter()
+            .filter(|preset| !overlay_ids.contains(&preset.id.as_str()))
+            .cloned()
+            .collect();
+
+        // `merge_overlay`'s only non-test caller is the `tokens-gen` bin, so
+        // without this the boundary guard first runs on the committed rows
+        // inside the weekly card-data cron. Every row must merge clean: a
+        // refusal, a supersession or an advisory all mean the file is stale.
+        let (_, reports) = merge_overlay(generated, overlay.clone())
+            .expect("every committed overlay row must satisfy the boundary guard");
+        assert!(!reports.is_empty(), "the overlay holds no rows to check");
+        for report in &reports {
+            assert_eq!(
+                report.outcome,
+                OverlayRowOutcome::Applied,
+                "overlay row `{}` ({} / {}) no longer merges clean; `tokens-gen` prints an \
+                 advisory here and the row is probably stale",
+                report.overlay_id,
+                report.set_code,
+                report.display_name
+            );
+        }
+
+        // Live control: the same call, with one row's set code mis-keyed the way
+        // a Scryfall token-set code would be, must find the collision the loop
+        // above claims is absent.
+        let mut mis_keyed = overlay[0].clone();
+        mis_keyed.id = format!("{}-probe", mis_keyed.id);
+        mis_keyed.set_code = format!("T{}", mis_keyed.set_code);
+        let (_, reports) = merge_overlay(known_token_presets().to_vec(), vec![mis_keyed])
+            .expect("the probe row is valid");
+        assert!(
+            matches!(
+                reports[0].outcome,
+                OverlayRowOutcome::AppliedShadowed { .. }
+            ),
+            "the advisory scan found nothing on a row built to trip it: {:?}",
+            reports[0].outcome
+        );
     }
 
     #[test]

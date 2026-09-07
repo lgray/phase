@@ -29,6 +29,7 @@ combo-verify = ["test-support"]
 
 [dependencies]
 serde = { workspace = true }
+serde_ignored = "0.1"
 tracing = { workspace = true }
 thiserror = "2"
 rand = "0.9"
