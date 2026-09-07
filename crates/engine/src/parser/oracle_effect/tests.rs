@@ -46229,7 +46229,7 @@ fn this_is_how_it_ends_villainous_continuation() {
 
 #[test]
 fn the_master_most_life_villainous_choice() {
-    // CR 800.4a + CR 701.55a: "choose an opponent with the most life among
+    // CR 608.2d + CR 701.55a: "choose an opponent with the most life among
     // your opponents. That player faces a villainous choice — …" must
     // produce a restricted Choose(Opponent) plus a ChooseOneOf whose chooser
     // is the chosen player and whose "They lose N life" branch is scoped.

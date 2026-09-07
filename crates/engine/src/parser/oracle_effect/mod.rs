@@ -8960,11 +8960,11 @@ fn try_parse_choose_player_to_verb(
     Some(clause)
 }
 
-/// CR 608.2c + CR 800.4a (issue #1504): "an opponent draws a card" — the
-/// opponent is chosen during resolution, not targeted at cast (contrast with
-/// "target opponent draws"). Decomposed into `Choose { Opponent }` with the
-/// verb phrase as a `sub_ability`, mirroring `try_parse_choose_player_to_verb`
-/// for Skullwinder's "choose an opponent" form.
+/// CR 608.2d (issue #1504): "an opponent draws a card" — the opponent is chosen
+/// during resolution, not targeted at cast (contrast with "target opponent
+/// draws"). Decomposed into `Choose { Opponent }` with the verb phrase as a
+/// `sub_ability`, mirroring `try_parse_choose_player_to_verb` for Skullwinder's
+/// "choose an opponent" form.
 fn try_parse_an_opponent_to_verb(
     tp: TextPair<'_>,
     ctx: &mut ParseContext,
@@ -9869,9 +9869,9 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         return clause;
     }
 
-    // CR 608.2c + CR 800.4a (issue #1504): "an opponent <verb>" before generic
-    // subject dispatch, which would bind `ControllerRef::Opponent` as a cast-time
-    // player target on Draw/Mill/etc.
+    // CR 608.2d (issue #1504): "an opponent <verb>" before generic subject
+    // dispatch, which would bind `ControllerRef::Opponent` as a cast-time player
+    // target on Draw/Mill/etc.
     if let Some(clause) = try_parse_an_opponent_to_verb(tp, ctx) {
         return clause;
     }
@@ -28633,7 +28633,8 @@ pub(crate) fn parse_named_choice_object_with_provenance(
             .flatten();
         match restriction {
             Some(restriction) => Some(ChoiceType::opponent_with_restriction(restriction)),
-            // CR 800.4a: Choose an opponent from among players in the game.
+            // CR 608.2d: the unrestricted "choose an opponent" — a resolution-time
+            // choice with no legality narrowing beyond opponent-hood.
             None => Some(ChoiceType::opponent()),
         }
     } else if tag::<_, _, E>("a player").parse(rest).is_ok() {

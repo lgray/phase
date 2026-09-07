@@ -2358,7 +2358,7 @@ pub enum ChosenAttribute {
     /// cannot be confused at a read site, and so `game::visibility` redacts on
     /// the type rather than on a condition it might forget to check.
     RevealedNumber(u32),
-    /// Stores the chosen opponent/player ID (CR 800.4a).
+    /// Stores the chosen opponent/player ID.
     Player(PlayerId),
     /// Stores two chosen colors as a pair.
     TwoColors([ManaColor; 2]),
@@ -2594,7 +2594,6 @@ impl ChoiceValue {
                     .then_some(Self::CardPredicate(predicate))
             }
             ChoiceType::LandType => Some(Self::LandType(value.to_string())),
-            // CR 800.4a: Parse player ID from string.
             ChoiceType::Opponent { .. } | ChoiceType::Player { .. } => value
                 .parse::<u8>()
                 .ok()

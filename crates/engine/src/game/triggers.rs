@@ -8390,11 +8390,11 @@ pub(crate) fn is_pending_trigger_construction_active(state: &GameState) -> bool 
 /// already handled upstream (`elimination::do_eliminate` clears all three
 /// pending-trigger fields when the tracked entry is retained off the stack). If
 /// this fires, the entry left the stack via an UNEXPECTED / UNIDENTIFIED
-/// state-coherence defect, not a known rules-legal cause. The CRs below are
-/// cited only as the rules basis for the RECOVERY SEMANTICS, not the cause:
+/// state-coherence defect, not a known rules-legal cause. The CR below is cited
+/// only as the rules basis for the RECOVERY SEMANTICS, not the cause:
 ///
-/// * CR 608.2b: a spell or ability that has left the stack does not resolve.
-/// * CR 800.4a: an object on the stack that ceases to exist is simply gone.
+/// * CR 608.1: only the spell or ability on the stack resolves, so one that has
+///   left it does not.
 ///
 /// so a stack object that no longer exists can be neither mutated nor resolved.
 /// Recovery: record a distinguishable diagnostic (item recorded once per

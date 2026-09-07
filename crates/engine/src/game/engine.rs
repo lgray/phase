@@ -14570,10 +14570,10 @@ fn apply_non_priority_pass_action(
                     &pending_trigger.ability,
                 ) {
                     // Unexpected dangling cursor: the entry is no longer on the
-                    // stack. Recover per CR 608.2b / CR 800.4a (a stack object
-                    // that has left the stack does not resolve) — record the
-                    // diagnostic, abandon, and return priority instead of
-                    // panicking (re-normalized next pass; CR 117.3b would give
+                    // stack. Recover per CR 608.1 (only the spell or ability on
+                    // the stack resolves, so an entry that has left it cannot) —
+                    // record the diagnostic, abandon, and return priority instead
+                    // of panicking (re-normalized next pass; CR 117.3b would give
                     // the active player).
                     triggers::abandon_ceased_pending_trigger(state, &pending_trigger.ability);
                     priority::clear_priority_passes(state);
@@ -19531,12 +19531,13 @@ mod stage2_injector_tests {
             state.loop_detect_ring.is_empty(),
             "CR 732.2a: the discarded drive's detection window is cleared before handback"
         );
-        assert!(
-            matches!(state.waiting_for, WaitingFor::Priority { player } if !state
-                .players
-                .iter()
-                .any(|p| p.id == player && p.is_eliminated)),
-            "CR 800.4a: priority is seated at a living seat; got {:?}",
+        assert_eq!(
+            state.waiting_for,
+            WaitingFor::Priority {
+                player: committed.active_player
+            },
+            "CR 732.2a: the ending point is a place where a player has priority — the restored \
+             board's own active player; got {:?}",
             state.waiting_for
         );
     }
@@ -19662,12 +19663,13 @@ mod stage2_injector_tests {
             state.players.iter().all(|p| !p.is_eliminated),
             "no seat is eliminated on the restored board"
         );
-        assert!(
-            matches!(state.waiting_for, WaitingFor::Priority { player } if !state
-                .players
-                .iter()
-                .any(|p| p.id == player && p.is_eliminated)),
-            "CR 800.4a: the crown is given up for a handback at a living seat; got {:?}",
+        assert_eq!(
+            state.waiting_for,
+            WaitingFor::Priority {
+                player: committed.active_player
+            },
+            "CR 732.2a: the crown is given up for the ending point — a place where a player has \
+             priority, the restored board's own active player; got {:?}",
             state.waiting_for
         );
     }

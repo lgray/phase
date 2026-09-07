@@ -12036,7 +12036,8 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
     assert!(
         matches!(state.waiting_for, WaitingFor::Priority { player }
             if !state.players.iter().any(|p| p.id == player && p.is_eliminated)),
-        "ⓑ CR 800.4a: the refusal hands priority to a LIVING seat; got {:?}",
+        "ⓑ CR 732.2a: the refusal ends at a place where a player has priority, and that seat \
+         is still in the game; got {:?}",
         state.waiting_for
     );
 }
@@ -12442,7 +12443,8 @@ fn an_over_bound_count_is_refused_at_consumption() {
     assert!(
         matches!(refused.waiting_for, WaitingFor::Priority { player }
             if !refused.players.iter().any(|p| p.id == player && p.is_eliminated)),
-        "CR 800.4a: the refusal hands priority to a LIVING seat; got {:?}",
+        "CR 732.2a: the refusal ends at a place where a player has priority, and that seat is \
+         still in the game; got {:?}",
         refused.waiting_for
     );
 
@@ -12533,7 +12535,8 @@ fn a_co_departure_the_prediction_does_not_name_is_refused() {
     assert!(
         matches!(both.waiting_for, WaitingFor::Priority { player }
             if !both.players.iter().any(|p| p.id == player && p.is_eliminated)),
-        "CR 800.4a: priority is handed to a living seat; got {:?}",
+        "CR 732.2a: the dropped cycle ends at a place where a player has priority, and that \
+         seat is still in the game; got {:?}",
         both.waiting_for
     );
 
