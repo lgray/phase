@@ -3161,9 +3161,15 @@ fn certified_bounded_cycle_offer<'a>(
     // On `periodic.delta` rather than on `frame_wise`: with the life term supplied, `self`
     // contributes only the poison and library axes the accumulation leaves untouched, which is
     // the shape a re-derivation at consumption will have too.
+    //
+    // THE PREDICTION THE REDUCTION ALSO RETURNS IS DISCARDED HERE, deliberately rather than by
+    // omission. A departure named at the OFFER beat would have to ride the proposal to
+    // consumption, where the same serde that can tamper the accepted count can tamper it; the
+    // consumption seam derives its own on the board the drive actually runs against.
     let max_iterations = periodic
         .delta
-        .elimination_bounds(state, &periodic.seat_life_charge);
+        .elimination_bounds(state, &periodic.seat_life_charge)
+        .count;
     // A bound of 0 states no legal repetition. A bound AT the cap states no narrowing at all
     // — this producer's whole claim is that it measured a CR 704.5a / CR 704.5c / CR 104.3c
     // threshold inside the loop, so an unnarrowed result belongs to another seam. Checking
@@ -4324,6 +4330,60 @@ fn has_no_loss_axis(delta: &crate::analysis::resource::ResourceVector) -> bool {
 /// active player if it is still in the game, otherwise the next living seat in turn order
 /// (elimination does not advance `active_player` when a non-acting seat concedes during the
 /// APNAP window, so `active_player` may be a departed player).
+/// CR 704.5a + CR 732.2a: what one confirmed proposal may legally do on the board it is
+/// actually spent against — the repetition ceiling, and the CR 704 threshold crossing the
+/// ACCEPTED count spends.
+///
+/// THE SINGLE AUTHORITY FOR BOTH CONSUMPTION-TIME REFUSALS. The guard below takes the ceiling
+/// and the drive's terminal arm takes the departure, and neither reads a signature field
+/// directly: a second site assembling the divisor would be a second derivation to argue equal.
+///
+/// DERIVED HERE, NEVER COPIED FROM THE OFFER. CR 732.2a admits only a sequence that "may be
+/// legally taken based on the current game state and the predictable results of the sequence of
+/// choices", and CR 704.3 runs the CR 704.5a check at every priority beat inside that sequence,
+/// so a count carrying a seat past a threshold before its final iteration is not a legal
+/// shortcut whatever minted it. A bound RIDING the proposal would be tampered by the same serde
+/// that tampers the count, so re-deriving is what lets this fail in the direction it guards. On
+/// the bounded-cycle producer the derived ceiling and the published count are the same number:
+/// the same reduction over the same bytes.
+///
+/// `None` for a proposal carrying no per-period signature. Such a proposal supports no derived
+/// ceiling at all, and the shipped behaviour of every producer that publishes none is unchanged.
+///
+/// The prediction is taken AT THE ACCEPTED COUNT. A declarer may name any count at or below the
+/// offered `max_iterations` and the drive runs at that count; because the named seat crosses on
+/// the relieved count itself and no seat crosses below it, a proposal accepted strictly under
+/// the ceiling predicts NO crossing at all. A discriminator that never mentioned the accepted
+/// count would admit a departure equal to the ceiling's own on a proposal predicting nobody
+/// would leave.
+struct ConsumptionBound {
+    /// CR 704.5a: the largest count legal on this board — the re-derived reduction's own.
+    ceiling: u32,
+    /// CR 704.5a: the seat the accepted count takes past its threshold, paired with the
+    /// repetition that does it, or `None` when this count crosses nobody.
+    predicted_departure: Option<(PlayerId, u32)>,
+}
+
+fn shortcut_consumption_bound(
+    state: &GameState,
+    proposal: &crate::analysis::loop_check::ShortcutProposal,
+    accepted: u32,
+) -> Option<ConsumptionBound> {
+    let per_cycle = proposal.per_cycle.as_ref()?;
+    // CR 119.3: the divisor the table agreed to, floored by what `PeriodicDelta::conforms`
+    // actually enforces — an emptied publication otherwise divides by nothing.
+    let divisor = per_cycle
+        .delta
+        .consumption_seat_life_charges(&per_cycle.seat_life_charge);
+    let bound = per_cycle.delta.elimination_bounds(state, &divisor);
+    Some(ConsumptionBound {
+        ceiling: bound.count,
+        predicted_departure: bound
+            .predicted_departure
+            .filter(|(_, iteration)| *iteration == accepted),
+    })
+}
+
 fn living_priority_seat(state: &GameState) -> PlayerId {
     if crate::game::players::is_alive(state, state.active_player) {
         state.active_player
@@ -4388,17 +4448,34 @@ fn apply_confirmed_shortcut(
         // one Accept: a GameState clone plus a drive per cycle. Re-check the GLOBAL cap here,
         // at the one point every confirmed drive passes through.
         //
-        // GLOBAL CAP ONLY. The per-offer `schema.max_iterations` is not re-checkable at this
-        // seam — the offer is gone by consumption and the proposal never carried the bound, and
-        // a bound copied onto the proposal would be tampered by the same serde that tampered
-        // the count, so that gate could not fail in the direction it guards.
+        // TWO CEILINGS, GLOBAL AND PER-OFFER. Both stated reasons for taking the global one
+        // here stand unchanged: no schema is re-checked (the offer is gone by consumption) and
+        // no bound is copied off the proposal (a copied bound would be tampered by the same
+        // serde that tampered the count, so that gate could not fail in the direction it
+        // guards). What has moved is the per-offer half: it is not READ, it is RE-DERIVED on
+        // this board by `shortcut_consumption_bound`, which is why it is checkable here at all.
+        //
+        // CR 732.2a admits only a sequence that "may be legally taken based on the current game
+        // state and the predictable results of the sequence of choices", and CR 704.3 runs the
+        // CR 704.5a check at every priority beat inside it, so a count carrying a seat past a
+        // threshold before its final iteration is not a legal shortcut whatever minted it.
+        //
+        // TWO BOUNDARIES, both deliberate. A proposal carrying no per-period signature supports
+        // no derived ceiling (`shortcut_consumption_bound` answers `None`) and keeps its shipped
+        // behaviour. `UntilLethal` carries no declared count for a ceiling to bound —
+        // `apply_until_lethal_shortcut` drives `shortcut_drive_period` cycles, fixed by the
+        // template's pins, and its own `SeatLeft | Abort` arm rolls every departure back through
+        // `until_lethal_fallback` — so no repetition past a CR 704.5a threshold can commit
+        // there, and that arm stays `false`.
         //
         // EXHAUSTIVE, no wildcard, for the reason the declare-site match states: a future
         // `IterationCount` variant carrying its own unbounded count must build-break here and
-        // force a bound decision rather than silently regress this cap.
+        // force a bound decision rather than silently regress either ceiling.
         || match proposal.count {
             crate::analysis::decision_template::IterationCount::Fixed(n) => {
                 n > MAX_SHORTCUT_CYCLES
+                    || shortcut_consumption_bound(state, proposal, n)
+                        .is_some_and(|bound| n > bound.ceiling)
             }
             // Bounded elsewhere by the same constant: `apply_until_lethal_shortcut` drives
             // `shortcut_drive_period` cycles, which clamps to `MAX_SHORTCUT_CYCLES`.
@@ -5382,9 +5459,39 @@ fn materialize_fixed_shortcut(
                 result.waiting_for = WaitingFor::GameOver { winner };
                 return;
             }
-            // CR 732.2a ENDING POINT: a seat left the game and the game continued. COMMIT the
-            // cycle and STOP — `break 'cycles` falls into the ending-point block below, which
-            // is already CR 732.2a's ending point for both other exits.
+            // CR 732.2a ENDING POINT: a seat left the game and the game continued. Commit
+            // the cycle and STOP — `break 'cycles` falls into the ending-point block below,
+            // which is already CR 732.2a's ending point for both other exits — but commit it
+            // ONLY when this departure is the one the bound predicted.
+            //
+            // THE DISCRIMINATOR IS TWO CONJUNCTS AND NEITHER FOLLOWS FROM THE OTHER.
+            // `CycleOutcome::SeatLeft` says a seat left and never which or how many; its own
+            // gate is a drop of at least one. So the arm compares the SET of seats present in
+            // the last committed board and gone from the driven one against the prediction's
+            // seat, AND the drive's own loop index against the repetition the prediction named.
+            // CR 704.5a licensed the count on the strength of ONE seat crossing on ONE
+            // iteration, so a departure that is not that seat, or not on that repetition, is a
+            // sequence the table never agreed to and the cycle is dropped whole.
+            //
+            // Why the second conjunct is not redundant given the first: `PeriodicDelta::conforms`
+            // compares TOTALS under the CR 601.2c re-aim licence its own doc states, so a
+            // conforming cycle may concentrate the whole period's charge onto the predicted
+            // seat, which then crosses long before the predicted repetition while the departure
+            // SET still equals the prediction. And the terminal cycle runs no conformance check
+            // at all, so when the first driven cycle is the terminal one no earlier cycle could
+            // have refused it.
+            //
+            // An ABSENT prediction admits no departure. The count was accepted below the
+            // ceiling, or the reduction named nobody, or the proposal carries no signature at
+            // all — in every one of those the honest answer is that this count crosses nobody,
+            // so a crossing is a divergence.
+            //
+            // RE-DERIVED HERE ON `*state`, through the same authority the guard used, rather
+            // than stashed at the guard: `materialize_fixed_shortcut` clones `*state` into
+            // `committed` before `'cycles` and writes only `committed` inside the loop, so
+            // `*state` is still the pre-drive board. Deliberately NOT the last committed board
+            // — a headroom already spent by earlier cycles would relieve to a REMAINING-cycles
+            // figure, while the conjunct below compares against the drive's ABSOLUTE index.
             //
             // NO CONFORMANCE CHECK HERE, and that is the decision rather than an omission.
             // `PeriodicDelta::conforms` protects the REMAINING repetitions of a bound derived
@@ -5398,10 +5505,17 @@ fn materialize_fixed_shortcut(
             // here rather than by accident. A cycle that takes EVERY remaining opponent to 0 at
             // once reaches `WaitingFor::GameOver` and lands in the `CrossLethal` arm above: it
             // COMMITS and the game ends (CR 104.2a). A cycle that takes ONE seat to 0 while
-            // >= 2 players survive raises no `GameOver` and lands HERE: it COMMITS and the
-            // drive stops at the priority window the removal was observed at, with that seat
-            // eliminated and the survivors holding an intact loop. `Abort` below is neither —
-            // it is the runaway cap, an unpinned prompt, or an engine error.
+            // >= 2 players survive raises no `GameOver` and lands HERE: it commits only under
+            // the discriminator above, with that seat eliminated and the survivors holding an
+            // intact loop. `Abort` below is neither — it is the runaway cap, an unpinned
+            // prompt, or an engine error.
+            //
+            // `CrossLethal` TAKES NO DISCRIMINATOR, and the ground is the game's end.
+            // CR 104.2a ends the game immediately once a player's opponents have all left, so a
+            // cross-lethal cycle leaves no remaining repetition to be unmakeable and no later
+            // priority beat for CR 704.3 to sweep — which is the whole harm this arm's
+            // discriminator refuses. The per-offer ceiling still governs that arm; it is taken
+            // at the guard, before any cycle is driven.
             //
             // The atomic per-cycle property survives as NO HALF-APPLIED PERIOD EXCEPT THE
             // TERMINAL ONE, WHOSE REMAINDER IS UNMAKEABLE: the justification was always about
@@ -5416,6 +5530,27 @@ fn materialize_fixed_shortcut(
                 state: s,
                 mut events,
             } => {
+                let predicted: BTreeSet<PlayerId> = shortcut_consumption_bound(state, proposal, n)
+                    .and_then(|bound| bound.predicted_departure)
+                    .filter(|(_, iteration)| *iteration == i + 1)
+                    .map(|(seat, _)| BTreeSet::from([seat]))
+                    .unwrap_or_default();
+                // CR 800.4a: a seat that has left the game. Read off the two boards rather than
+                // off the outcome's events, so a departure with no `PlayerEliminated` emitted is
+                // still seen.
+                let departed: BTreeSet<PlayerId> = committed
+                    .players
+                    .iter()
+                    .filter(|p| !p.is_eliminated)
+                    .map(|p| p.id)
+                    .filter(|seat| !crate::game::players::is_alive(&s, *seat))
+                    .collect();
+                // Equality on the SET, never a length check plus a membership test: the latter
+                // admits a swap. An empty prediction equals no non-empty departure, which is
+                // the fail-closed direction.
+                if departed != predicted || predicted.is_empty() {
+                    break 'cycles;
+                }
                 committed = *s;
                 result.events.append(&mut events);
                 break 'cycles;
@@ -22910,22 +23045,31 @@ mod kilo_interruptibility_tests {
 /// starts refusing first, which is the domination trap the enum exists to close.
 #[cfg(test)]
 mod bounded_offer_conjunct_tests {
-    use super::{try_offer_bounded_cycle_shortcut, BoundedOfferRefusal};
+    use super::{
+        shortcut_consumption_bound, try_offer_bounded_cycle_shortcut, BoundedOfferRefusal,
+        MAX_SHORTCUT_CYCLES,
+    };
+    use crate::analysis::loop_check::ShortcutProposal;
     use crate::game::scenario::GameScenario;
     use crate::types::game_state::{GameState, LoopDetectionMode, WaitingFor};
     use crate::types::player::PlayerId;
 
     const P0: PlayerId = PlayerId(0);
     const P1: PlayerId = PlayerId(1);
+    const P2: PlayerId = PlayerId(2);
 
-    /// A 2-player board parked at `Priority{P0}` (P0 active) whose retained ring encodes a
-    /// period seen twice: `frames` successive normalized snapshots, each mutated by `shape`.
+    /// A `seats`-player board parked at `Priority{P0}` (P0 active) whose retained ring encodes
+    /// a period seen twice: `frames` successive normalized snapshots, each mutated by `shape`.
     ///
     /// `2k + 1 = 3` frames at `k = 1` is the smallest ring `ring_delta_signature` will certify,
     /// and every frame shares `turn_number` / `phase` / `extra_phases`, so the CR 703.1
     /// turn-position conjunct passes and this fixture is not silently testing that instead.
-    fn ring_state(frames: usize, shape: impl Fn(&mut GameState, usize)) -> GameState {
-        let mut scenario = GameScenario::new_n_player(2, 7);
+    ///
+    /// PARAMETERIZED BY SEAT COUNT rather than given a sibling: a row needing two drained seats
+    /// at distinct lives (so the argmin is unique and no axis it reads is single-entry) differs
+    /// from the two-seat rows in the population and in nothing else.
+    fn ring_state(seats: u8, frames: usize, shape: impl Fn(&mut GameState, usize)) -> GameState {
+        let mut scenario = GameScenario::new_n_player(seats, 7);
         // A stocked library is load-bearing, not scenery: the period this fixture encodes IS a
         // library delta, and an empty library makes every frame identical ⇒ a zero per-period
         // vector ⇒ `ring_delta_signature` returns `None` and every row below refuses at
@@ -23132,7 +23276,7 @@ mod bounded_offer_conjunct_tests {
     /// Mill `victim` by one card per retained frame — a constant per-frame library delta, which
     /// is a period observed twice at `frames >= 3`.
     fn mill_ring(victim: PlayerId, frames: usize) -> GameState {
-        ring_state(frames, move |frame, i| {
+        ring_state(2, frames, move |frame, i| {
             let player = frame
                 .players
                 .iter_mut()
@@ -23165,7 +23309,7 @@ mod bounded_offer_conjunct_tests {
     /// period ahead of it and every older frame one more — i.e. the live state is the far end of
     /// the period, which is the orientation `ResourceVector::delta(prior, current)` reads.
     fn drain_ring(victim: PlayerId, frames: usize) -> GameState {
-        ring_state(frames, move |frame, i| {
+        ring_state(2, frames, move |frame, i| {
             let player = frame
                 .players
                 .iter_mut()
@@ -23554,7 +23698,7 @@ mod bounded_offer_conjunct_tests {
         use crate::analysis::resource::PeriodVerdicts;
 
         // ── ARM 1: behavioural ───────────────────────────────────────────────────────────
-        let state = ring_state(3, |frame, i| {
+        let state = ring_state(2, 3, |frame, i| {
             frame.turn_number += i as u32;
         });
         assert_eq!(
@@ -24069,6 +24213,270 @@ mod bounded_offer_conjunct_tests {
              Found {outside:#?}"
         );
     }
+    /// The V1/V3d board: a 3-seat `k = 2` ring whose two drained seats sit at DISTINCT lives,
+    /// one of them carrying a within-period sign mix.
+    ///
+    /// Two seats rather than one, deliberately: every map the ceiling's derivation walks — the
+    /// period's life map, the reserved seat set and the published per-seat divisor — then holds
+    /// at least two entries, so a single-entry collection cannot let a flag pass for a count.
+    /// Distinct lives are what additionally make the argmin unique, which is the condition the
+    /// prediction exists under.
+    ///
+    /// P1's legs are `-5, +3`: the frame-wise accumulation charges the 5 it loses inside the
+    /// period while the endpoint pair sees only the -2 that survives it. P2's legs are flat, so
+    /// its own two derivations agree and it is the seat that stays out of the argmin.
+    fn signmix_three_seat_offer_board() -> GameState {
+        use crate::types::ability::{
+            ControllerRef, Effect, QuantityExpr, ResolvedAbility, TargetFilter, TypedFilter,
+        };
+        use crate::types::game_state::{StackEntry, StackEntryKind};
+        use crate::types::identifiers::{CardId, ObjectId};
+
+        let mut state = ring_state(3, 5, |frame, i| {
+            for (seat, legs) in [(P1, [-5, 3]), (P2, [-2, -2])] {
+                let offset: i32 = (0..i).map(|j| legs[j % 2]).sum();
+                let victim = frame
+                    .players
+                    .iter_mut()
+                    .find(|p| p.id == seat)
+                    .expect("seat exists");
+                victim.life += offset;
+            }
+            // ONE announcement per frame — a new stack entry, which is what
+            // `certified_period_touch` reads as an announcement.
+            let src = ObjectId(940);
+            let mut source = crate::game::game_object::GameObject::new(
+                src,
+                CardId(0),
+                P0,
+                "Drainer".to_string(),
+                crate::types::zones::Zone::Battlefield,
+            );
+            source.incarnation = 3;
+            frame.objects.insert(src, source);
+            frame.stack.push_back(StackEntry {
+                id: ObjectId(950 + i as u64),
+                source_id: src,
+                controller: P0,
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: src,
+                    ability: Box::new(ResolvedAbility::new(
+                        Effect::LoseLife {
+                            amount: QuantityExpr::Fixed { value: 1 },
+                            target: Some(TargetFilter::Typed(TypedFilter {
+                                type_filters: vec![],
+                                controller: Some(ControllerRef::Opponent),
+                                properties: vec![],
+                            })),
+                        },
+                        vec![],
+                        src,
+                        P0,
+                    )),
+                    condition: None,
+                    trigger_event: None,
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                    provenance: None,
+                },
+            });
+        });
+        // The headrooms the two derivations divide: 15 and 30 separate the frame-wise ceiling
+        // from the endpoint-pair one, and leave P2 comfortably outside the argmin under both.
+        for (seat, life) in [(P1, 15), (P2, 30)] {
+            state
+                .players
+                .iter_mut()
+                .find(|p| p.id == seat)
+                .expect("seat exists")
+                .life = life;
+        }
+        state
+    }
+
+    /// Mint the V1/V3d board's offer through the production seam, then take the production
+    /// DECLARE path to the responder's beat and hand back the live proposal beside the count
+    /// the offer published.
+    fn signmix_offer_at_responder_beat() -> (GameState, ShortcutProposal, u32) {
+        use crate::analysis::resource::PeriodCertification;
+        use crate::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
+
+        let mut state = signmix_three_seat_offer_board();
+        let (outcome, meter) =
+            try_offer_bounded_cycle_shortcut_metered(&state, false, ProbeCap::Shipped);
+        let Ok(offer @ WaitingFor::LoopShortcut { .. }) = outcome else {
+            panic!("the sign-mix board must mint a bounded offer; got {outcome:?}");
+        };
+        assert_eq!(
+            meter.certification,
+            Some(PeriodCertification::ResourceSignatureOnly),
+            "REACH-GUARD: this fixture must certify through basis B — basis A wins whenever it \
+             certifies, and its window would hand the accumulation different frames"
+        );
+        let WaitingFor::LoopShortcut { schema, .. } = &offer else {
+            unreachable!("matched above")
+        };
+        let published = schema.max_iterations;
+        assert!(
+            (1..MAX_SHORTCUT_CYCLES).contains(&published),
+            "REACH-GUARD: the published bound must be a NARROWED count strictly inside the \
+             range — a refusal and the un-narrowed sentinel are both excluded; got {published}"
+        );
+        state.waiting_for = offer;
+        // CR 732.2a: a bare declaration (no client template) is admitted only from a proposer
+        // who owns the recorded driving period — the property every real offer board carries at
+        // its own offer beat, and the one a synthetic ring has no play history to have written.
+        // Recorded AFTER the mint, so certification read the board this fixture actually built.
+        state
+            .last_loop_action_sequence
+            .push(crate::types::game_state::LoopActionContext {
+                card_id: crate::types::identifiers::CardId(0),
+                controller: P0,
+                action: crate::types::game_state::LoopAction::Activate {
+                    source_id: crate::types::identifiers::ObjectId(940),
+                    ability_index: 0,
+                },
+                convoke: None,
+                pins: vec![],
+            });
+        assert_eq!(
+            state.loop_period_controller(),
+            Some(P0),
+            "REACH-GUARD: the declare handler's bare-template arm reads this, and a period it \
+             does not attribute to the proposer is rejected before the response window"
+        );
+
+        crate::game::engine::apply(
+            &mut state,
+            P0,
+            crate::types::actions::GameAction::DeclareShortcut {
+                count: crate::analysis::decision_template::IterationCount::Fixed(published),
+                template: None,
+            },
+        )
+        .expect("the proposer declares the count the offer published");
+        let WaitingFor::RespondToShortcut { proposal, .. } = state.waiting_for.clone() else {
+            panic!(
+                "the declare handler parks on the CR 732.2b response window; got {:?}",
+                state.waiting_for
+            );
+        };
+        (state, proposal, published)
+    }
+
+    /// **V1 — CR 704.5a: the consumption ceiling IS the count the offer published.** The
+    /// re-derivation at the seam where the proposal is spent runs the same reduction over the
+    /// same bytes as the mint, so on a producer whose signature is intact the two are one
+    /// number — which is what makes the ceiling a legality check rather than a second policy.
+    ///
+    /// CONTROL LEG, NOT OPTIONAL: the same board's ceiling taken from the period's NET divisor
+    /// differs. Without it the row is satisfied by the very derivation it exists to refuse —
+    /// the endpoint pair, which cannot see a loss an offsetting gain cancels inside the period.
+    /// Its "stays green" sibling has a non-obvious shape and is named so it is not hunted for:
+    /// an UNCHARGED, sign-monotone offer, where the published charge is the frame-wise gross
+    /// and the net coincides with it. On a charged offer the reaching slot's reach term parts
+    /// the two even under sign-monotonicity, which is why this board is charged.
+    ///
+    /// REVERT-PROBE: take the consumption divisor from `per_cycle.delta.seat_life_charges(&[])`
+    /// instead of from the published charge ⇒ the ceiling reads the control's value ⇒ FLIPS.
+    #[test]
+    fn the_consumption_ceiling_agrees_with_the_count_the_offer_published() {
+        let (state, proposal, published) = signmix_offer_at_responder_beat();
+        let per_cycle = proposal
+            .per_cycle
+            .as_ref()
+            .expect("a bounded offer carries its per-period signature onto the proposal");
+
+        // ── CARDINALITY REACH-GUARDS: every map the derivation walks holds ≥ 2 entries ──
+        assert!(
+            per_cycle.delta.life.len() >= 2,
+            "REACH-GUARD: a single-entry life map lets a flag pass for a count; got {:?}",
+            per_cycle.delta.life
+        );
+        assert!(
+            per_cycle.declarable_victims.len() >= 2,
+            "REACH-GUARD: a single reserved seat makes the argmin unique for free; got {:?}",
+            per_cycle.declarable_victims
+        );
+        assert!(
+            per_cycle.seat_life_charge.len() >= 2,
+            "REACH-GUARD: a single-entry divisor cannot distinguish a per-seat reduction from \
+             a scalar one; got {:?}",
+            per_cycle.seat_life_charge
+        );
+
+        let derived = shortcut_consumption_bound(&state, &proposal, published)
+            .expect("REACH-GUARD: the helper must ANSWER on a proposal carrying a signature");
+        assert_eq!(
+            derived.ceiling, published,
+            "CR 704.5a: the consumption re-derivation and the mint are one reduction over one \
+             set of published bytes"
+        );
+
+        // ── THE CONTROL LEG ──
+        let net_ceiling = per_cycle
+            .delta
+            .elimination_bounds(&state, &per_cycle.delta.seat_life_charges(&[]))
+            .count;
+        assert_ne!(
+            net_ceiling, derived.ceiling,
+            "CONTROL: the period's NET divisor authorises a different count on this very \
+             board, so the equality above is a statement about WHICH derivation the seam runs"
+        );
+    }
+
+    /// **V3d — CR 732.2a: the prediction is derived at the ACCEPTED count, not at the
+    /// ceiling.** A declarer may name any count at or below the offered one and the drive runs
+    /// at that count; the named seat crosses on the relieved count itself and nobody crosses
+    /// below it, so a proposal accepted strictly under the ceiling predicts NO departure at
+    /// all. A discriminator reading a prediction taken at the ceiling would admit that seat's
+    /// departure on a proposal predicting nobody would leave.
+    ///
+    /// The PAIR on one board and one proposal is its own reach-guard: a helper always answering
+    /// absent fails the first leg, one always answering present fails the second.
+    ///
+    /// REVERT-PROBE: resolve the prediction at `bound.count` instead of at the accepted count
+    /// ⇒ both legs answer present ⇒ the second FAILS.
+    #[test]
+    fn the_predicted_departure_is_resolved_at_the_accepted_count() {
+        let (state, proposal, published) = signmix_offer_at_responder_beat();
+        assert!(
+            published >= 2,
+            "REACH-GUARD: a count strictly BELOW the ceiling must exist for the second leg to \
+             be constructible; got {published}"
+        );
+
+        let at_ceiling = shortcut_consumption_bound(&state, &proposal, published)
+            .expect("the helper answers on a proposal carrying a signature");
+        assert!(
+            at_ceiling.predicted_departure.is_some(),
+            "CR 704.5a: at the count the reduction derived, the seat it crosses is named"
+        );
+        assert_eq!(
+            at_ceiling
+                .predicted_departure
+                .map(|(_, iteration)| iteration),
+            Some(published),
+            "the named repetition is the count itself — the final iteration of the sequence"
+        );
+
+        let below = shortcut_consumption_bound(&state, &proposal, published - 1)
+            .expect("the helper answers on the same proposal at a lower count");
+        assert_eq!(
+            below.ceiling, at_ceiling.ceiling,
+            "REACH-GUARD: the CEILING is a property of the board and the signature, so it does \
+             not move with the accepted count — which is what leaves the prediction as the \
+             only thing that changed"
+        );
+        assert_eq!(
+            below.predicted_departure, None,
+            "CR 732.2a: below the ceiling no seat reaches its threshold, so this count \
+             predicts no departure"
+        );
+    }
+
     /// CR 119.3 + CR 704.5a — THE MINT'S LIFE TERMS ARE THE FRAME-WISE ACCUMULATION'S, NEVER
     /// THE PERIOD'S ENDPOINT PAIR'S.
     ///
@@ -24103,7 +24511,7 @@ mod bounded_offer_conjunct_tests {
         // frame announcing ONE `target opponent` drain — a NEW stack entry per frame, which is
         // what `certified_period_touch` reads as an announcement.
         let board = |legs: [i32; 2]| {
-            let mut state = ring_state(5, move |frame, i| {
+            let mut state = ring_state(2, 5, move |frame, i| {
                 let offset: i32 = (0..i).map(|j| legs[j % 2]).sum();
                 let victim = frame
                     .players
@@ -24184,8 +24592,9 @@ mod bounded_offer_conjunct_tests {
             );
             assert_eq!(
                 per_cycle.frames_per_period, 2,
-                "REACH-GUARD: a single-frame period is one on which the two derivations agree \
-                 BY CONSTRUCTION"
+                "REACH-GUARD: on this fixture's basis-B period a single frame would leave one \
+                 negative part to sum, so the frame-wise accumulation and the endpoint pair \
+                 coincide for want of a sign mix"
             );
             assert_eq!(
                 per_cycle.victim_slot.len(),

@@ -588,8 +588,17 @@ mod map_key_pairs {
 ///
 /// The `Vec` victim term (rather than a `BTreeMap` keyed by [`DecisionSlot`]) is
 /// deliberate: a struct map key hits exactly the `serde_json` restriction
-/// [`map_key_pairs`] exists for, and the single consumer of the published per-slot value
-/// (`game::interaction`'s `victim_charge`) looks its slot up at its call site.
+/// [`map_key_pairs`] exists for.
+///
+/// THE ENTRY'S TWO HALVES ARE READ DIFFERENTLY, and the published value is KEPT on that
+/// footing rather than narrowed. The **slot** is what both production readers consult —
+/// `PeriodicDelta::conforms` sizes its lift by the pinned slots it finds here, and
+/// `game::interaction`'s `victim_charge` asks whether the period charges this point's slot;
+/// each binds the magnitude to `_`. The **magnitude** has no production consumer at all: it is
+/// the wire witness of the mint's magnitude derivation, the only place
+/// [`ResourceVector::worst_seat_life_loss`]' output is observable off the certificate, and the
+/// accepted row pinning that derivation asserts against it. Narrowing the shape to a slot list
+/// would re-shape a saved-game field, which is its own wire-compatibility design.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeriodicDelta {
     /// How many RETAINED RING FRAMES one repetition spans — the certifying prior's ring index
@@ -631,8 +640,10 @@ pub struct PeriodicDelta {
     /// class, whose victims are already seat-keyed in `delta.life`.
     ///
     /// A UNION, so it is not per-slot: with two charged slots of different reaches this set
-    /// still names every seat some slot can be re-aimed onto, while `elimination_bounds`
-    /// reserves per seat only what the slots REACHING it charge.
+    /// still names every seat some slot can be re-aimed onto, while
+    /// [`ResourceVector::seat_life_charges`] is what charges each seat only the slots whose
+    /// reach CONTAINS it — `elimination_bounds` divides by the vector that producer hands it
+    /// and performs no per-slot arithmetic of its own.
     ///
     /// SNAPSHOTTED at the offer beat, deliberately not live: the bound the table accepted was
     /// computed against this set, and a later board is not what was agreed.
@@ -696,8 +707,9 @@ impl PeriodicDelta {
     ///   holds and all this conjunct needs: no conforming observation relocates a slot's loss
     ///   onto a seat outside its published set, hence none onto a seat outside its reach. The
     ///   conclusion stops where the reservation does: a seat no charge reaches has both of
-    ///   `elimination_bounds`' sums at zero, reserves nothing, and this conjunct says nothing
-    ///   about it — which is why the lift is confined to the domain.
+    ///   [`ResourceVector::seat_life_charges`]' sums at zero, so that producer measures no
+    ///   magnitude for it, `elimination_bounds` reserves nothing, and this conjunct says
+    ///   nothing about it — which is why the lift is confined to the domain.
     /// * SEAT. Sized by `pins`, not by `victim_slot.len()`. CR 732.2a specifies a sequence of
     ///   CHOICES, and `victim_slot` is ANNOUNCED rather than published — a CR 601.2c target
     ///   another player announces is charged but publishes no decision point, so no pin exists
@@ -841,6 +853,28 @@ impl SlotCharge {
         seats.dedup();
         seats
     }
+}
+
+/// CR 704.5a + CR 732.2a: everything [`ResourceVector::elimination_bounds`] computes — the
+/// largest legal repetition count, and the CR 704 threshold crossing that count spends.
+///
+/// The two halves ship together because they are one reduction: the relief that raises the
+/// count past the strict floor is licensed BY there being exactly one seat at that floor, so
+/// naming the count without naming the seat discards a fact the reduction already established.
+/// A consumer re-deriving the seat beside the count would be a second derivation to argue equal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EliminationBound {
+    /// The count itself, clamped to `game::engine::MAX_SHORTCUT_CYCLES`. `0` states no legal
+    /// repetition; the cap states no narrowing at all.
+    pub(crate) count: u32,
+    /// CR 704.5a: the seat whose headroom the FINAL iteration spends, paired with that
+    /// iteration — which is `count`, since the relief is what carries the sequence there.
+    ///
+    /// `None` on a tie at the floor, where the count crosses nobody; where the relief is
+    /// refused for the cap sentinel; and where no living seat is consumed at all. Paired rather
+    /// than published as two fields: a caller holding a seat beside a loose index can compare
+    /// the wrong one, and the two are only ever meaningful together.
+    pub(crate) predicted_departure: Option<(PlayerId, u32)>,
 }
 
 impl ResourceVector {
@@ -1186,8 +1220,9 @@ impl ResourceVector {
 
     /// CR 119.3 + CR 704.5a: the per-seat life magnitude one repetition may adjust each seat's
     /// total by — the divisor [`ResourceVector::elimination_bounds`] reserves elimination
-    /// headroom against, over the union of this vector's own life keys and every charge's
-    /// reach.
+    /// headroom against. The seat population is THIS function's own union of the vector's life
+    /// keys with every charge's reach; the reduction that consumes the result walks living
+    /// seats and re-derives none of it.
     ///
     /// **Entries are POSITIVE MAGNITUDES, not deltas.** `life`'s negative-as-loss convention
     /// is a *delta* convention; a divisor is not a delta. A non-positive result is dropped —
@@ -1266,6 +1301,45 @@ impl ResourceVector {
             .collect()
     }
 
+    /// CR 119.3 + CR 704.5a: the per-seat divisor a CONSUMPTION-time re-derivation divides by —
+    /// the charge the certificate PUBLISHED, floored per seat by the vector
+    /// [`ResourceVector::seat_life_charges`] produces from an EMPTY charge slice.
+    ///
+    /// # Why the floor exists at all
+    ///
+    /// [`PeriodicDelta::conforms`] is the only thing the drive checks a committed cycle
+    /// against, and it enforces a per-period TOTAL under the CR 601.2c re-aim licence its own
+    /// doc states — never a per-seat magnitude. So the published charge is an AGREEMENT, not an
+    /// enforced quantity, and a signature reaching consumption with that field empty (its
+    /// `#[serde(default)]` shape, which a persisted pre-field signature and a hostile restore
+    /// both produce) would divide by nothing and narrow nothing. Flooring by what the drive
+    /// DOES enforce — the losses this vector's own frames carry — leaves a ceiling standing on
+    /// exactly that signature.
+    ///
+    /// A floor can only RAISE a divisor, hence only LOWER the count a caller derives from it:
+    /// fail-closed. Where the published charge is present it dominates the enforced magnitude
+    /// by construction, being the frame-wise gross of the same losses plus every reaching
+    /// slot's reach, so the floor is the identity there.
+    ///
+    /// Composed rather than re-derived: the same producer builds both halves, so a change to
+    /// its negative-part convention moves the floor and the publication together.
+    pub(crate) fn consumption_seat_life_charges(
+        &self,
+        published: &[(PlayerId, i64)],
+    ) -> Vec<(PlayerId, i64)> {
+        // Seeded from the enforced vector, so the result has ONE ordering and needs no second
+        // sort — the reason `seat_life_charges` keys its own union on a `BTreeSet`.
+        let mut floored: BTreeMap<PlayerId, i64> =
+            self.seat_life_charges(&[]).into_iter().collect();
+        for (seat, magnitude) in published {
+            let floor = floored.get(seat).copied().unwrap_or(0);
+            if *magnitude > floor {
+                floored.insert(*seat, *magnitude);
+            }
+        }
+        floored.into_iter().collect()
+    }
+
     /// CR 732.2a + CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: the largest number of
     /// times this per-period delta may legally be repeated in one shortcut proposal.
     ///
@@ -1325,33 +1399,70 @@ impl ResourceVector {
     /// frame, and for a CR 704.3 sweep the ring never recorded; both under-state in the same
     /// direction as the net term did, so a published bound can only shrink. The one direction
     /// the producer's aim subtraction is not fail-closed is stated on it.
+    ///
+    /// # What the predicted departure means
+    ///
+    /// CR 704.5a: the seat named on [`EliminationBound::predicted_departure`] is the one whose
+    /// threshold the returned count actually crosses, and the iteration beside it is the
+    /// repetition that crosses it. It is present exactly when the relief above is taken,
+    /// because that is exactly when this reduction has established a SINGLE crosser; on a tie
+    /// at the floor, under a relief refused for the sentinel, and with no living seat consumed
+    /// at all, the returned count crosses nobody and there is nothing to name. A consumer
+    /// holding an absent prediction has been told "this count predicts NO departure", never
+    /// "this count predicts nothing in particular".
     pub(crate) fn elimination_bounds(
         &self,
         state: &GameState,
         seat_life_charge: &[(PlayerId, i64)],
-    ) -> u32 {
+    ) -> EliminationBound {
         let cap = crate::game::engine::MAX_SHORTCUT_CYCLES as i64;
 
         // CR 800.4a: an ELIMINATED seat has left the game and is not in the population, so a
         // corpse at 1 life cannot pin the bound to zero.
-        let strict: Vec<i64> = state
+        let strict: Vec<(PlayerId, i64)> = state
             .players
             .iter()
             .filter(|p| !p.is_eliminated)
-            .filter_map(|p| self.seat_headroom_bound(p, seat_life_charge))
+            .filter_map(|p| {
+                self.seat_headroom_bound(p, seat_life_charge)
+                    .map(|bound| (p.id, bound))
+            })
             .collect();
 
         // No axis consumes any living seat ⇒ nothing narrowed. The cap is what an
         // un-narrowed reduction has always published, and `is_bounded()` reads it as "this
         // producer stated no CR 704 threshold".
-        let Some(&floor) = strict.iter().min() else {
-            return cap as u32;
+        let Some(floor) = strict.iter().map(|(_, bound)| *bound).min() else {
+            return EliminationBound {
+                count: cap as u32,
+                predicted_departure: None,
+            };
         };
+        // The argmin, and only when it is UNIQUE — the same conjunct the relief is taken on,
+        // read out of the reduction rather than re-derived beside it.
+        let mut at_floor = strict
+            .iter()
+            .filter(|(_, bound)| *bound == floor)
+            .map(|(seat, _)| *seat);
+        let first_at_floor = at_floor.next();
+        let sole_floor_seat = first_at_floor.filter(|_| at_floor.next().is_none());
+
         let relieved = floor + 1;
-        if strict.iter().filter(|b| **b == floor).count() == 1 && relieved < cap {
-            relieved.clamp(0, cap) as u32
-        } else {
-            floor.clamp(0, cap) as u32
+        match sole_floor_seat {
+            Some(seat) if relieved < cap => {
+                let count = relieved.clamp(0, cap) as u32;
+                // CR 704.5a + CR 704.3: at the relieved count this seat and only this seat has
+                // crossed, and it crosses on that final iteration — which is the whole reason
+                // the relief was licensed.
+                EliminationBound {
+                    count,
+                    predicted_departure: Some((seat, count)),
+                }
+            }
+            _ => EliminationBound {
+                count: floor.clamp(0, cap) as u32,
+                predicted_departure: None,
+            },
         }
     }
 
@@ -15458,7 +15569,9 @@ mod tests {
     /// states, then hand THAT to the reduction — so a row keeps stating a `SlotCharge`'s reach
     /// and aim while `elimination_bounds` reads what production hands it.
     fn bound_with(delta: &ResourceVector, state: &GameState, charges: &[SlotCharge]) -> u32 {
-        delta.elimination_bounds(state, &delta.seat_life_charges(charges))
+        delta
+            .elimination_bounds(state, &delta.seat_life_charges(charges))
+            .count
     }
 
     /// CR 119.3: the MAX-vs-SUM fork in `victim_slot`'s magnitude
@@ -15840,6 +15953,161 @@ mod tests {
         );
     }
 
+    /// CR 704.5a + CR 732.2a: **the reduction names the seat its final iteration spends, and
+    /// the iteration.** The relief is licensed BY there being exactly one seat at the strict
+    /// floor, so the argmin is a fact the reduction has already established; publishing it
+    /// beside the count is reading it out rather than deriving it a second time.
+    ///
+    /// The three arms are one board shape with the consumed seats' lives moved, so what
+    /// changes between them is only which seat holds the binding value and how many do.
+    ///
+    /// REVERT-PROBE: return `predicted_departure: None` unconditionally ⇒ ⓐ and ⓒ FAIL while
+    /// ⓑ stays green. Name the FIRST consumed seat instead of the argmin ⇒ ⓒ FAILS (its
+    /// binding seat is the second) while ⓐ stays green. Pair the seat with the strict floor
+    /// instead of the relieved count ⇒ ⓐ's and ⓒ's iteration clauses FAIL. Drop the
+    /// uniqueness conjunct ⇒ ⓑ names a seat and FAILS.
+    #[test]
+    fn elimination_bounds_name_the_seat_the_relieved_count_crosses() {
+        let delta = life_loss_delta(&[(1, 1), (2, 1)]);
+        // The divisor every arm below is taken with — the same one the mint hands the
+        // reduction, so a reach-guard cannot read a differently-armed reduction.
+        let divisor = delta.seat_life_charges(&[]);
+
+        // ⓐ ONE seat at the binding value: the count is its crossing, and the prediction is
+        //   that seat paired with that very iteration.
+        let one = bound_board(&[40, 12, 40]);
+        let a = delta.elimination_bounds(&one, &divisor);
+        assert_eq!(a.count, 12);
+        assert_eq!(
+            a.predicted_departure,
+            Some((PlayerId(1), 12)),
+            "CR 704.5a: the seat whose headroom the final repetition spends, paired with that \
+             repetition"
+        );
+        assert_eq!(
+            one.players[1].life as i64 - i64::from(a.count),
+            0,
+            "the named seat is the one the count actually takes to the threshold — the \
+             arithmetic the pairing claims, asserted rather than restated"
+        );
+
+        // ⓑ TWO seats at the binding value: the relief is refused, the count crosses nobody,
+        //   and there is no seat to name. The paired negative on the same instrument.
+        let two = bound_board(&[40, 12, 12]);
+        let b = delta.elimination_bounds(&two, &divisor);
+        assert_eq!(b.count, 11);
+        assert_eq!(
+            b.predicted_departure, None,
+            "CR 732.2a: at a refused relief every consumed seat is strictly inside its \
+             threshold, so naming one would predict a departure that does not happen"
+        );
+        assert!(
+            two.players[1].life as i64 - i64::from(b.count) > 0
+                && two.players[2].life as i64 - i64::from(b.count) > 0,
+            "reach-guard: both tied seats survive the published count, which is what makes \
+             the absent prediction the right answer rather than an arbitrary one"
+        );
+
+        // ⓒ the binding seat is the SECOND consumed one, so "the first seat the walk
+        //   consumed" is not the argmin and cannot pass for it.
+        let second = bound_board(&[40, 13, 12]);
+        let c = delta.elimination_bounds(&second, &divisor);
+        assert!(
+            delta
+                .seat_headroom_bound(&second.players[1], &divisor)
+                .is_some()
+                && delta
+                    .seat_headroom_bound(&second.players[2], &divisor)
+                    .is_some(),
+            "reach-guard: BOTH seats are in the reduction, so 'only one seat could ever be \
+             named' does not satisfy the assertion below"
+        );
+        assert_eq!(c.predicted_departure, Some((PlayerId(2), c.count)));
+        assert_eq!(
+            second.players[2].life as i64 - i64::from(c.count),
+            0,
+            "CR 704.5a: the named seat crosses ON the named iteration"
+        );
+        assert!(
+            second.players[1].life as i64 - i64::from(c.count) > 0,
+            "CR 732.2a: the seat NOT named is still strictly inside its threshold there"
+        );
+
+        // ⓓ nothing consumed at all: the un-narrowed exit predicts nobody either.
+        let untouched = ResourceVector::default().elimination_bounds(&one, &[]);
+        assert_eq!(untouched.count, crate::game::engine::MAX_SHORTCUT_CYCLES);
+        assert_eq!(untouched.predicted_departure, None);
+    }
+
+    /// CR 119.3 + CR 704.5a: **the consumption divisor floors an emptied publication by what
+    /// the drive actually enforces.** `PeriodicDelta::seat_life_charge` is `#[serde(default)]`,
+    /// so a signature reaching consumption can carry an EMPTY charge beside an untouched
+    /// `delta` — and `PeriodicDelta::conforms` enforces a per-period TOTAL, never a per-seat
+    /// magnitude, so nothing downstream would restore it. Flooring by the vector
+    /// `seat_life_charges` builds from an empty charge slice is what leaves a ceiling standing
+    /// on that signature.
+    ///
+    /// REVERT-PROBE: return `published` verbatim from `consumption_seat_life_charges` ⇒ ⓐ's
+    /// divisor is empty, its ceiling is the un-narrowed sentinel, and its range assertion
+    /// FAILS — the same value ⓐ's own control leg measures for the unfloored call.
+    #[test]
+    fn the_consumption_divisor_floors_an_emptied_publication() {
+        let cap = crate::game::engine::MAX_SHORTCUT_CYCLES;
+        // One repetition takes 3 off P1 by the endpoint pair; the mint published a frame-wise
+        // gross of 5, which is the shape that dominates its own floor.
+        let delta = life_loss_delta(&[(1, 3)]);
+        let published = vec![(PlayerId(1), 5i64)];
+        let board = bound_board(&[40, 22]);
+
+        // ⓐ THE EMPTIED PUBLICATION. Control leg first, on the same board and the same
+        //   reduction: with no floor the divisor is empty, P1's life axis is unarmed, and the
+        //   count is the sentinel — which is the ceiling this floor exists to replace.
+        assert_eq!(
+            delta.elimination_bounds(&board, &[]).count,
+            cap,
+            "CONTROL: an unfloored empty publication narrows nothing at all"
+        );
+        let enforced = delta.consumption_seat_life_charges(&[]);
+        assert_eq!(
+            enforced,
+            vec![(PlayerId(1), 3)],
+            "the floor is the vector `seat_life_charges` builds from an empty charge slice"
+        );
+        let floored = delta.elimination_bounds(&board, &enforced);
+        assert!(
+            (1..cap).contains(&floored.count),
+            "CR 704.5a: the floored divisor leaves a NARROWED ceiling; got {}",
+            floored.count
+        );
+
+        // ⓑ THE PUBLICATION PRESENT. The floor is the identity, and the ceiling it yields is
+        //   AT MOST the enforced one — which is what makes this a floor rather than a
+        //   substitution.
+        assert_eq!(
+            delta.consumption_seat_life_charges(&published),
+            published,
+            "a published magnitude that dominates its floor passes through unchanged"
+        );
+        let from_charge = delta.elimination_bounds(&board, &published);
+        assert!(
+            (1..cap).contains(&from_charge.count),
+            "reach-guard: the paired positive is taken at a NARROWED ceiling too; got {}",
+            from_charge.count
+        );
+        assert!(
+            from_charge.count <= floored.count,
+            "a floor only RAISES a divisor, so it only LOWERS the ceiling: published {} must \
+             not exceed enforced {}",
+            from_charge.count,
+            floored.count
+        );
+        assert_ne!(
+            from_charge.count, floored.count,
+            "reach-guard: the two legs must separate, else `at most` is satisfied by a helper \
+             that ignores the publication entirely"
+        );
+    }
+
     /// CR 732.2a: **the relief never mints the offer gate's un-narrowed sentinel.**
     /// `ShortcutDecisionSchema::is_bounded()` reads `max_iterations < MAX_SHORTCUT_CYCLES`, so
     /// a relief that produced the cap itself would make a narrowed board look unbounded and
@@ -16181,9 +16449,12 @@ mod tests {
         let charge =
             |v: &ResourceVector| slot_charges(&[(v.worst_seat_life_loss(), &[1, 2], Some(1))]);
         let board = bound_board(&[40, 21, 29, 21]);
-        let net_bound = delta.elimination_bounds(&board, &delta.seat_life_charges(&charge(&delta)));
-        let frame_wise_bound =
-            delta.elimination_bounds(&board, &frame_wise.seat_life_charges(&charge(&frame_wise)));
+        let net_bound = delta
+            .elimination_bounds(&board, &delta.seat_life_charges(&charge(&delta)))
+            .count;
+        let frame_wise_bound = delta
+            .elimination_bounds(&board, &frame_wise.seat_life_charges(&charge(&frame_wise)))
+            .count;
         for (label, bound) in [("endpoint", net_bound), ("frame-wise", frame_wise_bound)] {
             assert!(
                 (1..crate::game::engine::MAX_SHORTCUT_CYCLES).contains(&bound),
@@ -16218,11 +16489,14 @@ mod tests {
         );
         assert_eq!(
             flat_delta
-                .elimination_bounds(&board, &flat_delta.seat_life_charges(&charge(&flat_delta))),
-            flat_frame_wise.elimination_bounds(
-                &board,
-                &flat_frame_wise.seat_life_charges(&charge(&flat_frame_wise))
-            ),
+                .elimination_bounds(&board, &flat_delta.seat_life_charges(&charge(&flat_delta)))
+                .count,
+            flat_frame_wise
+                .elimination_bounds(
+                    &board,
+                    &flat_frame_wise.seat_life_charges(&charge(&flat_frame_wise))
+                )
+                .count,
             "and the bound they divide out is the same number"
         );
     }
@@ -16263,10 +16537,12 @@ mod tests {
             slot_charges(&[(m, &[1], Some(1)), (m, &[2], Some(2))])
         };
         let board = bound_board(&[40, 21, 13]);
-        let net_bound =
-            delta.elimination_bounds(&board, &delta.seat_life_charges(&charges(&delta)));
-        let frame_wise_bound =
-            delta.elimination_bounds(&board, &frame_wise.seat_life_charges(&charges(&frame_wise)));
+        let net_bound = delta
+            .elimination_bounds(&board, &delta.seat_life_charges(&charges(&delta)))
+            .count;
+        let frame_wise_bound = delta
+            .elimination_bounds(&board, &frame_wise.seat_life_charges(&charges(&frame_wise)))
+            .count;
         assert!(
             (1..crate::game::engine::MAX_SHORTCUT_CYCLES).contains(&net_bound),
             "reach-guard: a NARROWED count, not the un-narrowed sentinel; got {net_bound}"
@@ -16336,8 +16612,8 @@ mod tests {
             "under the frame-wise term P1 is back in the reduction at `(7 - 1) / 3`"
         );
 
-        let net_bound = delta.elimination_bounds(&board, &net_divisor);
-        let frame_wise_bound = delta.elimination_bounds(&board, &frame_wise_divisor);
+        let net_bound = delta.elimination_bounds(&board, &net_divisor).count;
+        let frame_wise_bound = delta.elimination_bounds(&board, &frame_wise_divisor).count;
         for (label, bound) in [("endpoint", net_bound), ("frame-wise", frame_wise_bound)] {
             assert!(
                 (1..crate::game::engine::MAX_SHORTCUT_CYCLES).contains(&bound),
@@ -16464,7 +16740,7 @@ mod tests {
             net_divisor, frame_wise_divisor,
             "and the per-seat divisor is the same value, gaining seat dropped by both"
         );
-        let bound = delta.elimination_bounds(&board, &frame_wise_divisor);
+        let bound = delta.elimination_bounds(&board, &frame_wise_divisor).count;
         assert!(
             (1..crate::game::engine::MAX_SHORTCUT_CYCLES).contains(&bound),
             "reach-guard: 'unchanged' is asserted at a NARROWED count, not at the un-narrowed \
@@ -16472,7 +16748,7 @@ mod tests {
         );
         assert_eq!(
             bound,
-            delta.elimination_bounds(&board, &net_divisor),
+            delta.elimination_bounds(&board, &net_divisor).count,
             "CR 704.5a: a single-leg period publishes exactly the bound it publishes today"
         );
         assert_eq!(
