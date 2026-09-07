@@ -12634,6 +12634,26 @@ fn an_absent_prediction_admits_no_departure() {
         "PAIRED POSITIVE: the same first-cycle departure COMMITS once a prediction names it, so \
          ⓐ's refusal is the absent prediction and not a conformance refusal or an abort"
     );
+
+    // ⓒ LOCUS CONTROL — ⓐ's own board, its own charge and its own accepted count, with ONLY the
+    //   period width restored to the published one. The consumption ceiling and the prediction
+    //   are derived from the charge and the delta and never from `frames_per_period`, so the
+    //   guard sees byte-for-byte what it saw in ⓐ while the drive delimits real periods again.
+    let mut at_width = board();
+    let mut published_width = stretched(vec![(P2, 5)]);
+    published_width.frames_per_period = published.frames_per_period;
+    accept_restored_proposal(
+        &mut at_width,
+        proposer,
+        restored_proposal(&certificate, proposer, 4, published_width),
+    );
+    assert_ne!(
+        seat_lives(&at_width),
+        before,
+        "LOCUS CONTROL: this very board, charge and count DRIVE at the published period width, \
+         so ⓐ's unmoved board is the terminal arm refusing a departure and not the ceiling \
+         refusing the count at the guard"
+    );
 }
 
 /// **V3c — CR 704.5a: the admitted member the ITERATION conjunct must refuse.**
@@ -12715,6 +12735,26 @@ fn a_departure_on_an_iteration_the_prediction_did_not_name_is_refused() {
         "PAIRED POSITIVE: the identical departure COMMITS once the prediction names its \
          repetition, so ⓐ's refusal is the index comparison and nothing else"
     );
+
+    // ⓒ LOCUS CONTROL — ⓐ's own board, its own charge and its own accepted count, with ONLY the
+    //   period width restored to the published one. Neither the ceiling nor the prediction reads
+    //   `frames_per_period`, so the guard's inputs are ⓐ's exactly; what moves is where the
+    //   repetition boundaries fall, which is what the index conjunct compares against.
+    let mut at_width = board();
+    let mut published_width = doubled(vec![]);
+    published_width.frames_per_period = published.frames_per_period;
+    accept_restored_proposal(
+        &mut at_width,
+        proposer,
+        restored_proposal(&certificate, proposer, 2, published_width),
+    );
+    assert_ne!(
+        seat_lives(&at_width),
+        before,
+        "LOCUS CONTROL: this very board, charge and count DRIVE at the published period width, \
+         so ⓐ's unmoved board is the index conjunct refusing and not the ceiling refusing the \
+         count at the guard"
+    );
 }
 
 /// **V5 — a proposal carrying NO per-period signature keeps its shipped behaviour.**
@@ -12776,6 +12816,88 @@ fn an_unsigned_proposal_takes_no_per_offer_ceiling() {
     );
 }
 
+/// **V5b — CR 732.2a: an unsigned proposal keeps COMMIT-AND-STOP at a mid-drive departure.**
+///
+/// The row above covers the GUARD's half of the population boundary — no signature, no derived
+/// ceiling. This is the DRIVE's half, on the same boundary: with no signature there is no
+/// prediction for the terminal arm to discriminate against, so the cycle a seat departs on is
+/// committed and the drive stops there, which is what every producer publishing no per-period
+/// signature shipped with.
+///
+/// Four seats, one of them one point from its threshold and the others far from theirs, so the
+/// removal is a single seat's and TWO seats survive it — the terminal `SeatLeft` arm rather
+/// than the `CrossLethal` crown, which the surviving-seat count and the priority handback
+/// separate.
+///
+/// # Non-vacuity
+///
+/// Every seat is asserted in the game going in, and the committed board is asserted to have
+/// moved: a refused cycle is dropped whole, so BOTH the elimination and the moved life vector
+/// are false under a refusal.
+///
+/// REVERT-PROBE: take this arm's refusal from the EMPTINESS of the prediction instead of from
+/// the signature's presence ⇒ the unsigned drive is refused ⇒ the elimination FAILS.
+#[test]
+fn an_unsigned_proposal_commits_the_cycle_a_seat_departs_on() {
+    let (state, proposer, certificate, _honest) = dina_bounded_offer();
+    let published = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+
+    let mut board = state.clone();
+    for (seat, life) in [(P1, 1), (P2, 36), (P3, 36)] {
+        board
+            .players
+            .iter_mut()
+            .find(|p| p.id == seat)
+            .unwrap()
+            .life = life;
+    }
+    let before = seat_lives(&board);
+    assert!(
+        board.players.iter().all(|p| !p.is_eliminated),
+        "REACH-GUARD: every seat is in the game going in, so the removal below is one that \
+         really happens rather than one that already had"
+    );
+
+    // The unsigned proposal: the restore ingress's own shape with the signature ABSENT, which
+    // is what this seam reads — it consults `proposal.per_cycle` and nothing about the producer.
+    accept_restored_proposal(
+        &mut board,
+        proposer,
+        ShortcutProposal {
+            per_cycle: None,
+            ..restored_proposal(&certificate, proposer, 1, published)
+        },
+    );
+
+    assert_eq!(
+        eliminated_seats(&board),
+        vec![P1],
+        "CR 732.2a: an unsigned proposal predicts nothing, so there is no divergence to refuse \
+         — the drive commits the cycle the removal landed on and that seat has left the game"
+    );
+    assert_ne!(
+        seat_lives(&board),
+        before,
+        "the committed board is the DRIVEN one; a refused cycle is dropped whole and would \
+         leave the life vector the offer was made on"
+    );
+    assert!(
+        board.players.iter().filter(|p| !p.is_eliminated).count() >= 2,
+        "REACH-GUARD: two seats survive the removal, so this is the terminal arm a continuing \
+         game reaches and not the CR 104.2a crown"
+    );
+    assert!(
+        matches!(board.waiting_for, WaitingFor::Priority { player }
+            if !board.players.iter().any(|p| p.id == player && p.is_eliminated)),
+        "CR 732.2a: the drive STOPS at an ending point where a living player has priority; got \
+         {:?}",
+        board.waiting_for
+    );
+}
+
 /// **V6b — CR 119.3 + CR 704.5a: the floor at the guard, on the board it is measured on.**
 ///
 /// `PeriodicDelta::seat_life_charge` is `#[serde(default)]`, so a restored signature can reach
@@ -12807,9 +12929,10 @@ fn an_emptied_charge_still_bounds_the_drive_at_the_guard() {
         .expect("a bounded offer publishes its per-period signature");
     let before = seat_lives(&state);
     assert!(
-        honest >= 2,
-        "REACH-GUARD: the enforced ceiling must exceed one repetition, else 'the cycles below \
-         it commit' is unconstructible; got {honest}"
+        honest >= 7,
+        "REACH-GUARD: the paired positive drives `honest - 6` repetitions, so the published \
+         count must leave at least one below that margin — at 6 it drives none and below 6 the \
+         subtraction is not representable; got {honest}"
     );
     let blanked = || -> PeriodicDelta {
         let mut pc = published.clone();

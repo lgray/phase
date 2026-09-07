@@ -5481,10 +5481,16 @@ fn materialize_fixed_shortcut(
             // at all, so when the first driven cycle is the terminal one no earlier cycle could
             // have refused it.
             //
-            // An ABSENT prediction admits no departure. The count was accepted below the
-            // ceiling, or the reduction named nobody, or the proposal carries no signature at
-            // all — in every one of those the honest answer is that this count crosses nobody,
-            // so a crossing is a divergence.
+            // An ABSENT prediction admits no departure: the count was accepted below the
+            // ceiling, or the reduction named nobody, and in both the honest answer is that
+            // this count crosses nobody, so a crossing is a divergence.
+            //
+            // A proposal carrying NO SIGNATURE AT ALL is not that case and is not discriminated
+            // here. It supports no re-derivation, so it publishes no prediction to diverge FROM,
+            // and the drive keeps the commit-and-stop every producer that publishes none shipped
+            // with. That is this seam's population boundary, the same one the guard's per-offer
+            // ceiling stops at — which is why the branch below is taken from the SIGNATURE'S
+            // PRESENCE and never from the emptiness an absence produces.
             //
             // RE-DERIVED HERE ON `*state`, through the same authority the guard used, rather
             // than stashed at the guard: `materialize_fixed_shortcut` clones `*state` into
@@ -5530,26 +5536,31 @@ fn materialize_fixed_shortcut(
                 state: s,
                 mut events,
             } => {
-                let predicted: BTreeSet<PlayerId> = shortcut_consumption_bound(state, proposal, n)
-                    .and_then(|bound| bound.predicted_departure)
-                    .filter(|(_, iteration)| *iteration == i + 1)
-                    .map(|(seat, _)| BTreeSet::from([seat]))
-                    .unwrap_or_default();
-                // CR 800.4a: a seat that has left the game. Read off the two boards rather than
-                // off the outcome's events, so a departure with no `PlayerEliminated` emitted is
-                // still seen.
-                let departed: BTreeSet<PlayerId> = committed
-                    .players
-                    .iter()
-                    .filter(|p| !p.is_eliminated)
-                    .map(|p| p.id)
-                    .filter(|seat| !crate::game::players::is_alive(&s, *seat))
-                    .collect();
-                // Equality on the SET, never a length check plus a membership test: the latter
-                // admits a swap. An empty prediction equals no non-empty departure, which is
-                // the fail-closed direction.
-                if departed != predicted || predicted.is_empty() {
-                    break 'cycles;
+                // A SIGNED proposal is discriminated; an unsigned one falls straight through to
+                // the commit below. A signed proposal whose prediction is legitimately empty
+                // still fails closed inside, so the two cases do not collapse into one another.
+                if let Some(bound) = shortcut_consumption_bound(state, proposal, n) {
+                    let predicted: BTreeSet<PlayerId> = bound
+                        .predicted_departure
+                        .filter(|(_, iteration)| *iteration == i + 1)
+                        .map(|(seat, _)| BTreeSet::from([seat]))
+                        .unwrap_or_default();
+                    // CR 800.4a: a seat that has left the game. Read off the two boards rather
+                    // than off the outcome's events, so a departure with no `PlayerEliminated`
+                    // emitted is still seen.
+                    let departed: BTreeSet<PlayerId> = committed
+                        .players
+                        .iter()
+                        .filter(|p| !p.is_eliminated)
+                        .map(|p| p.id)
+                        .filter(|seat| !crate::game::players::is_alive(&s, *seat))
+                        .collect();
+                    // Equality on the SET, never a length check plus a membership test: the
+                    // latter admits a swap. An empty prediction equals no non-empty departure,
+                    // which is the fail-closed direction.
+                    if departed != predicted || predicted.is_empty() {
+                        break 'cycles;
+                    }
                 }
                 committed = *s;
                 result.events.append(&mut events);
