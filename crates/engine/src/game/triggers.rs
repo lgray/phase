@@ -8393,10 +8393,11 @@ pub(crate) fn is_pending_trigger_construction_active(state: &GameState) -> bool 
 /// state-coherence defect, not a known rules-legal cause. The CR below is cited
 /// only as the rules basis for the RECOVERY SEMANTICS, not the cause:
 ///
-/// * CR 608.1: only the spell or ability on the stack resolves, so one that has
-///   left it does not.
+/// * CR 608.1: resolution selects the spell or ability on top of the stack, so
+///   an entry absent from it is never selected to begin resolving.
 ///
-/// so a stack object that no longer exists can be neither mutated nor resolved.
+/// A cursor into an entry that is gone therefore has nothing left to complete
+/// and nothing to hand the resolver.
 /// Recovery: record a distinguishable diagnostic (item recorded once per
 /// abandon, count preserved — see `GameState::pending_trigger_abandons`), drop
 /// the vanished entry's side-table rows, and clear every in-flight construction

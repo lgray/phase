@@ -14570,10 +14570,11 @@ fn apply_non_priority_pass_action(
                     &pending_trigger.ability,
                 ) {
                     // Unexpected dangling cursor: the entry is no longer on the
-                    // stack. Recover per CR 608.1 (only the spell or ability on
-                    // the stack resolves, so an entry that has left it cannot) —
-                    // record the diagnostic, abandon, and return priority instead
-                    // of panicking (re-normalized next pass; CR 117.3b would give
+                    // stack. Recover per CR 608.1 (resolution selects the
+                    // spell or ability on top of the stack, so an entry absent
+                    // from it is never selected to begin resolving) — record
+                    // the diagnostic, abandon, and return priority instead of
+                    // panicking (re-normalized next pass; CR 117.3b would give
                     // the active player).
                     triggers::abandon_ceased_pending_trigger(state, &pending_trigger.ability);
                     priority::clear_priority_passes(state);
