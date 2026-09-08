@@ -4403,8 +4403,10 @@ fn living_priority_seat(state: &GameState) -> PlayerId {
 /// deliberately hands priority instead of reaching here, and re-detection re-fires the bridge
 /// LIVE on a later beat.) `UntilLethal` ⇒ mark the unbounded axes + declare the terminal win;
 /// `Fixed(N)` ⇒ Phase-4b finite materialization (`materialize_fixed_shortcut`), which drives
-/// N whole cycles atomically, commits + stops early on a cross-lethal `GameOver` mid-drive, and
-/// falls back to manual play (priority to `living_priority_seat`) on any abort.
+/// N whole cycles atomically, commits + stops early on a cross-lethal `GameOver` mid-drive
+/// whose winner is the one `predicted_winner` named (or on any such `GameOver` when it named
+/// nobody), and falls back to manual play (priority to `living_priority_seat`) on any abort or
+/// on a verdict that name contradicts.
 ///
 /// The consumption-time proposer/winner-liveness guard below catches a `Concede` (CR 104.3a)
 /// or a `Debug` that ELIMINATES either authority inside the still-open APNAP window. A `Debug` action
@@ -4558,10 +4560,11 @@ fn apply_until_lethal_shortcut(
     // that path today; the guard is the one-line root-cause fix through the same authority.
     let work: GameState = if committed.loop_period_controller() == Some(proposal.proposer) {
         // Object-growth loop period (recast buyback+convoke, or a multi-activation mana engine)
-        // declared `UntilLethal` by the AI (which hardcodes it for every optional offer). Drive
-        // one real period on a clone under the re-entrancy guard; an inert Advantage token/mana
-        // loop has NO life/poison faller ⇒ `live_mandatory_loop_winner` returns None below ⇒
-        // manual fallback (this is the latent AI-mis-crown fix, first-class).
+        // declared `UntilLethal` by the AI (the shape it proposes against an offer that narrowed no
+        // bound; a bounded one gets `Fixed`). Drive one real period on a clone under the
+        // re-entrancy guard; an inert Advantage token/mana loop has NO life/poison faller ⇒
+        // `live_mandatory_loop_winner` returns None below ⇒ manual fallback (this is the latent
+        // AI-mis-crown fix, first-class).
         let seq = committed.last_loop_action_sequence.clone();
         let controller = seq[0].controller;
         let expected_defs: Vec<Option<crate::types::ability::AbilityDefinition>> = seq
@@ -5265,7 +5268,11 @@ fn slot_source_prompted(
 /// mid-drive already applied to `work` (CR 704.5a via `run_post_action_pipeline`'s
 /// SBA pass) ⇒ COMMIT + STOP, un-clamped — `n` may be ≥ the true cycles-to-lethal
 /// (CR 732.2a "a specified number of times" places no upper bound relative to the
-/// board). Any unexpected prompt / stale-incarnation replay failure (CR 400.7) /
+/// board) — but only when that verdict is the one the proposal predicted, or the
+/// proposal predicted nobody. A verdict its name contradicts drops the crossing
+/// cycle whole and hands back like any other early stop (CR 732.2a: the sequence
+/// that ran is not the sequence the table accepted). Any unexpected prompt /
+/// stale-incarnation replay failure (CR 400.7) /
 /// runaway beat count ⇒ abort to manual play: roll back to the last fully-committed
 /// cycle and hand priority to the living seat — exactly the pre-4b
 /// decline-stub behavior, never a wrong crown.
@@ -5446,14 +5453,44 @@ fn materialize_fixed_shortcut(
                 result.events.append(&mut events); // ... with its events together
                 continue 'cycles;
             }
-            // Cross-lethal: COMMIT + STOP. CR 704.5a: the win is already applied to `work`
-            // (SBA → GameOver in `events`, `waiting_for = GameOver`). Do NOT roll back, NOT
-            // `mark_unbounded_loop` (finite ≠ unbounded — contrast the UntilLethal arm).
+            // Cross-lethal: COMMIT + STOP, ON THE NAME THE OFFER PUBLISHED. CR 704.5a: the win
+            // is already applied to `work` (SBA → GameOver in `events`,
+            // `waiting_for = GameOver`). Do NOT roll back, NOT `mark_unbounded_loop`
+            // (finite ≠ unbounded — contrast the UntilLethal arm).
+            //
+            // CR 732.2a admits only a sequence "that may be legally taken based on the current
+            // game state and the predictable results of the sequence of choices", and
+            // `predicted_winner` IS that prediction — confirmed over public board state when the
+            // offer was minted, and copied verbatim onto the proposal. A drive whose CR 704.5a
+            // verdict names a different seat, or names none, has falsified it: the sequence that
+            // ran is not the sequence the table accepted, so the crossing cycle is dropped whole
+            // and the drive leaves through the ending-point block below with the last conforming
+            // cycle intact. Strictly narrowing — it can turn a crown into a handback and never
+            // the reverse — and the same field the guard one seam above already reads for
+            // liveness, read here for identity.
+            //
+            // A NAMELESS proposal predicted nobody, so nothing about the drive's verdict can
+            // contradict it, and it keeps the disposition its producer shipped with. That is the
+            // admitted member of the class, not an oversight: every bounded and every
+            // object-growth mint writes `None`.
+            //
+            // CR 104.2a's override clause does not reach this: on a refusal the crossing cycle
+            // is NOT performed, so no opponent has left the game and the rule's own condition is
+            // unmet — there is nothing to override. What CR 104.2a still grounds is the
+            // unconditional COMMIT on the crowning path, where it ends the game the moment a
+            // player's opponents have all left, leaving no remaining repetition to be unmakeable
+            // and no later priority beat for CR 704.3 to sweep.
             CycleOutcome::CrossLethal {
                 state: s,
                 winner,
                 mut events,
             } => {
+                if proposal
+                    .predicted_winner
+                    .is_some_and(|named| winner != Some(named))
+                {
+                    break 'cycles;
+                }
                 *state = *s;
                 result.events.append(&mut events);
                 result.waiting_for = WaitingFor::GameOver { winner };
@@ -5510,18 +5547,22 @@ fn materialize_fixed_shortcut(
             // ⚠ THE THREE TERMINAL ARMS ARE ASYMMETRIC, and a future drive must learn that
             // here rather than by accident. A cycle that takes EVERY remaining opponent to 0 at
             // once reaches `WaitingFor::GameOver` and lands in the `CrossLethal` arm above: it
-            // COMMITS and the game ends (CR 104.2a). A cycle that takes ONE seat to 0 while
-            // >= 2 players survive raises no `GameOver` and lands HERE: it commits only under
-            // the discriminator above, with that seat eliminated and the survivors holding an
-            // intact loop. `Abort` below is neither — it is the runaway cap, an unpinned
-            // prompt, or an engine error.
+            // COMMITS and the game ends (CR 104.2a) when the offer named the seat that verdict
+            // produces, or named nobody, and is otherwise dropped whole. A cycle that takes ONE
+            // seat to 0 while >= 2 players survive raises no `GameOver` and lands HERE: it
+            // commits only under the discriminator above, with that seat eliminated and the
+            // survivors holding an intact loop. `Abort` below is neither — it is the runaway
+            // cap, an unpinned prompt, or an engine error.
             //
-            // `CrossLethal` TAKES NO DISCRIMINATOR, and the ground is the game's end.
-            // CR 104.2a ends the game immediately once a player's opponents have all left, so a
-            // cross-lethal cycle leaves no remaining repetition to be unmakeable and no later
-            // priority beat for CR 704.3 to sweep — which is the whole harm this arm's
-            // discriminator refuses. The per-offer ceiling still governs that arm; it is taken
-            // at the guard, before any cycle is driven.
+            // `CrossLethal` TAKES A DIFFERENT DISCRIMINATOR, and the two grounds do not
+            // overlap. CR 104.2a decides WHETHER the game ends — immediately, once a player's
+            // opponents have all left — so a committed cross-lethal cycle leaves no remaining
+            // repetition to be unmakeable and no later priority beat for CR 704.3 to sweep,
+            // which is the whole harm THIS arm's discriminator refuses. It decides nothing
+            // about WHOM the table agreed to crown; that is CR 732.2a's, and the arm above
+            // compares the drive's verdict against the offer's own prediction for exactly that.
+            // The per-offer ceiling still governs that arm; it is taken at the guard, before any
+            // cycle is driven.
             //
             // The atomic per-cycle property survives as NO HALF-APPLIED PERIOD EXCEPT THE
             // TERMINAL ONE, WHOSE REMAINDER IS UNMAKEABLE: the justification was always about
@@ -5576,8 +5617,8 @@ fn materialize_fixed_shortcut(
         }
     }
 
-    // Reached by: n cycles done with no cross-lethal, a terminal `SeatLeft`, OR any abort
-    // (each a `break 'cycles`).
+    // Reached by: n cycles done with no cross-lethal, a terminal `SeatLeft`, a cross-lethal
+    // verdict the proposal's own name contradicts, OR any abort (each a `break 'cycles`).
     // Commit the last WHOLE cycle; the aborting iteration's `ev` was already dropped (no
     // partial-cycle event leak). Ring-clear BEFORE handback so this same `apply()` does
     // not instantly re-emit a fresh offer for the same (now-interrupted) loop; a later
@@ -5586,7 +5627,9 @@ fn materialize_fixed_shortcut(
     // CR 732.2a: "The ending point of this sequence must be a place where a player has
     // priority, though it need not be the player proposing the shortcut." THIS BLOCK IS
     // THAT ENDING POINT for every entry path above — `n` cycles done with no cross-lethal,
-    // the terminal `SeatLeft`, and the `Abort` handback.
+    // the terminal `SeatLeft`, the refused crown, and the `Abort` handback. The rolled-back
+    // board the refused crown leaves is still such a place: the loop is intact on it, and the
+    // last conforming cycle is committed.
     //
     // PROBE-PINNED (probe arm `MUT_SEAM`): the window clear here is load-bearing, not a
     // backstop. MEASURED — skipping it on the f4 accepted drive leaves `loop_detect_ring`

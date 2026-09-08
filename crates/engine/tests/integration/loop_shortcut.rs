@@ -266,6 +266,33 @@ fn setup_3p_bystander_winner(mode: LoopDetectionMode) -> (GameRunner, ObjectId) 
     (runner, kickoff)
 }
 
+/// Two seats, both bleeding, at equal life and an equal per-cycle charge: P0's plague engine
+/// charges EVERY player once per life-loss event, so the crossing cycle takes both seats in one
+/// state-based sweep and the drive's verdict is a draw rather than a seat.
+///
+/// The life total is a construction parameter with two jobs, and 10 does both: the seats must be
+/// EQUAL so the crossing is simultaneous, and low enough that the crossing falls inside the
+/// number of cycles this board sustains before the drive gives up. At 1000 the drive stops far
+/// short of any crossing, so every leg would read a handback no proposal produced.
+///
+/// P1's land + Bolt are LOAD-BEARING for the same reason they are on the three-seat board: they
+/// make the loop OPTIONAL, so the engine offers instead of settling the game itself.
+fn setup_2p_symmetric_plague(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 10);
+    scenario.with_life(P1, 10);
+    scenario.add_creature_from_oracle(P0, "Test Plague Engine", 2, 2, PLAGUE_ENGINE);
+    scenario.add_basic_land(P1, ManaColor::Red);
+    scenario.add_bolt_to_hand(P1);
+    let kickoff = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Symmetric Kickoff", false, LOSE_ALL_KICKOFF)
+        .id();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
+    (runner, kickoff)
+}
+
 /// Drive PassPriority/OrderTriggers beats, accumulating events, until a state OTHER than
 /// `Priority`/`OrderTriggers` (a `LoopShortcut`/`RespondToShortcut`/`GameOver`/…) or the
 /// cap. Returns accumulated events + the terminal `waiting_for`.
@@ -2245,6 +2272,39 @@ fn over_cap_fixed_count_hands_back_with_no_drive() {
 #[test]
 fn b3_materialize_cross_lethal() {
     let (mut runner, l0, _cleric) = reach_2p_optional_drain_offer();
+    // The mint's own shape, read before anything is declared. This offer NAMES a winner, leaves
+    // its bound UNNARROWED, and SUGGESTS `UntilLethal` — and that trio is what makes the `Fixed`
+    // declare below admissible against it, because the declare seam checks the bound and never
+    // the suggestion. A mint that stopped naming a winner, or started narrowing, would red here
+    // rather than quietly turning this row into a reach it was not written for.
+    let WaitingFor::LoopShortcut {
+        predicted_winner,
+        schema,
+        ..
+    } = &runner.state().waiting_for
+    else {
+        panic!(
+            "expected a LoopShortcut offer, got {:?}",
+            runner.state().waiting_for
+        );
+    };
+    assert_eq!(
+        *predicted_winner,
+        Some(P0),
+        "the drain mint names the proposer as the predicted winner"
+    );
+    assert!(
+        !schema.is_bounded(),
+        "the bound stays at the engine-wide cap, so no per-offer ceiling stands between the \
+         declared count and the cross-lethal arm; measured max_iterations {}",
+        schema.max_iterations
+    );
+    assert_eq!(
+        schema.iteration_count,
+        IterationCount::UntilLethal,
+        "the SUGGESTION is UntilLethal while the count declared below is Fixed — admitted, \
+         because the two are separate fields and only the bound is checked"
+    );
     // Un-clamped (Q2): N is comfortably past any plausible per-cycle delta >= 1, so this
     // exercises N far beyond cycles-to-lethal without needing the exact probed delta.
     let n: u32 = (l0 as u32) * 2 + 10;
@@ -5359,13 +5419,20 @@ fn loop_shortcut_serializes_schema_under_data() {
 /// `apply_until_lethal_shortcut` re-derives the winner through `live_mandatory_loop_winner`, whose
 /// `!p.is_eliminated` living-filter ALREADY refuses to name a departed player — so on that path the
 /// conjunct is redundant defence-in-depth and any test would be vacuous.
-/// `materialize_fixed_shortcut` NEVER consults `predicted_winner` and COMMITS each driven cycle, so
-/// this conjunct is the ONLY thing between a departed winner and 3 committed loop cycles.
+/// `materialize_fixed_shortcut` consults `predicted_winner` at ONE point — its cross-lethal arm,
+/// which refuses to crown a verdict the name contradicts — and this row's `Fixed(3)` never crosses
+/// lethal, so that arm is never reached. Every cycle it drives is COMMITTED, which leaves this
+/// conjunct the ONLY thing between a departed winner and 3 committed loop cycles.
 ///
 /// `Fixed(n)` is reachable via the public `GameAction` surface (UI, scripted client, server payload
-/// surface): `handle_declare_shortcut` moves `count` into the proposal with zero validation; the
-/// fail-closed firewall validates only `template` pins and is skipped entirely when `template` is
-/// `None`. It is NOT emitted by the AI's own candidate generator, which hardcodes `UntilLethal`.
+/// surface): `handle_declare_shortcut` checks the declared count against the global cap and against
+/// the offer's own `max_iterations`, and refuses `UntilLethal` against a bounded offer — what it
+/// never checks is the declared shape against the schema's *suggested* `iteration_count`, so a
+/// `Fixed` count against an `UntilLethal` suggestion is admitted. The pin firewall validates only
+/// `template` pins and is skipped entirely when `template` is `None`. The AI's own candidate
+/// generator proposes `Fixed(max_iterations)` only against a BOUNDED offer; this row's offer
+/// narrowed no bound, so there the AI declares `UntilLethal` or declines and this row's `Fixed(3)`
+/// arrives from that public surface.
 ///
 /// # Why this test scripts `DeclareShortcut` directly instead of routing through the AI
 ///
@@ -12051,7 +12118,7 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
 ///
 /// | arm | trigger | outcome |
 /// |---|---|---|
-/// | **total wipe** | every remaining opponent crosses 0 on the same cycle ⇒ `WaitingFor::GameOver` | `CycleOutcome::CrossLethal` — the crossing cycle COMMITS, the game ends |
+/// | **total wipe** | every remaining opponent crosses 0 on the same cycle ⇒ `WaitingFor::GameOver` | `CycleOutcome::CrossLethal` — the crossing cycle COMMITS and the game ends when the proposal named that winner or named nobody; otherwise it is dropped whole |
 /// | **terminal crossing** | one seat crosses 0 while **≥2** players survive ⇒ no `GameOver` | `CycleOutcome::SeatLeft` — the crossing cycle COMMITS, that seat is eliminated, priority is handed back at a living seat |
 /// | **abort** | beat cap, unpinned prompt, engine error | `CycleOutcome::Abort` — that cycle rolls back whole, prior conforming cycles stay committed |
 ///
@@ -13099,6 +13166,223 @@ fn the_honest_count_reaches_the_cross_lethal_arm_when_the_crossing_takes_the_las
         None,
         "REACH-GUARD: this period charges the proposer's life not at all, so the crossing above \
          is attributable to the drained seat alone"
+    );
+}
+
+/// **CR 732.2a + CR 704.5a: the crown a finite drive may write is the seat the proposal named,
+/// or nobody.**
+///
+/// CR 732.2a admits only a sequence whose results are predictable, and `predicted_winner` is
+/// that prediction — confirmed over public board state when the offer was minted. A drive whose
+/// CR 704.5a sweep names a DIFFERENT seat has falsified it, so the crossing cycle is dropped
+/// whole and the drive leaves through its own ending point at a living seat. A proposal that
+/// names nobody predicted nothing to falsify and keeps the disposition its producer shipped
+/// with.
+///
+/// Reached through the restore ingress — a constructed `WaitingFor::RespondToShortcut` — which
+/// is the one ingress that arrives at this seam without passing an offer mint, and the one the
+/// seam's own owner and liveness conjuncts are already written for. It does NOT manufacture a
+/// disagreeing offer inside a mint: an offer naming a winner its own drive contradicts is an
+/// offer whose measurement was wrong, and standing between that and a crown is the point.
+///
+/// # Both ends of the disagreement, and which one discriminates
+///
+/// ⓑ/ⓐ are one board — a single opponent, so the crossing takes the last one and the drive
+/// crowns the proposer (CR 104.2a). Naming the seat the drive produces still crowns; naming the
+/// VICTIM does not. ⓓ/ⓒ are the other end — two seats crossing in one state-based sweep, so the
+/// drive names nobody. Naming nobody still draws; naming a seat does not.
+///
+/// **ⓒ is the discriminating member.** The plausible wrong predicate
+/// `winner.is_some_and(|w| w != named)` refuses a different seat exactly as the correct one
+/// does, and crowns nobody-by-draw on a proposal that named somebody. Nothing else here
+/// separates the two.
+///
+/// **ⓓ is the admitted member.** A gate that refused a nameless proposal would red it, and with
+/// it every bounded and object-growth mint, which publish no name at all.
+///
+/// Each crowning leg runs BEFORE its refusing partner on the same board at the same count, so a
+/// drive that stopped short of lethal reds the crowning leg instead of letting the refusal pass
+/// on a board that never crossed. Every count and every life is read off the certificate and the
+/// offer-beat board; none is a literal.
+///
+/// REVERT-PROBE: delete the name comparison from `materialize_fixed_shortcut`'s `CrossLethal`
+/// arm ⇒ ⓐ crowns the drive's own winner and ⓒ writes the draw ⇒ both refusal legs' first
+/// assertion FAILS, while ⓑ and ⓓ stay green.
+#[test]
+fn the_cross_lethal_arm_crowns_only_the_seat_the_proposal_names() {
+    // ── One opponent: the crossing takes the last one, so the drive names the proposer ──
+    let mut state = bloodloop_state(2);
+    drive_to_bounded_offer(&mut state, 400)
+        .expect("the mandatory-draw cascade raises a bounded offer at two seats");
+    let (proposer, certificate, schema) = bounded_offer_parts(&state);
+    let certificate = certificate.clone();
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let honest = schema.max_iterations;
+    let opponents: Vec<PlayerId> = state
+        .players
+        .iter()
+        .filter(|p| !p.is_eliminated && p.id != proposer)
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(
+        opponents.len(),
+        1,
+        "REACH-GUARD: exactly ONE living opponent is what makes this crossing a CR 104.2a win \
+         with a NAMED seat, which is the end ⓐ disagrees with; got {opponents:?}"
+    );
+    let victim = opponents[0];
+    let charge = -per_cycle.delta.life.get(&victim).copied().unwrap_or(0);
+    assert!(
+        charge > 0,
+        "REACH-GUARD: the published period must drain the opponent, else no crossing is derivable"
+    );
+    let victim_life = i64::from(player_life(&state, victim));
+
+    let accept_named = |named: Option<PlayerId>| -> GameState {
+        let mut board = state.clone();
+        accept_restored_proposal(
+            &mut board,
+            proposer,
+            ShortcutProposal {
+                predicted_winner: named,
+                ..restored_proposal(&certificate, proposer, honest, per_cycle.clone())
+            },
+        );
+        board
+    };
+
+    // ⓑ — the proposal names the seat the drive produces: still crowned.
+    let agreed = accept_named(Some(proposer));
+    assert_eq!(
+        agreed.waiting_for,
+        WaitingFor::GameOver {
+            winner: Some(proposer)
+        },
+        "ⓑ CR 104.2a: the drive's verdict confirms the name, so the crossing cycle commits and \
+         the game ends; lives {:?}",
+        seat_lives(&agreed)
+    );
+    assert_eq!(
+        eliminated_seats(&agreed),
+        vec![victim],
+        "ⓑ CR 704.5a: exactly the drained seat crossed its threshold"
+    );
+
+    // ⓐ — the same board and count, naming the VICTIM: the crossing cycle is dropped whole.
+    let refused = accept_named(Some(victim));
+    assert!(
+        matches!(refused.waiting_for, WaitingFor::Priority { player }
+            if !refused.players.iter().any(|p| p.id == player && p.is_eliminated)),
+        "ⓐ CR 732.2a: a falsified prediction leaves the drive at a place where a player has \
+         priority, not at a crown; got {:?}",
+        refused.waiting_for
+    );
+    assert!(
+        eliminated_seats(&refused).is_empty(),
+        "ⓐ CR 704.5a: the crossing cycle never committed, so nobody crossed a threshold"
+    );
+    assert_eq!(
+        i64::from(player_life(&refused, victim)),
+        victim_life - (i64::from(honest) - 1) * charge,
+        "ⓐ the board is the last CONFORMING cycle — one period's charge above the crossing"
+    );
+
+    // ── Two seats crossing in one sweep: the drive names nobody ──
+    let (mut runner, kickoff) = setup_2p_symmetric_plague(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+    let (_events, wf) = drive_collect(&mut runner, 600);
+    let WaitingFor::LoopShortcut {
+        proposer: sym_proposer,
+        certificate: sym_certificate,
+        schema: sym_schema,
+        ..
+    } = wf
+    else {
+        panic!("the symmetric board must OFFER (its loop is optional), got {wf:?}");
+    };
+    let sym_per_cycle = sym_certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let seats: Vec<PlayerId> = runner.state().players.iter().map(|p| p.id).collect();
+    let sym_charges: Vec<i64> = seats
+        .iter()
+        .map(|s| -sym_per_cycle.delta.life.get(s).copied().unwrap_or(0))
+        .collect();
+    assert!(
+        sym_charges.iter().all(|c| *c == sym_charges[0] && *c > 0),
+        "REACH-GUARD: an EQUAL per-cycle charge on every seat is what makes the crossing \
+         simultaneous, and a simultaneous crossing is what makes the drive name nobody; got \
+         {sym_charges:?}"
+    );
+    let sym_lives: Vec<i32> = seats
+        .iter()
+        .map(|s| player_life(runner.state(), *s))
+        .collect();
+    assert!(
+        sym_lives.iter().all(|l| *l == sym_lives[0]),
+        "REACH-GUARD: EQUAL lives, for the same reason; got {sym_lives:?}"
+    );
+    // The published bound stops one cycle short of the simultaneous crossing, so the count that
+    // reaches this arm is one past it — admissible because a proposal carrying no per-period
+    // signature supports no consumption ceiling, which is exactly the shape the one
+    // winner-naming mint publishes.
+    let past = sym_schema.max_iterations + 1;
+    let accept_sym = |named: Option<PlayerId>| -> GameState {
+        let mut board = runner.state().clone();
+        accept_restored_proposal(
+            &mut board,
+            sym_proposer,
+            ShortcutProposal {
+                predicted_winner: named,
+                per_cycle: None,
+                ..restored_proposal(&sym_certificate, sym_proposer, past, sym_per_cycle.clone())
+            },
+        );
+        board
+    };
+
+    // ⓓ — the proposal names nobody, and the drive names nobody: the draw still stands.
+    let drawn = accept_sym(None);
+    assert_eq!(
+        drawn.waiting_for,
+        WaitingFor::GameOver { winner: None },
+        "ⓓ CR 704.5a: both seats cross in one state-based sweep, so the game ends with no \
+         winner and a nameless proposal predicted nothing to contradict; lives {:?}",
+        seat_lives(&drawn)
+    );
+    assert_eq!(
+        eliminated_seats(&drawn),
+        seats,
+        "ⓓ CR 704.3: the sweep is simultaneous — both seats leave together"
+    );
+
+    // ⓒ — the same board and count, naming a seat the drive does not produce.
+    let refused_sym = accept_sym(Some(sym_proposer));
+    assert!(
+        matches!(refused_sym.waiting_for, WaitingFor::Priority { player }
+            if !refused_sym.players.iter().any(|p| p.id == player && p.is_eliminated)),
+        "ⓒ CR 732.2a: a draw contradicts a proposal that named a winner, so the crossing cycle \
+         is dropped and the drive ends at a place where a player has priority; got {:?}",
+        refused_sym.waiting_for
+    );
+    assert!(
+        eliminated_seats(&refused_sym).is_empty(),
+        "ⓒ CR 704.5a: neither seat crossed, because the cycle that would have crossed both never \
+         committed"
+    );
+    assert_eq!(
+        seat_lives(&refused_sym),
+        seats
+            .iter()
+            .zip(&sym_lives)
+            .zip(&sym_charges)
+            .map(|((seat, l0), charge)| (*seat, l0 - (past as i32 - 1) * *charge as i32))
+            .collect::<Vec<_>>(),
+        "ⓒ the board is the last CONFORMING cycle for BOTH seats, derived the same way as ⓐ"
     );
 }
 

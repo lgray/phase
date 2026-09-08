@@ -64,19 +64,29 @@
 //!
 //! ## Why the `IterationCount` gate is load-bearing for the CLASS
 //!
-//! `materialize_fixed_shortcut` NEVER consults `predicted_winner`: it drives `n` whole cycles and
-//! COMMITS each atomically (an object-growth `None` offer is routed to
-//! `materialize_object_growth_shortcut`). A `Fixed(n)` declare is real, committed board progress
-//! needing no crown — so a reject that ignored the count would be wrong for the class. Today's AI
-//! candidate generator only ever emits `UntilLethal`, but `Fixed(n)` is reachable through the
-//! public `GameAction` surface: `handle_declare_shortcut` moves `count` into the proposal with
-//! ZERO validation (the fail-closed firewall validates only `template` pins, and it runs against
-//! the RESOLVED template rather than the payload's: the handler shadows it with
+//! `materialize_fixed_shortcut` drives `n` whole cycles and COMMITS each atomically (an
+//! object-growth `None` offer is routed to `materialize_object_growth_shortcut`). It reads
+//! `predicted_winner` at ONE point only — its cross-lethal arm refuses to crown a verdict that
+//! name contradicts — so a count crossing nothing crowns nobody, and a `Fixed(n)` declare is real,
+//! committed board progress needing no crown whoever is latched. A reject that ignored the count
+//! would therefore be wrong for the class. The AI candidate generator itself proposes
+//! `Fixed(max_iterations)` against a bounded offer, and offers `UntilLethal` only against an offer
+//! that narrowed no bound; `Fixed(n)` is additionally reachable through the public `GameAction`
+//! surface. `handle_declare_shortcut` checks the declared count against the global cap and against
+//! the offer's own `max_iterations`, and refuses `UntilLethal` against a bounded offer; what it
+//! never checks is the declared shape against the schema's *suggested* `iteration_count` (the
+//! fail-closed pin firewall validates only `template` pins, and it runs against the RESOLVED
+//! template rather than the payload's: the handler shadows it with
 //! `template.or_else(|| offer.declaration.cloned())` before the `match`, so a payload carrying
 //! `None` against an offer that PUBLISHED a declaration reaches the `Some` arm and IS
 //! pin-validated by `declaration_conforms`. The firewall is skipped only when the payload carried
 //! none AND the offer published none — the arm that still refuses unless the proposer controls
 //! the recorded loop period).
+//!
+//! The count gate is what keeps the three rulings off the AI's own bounded candidate. Every offer
+//! the AI answers with `Fixed` is a bounded one, and every production mint of a bounded offer
+//! latches `predicted_winner: None` — ruling 2's antecedent shape, which a count-blind reject would
+//! fire on.
 //!
 //! ## Why the verdict reads `proposer` from the state, never `ctx.ai_player`
 //!
@@ -222,17 +232,18 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // producer could not compute a bound publishes `MAX_SHORTCUT_CYCLES`, so it states
             // no CR 704 threshold for a domination argument to stand on, and a count-blind
             // reject would be wrong for the CLASS: `materialize_fixed_shortcut` drives and
-            // COMMITS `n` whole cycles without ever reading `predicted_winner`, so a small-`n`
-            // `Fixed` is genuine committed board progress whoever is latched.
+            // COMMITS `n` whole cycles, and a count that crosses nothing crowns nobody, so a
+            // small-`n` `Fixed` is genuine committed board progress whoever is latched.
             //
             // NOTE (tripwire, still live for the unbounded branch): a `Fixed(n)` large enough
-            // to cross lethal WOULD commit a `GameOver` crowning whoever the DRIVE's
-            // state-based actions crown — `materialize_fixed_shortcut`'s `CrossLethal` arm
-            // forwards the SBA's own `Option<PlayerId>` WITHOUT filtering on
-            // `proposal.predicted_winner`, unlike both `UntilLethal` crown gates. Such a
-            // declare by a faller proposer is a committed self-loss, exactly what the
-            // `UntilLethal` arm above rejects. On a BOUNDED offer that hazard is discharged by
-            // the `loop_shortcut_declare_eliminates_proposer` arm BELOW, which asks
+            // to cross lethal WOULD commit a `GameOver` — and against an offer whose name is
+            // RIGHT it still does. `materialize_fixed_shortcut`'s `CrossLethal` arm now crowns
+            // only the seat `proposal.predicted_winner` names (or any seat when it names
+            // nobody), so what lets such a declare through is no longer the absence of a filter
+            // but the offer's own prediction agreeing with the drive. Such a declare by a faller
+            // proposer is a committed self-loss, exactly what the `UntilLethal` arm above
+            // rejects, and this arm is still neutral on it. On a BOUNDED offer that hazard is
+            // discharged by the `loop_shortcut_declare_eliminates_proposer` arm BELOW, which asks
             // `cycles_to_proposer_elimination` of the proposer alone. It is NOT discharged by
             // `elimination_bounds`' contract: that bound admits a crossing as the sequence's
             // FINAL iteration, so `max_iterations` can equal the proposer's own fatal count and
@@ -614,9 +625,9 @@ mod tests {
         assert_eq!(kind_of(&v), "loop_shortcut_untillethal_cannot_crown");
     }
 
-    /// Rows 3 + 5 + 7 — THE CLASS GUARD: `materialize_fixed_shortcut` never reads
-    /// `predicted_winner` and COMMITS every cycle it drives, so a `Fixed(n)` declare is real board
-    /// progress for ANY latched winner. Proves the reject set is not one state too wide.
+    /// Rows 3 + 5 + 7 — THE CLASS GUARD: `materialize_fixed_shortcut` COMMITS every cycle it
+    /// drives, and a count that crosses nothing crowns nobody, so a `Fixed(n)` declare is real
+    /// board progress for ANY latched winner. Proves the reject set is not one state too wide.
     ///
     /// This row stays green LEGITIMATELY, not by luck: `ShortcutDecisionSchema::default()`
     /// carries `max_iterations == MAX_SHORTCUT_CYCLES`, so `is_bounded()` is FALSE and the
