@@ -7644,6 +7644,18 @@ fn handle_respond_to_shortcut(
     response: crate::analysis::loop_check::ShortcutResponse,
     events: &mut Vec<GameEvent>,
 ) -> Result<ActionResult, EngineError> {
+    // CR 732.2b: a shortening responder names "a place where they will make a game choice that's
+    // different than what's been proposed", so a place at or past the proposed count names no such
+    // choice and the proposal admits it nowhere. `apply()` is the boundary every emitter crosses,
+    // and this refusal precedes the event take and every state write, so the responder keeps the
+    // window and can answer again.
+    if let crate::analysis::loop_check::ShortcutResponse::Shorten { at_iteration } = response {
+        if !proposal.shortening_places().contains(&at_iteration) {
+            return Err(EngineError::InvalidAction(format!(
+                "Shortcut place {at_iteration} is outside the proposed sequence"
+            )));
+        }
+    }
     let mut result = ActionResult {
         events: std::mem::take(events),
         waiting_for: state.waiting_for.clone(),

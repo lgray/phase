@@ -794,8 +794,9 @@ function DeclareShortcutOffer({
 /**
  * CR 732.2b/c: after the proposer declares, each other living player, in APNAP
  * order, may accept the shortcut or shorten it (break out to resume manual play).
- * Phase 3 discards `at_iteration` (no finite-K materialization), so "Break out"
- * dispatches a placeholder `at_iteration: 1`.
+ * "Break out" names place 0 — stop before the first repetition, which is what the
+ * button already promises — and that is the one place every proposal a responder can
+ * be shown admits, so the control needs no range of its own to stay in range.
  */
 export function RespondToShortcutModal() {
   const { t } = useTranslation("game");
@@ -811,7 +812,7 @@ export function RespondToShortcutModal() {
   }, [dispatch]);
 
   const handleShorten = useCallback(() => {
-    dispatch({ type: "RespondToShortcut", data: { response: { Shorten: { at_iteration: 1 } } } });
+    dispatch({ type: "RespondToShortcut", data: { response: { Shorten: { at_iteration: 0 } } } });
   }, [dispatch]);
 
   if (waitingFor?.type !== "RespondToShortcut" || !canAct) return null;

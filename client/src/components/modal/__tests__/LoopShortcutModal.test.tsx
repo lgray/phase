@@ -720,22 +720,23 @@ describe("LoopShortcutModal", () => {
     });
   });
 
-  // T5: "Break out" dispatches the Shorten payload shape (placeholder at_iteration).
-  it("dispatches Shorten on break out (T5)", () => {
+  // T5: CR 732.2b — "Break out" names place 0, the one place every proposal a responder can be
+  // shown admits, so the engine honors what this button dispatches.
+  it("dispatches Shorten at place 0 on break out (T5)", () => {
     seed(buildRespondToShortcutWaitingFor());
     render(<RespondToShortcutModal />);
 
     fireEvent.click(screen.getByRole("button", { name: "Break out" }));
     expect(dispatchMock).toHaveBeenCalledWith({
       type: "RespondToShortcut",
-      data: { response: { Shorten: { at_iteration: 1 } } },
+      data: { response: { Shorten: { at_iteration: 0 } } },
     });
   });
 
   // ── CR 732.2b: what the responding opponent SEES ─────────────────────────────────────────
   //
-  // T4 and T5 above stay UNMODIFIED: they seed `viewerInteraction: null`, which is the degrade
-  // path, and they are the standing instrument that the base three lines are the shipped ones.
+  // T4 and T5 above seed `viewerInteraction: null`, which is the degrade path, and they are the
+  // standing instrument that the base three lines are the shipped ones.
 
   /** The allocation rows in render order. `getAllByText` throws on an empty match, which is the
    *  query's own control against an assertion satisfied by rendering nothing. */

@@ -142,7 +142,9 @@ fn setup_2p_vito(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
 /// 2-player drain (as above) but P1 also holds a castable Lightning Bolt off an untapped
 /// Mountain — a meaningful priority action that makes the loop OPTIONAL (CR 732.5 probe
 /// FALSE). Returns runner + (kickoff, bolt, drain-cleric enabler id).
-fn setup_2p_optional_drain(mode: LoopDetectionMode) -> (GameRunner, ObjectId, ObjectId, ObjectId) {
+pub(crate) fn setup_2p_optional_drain(
+    mode: LoopDetectionMode,
+) -> (GameRunner, ObjectId, ObjectId, ObjectId) {
     let mut scenario = GameScenario::new_n_player(2, 7);
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_life(P0, 20);
@@ -1993,7 +1995,7 @@ fn injected_3p_unequal_life_pin_all_no_crown() {
 /// Reach `LoopShortcut{P0}` on a fresh `setup_2p_optional_drain(Interactive)` fixture.
 /// Returns the runner parked at the offer, `life(P1)` at that instant, and the
 /// DRAIN_CLERIC object id (for template pins).
-fn reach_2p_optional_drain_offer() -> (GameRunner, i32, ObjectId) {
+pub(crate) fn reach_2p_optional_drain_offer() -> (GameRunner, i32, ObjectId) {
     let (mut runner, kickoff, _bolt, cleric) =
         setup_2p_optional_drain(LoopDetectionMode::Interactive);
     let _ = runner.cast(kickoff).resolve();

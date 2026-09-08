@@ -2019,15 +2019,14 @@ fn shortcut_reply_projection(waiting_for: &WaitingFor) -> Option<ShortcutReplyPr
     let WaitingFor::RespondToShortcut { proposal, .. } = waiting_for else {
         return None;
     };
-    let max_iteration = match proposal.count {
-        crate::analysis::decision_template::IterationCount::Fixed(iterations) => {
-            iterations.saturating_sub(1)
-        }
-        crate::analysis::decision_template::IterationCount::UntilLethal => u32::MAX,
-    };
+    // CR 732.2b: the proposal states which places it admits; this publishes that range's two
+    // ends verbatim, never a second derivation of them, so a range the responder is shown is a
+    // range `apply()` honors. An empty range therefore arrives with its floor above its ceiling,
+    // which the submission guard reads as admitting no place at all.
+    let places = proposal.shortening_places();
     Some(ShortcutReplyProjection {
-        min_iteration: 0,
-        max_iteration,
+        min_iteration: *places.start(),
+        max_iteration: *places.end(),
     })
 }
 

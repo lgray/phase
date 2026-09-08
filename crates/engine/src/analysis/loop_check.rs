@@ -199,6 +199,26 @@ pub struct ShortcutProposal {
     pub per_cycle: Option<crate::analysis::resource::PeriodicDelta>,
 }
 
+impl ShortcutProposal {
+    /// CR 732.2b: every place a responder may name to shorten this proposal — "a place where
+    /// they will make a game choice that's different than what's been proposed". A place at or
+    /// past the proposed count names no such choice, so the range ends one below the count.
+    ///
+    /// A proposal of zero repetitions offers nothing to diverge from, and that is a value of the
+    /// return type rather than an error: the empty range's floor sits above its ceiling, and
+    /// `contains` refuses every place against it, zero included.
+    pub fn shortening_places(&self) -> std::ops::RangeInclusive<u32> {
+        match self.count {
+            IterationCount::Fixed(iterations) => iterations
+                .checked_sub(1)
+                .map_or(std::ops::RangeInclusive::new(1, 0), |last| 0..=last),
+            // CR 704.5a: the drain runs until a player loses, so the proposal names no count
+            // and no place is past its end.
+            IterationCount::UntilLethal => 0..=u32::MAX,
+        }
+    }
+}
+
 /// CR 732.2b/c: an opponent's answer to a proposed loop shortcut. `Accept` lets the
 /// shortcut proceed; `Shorten` names an earlier stopping point.
 ///
