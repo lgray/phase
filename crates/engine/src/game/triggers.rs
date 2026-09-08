@@ -8385,7 +8385,7 @@ pub(crate) fn is_pending_trigger_construction_active(state: &GameState) -> bool 
 /// cursor `pending_trigger_entry` is left dangling.
 ///
 /// This should be UNREACHABLE: mode/target/division are chosen while the ability
-/// is put on the stack (CR 603.3d), before any player has priority, so it cannot
+/// is put on the stack (CR 603.3c + CR 603.3d), before any player has priority, so it cannot
 /// be countered/removed mid-construction; and a controller leaving the game is
 /// already handled upstream (`elimination::do_eliminate` clears all three
 /// pending-trigger fields when the tracked entry is retained off the stack). If
@@ -8396,8 +8396,8 @@ pub(crate) fn is_pending_trigger_construction_active(state: &GameState) -> bool 
 /// * CR 608.1: resolution selects the spell or ability on top of the stack, so
 ///   an entry absent from it is never selected to begin resolving.
 ///
-/// A cursor into an entry that is gone therefore has nothing left to complete
-/// and nothing to hand the resolver.
+/// A cursor into an entry that is gone has nothing left to complete and
+/// nothing to hand the resolver.
 /// Recovery: record a distinguishable diagnostic (item recorded once per
 /// abandon, count preserved — see `GameState::pending_trigger_abandons`), drop
 /// the vanished entry's side-table rows, and clear every in-flight construction
@@ -8541,7 +8541,7 @@ fn assign_pending_trigger_entry_ability(
             _ => None,
         });
     let mut assigned_ability = source_ability.clone();
-    // CR 603.3d: Target/mode construction replaces the provisional stack
+    // CR 603.3c + CR 603.3d: Target/mode construction replaces the provisional stack
     // ability before any player receives priority. Rebind event-referential
     // force-blocks here so that replacement cannot discard the stack-time
     // identity for "that Wolf".
