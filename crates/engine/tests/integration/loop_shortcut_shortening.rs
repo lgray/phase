@@ -1,11 +1,13 @@
 //! CR 732.2b — which places a responder may name when shortening a proposed loop shortcut.
 //!
-//! The proposal owns the range (`ShortcutProposal::shortening_places`); `apply()` enforces it and
-//! the interaction projection publishes its two ends. Every row drives real `apply()` calls on a
-//! board reached through a production path — the restored four-seat drain dump, or the driven
-//! two-player optional-drain rig — except the zero-count proposal, which no offer path mints and
-//! which is therefore declared raw.
+//! The proposal owns the range (`ShortcutProposal::shortening_places`); `apply()` enforces it,
+//! the interaction projection publishes its two ends, and the engine-driven seat's own emitter
+//! reads it. Every row drives real `apply()` calls on a board reached through a production path
+//! — the restored four-seat drain dump, or the driven two-player optional-drain rig — the
+//! zero-count proposal included: the handler floors nothing at zero, so a declaration naming it
+//! mints a proposal and opens the poll on a range that holds no place at all.
 
+use engine::ai_support::legal_actions;
 use engine::analysis::decision_template::IterationCount;
 use engine::analysis::loop_check::ShortcutResponse;
 use engine::game::engine::{apply, EngineError};
@@ -175,9 +177,11 @@ fn every_place_is_in_range_on_an_until_lethal_proposal() {
     );
 }
 
-/// The member the class must refuse. A zero-repetition proposal offers nothing to diverge from,
-/// so it admits no place at all — while `Accept` still answers, which is what proves the refusal
-/// is scoped to the shortening response and did not swallow the reply path.
+/// The member the class must refuse, reached the way the engine reaches one: the handler floors
+/// nothing at zero, so a `Fixed(0)` declaration mints a proposal and polls on it. A
+/// zero-repetition proposal offers nothing to diverge from, so it admits no place at all — while
+/// `Accept` still answers, which is what proves the refusal is scoped to the shortening response
+/// and did not swallow the reply path.
 #[test]
 fn a_zero_count_proposal_admits_no_place_while_accept_still_answers() {
     let mut state = weird_window(IterationCount::Fixed(0));
@@ -215,11 +219,54 @@ fn a_zero_count_proposal_admits_no_place_while_accept_still_answers() {
     );
 }
 
-/// Place 0 is in range on every proposal a responder can be shown, which is what every emitter
-/// that names a constant place emits. `Fixed(1)` carries the boundary: there 0 is simultaneously
-/// the only legal place and the last one.
+/// The engine-driven seat at a window whose range is empty. Its answer has to be one the reducer
+/// takes: `ai_support::candidates` builds a single candidate here and validates it against the
+/// reducer, so a verdict naming a place the proposal admits nowhere is dropped rather than
+/// refused on submit, leaving the polled seat nothing to play. The guard is the same rig at a
+/// count whose range does hold a place, where the seat still names one — so a seat that Accepted
+/// everywhere could not satisfy the row.
 #[test]
-fn place_zero_is_answered_on_every_proposal_a_responder_can_be_shown() {
+fn the_engine_driven_seat_can_answer_a_window_whose_range_is_empty() {
+    let mut state = rig_window(IterationCount::Fixed(0));
+    assert!(
+        admitted_places(&state).is_empty(),
+        "reach-guard: this window's proposal admits no place"
+    );
+    let (responder, _) = window(&state);
+    let candidates = legal_actions(&state);
+    assert_eq!(
+        candidates.len(),
+        1,
+        "the polled seat holds one candidate against an empty range, got {candidates:?}"
+    );
+    apply(&mut state, responder, candidates[0].clone())
+        .expect("the generated candidate must be one the reducer accepts");
+
+    let mut guard = rig_window(IterationCount::Fixed(1));
+    assert_eq!(
+        admitted_places(&guard),
+        0..=0,
+        "reach-guard: a one-repetition proposal admits exactly place 0"
+    );
+    let (guard_responder, _) = window(&guard);
+    let guard_candidates = legal_actions(&guard);
+    assert_eq!(
+        guard_candidates,
+        vec![GameAction::RespondToShortcut {
+            response: ShortcutResponse::Shorten { at_iteration: 0 }
+        }],
+        "reach-guard: on a range that holds a place this seat still names one"
+    );
+    apply(&mut guard, guard_responder, guard_candidates[0].clone())
+        .expect("the named place is legal on the proposal that admits it");
+}
+
+/// Place 0 is in range on every proposal whose range holds a place at all — `Fixed(n >= 1)` and
+/// `UntilLethal` — which is the place every emitter that names a constant one emits. `Fixed(1)`
+/// carries the boundary: there 0 is simultaneously the only legal place and the last one. The
+/// zero count is the complementary class, and the row above owns it.
+#[test]
+fn place_zero_is_answered_on_every_proposal_whose_range_holds_a_place() {
     let bounded = IterationCount::Fixed(weird_offer_bound());
     for mut state in [
         weird_window(bounded),
@@ -293,7 +340,8 @@ fn interaction_admits(state: &GameState, at_iteration: u32) -> bool {
 
 /// A range the responder is shown is a range `apply()` honors: the projection publishes the
 /// proposal's own two ends, and the two layers agree on every place around them. Reds if either
-/// layer derives its ends a second time.
+/// layer derives its ends a second time — the empty range is the leg that catches it, since a
+/// second derivation of it publishes `[0, 0]` and admits a place the reducer refuses.
 #[test]
 fn the_published_range_and_the_reducer_agree_on_every_proposal_shape() {
     let bound = weird_offer_bound();

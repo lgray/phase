@@ -720,8 +720,8 @@ describe("LoopShortcutModal", () => {
     });
   });
 
-  // T5: CR 732.2b — "Break out" names place 0, the one place every proposal a responder can be
-  // shown admits, so the engine honors what this button dispatches.
+  // T5: CR 732.2b — "Break out" names place 0, which the published range holds whenever it
+  // holds a place at all, so the engine honors what this button dispatches on this window.
   it("dispatches Shorten at place 0 on break out (T5)", () => {
     seed(buildRespondToShortcutWaitingFor());
     render(<RespondToShortcutModal />);

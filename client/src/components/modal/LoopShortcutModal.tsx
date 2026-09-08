@@ -795,8 +795,10 @@ function DeclareShortcutOffer({
  * CR 732.2b/c: after the proposer declares, each other living player, in APNAP
  * order, may accept the shortcut or shorten it (break out to resume manual play).
  * "Break out" names place 0 — stop before the first repetition, which is what the
- * button already promises — and that is the one place every proposal a responder can
- * be shown admits, so the control needs no range of its own to stay in range.
+ * button already promises — and the published range holds that place whenever it holds one at
+ * all. A proposal that admits no place is the exception: the engine refuses this dispatch
+ * there, and reading the published range instead of dispatching a constant is what takes that
+ * case off the button.
  */
 export function RespondToShortcutModal() {
   const { t } = useTranslation("game");

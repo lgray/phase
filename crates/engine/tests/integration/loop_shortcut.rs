@@ -142,9 +142,7 @@ fn setup_2p_vito(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
 /// 2-player drain (as above) but P1 also holds a castable Lightning Bolt off an untapped
 /// Mountain — a meaningful priority action that makes the loop OPTIONAL (CR 732.5 probe
 /// FALSE). Returns runner + (kickoff, bolt, drain-cleric enabler id).
-pub(crate) fn setup_2p_optional_drain(
-    mode: LoopDetectionMode,
-) -> (GameRunner, ObjectId, ObjectId, ObjectId) {
+fn setup_2p_optional_drain(mode: LoopDetectionMode) -> (GameRunner, ObjectId, ObjectId, ObjectId) {
     let mut scenario = GameScenario::new_n_player(2, 7);
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_life(P0, 20);
