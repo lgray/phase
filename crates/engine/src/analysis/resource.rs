@@ -344,6 +344,218 @@ mod verdict_memo {
 
 pub(crate) use verdict_memo::{FrameIx, PeriodVerdicts, ProbeBudget, PROBE_BUDGET};
 
+/// CR 732.2a: what the shortcut detector cost this drive, one field per **tick site**.
+///
+/// The unit is the tick site, not the part. A field fed by two sites cannot tell a deleted
+/// tick from a live sibling, so the parts are summed in the report and in the two derived
+/// accessors below and never in a field. A timed site carries a nanosecond total and the
+/// call count that produced it, so a zero on either axis means one thing; the clone sites
+/// carry no duration by design, which is what keeps [`LoopDetectCost::parts`]'s "non-zero
+/// on both axes" contract answerable for every entry it holds.
+///
+/// The numbers belong to a drive on one thread — never to a game object, a player or a
+/// `GameState`. This never lands on `GameState`, is never serialized, and never crosses the
+/// WASM/IPC/WebSocket boundary. It accumulates from the last [`reset_loop_detect_cost`] on
+/// this thread; [`loop_detect_cost`] hands back a snapshot the caller owns.
+///
+/// Extends [`crate::game::engine::MintMeter`]'s shape — a plain struct of named counters
+/// produced inside the detector and read through a dedicated seam — from a per-mint
+/// snapshot to a per-drive accumulator, because the subject is a per-*beat* cost that no
+/// single call's return value can carry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LoopDetectCost {
+    /// The sampler's normalized clone (`GameState::record_loop_detect_sample`).
+    pub sample_normalize_ns: u64,
+    pub sample_normalize_calls: u32,
+    /// The sampler's second, un-normalized clone.
+    pub sample_live_ns: u64,
+    pub sample_live_calls: u32,
+    /// The reconcile bridge as a whole — the CONTAINER of the five reduction sites it
+    /// reaches (`mandatory`, `winner_scan`, `bounded_offer` and the two ring walks), so the
+    /// parts have something to be a share of and the bridge's own interior is visible
+    /// rather than absorbed. Excluded from any leaf sum for exactly that reason; the
+    /// sampler's two sites and `object_growth` sit OUTSIDE it.
+    pub reconcile_ns: u64,
+    pub reconcile_calls: u32,
+    /// CR 732.5: the mandatory-vs-optional probe, per living seat.
+    pub mandatory_ns: u64,
+    pub mandatory_calls: u32,
+    /// Path A — the determinate-lethal-winner ring scan.
+    pub winner_scan_ns: u64,
+    pub winner_scan_calls: u32,
+    /// Path D — the bounded-cycle offer mint.
+    pub bounded_offer_ns: u64,
+    pub bounded_offer_calls: u32,
+    /// Path B — the CR 732.4 draw ring walk, reached only when the loop is mandatory.
+    pub recurrence_scan_mandatory_ns: u64,
+    pub recurrence_scan_mandatory_calls: u32,
+    /// CR 104.4b Path C — the revocable-unbounded ring walk, reached only when it is not.
+    pub recurrence_scan_optional_ns: u64,
+    pub recurrence_scan_optional_calls: u32,
+    /// The empty-stack dual of the bridge, below the reconcile block.
+    pub object_growth_ns: u64,
+    pub object_growth_calls: u32,
+    /// The sampler's two clone calls, counted rather than timed.
+    pub sampler_normalized_clones: u32,
+    pub sampler_live_clones: u32,
+    /// The `normalize_for_loop()` that opens `project_out_resources` — the compare side's
+    /// clone budget, minted twice per comparison.
+    pub projected_clones: u32,
+    /// One field per production function that calls `project_out_resources`, never one
+    /// aggregate: an aggregate cannot tell four live sites from one live and three dead.
+    pub compares_equal_modulo_resources: u32,
+    pub compares_cover_modulo_growth_scoped: u32,
+    pub compares_cover_modulo_object_growth: u32,
+    pub compares_cover_modulo_fodder_growth: u32,
+}
+
+impl LoopDetectCost {
+    /// The timed sites, one entry per site: name, nanoseconds, calls.
+    pub fn parts(&self) -> [(&'static str, u64, u32); 9] {
+        [
+            (
+                "sample_normalize",
+                self.sample_normalize_ns,
+                self.sample_normalize_calls,
+            ),
+            ("sample_live", self.sample_live_ns, self.sample_live_calls),
+            ("reconcile", self.reconcile_ns, self.reconcile_calls),
+            ("mandatory", self.mandatory_ns, self.mandatory_calls),
+            ("winner_scan", self.winner_scan_ns, self.winner_scan_calls),
+            (
+                "bounded_offer",
+                self.bounded_offer_ns,
+                self.bounded_offer_calls,
+            ),
+            (
+                "recurrence_scan_mandatory",
+                self.recurrence_scan_mandatory_ns,
+                self.recurrence_scan_mandatory_calls,
+            ),
+            (
+                "recurrence_scan_optional",
+                self.recurrence_scan_optional_ns,
+                self.recurrence_scan_optional_calls,
+            ),
+            (
+                "object_growth",
+                self.object_growth_ns,
+                self.object_growth_calls,
+            ),
+        ]
+    }
+
+    /// The count-only sites, one entry per site. Deliberately a separate accessor from
+    /// [`LoopDetectCost::parts`]: a duration-less axis inside that array would make its
+    /// two-axis contract unanswerable for half its entries.
+    pub fn clones(&self) -> [(&'static str, u32); 7] {
+        [
+            ("sampler_normalized_clones", self.sampler_normalized_clones),
+            ("sampler_live_clones", self.sampler_live_clones),
+            ("projected_clones", self.projected_clones),
+            (
+                "compares_equal_modulo_resources",
+                self.compares_equal_modulo_resources,
+            ),
+            (
+                "compares_cover_modulo_growth_scoped",
+                self.compares_cover_modulo_growth_scoped,
+            ),
+            (
+                "compares_cover_modulo_object_growth",
+                self.compares_cover_modulo_object_growth,
+            ),
+            (
+                "compares_cover_modulo_fodder_growth",
+                self.compares_cover_modulo_fodder_growth,
+            ),
+        ]
+    }
+
+    /// The recurrence scan as one part: both ring-walk arms summed. Derived, never a field
+    /// — a summed field would be the multi-site counter this type refuses.
+    pub fn recurrence_scan(&self) -> (u64, u32) {
+        (
+            self.recurrence_scan_mandatory_ns + self.recurrence_scan_optional_ns,
+            self.recurrence_scan_mandatory_calls + self.recurrence_scan_optional_calls,
+        )
+    }
+
+    /// Every comparison the four production callers of `project_out_resources` performed.
+    /// Each of them projects both sides as a pair, which is what makes
+    /// `projected_clones <= 2 * resource_compares()` the relation over this closed
+    /// population.
+    pub fn resource_compares(&self) -> u32 {
+        self.compares_equal_modulo_resources
+            + self.compares_cover_modulo_growth_scoped
+            + self.compares_cover_modulo_object_growth
+            + self.compares_cover_modulo_fodder_growth
+    }
+}
+
+thread_local! {
+    /// The accumulator. A `Cell`, not a `RefCell` and not an atomic: the reducer is
+    /// single-threaded per game — the same property `game::engine`'s simulation-probe flag
+    /// relies on — so a read-modify-write is exact and free.
+    static LOOP_DETECT_COST: std::cell::Cell<LoopDetectCost> =
+        std::cell::Cell::new(LoopDetectCost::default());
+}
+
+/// This thread's accumulated detector cost since the last [`reset_loop_detect_cost`].
+pub fn loop_detect_cost() -> LoopDetectCost {
+    LOOP_DETECT_COST.with(std::cell::Cell::get)
+}
+
+/// Zero this thread's accumulator. Explicit reset is the only invalidation there is.
+pub fn reset_loop_detect_cost() {
+    LOOP_DETECT_COST.with(|cost| cost.set(LoopDetectCost::default()));
+}
+
+/// Apply one count-only tick to this thread's accumulator.
+pub(crate) fn bump_loop_detect_cost(tick: impl FnOnce(&mut LoopDetectCost)) {
+    LOOP_DETECT_COST.with(|cell| {
+        let mut cost = cell.get();
+        tick(&mut cost);
+        cell.set(cost);
+    });
+}
+
+/// The `(nanoseconds, calls)` pair one timed site owns.
+type CostSlot = fn(&mut LoopDetectCost) -> (&mut u64, &mut u32);
+
+/// Records a scanned block's elapsed time on EVERY exit, so an early `return` out of the
+/// branch a remedy targets cannot silently under-report exactly that branch.
+///
+/// `web_time::Instant`, not `std::time::Instant`: both the sampler and the reconcile seam
+/// are on the WASM-reachable `apply()` path, where the std clock panics
+/// (`crate::util::deadline`'s module doc is the in-tree authority).
+#[must_use]
+pub(crate) struct CostTimer {
+    start: web_time::Instant,
+    slot: CostSlot,
+}
+
+impl CostTimer {
+    pub(crate) fn start(slot: CostSlot) -> Self {
+        Self {
+            start: web_time::Instant::now(),
+            slot,
+        }
+    }
+}
+
+impl Drop for CostTimer {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed().as_nanos() as u64;
+        let slot = self.slot;
+        bump_loop_detect_cost(|cost| {
+            let (nanos, calls) = slot(cost);
+            *nanos += elapsed;
+            *calls += 1;
+        });
+    }
+}
+
 /// WUBRG + colorless, the canonical index order used by [`ResourceVector::mana`].
 ///
 /// Matches `ManaColor::ALL` (WUBRG) with colorless appended, so index `i` of the
@@ -1876,6 +2088,7 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
 /// and is regression-pinned. [`loop_states_cover_modulo_growth`] closes both surfaces by
 /// construction rather than inheriting the assumption.
 pub fn loop_states_equal_modulo_resources(a: &GameState, b: &GameState) -> bool {
+    bump_loop_detect_cost(|cost| cost.compares_equal_modulo_resources += 1);
     let pa = project_out_resources(a);
     let pb = project_out_resources(b);
     // CR 606.3: the per-object loyalty-activation count is the authoritative
@@ -2733,6 +2946,7 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
     scope: LoopWindowScope<'_>,
     verdicts: &mut PeriodVerdicts<'a>,
 ) -> bool {
+    bump_loop_detect_cost(|cost| cost.compares_cover_modulo_growth_scoped += 1);
     // (1) Board equal modulo the NARROWED projection AND modulo the stack, with the
     // object resource axes STRICT-COMPARED. Project both, clear both stacks
     // and their stack-entry-indexed firing sidecars (the stack is compared separately
@@ -2931,6 +3145,7 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
     prior: &GameState,
     current: &GameState,
 ) -> bool {
+    bump_loop_detect_cost(|cost| cost.compares_cover_modulo_object_growth += 1);
     // Flush BOTH clones once, up front, then project out the monotone
     // resources for the board/GameState equality axes.
     let pf = flush_clone(prior);
@@ -3393,6 +3608,7 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     fodder_class: &GameObject,
     caster: PlayerId,
 ) -> bool {
+    bump_loop_detect_cost(|cost| cost.compares_cover_modulo_fodder_growth += 1);
     let pf = flush_clone(prior);
     let cf = flush_clone(current);
     let mut pa = project_out_resources(&pf);
@@ -7506,6 +7722,7 @@ pub(crate) fn project_object_for_loop(object: &mut crate::game::game_object::Gam
 }
 
 fn project_out_resources(state: &GameState) -> GameState {
+    bump_loop_detect_cost(|cost| cost.projected_clones += 1);
     let mut s = state.normalize_for_loop();
 
     for player in &mut s.players {

@@ -25471,10 +25471,32 @@ impl GameState {
         if self.loop_detect_ring.len() == LOOP_DETECT_RING_CAP {
             self.loop_detect_ring.pop_front();
         }
-        let snapshot = std::sync::Arc::new(LoopDetectSample {
-            normalized: self.normalize_for_loop(),
-            live: self.loop_detect_live_sample(),
-        });
+        // The two clones are metered at THIS call site rather than at either clone
+        // function's entry: `normalize_for_loop` carries production callers outside this
+        // detector (the CR 104.4b mandatory-draw fingerprint among them), which are not part
+        // of the detector's budget.
+        let normalized = {
+            let _timed = crate::analysis::resource::CostTimer::start(|cost| {
+                (
+                    &mut cost.sample_normalize_ns,
+                    &mut cost.sample_normalize_calls,
+                )
+            });
+            crate::analysis::resource::bump_loop_detect_cost(|cost| {
+                cost.sampler_normalized_clones += 1;
+            });
+            self.normalize_for_loop()
+        };
+        let live = {
+            let _timed = crate::analysis::resource::CostTimer::start(|cost| {
+                (&mut cost.sample_live_ns, &mut cost.sample_live_calls)
+            });
+            crate::analysis::resource::bump_loop_detect_cost(|cost| {
+                cost.sampler_live_clones += 1;
+            });
+            self.loop_detect_live_sample()
+        };
+        let snapshot = std::sync::Arc::new(LoopDetectSample { normalized, live });
         self.loop_detect_ring.push_back(snapshot);
     }
 

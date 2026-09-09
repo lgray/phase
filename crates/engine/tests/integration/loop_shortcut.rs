@@ -21,7 +21,8 @@ use engine::analysis::decision_template::{
 };
 use engine::analysis::loop_check::{LoopCertificate, ShortcutProposal, ShortcutResponse, WinKind};
 use engine::analysis::resource::{
-    loop_states_equal_modulo_resources, BoardDelta, PeriodicDelta, ResourceAxis,
+    loop_detect_cost, loop_states_equal_modulo_resources, reset_loop_detect_cost, BoardDelta,
+    LoopDetectCost, PeriodicDelta, ResourceAxis,
 };
 use engine::game::derived_views::{FamilyCollapseState, UnboundedFamily};
 use engine::game::engine::{apply, EngineError};
@@ -16239,5 +16240,388 @@ fn c2a_row_t1b_both_trigger_target_selection_arms_route_through_the_single_write
         vec!["ChooseTarget", "SelectTargets"],
         "both arms by NAME, not just by count: a census that found the same arm twice would \
          satisfy a bare count while leaving the other one unmeasured"
+    );
+}
+
+/// One leg of the detector-cost drive: the same fixture, the same drive helper and the same
+/// beat count at one [`LoopDetectionMode`], with this thread's meter zeroed at its start.
+struct CostLeg {
+    cost: LoopDetectCost,
+    wall_ns: u128,
+    beats: usize,
+    lives: Vec<i32>,
+    stack_len: usize,
+    waiting: String,
+}
+
+/// The `WaitingFor` variant name alone — the discriminant the leg-equality check compares,
+/// without a `LoopShortcut`'s whole certificate in the failure message.
+fn waiting_kind(waiting: &WaitingFor) -> String {
+    let debug = format!("{waiting:?}");
+    debug
+        .split([' ', '{', '('])
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn drive_cost_leg(mode: LoopDetectionMode, beats: usize) -> CostLeg {
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dellian_emblem_conqueror_4p.json.gz"
+    )));
+    assert_eq!(
+        state.loop_detect_ring.len(),
+        0,
+        "reach-guard: the dump ships with an EMPTY ring, so the ring the reduction walks \
+         below is THIS drive's accumulation through the production sampler"
+    );
+    state.loop_detection = mode;
+    let pin = engine_live_opponents(&state, P0).first().copied();
+
+    // THE GROUND FOR THE PRINTED EMPTY-STACK SITES, ASSERTED PER BEAT AND NOT ONCE PER LEG.
+    // The property it has to buy is "at every beat": a fixture that emptied the stack at some
+    // beat and refilled by the last one would pass an end-of-leg check while
+    // `try_offer_object_growth_shortcut` — whose seam is the bridge's empty-stack dual —
+    // silently became a firing site with nothing asserted over it.
+    assert!(
+        !state.stack.is_empty(),
+        "{mode:?} entry: the fixture must ship with a NON-EMPTY stack"
+    );
+
+    reset_loop_detect_cost();
+    let started = std::time::Instant::now();
+    let mut ran = 0usize;
+    for beat in 0..beats {
+        if dump_drive_one_beat(&mut state, pin).is_err() {
+            break;
+        }
+        ran = beat + 1;
+        assert!(
+            !state.stack.is_empty(),
+            "{mode:?} beat {beat}: the stack must stay NON-EMPTY at every beat — that is what \
+             forces `object_growth`'s zero, and through `try_offer_object_growth_shortcut` \
+             being its only production caller, `compares_cover_modulo_fodder_growth`'s"
+        );
+    }
+    let wall_ns = started.elapsed().as_nanos();
+
+    CostLeg {
+        cost: loop_detect_cost(),
+        wall_ns,
+        beats: ran,
+        lives: state.players.iter().map(|p| p.life).collect(),
+        stack_len: state.stack.len(),
+        waiting: waiting_kind(&state.waiting_for),
+    }
+}
+
+/// CR 732.2a: the shortcut detector's per-beat cost, separated by tick site and each part
+/// SIZED against a detector-off leg of the same drive on the same fixture.
+///
+/// THE INSTRUMENT IS INSIDE THE DETECTOR. A test that times `apply()` measures the beat, and
+/// the beat is not the subject: a beat costs something before the detector is counted at
+/// all, so every share here is read against `wall(Interactive) - wall(Off)`, and what the
+/// parts do not account for is REPORTED as a residual rather than absorbed into a neighbour.
+///
+/// THREE LEGS IN ONE PROCESS, AND THE ORDER IS LOAD-BEARING. An `Off` leg runs first and is
+/// discarded so the timed `Off` leg does not pay first-touch allocation. `Interactive` then
+/// runs BEFORE the timed `Off` leg: with `Off` first that leg contributes zero anyway, so an
+/// inoperative `reset_loop_detect_cost()` would be invisible and the `Off`-reads-zero
+/// assertion would pass for the wrong reason.
+///
+/// WHICH SITES ARE ASSERTED IS DERIVED, NOT CHOSEN. A site is asserted iff its firing is
+/// forced by something this row itself pins — the bridge's own entry, the leg-equality
+/// assertions, or the exclusivity assertion below. Every other site is PRINTED beside the
+/// ground that decides its zero, and each such ground is asserted rather than stated, because
+/// a ground that lapses turns a printed site into a firing one whose deleted tick nothing
+/// would catch. An assertion whose passing value is produced by construction cannot tell a
+/// live tick from a deleted one, which is why the non-firing sites are printed instead of
+/// being averaged into a live sibling.
+///
+/// The printed COMPARE sites have no zero-ground and none is claimed for them; they are
+/// covered by `projected_clones <= 2 * resource_compares()` over the closed population of
+/// `project_out_resources`'s four production callers. Deleting the tick at ANY firing compare
+/// site drops that sum and puts `projected_clones` out of range. The `<=` direction is the
+/// one every admissible remedy preserves, so its base-equality half is deliberately not
+/// asserted here.
+///
+/// REVERT-PROBE: delete the tick at any site that fires on this drive and the row reds naming
+/// it — by that site's own non-zero assertion where it has one, and otherwise by the relation
+/// above. The one deletion no assertion can catch is a tick at a site that does not fire,
+/// where presence and absence read alike; that is exactly the set the grounds keep genuinely
+/// non-firing rather than assumed to be.
+#[test]
+fn the_detector_separates_into_sized_parts_against_a_detector_off_leg() {
+    const BEATS: usize = 90;
+    // Forced non-zero by the bridge's own entry (`reconcile`), by what the bridge calls
+    // unconditionally before any recurrence question (`mandatory`, `winner_scan`), by Path D
+    // being reached whenever Path A did not return (`bounded_offer`, which the `waiting_for`
+    // leg-equality pins), and by the sampler minting into the ring the reduction then walks.
+    const ASSERTED_PARTS: [&str; 6] = [
+        "sample_normalize",
+        "sample_live",
+        "reconcile",
+        "mandatory",
+        "winner_scan",
+        "bounded_offer",
+    ];
+    const ASSERTED_CLONES: [&str; 4] = [
+        "sampler_normalized_clones",
+        "sampler_live_clones",
+        "projected_clones",
+        "compares_equal_modulo_resources",
+    ];
+    // Which ring-walk arm the `mandatory` verdict makes live on this drive, as a literal
+    // rather than as a value read back out of the meter. No remedy may move it: which arm is
+    // live is the `mandatory` verdict, and a remedy that moved a verdict has already failed.
+    const LIVE_RECURRENCE_ARM: &str = "recurrence_scan_optional";
+    const DEAD_RECURRENCE_ARM: &str = "recurrence_scan_mandatory";
+
+    let _warmup = drive_cost_leg(LoopDetectionMode::Off, BEATS);
+    let interactive = drive_cost_leg(LoopDetectionMode::Interactive, BEATS);
+    let off = drive_cost_leg(LoopDetectionMode::Off, BEATS);
+
+    // Hostile fixture: the two legs must have driven the SAME beats to the SAME place. A leg
+    // that diverged makes the wall difference unattributable, so this reds rather than
+    // reporting an unattributable number.
+    assert_eq!(
+        (
+            interactive.beats,
+            &interactive.lives,
+            interactive.stack_len,
+            &interactive.waiting
+        ),
+        (off.beats, &off.lives, off.stack_len, &off.waiting),
+        "the two legs must run the same beat count and end on the same life vector, stack \
+         length and `waiting_for` discriminant — otherwise `wall(Interactive) - wall(Off)` is \
+         a difference between two different drives and attributes nothing"
+    );
+    assert_eq!(
+        interactive.beats, BEATS,
+        "reach-guard: both legs must have driven the full {BEATS} beats; a short drive is a \
+         drive helper failure, not a measurement"
+    );
+
+    // The negative, and its reach-guard: each field is paired with ITSELF on the Interactive
+    // leg below, in this same process. Over the printed set both legs read zero, so no
+    // reach-guard exists there and none is claimed.
+    for (name, nanos, calls) in off.cost.parts() {
+        assert_eq!(
+            (nanos, calls),
+            (0, 0),
+            "the detector-OFF leg must tick nothing — `{name}` read {nanos} ns over {calls} \
+             calls. Both sampler ends and the reconcile seam sit behind \
+             `LoopDetectionMode::samples()` and the meter sits INSIDE those gates, so a tick \
+             here is a site that escaped one (a nested legality probe included) — or a \
+             `reset_loop_detect_cost()` that did nothing, which this leg ordering is what \
+             exposes"
+        );
+    }
+    for (name, count) in off.cost.clones() {
+        assert_eq!(
+            count, 0,
+            "the detector-OFF leg must tick nothing — `{name}` read {count}"
+        );
+    }
+
+    let part_names: Vec<&str> = interactive
+        .cost
+        .parts()
+        .iter()
+        .map(|(name, _, _)| *name)
+        .collect();
+    for want in ASSERTED_PARTS
+        .iter()
+        .chain([&LIVE_RECURRENCE_ARM, &DEAD_RECURRENCE_ARM])
+    {
+        assert!(
+            part_names.contains(want),
+            "reach-guard: `{want}` is not a tick site in `parts()` — a renamed or deleted \
+             field would otherwise empty this row's asserted set in silence. Sites: \
+             {part_names:?}"
+        );
+    }
+    for (name, nanos, calls) in interactive.cost.parts() {
+        if !(ASSERTED_PARTS.contains(&name) || name == LIVE_RECURRENCE_ARM) {
+            continue;
+        }
+        assert!(
+            calls > 0 && nanos > 0,
+            "`{name}` must carry a non-zero call count AND a non-zero nanosecond total on the \
+             Interactive leg; read {nanos} ns over {calls} calls. A zero on either axis is a \
+             tick that is not installed, not reached, or not recording"
+        );
+    }
+
+    let arm_calls = |want: &str| -> u32 {
+        interactive
+            .cost
+            .parts()
+            .into_iter()
+            .find(|(name, _, _)| *name == want)
+            .map(|(_, _, calls)| calls)
+            .expect("the arm names above are reach-guarded")
+    };
+    let mandatory_arm = arm_calls(DEAD_RECURRENCE_ARM);
+    let optional_arm = arm_calls(LIVE_RECURRENCE_ARM);
+    assert!(
+        mandatory_arm == 0 || optional_arm == 0,
+        "one `mandatory` value computed at the bridge's head gates both ring walks, \
+         so exactly one arm is reachable per ENTRY — but that alone does not stop both \
+         accumulating ACROSS entries. This assertion is what buys \"one arm is dead over the \
+         whole drive\", and so is the licence for PRINTING that arm instead of asserting it. \
+         Both live here ({mandatory_arm} mandatory, {optional_arm} optional) means the licence \
+         is gone: assert each arm individually and drop the printed-arm licence rather than \
+         weakening this to a sum"
+    );
+    let live_arm = if mandatory_arm > 0 {
+        DEAD_RECURRENCE_ARM
+    } else {
+        LIVE_RECURRENCE_ARM
+    };
+    assert_eq!(
+        live_arm, LIVE_RECURRENCE_ARM,
+        "the live ring-walk arm on this drive is fixed as a literal in this row: \
+         `{LIVE_RECURRENCE_ARM}`. It reads `{live_arm}` instead ({mandatory_arm} mandatory \
+         calls, {optional_arm} optional), which is the `mandatory` verdict having moved — a \
+         verdict move is this instrument's failure, not its measurement"
+    );
+
+    let clone_names: Vec<&str> = interactive
+        .cost
+        .clones()
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    for want in ASSERTED_CLONES {
+        assert!(
+            clone_names.contains(&want),
+            "reach-guard: `{want}` is not a tick site in `clones()`. Sites: {clone_names:?}"
+        );
+    }
+    for (name, count) in interactive.cost.clones() {
+        if ASSERTED_CLONES.contains(&name) {
+            assert!(
+                count > 0,
+                "`{name}` must be non-zero on the Interactive leg; read {count}"
+            );
+        }
+    }
+
+    // The one law covering the printed compare sites. `project_out_resources` is declared
+    // without `pub`, so no caller can exist outside its own module and the population is
+    // compiler-closed; each of its four production callers projects both sides as a pair.
+    // Deleting the tick at any FIRING compare site drops the right-hand side below the clone
+    // count it has to cover.
+    assert!(
+        u64::from(interactive.cost.projected_clones)
+            <= 2 * u64::from(interactive.cost.resource_compares()),
+        "projected_clones ({}) must stay within 2 x resource_compares ({}) — each of \
+         `project_out_resources`'s four production callers projects BOTH sides, so a clone \
+         count above twice the compare count means a compare site stopped being counted",
+        interactive.cost.projected_clones,
+        interactive.cost.resource_compares()
+    );
+
+    // ── REPORTED, NEVER ASSERTED ────────────────────────────────────────────────────────
+    let detector_ns = interactive.wall_ns.saturating_sub(off.wall_ns);
+    let ms = |nanos: u128| nanos as f64 / 1.0e6;
+    let share = |nanos: u64| 100.0 * nanos as f64 / detector_ns as f64;
+    // Leaf parts only: `reconcile` is the CONTAINER of the reduction sites, so summing it
+    // beside them would double-count the whole bridge.
+    let leaves: Vec<(&str, u64, u32)> = interactive
+        .cost
+        .parts()
+        .into_iter()
+        .filter(|(name, _, _)| *name != "reconcile")
+        .collect();
+    let accounted: u128 = leaves.iter().map(|(_, nanos, _)| u128::from(*nanos)).sum();
+    let residual = detector_ns as i128 - accounted as i128;
+
+    println!(
+        "BEATS {BEATS}  wall(Interactive) {:.1} ms  wall(Off) {:.1} ms  \
+         DETECTOR-BY-DIFFERENCE {:.1} ms ({:.2} ms/beat)  lives {:?}  stack {}  waiting {}",
+        ms(interactive.wall_ns),
+        ms(off.wall_ns),
+        ms(detector_ns),
+        ms(detector_ns) / BEATS as f64,
+        interactive.lives,
+        interactive.stack_len,
+        interactive.waiting
+    );
+    println!(
+        "  CONTAINER reconcile {:.2} ms  calls={}  share={:.2}%  (holds every reduction site \
+         below it; excluded from the leaf sum)",
+        ms(u128::from(interactive.cost.reconcile_ns)),
+        interactive.cost.reconcile_calls,
+        share(interactive.cost.reconcile_ns)
+    );
+    let mut ordered = leaves.clone();
+    ordered.sort_by_key(|(_, nanos, _)| std::cmp::Reverse(*nanos));
+    println!("  LEAF PARTS, ordered by share of the detector:");
+    for (name, nanos, calls) in &ordered {
+        println!(
+            "    {name:<28} {:>10.2} ms  calls={calls:>6}  share={:>7.2}%",
+            ms(u128::from(*nanos)),
+            share(*nanos)
+        );
+    }
+    let (recurrence_ns, recurrence_calls) = interactive.cost.recurrence_scan();
+    println!(
+        "  DERIVED recurrence_scan {:.2} ms  calls={recurrence_calls}  share={:.2}%  (both \
+         arms summed; a derived accessor, never a field)",
+        ms(u128::from(recurrence_ns)),
+        share(recurrence_ns)
+    );
+    println!(
+        "  DERIVED resource_compares {}  vs projected_clones {}  (base relation: 2 x compares)",
+        interactive.cost.resource_compares(),
+        interactive.cost.projected_clones
+    );
+    for (name, count) in interactive.cost.clones() {
+        println!("  COUNT {name:<38} {count}");
+    }
+    println!(
+        "  ACCOUNTED {:.1} ms = {:.2}% of the detector;  RESIDUAL {:.1} ms = {:.2}%  \
+         (reported, never absorbed into a neighbouring share)",
+        ms(accounted),
+        100.0 * accounted as f64 / detector_ns as f64,
+        residual as f64 / 1.0e6,
+        100.0 * residual as f64 / detector_ns as f64
+    );
+
+    println!("  PRINTED SITES, each beside the ground that decides its zero:");
+    println!(
+        "    object_growth  ns={} calls={}  — GROUND (asserted, per beat, on both legs): its \
+         seam requires an EMPTY stack where the bridge requires a non-empty one, and this \
+         drive's stack was asserted non-empty at every beat",
+        interactive.cost.object_growth_ns, interactive.cost.object_growth_calls
+    );
+    println!(
+        "    {DEAD_RECURRENCE_ARM}  calls={mandatory_arm}  — GROUND (asserted): the \
+         exclusivity above, which is what makes this arm dead across the whole drive rather \
+         than merely one-per-entry"
+    );
+    println!(
+        "    compares_cover_modulo_fodder_growth  count={}  — GROUND (asserted): its only \
+         production caller IS `try_offer_object_growth_shortcut`, so it inherits that row's \
+         empty-stack ground exactly",
+        interactive.cost.compares_cover_modulo_fodder_growth
+    );
+    println!(
+        "    compares_cover_modulo_object_growth  count={}  — GROUND (build-level, so it \
+         cannot lapse at runtime and no runtime assertion is available or needed): its only \
+         production caller is `analysis::loop_check::detect_loop`, whose own non-test callers \
+         all sit in `analysis::corpus`, a module `analysis/mod.rs` gates on `test` or the \
+         `combo-verify` feature. A build with that feature on is not the build under test",
+        interactive.cost.compares_cover_modulo_object_growth
+    );
+    println!(
+        "    compares_cover_modulo_growth_scoped  count={}  — NO zero-ground, and none is \
+         claimed: every production call site reaches it as the second disjunct of an `||` (or \
+         the `else if`) whose first arm is a `loop_states_equal_modulo_resources` compare, so \
+         whether it fires is decided by comparison data this row pins nothing about. It is \
+         covered by the `projected_clones <= 2 x resource_compares` law asserted above",
+        interactive.cost.compares_cover_modulo_growth_scoped
     );
 }

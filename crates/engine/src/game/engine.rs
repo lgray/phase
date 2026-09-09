@@ -2243,6 +2243,12 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
 /// second non-faller ⇒ `None` ⇒ neither Path A (no winner) nor Path B (a life-loss axis is
 /// present, so it is not a CR 732.4 no-loss draw) fires, and it falls through without crowning.
 fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
+    // The CONTAINER of the five reduction sites this function reaches, so the parts have
+    // something to be a share of. A `Drop` guard, because each path returns from its own
+    // exit and a duplicated `elapsed()` at one of them would eventually be the one missed.
+    let _timed = crate::analysis::resource::CostTimer::start(|cost| {
+        (&mut cost.reconcile_ns, &mut cost.reconcile_calls)
+    });
     // CR 732.5 / CR 732.2b: is the loop mandatory (no living player has a meaningful
     // priority action that could break it)? The single mandatory-vs-optional signal the
     // engine already computes — not a new stored flag.
@@ -2319,6 +2325,12 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
     // found no determinate winner. `mandatory` gates it (CR 732.5); a loss axis or an
     // optional loop falls through to the pre-feature halt.
     if mandatory {
+        let _timed = crate::analysis::resource::CostTimer::start(|cost| {
+            (
+                &mut cost.recurrence_scan_mandatory_ns,
+                &mut cost.recurrence_scan_mandatory_calls,
+            )
+        });
         let priors: Vec<std::sync::Arc<crate::types::LoopDetectSample>> =
             state.loop_detect_ring.iter().cloned().collect();
         let cur = crate::analysis::resource::ResourceVector::snapshot(state);
@@ -2361,6 +2373,12 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
     // design intent (in-scope). The mark means "this player can grind this axis unboundedly
     // under their own control", the closest live realization of CR 104.4b's grant.
     if !mandatory {
+        let _timed = crate::analysis::resource::CostTimer::start(|cost| {
+            (
+                &mut cost.recurrence_scan_optional_ns,
+                &mut cost.recurrence_scan_optional_calls,
+            )
+        });
         let controller = state.active_player; // sampler gate is Priority{active_player}: the driver
         let priors: Vec<std::sync::Arc<crate::types::LoopDetectSample>> =
             state.loop_detect_ring.iter().cloned().collect();
@@ -2466,6 +2484,9 @@ fn find_live_loop_winner(
     crate::analysis::resource::ResourceVector,
     std::sync::Arc<crate::types::LoopDetectSample>,
 )> {
+    let _timed = crate::analysis::resource::CostTimer::start(|cost| {
+        (&mut cost.winner_scan_ns, &mut cost.winner_scan_calls)
+    });
     let priors: Vec<std::sync::Arc<crate::types::LoopDetectSample>> =
         state.loop_detect_ring.iter().cloned().collect();
     let cur = crate::analysis::resource::ResourceVector::snapshot(state);
@@ -2655,6 +2676,9 @@ pub fn try_offer_bounded_cycle_shortcut(
     state: &GameState,
     mandatory: bool,
 ) -> Result<WaitingFor, BoundedOfferRefusal> {
+    let _timed = crate::analysis::resource::CostTimer::start(|cost| {
+        (&mut cost.bounded_offer_ns, &mut cost.bounded_offer_calls)
+    });
     try_offer_bounded_cycle_shortcut_metered(state, mandatory, ProbeCap::Shipped).0
 }
 
@@ -6681,6 +6705,9 @@ fn try_offer_object_growth_shortcut(
     crate::analysis::loop_check::LoopCertificate,
     crate::analysis::decision_template::ShortcutDecisionSchema,
 )> {
+    let _timed = crate::analysis::resource::CostTimer::start(|cost| {
+        (&mut cost.object_growth_ns, &mut cost.object_growth_calls)
+    });
     let seq = state.last_loop_action_sequence.clone();
     if seq.is_empty() {
         return None;
@@ -8822,6 +8849,12 @@ fn priority_player_has_meaningful_action(state: &GameState) -> bool {
 /// `false` and the cascade falls through to the existing halt (priority preserved) —
 /// fail-safe toward the status quo, never a wrong win.
 fn no_living_player_has_meaningful_priority_action(state: &GameState) -> bool {
+    // Metered in the BODY, not per call site: the reconcile match's `On` arm and the
+    // bridge's own first statement both reach it, and a per-call-site pair would leave the
+    // `On` one dead on an `Interactive` drive.
+    let _timed = crate::analysis::resource::CostTimer::start(|cost| {
+        (&mut cost.mandatory_ns, &mut cost.mandatory_calls)
+    });
     state.players.iter().filter(|p| !p.is_eliminated).all(|p| {
         let mut probe_state = state.clone();
         probe_state.auto_pass.clear();
