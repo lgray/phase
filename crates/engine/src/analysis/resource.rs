@@ -409,67 +409,103 @@ pub struct LoopDetectCost {
     pub compares_cover_modulo_fodder_growth: u32,
 }
 
+/// [`LoopDetectCost::parts`]' rows: site name, nanoseconds, calls.
+type TimedSites = [(&'static str, u64, u32); 9];
+/// [`LoopDetectCost::clones`]' rows: site name, count.
+type CloneSites = [(&'static str, u32); 7];
+
 impl LoopDetectCost {
+    /// Both report arrays out of ONE no-`..` destructure, which is what makes them
+    /// field-total together: a new field on this struct BREAKS THE BUILD until the author
+    /// places it in the timed array or the count-only one. Same idiom, and the same reason,
+    /// as [`project_out_player_consumables`]'s. Nothing is bound `_` here — every field is
+    /// consumed by one of the two arrays, so a bound-but-unplaced field is a deny too.
+    fn classify(&self) -> (TimedSites, CloneSites) {
+        let Self {
+            sample_normalize_ns,
+            sample_normalize_calls,
+            sample_live_ns,
+            sample_live_calls,
+            reconcile_ns,
+            reconcile_calls,
+            mandatory_ns,
+            mandatory_calls,
+            winner_scan_ns,
+            winner_scan_calls,
+            bounded_offer_ns,
+            bounded_offer_calls,
+            recurrence_scan_mandatory_ns,
+            recurrence_scan_mandatory_calls,
+            recurrence_scan_optional_ns,
+            recurrence_scan_optional_calls,
+            object_growth_ns,
+            object_growth_calls,
+            sampler_normalized_clones,
+            sampler_live_clones,
+            projected_clones,
+            compares_equal_modulo_resources,
+            compares_cover_modulo_growth_scoped,
+            compares_cover_modulo_object_growth,
+            compares_cover_modulo_fodder_growth,
+        } = *self;
+        (
+            [
+                (
+                    "sample_normalize",
+                    sample_normalize_ns,
+                    sample_normalize_calls,
+                ),
+                ("sample_live", sample_live_ns, sample_live_calls),
+                ("reconcile", reconcile_ns, reconcile_calls),
+                ("mandatory", mandatory_ns, mandatory_calls),
+                ("winner_scan", winner_scan_ns, winner_scan_calls),
+                ("bounded_offer", bounded_offer_ns, bounded_offer_calls),
+                (
+                    "recurrence_scan_mandatory",
+                    recurrence_scan_mandatory_ns,
+                    recurrence_scan_mandatory_calls,
+                ),
+                (
+                    "recurrence_scan_optional",
+                    recurrence_scan_optional_ns,
+                    recurrence_scan_optional_calls,
+                ),
+                ("object_growth", object_growth_ns, object_growth_calls),
+            ],
+            [
+                ("sampler_normalized_clones", sampler_normalized_clones),
+                ("sampler_live_clones", sampler_live_clones),
+                ("projected_clones", projected_clones),
+                (
+                    "compares_equal_modulo_resources",
+                    compares_equal_modulo_resources,
+                ),
+                (
+                    "compares_cover_modulo_growth_scoped",
+                    compares_cover_modulo_growth_scoped,
+                ),
+                (
+                    "compares_cover_modulo_object_growth",
+                    compares_cover_modulo_object_growth,
+                ),
+                (
+                    "compares_cover_modulo_fodder_growth",
+                    compares_cover_modulo_fodder_growth,
+                ),
+            ],
+        )
+    }
+
     /// The timed sites, one entry per site: name, nanoseconds, calls.
     pub fn parts(&self) -> [(&'static str, u64, u32); 9] {
-        [
-            (
-                "sample_normalize",
-                self.sample_normalize_ns,
-                self.sample_normalize_calls,
-            ),
-            ("sample_live", self.sample_live_ns, self.sample_live_calls),
-            ("reconcile", self.reconcile_ns, self.reconcile_calls),
-            ("mandatory", self.mandatory_ns, self.mandatory_calls),
-            ("winner_scan", self.winner_scan_ns, self.winner_scan_calls),
-            (
-                "bounded_offer",
-                self.bounded_offer_ns,
-                self.bounded_offer_calls,
-            ),
-            (
-                "recurrence_scan_mandatory",
-                self.recurrence_scan_mandatory_ns,
-                self.recurrence_scan_mandatory_calls,
-            ),
-            (
-                "recurrence_scan_optional",
-                self.recurrence_scan_optional_ns,
-                self.recurrence_scan_optional_calls,
-            ),
-            (
-                "object_growth",
-                self.object_growth_ns,
-                self.object_growth_calls,
-            ),
-        ]
+        self.classify().0
     }
 
     /// The count-only sites, one entry per site. Deliberately a separate accessor from
     /// [`LoopDetectCost::parts`]: a duration-less axis inside that array would make its
     /// two-axis contract unanswerable for half its entries.
     pub fn clones(&self) -> [(&'static str, u32); 7] {
-        [
-            ("sampler_normalized_clones", self.sampler_normalized_clones),
-            ("sampler_live_clones", self.sampler_live_clones),
-            ("projected_clones", self.projected_clones),
-            (
-                "compares_equal_modulo_resources",
-                self.compares_equal_modulo_resources,
-            ),
-            (
-                "compares_cover_modulo_growth_scoped",
-                self.compares_cover_modulo_growth_scoped,
-            ),
-            (
-                "compares_cover_modulo_object_growth",
-                self.compares_cover_modulo_object_growth,
-            ),
-            (
-                "compares_cover_modulo_fodder_growth",
-                self.compares_cover_modulo_fodder_growth,
-            ),
-        ]
+        self.classify().1
     }
 
     /// The recurrence scan as one part: both ring-walk arms summed. Derived, never a field

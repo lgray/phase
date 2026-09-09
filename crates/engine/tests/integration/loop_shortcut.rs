@@ -16278,11 +16278,7 @@ fn drive_cost_leg(mode: LoopDetectionMode, beats: usize) -> CostLeg {
     state.loop_detection = mode;
     let pin = engine_live_opponents(&state, P0).first().copied();
 
-    // THE GROUND FOR THE PRINTED EMPTY-STACK SITES, ASSERTED PER BEAT AND NOT ONCE PER LEG.
-    // The property it has to buy is "at every beat": a fixture that emptied the stack at some
-    // beat and refilled by the last one would pass an end-of-leg check while
-    // `try_offer_object_growth_shortcut` — whose seam is the bridge's empty-stack dual —
-    // silently became a firing site with nothing asserted over it.
+    // Fixture identity: the drive this row sizes is the bridge's, whose seam wants a stack.
     assert!(
         !state.stack.is_empty(),
         "{mode:?} entry: the fixture must ship with a NON-EMPTY stack"
@@ -16296,11 +16292,23 @@ fn drive_cost_leg(mode: LoopDetectionMode, beats: usize) -> CostLeg {
             break;
         }
         ran = beat + 1;
-        assert!(
-            !state.stack.is_empty(),
-            "{mode:?} beat {beat}: the stack must stay NON-EMPTY at every beat — that is what \
-             forces `object_growth`'s zero, and through `try_offer_object_growth_shortcut` \
-             being its only production caller, `compares_cover_modulo_fodder_growth`'s"
+        // The ground for the PRINTED empty-stack sites, read off the METER rather than
+        // inferred from the stack: `finish_action_boundary_with_lifecycle` reconciles twice
+        // per `apply()`, either side of `run_auto_pass_loop`, so a stack observed after
+        // `apply()` returns never dominates the first reconcile's guard.
+        let so_far = loop_detect_cost();
+        assert_eq!(
+            (
+                so_far.object_growth_calls,
+                so_far.compares_cover_modulo_fodder_growth
+            ),
+            (0, 0),
+            "{mode:?} beat {beat}: `object_growth` read {} calls and \
+             `compares_cover_modulo_fodder_growth` {} — both are PRINTED rather than asserted \
+             non-zero, on the ground that this drive never reaches them. A firing site here is \
+             a printed row whose deleted tick nothing would catch",
+            so_far.object_growth_calls,
+            so_far.compares_cover_modulo_fodder_growth
         );
     }
     let wall_ns = started.elapsed().as_nanos();
@@ -16316,40 +16324,14 @@ fn drive_cost_leg(mode: LoopDetectionMode, beats: usize) -> CostLeg {
 }
 
 /// CR 732.2a: the shortcut detector's per-beat cost, separated by tick site and each part
-/// SIZED against a detector-off leg of the same drive on the same fixture.
+/// SIZED against a detector-off leg of the same drive on the same fixture. Asserts that every
+/// site this drive forces to fire ticks on both axes, that the detector-off leg ticks nothing,
+/// and that the detector-by-difference the shares divide by is positive.
 ///
-/// THE INSTRUMENT IS INSIDE THE DETECTOR. A test that times `apply()` measures the beat, and
-/// the beat is not the subject: a beat costs something before the detector is counted at
-/// all, so every share here is read against `wall(Interactive) - wall(Off)`, and what the
-/// parts do not account for is REPORTED as a residual rather than absorbed into a neighbour.
-///
-/// THREE LEGS IN ONE PROCESS, AND THE ORDER IS LOAD-BEARING. An `Off` leg runs first and is
-/// discarded so the timed `Off` leg does not pay first-touch allocation. `Interactive` then
-/// runs BEFORE the timed `Off` leg: with `Off` first that leg contributes zero anyway, so an
-/// inoperative `reset_loop_detect_cost()` would be invisible and the `Off`-reads-zero
-/// assertion would pass for the wrong reason.
-///
-/// WHICH SITES ARE ASSERTED IS DERIVED, NOT CHOSEN. A site is asserted iff its firing is
-/// forced by something this row itself pins — the bridge's own entry, the leg-equality
-/// assertions, or the exclusivity assertion below. Every other site is PRINTED beside the
-/// ground that decides its zero, and each such ground is asserted rather than stated, because
-/// a ground that lapses turns a printed site into a firing one whose deleted tick nothing
-/// would catch. An assertion whose passing value is produced by construction cannot tell a
-/// live tick from a deleted one, which is why the non-firing sites are printed instead of
-/// being averaged into a live sibling.
-///
-/// The printed COMPARE sites have no zero-ground and none is claimed for them; they are
-/// covered by `projected_clones <= 2 * resource_compares()` over the closed population of
-/// `project_out_resources`'s four production callers. Deleting the tick at ANY firing compare
-/// site drops that sum and puts `projected_clones` out of range. The `<=` direction is the
-/// one every admissible remedy preserves, so its base-equality half is deliberately not
-/// asserted here.
-///
-/// REVERT-PROBE: delete the tick at any site that fires on this drive and the row reds naming
-/// it — by that site's own non-zero assertion where it has one, and otherwise by the relation
-/// above. The one deletion no assertion can catch is a tick at a site that does not fire,
-/// where presence and absence read alike; that is exactly the set the grounds keep genuinely
-/// non-firing rather than assumed to be.
+/// THE LEG ORDER IS LOAD-BEARING. A discarded `Off` leg runs first so the timed `Off` leg does
+/// not pay first-touch allocation, and `Interactive` runs BEFORE the timed `Off` leg: with
+/// `Off` first that leg contributes zero anyway, so an inoperative `reset_loop_detect_cost()`
+/// would be invisible and the `Off`-reads-zero assertion would pass for the wrong reason.
 #[test]
 fn the_detector_separates_into_sized_parts_against_a_detector_off_leg() {
     const BEATS: usize = 90;
@@ -16400,6 +16382,16 @@ fn the_detector_separates_into_sized_parts_against_a_detector_off_leg() {
         interactive.beats, BEATS,
         "reach-guard: both legs must have driven the full {BEATS} beats; a short drive is a \
          drive helper failure, not a measurement"
+    );
+    // The divisor of every share printed below.
+    let detector_ns = interactive.wall_ns.saturating_sub(off.wall_ns);
+    assert!(
+        detector_ns > 0,
+        "wall(Interactive) {} ns must EXCEED wall(Off) {} ns — a vanished difference divides \
+         every share below by zero and prints `inf`/`NaN` in a GREEN row, attributing exactly \
+         as little as a diverged leg does",
+        interactive.wall_ns,
+        off.wall_ns
     );
 
     // The negative, and its reach-guard: each field is paired with ITSELF on the Interactive
@@ -16524,7 +16516,6 @@ fn the_detector_separates_into_sized_parts_against_a_detector_off_leg() {
     );
 
     // ── REPORTED, NEVER ASSERTED ────────────────────────────────────────────────────────
-    let detector_ns = interactive.wall_ns.saturating_sub(off.wall_ns);
     let ms = |nanos: u128| nanos as f64 / 1.0e6;
     let share = |nanos: u64| 100.0 * nanos as f64 / detector_ns as f64;
     // Leaf parts only: `reconcile` is the CONTAINER of the reduction sites, so summing it
@@ -16592,9 +16583,8 @@ fn the_detector_separates_into_sized_parts_against_a_detector_off_leg() {
 
     println!("  PRINTED SITES, each beside the ground that decides its zero:");
     println!(
-        "    object_growth  ns={} calls={}  — GROUND (asserted, per beat, on both legs): its \
-         seam requires an EMPTY stack where the bridge requires a non-empty one, and this \
-         drive's stack was asserted non-empty at every beat",
+        "    object_growth  ns={} calls={}  — GROUND (asserted, per beat, on both legs): the \
+         drive helper reads this counter itself after every beat and reds on a non-zero",
         interactive.cost.object_growth_ns, interactive.cost.object_growth_calls
     );
     println!(
@@ -16603,9 +16593,8 @@ fn the_detector_separates_into_sized_parts_against_a_detector_off_leg() {
          than merely one-per-entry"
     );
     println!(
-        "    compares_cover_modulo_fodder_growth  count={}  — GROUND (asserted): its only \
-         production caller IS `try_offer_object_growth_shortcut`, so it inherits that row's \
-         empty-stack ground exactly",
+        "    compares_cover_modulo_fodder_growth  count={}  — GROUND (asserted, per beat, on \
+         both legs): the drive helper reads this counter itself after every beat too",
         interactive.cost.compares_cover_modulo_fodder_growth
     );
     println!(
