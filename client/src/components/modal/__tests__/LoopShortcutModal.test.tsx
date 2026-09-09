@@ -794,6 +794,17 @@ describe("LoopShortcutModal", () => {
     fireEvent.keyDown(placeBox(), { key: "Enter" });
     expect(dispatchMock).not.toHaveBeenCalled();
 
+    // The reach guard for that refusal, and the box's own entry point into the one handler the
+    // footer button also reaches: the same key on the same box sends an in-range place. 6 is a
+    // place no click leg on this window sends, so neither dispatch assertion stands in for the
+    // other, and a modal that ignored Enter entirely would satisfy every refusal above.
+    fireEvent.change(placeBox(), { target: { value: "6" } });
+    fireEvent.keyDown(placeBox(), { key: "Enter" });
+    expect(dispatchMock).toHaveBeenCalledWith({
+      type: "RespondToShortcut",
+      data: { response: { Shorten: { at_iteration: 6 } } },
+    });
+
     fireEvent.change(placeBox(), { target: { value: "2" } });
     fireEvent.click(shortenButton());
     expect(dispatchMock).toHaveBeenCalledWith({
@@ -830,6 +841,32 @@ describe("LoopShortcutModal", () => {
       type: "RespondToShortcut",
       data: { response: { Shorten: { at_iteration: 3 } } },
     });
+  });
+
+  // The other half of the same pair, and the half with a production consequence: a SECOND
+  // responder window opens at its own published floor rather than carrying the place typed into
+  // the first. Window B is byte-identical to A and differs only in the reply's interaction id, so
+  // a body keyed on the published range — or on any `waitingFor.data` field — keeps the typed
+  // place and fails here while passing the row above. `rerender` rather than `cleanup()` +
+  // `render()`: a fresh tree mounts a fresh body on the unkeyed code too.
+  it("opens a second responder window at its published floor", () => {
+    const seedReply = (interactionId: string) =>
+      seed(
+        buildRespondToShortcutWaitingFor({ proposal: { count: { Fixed: 9 } } }),
+        {},
+        respondInteraction({ minIteration: 2, maxIteration: 6 }, [], interactionId),
+      );
+
+    seedReply("session.0.2");
+    const view = render(<RespondToShortcutModal />);
+    fireEvent.change(placeBox(), { target: { value: "5" } });
+    expect(placeBox()).toHaveValue("5");
+
+    seedReply("session.0.3");
+    view.rerender(<RespondToShortcutModal />);
+
+    // The published floor — neither zero nor the place named in the first window.
+    expect(placeBox()).toHaveValue("2");
   });
 
   // R3: CR 732.2b — an empty published range holds no place to name, which is the shape a
