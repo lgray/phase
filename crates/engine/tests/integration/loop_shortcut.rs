@@ -849,11 +849,11 @@ fn interactive_3p_mandatory_no_loss_draw() {
 // ────────────────────────── T-Q1-shorten ──────────────────────────
 
 /// T-Q1-shorten ⭐: an OPTIONAL winning drain under `Interactive`. The proposer declares the
-/// shortcut; the opponent SHORTENS ⇒ the engine hands THAT opponent a real priority window
-/// (CR 732.2c); the opponent casts removal on an enabler ⇒ the loop breaks (no GameOver,
-/// re-detection does not re-confirm). Discriminator: replacing Shorten with Accept runs the
-/// same fixture to `GameOver{winner: P0}` — proving the WINDOW stopped it, not an unrelated
-/// fizzle.
+/// shortcut; the opponent SHORTENS at a low place ⇒ the shortened drive commits its cycles and
+/// the ending point lands on THAT opponent (CR 732.2b/c); the opponent casts removal on an
+/// enabler ⇒ the loop breaks (no GameOver, re-detection does not re-confirm). Discriminator:
+/// replacing Shorten with Accept runs the same fixture to `GameOver{winner: P0}` — proving the
+/// WINDOW stopped it, not an unrelated fizzle.
 #[test]
 fn interactive_shorten_hands_priority_and_breaks_loop() {
     let (mut runner, kickoff, bolt, cleric) =
@@ -888,15 +888,15 @@ fn interactive_shorten_hands_priority_and_breaks_loop() {
         })
         .expect("P1 shortens");
 
-    // CR 732.2c: P1 received a real priority window (not the shortcut).
+    // CR 732.2b/c: the shortcut was taken to the place P1 named, and P1 holds its ending point.
     assert_eq!(
         runner.state().waiting_for,
         WaitingFor::Priority { player: P1 },
-        "Shorten hands the shortening opponent a priority window"
+        "the shortening opponent holds the shortened sequence's ending point"
     );
     assert!(
         life(&runner, P1) > 0,
-        "P1 is alive — the loop was NOT auto-taken"
+        "P1 is alive — the shortened drive stopped at the place P1 named, short of lethal"
     );
 
     // P1 casts removal on an enabler ⇒ the loop breaks.
@@ -1151,6 +1151,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         win_kind: WinKind::LethalDamage,
         template: None,
         per_cycle: None,
+        shortened_by: None,
     };
     let wf_r = WaitingFor::RespondToShortcut {
         player: P2,
@@ -3061,11 +3062,11 @@ fn low2_smart_shortcut_self_preservation() {
     assert_eq!(
         runner.state().waiting_for,
         WaitingFor::Priority { player: P1 },
-        "Shorten hands P1 a real priority window — it survives"
+        "the zero place is taken at once and its ending point is P1's — it survives"
     );
     assert!(
         life(&runner, P1) > 0,
-        "P1 is alive — the loop was not auto-taken"
+        "P1 is alive — a sequence performed zero times took nothing from it"
     );
 
     // Control: the identical fixture/flow, but P1 Accepts (submitted manually, not via the
@@ -4729,6 +4730,7 @@ fn respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers() {
                     ),
                 }),
                 per_cycle: None,
+                shortened_by: None,
             },
         };
         state
@@ -6708,6 +6710,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
                     declarable_victims: vec![],
                     seat_life_charge: vec![],
                 }),
+                shortened_by: None,
             },
         };
         v["waiting_for"] = serde_json::to_value(&waiting).expect("a WaitingFor serializes");
@@ -9372,86 +9375,370 @@ fn two_accepts_in_one_phase_bound_the_collapse_to_the_smallest_accepted_count() 
     );
 }
 
-/// R6a FIX-4 (CR 732.2c). The AI's `LoopCollapse` candidate was a hardcoded `amount: 1`, from
-/// when the prompt's `max` was the fixed engine-wide `MAX_SHORTCUT_CYCLES`. Binding `max` to
-/// the accepted count makes `max == 0` reachable — a shortcut everyone accepted at `Fixed(0)`
-/// — and the reducer rejects `amount > max`, so the generator's SOLE candidate would be
-/// illegal and an AI-seated controller would have no legal action at this prompt.
+/// CR 732.2c: a count of ZERO performs nothing and TAKES the shortcut — on either response.
+/// "The game advances to the last proposed ending point, with all game choices contained in the
+/// shortcut proposal having been taken": a place of zero names the sequence's start, so arriving
+/// there means performing no iteration. The board is unchanged, nothing is stashed, the CR 500.5
+/// boundary mints no collapse prompt, the recorded period is CONSUMED, and the beat that follows
+/// is a priority window rather than a fresh offer of the shortcut just taken.
 ///
-/// Driven end-to-end: a real cast → a real `Fixed(0)` declaration → real APNAP accepts → the
-/// real CR 500.5 boundary prompt → the production `ai_support::legal_actions` generator → the
-/// production `apply()` reducer.
+/// One rule, both responses, so neither is the only one it is bought on: the `Accept` leg drives
+/// a real cast, a real `Fixed(0)` declaration and real APNAP accepts on the sprout board; the
+/// `Shorten` leg names place 0 on the mana engine, the subclass that stashes nothing at all.
 ///
-/// REVERT-PROBE (RUN, MEASURED): restore `GameAction::SubmitPayAmount { amount: 1 }` in
-/// `ai_support::candidates` ⇒ `legal_actions` returns `[]`. `legal_actions` validates its
-/// candidates against the reducer, so the illegal `amount: 1` is not merely rejected on
-/// submit — it is dropped, leaving the AI with NO legal action at this prompt. Assertion (3)
-/// FAILS (`left: []`).
+/// The `Fixed(1)` control is the instrument: on the same rig an accept at one still registers a
+/// stash and still mints the prompt, so the zero leg's absences are a property of the count and
+/// not of a fixture that never materializes. The consumed period and the priority beat are
+/// assertions rather than remarks — route the zero back through the per-cycle drive and every
+/// other assertion still passes while this same `apply()` re-offers the shortcut it just took.
 #[test]
-fn ai_collapse_candidate_is_clamped_to_the_accepted_bound() {
-    let mut state = r6a_offer_state();
-    assert!(
-        matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
-        "reach-guard: at the offer, got {:?}",
-        state.waiting_for
-    );
-    r6a_declare_and_accept_all(&mut state, P0, 0);
-    r6a_drive_to_boundary(&mut state);
-
-    // (1) reach-guard: a `Fixed(0)` accept really does register a stash and really does prompt.
-    // (2) ...with the zero-width range the clamp exists for.
-    let WaitingFor::PayAmountChoice {
-        resource: engine::types::game_state::PayableResource::LoopCollapse { .. },
-        min,
-        max,
-        ..
-    } = &state.waiting_for
-    else {
-        panic!(
-            "reach-guard: a Fixed(0) accept must still reach the boundary prompt, got {:?}",
-            state.waiting_for
+fn a_count_of_zero_performs_nothing_and_takes_the_shortcut_on_either_response() {
+    let board = |s: &GameState| {
+        (
+            s.battlefield
+                .iter()
+                .filter(|id| s.objects.get(id).is_some_and(|o| o.controller == P0))
+                .count(),
+            s.players.iter().find(|p| p.id == P0).unwrap().life,
         )
     };
+
+    // ── The control: the same rig at ONE registers and prompts.
+    let mut one = r6a_offer_state();
+    r6a_declare_and_accept_all(&mut one, P0, 1);
     assert_eq!(
-        (*min, *max),
-        (0, 0),
-        "CR 732.2c: Fixed(0) bounds the prompt to exactly 0"
+        one.pending_unbounded_materialization
+            .get(&P0)
+            .map_or(0, Vec::len),
+        1,
+        "control: an accept at a NON-ZERO count still registers a deferred collapse"
     );
-
-    // (3) The production candidate generator offers the clamped amount (BASE: a hardcoded 1).
-    let candidates = engine::ai_support::legal_actions(&state);
-    assert_eq!(
-        candidates,
-        vec![GameAction::SubmitPayAmount { amount: 0 }],
-        "the AI's sole collapse candidate is clamped to the accepted bound"
-    );
-
-    // (4) ...and it is actually LEGAL — the assertion that makes (3) load-bearing rather than
-    // a restatement of the generator.
-    apply(&mut state, P0, candidates[0].clone())
-        .expect("the AI's generated candidate must be accepted by the reducer");
-
-    // (5) CR 732.2a: the submit lands on an ending point a seat can act at. Asserted in the
-    // uniform shape rather than with a `Priority` matcher, because this board's entered phase owes
-    // CR 508.1's declare-attackers turn-based action before the CR 117.3a grant — a `Priority`
-    // matcher would red on a beat the rule is satisfied by.
-    super::wba_loop_firewall_interposition::answer_terminal_beat(
-        &state,
-        "CR 732.2a: the Fixed(0) accept's ending point",
-    );
-
-    // (6) And on THIS row's own instrument — the production candidate generator, not the viewer
-    // surface — an AI-seated controller has somewhere to go. A collapse that hands back a beat no
-    // generator can answer strands exactly the seat (3) exists to keep playing.
-    let next = engine::ai_support::legal_actions(&state);
+    r6a_drive_to_boundary(&mut one);
     assert!(
-        !next.is_empty(),
-        "CR 732.2a: the generator must offer the AI a candidate at the collapse's ending point, \
-         got [] at {:?}",
-        state.waiting_for
+        matches!(
+            one.waiting_for,
+            WaitingFor::PayAmountChoice {
+                resource: engine::types::game_state::PayableResource::LoopCollapse { .. },
+                ..
+            }
+        ),
+        "control: that accept reaches the CR 500.5 boundary prompt, got {:?}",
+        one.waiting_for
     );
-    apply(&mut state, P0, next[0].clone())
-        .expect("the generator's candidate at the ending point must be accepted by the reducer");
+
+    // ── The Accept leg, on the subclass that registers.
+    let mut zero = r6a_offer_state();
+    assert!(
+        matches!(zero.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
+        "reach-guard: at the offer, got {:?}",
+        zero.waiting_for
+    );
+    let at_offer = board(&zero);
+    assert!(
+        !zero.last_loop_action_sequence.is_empty(),
+        "reach-guard: the offer's routing signal — the recorded period — is live going in"
+    );
+    r6a_declare_and_accept_all(&mut zero, P0, 0);
+
+    assert_eq!(
+        board(&zero),
+        at_offer,
+        "CR 732.2c: a sequence performed zero times leaves the board where it found it"
+    );
+    assert!(
+        zero.pending_unbounded_materialization.is_empty()
+            && zero.pending_materialization_count.is_empty(),
+        "nothing was performed, so nothing may be stashed and no bound may be written"
+    );
+    assert!(
+        zero.last_loop_action_sequence.is_empty(),
+        "the recorded period is CONSUMED — a shortcut that leaves it standing is re-offered by \
+         the same action that took it"
+    );
+    assert!(
+        matches!(zero.waiting_for, WaitingFor::Priority { .. }),
+        "CR 732.2a: the taking ends at a priority point, never at a fresh offer of the loop it \
+         just answered; got {:?}",
+        zero.waiting_for
+    );
+    r6a_drive_to_boundary(&mut zero);
+    assert!(
+        !matches!(
+            zero.waiting_for,
+            WaitingFor::PayAmountChoice {
+                resource: engine::types::game_state::PayableResource::LoopCollapse { .. },
+                ..
+            }
+        ),
+        "nothing was stashed, so the boundary mints no collapse prompt; got {:?}",
+        zero.waiting_for
+    );
+
+    // ── The Shorten leg, on the subclass that registers nothing.
+    let Some(db) = super::support::shared_card_db() else {
+        return;
+    };
+    let mut rig = super::loop_shortcut_mana_engine::setup(
+        true,
+        engine::types::game_state::LoopDetectionMode::Interactive,
+        db,
+    );
+    let mana = super::loop_shortcut_mana_engine::mana_ability_index(rig.runner.state(), rig.basalt)
+        .expect("Basalt publishes its mana ability");
+    let untap =
+        super::loop_shortcut_mana_engine::untap_ability_index(rig.runner.state(), rig.basalt)
+            .expect("Basalt publishes its untap ability");
+    super::loop_shortcut_mana_engine::drive_one_period(&mut rig, mana, untap);
+    assert!(
+        matches!(
+            rig.runner.state().waiting_for,
+            WaitingFor::LoopShortcut { .. }
+        ),
+        "reach-guard: the mana engine must OFFER, got {:?}",
+        rig.runner.state().waiting_for
+    );
+    rig.runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(4),
+            template: None,
+        })
+        .expect("the proposer declares");
+    let pool_before = rig.runner.state().players[0]
+        .mana_pool
+        .count_color(ManaType::Colorless);
+    let WaitingFor::RespondToShortcut { player, .. } = rig.runner.state().waiting_for else {
+        panic!(
+            "the declaration opens a responder window, got {:?}",
+            rig.runner.state().waiting_for
+        );
+    };
+    rig.runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Shorten { at_iteration: 0 },
+        })
+        .expect("place 0 is in range on a four-repetition proposal");
+
+    let after = rig.runner.state();
+    assert_eq!(
+        after.players[0].mana_pool.count_color(ManaType::Colorless),
+        pool_before,
+        "CR 732.2c: zero periods were performed, so the pool did not move"
+    );
+    assert!(
+        after.unbounded_resources.is_empty() && after.pending_unbounded_materialization.is_empty(),
+        "a sequence performed zero times grants no unbounded advance and stashes nothing"
+    );
+    assert!(
+        after.last_loop_action_sequence.is_empty(),
+        "the recorded period is CONSUMED on the shortening ingress too"
+    );
+    assert_eq!(
+        after.waiting_for,
+        WaitingFor::Priority { player },
+        "CR 732.2b: the shortener named the place, so the shortener holds its ending point"
+    );
+}
+
+/// CR 732.2c on the object-growth subclass that REGISTERS: a shortened proposal is PERFORMED,
+/// not elided. The elision defers the growth to a CR 500.5 boundary collapse under a ceiling the
+/// accept wrote; a responder who named a place accepted no unbounded advance, so the named
+/// number of periods is delivered instead — the growth the elision would have deferred, standing
+/// on the board.
+///
+/// The Accept control is the instrument, and the stash and the prompt are the discriminators
+/// because they are exactly what the elision produces and performance does not. The two
+/// shortening lengths separate performing the named number from performing one. Reds at base,
+/// where a `Shorten` reaches no materializer at all.
+#[test]
+fn a_shortened_sprout_loop_is_performed_while_an_accepted_one_is_stashed() {
+    let board = |s: &GameState| {
+        (
+            s.battlefield
+                .iter()
+                .filter(|id| s.objects.get(id).is_some_and(|o| o.controller == P0))
+                .count() as i64,
+            s.players.iter().find(|p| p.id == P0).unwrap().life as i64,
+        )
+    };
+    let at_offer = board(&r6a_offer_state());
+
+    // Control: ACCEPTED at a non-zero count — the growth is deferred, not delivered.
+    let mut accepted = r6a_offer_state();
+    r6a_declare_and_accept_all(&mut accepted, P0, 2);
+    assert_eq!(
+        board(&accepted),
+        at_offer,
+        "control: the elision defers the growth, so the accept itself moves no board"
+    );
+    assert_eq!(
+        accepted
+            .pending_unbounded_materialization
+            .get(&P0)
+            .map_or(0, Vec::len),
+        1,
+        "control: the accept registers the deferred collapse"
+    );
+    r6a_drive_to_boundary(&mut accepted);
+    assert!(
+        matches!(
+            accepted.waiting_for,
+            WaitingFor::PayAmountChoice {
+                resource: engine::types::game_state::PayableResource::LoopCollapse { .. },
+                ..
+            }
+        ),
+        "control: the stash mints the CR 500.5 collapse prompt, got {:?}",
+        accepted.waiting_for
+    );
+
+    for place in [1u32, 2] {
+        let mut state = r6a_offer_state();
+        apply(
+            &mut state,
+            P0,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(3),
+                template: None,
+            },
+        )
+        .expect("the proposer declares");
+        let WaitingFor::RespondToShortcut { player, .. } = state.waiting_for else {
+            panic!(
+                "the declaration opens a responder window, got {:?}",
+                state.waiting_for
+            )
+        };
+        let shortener = player;
+        let mut first = true;
+        while let WaitingFor::RespondToShortcut { player, .. } = state.waiting_for.clone() {
+            let response = if std::mem::take(&mut first) {
+                ShortcutResponse::Shorten {
+                    at_iteration: place,
+                }
+            } else {
+                ShortcutResponse::Accept
+            };
+            apply(
+                &mut state,
+                player,
+                GameAction::RespondToShortcut { response },
+            )
+            .expect("each seat answers");
+        }
+
+        assert_eq!(
+            board(&state),
+            (at_offer.0 + i64::from(place), at_offer.1 + i64::from(place)),
+            "CR 732.2c at place {place}: that many real periods stand on the board"
+        );
+        assert!(
+            state.pending_unbounded_materialization.is_empty()
+                && state.pending_materialization_count.is_empty(),
+            "performance defers nothing, so there is no stash and no ceiling to write"
+        );
+        assert!(
+            state.last_loop_action_sequence.is_empty(),
+            "the recorded period is consumed by the taking"
+        );
+        assert_eq!(
+            state.waiting_for,
+            WaitingFor::Priority { player: shortener },
+            "the drive reached the place the responder named, so they hold the ending point"
+        );
+
+        r6a_drive_to_boundary(&mut state);
+        assert!(
+            !matches!(
+                state.waiting_for,
+                WaitingFor::PayAmountChoice {
+                    resource: engine::types::game_state::PayableResource::LoopCollapse { .. },
+                    ..
+                }
+            ),
+            "nothing was stashed, so the boundary mints no collapse prompt; got {:?}",
+            state.waiting_for
+        );
+    }
+}
+
+/// The `LoopCollapse` clamp, on the ingress that outlives the swallow above: a DECODE, not a
+/// mint. After a zero-count shortcut performs nothing and stashes nothing, no live path writes a
+/// zero into `pending_materialization_count` — but a save written BEFORE that carries one, and
+/// the production restore admits it. The restored state then drives to the CR 500.5 boundary,
+/// mints the prompt at a zero-width range, and the production candidate generator answers it.
+///
+/// The stash is the reach-guard: the boundary picks the prompt's controller by walking
+/// `pending_unbounded_materialization` for a non-empty entry and only then reads the count, so a
+/// save carrying the bound alone mints no prompt and this row would assert nothing. The live
+/// control is the same drive at a bound of ONE, which is what separates a restored zero from an
+/// absent bound — an absent bound is not a zero at this prompt, it is the engine-wide ceiling.
+///
+/// REVERT-PROBE (RUN, MEASURED): restore `GameAction::SubmitPayAmount { amount: 1 }` in
+/// `ai_support::candidates` ⇒ `legal_actions` returns `[]`. The generator validates its
+/// candidates against the reducer, so the illegal `amount: 1` is not merely rejected on submit —
+/// it is dropped, leaving the AI with NO legal action at this prompt.
+#[test]
+fn the_collapse_candidate_is_clamped_to_a_bound_restored_from_an_older_save() {
+    // A save written before the swallow: a registered stash AND the bound its accept wrote.
+    let saved = |bound: u32| {
+        let mut state = r6a_offer_state();
+        r6a_declare_and_accept_all(&mut state, P0, 1);
+        assert_eq!(
+            state
+                .pending_unbounded_materialization
+                .get(&P0)
+                .map_or(0, Vec::len),
+            1,
+            "reach-guard: the save must carry the pending-materialization STASH, or the boundary \
+             selects no controller and mints no prompt at all"
+        );
+        state.pending_materialization_count.insert(P0, bound);
+        let payload = serde_json::to_value(&state).expect("the saved board serializes");
+        serde_json::from_value::<engine::types::game_state::PersistedGameState>(payload)
+            .expect("it decodes through the production restore chokepoint")
+            .into_game_state()
+            .expect("persisted test snapshot satisfies the checked restore contract")
+    };
+
+    for bound in [0u32, 1] {
+        let mut state = saved(bound);
+        assert_eq!(
+            state.pending_materialization_count.get(&P0).copied(),
+            Some(bound),
+            "the restored bound survives the decode — without this the row measures something else"
+        );
+        r6a_drive_to_boundary(&mut state);
+
+        let WaitingFor::PayAmountChoice {
+            player,
+            resource: engine::types::game_state::PayableResource::LoopCollapse { .. },
+            min,
+            max,
+            ..
+        } = &state.waiting_for
+        else {
+            panic!(
+                "bound={bound}: the restored stash must reach the boundary prompt, got {:?}",
+                state.waiting_for
+            )
+        };
+        assert_eq!(
+            (*player, *min, *max),
+            (P0, 0, bound),
+            "CR 732.2c: the prompt is bounded by the count the save carried"
+        );
+
+        let candidates = engine::ai_support::legal_actions(&state);
+        assert_eq!(
+            candidates,
+            vec![GameAction::SubmitPayAmount {
+                amount: bound.min(1)
+            }],
+            "bound={bound}: the sole collapse candidate is clamped to what the reducer admits"
+        );
+        apply(&mut state, P0, candidates[0].clone())
+            .expect("the generated candidate must be one the reducer accepts");
+    }
 }
 
 // ===========================================================================
@@ -12108,6 +12395,142 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
     );
 }
 
+/// The arrival rule on the drive's TERMINAL-DEPARTURE arm, which is the one shape a shortening
+/// can reach it on. A proposal carrying a per-period signature cannot: the consumption authority
+/// admits a predicted departure only at the accepted count while the range admits only places
+/// strictly below it, so such a shortening always names a place short of the first crossing. An
+/// UNSIGNED proposal derives no ceiling and carries no frame delimiter, so the combination is
+/// constructible and is written rather than argued away.
+///
+/// CR 732.2b/c: the seat follows the ARRIVAL, never the answer. Both legs drive the SAME board to
+/// the SAME stopping point — the cycle on which a seat leaves the game — and differ only in the
+/// place the responder named. Name the cycle the drive stops on and the shortener holds the
+/// ending point; name one further and the drive stopped short of it, so no CR 732.2b window was
+/// opened there, the handback the drive already ships stands, and the shortener does not receive
+/// it. That the two legs differ in nothing else is what makes the seat attributable to arrival.
+///
+/// Reds under its own restoration: derive arrival from the loop's EXITS rather than from its
+/// commits and the terminal arm hands back on a drive that reached the named place. The seat the
+/// drive eliminates is queued behind the shortener, so the seat rule is read on a LIVING
+/// shortener rather than through the CR 800.4a fallback.
+#[test]
+fn a_shortened_unsigned_drive_seats_the_shortener_only_where_it_reached_the_named_place() {
+    let mut base = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    drive_to_bounded_offer(&mut base, 400).expect("the bounded offer must fire on the 4p dump");
+    let (proposer, _certificate, schema) = bounded_offer_parts(&base);
+    let honest_bound = schema.max_iterations;
+    let lives_before: Vec<(PlayerId, i32)> = base.players.iter().map(|p| (p.id, p.life)).collect();
+    assert!(
+        base.players.iter().all(|p| !p.is_eliminated),
+        "reach-guard: every seat is in the game going in, so an elimination below is the drive's"
+    );
+
+    // A restored window carrying an UNSIGNED proposal. Unsigned is what makes the combination
+    // reachable at all: with no signature there is no derived ceiling and no terminal-departure
+    // discriminator, and the drive's cycle is board recurrence alone.
+    let restored_at = |count: u32| {
+        let mut state = base.clone();
+        apply(
+            &mut state,
+            proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(honest_bound),
+                template: None,
+            },
+        )
+        .expect("the proposer declares the honest bound");
+        let WaitingFor::RespondToShortcut { proposal, .. } = &mut state.waiting_for else {
+            panic!("the declaration opens a responder window")
+        };
+        proposal.per_cycle = None;
+        proposal.count = IterationCount::Fixed(count);
+        let payload = serde_json::to_value(&state).expect("the board serializes");
+        serde_json::from_value::<engine::types::game_state::PersistedGameState>(payload)
+            .expect("it decodes through the production restore chokepoint")
+            .into_game_state()
+            .expect("persisted test snapshot satisfies the checked restore contract")
+    };
+
+    // The drive stops on the cycle a seat leaves the game, which on this board is its FIRST —
+    // measured by the elimination assertion each leg makes rather than assumed here.
+    let stops_on = 1u32;
+    for named in [stops_on, stops_on + 1] {
+        let mut state = restored_at(named + 1);
+        let WaitingFor::RespondToShortcut { player, .. } = state.waiting_for else {
+            panic!("the restore keeps the responder window")
+        };
+        let shortener = player;
+
+        let mut first = true;
+        while let WaitingFor::RespondToShortcut { player, .. } = state.waiting_for.clone() {
+            let response = if std::mem::take(&mut first) {
+                ShortcutResponse::Shorten {
+                    at_iteration: named,
+                }
+            } else {
+                ShortcutResponse::Accept
+            };
+            apply(
+                &mut state,
+                player,
+                GameAction::RespondToShortcut { response },
+            )
+            .expect("each seat answers");
+        }
+
+        let eliminated: Vec<PlayerId> = state
+            .players
+            .iter()
+            .filter(|p| p.is_eliminated)
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(
+            eliminated.len(),
+            1,
+            "named={named}: the terminal-departure arm commits the cycle a seat leaves on and \
+             stops there — one departure, not none and not the whole table"
+        );
+        assert!(
+            !eliminated.contains(&shortener),
+            "named={named}: the departing seat is queued behind the shortener, so the seat rule \
+             is read on a living shortener and not through the CR 800.4a fallback"
+        );
+        assert!(
+            state.players.iter().filter(|p| !p.is_eliminated).count() >= 2,
+            "named={named}: two seats survive, so this is the terminal arm and not the CR 104.2a \
+             crown"
+        );
+        assert_ne!(
+            state
+                .players
+                .iter()
+                .map(|p| (p.id, p.life))
+                .collect::<Vec<_>>(),
+            lives_before,
+            "named={named}: the committed life vector moved, so the seat assertion below is read \
+             on a drive that ran"
+        );
+
+        if named == stops_on {
+            assert_eq!(
+                state.waiting_for,
+                WaitingFor::Priority { player: shortener },
+                "CR 732.2b/c: the drive committed exactly the named count, so the shortener holds \
+                 the ending point"
+            );
+        } else {
+            assert!(
+                matches!(state.waiting_for, WaitingFor::Priority { player } if player != shortener),
+                "CR 732.2b: the same drive stopped short of this named place, so no window was \
+                 opened there and the handback stands; got {:?}",
+                state.waiting_for
+            );
+        }
+    }
+}
+
 /// THE TERMINAL CYCLE. A crossing that eliminates ONE seat while **≥2 players survive** raises
 /// no `GameOver` (CR 104.2a crowns nobody), so the drive does not cross-lethal. It COMMITS that
 /// cycle and STOPS at the priority window the removal was observed at — CR 732.2a's ending
@@ -12435,6 +12858,7 @@ fn restored_proposal(
         win_kind: certificate.win_kind,
         template: None,
         per_cycle: Some(per_cycle),
+        shortened_by: None,
     }
 }
 
@@ -13482,8 +13906,8 @@ fn a_cycle_that_does_not_match_the_published_period_is_dropped() {
 /// deleted rather than re-dressed, exactly as the same count was at
 /// `bounded_offer_conjunct_tests`' module doc. The reproducible claim is this row's own
 /// REVERT-PROBE line below.) Its sibling one screen away
-/// (`ai_collapse_candidate_is_clamped_to_the_accepted_bound`) sets the standard this row
-/// mirrors — generate the candidate through the production generator, then `apply()` it.
+/// (`the_collapse_candidate_is_clamped_to_a_bound_restored_from_an_older_save`) sets the standard
+/// this row mirrors — generate the candidate through the production generator, then `apply()` it.
 ///
 /// Without that candidate an AI proposer at a bounded offer has exactly two options:
 /// `UntilLethal`, which `handle_declare_shortcut` refuses outright against a bounded offer, and
@@ -14746,15 +15170,22 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
     }
 }
 
-/// **R28-d — the GLOBAL count cap, re-checked at CONSUMPTION.**
+/// **The GLOBAL count cap, re-checked at CONSUMPTION — on a live ingress and on a restored one.**
 ///
 /// `handle_declare_shortcut` refuses an over-cap `Fixed` before the proposal is built and its
 /// own note records that the drive helpers do NOT re-check — so the cap was defended at declare
-/// and only at declare. A RESTORED `WaitingFor::RespondToShortcut` never passes that declare,
-/// for exactly the reason the sibling `owner` row above exists: the untrusted-restore scrubber
-/// rewrites only the two pre-cast waits. A hand-edited count therefore reached
-/// `materialize_fixed_shortcut` through one Accept — a `GameState` clone plus a drive per cycle,
-/// which is the vector the declare site calls the catastrophic remote one.
+/// and only at declare. Two ingresses reach consumption past it. A responder may SHORTEN an
+/// unbounded proposal, whose range admits every place (CR 732.2b puts no ceiling on the place a
+/// responder may name), and the rewritten count is then above the cap on a proposal the engine
+/// minted, with nothing tampered — leg (c). And a RESTORED `WaitingFor::RespondToShortcut` never
+/// passes the declare at all, for exactly the reason the sibling `owner` row above exists: the
+/// untrusted-restore scrubber rewrites only the two pre-cast waits. A hand-edited count therefore
+/// reached `materialize_fixed_shortcut` through one Accept — a `GameState` clone plus a drive per
+/// cycle, which is the vector the declare site calls the catastrophic remote one.
+///
+/// What the guard costs is named rather than hidden: CR 732.2c says the shortcut IS taken, and a
+/// handback does not take it. The cap is ours and not the game's, and failing closed onto manual
+/// play runs in the more-responder-agency direction.
 ///
 /// The cap is read as `ShortcutDecisionSchema::default().max_iterations`, which IS
 /// `MAX_SHORTCUT_CYCLES` (`default_max_iterations`) — the const itself is `pub(crate)` and
@@ -14764,6 +15195,9 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
 /// * **(a)** `Fixed(cap + 1)` ⇒ refused: manual handback, ZERO cycles committed.
 /// * **(b)** `Fixed(1)`, the same construction differing only in the count ⇒ DRIVES. Without
 ///   (b), (a)'s no-delta observation is satisfied by a fixture that never reached the guard.
+/// * **(c)** the same boundary member `cap + 1`, named as a legal place by a living responder on
+///   an engine-minted unbounded proposal ⇒ the same refusal, on an ingress that tampered with
+///   nothing. Its own control is the in-cap place on the same rig, which drives.
 ///
 /// VACUITY TRAP, inherited from `over_cap_fixed_count_hands_back_with_no_drive`: a handback
 /// lands on `WaitingFor::Priority` and so does a stop-short drive, so `waiting_for` is an
@@ -14773,7 +15207,7 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
 /// disjunct from `apply_confirmed_shortcut`'s guard ⇒ (a) drives and its no-delta assertion
 /// FAILS, while (b) stays green.
 #[test]
-fn r28_d_a_restored_over_cap_count_is_refused_at_consumption() {
+fn an_over_cap_count_is_refused_at_consumption_on_both_ingresses() {
     let cap = ShortcutDecisionSchema::default().max_iterations;
     for count in [cap + 1, 1] {
         let over_cap = count > cap;
@@ -14847,6 +15281,61 @@ fn r28_d_a_restored_over_cap_count_is_refused_at_consumption() {
                 after, lives,
                 "count={count}: (b) a legal count still DRIVES — without this (a)'s no-delta \
                  assertion is vacuous"
+            );
+        }
+    }
+
+    // (c) THE LIVE INGRESS. CR 732.2b admits every place on an unbounded proposal, so a living
+    // responder naming one above the cap mints exactly the count leg (a) had to tamper for —
+    // on a proposal the engine minted, through the reducer, with nothing edited.
+    for place in [cap + 1, 1] {
+        let over_cap = place > cap;
+        let (mut runner, _life, _cleric) = reach_2p_optional_drain_offer();
+        runner
+            .act(GameAction::DeclareShortcut {
+                count: IterationCount::UntilLethal,
+                template: None,
+            })
+            .expect("the proposer declares an unbounded shortcut");
+        let WaitingFor::RespondToShortcut {
+            player, proposal, ..
+        } = &runner.state().waiting_for
+        else {
+            panic!(
+                "the declaration opens a responder window, got {:?}",
+                runner.state().waiting_for
+            )
+        };
+        let responder = *player;
+        assert!(
+            proposal.shortening_places().contains(&place),
+            "place={place}: reach-guard — this is a LEGAL place on this proposal, so nothing              below is attributable to the range refusal"
+        );
+        let lives: Vec<i32> = runner.state().players.iter().map(|p| p.life).collect();
+
+        runner
+            .act(GameAction::RespondToShortcut {
+                response: ShortcutResponse::Shorten {
+                    at_iteration: place,
+                },
+            })
+            .expect("the reducer takes the response; an over-cap count is a HANDBACK, not an Err");
+        let after: Vec<i32> = runner.state().players.iter().map(|p| p.life).collect();
+
+        if over_cap {
+            assert_eq!(
+                after, lives,
+                "place={place}: (c) ZERO cycles committed — the cap fired before the first clone                  on an ingress that tampered with nothing"
+            );
+            assert!(
+                matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player != responder),
+                "place={place}: (c) a refused shortcut seats no ending point, so the handback                  restarts the round at a living seat; got {:?}",
+                runner.state().waiting_for
+            );
+        } else {
+            assert_ne!(
+                after, lives,
+                "place={place}: (c)'s control — an in-cap place on the same rig DRIVES, without                  which the no-delta assertion above is vacuous"
             );
         }
     }

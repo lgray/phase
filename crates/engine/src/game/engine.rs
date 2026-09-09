@@ -4392,16 +4392,65 @@ fn living_priority_seat(state: &GameState) -> PlayerId {
     }
 }
 
-/// CR 732.2c + CR 704.5a: apply a confirmed loop shortcut. Reached ONLY on the Accept path
-/// (every living opponent accepted). CR 608.2b re-validation is satisfied BY CONSTRUCTION:
+/// CR 732.2b + CR 732.2c: who holds a taken shortcut's ending point. CR 732.2b makes the place
+/// a responder named the new ending point of the proposed sequence, and CR 732.2c's third
+/// sentence owes the different game choice to the player who then has priority — so the seat
+/// follows the ARRIVAL rather than the answer: the shortener holds it exactly where the drive
+/// reached the place they named.
+///
+/// Every other exit keeps the handback the drive already ships. Where the drive stopped short,
+/// no CR 732.2b window was opened at all — the different choice is a choice at a place inside a
+/// sequence that was not performed to it — so nothing is moved off the shortener there. The
+/// fallback is CR 800.4a-shaped, whose condition is the departing player's own priority, which
+/// is exactly the case a materialization that eliminated the shortener produces.
+///
+/// Both sites that can arrive at an ending point call this, so the two cannot answer the rule
+/// differently.
+fn shortcut_ending_point_seat(
+    state: &GameState,
+    proposal: &crate::analysis::loop_check::ShortcutProposal,
+    reached_named_place: bool,
+) -> PlayerId {
+    proposal
+        .shortened_by
+        .filter(|_| reached_named_place)
+        .filter(|&seat| crate::game::players::is_alive(state, seat))
+        .unwrap_or_else(|| living_priority_seat(state))
+}
+
+/// CR 732.2a: close a `Fixed` materialization at its ending point — "a place where a player has
+/// priority, though it need not be the player proposing the shortcut". Both materializations
+/// the count can reach end here, so the window clear and the seat rule cannot drift apart
+/// between them.
+///
+/// The ring clear is load-bearing rather than a backstop: without it this same `apply()` re-emits
+/// an offer for the loop it just took, and a later beat is where a genuine re-detection belongs.
+fn end_shortcut_at_priority(
+    state: &mut GameState,
+    result: &mut ActionResult,
+    proposal: &crate::analysis::loop_check::ShortcutProposal,
+    reached_named_place: bool,
+) {
+    state.loop_detect_ring.clear();
+    // CR 603.5: the recorded "may" answers describe the window that just ended.
+    state.loop_answer_journal = None;
+    priority::reset_priority(state);
+    state.waiting_for = WaitingFor::Priority {
+        player: shortcut_ending_point_seat(state, proposal, reached_named_place),
+    };
+    result.waiting_for = state.waiting_for.clone();
+}
+
+/// CR 732.2c + CR 704.5a: apply a confirmed loop shortcut, once the last player has either
+/// accepted or shortened it. CR 608.2b re-validation is satisfied BY CONSTRUCTION:
 /// the offer confirmed `proposal.predicted_winner` as the determinate winner over public board
-/// state, and between the offer and the final Accept the dispatch admits ONLY the protocol
+/// state, and between the offer and the last answer the dispatch admits ONLY the protocol
 /// actions (`DeclareShortcut`/`RespondToShortcut`), none of which touch the board — so the
 /// loop is provably still intact and the predicted winner remains valid. (A live ring re-scan
 /// here is unsound: intervening finalize/SBA/layer steps drift the paused state away from the
-/// sampled ring frames. The Shorten path — where a real board action CAN break the loop —
-/// deliberately hands priority instead of reaching here, and re-detection re-fires the bridge
-/// LIVE on a later beat.) `UntilLethal` ⇒ mark the unbounded axes + declare the terminal win;
+/// sampled ring frames.) A shortening reaches here on the rewritten count its responder named
+/// (CR 732.2b), carrying that seat in `shortened_by`; the count decides the materializer, and
+/// the seat decides the ending point. `UntilLethal` ⇒ mark the unbounded axes + declare the terminal win;
 /// `Fixed(N)` ⇒ Phase-4b finite materialization (`materialize_fixed_shortcut`), which drives
 /// N whole cycles atomically, commits + stops early on a cross-lethal `GameOver` mid-drive
 /// whose winner is the one `predicted_winner` named (or on any such `GameOver` when it named
@@ -5338,6 +5387,42 @@ fn materialize_fixed_shortcut(
     // below, which is correct because a heterogeneous period cannot have minted an object-growth
     // offer in the first place.
     if state.loop_period_controller() == Some(proposal.proposer) {
+        // THE ELISION IS TAKEN ONLY FOR A NON-ZERO COUNT THAT NOBODY SHORTENED. One rule, two
+        // grounds, decided above the route choice because both belong to the count and to the
+        // answer rather than to the shapes whose emitters happen to name zero.
+        //
+        // ZERO. CR 732.2c's advance to the last proposed ending point is satisfied at a place of
+        // zero by arriving there having performed no iteration. Choosing the route first would
+        // instead stash a collapse — and on a mana period grant an unbounded axis — for a
+        // sequence that performed nothing, since that materializer carries no count to read.
+        //
+        // A SHORTENING. The elision's whole licence is that the table accepted an UNBOUNDED
+        // advance: the offer states no narrowed bound, the axes are marked unbounded as the
+        // materializer's unconditional first act, and the accepted count survives only as a
+        // ceiling on a deferred collapse — a ceiling written only where something was stashed,
+        // and a mana period stashes nothing. A responder who named a place accepted no such
+        // advance. CR 732.1b permits elision and never requires it ("the shortcut rules can be
+        // used to determine how many times those actions are repeated without having to
+        // actually perform them"); CR 732.2c requires the RESULT — the game at the last proposed
+        // ending point with the proposal's game choices taken — and performing the named number
+        // of periods is that result on both subclasses, including the one where no ceiling is
+        // ever written.
+        //
+        // COST, named rather than hidden: the driver is uncapped and its cost grows with the
+        // count. It is the same cost the deferred collapse already pays through this same
+        // function at counts up to the same implementation limit, so no ceiling of this arm's
+        // own is added here — the consumption guard's global cap has already refused anything
+        // above it.
+        if n == 0 || proposal.shortened_by.is_some() {
+            let period = state.last_loop_action_sequence.clone();
+            let delivered = drive_persistent_axis_collapse(state, &period, n);
+            // The recorded period is the offer mint's routing signal, so a taken shortcut must
+            // consume it or this same `apply()` re-offers the shortcut it just answered — the
+            // ring-clear's own stated purpose, applied to the other half of the signal.
+            state.last_loop_action_sequence.clear();
+            end_shortcut_at_priority(state, result, proposal, delivered == n);
+            return;
+        }
         let stashed_before = state
             .pending_unbounded_materialization
             .get(&proposal.proposer)
@@ -5369,6 +5454,13 @@ fn materialize_fixed_shortcut(
     // `apply_confirmed_shortcut`'s doc comment establishes the board is unchanged since the
     // offer (Declare/Accept touch only the protocol, never the board).
     let mut committed = state.clone();
+    // CR 732.2b/c: "the drive reached the place that was named" is exactly "the drive committed
+    // that many whole cycles", so the ending-point block below derives it from the two sites
+    // that commit one rather than re-asking it at each of the loop's exits — none of which asks
+    // that question, and each of which would have to answer it correctly for the seat rule to
+    // hold. The fail direction is the safe one: an exit that commits without counting hands
+    // back instead of seating the shortener.
+    let mut committed_cycles: u32 = 0;
 
     // The recurrence boundary is the loop's canonical per-cycle SETTLE beat —
     // `Priority{active_player}` — the same beat-kind the detector ring samples
@@ -5451,6 +5543,7 @@ fn materialize_fixed_shortcut(
                 }
                 committed = *s; // ATOMIC: commit state ...
                 result.events.append(&mut events); // ... with its events together
+                committed_cycles += 1;
                 continue 'cycles;
             }
             // Cross-lethal: COMMIT + STOP, ON THE NAME THE OFFER PUBLISHED. CR 704.5a: the win
@@ -5606,6 +5699,7 @@ fn materialize_fixed_shortcut(
                 }
                 committed = *s;
                 result.events.append(&mut events);
+                committed_cycles += 1;
                 break 'cycles;
             }
             // Runaway cap / unpinned prompt / engine error ⇒ abort to manual. The aborting
@@ -5620,46 +5714,39 @@ fn materialize_fixed_shortcut(
     // Reached by: n cycles done with no cross-lethal, a terminal `SeatLeft`, a cross-lethal
     // verdict the proposal's own name contradicts, OR any abort (each a `break 'cycles`).
     // Commit the last WHOLE cycle; the aborting iteration's `ev` was already dropped (no
-    // partial-cycle event leak). Ring-clear BEFORE handback so this same `apply()` does
-    // not instantly re-emit a fresh offer for the same (now-interrupted) loop; a later
-    // beat re-detects genuinely.
+    // partial-cycle event leak).
     //
     // CR 732.2a: "The ending point of this sequence must be a place where a player has
-    // priority, though it need not be the player proposing the shortcut." THIS BLOCK IS
-    // THAT ENDING POINT for every entry path above — `n` cycles done with no cross-lethal,
-    // the terminal `SeatLeft`, the refused crown, and the `Abort` handback. The rolled-back
-    // board the refused crown leaves is still such a place: the loop is intact on it, and the
-    // last conforming cycle is committed.
+    // priority, though it need not be the player proposing the shortcut." THIS IS THAT ENDING
+    // POINT for every entry path above — `n` cycles done with no cross-lethal, the terminal
+    // `SeatLeft`, the refused crown, and the `Abort` handback. The rolled-back board the
+    // refused crown leaves is still such a place: the loop is intact on it, and the last
+    // conforming cycle is committed.
     //
-    // PROBE-PINNED (probe arm `MUT_SEAM`): the window clear here is load-bearing, not a
+    // PROBE-PINNED (probe arm `MUT_SEAM`): the window clear is load-bearing, not a
     // backstop. MEASURED — skipping it on the f4 accepted drive leaves `loop_detect_ring`
     // non-empty (12) and the journal populated (3 answers), and this same `apply()`
-    // re-emits a `LoopShortcut` offer.
+    // re-emits an offer for the loop it just took.
     // The dina 4p drain reaches this seam through the terminal `SeatLeft` entry with a LIVE
     // ring and an ALREADY-EMPTY journal, so on that path the ring-clear is load-bearing while
-    // the `loop_answer_journal = None` below is a ⚠ FORWARD TRIPWIRE rather than a co-equal
+    // the journal clear is a ⚠ FORWARD TRIPWIRE rather than a co-equal
     // half of the CR 603.5 claim — it earns its place by failing if a future writer populates
     // the journal on this entry path. The DISCRIMINATING statement of the journal half is the
     // f4 row
     // `fantastic_four_bounded_loop::r3a_the_accepted_drive_ends_at_the_priority_point_with_the_window_cleared`.
     //
-    // The `waiting_for` re-seat below is a live case, not a normalization with no fixture. The
+    // The `waiting_for` re-seat is a live case, not a normalization with no fixture. The
     // terminal `SeatLeft` entry arrives at the priority window the removal was observed at,
     // which on a multiplayer drain is NOT the active player's, so skipping the re-seat hands
-    // back at the wrong seat. `living_priority_seat` is CR 800.4a-shaped (it falls to the next
-    // player in turn order when the active player has left), and CR 732.2a asks only for A
-    // place where a player has priority — restarting the priority round at a living active
-    // player is one. The row that pins it is
+    // back at the wrong seat. The seat authority answers CR 800.4a-shaped for every exit that
+    // stopped short of the named place (it falls to the next player in turn order when the
+    // active player has left), and CR 732.2a asks only for A place where a player has priority
+    // — restarting the priority round at a living active player is one. The row that pins it is
     // `loop_shortcut::bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat`.
+    // Where a responder shortened and the drive reached the place they named, that seat holds
+    // this point instead (CR 732.2b/c), decided by the same authority the elided route calls.
     *state = committed;
-    state.loop_detect_ring.clear();
-    // CR 603.5: the recorded "may" answers describe the window that just ended.
-    state.loop_answer_journal = None;
-    priority::reset_priority(state);
-    state.waiting_for = WaitingFor::Priority {
-        player: living_priority_seat(state),
-    };
-    result.waiting_for = state.waiting_for.clone();
+    end_shortcut_at_priority(state, result, proposal, committed_cycles == n);
 }
 
 /// PR-7 Phase 4d-ii: the injector aborted a driven recast cycle ⇒ fall closed to manual
@@ -7230,7 +7317,9 @@ fn materialize_object_growth_shortcut(
 /// a committed whole-period prefix; the CR 732.2a ending point is the caller's exit, not this
 /// function's.
 ///
-/// The delivered prefix is a value in `[0, n]`, and the table already consented to every value in
+/// The delivered prefix is a value in `[0, n]` and is RETURNED, because a caller that cannot
+/// separate a full delivery from a truncated one cannot decide who holds the ending point
+/// (CR 732.2b/c). The table already consented to every value in
 /// that range — see the L3 prefix-consent statement at `game::turns`' `PayableResource::LoopCollapse`
 /// prompt, which is the licence and is not restated here. That block is cited for prefix consent
 /// ALONE.
@@ -7257,9 +7346,9 @@ pub(crate) fn drive_persistent_axis_collapse(
     state: &mut GameState,
     seq: &[crate::types::game_state::LoopActionContext],
     n: u32,
-) {
+) -> u32 {
     let Some(controller) = seq.first().map(|c| c.controller) else {
-        return;
+        return 0;
     };
     // Derive `expected_defs` ONCE from the base (reloaded) boundary state — each `Activate` step's
     // named ability def for `Eq` re-validation; `Recast` re-finds its card + combined spell def live.
@@ -7269,6 +7358,7 @@ pub(crate) fn drive_persistent_axis_collapse(
         .collect();
     let _guard = SimulationProbeGuard::enter(); // held across the whole drive
     let mut committed = state.clone();
+    let mut delivered = 0;
     for i in 0..n {
         let mut work = committed.clone();
         // The accept beat cleared the sequence and handed priority to the living seat; re-seed a
@@ -7281,9 +7371,11 @@ pub(crate) fn drive_persistent_axis_collapse(
             break; // commit the successful prefix; the caller hands priority back
         }
         committed = work;
+        delivered += 1;
     }
     *state = committed;
     // `_guard` drops HERE — before the caller re-drains — so the restored beat is offer-eligible.
+    delivered
 }
 
 /// CR 732.2a / CR 111.1 / CR 110.5b / CR 707.2: when an accepted convoke/tap-cost object-growth
@@ -7582,6 +7674,8 @@ fn handle_declare_shortcut(
         // CR 732.2a: the drive reads ONE authority for what a conformant cycle looks like —
         // the confirmed certificate's own signature, copied, never re-derived.
         per_cycle: offer.certificate.per_cycle.clone(),
+        // CR 732.2b: a mint is a proposal nobody has answered yet, so no place has been named.
+        shortened_by: None,
     };
     // CR 732.2b: living opponents in APNAP turn order, starting after the proposer.
     let opps: Vec<PlayerId> = crate::game::players::apnap_order_from(
@@ -7675,10 +7769,10 @@ fn handle_decline_shortcut(
 
 /// CR 732.2b/c: one opponent answered the shortcut offer. Mirrors the
 /// `OpponentMayChoice`/`UnlessPayment` APNAP fan-out (drain-one-advance via
-/// `remaining_players`). Accept advances to the next opponent, or — when the last accepts —
-/// takes the shortcut. Shorten conservatively hands THAT opponent a real priority window
-/// (CR 732.2c "a different choice"); the shortcut is NOT auto-applied, and a later beat
-/// re-detects the loop (a fresh offer if it still closes, normal play if broken).
+/// `remaining_players`). Both answers advance the same poll, and the last of them takes the
+/// shortcut (CR 732.2c). A `Shorten` additionally rewrites the proposal: the place it names
+/// becomes the count (CR 732.2b "this place becomes the new ending point of the proposed
+/// sequence") and the responder is recorded as the seat that ending point belongs to.
 fn handle_respond_to_shortcut(
     state: &mut GameState,
     player: PlayerId,
@@ -7727,16 +7821,41 @@ fn handle_respond_to_shortcut(
                 apply_confirmed_shortcut(state, &mut result, &proposal);
             }
         }
-        crate::analysis::loop_check::ShortcutResponse::Shorten { .. } => {
-            // DEFICIENCY NOTE (realization gap vs the design at `types::game_state`'s
-            // `scheduled_collapse_axes` doc; full note on `ShortcutResponse`): CR 732.2b makes the
-            // named place the new ending point, so the shortcut should still be taken up to there.
-            // This hands the responder a real priority window instead. Tracked by the
-            // "Shortcut-system rules-correctness completion" follow-up in `.deferred-backlog.md`.
-            priority::reset_priority(state);
-            state.priority_player = player;
-            state.waiting_for = WaitingFor::Priority { player };
-            result.waiting_for = state.waiting_for.clone();
+        crate::analysis::loop_check::ShortcutResponse::Shorten { at_iteration } => {
+            // CR 732.2b: "This place becomes the new ending point of the proposed sequence." The
+            // count the rest of the table now answers is the place this responder named, and
+            // they are the seat CR 732.2c owes a different game choice at it. Nothing else on
+            // the proposal moves — the offer's own predicted winner rides it into consumption,
+            // so the seat the offer named is still on the record when the shortcut is taken.
+            let mut proposal = proposal;
+            proposal.count =
+                crate::analysis::decision_template::IterationCount::Fixed(at_iteration);
+            proposal.shortened_by = Some(player);
+            // CR 800.4a: never advance the offer onto a player who has left the game — the same
+            // departed-seat filter, and the same APNAP-ordered queue, the Accept arm drains.
+            let mut living = remaining_players
+                .into_iter()
+                .filter(|&p| crate::game::players::is_alive(state, p));
+            match (at_iteration, living.next()) {
+                // A place of zero rewrites the proposal to one whose range admits no place, so
+                // `Shorten` is refused for every seat still queued and `Accept` is the only
+                // answer left — and the last of those Accepts would reach this same call with
+                // this same proposal. Eliding the rest of the poll is that outcome rather than a
+                // policy. What it gives up is a window in which a queued concession could land
+                // before consumption, inert for a count that materializes nothing.
+                (0, _) => apply_confirmed_shortcut(state, &mut result, &proposal),
+                // CR 732.2c: "Once the last player has either accepted or shortened the shortcut
+                // proposal, the shortcut is taken."
+                (_, None) => apply_confirmed_shortcut(state, &mut result, &proposal),
+                (_, Some(next)) => {
+                    state.waiting_for = WaitingFor::RespondToShortcut {
+                        player: next,
+                        remaining_players: living.collect(),
+                        proposal,
+                    };
+                    result.waiting_for = state.waiting_for.clone();
+                }
+            }
         }
     }
     Ok(result)
@@ -19558,6 +19677,7 @@ mod stage2_injector_tests {
             win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
             template: Some(template),
             per_cycle: None,
+            shortened_by: None,
         };
         let mut result = crate::types::game_state::ActionResult {
             events: Vec::new(),
@@ -19693,6 +19813,7 @@ mod stage2_injector_tests {
             win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
             template: Some(sched),
             per_cycle: None,
+            shortened_by: None,
         };
         let mut result = crate::types::game_state::ActionResult {
             events: Vec::new(),

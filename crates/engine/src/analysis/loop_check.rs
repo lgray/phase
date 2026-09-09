@@ -197,6 +197,22 @@ pub struct ShortcutProposal {
     /// producer states no per-period signature (see [`LoopCertificate::per_cycle`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_cycle: Option<crate::analysis::resource::PeriodicDelta>,
+    /// CR 732.2b/c: the responder whose named place is this proposal's current ending point.
+    /// CR 732.2b makes the place they named "the new ending point of the proposed sequence",
+    /// and CR 732.2c's third sentence owes the different game choice to the player who then
+    /// has priority — so this is the seat that obligation belongs to.
+    ///
+    /// `None` is "nobody has shortened", the state every mint writes. A later shortening
+    /// OVERWRITES it, because the last named place is the ending point and its namer is who
+    /// then has priority; an `Accept` neither sets nor clears it, because an `Accept` names no
+    /// place. Two consumers read it, and naming both here is why neither restates the rule:
+    /// `game::engine`'s ending-seat authority, and its fixed materializer's route answer — a
+    /// captured object-growth period a responder shortened is PERFORMED rather than elided,
+    /// because the elision's licence is an unbounded advance that a shortening declines.
+    ///
+    /// A seat identity is public board state, so this carries no redaction seam of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortened_by: Option<PlayerId>,
 }
 
 impl ShortcutProposal {
@@ -226,21 +242,9 @@ impl ShortcutProposal {
 /// doesn't need to specify at this time what the new choice will be" — which is why `Shorten`
 /// carries `at_iteration` and no choice payload.
 ///
-/// DEFICIENCY NOTE — REALIZATION GAP vs THE DESIGN. This is a note, not a defense.
-///
-/// The design is stated at `types::game_state`'s `scheduled_collapse_axes` doc. Under CR 732.2b the
-/// place a responder names "becomes the new ending point", so the shortcut is still TAKEN up to
-/// there. This engine does not do that yet: every `Shorten` is realized as decline-to-manual —
-/// nothing is taken and the responder receives a real priority window, with `at_iteration` carried
-/// and honored as a stop signal rather than as a partial-advance instruction. Finite-K
-/// materialization at the named iteration is the remaining work.
-///
-/// The gap's direction is toward MORE responder agency than CR 732.2b grants (priority strictly
-/// earlier, proposer benefit strictly less), so it can never take a choice away from a player who
-/// asked to diverge — but the target is the rule, not a favorable direction. Closing it is tracked
-/// as the USER-AUTHORIZED follow-up "Shortcut-system rules-correctness completion — true all the
-/// way down" (`.deferred-backlog.md`), which exists to make the design true all the way down rather
-/// than to justify where it is not yet. Out of scope for the PR that wrote this note.
+/// `at_iteration` is a partial-advance instruction, not a stop signal: the named place becomes
+/// the proposal's count, the poll runs on to the last player, and the shortcut is then taken to
+/// that place (CR 732.2c). `ShortcutProposal::shortened_by` carries whose place it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ShortcutResponse {
     /// CR 732.2c: this player agrees to take the shortcut.

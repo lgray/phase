@@ -1378,10 +1378,10 @@ pub fn validate_pins(
                     // NOT disabled at 0: the slot-exposure (`UnexposedSlot`), pin-kind and
                     // cardinality checks all sit OUTSIDE this loop and still run.
                     //
-                    // ⚠ SCOPE: this licenses representing and validating count 0. It does NOT
-                    // claim today's Shorten path reaches here with 0 —
-                    // `handle_respond_to_shortcut` realizes Shorten as a real priority window,
-                    // not an auto-applied `Fixed(0)`.
+                    // A `Shorten` at place 0 is exactly that proposal:
+                    // `handle_respond_to_shortcut` rewrites the count to `Fixed(0)` and takes
+                    // the shortcut, so this is a live shape rather than a merely representable
+                    // one.
                     for i in 0..validated_range {
                         let concrete = resolve_target(t, slot, i, state)
                             .map_err(|_| PinValidation::IllegalPinValue { slot: slot.clone() })?;

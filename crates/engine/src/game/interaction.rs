@@ -3431,9 +3431,11 @@ fn declared_shortcut_projection(waiting_for: &WaitingFor) -> Option<DeclaredSequ
     // The single hidden-information authority has already set this to `None` for a viewer who
     // may not see the declaration, so an identity that authority dropped is unreachable here.
     let template = proposal.template.as_ref()?;
-    // The DECLARED count as a degenerate one-point window. Nothing on this path samples a count
-    // — the count sampler is never called here — so stating the declared count is the honest
-    // value for a field the offer-side projection requires.
+    // The proposal's LIVE count as a degenerate one-point window — the proposer's declaration
+    // until a responder shortens, and that responder's named place afterwards (CR 732.2b), which
+    // is what the seats still queued are being asked about. Nothing on this path samples a count
+    // — the count sampler is never called here — so reading the proposal's own count is the
+    // honest value for a field the offer-side projection requires.
     let count = match proposal.count {
         IterationCount::Fixed(iterations) => InteractionShortcutCountSpec::Fixed {
             min: iterations,

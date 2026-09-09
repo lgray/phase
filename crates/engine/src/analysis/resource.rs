@@ -20252,6 +20252,7 @@ mod tests {
                 declarable_victims: vec![],
                 seat_life_charge: vec![],
             }),
+            shortened_by: None,
         };
         let wait = WaitingFor::RespondToShortcut {
             player: PlayerId(1),

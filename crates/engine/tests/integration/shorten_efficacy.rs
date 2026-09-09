@@ -1388,7 +1388,8 @@ fn v9b_a_sacrifice_for_mana_seat_still_gets_its_window() {
 // mana "can be used to pay costs immediately", CR 106.1 says paying costs is
 // mana's whole function, and CR 601.2g runs mana abilities during the very cast
 // they fund. So producing mana widens what the polled seat can do inside the
-// window `game::engine`'s `RespondToShortcut(Shorten)` arm hands back, and the
+// window a Shorten opens for that seat — the ending point it holds once the
+// shortcut is taken — and the
 // classifier — which reads ONE ability's AST and no other object — cannot prove
 // otherwise. Both rows below ride the REAL 4p board through the same production
 // chokepoint the flagship uses.
@@ -2095,7 +2096,7 @@ fn v10b_an_actor_owned_sacrifice_for_mana_seat_keeps_its_window() {
 /// over: `effect_window_reach`'s `ChangeZone` arm allowlisted ANY
 /// `Library -> Battlefield` move, and a land that arrives untapped (CR 110.5b —
 /// permanents enter untapped "unless a spell or ability says otherwise") taps for
-/// mana inside the window the Shorten hands back. CR 302.6's summoning-sickness
+/// mana inside the window a Shorten opens. CR 302.6's summoning-sickness
 /// bar is a CREATURE rule and never reaches a land, and CR 601.2g runs the mana
 /// ability during the cast it funds.
 ///

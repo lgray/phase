@@ -3400,13 +3400,19 @@ export type DecisionSource =
  */
 export type DecisionTemplate = Record<string, unknown>;
 
-/** Mirrors `engine::analysis::loop_check::ShortcutProposal`. */
+/**
+ * Mirrors `engine::analysis::loop_check::ShortcutProposal`. `shortened_by` is the responder
+ * whose named place is the proposal's current ending point (CR 732.2b); it is `skip_serializing_if
+ * none` on the wire, so an unshortened proposal serializes exactly as before and no protocol
+ * version moves — the same posture the two optional fields this interface does not mirror ship.
+ */
 export interface ShortcutProposal {
   proposer: PlayerId;
   predicted_winner: PlayerId | null;
   count: IterationCount;
   unbounded: ResourceAxis[];
   win_kind: WinKind;
+  shortened_by?: PlayerId;
 }
 
 /**

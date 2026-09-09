@@ -13645,8 +13645,9 @@ pub enum WaitingFor {
     ///
     /// The window is what makes CR 732.2c's "once the LAST player has either accepted or
     /// shortened" a real condition rather than an assumption: no advance occurs until this queue
-    /// drains. See `ShortcutResponse` for how a `Shorten` is realized, which is deliberately
-    /// conservative and disclosed there.
+    /// drains — on either answer. A `Shorten` rewrites `proposal.count` to the place it names
+    /// and records the namer in `proposal.shortened_by`, so the seats queued behind it answer
+    /// the shortened proposal and the last of them takes it to that place.
     RespondToShortcut {
         player: PlayerId,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -25799,8 +25800,8 @@ impl GameState {
     /// **ELISION ≡ PERFORMANCE. The engine can never advance to a state that performing the
     /// proposal's choices would not produce.** CR 732.2c defines the advance as reaching the ending
     /// point "with all game choices contained in the shortcut proposal having been taken", so the
-    /// end state must be the state those choices produce. There are exactly three materialization
-    /// routes and each preserves that identity:
+    /// end state must be the state those choices produce. Every materialization route the
+    /// confirmed-shortcut dispatch can take preserves that identity:
     ///
     /// (a) UNOBSERVED → batch. `batch(N) ≡ perform-each(N)` by the growth-observed firewall's own
     ///     precondition: the batch route is entered only when no observer can make the lump apply
@@ -25816,6 +25817,11 @@ impl GameState {
     ///     the iterations beat by beat through `pass_priority_once_with_pipeline`. Identity holds
     ///     the way it holds on route (b), and for the same reason: nothing is elided that
     ///     performance would not produce.
+    /// (e) SHORTENED, OR A COUNT OF ZERO → the captured period is PERFORMED the named number of
+    ///     times, through the same driver route (b) names. Route (a)'s licence is that the table
+    ///     accepted an unbounded advance; a responder who named a place (CR 732.2b) accepted no
+    ///     such thing, and a sequence performed zero times reaches its ending point having done
+    ///     nothing, so neither may take the elision. Identity again holds by performance.
     ///
     /// Route (c) is the one the review indicted, and it is the route that ENFORCES CR 732.2c rather
     /// than departing from it. Once an observer appears, the other two options both break the
@@ -27367,6 +27373,7 @@ mod forced_cascade_window_tests {
                         win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
                         template: None,
                         per_cycle: None,
+                        shortened_by: None,
                     },
                 },
             ),
