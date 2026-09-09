@@ -4404,8 +4404,12 @@ fn living_priority_seat(state: &GameState) -> PlayerId {
 /// fallback is CR 800.4a-shaped, whose condition is the departing player's own priority, which
 /// is exactly the case a materialization that eliminated the shortener produces.
 ///
-/// Both sites that can arrive at an ending point call this, so the two cannot answer the rule
-/// differently.
+/// Both blocks that can arrive at a NAMED place call this, so the two cannot answer the rule
+/// differently. A `Fixed` count reaches a third ending-point block, the elision's tail in
+/// `materialize_object_growth_shortcut`, which inlines the ring clear and `living_priority_seat`
+/// instead of calling this. That tail is reached only under
+/// `n != 0 && proposal.shortened_by.is_none()`, where this function returns `living_priority_seat`
+/// anyway, so the inline answer and this one cannot disagree.
 fn shortcut_ending_point_seat(
     state: &GameState,
     proposal: &crate::analysis::loop_check::ShortcutProposal,
@@ -4419,9 +4423,11 @@ fn shortcut_ending_point_seat(
 }
 
 /// CR 732.2a: close a `Fixed` materialization at its ending point — "a place where a player has
-/// priority, though it need not be the player proposing the shortcut". Both materializations
-/// the count can reach end here, so the window clear and the seat rule cannot drift apart
-/// between them.
+/// priority, though it need not be the player proposing the shortcut". Every materialization that
+/// can reach a place a responder named ends here, so the window clear and the seat rule cannot
+/// drift apart between them. The elision's tail in `materialize_object_growth_shortcut` is a
+/// co-equal ending-point block that does not call this: it is reached only where no place was
+/// named, and it inlines the ring clear and `living_priority_seat`.
 ///
 /// The ring clear is load-bearing rather than a backstop: without it this same `apply()` re-emits
 /// an offer for the loop it just took, and a later beat is where a genuine re-detection belongs.
