@@ -16569,12 +16569,16 @@ fn the_detector_separates_into_sized_parts_against_a_detector_off_leg() {
 /// is compiler-closed, and each of those callers projects both sides between its own entry
 /// tick and its second projection — the two read EQUAL at base.
 ///
-/// REVERT-FAILING while the bridge's ring walk is the only site that shares a current-side
-/// projection: every other production call of the four compare entries derives both sides, so
-/// a second hoist anywhere would hold this whole-detector inequality up on its own. Hand
-/// either ring walk `state` again instead of the shared frames and the current side is
-/// re-derived per prior, returning `projected_clones` to `2 x resource_compares` and failing
-/// the strict inequality — while every verdict row stays green.
+/// REVERT-FAILING over the one walk this drive runs. `SharedCurrentFrames::new` has exactly two
+/// call sites — the `mandatory` and `!mandatory` ring walks of `interactive_loop_bridge` — and
+/// every other production call of the four compare entries derives both sides, so a second hoist
+/// anywhere would hold this whole-detector inequality up on its own. This fixture takes the
+/// `!mandatory` walk alone, the live arm
+/// `the_detector_separates_into_sized_parts_against_a_detector_off_leg` pins on the same drive:
+/// hand THAT walk `state` again instead of the shared frames and the current side is re-derived
+/// per prior, returning `projected_clones` to `2 x resource_compares` and failing the strict
+/// inequality — while every verdict row stays green. The `mandatory` walk's hoist never runs
+/// here, so reverting it alone leaves this row green: unreached, not guarded.
 #[test]
 fn the_bridge_shares_one_current_side_projection_across_its_ring_walk() {
     const BEATS: usize = 12;
