@@ -2334,26 +2334,34 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
         let priors: Vec<std::sync::Arc<crate::types::LoopDetectSample>> =
             state.loop_detect_ring.iter().cloned().collect();
         let cur = crate::analysis::resource::ResourceVector::snapshot(state);
-        for prior in &priors {
-            let prior = &prior.normalized;
-            let delta = crate::analysis::resource::ResourceVector::delta(
-                &crate::analysis::resource::ResourceVector::snapshot(prior),
-                &cur,
-            );
-            // CR 732.2a board-recurrence (constant-depth OR ω growing cascade) + net
-            // progress + NO loss axis for anyone ⇒ the loop grinds forever with nobody
-            // able to win or lose ⇒ CR 732.4 / 104.4b draw.
-            if (crate::analysis::resource::loop_states_equal_modulo_resources(prior, state)
-                || crate::analysis::resource::loop_states_cover_modulo_growth(prior, state))
-                && delta.is_net_progress()
-                && has_no_loss_axis(&delta)
-            {
-                result.events.push(GameEvent::GameOver { winner: None });
-                state.waiting_for = WaitingFor::GameOver { winner: None };
-                result.waiting_for = state.waiting_for.clone();
-                match_flow::handle_game_over_transition(state);
-                return;
-            }
+        // The current side is the same state for every prior, so its two projections are
+        // derived ONCE for the whole ring instead of twice per prior. The frames BORROW
+        // `state`, which is why the verdict is carried out of the scan and acted on below: a
+        // mutation inside the walk would be a borrow-check error rather than a walk that keeps
+        // comparing against a state it already changed.
+        let drawn = !priors.is_empty() && {
+            let frames = crate::analysis::resource::SharedCurrentFrames::new(state);
+            priors.iter().any(|prior| {
+                let prior = &prior.normalized;
+                let delta = crate::analysis::resource::ResourceVector::delta(
+                    &crate::analysis::resource::ResourceVector::snapshot(prior),
+                    &cur,
+                );
+                // CR 732.2a board-recurrence (constant-depth OR ω growing cascade) + net
+                // progress + NO loss axis for anyone ⇒ the loop grinds forever with nobody
+                // able to win or lose ⇒ CR 732.4 / 104.4b draw.
+                (crate::analysis::resource::loop_states_equal_modulo_resources_side(prior, &frames)
+                    || crate::analysis::resource::loop_states_cover_modulo_growth(prior, &frames))
+                    && delta.is_net_progress()
+                    && has_no_loss_axis(&delta)
+            })
+        };
+        if drawn {
+            result.events.push(GameEvent::GameOver { winner: None });
+            state.waiting_for = WaitingFor::GameOver { winner: None };
+            result.waiting_for = state.waiting_for.clone();
+            match_flow::handle_game_over_transition(state);
+            return;
         }
     }
     // PR-7 Phase 4c (B5): OPTIONAL beneficial (non-winning) loop ⇒ revocable-∞ capability.
@@ -2383,75 +2391,88 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
         let priors: Vec<std::sync::Arc<crate::types::LoopDetectSample>> =
             state.loop_detect_ring.iter().cloned().collect();
         let cur = crate::analysis::resource::ResourceVector::snapshot(state);
-        for prior in &priors {
-            let prior = &prior.normalized;
-            let delta = crate::analysis::resource::ResourceVector::delta(
-                &crate::analysis::resource::ResourceVector::snapshot(prior),
-                &cur,
-            );
-            // Same recurrence + net-progress predicate as Path B (byte-reused), minus the
-            // `mandatory` gate. The object-growth disjunct is the SHARED-BUT-DORMANT arm
-            // (empty residual today; lights up under 4a-live with no further edit).
-            //
-            // REDUNDANCY PROOF (R6, team-lead-verified): `has_no_loss_axis` (conjunct 3
-            // below) is UNCONDITIONALLY REDUNDANT at this Path-C call site — every
-            // self-loss axis it checks is already rejected by an EARLIER conjunct, so
-            // removing it changes no Path-C outcome and a discriminating runtime test for
-            // it HERE is unsatisfiable (waived; kept as documented defense-in-depth):
-            //   - library↓ (self-mill): a card leaving the Library zone changes its
-            //     `objects_content_eq` zone, so successive frames compare UNEQUAL and
-            //     recurrence (conjunct 1) fails first — the loop never recurs, so this
-            //     arm is never even reached.
-            //   - life↓ (self-burn): life is a Consumed axis (`ResourceVector::components`),
-            //     so `is_net_progress` (conjunct 2) returns false on any net-negative life
-            //     (`ResourceVector::is_net_progress`'s `Component::Consumed if value < 0`
-            //     arm, over all players) before conjunct 3 runs.
-            //   - poison↑ (self-poison): `classify_win_kind` (conjunct 4) maps poison>0 to
-            //     `WinKind::PoisonLoss`, not `Advantage`, so the `== Advantage` conjunct
-            //     rejects it.
-            // CONTRAST — the Path-B DRAW gate (the EARLIER draw arm in this same
-            // `interactive_loop_bridge`: recurrence + is_net_progress + has_no_loss_axis, and it is
-            // the arm carrying NO `classify_win_kind` / `== Advantage` conjunct) is DIFFERENT: there
-            // `has_no_loss_axis` is the SOLE loss-axis veto and is LOAD-BEARING BY
-            // CONSTRUCTION — it MUST NOT be removed. A poison loop reaching Path B satisfies
-            // recurrence (poison is projected out by `projected_player_axes`, which destructures
-            // `poison_counters` out of the compared image) AND is_net_progress
-            // (poison is a Gained axis, which cannot make is_net_progress false), so without
-            // this conjunct such a loop would be WRONGLY certified a CR 732.4 draw. (Path C's
-            // poison redundancy comes ENTIRELY from its extra `== Advantage` conjunct, which
-            // Path B lacks.) The Path-B veto is currently NOT runtime-discriminable: a
-            // single-compound-trigger poison loop DOES reach the Path-B bridge, but the
-            // "you gain N life and [each opponent gets a poison counter]" parser drop removes
-            // the poison conjunct (card-build keeps only `GainLife`), so poison is 0 in the loop
-            // delta at the gate → it draws as a benign lifegain loop and never exercises
-            // has_no_loss_axis's poison veto. No constructible fixture carries poison>0 to the
-            // Path-B gate (the 2-trigger form clears `loop_detect_ring` on its OrderTriggers
-            // beats, in `apply_action`'s `PassPriority | OrderTriggers { .. }` ring-clear arm;
-            // the single-compound-trigger form drops the poison at
-            // parse). The runtime discriminator is therefore WAIVED as measured-unsatisfiable;
-            // this in-code load-bearing-by-construction proof is the substitute. See the
-            // `interactive_recurring_poison_is_not_drawn` Path-B behavioral test.
-            if (crate::analysis::resource::loop_states_equal_modulo_resources(prior, state)
-                || crate::analysis::resource::loop_states_cover_modulo_growth(prior, state)
-                // CR 122.1 + CR 104.4b: OR a pure preserved-`Generic` counter-growth
-                // cover (proliferate/charge Pentad Prism, burden The One Ring). Live
-                // revocable-∞ mark ONLY — this Path-C arm routes to `mark_unbounded_loop`
-                // + enabler registration below, which NEVER produces a GameOver; an
-                // over-claim is a revocable capability, not a wrongful game-end.
-                || crate::analysis::resource::loop_states_cover_modulo_counter_growth(
-                    prior, state,
-                ))
-                && delta.is_net_progress()
-                && has_no_loss_axis(&delta)
-                && crate::analysis::loop_check::classify_win_kind(controller, &delta)
-                    == crate::analysis::loop_check::WinKind::Advantage
-            {
+        // Hoisted for the same reason as Path B's, and with the same consequence: the frames
+        // borrow `state`, so the mark below happens after the scan rather than inside it.
+        let hit = if priors.is_empty() {
+            None
+        } else {
+            let frames = crate::analysis::resource::SharedCurrentFrames::new(state);
+            priors.iter().find_map(|prior| {
+                let prior = &prior.normalized;
+                let delta = crate::analysis::resource::ResourceVector::delta(
+                    &crate::analysis::resource::ResourceVector::snapshot(prior),
+                    &cur,
+                );
+                // Same recurrence + net-progress predicate as Path B (byte-reused), minus the
+                // `mandatory` gate. The object-growth disjunct is the SHARED-BUT-DORMANT arm
+                // (empty residual today; lights up under 4a-live with no further edit).
+                //
+                // REDUNDANCY PROOF (R6, team-lead-verified): `has_no_loss_axis` (conjunct 3
+                // below) is UNCONDITIONALLY REDUNDANT at this Path-C call site — every
+                // self-loss axis it checks is already rejected by an EARLIER conjunct, so
+                // removing it changes no Path-C outcome and a discriminating runtime test for
+                // it HERE is unsatisfiable (waived; kept as documented defense-in-depth):
+                //   - library↓ (self-mill): a card leaving the Library zone changes its
+                //     `objects_content_eq` zone, so successive frames compare UNEQUAL and
+                //     recurrence (conjunct 1) fails first — the loop never recurs, so this
+                //     arm is never even reached.
+                //   - life↓ (self-burn): life is a Consumed axis (`ResourceVector::components`),
+                //     so `is_net_progress` (conjunct 2) returns false on any net-negative life
+                //     (`ResourceVector::is_net_progress`'s `Component::Consumed if value < 0`
+                //     arm, over all players) before conjunct 3 runs.
+                //   - poison↑ (self-poison): `classify_win_kind` (conjunct 4) maps poison>0 to
+                //     `WinKind::PoisonLoss`, not `Advantage`, so the `== Advantage` conjunct
+                //     rejects it.
+                // CONTRAST — the Path-B DRAW gate (the EARLIER draw arm in this same
+                // `interactive_loop_bridge`: recurrence + is_net_progress + has_no_loss_axis, and it is
+                // the arm carrying NO `classify_win_kind` / `== Advantage` conjunct) is DIFFERENT: there
+                // `has_no_loss_axis` is the SOLE loss-axis veto and is LOAD-BEARING BY
+                // CONSTRUCTION — it MUST NOT be removed. A poison loop reaching Path B satisfies
+                // recurrence (poison is projected out by `projected_player_axes`, which destructures
+                // `poison_counters` out of the compared image) AND is_net_progress
+                // (poison is a Gained axis, which cannot make is_net_progress false), so without
+                // this conjunct such a loop would be WRONGLY certified a CR 732.4 draw. (Path C's
+                // poison redundancy comes ENTIRELY from its extra `== Advantage` conjunct, which
+                // Path B lacks.) The Path-B veto is currently NOT runtime-discriminable: a
+                // single-compound-trigger poison loop DOES reach the Path-B bridge, but the
+                // "you gain N life and [each opponent gets a poison counter]" parser drop removes
+                // the poison conjunct (card-build keeps only `GainLife`), so poison is 0 in the loop
+                // delta at the gate → it draws as a benign lifegain loop and never exercises
+                // has_no_loss_axis's poison veto. No constructible fixture carries poison>0 to the
+                // Path-B gate (the 2-trigger form clears `loop_detect_ring` on its OrderTriggers
+                // beats, in `apply_action`'s `PassPriority | OrderTriggers { .. }` ring-clear arm;
+                // the single-compound-trigger form drops the poison at
+                // parse). The runtime discriminator is therefore WAIVED as measured-unsatisfiable;
+                // this in-code load-bearing-by-construction proof is the substitute. See the
+                // `interactive_recurring_poison_is_not_drawn` Path-B behavioral test.
+                // CR 122.1 + CR 104.4b: the third disjunct is a pure preserved-`Generic`
+                // counter-growth cover (proliferate/charge Pentad Prism, burden The One
+                // Ring). Live revocable-∞ mark ONLY — this Path-C arm routes to
+                // `mark_unbounded_loop` + enabler registration below, which NEVER produces a
+                // GameOver; an over-claim is a revocable capability, not a wrongful game-end.
+                // It is also the one disjunct the hoist leaves deriving: its current-side
+                // comparand is `equalize_generic_counters(prior, current)`, which depends on
+                // the prior.
+                let recurs =
+                    crate::analysis::resource::loop_states_equal_modulo_resources_side(
+                        prior, &frames,
+                    ) || crate::analysis::resource::loop_states_cover_modulo_growth(prior, &frames)
+                        || crate::analysis::resource::loop_states_cover_modulo_counter_growth(
+                            prior,
+                            frames.current(),
+                        );
+                if !(recurs
+                    && delta.is_net_progress()
+                    && has_no_loss_axis(&delta)
+                    && crate::analysis::loop_check::classify_win_kind(controller, &delta)
+                        == crate::analysis::loop_check::WinKind::Advantage)
+                {
+                    return None;
+                }
                 let axes = delta.unbounded_axes_for(controller);
                 if axes.is_empty() {
-                    continue; // no unbounded axis for the driver ⇒ not this player's loop
+                    return None; // no unbounded axis for the driver ⇒ not this player's loop
                 }
-                // CR 104.4b: mark the revocable unbounded capability (idempotent set-union).
-                state.mark_unbounded_loop(controller, &axes);
                 // CR 110.1 + every-enabler: the stable recurring board is the enabler set.
                 // battlefield_ids(prior) ∩ battlefield_ids(state) — complete for battlefield-
                 // permanent enablers of a constant-depth loop, excludes intra-loop churn.
@@ -2459,11 +2480,15 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                     .battlefield
                     .iter()
                     .copied()
-                    .filter(|id| state.battlefield.contains(id))
+                    .filter(|id| frames.current().battlefield.contains(id))
                     .collect();
-                state.register_unbounded_loop_enablers(controller, enablers);
-                return;
-            }
+                Some((axes, enablers))
+            })
+        };
+        if let Some((axes, enablers)) = hit {
+            // CR 104.4b: mark the revocable unbounded capability (idempotent set-union).
+            state.mark_unbounded_loop(controller, &axes);
+            state.register_unbounded_loop_enablers(controller, enablers);
         }
     }
     // else: staggered-pod loss / non-beneficial optional loop ⇒ no auto-resolve; fall

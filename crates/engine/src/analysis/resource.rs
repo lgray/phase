@@ -13,6 +13,7 @@
 //! the **complement** of `loop_states_equal`: board/zones/tap-state identical, monotone
 //! resources allowed to differ. [`loop_states_equal_modulo_resources`] is that comparison.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
@@ -416,10 +417,15 @@ type CloneSites = [(&'static str, u32); 7];
 
 impl LoopDetectCost {
     /// Both report arrays out of ONE no-`..` destructure, which is what makes them
-    /// field-total together: a new field on this struct BREAKS THE BUILD until the author
-    /// places it in the timed array or the count-only one. Same idiom, and the same reason,
-    /// as [`project_out_player_consumables`]'s. Nothing is bound `_` here — every field is
-    /// consumed by one of the two arrays, so a bound-but-unplaced field is a deny too.
+    /// field-total together: an OMITTED field is a hard `rustc` error (E0027). Same idiom,
+    /// and the same reason, as [`project_out_player_consumables`]'s. The other two ways to
+    /// drop a field are closed one tier up, by `clippy -D warnings` rather than by
+    /// `cargo build`: a bound-but-unplaced field is an unused-variable deny, and the
+    /// attribute below rejects `field: _`, which otherwise slips both arrays AND the
+    /// whole-meter-zero negative with no diagnostic at any tier. Unlike
+    /// [`project_out_player_consumables`], `_` has no legitimate meaning here — every field
+    /// belongs to exactly one array.
+    #[deny(clippy::unneeded_field_pattern)]
     fn classify(&self) -> (TimedSites, CloneSites) {
         let Self {
             sample_normalize_ns,
@@ -2109,6 +2115,86 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
     None
 }
 
+/// The current side of a loop comparison: either a raw state, whose projections the
+/// comparison derives itself, or a [`SharedCurrentFrames`] a caller already derived once for a
+/// whole ring walk. The two are distinct TYPES rather than two `&GameState`s, because a
+/// projected frame and a raw state are otherwise indistinguishable and the wrong one compares
+/// a projected image against an unprojected one.
+///
+/// `Copy`: a body reads the state and its projection independently.
+pub(crate) trait CurrentSide<'a>: Copy {
+    /// The unprojected state. Every read outside a projected comparand uses it.
+    fn state(self) -> &'a GameState;
+    /// [`project_out_resources`] of [`CurrentSide::state`].
+    fn projected(self) -> Cow<'a, GameState>;
+    /// [`cover_projection`] of it.
+    fn cover_projected(self) -> Cow<'a, GameState>;
+}
+
+impl<'a> CurrentSide<'a> for &'a GameState {
+    fn state(self) -> &'a GameState {
+        self
+    }
+    fn projected(self) -> Cow<'a, GameState> {
+        Cow::Owned(project_out_resources(self))
+    }
+    fn cover_projected(self) -> Cow<'a, GameState> {
+        Cow::Owned(cover_projection(self))
+    }
+}
+
+/// The two current-side projections one reconcile-bridge ring walk shares across every prior
+/// it compares, derived once per walk instead of once per prior.
+///
+/// It BORROWS the state it describes, which is what makes the walk's `state`-invariance
+/// load-bearing rather than incidental: mutating that state while these frames are alive is a
+/// borrow-check error, not a stale comparand. Both fields come from the same two functions the
+/// deriving path calls, so a shared comparison compares the same bytes as the one it replaces.
+pub(crate) struct SharedCurrentFrames<'a> {
+    current: &'a GameState,
+    projected: GameState,
+    cover: GameState,
+}
+
+impl<'a> SharedCurrentFrames<'a> {
+    pub(crate) fn new(current: &'a GameState) -> Self {
+        Self {
+            current,
+            projected: project_out_resources(current),
+            cover: cover_projection(current),
+        }
+    }
+
+    /// The state these frames project — the only current-side state a sharing caller reads,
+    /// so a projection can never be paired with a different state.
+    pub(crate) fn current(&self) -> &'a GameState {
+        self.current
+    }
+}
+
+impl<'a> CurrentSide<'a> for &'a SharedCurrentFrames<'a> {
+    fn state(self) -> &'a GameState {
+        self.current
+    }
+    fn projected(self) -> Cow<'a, GameState> {
+        Cow::Borrowed(&self.projected)
+    }
+    fn cover_projected(self) -> Cow<'a, GameState> {
+        Cow::Borrowed(&self.cover)
+    }
+}
+
+/// [`project_out_resources`] with the stack and its stack-entry-indexed firing sidecar
+/// cleared — the single authority for the comparand
+/// [`loop_states_cover_modulo_growth_scoped`]'s gate (1) needs, whose gate (2) compares the
+/// stack separately.
+fn cover_projection(state: &GameState) -> GameState {
+    let mut projected = project_out_resources(state);
+    projected.stack.clear();
+    projected.stack_trigger_firings.clear();
+    projected
+}
+
 /// CR 732.2a vs CR 104.4b: the **complement** of the engine's strict loop equality
 /// (`types::game_state::loop_states_equal`), which also requires life, damage, counters,
 /// P/T, loyalty and mana to match — correct for a *mandatory* loop, a draw only if it
@@ -2124,9 +2210,21 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
 /// and is regression-pinned. [`loop_states_cover_modulo_growth`] closes both surfaces by
 /// construction rather than inheriting the assumption.
 pub fn loop_states_equal_modulo_resources(a: &GameState, b: &GameState) -> bool {
+    loop_states_equal_modulo_resources_side(a, b)
+}
+
+/// [`loop_states_equal_modulo_resources`] over a [`CurrentSide`], so a ring walk can reuse one
+/// current-side projection across every prior instead of re-deriving it per prior. The
+/// `compares_equal_modulo_resources` tick lives HERE and at no other site, so a shared
+/// comparison counts exactly like a deriving one and `projected_clones <= 2 *
+/// resource_compares` stays a relation over one population.
+pub(crate) fn loop_states_equal_modulo_resources_side<'a, C: CurrentSide<'a>>(
+    a: &GameState,
+    b: C,
+) -> bool {
     bump_loop_detect_cost(|cost| cost.compares_equal_modulo_resources += 1);
     let pa = project_out_resources(a);
-    let pb = project_out_resources(b);
+    let pb = b.projected();
     // CR 606.3: the per-object loyalty-activation count is the authoritative
     // once-per-turn-per-permanent gate, but `objects_content_eq` does NOT compare it
     // (and `normalize_for_loop` does not zero it), so a loyalty loop is invisible to
@@ -2731,11 +2829,14 @@ fn auto_may_choice_relief(
 /// constant-depth 2p path ([`loop_states_equal_modulo_resources`]) makes the SAME
 /// extrapolation with NONE of these — that assumption is documented there, not claimed as a
 /// theorem here.
-pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameState) -> bool {
+pub(crate) fn loop_states_cover_modulo_growth<'a, C: CurrentSide<'a>>(
+    prior: &GameState,
+    current: C,
+) -> bool {
     // The zero-proof container: frames = `[current]`, no proposer ⇒ nothing published ⇒ no
     // relief, which is byte-identically what an `unproven()` scope already meant. The four
     // production callers of this 2-arg entry point are therefore untouched.
-    let mut verdicts = PeriodVerdicts::unproven(current);
+    let mut verdicts = PeriodVerdicts::unproven(current.state());
     loop_states_cover_modulo_growth_scoped(
         prior,
         current,
@@ -2976,24 +3077,21 @@ fn window_cast_card_ids(state: &GameState, proposer: Option<PlayerId>) -> Option
 /// derived LOCALLY from `current`'s own driving sequence ([`window_cast_card_ids`]), and the
 /// `projected_scope` built for that call deliberately holds `pinned: None` — the projected
 /// firewall is a different axis and must not inherit the caller's pins.
-pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
+pub(crate) fn loop_states_cover_modulo_growth_scoped<'a, C: CurrentSide<'a>>(
     prior: &GameState,
-    current: &'a GameState,
+    current: C,
     scope: LoopWindowScope<'_>,
     verdicts: &mut PeriodVerdicts<'a>,
 ) -> bool {
     bump_loop_detect_cost(|cost| cost.compares_cover_modulo_growth_scoped += 1);
     // (1) Board equal modulo the NARROWED projection AND modulo the stack, with the
-    // object resource axes STRICT-COMPARED. Project both, clear both stacks
-    // and their stack-entry-indexed firing sidecars (the stack is compared separately
-    // in (2)), then require full board equality plus loyalty-activation parity plus
-    // strict object damage/counter equality.
-    let mut pa = project_out_resources(prior);
-    let mut pb = project_out_resources(current);
-    pa.stack.clear();
-    pb.stack.clear();
-    pa.stack_trigger_firings.clear();
-    pb.stack_trigger_firings.clear();
+    // object resource axes STRICT-COMPARED. Project both through the single authority for
+    // this comparand ([`cover_projection`]) — the stack and its entry-indexed firing sidecar
+    // are compared separately in (2) — then require full board equality plus
+    // loyalty-activation parity plus strict object damage/counter equality.
+    let pb = current.cover_projected();
+    let current = current.state();
+    let pa = cover_projection(prior);
     if !(loop_states_equal(&pa, &pb)
         && loyalty_activation_counts_match(&pa, &pb)
         && object_resource_axes_match(prior, current))
