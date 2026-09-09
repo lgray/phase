@@ -525,8 +525,10 @@ impl LoopDetectCost {
 
     /// Every comparison the four production callers of `project_out_resources` performed.
     /// Each of them projects both sides as a pair, which is what makes
-    /// `projected_clones <= 2 * resource_compares()` the relation over this closed
-    /// population.
+    /// `projected_clones <= 2 * resource_compares()` a bound over this closed population —
+    /// a bound and not a parity, because `SharedCurrentFrames::new` projects twice per
+    /// ring-walk entry and ticks no compare: the bound needs a ring long enough to pay for
+    /// those two as well, and a short drive breaches it.
     pub fn resource_compares(&self) -> u32 {
         self.compares_equal_modulo_resources
             + self.compares_cover_modulo_growth_scoped
@@ -2216,8 +2218,10 @@ pub fn loop_states_equal_modulo_resources(a: &GameState, b: &GameState) -> bool 
 /// [`loop_states_equal_modulo_resources`] over a [`CurrentSide`], so a ring walk can reuse one
 /// current-side projection across every prior instead of re-deriving it per prior. The
 /// `compares_equal_modulo_resources` tick lives HERE and at no other site, so a shared
-/// comparison counts exactly like a deriving one and `projected_clones <= 2 *
-/// resource_compares` stays a relation over one population.
+/// comparison counts exactly like a deriving one over one population, while projecting one
+/// side instead of two. `projected_clones <= 2 * resource_compares` survives that as a BOUND
+/// rather than a parity: [`SharedCurrentFrames::new`]'s two projections tick no compare at
+/// all, so a walk too short to amortize them breaks it.
 pub(crate) fn loop_states_equal_modulo_resources_side<'a, C: CurrentSide<'a>>(
     a: &GameState,
     b: C,

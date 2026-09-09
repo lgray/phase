@@ -16496,13 +16496,17 @@ fn the_detector_separates_into_sized_parts_against_a_detector_off_leg() {
     // without `pub`, so no caller can exist outside its own module and the population is
     // compiler-closed; each of its four production callers projects both sides as a pair.
     // Deleting the tick at any FIRING compare site drops the right-hand side below the clone
-    // count it has to cover.
+    // count it has to cover. A bound and not a parity, because the reconcile bridge's ring walk
+    // hoists two current-side projections per entry and ticks no compare for them: the law is a
+    // claim about ring length too, and on this fixture it holds from five beats up and fails
+    // below. Re-derive that floor by lowering `BEATS`.
     assert!(
         u64::from(interactive.cost.projected_clones)
             <= 2 * u64::from(interactive.cost.resource_compares()),
-        "projected_clones ({}) must stay within 2 x resource_compares ({}) — each of \
-         `project_out_resources`'s four production callers projects BOTH sides, so a clone \
-         count above twice the compare count means a compare site stopped being counted",
+        "projected_clones ({}) must stay within 2 x resource_compares ({}) — the bridge's ring \
+         walk projects two current-side frames per entry and ticks no compare for them, so \
+         under five beats the beat count alone breaches this bound; this row ran {BEATS}, and \
+         above that floor the cause is a compare site that stopped being counted",
         interactive.cost.projected_clones,
         interactive.cost.resource_compares()
     );
@@ -16563,13 +16567,14 @@ fn the_detector_separates_into_sized_parts_against_a_detector_off_leg() {
 /// `projected_clones` is the work counter and `resource_compares()` the decision counter at
 /// multiplicity 2: `project_out_resources` is declared without `pub`, so its caller population
 /// is compiler-closed, and each of those callers projects both sides between its own entry
-/// tick and its second projection — the two read EQUAL at base. The sharing sits between a
-/// compare's entry and its two projections and removes no compare, so the equality can only
-/// break downward.
+/// tick and its second projection — the two read EQUAL at base.
 ///
-/// REVERT-FAILING: hand either ring walk `state` again instead of the shared frames and the
-/// current side is re-derived per prior, returning `projected_clones` to `2 x
-/// resource_compares` and failing the strict inequality — while every verdict row stays green.
+/// REVERT-FAILING while the bridge's ring walk is the only site that shares a current-side
+/// projection: every other production call of the four compare entries derives both sides, so
+/// a second hoist anywhere would hold this whole-detector inequality up on its own. Hand
+/// either ring walk `state` again instead of the shared frames and the current side is
+/// re-derived per prior, returning `projected_clones` to `2 x resource_compares` and failing
+/// the strict inequality — while every verdict row stays green.
 #[test]
 fn the_bridge_shares_one_current_side_projection_across_its_ring_walk() {
     const BEATS: usize = 12;
@@ -16591,7 +16596,8 @@ fn the_bridge_shares_one_current_side_projection_across_its_ring_walk() {
     assert!(
         u64::from(interactive.cost.projected_clones) < 2 * compares,
         "projected_clones ({}) must be strictly below 2 x resource_compares ({compares}); a \
-         walk that re-derives the current side per prior reads exactly 2 x",
+         walk that re-derives the current side per prior reads exactly 2 x, and a `BEATS` below \
+         six leaves the walk too short to pay for its own two uncounted frames",
         interactive.cost.projected_clones
     );
     println!(
@@ -16605,9 +16611,11 @@ fn the_bridge_shares_one_current_side_projection_across_its_ring_walk() {
 /// wall(Off)`, with the residual reported rather than absorbed into a neighbouring share.
 ///
 /// An instrument, not a CI row: share stability is what needs the long drive, and a wall clock
-/// only means something under the build profile it is read in. Run it as
-/// `cargo nextest run -p phase-engine --cargo-profile server-release --run-ignored all -E
-/// 'test(=loop_shortcut::the_detector_cost_attributes_to_its_named_parts)'`.
+/// only means something under the build profile it is read in. It PRINTS its attribution, so
+/// `--no-capture` is part of the command and not a taste — without it the run is a green PASS
+/// and no attribution at all. Run it as
+/// `cargo nextest run -p phase-engine --cargo-profile server-release --run-ignored all
+/// --no-capture -E 'test(=loop_shortcut::the_detector_cost_attributes_to_its_named_parts)'`.
 #[test]
 #[ignore = "measurement instrument, not an assertion; see the doc comment"]
 fn the_detector_cost_attributes_to_its_named_parts() {
