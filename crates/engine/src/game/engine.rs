@@ -4374,11 +4374,6 @@ fn has_no_loss_axis(delta: &crate::analysis::resource::ResourceVector) -> bool {
         && delta.poison.values().all(|&n| n <= 0)
 }
 
-/// CR 800.4a: the seat that should receive priority when a loop-shortcut resolution hands
-/// priority back. Priority passes to the next player in turn order still in the game — the
-/// active player if it is still in the game, otherwise the next living seat in turn order
-/// (elimination does not advance `active_player` when a non-acting seat concedes during the
-/// APNAP window, so `active_player` may be a departed player).
 /// CR 704.5a + CR 732.2a: what one confirmed proposal may legally do on the board it is
 /// actually spent against — the repetition ceiling, and the CR 704 threshold crossing the
 /// ACCEPTED count spends.
@@ -4433,6 +4428,37 @@ fn shortcut_consumption_bound(
     })
 }
 
+/// Whether this engine will drive `count` repetitions of `proposal` on this board — the one
+/// authority both the responder's seam and the consumption seam ask.
+///
+/// IMPLEMENTATION BUDGET BOUND (see `MAX_SHORTCUT_CYCLES`), deliberately NOT labelled as a
+/// CR 732.2a constraint, for the same reason the declare-site arm is not: the rules place no
+/// ceiling on a shortcut's repetitions, so this ceiling is ours and not the game's.
+///
+/// CR 704.5a + CR 732.2a: the second disjunct is the per-board ceiling `shortcut_consumption_bound`
+/// re-derives — CR 732.2a admits only a sequence that "may be legally taken based on the current
+/// game state and the predictable results of the sequence of choices", and CR 704.3 runs the
+/// CR 704.5a check at every priority beat inside it. A proposal carrying no per-period signature
+/// supports no derived ceiling and is bounded by the budget alone.
+///
+/// Reads `state` and `proposal.per_cycle`; never `proposal.count`. That is what lets the
+/// responder's seam ask it about the count a named place would MINT, on a proposal still
+/// carrying the count that place replaces.
+fn shortcut_count_is_drivable(
+    state: &GameState,
+    proposal: &crate::analysis::loop_check::ShortcutProposal,
+    count: u32,
+) -> bool {
+    count <= MAX_SHORTCUT_CYCLES
+        && !shortcut_consumption_bound(state, proposal, count)
+            .is_some_and(|bound| count > bound.ceiling)
+}
+
+/// CR 800.4a: the seat that should receive priority when a loop-shortcut resolution hands
+/// priority back. Priority passes to the next player in turn order still in the game — the
+/// active player if it is still in the game, otherwise the next living seat in turn order
+/// (elimination does not advance `active_player` when a non-acting seat concedes during the
+/// APNAP window, so `active_player` may be a departed player).
 fn living_priority_seat(state: &GameState) -> PlayerId {
     if crate::game::players::is_alive(state, state.active_player) {
         state.active_player
@@ -4551,8 +4577,10 @@ fn apply_confirmed_shortcut(
         // that the drive helpers do NOT re-check — which leaves the restore ingress undefended,
         // exactly as it left the `owner` firewall above undefended. A tampered `Fixed(4e9)`
         // riding a restored `RespondToShortcut` reaches `materialize_fixed_shortcut` through
-        // one Accept: a GameState clone plus a drive per cycle. Re-check the GLOBAL cap here,
-        // at the one point every confirmed drive passes through.
+        // one Accept: a GameState clone plus a drive per cycle. Ask
+        // `shortcut_count_is_drivable` here, at the one point every confirmed drive passes
+        // through — the same question the responder's seam asks about the count a named place
+        // would mint, so the two seams cannot answer it differently.
         //
         // TWO CEILINGS, GLOBAL AND PER-OFFER. Both stated reasons for taking the global one
         // here stand unchanged: no schema is re-checked (the offer is gone by consumption) and
@@ -4560,11 +4588,6 @@ fn apply_confirmed_shortcut(
         // serde that tampered the count, so that gate could not fail in the direction it
         // guards). What has moved is the per-offer half: it is not READ, it is RE-DERIVED on
         // this board by `shortcut_consumption_bound`, which is why it is checkable here at all.
-        //
-        // CR 732.2a admits only a sequence that "may be legally taken based on the current game
-        // state and the predictable results of the sequence of choices", and CR 704.3 runs the
-        // CR 704.5a check at every priority beat inside it, so a count carrying a seat past a
-        // threshold before its final iteration is not a legal shortcut whatever minted it.
         //
         // TWO BOUNDARIES, both deliberate. A proposal carrying no per-period signature supports
         // no derived ceiling (`shortcut_consumption_bound` answers `None`) and keeps its shipped
@@ -4579,9 +4602,7 @@ fn apply_confirmed_shortcut(
         // force a bound decision rather than silently regress either ceiling.
         || match proposal.count {
             crate::analysis::decision_template::IterationCount::Fixed(n) => {
-                n > MAX_SHORTCUT_CYCLES
-                    || shortcut_consumption_bound(state, proposal, n)
-                        .is_some_and(|bound| n > bound.ceiling)
+                !shortcut_count_is_drivable(state, proposal, n)
             }
             // Bounded elsewhere by the same constant: `apply_until_lethal_shortcut` drives
             // `shortcut_drive_period` cycles, which clamps to `MAX_SHORTCUT_CYCLES`.
@@ -7848,6 +7869,18 @@ fn handle_respond_to_shortcut(
         if !proposal.shortening_places().contains(&at_iteration) {
             return Err(EngineError::InvalidAction(format!(
                 "Shortcut place {at_iteration} is outside the proposed sequence"
+            )));
+        }
+        // CR 732.2b gives a responder two answers — accept, or name the place the sequence ends
+        // at — and CR 732.2c takes the shortcut once the last player has given one of them.
+        // Dropping the shortcut and restarting priority substitutes a decline for the answer they
+        // gave, and spends a grant CR 732.2b put in their hands without telling them. Refuse here
+        // instead, before the event take and every state write, so the window survives and they
+        // can name a place this engine will drive.
+        if !shortcut_count_is_drivable(state, &proposal, at_iteration) {
+            return Err(EngineError::InvalidAction(format!(
+                "Shortcut place {at_iteration} is inside the proposed sequence, but this engine \
+                 will not take the sequence there"
             )));
         }
     }

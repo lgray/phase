@@ -79,12 +79,12 @@
 // resource, locally, on engine-source edits. It is NOT checked in GitHub CI, and CI
 // enrollment is policy-blocked (`.agents/pr-review-policy.toml` `[hard_stops]` lists
 // `.github/workflows/**`). A green block in a merged commit is not a CI-verified block.
-// PROBE-PIN:BEGIN manifest=probe-pin/engine-census.toml digest=sha256:cda03c6f79dd89a6
+// PROBE-PIN:BEGIN manifest=probe-pin/engine-census.toml digest=sha256:96dd4724d5620be1
 // instrument rustc = rustc 1.97.0-nightly (0febdbab2 2026-04-18)
 // | probe | mutation | expect | verdict | firing assertion (anchor) | provenance |
 // |---|---|---|---|---|---|
 // | P0_control | (none) | pass | pass | (control; no mounts) | — |
-// | P1_production_site_removed | scenario.rs ×1 | fail | fail | left: (22, 24) / right: (23, 24) / THE TEST HALF HAS BEEN ADJUDICATED FIVE TIMES | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
+// | P1_production_site_removed | scenario.rs ×1 | fail | fail | left: (22, 24) / right: (23, 24) / THE TEST HALF HAS BEEN ADJUDICATED SEVEN TIMES | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
 // | P2_test_site_removed | projection.rs ×1 | fail | fail | left: (23, 23) / right: (23, 24) | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
 // | P3_walk_reaches_phase_ai_and_skips_comments | lib.rs ×1 | fail | fail | left: (24, 24) / right: (23, 24) | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
 // | P4_counting_is_per_line | lib.rs ×1 | fail | fail | left: (25, 24) / right: (23, 24) | crates/engine/tests/integration/loop_shortcut_offer_writer_census.rs |
@@ -370,7 +370,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          certify without declaring or driving — §10 ruling condition (2), i.e. \
          answer-legality-at-certification becomes OWED WORK and the U-series stops. A new READ \
          site is the benign case; adjudicate, do not relax the assert.\n\
-         THE TEST HALF HAS BEEN ADJUDICATED FIVE TIMES (12 ⇒ 13, §6 R27 (b)'s schema read in \
+         THE TEST HALF HAS BEEN ADJUDICATED SEVEN TIMES (12 ⇒ 13, §6 R27 (b)'s schema read in \
          `engine/src/analysis/resource.rs`; 13 ⇒ 14, 5d U4's `u4_park_on_offer` fixture in \
          `engine/src/game/engine.rs`, which parks a constructed board on an offer so §6 R28 \
          arm (b) can assert the DECLARE firewall refuses a hostile `template.owner`; 14 ⇒ 16, \

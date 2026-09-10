@@ -115,7 +115,7 @@ claim = "the production half fails DOWNWARD, and the pinned tuple + adjudication
   outcome = "fail"
   anchor  = ["left: (22, 24)",
              "right: (23, 24)",
-             "THE TEST HALF HAS BEEN ADJUDICATED FIVE TIMES"]
+             "THE TEST HALF HAS BEEN ADJUDICATED SEVEN TIMES"]
 
 [[probe]]
 id    = "P2_test_site_removed"

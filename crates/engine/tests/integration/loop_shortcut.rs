@@ -6313,7 +6313,7 @@ fn foreign_object_second_surface_still_vetoes_after_x1() {
 // is an accumulation across dozens of real beats.
 // ===========================================================================
 
-fn gunzip_dump(gz: &[u8]) -> String {
+pub(crate) fn gunzip_dump(gz: &[u8]) -> String {
     use std::io::Read;
     let mut json = String::new();
     flate2::read::GzDecoder::new(gz)
@@ -6322,7 +6322,7 @@ fn gunzip_dump(gz: &[u8]) -> String {
     json
 }
 
-fn restore_dump(json: &str) -> GameState {
+pub(crate) fn restore_dump(json: &str) -> GameState {
     let envelope: serde_json::Value =
         serde_json::from_str(json).expect("dump envelope parses as JSON");
     // Decode AS `PersistedGameState` rather than decoding a bare `GameState` and wrapping
@@ -15171,14 +15171,17 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
     }
 }
 
-/// **The GLOBAL count cap, re-checked at CONSUMPTION — on a live ingress and on a restored one.**
+/// **The GLOBAL count cap, refused on BOTH ingresses — at CONSUMPTION on a restored proposal
+/// nobody answered, and at the RESPONDER'S SEAM when a living seat names the place.**
 ///
 /// `handle_declare_shortcut` refuses an over-cap `Fixed` before the proposal is built and its
 /// own note records that the drive helpers do NOT re-check — so the cap was defended at declare
-/// and only at declare. Two ingresses reach consumption past it. A responder may SHORTEN an
-/// unbounded proposal, whose range admits every place (CR 732.2b puts no ceiling on the place a
-/// responder may name), and the rewritten count is then above the cap on a proposal the engine
-/// minted, with nothing tampered — leg (c). And a RESTORED `WaitingFor::RespondToShortcut` never
+/// and only at declare. Two ingresses reach the cap past it, and they are refused in different
+/// SHAPES. A responder may SHORTEN an unbounded proposal, whose range admits every place
+/// (CR 732.2b puts no ceiling on the place a responder may name), and the place they name would
+/// rewrite the count above the cap — that one has a live answer to return, so it is refused at
+/// the responder's own seam with the window intact and no state written, leg (c). And a RESTORED
+/// `WaitingFor::RespondToShortcut` never
 /// passes the declare at all, for exactly the reason the sibling `owner` row above exists: the
 /// untrusted-restore scrubber rewrites only the two pre-cast waits. A hand-edited count therefore
 /// reached `materialize_fixed_shortcut` through one Accept — a `GameState` clone plus a drive per
@@ -15197,18 +15200,20 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
 /// * **(b)** `Fixed(1)`, the same construction differing only in the count ⇒ DRIVES. Without
 ///   (b), (a)'s no-delta observation is satisfied by a fixture that never reached the guard.
 /// * **(c)** the same boundary member `cap + 1`, named as a legal place by a living responder on
-///   an engine-minted unbounded proposal ⇒ the same refusal, on an ingress that tampered with
-///   nothing. Its own control is the in-cap place on the same rig, which drives.
+///   an engine-minted unbounded proposal ⇒ refused at the RESPONDER'S SEAM with
+///   `Err(EngineError::InvalidAction(_))`, on an ingress that tampered with nothing: the poll is
+///   still theirs, with the same queue, and no life total moved. Its own control is the in-cap
+///   place on the same rig, which is taken and drives.
 ///
 /// VACUITY TRAP, inherited from `over_cap_fixed_count_hands_back_with_no_drive`: a handback
 /// lands on `WaitingFor::Priority` and so does a stop-short drive, so `waiting_for` is an
 /// invariant here, not the discriminator. The DRIVE is — hence the life-delta assertions.
 ///
-/// REVERT-PROBE: delete the `match proposal.count { …Fixed(n) => n > MAX_SHORTCUT_CYCLES, … }`
-/// disjunct from `apply_confirmed_shortcut`'s guard ⇒ (a) drives and its no-delta assertion
-/// FAILS, while (b) stays green.
+/// REVERT-PROBE: delete the count arm from `apply_confirmed_shortcut`'s guard — stop asking
+/// `shortcut_count_is_drivable` there — ⇒ (a) drives and its no-delta assertion FAILS, while
+/// (b) stays green. Leg (c) reds under the sibling restoration, at the responder's seam.
 #[test]
-fn an_over_cap_count_is_refused_at_consumption_on_both_ingresses() {
+fn an_over_cap_count_is_refused_at_consumption_and_at_the_responders_seam() {
     let cap = ShortcutDecisionSchema::default().max_iterations;
     for count in [cap + 1, 1] {
         let over_cap = count > cap;
@@ -15313,30 +15318,40 @@ fn an_over_cap_count_is_refused_at_consumption_on_both_ingresses() {
             "place={place}: reach-guard — this is a LEGAL place on this proposal, so nothing              below is attributable to the range refusal"
         );
         let lives: Vec<i32> = runner.state().players.iter().map(|p| p.life).collect();
+        let window = runner.state().waiting_for.clone();
 
-        runner
-            .act(GameAction::RespondToShortcut {
-                response: ShortcutResponse::Shorten {
-                    at_iteration: place,
-                },
-            })
-            .expect("the reducer takes the response; an over-cap count is a HANDBACK, not an Err");
+        let answered = runner.act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Shorten {
+                at_iteration: place,
+            },
+        });
         let after: Vec<i32> = runner.state().players.iter().map(|p| p.life).collect();
 
         if over_cap {
+            assert!(
+                matches!(answered, Err(EngineError::InvalidAction(_))),
+                "place={place}: (c) a place this engine will not drive is refused at the \
+                 responder's own seam, not answered for; got {answered:?}"
+            );
+            assert_eq!(
+                runner.state().waiting_for,
+                window,
+                "place={place}: (c) the refusal precedes the event take and every state write, \
+                 so the poll is still {responder:?}'s with the same queue"
+            );
             assert_eq!(
                 after, lives,
-                "place={place}: (c) ZERO cycles committed — the cap fired before the first clone                  on an ingress that tampered with nothing"
-            );
-            assert!(
-                matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player != responder),
-                "place={place}: (c) a refused shortcut seats no ending point, so the handback                  restarts the round at a living seat; got {:?}",
-                runner.state().waiting_for
+                "place={place}: (c) ZERO cycles committed — the refusal fired before the first \
+                 clone, on an ingress that tampered with nothing"
             );
         } else {
+            answered.unwrap_or_else(|error| {
+                panic!("place={place}: (c)'s control is a place the engine drives: {error:?}")
+            });
             assert_ne!(
                 after, lives,
-                "place={place}: (c)'s control — an in-cap place on the same rig DRIVES, without                  which the no-delta assertion above is vacuous"
+                "place={place}: (c)'s control — an in-cap place on the same rig DRIVES, without \
+                 which the no-delta assertion above is vacuous"
             );
         }
     }
@@ -16578,7 +16593,8 @@ fn the_detector_separates_into_sized_parts_against_a_detector_off_leg() {
 /// hand THAT walk `state` again instead of the shared frames and the current side is re-derived
 /// per prior, returning `projected_clones` to `2 x resource_compares` and failing the strict
 /// inequality — while every verdict row stays green. The `mandatory` walk's hoist never runs
-/// here, so reverting it alone leaves this row green: unreached, not guarded.
+/// here, so reverting it alone leaves this row green; the sibling row on the mandatory drain
+/// board is where that hoist is guarded.
 #[test]
 fn the_bridge_shares_one_current_side_projection_across_its_ring_walk() {
     const BEATS: usize = 12;
@@ -16608,6 +16624,96 @@ fn the_bridge_shares_one_current_side_projection_across_its_ring_walk() {
         "BEATS {BEATS}  projected_clones {}  resource_compares {compares}  ring-walk calls \
          {walk_calls}",
         interactive.cost.projected_clones
+    );
+}
+
+/// One leg of the detector-cost drive on the MANDATORY drain board, where the reconcile bridge
+/// takes its `mandatory` ring walk instead of the `!mandatory` one. Written rather than
+/// parameterized off [`drive_cost_leg`]: that helper's reach-guards are the dellian dump's — an
+/// empty ring plus a non-empty stack — and this fixture is a different board.
+fn drive_mandatory_cost_leg(beats: usize) -> CostLeg {
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/lethal_lifegain_loss_4p.json.gz"
+    )));
+    assert_eq!(
+        state.loop_detect_ring.len(),
+        0,
+        "reach-guard: the dump ships with an EMPTY ring, so the ring the reduction walks below \
+         is THIS drive's accumulation through the production sampler"
+    );
+    state.loop_detection = LoopDetectionMode::Interactive;
+    let pin = engine_live_opponents(&state, P0).first().copied();
+
+    reset_loop_detect_cost();
+    let started = std::time::Instant::now();
+    let mut ran = 0usize;
+    for beat in 0..beats {
+        if dump_drive_one_beat(&mut state, pin).is_err() {
+            break;
+        }
+        ran = beat + 1;
+    }
+    let wall_ns = started.elapsed().as_nanos();
+
+    CostLeg {
+        cost: loop_detect_cost(),
+        wall_ns,
+        beats: ran,
+        lives: state.players.iter().map(|p| p.life).collect(),
+        stack_len: state.stack.len(),
+        waiting: waiting_kind(&state.waiting_for),
+    }
+}
+
+/// CR 732.2a: the reconcile bridge's MANDATORY ring walk derives the current side ONCE per walk
+/// too, so the same drive does strictly fewer projections at the same compare count — the second
+/// of `SharedCurrentFrames::new`'s two call sites, and the one the sibling sharing row above
+/// cannot reach because the board it drives takes the `!mandatory` arm alone.
+///
+/// The arm this row reaches is the bridge's CR 732.4 check — a loop of only mandatory actions is
+/// a draw — so the board has to be one the bridge reads as mandatory. This drain dump is, and its
+/// walk is long enough to pay for the two frames the hoist leaves uncounted; a mandatory loop that
+/// actually draws terminates the drive before its ring grows that far.
+///
+/// THE TWO WALK GUARDS PARTITION THE HOIST SITES ONE ROW EACH: the `mandatory` walk must have
+/// run and the `!mandatory` walk must not have, so reverting the OTHER hoist cannot move this
+/// row and reverting this one cannot move the sibling. REVERT-FAILING: hand this walk `state`
+/// again instead of the shared frames and the current side is re-derived per prior, returning
+/// `projected_clones` to exactly `2 x resource_compares` — which is why the `<` is load-bearing
+/// and must not be weakened to `<=`.
+#[test]
+fn the_bridge_shares_one_current_side_projection_across_its_mandatory_ring_walk() {
+    const BEATS: usize = 12;
+    let leg = drive_mandatory_cost_leg(BEATS);
+    assert_eq!(
+        leg.beats, BEATS,
+        "reach-guard: the leg must have driven the full {BEATS} beats; a short drive is a drive \
+         helper failure, not a measurement"
+    );
+    assert!(
+        leg.cost.recurrence_scan_mandatory_calls > 0,
+        "reach-guard: the MANDATORY ring walk must have run, or this row guards nothing"
+    );
+    assert_eq!(
+        leg.cost.recurrence_scan_optional_calls, 0,
+        "reach-guard: the `!mandatory` walk must NOT run on this board, so everything below is \
+         attributable to the mandatory hoist alone"
+    );
+    let compares = u64::from(leg.cost.resource_compares());
+    assert!(
+        compares > 0,
+        "reach-guard: no comparison ran, so there is nothing for the clone count to be below"
+    );
+    assert!(
+        u64::from(leg.cost.projected_clones) < 2 * compares,
+        "projected_clones ({}) must be strictly below 2 x resource_compares ({compares}); a walk \
+         that re-derives the current side per prior reads exactly 2 x",
+        leg.cost.projected_clones
+    );
+    println!(
+        "BEATS {BEATS}  projected_clones {}  resource_compares {compares}  mandatory walk calls \
+         {}",
+        leg.cost.projected_clones, leg.cost.recurrence_scan_mandatory_calls
     );
 }
 
