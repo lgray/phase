@@ -918,10 +918,14 @@ fn interaction_admits(state: &GameState, at_iteration: u32) -> bool {
     .is_ok()
 }
 
-/// A range the responder is shown is a range `apply()` honors AT OR BELOW the budget this
-/// engine drives, and the projection publishes the proposal's own two ends on every shape. Reds
-/// if either layer derives its ends a second time — the empty range is the leg that catches it,
-/// since a second derivation of it publishes `[0, 0]` and admits a place the reducer refuses.
+/// The line between a range the responder is SHOWN and a range `apply()` honors is drivability:
+/// the projection publishes the proposal's own two ends on every shape, and the reducer refuses
+/// every place this engine will not drive. Being above the budget is one way to be undrivable —
+/// a board whose per-cycle charge re-derives a lower CR 704.5a ceiling refuses places well
+/// inside it — and it is the only one the places probed here meet, so this row's boards part at
+/// the budget. Reds if either layer derives its ends a second time — the empty range is the leg
+/// that catches it, since a second derivation of it publishes `[0, 0]` and admits a place the
+/// reducer refuses.
 ///
 /// ABOVE the budget the two layers deliberately DISAGREE: the projection still admits, and the
 /// reducer alone refuses. That is how a responder is TOLD rather than pre-refused by their own
