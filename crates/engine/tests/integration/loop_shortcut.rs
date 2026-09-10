@@ -1256,6 +1256,42 @@ fn interactive_proposer_concede_mid_apnap_does_not_crown_departed() {
         runner.state().waiting_for
     );
 
+    // The other answer CR 732.2b grants this same seat at this same window. A departed proposer
+    // is not a fact P2's next answer can change, so refusing at the responder's seam would wedge
+    // the seat instead of the answer: the seam TAKES the shortening and F1 refuses it at
+    // consumption, which is also what proves F1 is reached on the Shorten path.
+    {
+        assert!(
+            life(&runner, P1) < 20 && life(&runner, P2) < 20,
+            "reach-guard: repetitions of this loop move life totals, so the no-delta observation \
+             below is not satisfied by a sequence that commits nothing (P1 {}, P2 {})",
+            life(&runner, P1),
+            life(&runner, P2)
+        );
+        let mut shortened = runner.state().clone();
+        let before: Vec<i32> = shortened.players.iter().map(|p| p.life).collect();
+        apply(
+            &mut shortened,
+            P2,
+            GameAction::RespondToShortcut {
+                response: ShortcutResponse::Shorten { at_iteration: 1 },
+            },
+        )
+        .expect("the seam takes a place this engine will drive, whatever the proposer's liveness");
+        assert_eq!(
+            shortened.players.iter().map(|p| p.life).collect::<Vec<_>>(),
+            before,
+            "F1 refuses the shortened sequence at consumption: not one repetition commits"
+        );
+        match shortened.waiting_for {
+            WaitingFor::Priority { player } => assert_ne!(
+                player, P0,
+                "CR 800.4a: the handback routes to a living seat, not the departed proposer"
+            ),
+            ref other => panic!("consumption hands priority back, got {other:?}"),
+        }
+    }
+
     // P2 accepts (last) → would crown the departed P0 if F1 were reverted.
     let last = runner
         .act(GameAction::RespondToShortcut {
@@ -5524,6 +5560,36 @@ fn predicted_winner_concede_mid_apnap_does_not_drive() {
 
     let p0_before = life(&runner, P0);
     let p1_before = life(&runner, P1);
+
+    // The other answer CR 732.2b grants this same seat. A departed predicted winner is not a fact
+    // P1's next answer can change, so the responder's seam TAKES the shortening and the guard
+    // refuses it at consumption — the same refusal, reached on the Shorten path. The bled fallers
+    // reach-guarded above are what keep the no-delta observation from being satisfied by a
+    // sequence that commits nothing.
+    {
+        let mut shortened = runner.state().clone();
+        let before: Vec<i32> = shortened.players.iter().map(|p| p.life).collect();
+        apply(
+            &mut shortened,
+            P1,
+            GameAction::RespondToShortcut {
+                response: ShortcutResponse::Shorten { at_iteration: 1 },
+            },
+        )
+        .expect("the seam takes a place this engine will drive, whatever the winner's liveness");
+        assert_eq!(
+            shortened.players.iter().map(|p| p.life).collect::<Vec<_>>(),
+            before,
+            "the guard refuses the shortened sequence at consumption: not one repetition commits"
+        );
+        match shortened.waiting_for {
+            WaitingFor::Priority { player } => assert_ne!(
+                player, P2,
+                "CR 800.4a: the handback routes to a living seat, not the departed winner"
+            ),
+            ref other => panic!("the liveness guard hands priority back, got {other:?}"),
+        }
+    }
 
     // The last living opponent accepts ⇒ CR 732.2c ⇒ `apply_confirmed_shortcut` with a STALE
     // `predicted_winner` (P2, departed) and a LIVING proposer (P0).

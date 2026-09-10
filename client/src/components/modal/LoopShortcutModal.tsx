@@ -849,7 +849,9 @@ function RespondToShortcut({
   const [place, setPlace] = useState<string | null>(null);
   const raw = place ?? String(minIteration ?? 0);
   // `parseAmount` is the shared sanitization authority — it REJECTS an entry outside the published
-  // range rather than clamping, so a place the engine would refuse can never be named.
+  // range rather than clamping. Inside that range the engine stays the authority: a place past what
+  // it will drive is refused at the responder's seam with the window intact, so the responder is
+  // told and can answer again. This modal holds no budget of its own.
   const chosen = offersShorten ? parseAmount(raw, minIteration, maxIteration) : null;
 
   const handleAccept = useCallback(() => {
