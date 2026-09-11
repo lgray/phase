@@ -7749,7 +7749,8 @@ pub(crate) fn token_growth_is_observed(state: &GameState) -> bool {
 /// CR 614.1a: a replacement's BODY (not its `condition`) can read a projected
 /// player resource. `QuantityModification` variants are all fixed constants (no
 /// read). `DamageModification::LifeFloor` caps against a player's live life total
-/// (CR 119, projected); `Plus { value }` carries a `QuantityExpr` that MAY read one
+/// (CR 119, projected); `Plus { value }` and `PreventionMinus`'s live `Quantity`
+/// formula carry a `QuantityExpr` that MAY read one
 /// — treated fail-closed. `execute` is an `AbilityDefinition` with no C0-walker
 /// predicate ⇒ fail-closed when present. The un-flagged `DamageModification` /
 /// `QuantityModification` variants are safe to omit because their outputs land in
@@ -7763,7 +7764,13 @@ fn replacement_body_may_read_projected(def: &crate::types::ability::ReplacementD
     }
     matches!(
         def.damage_modification,
-        Some(DamageModification::LifeFloor { .. } | DamageModification::Plus { .. })
+        Some(
+            DamageModification::LifeFloor { .. }
+                | DamageModification::Plus { .. }
+                | DamageModification::PreventionMinus {
+                    value: crate::types::ability::PreventionFormula::Quantity { .. },
+                }
+        )
     )
 }
 

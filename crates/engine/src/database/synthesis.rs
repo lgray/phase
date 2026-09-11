@@ -3864,7 +3864,9 @@ pub(crate) fn entry_replacement_for_grant_static(
 fn build_absorb_replacement(n: u32) -> ReplacementDefinition {
     ReplacementDefinition::new(ReplacementEvent::DamageDone)
         .valid_card(TargetFilter::SelfRef)
-        .damage_modification(DamageModification::PreventionMinus { value: n })
+        .damage_modification(DamageModification::PreventionMinus {
+            value: crate::types::ability::PreventionFormula::fixed(n),
+        })
         .description(format!(
             "CR 702.64a: Absorb {n} — if a source would deal damage to this creature, \
              prevent {n} of that damage."
@@ -3880,7 +3882,9 @@ fn is_absorb_replacement(r: &ReplacementDefinition, n: u32) -> bool {
         && matches!(r.valid_card, Some(TargetFilter::SelfRef))
         && matches!(
             r.damage_modification,
-            Some(DamageModification::PreventionMinus { value }) if value == n
+            Some(DamageModification::PreventionMinus {
+                value: crate::types::ability::PreventionFormula::Fixed(value),
+            }) if value == n
         )
 }
 
@@ -26050,7 +26054,9 @@ mod absorb_synthesis_tests {
         assert!(
             matches!(
                 r.damage_modification,
-                Some(DamageModification::PreventionMinus { value: 2 })
+                Some(DamageModification::PreventionMinus {
+                    value: crate::types::ability::PreventionFormula::Fixed(2),
+                })
             ),
             "CR 702.64a: prevent N (=2) of the damage (prevention provenance)"
         );

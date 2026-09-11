@@ -1044,6 +1044,70 @@ pub(super) fn strip_if_you_do_conditional(text: &str) -> (Option<AbilityConditio
     (None, text.to_string())
 }
 
+/// CR 603.12 + CR 603.4 + CR 608.2a: A reflexive connector can introduce a
+/// separate triggered ability with an intervening-if condition: "When you do,
+/// if <condition>, <body>." Keep the creation marker and the guard as a flat
+/// root `And`, so the runtime checks the guard when the trigger would be created
+/// and checks it again as that stack object resolves.
+///
+/// The general conditional parser is deliberately conservative. If it cannot
+/// represent the guard, the deferred variant retains both the reflexive marker
+/// and the original remainder. Downstream specialized strippers (for example
+/// counter thresholds) still get their established chance to parse it; if they
+/// decline too, the chain parser emits an `Unimplemented` effect before an
+/// optional-clause fallback can discard the guard.
+pub(super) enum ReflexiveConditionalStrip {
+    Parsed {
+        condition: Option<AbilityCondition>,
+        remainder: String,
+    },
+    DeferredWhenYouDoGuard {
+        condition: AbilityCondition,
+        remainder: String,
+    },
+}
+
+pub(super) fn strip_if_you_do_conditional_with_context(
+    text: &str,
+    ctx: &mut ParseContext,
+) -> ReflexiveConditionalStrip {
+    let (condition, remainder) = strip_if_you_do_conditional(text);
+    let Some(condition) = condition else {
+        return ReflexiveConditionalStrip::Parsed {
+            condition: None,
+            remainder,
+        };
+    };
+    if !condition.has_when_you_do_marker() {
+        return ReflexiveConditionalStrip::Parsed {
+            condition: Some(condition),
+            remainder,
+        };
+    }
+
+    let (guard, body) = strip_leading_general_conditional(&remainder, ctx);
+    match guard {
+        Some(guard) => ReflexiveConditionalStrip::Parsed {
+            condition: Some(condition.with_when_you_do_guard(guard)),
+            remainder: body,
+        },
+        // A syntactically present leading guard must never be treated like an
+        // absent one. Keep it distinguishable until every specialized guard
+        // parser has declined, rather than letting `clause_shell` strip its
+        // optional body and turn the reflexive trigger unconditional.
+        None if split_leading_conditional(&remainder).is_some() => {
+            ReflexiveConditionalStrip::DeferredWhenYouDoGuard {
+                condition,
+                remainder,
+            }
+        }
+        None => ReflexiveConditionalStrip::Parsed {
+            condition: Some(condition),
+            remainder,
+        },
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum UnlessSuffixStrip {
     Absent,
@@ -1438,6 +1502,18 @@ fn parse_if_exiled_card_type_conditional(text: &str) -> Option<(AbilityCondition
 /// `tag("with the ")`. Note the last two are NOT routed through
 /// `parse_suffix_subject_head` — enumerate all three heads when auditing this.
 ///
+/// The shared-quality relative-clause branch adds one more determiner head:
+/// `parse_shared_quality_clause` is fronted by `tag("that ")` (e.g. "that
+/// shares a creature type with a creature you control", Descendants' Path).
+/// It is additionally GUARDED on `reference: Some(_)` so a reference-less
+/// clause consumes nothing (a `None` reference is an unconditionally-true gate
+/// at runtime — see the branch's own comment below). The `tag("that ")` head
+/// is why it is safe between `tag(" card")` and `tag(" is revealed this way")`:
+/// the reveal-head slice trims to `"is revealed this way"`, which fails
+/// `tag("that ")` and is consumed by nothing. Any change to this branch, like
+/// the mana-value ones above, must re-run the card-data structural diff (no
+/// card carrying "is revealed this way" may move except by intent).
+///
 /// Consequently, for any input the reveal head accepted before the property
 /// slot existed, the slice handed here begins `" is revealed this way"`, which
 /// no branch above can consume: byte-identity for those cards is a PROOF, not a
@@ -1458,6 +1534,34 @@ fn parse_revealed_card_gate_suffix<'a>(
     {
         let leading_ws = after_type.len() - after_type.trim_start().len();
         return (&after_type[leading_ws + consumed..], Some(prop));
+    }
+    // CR 205.3m + CR 608.2c: postnominal shared-quality relative clause on a
+    // revealed/exiled card gate — "creature card that shares a creature type
+    // with a creature you control" (Descendants' Path). Delegates to the shared
+    // `parse_shared_quality_clause` building block, fronted by the determiner
+    // `tag("that ")` (consumes NOTHING on a non-match, preserving this helper's
+    // load-bearing invariant: the `is revealed this way` caller's post-`card`
+    // slice trims to "is revealed this way", which fails `tag("that ")`).
+    //
+    // The `reference: Some(_)` guard is REQUIRED, not cosmetic: the clause parses
+    // its reference with `opt(...)` and returns `Ok` with `reference: None` when
+    // the `" with <ref>"` phrase is absent OR present-but-unparseable. Runtime
+    // `evaluate_shares_quality` treats a `None` reference as UNCONDITIONALLY TRUE
+    // (`is_none_or`), so accepting a `None`-reference clause here would (a) re-emit
+    // the always-satisfied gate this fix exists to remove, and (b) in the
+    // `is revealed this way` caller, consume `that shares <quality>`, leave the
+    // mandatory anchor unmatchable, and drop that card's ENTIRE condition. Guarding
+    // on `Some(_)` makes the arm consume nothing in both degenerate cases, keeping
+    // the invariant intact for all callers; a genuinely unparseable reference then
+    // stays an honest unsupported gap rather than a false gate.
+    if let Ok((
+        rest,
+        prop @ FilterProp::SharesQuality {
+            reference: Some(_), ..
+        },
+    )) = crate::parser::oracle_target::parse_shared_quality_clause(after_type.trim_start(), ctx)
+    {
+        return (rest, Some(prop));
     }
     (after_type, None)
 }
@@ -7867,6 +7971,7 @@ mod tests {
     use crate::parser::parse_oracle_text;
     use crate::types::ability::{
         AggregateFunction, CardTypeSetSource, CommanderOwnership, PlayerFilter, SharedQuality,
+        SharedQualityRelation,
     };
     use crate::types::counter::{CounterMatch, CounterType};
 
@@ -8937,6 +9042,41 @@ mod tests {
             assert_eq!(&condition, expected, "condition mismatch for {input:?}");
             assert_eq!(rest, "draw a card", "rest mismatch for {input:?}");
         }
+    }
+
+    #[test]
+    fn reflexive_connector_defers_an_unrecognized_following_guard() {
+        let text = "When you do, if the moon is blue, draw a card";
+        let stripped = strip_if_you_do_conditional_with_context(text, &mut ParseContext::default());
+
+        let ReflexiveConditionalStrip::DeferredWhenYouDoGuard {
+            condition,
+            remainder,
+        } = stripped
+        else {
+            panic!("an unsupported guard must stay distinct from a bare reflexive marker");
+        };
+        assert_eq!(condition, AbilityCondition::WhenYouDo);
+        assert_eq!(remainder, "if the moon is blue, draw a card");
+    }
+
+    #[test]
+    fn reflexive_connector_defers_a_specialized_card_type_guard() {
+        let text = "When you do, if a creature card is revealed this way, draw a card";
+        let stripped = strip_if_you_do_conditional_with_context(text, &mut ParseContext::default());
+
+        let ReflexiveConditionalStrip::DeferredWhenYouDoGuard {
+            condition,
+            remainder,
+        } = stripped
+        else {
+            panic!("the specialized card-type guard must remain available to its ordered parser");
+        };
+        assert_eq!(condition, AbilityCondition::WhenYouDo);
+        assert_eq!(
+            remainder,
+            "if a creature card is revealed this way, draw a card"
+        );
     }
 
     #[test]
@@ -11273,6 +11413,78 @@ mod tests {
         assert!(subtype_filter.is_none());
     }
 
+    /// CR 205.3m + CR 608.2c (Verification row 3): Descendants' Path —
+    /// "If it's a creature card that shares a creature type with a creature you
+    /// control, you may cast it …". The postnominal shared-quality clause must
+    /// be consumed by the revealed-card gate suffix and wired onto
+    /// `additional_filter` as a `SharesQuality{ CreatureType, Shares, Some(ref) }`,
+    /// leaving a CLEAN effect body. Reverting the new arm makes
+    /// `additional_filter` `None` and leaves the clause stranded in the body.
+    #[test]
+    fn strip_card_type_conditional_creature_that_shares_creature_type() {
+        let (cond, body) = strip_card_type_conditional(
+            "If it's a creature card that shares a creature type with a creature you control, \
+             you may cast it without paying its mana cost.",
+        );
+        assert_eq!(body, "you may cast it without paying its mana cost.");
+        let Some(AbilityCondition::RevealedHasCardType {
+            card_types,
+            additional_filter,
+            subtype_filter,
+        }) = cond
+        else {
+            panic!("expected RevealedHasCardType with SharesQuality filter, got {cond:?}");
+        };
+        assert_eq!(card_types, vec![CoreType::Creature]);
+        assert!(subtype_filter.is_none());
+        let Some(FilterProp::SharesQuality {
+            quality,
+            relation,
+            reference,
+        }) = additional_filter
+        else {
+            panic!("expected SharesQuality additional_filter, got {additional_filter:?}");
+        };
+        assert_eq!(quality, SharedQuality::CreatureType);
+        assert_eq!(relation, SharedQualityRelation::Shares);
+        // The load-bearing guard: the reference "a creature you control" must
+        // have resolved. A `None` here is the always-true gate this fix removes.
+        assert!(
+            reference.is_some(),
+            "reference 'a creature you control' must resolve to Some(_), got None"
+        );
+    }
+
+    /// CR 205.3m (Verification row 4, GUARD): a reference-less shares clause
+    /// ("that shares a creature type", with NO " with <ref>") must NOT be
+    /// consumed — `parse_shared_quality_clause` returns `reference: None`, which
+    /// `evaluate_shares_quality` treats as unconditionally true. The
+    /// `reference: Some(_)` guard rejects it, so the arm consumes NOTHING: the
+    /// gate carries no `additional_filter` and the clause stays in the body.
+    /// Removing the guard flips both assertions.
+    #[test]
+    fn strip_card_type_conditional_shares_clause_without_reference_is_unconsumed() {
+        let (cond, body) = strip_card_type_conditional(
+            "If it's a creature card that shares a creature type, \
+             you may cast it without paying its mana cost.",
+        );
+        let Some(AbilityCondition::RevealedHasCardType {
+            additional_filter, ..
+        }) = cond
+        else {
+            panic!("expected RevealedHasCardType, got {cond:?}");
+        };
+        assert!(
+            additional_filter.is_none(),
+            "reference-less shares clause must NOT be consumed (would emit an \
+             always-true gate), got {additional_filter:?}"
+        );
+        assert!(
+            // allow-noncombinator: test assertion on the leftover effect body, not parsing dispatch.
+            body.trim_start().starts_with("that shares"),
+            "the unconsumed clause must remain in the effect body, got {body:?}"
+        );
+    }
     /// CR 608.2c: Suffix-if peel (`strip_suffix_conditional`) must stay in lockstep
     /// with the leading-if `strip_card_type_conditional` mana-value gate.
     #[test]

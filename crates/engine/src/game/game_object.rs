@@ -3297,6 +3297,30 @@ impl GameObject {
             .collect()
     }
 
+    /// CR 716.2d: This permanent's level — the single authority every class-level
+    /// gate reads. A permanent that doesn't have a level is treated as though its
+    /// level is 1, so an object that carries Class abilities without a stored level
+    /// (a copy effect grants the `Class` subtype and its level bars through the
+    /// layer system, while CR 716.2b keeps the level itself off the copiable
+    /// characteristics) still answers every level question, and answers it with 1
+    /// rather than the original's level.
+    ///
+    /// Contract: this answers "what is this permanent's level", which is the only
+    /// question CR 716.2d normalizes. It deliberately does NOT answer "does this
+    /// object store a level of its own" — read `class_level` directly for that.
+    /// CR 716.4: level counters on leveler cards are a separate designation and are
+    /// never read here.
+    pub fn level(&self) -> u8 {
+        Self::level_from_stored(self.class_level)
+    }
+
+    /// CR 716.2d: [`Self::level`] for callers that hold a latched level snapshot
+    /// instead of a live object (`TriggerSourceRead::Latched`). The default lives
+    /// here alone so no read site restates it.
+    pub fn level_from_stored(class_level: Option<u8>) -> u8 {
+        class_level.unwrap_or(1)
+    }
+
     /// CR 614.12c + CR 607.2d: Look up the persisted anchor-word label chosen
     /// as this permanent entered the battlefield (e.g. "Jeskai" / "Temur" on
     /// Frostcliff Siege, "Khans" / "Dragons" on a Khans of Tarkir Siege).

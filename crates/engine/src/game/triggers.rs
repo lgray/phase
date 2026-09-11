@@ -13467,9 +13467,10 @@ fn check_trigger_constraint_with_ref(
             nth_in_turn == *n
         }
         // CR 716.2a: "When this Class becomes level N" — fire only at the specified level.
-        TriggerConstraint::AtClassLevel { level } => source_context
-            .and_then(|source| source.source_read(state).class_level())
-            .is_some_and(|current| current == *level),
+        // CR 716.2d: an absent stored level reads as 1 (`GameObject::level`).
+        TriggerConstraint::AtClassLevel { level } => {
+            source_context.is_some_and(|source| source.source_read(state).level() == *level)
+        }
         // CR 603.4: "This ability triggers only the first N times each turn."
         TriggerConstraint::MaxTimesPerTurn { max } => definition_ref.is_none_or(|key| {
             state
@@ -14029,9 +14030,10 @@ fn evaluate_trigger_condition_with_source(
                 })
         }),
         // CR 716.2a: True when the source Class is at or above the specified level.
-        TriggerCondition::ClassLevelGE { level } => source_context
-            .and_then(|source| source.source_read(state).class_level())
-            .is_some_and(|current| current >= *level),
+        // CR 716.2d: an absent stored level reads as 1 (`GameObject::level`).
+        TriggerCondition::ClassLevelGE { level } => {
+            source_context.is_some_and(|source| source.source_read(state).level() >= *level)
+        }
         // CR 701.64b + CR 702.186b: True when the source permanent is harnessed.
         // Gates an ∞ (Infinity) triggered ability so it only fires while
         // harnessed (the ∞ ability word maps to this condition).
