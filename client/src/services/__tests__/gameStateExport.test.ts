@@ -152,19 +152,11 @@ describe("gameStateExport", () => {
       }),
     });
     let downloadedBlob: Blob | null = null;
-    Object.defineProperty(URL, "createObjectURL", {
-      configurable: true,
-      writable: true,
-      value: vi.fn((blob: Blob) => {
-        downloadedBlob = blob;
-        return "blob:mock-url";
-      }),
+    vi.spyOn(URL, "createObjectURL").mockImplementation((blob) => {
+      downloadedBlob = blob as Blob;
+      return "blob:mock-url";
     });
-    Object.defineProperty(URL, "revokeObjectURL", {
-      configurable: true,
-      writable: true,
-      value: vi.fn(),
-    });
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     const trustedState = JSON.stringify({ state: "trusted-envelope" });
     const adapter = buildEngineAdapterMock(undefined, {
@@ -172,20 +164,15 @@ describe("gameStateExport", () => {
     });
     useGameStore.setState({ gameMode: "ai" });
 
-    try {
-      const filename = await exportAuthoritativeGameStateZip(adapter);
+    const filename = await exportAuthoritativeGameStateZip(adapter);
 
-      expect(filename).toMatch(/^authoritative-game-state-.*\.zip$/);
-      expect(clickSpy).toHaveBeenCalledOnce();
-      expect(downloadedBlob).not.toBeNull();
-      const entries = unzipSync(new Uint8Array(await downloadedBlob!.arrayBuffer()));
-      const [entryName] = Object.keys(entries);
-      expect(entryName).toMatch(/^authoritative-game-state-.*\.json$/);
-      expect(strFromU8(entries[entryName])).toBe(trustedState);
-    } finally {
-      Reflect.deleteProperty(URL, "createObjectURL");
-      Reflect.deleteProperty(URL, "revokeObjectURL");
-    }
+    expect(filename).toMatch(/^authoritative-game-state-.*\.zip$/);
+    expect(clickSpy).toHaveBeenCalledOnce();
+    expect(downloadedBlob).not.toBeNull();
+    const entries = unzipSync(new Uint8Array(await downloadedBlob!.arrayBuffer()));
+    const [entryName] = Object.keys(entries);
+    expect(entryName).toMatch(/^authoritative-game-state-.*\.json$/);
+    expect(strFromU8(entries[entryName])).toBe(trustedState);
   });
 
   it("does not download when the user cancels the save picker", async () => {

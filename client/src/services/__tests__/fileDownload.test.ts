@@ -6,26 +6,16 @@ describe("downloadBlob", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     Reflect.deleteProperty(window, "showSaveFilePicker");
-    Reflect.deleteProperty(URL, "createObjectURL");
-    Reflect.deleteProperty(URL, "revokeObjectURL");
   });
 
   function stubAnchorDownload() {
     let downloadedBlob: Blob | null = null;
     let downloadedName: string | null = null;
-    Object.defineProperty(URL, "createObjectURL", {
-      configurable: true,
-      writable: true,
-      value: vi.fn((blob: Blob) => {
-        downloadedBlob = blob;
-        return "blob:mock-url";
-      }),
+    vi.spyOn(URL, "createObjectURL").mockImplementation((blob) => {
+      downloadedBlob = blob as Blob;
+      return "blob:mock-url";
     });
-    Object.defineProperty(URL, "revokeObjectURL", {
-      configurable: true,
-      writable: true,
-      value: vi.fn(),
-    });
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
       this: HTMLAnchorElement,
     ) {
@@ -98,4 +88,34 @@ describe("downloadBlob", () => {
     expect((err as DOMException).name).toBe("AbortError");
     expect(clickSpy).not.toHaveBeenCalled();
   });
+
+  it.each(["createWritable", "write", "close"] as const)(
+    "rejects without an anchor download when %s fails on the picked file",
+    async (failingStep) => {
+      // Once a destination is chosen it may already be empty or partial, so a
+      // failed write must surface as a failure, not as a fallback "success".
+      const streamError = new DOMException("Write failed", "NoModificationAllowedError");
+      const steps = {
+        createWritable: vi.fn(async () => {}),
+        write: vi.fn(async () => {}),
+        close: vi.fn(async () => {}),
+      };
+      steps[failingStep].mockRejectedValueOnce(streamError);
+      Object.defineProperty(window, "showSaveFilePicker", {
+        configurable: true,
+        value: vi.fn(async () => ({
+          createWritable: async () => {
+            await steps.createWritable();
+            return { write: steps.write, close: steps.close };
+          },
+        })),
+      });
+      const anchor = stubAnchorDownload();
+
+      await expect(downloadBlob("notes.txt", new Blob(["data"]))).rejects.toBe(streamError);
+
+      expect(steps[failingStep]).toHaveBeenCalledOnce();
+      expect(anchor.filename()).toBeNull();
+    },
+  );
 });
