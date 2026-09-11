@@ -283,7 +283,7 @@ fn census(needle: &str) -> Vec<Hit> {
 ///   `template.owner` — i.e. that arm (b)'s drive-seam configuration is
 ///   production-unreachable.
 /// * 14 ⇒ 16: both in `phase-ai/src/policies/loop_shortcut.rs`'s `#[cfg(test)]`
-///   module — `bounded_offer_with_period`, a builder minting an offer whose
+///   module — `bounded_offer_declaring`, a builder minting an offer whose
 ///   certificate carries a real `per_cycle` so the proposer-elimination arm can
 ///   be driven, and `certificate_of`, a READ accessor for the same rows.
 /// * 16 ⇒ 17: the cap-round row
@@ -375,7 +375,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          `engine/src/game/engine.rs`, which parks a constructed board on an offer so §6 R28 \
          arm (b) can assert the DECLARE firewall refuses a hostile `template.owner`; 14 ⇒ 16, \
          BOTH in `phase-ai/src/policies/loop_shortcut.rs`'s `#[cfg(test)]` module — \
-         `bounded_offer_with_period`, a builder minting an offer whose certificate carries a \
+         `bounded_offer_declaring`, a builder minting an offer whose certificate carries a \
          real `per_cycle` so the proposer-elimination arm can be driven, and `certificate_of`, \
          a read accessor for the same rows. PRODUCTION STAYED AT 22 across that change, which \
          is the half this pin exists to protect: the new policy arm READS the certificate and \

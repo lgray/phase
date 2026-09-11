@@ -18,10 +18,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::analysis::decision_template::DecisionSlot;
+use crate::analysis::decision_template::{
+    self, ConcreteDecision, ConcreteTarget, DecisionPoint, DecisionPointKind, DecisionSlot,
+    DecisionTemplate, IterationIndex,
+};
 use crate::game::game_object::GameObject;
 use crate::types::ability::{
-    AbilityCondition, AbilityDefinition, AbilityUseTally, ActivationRestriction, DamageModification,
+    AbilityCondition, AbilityDefinition, AbilityUseTally, ActivationRestriction,
+    DamageModification, TargetRef,
 };
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::counter::CounterType;
@@ -847,11 +851,13 @@ mod map_key_pairs {
 /// [`map_key_pairs`] exists for.
 ///
 /// THE ENTRY'S TWO HALVES ARE READ DIFFERENTLY, and the published value is KEPT on that
-/// footing rather than narrowed. The **slot** is what both production readers consult —
-/// `PeriodicDelta::conforms` sizes its lift by the pinned slots it finds here, and
-/// `game::interaction`'s `victim_charge` asks whether the period charges this point's slot;
-/// each binds the magnitude to `_`. The **magnitude** has no production consumer at all: it is
-/// the wire witness of the mint's magnitude derivation, the only place
+/// footing rather than narrowed. The **slot** is what `PeriodicDelta::conforms` and
+/// `game::interaction`'s `victim_charge` consult — the first sizes its lift by the pinned slots
+/// it finds here, the second asks whether the period charges this point's slot — and each binds
+/// the magnitude to `_`. The **magnitude** is read by
+/// [`PeriodicDelta::declared_seat_life_charges`], which charges a seat every slot a declaration
+/// may newly land on it (the AI's bounded-declare veto is its production caller). It is also the
+/// wire witness of the mint's magnitude derivation, the only place
 /// [`ResourceVector::worst_seat_life_loss`]' output is observable off the certificate, and the
 /// accepted row pinning that derivation asserts against it. Narrowing the shape to a slot list
 /// would re-shape a saved-game field, which is its own wire-compatibility design.
@@ -1007,6 +1013,191 @@ impl PeriodicDelta {
                 .zip(slot_charged_life(observed, slots, domain))
                 .is_some_and(|(a, b)| a == b)
     }
+
+    /// CR 119.3 + CR 704.3 + CR 704.5a: what each repetition, from the first, can do to `seat`'s
+    /// life total when `declaration` is the sequence of choices driven, given that `observed` is
+    /// the sequence the certified period was measured under. Lazy and unbounded: the caller
+    /// takes as many repetitions as it declares, and may stop at the first fatal one.
+    ///
+    /// # The net term
+    ///
+    /// The period's own net loss on `seat` ([`ResourceVector::seat_life_charges`] over the
+    /// endpoint delta with no charges) describes a repetition whose choices match the
+    /// observation. A declaration changes that only through the charged target slots
+    /// ([`PeriodicDelta::victim_slot`]), one of two ways per slot:
+    ///
+    /// * the slot may NEWLY LAND on `seat`: the declaration may name it (CR 601.2c) and the
+    ///   observation did not. That adds the slot's magnitude, which bounds the loss it inflicts.
+    /// * the slot may LEAVE `seat`: the observation may have named it and the declaration may
+    ///   not. This one cannot be bounded from the net delta. Whatever the slot did to `seat` is
+    ///   folded into that delta, including a life GAIN whose departure raises the loss, and
+    ///   including a loss the reserved charge's aim subtraction absorbed. So a leaving slot
+    ///   makes the net term the reserved charge below, which bounds every conforming
+    ///   declaration. Subtracting the leaving slot's magnitude from the reserved charge instead
+    ///   under-charges a two-slot swap with an untargeted loss on the seat, and a re-aimed gain.
+    ///
+    /// An unknown pin is read fail-closed: it both lands and leaves. A slot with no published
+    /// `Targets` point is a CR 732.2a withhold whose chooser is not the declarer, so neither
+    /// template speaks for it, and a pin that does not resolve on `state`, a missing template,
+    /// and a slot a template leaves unpinned are unknown too. A slot lands only on a seat in
+    /// its published `legal_targets` (for a withheld slot, in
+    /// [`PeriodicDelta::declarable_victims`]), the set CR 115.2 +
+    /// `decision_template::declaration_conforms` confine a conforming pin to. It leaves only a
+    /// seat in `declarable_victims`: an observed aim lies in the slot's reach, and
+    /// [`PeriodicDelta::conforms`] holds a seat outside that domain to its observed loss.
+    ///
+    /// # The dip term
+    ///
+    /// CR 704.3 checks CR 704.5a whenever a player would receive priority, including the beats
+    /// INSIDE a repetition. A repetition that nets nothing can still take the total to zero on
+    /// the way, which is why this is a separate term. It starts from
+    /// [`PeriodicDelta::seat_life_charge`], the engine's frame-wise charge with every reaching
+    /// slot added, which bounds the gross loss any conforming declaration inflicts in one
+    /// repetition because its aim subtraction covers only slots that still reach the seat.
+    ///
+    /// A slot OFF the seat in both templates comes out of it. Its published legal set holds the
+    /// seat, so the reserved charge added its magnitude as reach; neither the observation nor
+    /// the declaration names the seat, so the window did not aim it there, its magnitude sits
+    /// in no aim subtraction, and the declaration does not bring it back. Removing it keeps the
+    /// charge at or above the gross loss of this declaration, and stops a declaration that
+    /// never touches the seat from being charged a slot it pins elsewhere. A slot aimed at the
+    /// seat in the window, a slot either template leaves unknown, and a withheld slot all stay.
+    ///
+    /// Floored by the net term, so an emptied publication (a pre-field signature, see that
+    /// field's doc) degrades to the net term, as
+    /// [`ResourceVector::consumption_seat_life_charges`] degrades to the enforced loss.
+    ///
+    /// # The witness and the known over-charges
+    ///
+    /// `observed` must be the declaration the offer published:
+    /// `game::engine::build_bounded_declaration` pins each slot to the proposer's one answer in
+    /// the certified window, which is the aim the reserved charge subtracted. Another template
+    /// breaks the aim reasoning above.
+    ///
+    /// A withheld slot is charged against EVERY seat in `declarable_victims`, and forces the
+    /// net term to the dip for each of them, even when that slot can only name some other seat:
+    /// the certificate publishes one reach union, never a per-slot reach, so which seats a
+    /// withheld slot can name is not recoverable here. That is a fail-closed over-charge.
+    ///
+    /// Both templates resolve through [`decision_template::resolve`], the authority the drive
+    /// replays a declaration with, once per repetition because a scheduled pin may name a
+    /// different seat at each index; when they are the same template, as on the bounded
+    /// candidate `ai_support::candidates` emits (it carries the offer's own declaration), one
+    /// resolution serves both. Everything else is read once. The
+    /// magnitudes are the engine's charge model: every charged slot carries
+    /// [`ResourceVector::worst_seat_life_loss`] whatever its effect, so a charged slot that deals
+    /// no damage is still charged when it lands.
+    pub fn declared_seat_life_charges<'a>(
+        &'a self,
+        seat: PlayerId,
+        declaration: Option<&'a DecisionTemplate>,
+        observed: Option<&'a DecisionTemplate>,
+        points: &'a [DecisionPoint],
+        state: &'a GameState,
+    ) -> impl Iterator<Item = DeclaredLifeCharge> + 'a {
+        let charge_on_seat = |charges: &[(PlayerId, i64)]| {
+            charges
+                .iter()
+                .find(|(charged, _)| *charged == seat)
+                .map_or(0, |(_, magnitude)| *magnitude)
+        };
+        let floor = charge_on_seat(self.delta.seat_life_charges(&[]).as_slice());
+        let reserved = charge_on_seat(self.seat_life_charge.as_slice());
+        // CR 704.5a: the seats the bound reserved headroom for. No slot reaches a seat outside
+        // them, and `PeriodicDelta::conforms` holds such a seat's loss to the observed one.
+        let in_domain = self.declarable_victims.contains(&seat);
+        let one_template = declaration.is_some() && declaration == observed;
+        // CR 115.2: each charged slot with whether its published legal set holds the seat,
+        // `None` for a withheld slot.
+        let slots: Vec<(&DecisionSlot, i64, Option<bool>)> = self
+            .victim_slot
+            .iter()
+            .map(|(slot, magnitude)| {
+                let published = points.iter().find_map(|point| match &point.kind {
+                    DecisionPointKind::Targets { legal_targets, .. } if point.slot == *slot => {
+                        Some(legal_targets.contains(&TargetRef::Player(seat)))
+                    }
+                    _ => None,
+                });
+                (slot, (*magnitude).max(0), published)
+            })
+            .collect();
+        (0..).map(move |iteration: IterationIndex| {
+            // With no charged slot there is no pin to read and every repetition is alike.
+            let resolve_at = |template: Option<&DecisionTemplate>| {
+                template.filter(|_| !slots.is_empty()).and_then(|template| {
+                    decision_template::resolve(template, iteration, state).ok()
+                })
+            };
+            let declared = resolve_at(declaration);
+            let seen_apart = (!one_template).then(|| resolve_at(observed)).flatten();
+            let seen = if one_template {
+                declared.as_deref()
+            } else {
+                seen_apart.as_deref()
+            };
+            // CR 601.2c: whether this repetition's resolved pin for `slot` names the seat,
+            // `None` when the template is absent, unresolvable, or leaves the slot unpinned.
+            let names_seat = |decisions: Option<&[ConcreteDecision]>,
+                              slot: &DecisionSlot|
+             -> Option<bool> {
+                decisions?.iter().find_map(|decision| match decision {
+                    ConcreteDecision::Targets {
+                        slot: pinned,
+                        targets,
+                    } if pinned == slot => Some(targets.contains(&ConcreteTarget::Player(seat))),
+                    _ => None,
+                })
+            };
+            let mut landing = 0i64;
+            let mut leaves = false;
+            let mut elsewhere = 0i64;
+            for &(slot, magnitude, published) in &slots {
+                let (reaches, now, before) = match published {
+                    Some(legal) => (
+                        legal,
+                        names_seat(declared.as_deref(), slot),
+                        names_seat(seen, slot),
+                    ),
+                    // CR 732.2a: a withheld slot's chooser is not the declarer, so neither
+                    // template speaks for it. Charged against every seat in the domain, a
+                    // known over-charge (see the doc).
+                    None => (in_domain, None, None),
+                };
+                if reaches && now != Some(false) && before != Some(true) {
+                    landing += magnitude;
+                }
+                if in_domain && now != Some(true) && before != Some(false) {
+                    leaves = true;
+                }
+                if published == Some(true) && now == Some(false) && before == Some(false) {
+                    elsewhere += magnitude;
+                }
+            }
+            let net = floor + landing;
+            let dip = net.max(reserved - elsewhere);
+            DeclaredLifeCharge {
+                net: if leaves { dip } else { net },
+                dip,
+            }
+        })
+    }
+}
+
+/// CR 119.3 + CR 704.3: what one repetition of a certified period can do to one seat's life
+/// total under one declaration — one item of [`PeriodicDelta::declared_seat_life_charges`].
+///
+/// Two numbers because CR 704.5a is checked at every priority beat and not only between
+/// repetitions: a seat dies in repetition `k` when what the earlier repetitions took from it
+/// plus the deepest point inside `k` reaches its life total. Both are upper bounds, and
+/// `net <= dip` always.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeclaredLifeCharge {
+    /// The most the seat's total can be lower at the end of the repetition than at its start.
+    pub net: i64,
+    /// The most the seat's total can fall below the repetition's starting total at any
+    /// priority beat inside it.
+    pub dip: i64,
 }
 
 /// The delta with up to `slots` per-seat life LOSSES — the largest first, and only on seats in
@@ -16467,6 +16658,496 @@ mod tests {
             from_charge.count, floored.count,
             "reach-guard: the two legs must separate, else `at most` is satisfied by a helper \
              that ignores the publication entirely"
+        );
+    }
+
+    /// A declaration pinning each `(slot, seats)` pair to a CR 601.2c target schedule over
+    /// seats, one ranking per step — the TARGET-class spelling `record_trigger_target_answer`
+    /// journals. One seat is a constant pin; more are a round-robin.
+    fn seat_schedule_declaration(pins: &[(&DecisionSlot, &[u8])]) -> DecisionTemplate {
+        let step = |seat: &u8| {
+            crate::analysis::decision_template::Ranking::one(
+                crate::analysis::decision_template::AnnouncementSubject::Seat(PlayerId(*seat)),
+            )
+        };
+        let schedule = |seats: &[u8]| match seats {
+            [seat] => crate::analysis::decision_template::TargetSchedule::Constant(step(seat)),
+            _ => crate::analysis::decision_template::TargetSchedule::RoundRobin(
+                seats.iter().map(step).collect(),
+            ),
+        };
+        let sources: Vec<_> = pins.iter().map(|(slot, _)| slot.source.clone()).collect();
+        DecisionTemplate {
+            owner: PlayerId(0),
+            decisions: pins
+                .iter()
+                .map(
+                    |(slot, seats)| crate::analysis::decision_template::PinnedDecision::Targets {
+                        slot: (*slot).clone(),
+                        targets: vec![crate::analysis::decision_template::TargetPin::Scheduled(
+                            schedule(seats),
+                        )],
+                    },
+                )
+                .collect(),
+            replay: crate::analysis::decision_template::ReplayMode::Scheduled {
+                count: crate::analysis::decision_template::IterationCount::Fixed(9),
+            },
+            key: crate::analysis::decision_template::DecisionGroupKey::from_sources(
+                &sources,
+                crate::analysis::decision_template::DecisionKind::LoopChoice,
+            ),
+        }
+    }
+
+    /// A CR 601.2c player-target slot announced by a creature of P0's, which `resolve` needs
+    /// live on the battlefield to replay a seat pin against.
+    fn announced_target_slot(board: &mut GameState, id: u64) -> DecisionSlot {
+        let source_id = battlefield_creature(board, id, 0);
+        DecisionSlot::target(crate::types::game_state::YieldTarget::ThisObject {
+            source_id,
+            incarnation: None,
+            trigger_description: None,
+        })
+    }
+
+    /// CR 115.2: the published point for `slot`, legal on exactly `seats`.
+    fn seat_point(slot: &DecisionSlot, seats: &[u8]) -> DecisionPoint {
+        DecisionPoint {
+            slot: slot.clone(),
+            kind: DecisionPointKind::Targets {
+                legal_targets: seats
+                    .iter()
+                    .map(|seat| TargetRef::Player(PlayerId(*seat)))
+                    .collect(),
+                min_targets: 1,
+                max_targets: 1,
+                ordered: false,
+            },
+        }
+    }
+
+    /// The charge [`PeriodicDelta::declared_seat_life_charges`] states for repetition
+    /// `iteration`.
+    fn nth_charge(
+        period: &PeriodicDelta,
+        seat: PlayerId,
+        declaration: Option<&DecisionTemplate>,
+        observed: Option<&DecisionTemplate>,
+        points: &[DecisionPoint],
+        iteration: usize,
+        board: &GameState,
+    ) -> DeclaredLifeCharge {
+        period
+            .declared_seat_life_charges(seat, declaration, observed, points, board)
+            .nth(iteration)
+            .expect("the per-repetition charges are unbounded")
+    }
+
+    /// CR 119.3 + CR 704.5a: **a declaration charges a seat a slot only where its pin moves
+    /// it, measured against the allocation the period was observed under.** One board, one
+    /// slot: P0's trigger announces a player-target slot that may name P0 or P1, and the
+    /// detection window saw it drain P1 (by 2, and by 4 in ⓖ's period). The mint reserves that
+    /// slot's magnitude on BOTH seats, because the bound covers every legal declaration.
+    ///
+    /// REVERT-PROBES, each failing a different leg:
+    /// * ignore `observed` (read every `before` as unknown) ⇒ ⓐ charges P1 its own observed
+    ///   drain a second time (net 4) ⇒ FAILS.
+    /// * read an unknown observation as "not on this seat" ⇒ ⓔ nets 0 ⇒ FAILS.
+    /// * resolve at a fixed index instead of `iteration` ⇒ ⓓ's second repetition nets 2 ⇒
+    ///   FAILS.
+    /// * drop the dip's `net.max(..)` floor ⇒ ⓕ's dip reads 0 under a net of 2 ⇒ FAILS.
+    /// * charge every dip the full reserved charge, blind to the declaration ⇒ ⓐ's P0 dips 2 ⇒
+    ///   FAILS.
+    /// * drop `now == Some(false)` from the dip's removal ⇒ ⓖ's pinned leg dips 5 ⇒ FAILS.
+    /// * weaken it to `now != Some(true)` ⇒ ⓖ's unpinned leg dips 5 ⇒ FAILS.
+    #[test]
+    fn a_declared_charge_lands_a_slot_only_where_its_pin_moves_it() {
+        let (p0, p1) = (PlayerId(0), PlayerId(1));
+        let mut board = bound_board(&[18, 20]);
+        let slot = announced_target_slot(&mut board, 500);
+        let charges = vec![SlotCharge {
+            slot: slot.clone(),
+            magnitude: 2,
+            reaches: vec![p0, p1],
+            aimed_at: Some(p1),
+        }];
+        let delta = life_loss_delta(&[(1, 2)]);
+        let published = delta.seat_life_charges(&charges);
+        assert_eq!(
+            published,
+            vec![(p0, 2), (p1, 2)],
+            "reach-guard: the mint's producer reserves the slot on BOTH reached seats"
+        );
+        let period = PeriodicDelta {
+            frames_per_period: 1,
+            delta,
+            victim_slot: vec![(slot.clone(), 2)],
+            declarable_victims: SlotCharge::declarable_victims(&charges),
+            seat_life_charge: published,
+        };
+        let points = [seat_point(&slot, &[0, 1])];
+        let observed = seat_schedule_declaration(&[(&slot, &[1])]);
+        let charge = |seat: PlayerId,
+                      declaration: Option<&DecisionTemplate>,
+                      observed: Option<&DecisionTemplate>,
+                      iteration: usize| {
+            let DeclaredLifeCharge { net, dip } = nth_charge(
+                &period,
+                seat,
+                declaration,
+                observed,
+                &points,
+                iteration,
+                &board,
+            );
+            (net, dip)
+        };
+
+        // ⓐ THE OBSERVED ALLOCATION: nothing moves. The slot is off P0 in both templates, so P0
+        //   nets and dips nothing; P1 nets exactly its observed drain.
+        assert_eq!(charge(p0, Some(&observed), Some(&observed), 0), (0, 0));
+        assert_eq!(charge(p1, Some(&observed), Some(&observed), 0), (2, 2));
+
+        // ⓑ RE-AIMED ONTO P0: the slot lands on P0 although the observed period drained only
+        //   P1. P1 is not credited for the slot leaving it.
+        let onto_p0 = seat_schedule_declaration(&[(&slot, &[0])]);
+        assert_eq!(charge(p0, Some(&onto_p0), Some(&observed), 0), (2, 2));
+        assert_eq!(charge(p1, Some(&onto_p0), Some(&observed), 0), (2, 2));
+
+        // ⓒ NO DECLARATION: an unpinned slot may land on any seat it reaches.
+        assert_eq!(charge(p0, None, Some(&observed), 0), (2, 2));
+
+        // ⓓ A ROUND-ROBIN SCHEDULE is resolved per repetition.
+        let alternating = seat_schedule_declaration(&[(&slot, &[0, 1])]);
+        assert_eq!(charge(p0, Some(&alternating), Some(&observed), 0), (2, 2));
+        assert_eq!(charge(p0, Some(&alternating), Some(&observed), 1), (0, 0));
+
+        // ⓔ NO OBSERVATION: the slot may have been on P0 in the window, so pinning it to P1
+        //   earns P0 nothing.
+        assert_eq!(charge(p0, Some(&observed), None, 0), (2, 2));
+
+        // ⓕ AN EMPTIED PUBLICATION (a pre-field save): the dip never undercuts the net term.
+        let restored = PeriodicDelta {
+            seat_life_charge: Vec::new(),
+            ..period.clone()
+        };
+        assert_eq!(
+            nth_charge(
+                &restored,
+                p0,
+                Some(&onto_p0),
+                Some(&observed),
+                &points,
+                0,
+                &board
+            ),
+            DeclaredLifeCharge { net: 2, dip: 2 }
+        );
+
+        // ⓖ A SLOT THAT MAY LAND STAYS IN THE DIP. P0 pays 4 and gains 3 untargeted, and the
+        //   slot drains P1 by 4: the endpoint shows P0 −1, the frame-wise loss is 4 on each
+        //   seat, and P0 is reserved its 4 plus the slot's 4. Pinned onto P0 or left unpinned,
+        //   the slot may resolve after the payment and before the gain.
+        let dipping_charges = vec![SlotCharge {
+            slot: slot.clone(),
+            magnitude: 4,
+            reaches: vec![p0, p1],
+            aimed_at: Some(p1),
+        }];
+        let dipping = PeriodicDelta {
+            frames_per_period: 2,
+            delta: life_loss_delta(&[(0, 1), (1, 4)]),
+            victim_slot: vec![(slot.clone(), 4)],
+            declarable_victims: SlotCharge::declarable_victims(&dipping_charges),
+            seat_life_charge: life_loss_delta(&[(0, 4), (1, 4)])
+                .seat_life_charges(&dipping_charges),
+        };
+        assert_eq!(
+            dipping.seat_life_charge,
+            vec![(p0, 8), (p1, 4)],
+            "reach-guard: P0 is reserved its frame-wise 4 plus the reaching slot's 4"
+        );
+        assert_eq!(
+            nth_charge(
+                &dipping,
+                p0,
+                Some(&onto_p0),
+                Some(&observed),
+                &points,
+                0,
+                &board
+            ),
+            DeclaredLifeCharge { net: 5, dip: 8 },
+            "CR 704.3: pinned onto P0, the slot's 4 can follow the payment of 4 before the gain"
+        );
+        assert_eq!(
+            nth_charge(&dipping, p0, None, Some(&observed), &points, 0, &board),
+            DeclaredLifeCharge { net: 5, dip: 8 },
+            "CR 704.3: an unpinned slot may land on P0 at that same beat"
+        );
+    }
+
+    /// CR 119.3 + CR 704.3 + CR 704.5a: **a slot that may LEAVE a seat relieves that seat of
+    /// nothing.** The observed net delta folds in whatever the leaving slot did there, so the
+    /// seat's net term falls back to the reserved charge, which bounds every conforming
+    /// declaration.
+    ///
+    /// * ⓐ the review's two-slot SWAP. S1 ("target player loses 1 life") was seen on P0, S2
+    ///   ("target player loses 2 life") on P1, and P0 also pays 2 untargeted: P0 −3, P1 −2, so
+    ///   both slots carry the worst loss, 3, and each seat is reserved 6. At 7 life P0 is the
+    ///   sole binding seat and the offer's bound is 2. Swapping the pins leaves P0 losing
+    ///   2 + 2 = 4 a repetition, 8 over two. Subtracting the leaving S1 from P0's reserved 6
+    ///   gave 3, 6 over two, and scored the declare that kills P0.
+    ///   The PUBLISHED declaration on the same board leaves S2 off P0 in both templates: P0
+    ///   loses 3 a repetition, 7 → 4 → 1, and two repetitions must not reach its 7.
+    /// * ⓑ a re-aimed GAIN. P0 pays 2 and G, seen on P0, gives it 2 back; P1 loses 2
+    ///   untargeted. Aiming G at P1 leaves P0 losing 2 a repetition, which its net delta of 0
+    ///   cannot show and subtracting G's magnitude takes to 0.
+    /// * ⓒ a repetition that nets nothing: pay 1, gain 1. It charges no net and a dip of 1,
+    ///   because CR 704.3 checks life at the beat between the two.
+    ///
+    /// REVERT-PROBES:
+    /// * subtract a leaving slot's magnitude from the reserved charge instead of falling back
+    ///   to it ⇒ ⓐ nets 3 and ⓑ nets 0, both under the true loss ⇒ FAILS.
+    /// * charge the reserved charge as the net term ⇒ ⓒ nets 1 ⇒ FAILS.
+    /// * charge every dip the full reserved charge ⇒ ⓐ's published declaration dips 6, and
+    ///   3 + 6 reaches 7 ⇒ FAILS.
+    #[test]
+    fn a_slot_leaving_a_seat_keeps_that_seats_reserved_charge() {
+        let (p0, p1) = (PlayerId(0), PlayerId(1));
+        let mut board = bound_board(&[7, 20]);
+        let s1 = announced_target_slot(&mut board, 500);
+        let s2 = announced_target_slot(&mut board, 501);
+        let g = announced_target_slot(&mut board, 502);
+
+        // ⓐ THE SWAP.
+        let swap_charges = vec![
+            SlotCharge {
+                slot: s1.clone(),
+                magnitude: 3,
+                reaches: vec![p0, p1],
+                aimed_at: Some(p0),
+            },
+            SlotCharge {
+                slot: s2.clone(),
+                magnitude: 3,
+                reaches: vec![p0, p1],
+                aimed_at: Some(p1),
+            },
+        ];
+        let swap_delta = life_loss_delta(&[(0, 3), (1, 2)]);
+        let swap_published = swap_delta.seat_life_charges(&swap_charges);
+        assert_eq!(
+            swap_published,
+            vec![(p0, 6), (p1, 6)],
+            "reach-guard: each seat is reserved both slots, net of the one aimed at it"
+        );
+        let swap = PeriodicDelta {
+            frames_per_period: 1,
+            delta: swap_delta,
+            victim_slot: vec![(s1.clone(), 3), (s2.clone(), 3)],
+            declarable_victims: SlotCharge::declarable_victims(&swap_charges),
+            seat_life_charge: swap_published,
+        };
+        let swap_points = [seat_point(&s1, &[0, 1]), seat_point(&s2, &[0, 1])];
+        let swap_observed = seat_schedule_declaration(&[(&s1, &[0]), (&s2, &[1])]);
+        let swapped = seat_schedule_declaration(&[(&s1, &[1]), (&s2, &[0])]);
+        let swapped_charge = nth_charge(
+            &swap,
+            p0,
+            Some(&swapped),
+            Some(&swap_observed),
+            &swap_points,
+            0,
+            &board,
+        );
+        assert!(
+            swapped_charge.net >= 4,
+            "CR 119.3: the swap takes 4 a repetition from P0; charging {} under-counts it",
+            swapped_charge.net
+        );
+        assert!(
+            swapped_charge.net + swapped_charge.dip >= 7,
+            "CR 704.5a: two repetitions of the swap must reach P0's 7 life, or the offered \
+             Fixed(2) scores the declare that kills it"
+        );
+        assert_eq!(swapped_charge, DeclaredLifeCharge { net: 6, dip: 6 });
+        let as_published = nth_charge(
+            &swap,
+            p0,
+            Some(&swap_observed),
+            Some(&swap_observed),
+            &swap_points,
+            0,
+            &board,
+        );
+        assert_eq!(
+            as_published,
+            DeclaredLifeCharge { net: 3, dip: 3 },
+            "CR 119.3: as published P0 loses its 2 and S1's 1; S2, off P0 in both templates, \
+             is no part of its dip"
+        );
+        assert!(
+            as_published.net + as_published.dip < 7,
+            "the offered Fixed(2) as published leaves P0 at 1 life and must not be refused"
+        );
+
+        // ⓑ THE RE-AIMED GAIN. The reserved charge comes from the frame-wise losses (P0 paid
+        //   2, P1 lost 2); the published delta is the endpoint pair, where P0 nets 0.
+        let gain_charges = vec![SlotCharge {
+            slot: g.clone(),
+            magnitude: 2,
+            reaches: vec![p0, p1],
+            aimed_at: Some(p0),
+        }];
+        let gain = PeriodicDelta {
+            frames_per_period: 1,
+            delta: life_loss_delta(&[(1, 2)]),
+            victim_slot: vec![(g.clone(), 2)],
+            declarable_victims: SlotCharge::declarable_victims(&gain_charges),
+            seat_life_charge: life_loss_delta(&[(0, 2), (1, 2)]).seat_life_charges(&gain_charges),
+        };
+        let away = seat_schedule_declaration(&[(&g, &[1])]);
+        let kept = seat_schedule_declaration(&[(&g, &[0])]);
+        let gain_points = [seat_point(&g, &[0, 1])];
+        assert_eq!(
+            nth_charge(&gain, p0, Some(&away), Some(&kept), &gain_points, 0, &board),
+            DeclaredLifeCharge { net: 2, dip: 2 },
+            "CR 119.3: with the gain aimed away P0 loses the 2 it pays each repetition"
+        );
+        assert_eq!(
+            nth_charge(&gain, p0, Some(&kept), Some(&kept), &gain_points, 0, &board).net,
+            0,
+            "control: kept on P0, the gain still offsets the payment"
+        );
+
+        // ⓒ PAY 1, GAIN 1: the frame-wise charge is 1 and the endpoint pair nets nothing.
+        let even = PeriodicDelta {
+            frames_per_period: 2,
+            delta: ResourceVector::default(),
+            victim_slot: Vec::new(),
+            declarable_victims: Vec::new(),
+            seat_life_charge: vec![(p0, 1)],
+        };
+        assert_eq!(
+            nth_charge(&even, p0, None, None, &[], 0, &board),
+            DeclaredLifeCharge { net: 0, dip: 1 }
+        );
+    }
+
+    /// CR 115.2 + CR 704.5a: **a slot that cannot name a seat moves nothing onto or off it.**
+    /// Each guard is exercised on a seat whose own period pays 1 and gains 1, so any loss a slot
+    /// wrongly lands, any fallback it wrongly forces, or any reservation it wrongly removes
+    /// shows in the charge.
+    ///
+    /// * ⓐ LANDING needs the seat in the slot's published legal set. S2 may name only P1, and
+    ///   the declaration leaves it unpinned: unknown, but it can still never land on P0.
+    ///   Taking a slot out of the DIP needs the same membership: pinned to P1 in both
+    ///   templates, S2 was never in P0's reserved charge, so there is nothing of it to remove.
+    /// * ⓑ LEAVING needs the seat inside `declarable_victims`. S may name only P1, and with no
+    ///   observed declaration nothing says where it was seen; P0 is outside every reach, so it
+    ///   cannot have been there.
+    ///
+    /// REVERT-PROBES:
+    /// * drop the `reaches &&` guard on landing ⇒ ⓐ's unpinned leg nets 2 ⇒ FAILS.
+    /// * drop the `published == Some(true)` guard on the dip's removal ⇒ ⓐ's pinned leg dips 0,
+    ///   under the 1 P0 pays inside each repetition ⇒ FAILS.
+    /// * drop the `in_domain &&` guard on leaving ⇒ ⓑ nets 1 ⇒ FAILS.
+    #[test]
+    fn a_slot_that_cannot_name_a_seat_moves_nothing_onto_or_off_it() {
+        let (p0, p1) = (PlayerId(0), PlayerId(1));
+        let mut board = bound_board(&[18, 20]);
+        let s1 = announced_target_slot(&mut board, 500);
+        let s2 = announced_target_slot(&mut board, 501);
+        let s = announced_target_slot(&mut board, 502);
+        // Frame-wise P0 paid 1 (and regained it), P1 lost 2; the endpoint pair shows only P1.
+        let frame_wise = life_loss_delta(&[(0, 1), (1, 2)]);
+
+        // ⓐ LANDING.
+        let two_slots = vec![
+            SlotCharge {
+                slot: s1.clone(),
+                magnitude: 2,
+                reaches: vec![p0, p1],
+                aimed_at: Some(p1),
+            },
+            SlotCharge {
+                slot: s2.clone(),
+                magnitude: 2,
+                reaches: vec![p1],
+                aimed_at: Some(p1),
+            },
+        ];
+        let landing = PeriodicDelta {
+            frames_per_period: 2,
+            delta: life_loss_delta(&[(1, 2)]),
+            victim_slot: vec![(s1.clone(), 2), (s2.clone(), 2)],
+            declarable_victims: SlotCharge::declarable_victims(&two_slots),
+            seat_life_charge: frame_wise.seat_life_charges(&two_slots),
+        };
+        let landing_points = [seat_point(&s1, &[0, 1]), seat_point(&s2, &[1])];
+        let both_on_p1 = seat_schedule_declaration(&[(&s1, &[1]), (&s2, &[1])]);
+        let s2_unpinned = seat_schedule_declaration(&[(&s1, &[1])]);
+        assert_eq!(
+            nth_charge(
+                &landing,
+                p0,
+                Some(&s2_unpinned),
+                Some(&both_on_p1),
+                &landing_points,
+                0,
+                &board
+            ),
+            DeclaredLifeCharge { net: 0, dip: 1 },
+            "CR 115.2: S2 cannot name P0, so leaving it unpinned lands nothing on P0"
+        );
+        assert_eq!(
+            nth_charge(
+                &landing,
+                p0,
+                Some(&both_on_p1),
+                Some(&both_on_p1),
+                &landing_points,
+                0,
+                &board
+            ),
+            DeclaredLifeCharge { net: 0, dip: 1 },
+            "CR 704.3: P0 still pays 1 inside each repetition; only S1 was reserved against it"
+        );
+
+        // ⓑ LEAVING.
+        let one_slot = vec![SlotCharge {
+            slot: s.clone(),
+            magnitude: 2,
+            reaches: vec![p1],
+            aimed_at: Some(p1),
+        }];
+        let leaving = PeriodicDelta {
+            frames_per_period: 2,
+            delta: life_loss_delta(&[(1, 2)]),
+            victim_slot: vec![(s.clone(), 2)],
+            declarable_victims: SlotCharge::declarable_victims(&one_slot),
+            seat_life_charge: frame_wise.seat_life_charges(&one_slot),
+        };
+        assert_eq!(
+            leaving.declarable_victims,
+            vec![p1],
+            "reach-guard: P0 must lie outside the reserved domain"
+        );
+        let onto_p1 = seat_schedule_declaration(&[(&s, &[1])]);
+        assert_eq!(
+            nth_charge(
+                &leaving,
+                p0,
+                Some(&onto_p1),
+                None,
+                &[seat_point(&s, &[1])],
+                0,
+                &board
+            ),
+            DeclaredLifeCharge { net: 0, dip: 1 },
+            "CR 704.5a: no slot reaches P0, so none can have left it"
         );
     }
 
