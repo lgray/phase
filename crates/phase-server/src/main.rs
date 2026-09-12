@@ -951,7 +951,7 @@ fn dev_fixture_enabled() -> bool {
 }
 
 fn select_card_data_source(data_dir: &Path, dev_fixture: bool) -> Result<CardDataSource, String> {
-    let export_path = data_dir.join("card-data.json");
+    let export_path = data_dir.join(data_bootstrap::CARD_DATA_FILE);
     if export_path.is_file() {
         return Ok(CardDataSource::Export(export_path));
     }
@@ -967,7 +967,7 @@ fn select_card_data_source(data_dir: &Path, dev_fixture: bool) -> Result<CardDat
 }
 
 fn bootstrap_required(data_dir: &Path, dev_fixture: bool) -> bool {
-    !dev_fixture || data_dir.join("card-data.json").is_file()
+    !dev_fixture || data_dir.join(data_bootstrap::CARD_DATA_FILE).is_file()
 }
 
 fn fatal_startup(message: impl std::fmt::Display) -> ! {
@@ -2034,7 +2034,10 @@ async fn serve() {
     );
     let data_path = cli.data_dir.as_path();
     let dev_fixture = dev_fixture_enabled();
-    if bootstrap_required(data_path, dev_fixture) {
+    // The two load sites need the same inputs the pre-pass used, so the block
+    // yields them: a directory the operator opted out of managing is never
+    // rearranged, and that verdict has one source.
+    let bootstrap = if bootstrap_required(data_path, dev_fixture) {
         let identity = data_bootstrap::ChannelIdentity::embedded()
             .unwrap_or_else(|error| fatal_startup(error));
         let options = data_bootstrap::BootstrapOptions {
@@ -2046,18 +2049,32 @@ async fn serve() {
         {
             fatal_startup(error);
         }
+        Some((options, identity))
     } else {
         warn!(
             path = %data_path.display(),
             "using PHASE_DEV_FIXTURE=1 test fixture; startup data bootstrap is disabled"
         );
-    }
+        None
+    };
+    let (bootstrap_options, identity) = match &bootstrap {
+        Some((options, identity)) => (Some(options), identity.as_ref()),
+        None => (None, None),
+    };
     let card_data_source = select_card_data_source(data_path, dev_fixture)
         .unwrap_or_else(|message| fatal_startup(message));
     let card_db = match card_data_source {
-        CardDataSource::Export(path) => CardDatabase::from_export(&path).unwrap_or_else(|error| {
-            fatal_startup(format!("failed to load {}: {error}", path.display()))
-        }),
+        // The payload goes unread: the authority builds the path from the data
+        // directory and the file name, exactly as this arm's payload was built.
+        CardDataSource::Export(_) => data_bootstrap::load_data_file(
+            data_path,
+            data_bootstrap::CARD_DATA_FILE,
+            bootstrap_options,
+            identity,
+            CardDatabase::from_export,
+        )
+        .await
+        .unwrap_or_else(|error| fatal_startup(error)),
         CardDataSource::DevFixture(path) => {
             CardDatabase::from_mtgjson(&path).unwrap_or_else(|error| {
                 fatal_startup(format!(
@@ -2116,16 +2133,22 @@ async fn serve() {
     session_manager.game_log = Arc::clone(&game_log);
     let state: SharedState = Arc::new(Mutex::new(session_manager));
     let draft_sessions: SharedDraftState = Arc::new(Mutex::new(DraftSessionManager::new()));
-    let draft_pools_path = data_path.join("draft-pools.json");
-    let draft_pools: SharedDraftPools = match draft_pools::DraftPools::from_path(&draft_pools_path)
+    let draft_pools: SharedDraftPools = match data_bootstrap::load_data_file(
+        data_path,
+        data_bootstrap::DRAFT_POOLS_FILE,
+        bootstrap_options,
+        identity,
+        draft_pools::DraftPools::from_path,
+    )
+    .await
     {
         Ok(pools) => {
             info!(sets = pools.len(), "draft pools loaded");
             Arc::new(pools)
         }
+        // The error opens with the path, so the field would repeat it.
         Err(e) => {
             warn!(
-                path = %draft_pools_path.display(),
                 error = %e,
                 "draft pools unavailable; server-hosted drafts cannot start"
             );
