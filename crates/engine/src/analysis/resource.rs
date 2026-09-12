@@ -2398,7 +2398,12 @@ fn cover_projection(state: &GameState) -> GameState {
 /// draw only if the game truly repeats with nothing changing. For a *beneficial* loop
 /// (CR 732.2a, the shortcut) the question asked here is identity in **board, zones and
 /// tap-state on the PROJECTED feed**: `normalize_for_loop`, then [`project_out_resources`],
-/// then that same strict comparator.
+/// then that same strict comparator — plus the two hand conjuncts at the end of
+/// [`loop_states_equal_modulo_resources_side`], where this gate compensates for axes the
+/// strict comparator leaves out: [`loyalty_activation_counts_match`] over the per-object
+/// CR 606.3 count (distinct from the per-player `extra_loyalty_activations_this_turn`, which
+/// `impl PartialEq for GameState` does compare) and `last_loop_action_sequence`. Each states
+/// its own fail-closed argument there.
 ///
 /// What the projection removes is named by its own authorities rather than listed, because a
 /// list presented as exact is wrong by omission the moment a zeroing site is added — see
@@ -4545,8 +4550,10 @@ pub(crate) enum MemberLiveness {
 ///
 /// The axes the arms actually differ on are PARAMETERS, not copied blocks. `pre` and
 /// `liveness` are each a declaration an arm cannot leave unstated, and `shape` / `excludes`
-/// keep each arm's own typed subject and its own delegated authority — so no arm needs `dyn`,
-/// and none can resolve a member against a frame other than `state`.
+/// keep each arm's own typed subject and its own delegated authority — so no arm needs `dyn`.
+/// That no arm resolves a member against a frame other than `state` is a property OF THE ARMS,
+/// established by reading them, and NOT of this signature: `shape` and `excludes` are `FnOnce`
+/// closures that capture freely, so nothing here binds them to the `state` argument.
 pub(crate) fn provably_excludes_class<S>(
     state: &GameState,
     class_member: ObjectId,
@@ -4806,6 +4813,10 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       `FilterReadContext` from THIS effect via `effect_target_ctx` rather than pinning one.
 ///   (d) BOTH P/T halves must be provably invariant — `toughness` as much as `power`
 ///       (`Pump` carries two independent `PtValue`s and either can hold the aggregate).
+///
+/// Legacy conjunct labels name those two declarations: `(0)` is the pre-gate's
+/// `activation_restrictions` refusal, `(a)` its blank-and-rescan, `(c)` the liveness
+/// declaration.
 fn pump_aggregate_provably_excludes_class(
     exec: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -5029,6 +5040,10 @@ fn pt_value_aggregate_provably_excludes_class(
 ///       CONSTANT-TRUE on every input production can construct — the guarantee that carries
 ///       there is the cover above. (d) earns its place by keeping the arm sound for a future
 ///       caller that hands it a differently-built class set.
+///
+/// Legacy conjunct labels name those two declarations: `(0)` is the pre-gate's
+/// `activation_restrictions` refusal, `(a)` its blank-and-rescan, `(c)` the liveness
+/// declaration.
 fn exiled_colors_provably_exclude_class(
     ability: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -5109,6 +5124,10 @@ fn exiled_colors_provably_exclude_class(
 /// an off-battlefield id differs from the source no more trivially than a battlefield one does.
 /// What the declaration buys here is that relief is granted only over the class the sole
 /// production caller can build, and that the arm stays fail-closed for every other caller.
+///
+/// Legacy conjunct labels name those two declarations: `(0)` is the pre-gate's
+/// `activation_restrictions` refusal, `(a)` its blank-and-rescan, `(c)` the liveness
+/// declaration.
 fn counters_on_source_provably_excludes_class(
     ability: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -8257,28 +8276,31 @@ pub(crate) fn project_object_for_loop(object: &mut crate::game::game_object::Gam
     object
         .counters
         .retain(|ct, _| !ct.is_monotone_loop_resource());
-    // This family is ERASED, not derived from the counters above. THREE layers write it:
-    // CR 613.4a (Layer 7a — characteristic-defining abilities that define P/T, see CR 604.3),
-    // CR 613.4b (Layer 7b — effects that SET P/T) and CR 613.4c (Layer 7c — effects AND
-    // counters that modify P/T). The writer class is the one
-    // `game::layers::modification_characteristic_writes` already enumerates exhaustively as
-    // `CharacteristicKinds::POWER_TOUGHNESS`; do not re-enumerate it here. Only the counter
-    // half of CR 613.4c is the CR 122.1 monotone resource the `retain` above REMOVES —
-    // neither of the other two layers has a counter in it at all.
+    // This family is ERASED, not derived from the counters above. For the P/T pair the writer
+    // class is the one `game::layers::modification_characteristic_writes` already enumerates as
+    // `CharacteristicKinds::POWER_TOUGHNESS`, which that authority and the flag's own
+    // declaration both cite as CR 613.1g + CR 613.4a-d; do not re-enumerate its members here.
+    // That flag set carries no loyalty and no defense kind, so those two fields are NOT
+    // governed by it — CR 306.5c and CR 310.4c make each of them the count of its own counter,
+    // which is the separate ground stated at the end of this comment. What the `retain` above
+    // REMOVES is exactly `CounterType::is_monotone_loop_resource`'s class, which spans both the
+    // CR 613.4c P/T-modifying counters and those loyalty and defense counters.
     //
-    // Erasing all four is nevertheless sound for a COMPARAND, and this is the whole ground:
-    // the layer flush is a pure function of `GameState`, so a stored difference in this family
-    // can encode only an input to that function, and on this feed every such input is either
-    // projected out by one of `project_out_resources`' zeroing sources, or already
-    // omitted by the strict CR 104.4b comparator on BOTH feeds (card-intrinsic `base_*`,
-    // abilities and static definitions; the CR 613.7 timestamp order `normalize_for_loop`
-    // canonicalizes), or not compared by `impl PartialEq for GameState` at all. The
-    // alternative — re-flushing the clone — would put a layer pass inside a predicate the
-    // reducer calls per compare.
+    // Erasing the layer-flush outputs is nevertheless sound for a COMPARAND, and this is the
+    // whole ground for them: the flush is a pure function of `GameState`, so a stored
+    // difference in one of its outputs can encode only an input to that function, and on this
+    // feed every such input is either projected out by one of `project_out_resources`' zeroing
+    // sources, or already omitted by the strict CR 104.4b comparator on BOTH feeds
+    // (card-intrinsic `base_*`, abilities and static definitions; the CR 613.7 timestamp order
+    // `normalize_for_loop` canonicalizes), or not compared by `impl PartialEq for GameState` at
+    // all. The alternative — re-flushing the clone — would put a layer pass inside a predicate
+    // the reducer calls per compare.
     //
-    // CR 306.5c and CR 310.4c make the counter count the WHOLE value for a planeswalker or a
-    // battle ON THE BATTLEFIELD, and off it neither field carries that identity, so one
-    // erasure serves every zone.
+    // `defense` is outside that argument entirely: `evaluate_layers` never writes it. CR 306.5c
+    // and CR 310.4c make the counter count the WHOLE value for a planeswalker or a battle ON
+    // THE BATTLEFIELD, so for those two fields erasing the field removes exactly what the
+    // `retain` above already removed; off the battlefield neither field carries that identity,
+    // so one erasure serves every zone.
     object.power = None;
     object.toughness = None;
     object.loyalty = None;

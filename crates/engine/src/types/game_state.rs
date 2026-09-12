@@ -29866,9 +29866,10 @@ pub(crate) fn loop_states_equal(a: &GameState, b: &GameState) -> bool {
 
 /// CR 104.4b: per-object mutable-content equality — supplements `GameState`'s
 /// `objects.len()`-only `PartialEq` object check. Card-intrinsic fields
-/// (`base_*`, abilities, definitions) are immutable for a given object id within
-/// a game and so cannot differ between two states; only the fields a mandatory
-/// action could change are compared.
+/// (`base_*`, abilities, definitions) are OMITTED, on the co-variance ground
+/// [`object_content_eq`]'s own doc states and not on immutability — they are not
+/// immutable within a game; only the fields a mandatory action could change are
+/// compared.
 pub(crate) fn objects_content_eq(
     a: &im::HashMap<ObjectId, GameObject, rustc_hash::FxBuildHasher>,
     b: &im::HashMap<ObjectId, GameObject, rustc_hash::FxBuildHasher>,
@@ -29893,16 +29894,21 @@ pub(crate) fn objects_content_eq(
 ///
 /// OMITTED, each justified by its write site rather than by this doc: volatile layer identity
 /// (`timestamp` / `incarnation` / `transformation_count`); card-intrinsic `base_*`, abilities
-/// and definitions, immutable for a given object id within a game; cast-fact latches
-/// co-variate of a compared field; monotone-saturating latches (`foretold` / `monstrous` / …);
-/// and the layer-derived characteristics the static firewall scans instead — `card_types`,
-/// `keywords` and `color`. `color` is the one worth stating, because it looks accumulable and
-/// is not: `seed_live_characteristics_from_base` assigns it from `base_color` at the head of
-/// every layer flush, so it is re-derived and never accumulated, and CR 105.2 (an object's
-/// colour comes from its mana cost, a colour indicator or a characteristic-defining ability)
-/// with CR 613.1e (Layer 5) put it in that bucket with the other firewall-scanned statics.
-/// Comparing it could only SUPPRESS a draw, while adding an axis a stale un-flushed clone can
-/// differ on.
+/// and definitions — NOT immutable within a game, since the face- and text-changing paths
+/// rewrite them on an object already in `state.objects`, so the ground is instead that each
+/// such rewrite pairs with an axis this comparator DOES compare: `face_down` for the face-down
+/// re-seed, `flipped` for the flip applicator, `room_unlocks` for the door-text install, and
+/// the stack residency `zone` compares for the cleave text swap, which
+/// `zones::apply_zone_exit_cleanup` reverts on every move but → Stack and Stack → Battlefield;
+/// cast-fact latches co-variate of a compared field; monotone-saturating latches
+/// (`foretold` / `monstrous` / …); and the layer-derived characteristics the static firewall
+/// scans instead — `card_types`, `keywords` and `color`. `color` is the one worth stating,
+/// because it looks accumulable and is not: `seed_live_characteristics_from_base` assigns it
+/// from `base_color` at the head of every layer flush, so it is re-derived and never
+/// accumulated, and CR 105.2 (an object's colour comes from its mana cost, a colour indicator
+/// or a characteristic-defining ability) with CR 613.1e (Layer 5) put it in that bucket with
+/// the other firewall-scanned statics. Comparing it could only SUPPRESS a draw, while adding
+/// an axis a stale un-flushed clone can differ on.
 ///
 /// `loyalty_activations_this_turn` fits none of those buckets. It is named here not as the only
 /// omission that doesn't, but because its compensation lives in a predicate this comparator
