@@ -2393,13 +2393,19 @@ fn cover_projection(state: &GameState) -> GameState {
     projected
 }
 
-/// CR 732.2a vs CR 104.4b: the **complement** of the engine's strict loop equality
-/// (`types::game_state::loop_states_equal`), which also requires life, damage, counters,
-/// P/T, loyalty and mana to match — correct for a *mandatory* loop, a draw only if it
-/// truly repeats with nothing changing. For a *beneficial* loop (CR 732.2a, the shortcut)
-/// the question is the opposite: identical in **board, zones and tap-state**, with the
-/// monotone resources allowed to differ. Built on `normalize_for_loop`, then
-/// [`project_out_resources`], then `loop_states_equal`.
+/// CR 732.2a vs CR 104.4b: the RELAXED loop equality. The strict comparator
+/// (`types::game_state::loop_states_equal`) is the right question for a *mandatory* loop — a
+/// draw only if the game truly repeats with nothing changing. For a *beneficial* loop
+/// (CR 732.2a, the shortcut) the question asked here is identity in **board, zones and
+/// tap-state on the PROJECTED feed**: `normalize_for_loop`, then [`project_out_resources`],
+/// then that same strict comparator.
+///
+/// What the projection removes is named by its own authorities rather than listed, because a
+/// list presented as exact is wrong by omission the moment a zeroing site is added — see
+/// [`project_out_resources`]. The layer-derived power / toughness / loyalty / defense family is
+/// NOT one of them and is not a resource: [`project_object_for_loop`] ERASES those four, which
+/// returns them to the bucket the strict comparator already omits on BOTH feeds, alongside
+/// colour, card types and abilities.
 ///
 /// INHERITED EXTRAPOLATION ASSUMPTION: this constant-depth path extrapolates the per-cycle
 /// delta over unboundedly many cycles with NO syntactic guard on either fire-time read
@@ -3473,8 +3479,8 @@ fn flush_clone(state: &GameState) -> GameState {
 /// unobserved class. Returns `true` iff ALL of:
 /// 1″. every NON-grown object is content-equal on the `object_content_eq` field partition
 ///     ([`board_covers`]), each grown id confines to an inert class member already
-///     in `prior`, object resource axes strict-match, and every non-object
-///     GameState field is strict-equal ([`eq_except_growable`]);
+///     in `prior`, object resource axes strict-match, and the non-object GameState remainder
+///     covers ([`eq_except_growable`]);
 /// 2″. every grown object is churn-inert ([`grown_objects_are_inert`]);
 /// 3″. no live fire-time observer reads the growing class (the off-stack firewall);
 /// 4″. no cost surface references the growing class (CR 732.2a — the EXHAUSTIVE cost scan
@@ -3508,7 +3514,7 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
         return false;
     }
 
-    // (1) Board equal modulo the inert growth set + all non-object GameState fields.
+    // (1) Board equal modulo the inert growth set, plus the non-object GameState remainder.
     if !(board_covers(&pa, &pb, &grown_ids)
         && object_resource_axes_match(prior, current)
         && loyalty_activation_counts_match(&pa, &pb)
@@ -3561,9 +3567,10 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
 /// CR 110.1: two permanents are the same fodder class iff their full content is
 /// equal MODULO `tapped` (a convoke/affinity loop taps one fodder member and
 /// reproduces another untapped — same class, different tap state). Routes through
-/// [`object_content_eq`] so the `_gameobject_partition_is_total` guard
-/// (game_object.rs) governs the fodder field set — no hand-rolled field list. This
-/// single point keeps the fodder compare honest as `GameObject` grows.
+/// [`object_content_eq`], so the fodder field set IS that comparator's compared set modulo
+/// `tapped` — no hand-rolled field list here. `_gameobject_partition_is_total`
+/// (game_object.rs) does not define that set: it binds every field of the struct, so what it
+/// buys is a forced classification decision as `GameObject` grows.
 pub(crate) fn fodder_content_eq(a: &GameObject, b: &GameObject) -> bool {
     let mut probe = a.clone();
     probe.tapped = b.tapped;
@@ -4051,10 +4058,9 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
         return false;
     }
 
-    // Non-object GameState fields (journals, monarch, delayed triggers, …) + the
-    // object COUNT, grown pile stripped. NOTE: `GameState::PartialEq` compares only
-    // `objects.len()`, so stable-engine object CONTENT is covered by
-    // `board_covers_modulo_fodder`'s `objects_content_eq` above, not here.
+    // The growth-invariant non-object remainder, grown pile stripped. NOTE:
+    // `GameState::PartialEq` compares only `objects.len()`, so stable-engine object CONTENT is
+    // covered by `board_covers_modulo_fodder`'s `objects_content_eq` above, not here.
     if !eq_except_growable(&pa, &pb, &growing) {
         return false;
     }
@@ -4381,14 +4387,16 @@ fn grown_objects_are_inert(current: &GameState, grown: &HashSet<ObjectId>) -> bo
         .all(|id| current.objects.get(id).is_some_and(object_is_inert))
 }
 
-/// Every NON-object GameState field is strict-equal across the two
-/// projected frames. Reuses `impl PartialEq for GameState` wholesale (the
-/// `_gamestate_partition_is_total` guard keeps that reuse honest as fields are
-/// added): strip the grown ids from both object maps and clear the battlefield
-/// ordering + stack (the grown ids live there; those axes are covered by
-/// `board_covers` / the stack gate), so PartialEq's `objects.len()` + every other
-/// non-object field (delayed-trigger stores, journals, monarch, …) compares the
-/// growth-invariant remainder. A hidden per-cycle accumulator here fails the compare.
+/// The growth-invariant non-object remainder of the two projected frames, through
+/// `impl PartialEq for GameState`: strip the grown ids from both object maps and clear the
+/// battlefield ordering + stack (the grown ids live there, and those axes are covered by
+/// `board_covers` / the stack gate), so what is left for `PartialEq` to answer is
+/// `objects.len()` plus the non-object axes it compares.
+///
+/// WHICH axes those are is `impl PartialEq for GameState`'s own decision, and
+/// `_gamestate_partition_is_total`'s doc is the single authority on what its totality guard
+/// buys. The two hand conjuncts at the end of this function are where this gate compensates
+/// for an axis that decision left out; each states its own one-sided-safety argument.
 fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>) -> bool {
     let mut a = pa.clone();
     let mut b = pb.clone();
@@ -4596,20 +4604,16 @@ pub(crate) fn provably_excludes_class<S>(
 /// substituting the scoped player for the controller.
 ///
 /// NOT A VISITOR, deliberately: an INCOMPLETE `QuantityRef` collector is unsound HERE, because
-/// "every collected read excludes" is vacuously true over a set that missed one. Instead, FOUR
-/// fail-closed conjuncts, each keeping the conservative veto whenever it cannot prove its half:
-///   (0) NO ACTIVATION RESTRICTIONS on this def. LOAD-BEARING, and (a) does NOT cover it —
-///       `ability_scan::ability_definition_axes` destructures `activation_restrictions: _`, so
-///       the scan is BLIND to it and the clone-and-rescan would answer `false` even with a
-///       class-MATCHING `ActivationRestriction::RequiresCondition` on the same def.
-///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, set `condition = None`,
-///       re-run `ability_definition_reads_growing_class_for_loop`. Only if THAT is `false` is
-///       `condition` the def's only growing-class read, so no effect body, cost, sub-ability
-///       or other field hides a second read this predicate never looked at.
-///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`. No recursion, therefore no
+/// "every collected read excludes" is vacuously true over a set that missed one. Instead,
+/// fail-closed conjuncts through [`provably_excludes_class`], each keeping the conservative
+/// veto whenever it cannot prove its half. Pre-gate `SoleSource::Blank` on
+/// `AbilityAxis::Condition`; liveness `MemberLiveness::Resolvable`, and NOT `OnBattlefield` —
+/// (c) synthesizes an entry record from the member's own live object, so an off-battlefield
+/// member is measured rather than trivially excluded.
+///   (b) SHAPE by a SINGLE-LEVEL pattern match. No recursion, therefore no
 ///       totality obligation: a compound (`And`/`Or`/`Not`), an rhs-position read, a
-///       non-`QuantityCheck` variant or a non-`BattlefieldEntriesThisTurn` ref all fall to `_`
-///       and KEEP the veto. `rhs` must be `Fixed` so it cannot smuggle a second board read.
+///       non-`QuantityCheck` variant or a non-`BattlefieldEntriesThisTurn` ref all refuse and
+///       KEEP the veto. `rhs` must be `Fixed` so it cannot smuggle a second board read.
 ///   (c) EXCLUSION delegated verbatim to the ledger's own fire-time matcher
 ///       `restrictions::battlefield_entry_matches_filter` (see the pin). NOT
 ///       `matches_target_filter`: that is not a superset of the ledger matcher (entry-time
@@ -8201,9 +8205,6 @@ fn project_out_player_consumables(p: &mut Player) {
     *cards_drawn_this_step = 0;
 }
 
-/// Clone a state through `normalize_for_loop` and additionally zero every
-/// monotone resource the modulo comparison must ignore. The result is only ever
-/// fed to `loop_states_equal`; it is never used as a live game state.
 /// CR 120 / CR 122.1 / CR 613.4c: project the monotone per-object resources out of one
 /// object (the single authority, shared by [`project_out_resources`] and the object-growth
 /// hook's fodder-class representative so the class compares in the SAME normalized form as
@@ -8222,18 +8223,39 @@ pub(crate) fn project_object_for_loop(object: &mut crate::game::game_object::Gam
     object
         .counters
         .retain(|ct, _| !ct.is_monotone_loop_resource());
-    // CR 613.4c: the counter-derived fields are zeroed because they derive ONLY from the
-    // monotone counters just projected out — power/toughness fold only
-    // `power_toughness_delta()==Some` counters, loyalty derives only from
-    // CounterType::Loyalty and defense only from CounterType::Defense. The preserved
-    // counters never reach these four fields, so zeroing cannot mask a consumed
-    // non-monotone counter.
+    // This family is ERASED, not derived from the counters above. THREE layers write it:
+    // CR 613.4a (Layer 7a — characteristic-defining abilities that define P/T, see CR 604.3),
+    // CR 613.4b (Layer 7b — effects that SET P/T) and CR 613.4c (Layer 7c — effects AND
+    // counters that modify P/T). The writer class is the one
+    // `game::layers::modification_characteristic_writes` already enumerates exhaustively as
+    // `CharacteristicKinds::POWER_TOUGHNESS`; do not re-enumerate it here. Only the counter
+    // half of CR 613.4c is the CR 122.1 monotone resource retained above — the other two
+    // layers read the board and have no counter in them at all.
+    //
+    // Erasing all four is nevertheless sound for a COMPARAND, and this is the whole ground:
+    // the layer flush is a pure function of `GameState`, so a stored difference in this family
+    // can encode only an input to that function, and on this feed every such input is either
+    // projected out by one of `project_out_resources`' zeroing sources, or already
+    // omitted by the strict CR 104.4b comparator on BOTH feeds (card-intrinsic `base_*`,
+    // abilities and static definitions; the CR 613.7 timestamp order `normalize_for_loop`
+    // canonicalizes), or not compared by `impl PartialEq for GameState` at all. The
+    // alternative — re-flushing the clone — would put a layer pass inside a predicate the
+    // reducer calls per compare.
+    //
+    // CR 306.5c and CR 310.4c make the counter count the WHOLE value for a planeswalker or a
+    // battle ON THE BATTLEFIELD, and off it neither field carries that identity, so one
+    // erasure serves every zone.
     object.power = None;
     object.toughness = None;
     object.loyalty = None;
     object.defense = None;
 }
 
+/// Clone a state through `normalize_for_loop`, then apply the zeroing sources the
+/// relaxed comparison needs: [`project_out_player_consumables`] for the per-player axes (its
+/// own no-`..` destructure is that set's boundary), [`project_object_for_loop`] for the
+/// per-object ones, and the per-turn tally/journal block below. The result is only ever a
+/// comparand — it is never used as a live game state.
 fn project_out_resources(state: &GameState) -> GameState {
     bump_loop_detect_cost(|cost| cost.projected_clones += 1);
     // Read from the unprojected state: the cost gates judge recorded facts
@@ -8882,6 +8904,329 @@ mod tests {
             include_bytes!("../../tests/fixtures/dellian_emblem_conqueror_4p.json.gz"),
         ),
     ];
+
+    /// Clone `name` off the committed dellian board and install it on `state` in `zone`,
+    /// keeping the decoded object's own stored P/T, base P/T, counter map and static
+    /// definitions — so the injected card is a real card's real modification shape, decoded
+    /// through the production `PersistedGameState` path, not a hand-built stand-in.
+    fn install_dellian_card(state: &mut GameState, name: &str, zone: Zone) -> ObjectId {
+        let dump = dump_state(TRACKED_DUMPS[1].1);
+        let mut object = dump
+            .objects
+            .values()
+            .find(|o| o.name == name && o.zone == Zone::Battlefield)
+            .unwrap_or_else(|| panic!("`{name}` must be on the committed dellian battlefield"))
+            .clone();
+        let owner = state.active_player;
+        let id = ObjectId(9_100);
+        object.id = id;
+        object.zone = zone;
+        object.owner = owner;
+        object.controller = owner;
+        object.base_controller = Some(owner);
+        state.objects.insert(id, object);
+        match zone {
+            Zone::Battlefield => state.battlefield.push_back(id),
+            Zone::Library => state
+                .players
+                .iter_mut()
+                .find(|p| p.id == owner)
+                .expect("the active player is on the board")
+                .library
+                .push_back(id),
+            other => {
+                panic!("this helper installs into the battlefield or a library, not {other:?}")
+            }
+        }
+        crate::analysis::corpus::settle_layers(state);
+        id
+    }
+
+    /// The shipped Priest of Titania + Umbral Mantle green-mana loop, with `inject` handed the
+    /// board before the drive begins and `observe` called on the pumped creature at the end of
+    /// every driven cycle.
+    fn priest_umbral_certificate(
+        inject: impl FnOnce(&mut GameState),
+        mut observe: impl FnMut(&GameState, ObjectId),
+    ) -> Option<crate::analysis::loop_check::LoopCertificate> {
+        use crate::analysis::corpus;
+        use crate::types::ability::Effect;
+
+        let mut board =
+            corpus::build_board_green(crate::test_support::shared_card_db(), corpus::row(10).cards)
+                .expect(
+                    "the Priest of Titania + Umbral Mantle row must build from the card fixtures",
+                );
+        let priest = board.ids[0];
+        let umbral = board.ids[1];
+        // 4 seeded Elves + Priest (itself an Elf) ⇒ Priest taps for 5 green; net +2 a cycle
+        // after Umbral Mantle's {3} untap cost.
+        corpus::seed_subtype_creatures(board.runner.state_mut(), "Elf", 4);
+        corpus::attach_aura(board.runner.state_mut(), umbral, priest);
+        inject(board.runner.state_mut());
+        let untap_idx = corpus::ability_index_where(board.runner.state(), priest, |e| {
+            matches!(e, Effect::Pump { .. })
+        })
+        .expect("Umbral Mantle's granted {3},{Q} pump must reach the equipped creature");
+        corpus::run_combo(board, |probe| {
+            if let Some(tap_idx) =
+                corpus::ability_index_where(probe.runner().state(), priest, corpus::is_mana_effect)
+            {
+                corpus::activate_and_resolve(probe, priest, tap_idx, None);
+            }
+            corpus::activate_and_resolve(probe, priest, untap_idx, None);
+            observe(probe.runner().state(), priest);
+        })
+    }
+
+    /// The projection's decision over the power / toughness / loyalty / defense family is
+    /// BOARD-INDEPENDENT, so a constant-magnitude monotone pump keeps its CR 732.2a certificate
+    /// whatever else shares the board.
+    ///
+    /// Four arms on the shipped Priest of Titania + Umbral Mantle loop: unmodified; with Drove
+    /// of Elves (`*/*`, a CR 613.4a characteristic-defining writer over a live population)
+    /// cloned from the real dellian board onto the battlefield; the same card in a library; and
+    /// with Thunderfoot Baloth (a CR 613.4c constant-magnitude pump) on the battlefield.
+    ///
+    /// WHAT REDS IT: a board-derived licence between erasure and subtraction reds the two Drove
+    /// arms, because a reading P/T writer then shares the board; an unconditional subtraction of
+    /// the counter contribution reds all four, and reds
+    /// `analysis::corpus_tests::drive_combo_10_priest_umbral` with them. The Baloth arm is the
+    /// hostile sibling: a P/T WRITER whose value reads nothing must behave exactly as no
+    /// injection does, so the row cannot pass by being insensitive to injection.
+    /// `drive_combo_10_priest_umbral_requires_untap` is the shipped control that this
+    /// certificate is not unconditional.
+    #[test]
+    fn projection_of_the_pt_family_is_board_independent() {
+        use crate::game::ability_scan::continuous_modification_reads_sibling_mutable;
+
+        // ── the unmodified arm, carrying the reach guard the other three inherit ──────
+        let mut trace: Vec<(Option<i32>, usize, usize)> = Vec::new();
+        let cert = priest_umbral_certificate(
+            |_| {},
+            |state, priest| {
+                let pumped = &state.objects[&priest];
+                trace.push((
+                    pumped.power,
+                    pumped.counters.len(),
+                    state.transient_continuous_effects.len(),
+                ));
+            },
+        );
+        assert!(
+            cert.is_some(),
+            "the shipped Priest of Titania + Umbral Mantle loop must confirm infinite green \
+             mana on an unmodified board"
+        );
+        assert!(
+            trace.len() >= 2,
+            "reach-guard: the drive must observe at least two cycles, or the drift assertions \
+             below quantify over nothing; got {trace:?}"
+        );
+        assert!(
+            trace.iter().any(|&(power, ..)| power != trace[0].0),
+            "reach-guard: the pumped creature's STORED power must drift across cycles, or this \
+             row is not about the P/T family at all; got {trace:?}"
+        );
+        assert!(
+            trace.iter().all(|&(_, counters, _)| counters == 0),
+            "reach-guard: the drift must NOT come from counters — the residue is Umbral \
+             Mantle's accumulating constant `+2/+2`, so a counter-subtraction reading of the \
+             projection would have nothing to subtract; got {trace:?}"
+        );
+        assert!(
+            trace.last().expect("non-empty").2 > trace[0].2,
+            "reach-guard: `transient_continuous_effects` must GROW across the window — that is \
+             where the accumulating pump lives, and it is uncompared and unprojected by \
+             decision; got {trace:?}"
+        );
+
+        // ── the two Drove of Elves arms: a reading P/T writer sharing the board ──────
+        for zone in [Zone::Battlefield, Zone::Library] {
+            let mut reads_a_sibling = false;
+            let cert = priest_umbral_certificate(
+                |state| {
+                    let drove = install_dellian_card(state, "Drove of Elves", zone);
+                    reads_a_sibling = state.objects[&drove]
+                        .static_definitions
+                        .iter_all()
+                        .flat_map(|def| def.modifications.iter())
+                        .any(continuous_modification_reads_sibling_mutable);
+                },
+                |_, _| {},
+            );
+            assert!(
+                reads_a_sibling,
+                "reach-guard ({zone:?}): the injected Drove of Elves must carry a modification \
+                 the production classifier answers SIBLING-READING for — its power and \
+                 toughness each equal the number of green permanents its controller \
+                 controls — else the arm injects an inert card and proves nothing"
+            );
+            assert!(
+                cert.is_some(),
+                "({zone:?}) CR 613.4a: a characteristic-defining P/T writer sharing the board \
+                 must not cost the loop its certificate. A board-derived licence between \
+                 erasure and subtraction reds exactly this arm"
+            );
+        }
+
+        // ── the hostile sibling: a P/T writer whose value reads NOTHING ──────────────
+        let cert = priest_umbral_certificate(
+            |state| {
+                install_dellian_card(state, "Thunderfoot Baloth", Zone::Battlefield);
+            },
+            |_, _| {},
+        );
+        assert!(
+            cert.is_some(),
+            "CR 613.4c: a constant-magnitude pump on the board must behave exactly as no \
+             injection does — this arm is what stops the row passing by insensitivity to \
+             injection"
+        );
+    }
+
+    /// Counter-driven relief covers the whole class an anthem MOVES, not only the object
+    /// carrying the counters, and the four P/T conjuncts are live precisely on the unprojected
+    /// feed.
+    ///
+    /// WHAT REDS IT: an unconditional subtraction of the counter contribution and a
+    /// board-derived licence each flip the relaxed gate to REJECT; quantifying the counter
+    /// partition over ALL counters rather than `CounterType::is_monotone_loop_resource` reds it
+    /// too. The `tapped` variant is the hostile sibling — without it the row is satisfied by a
+    /// gate that accepts everything.
+    #[test]
+    fn counter_relief_covers_every_object_the_anthem_moves() {
+        use crate::types::counter::CounterType;
+
+        let prior = dump_state(TRACKED_DUMPS[1].1);
+        let joraga = *prior
+            .objects
+            .values()
+            .find(|o| o.name == "Joraga Warcaller" && o.zone == Zone::Battlefield)
+            .map(|o| &o.id)
+            .expect("the committed dellian board carries Joraga Warcaller on the battlefield");
+        assert!(
+            prior.objects[&joraga].counters.is_empty(),
+            "reach-guard: the loaded Warcaller must start with NO counters, so the frame below \
+             moves the anthem from zero"
+        );
+        // ── the four P/T conjuncts are LIVE unprojected and VACUOUS projected ────────
+        // This is the runtime half of the compared/omitted property `object_content_eq`'s doc
+        // states, driven per field, with `tapped` as the guard that the projection does not
+        // simply make everything equal.
+        let base = prior.objects[&joraga].clone();
+        for (label, mutate) in [
+            (
+                "power",
+                (|o: &mut GameObject| o.power = Some(99)) as fn(&mut GameObject),
+            ),
+            ("toughness", |o: &mut GameObject| o.toughness = Some(99)),
+            ("loyalty", |o: &mut GameObject| o.loyalty = Some(99)),
+            ("defense", |o: &mut GameObject| o.defense = Some(99)),
+        ] {
+            let mut moved = base.clone();
+            mutate(&mut moved);
+            assert!(
+                !crate::types::game_state::object_content_eq(&base, &moved),
+                "`{label}` is a LIVE conjunct on an unprojected pair"
+            );
+            let (mut pa, mut pb) = (base.clone(), moved.clone());
+            project_object_for_loop(&mut pa);
+            project_object_for_loop(&mut pb);
+            assert!(
+                crate::types::game_state::object_content_eq(&pa, &pb),
+                "`{label}` is VACUOUS once the projection authority has erased it, which is \
+                 what makes the conjunct's liveness a property of the FRAMES and not of the \
+                 comparator"
+            );
+        }
+        let mut tap_probe = base.clone();
+        tap_probe.tapped = !base.tapped;
+        let (mut pa, mut pb) = (base.clone(), tap_probe);
+        project_object_for_loop(&mut pa);
+        project_object_for_loop(&mut pb);
+        assert!(
+            !crate::types::game_state::object_content_eq(&pa, &pb),
+            "guard on the four rows above: the projection does NOT make two objects equal, so \
+             each `VACUOUS` verdict is attributable to the erased field alone"
+        );
+
+        // ── the frame: one monotone counter on the Warcaller, plus a life gain ───────
+        let mut current = prior.clone();
+        {
+            let warcaller = current
+                .objects
+                .get_mut(&joraga)
+                .expect("just read it off this frame");
+            *warcaller
+                .counters
+                .entry(CounterType::Plus1Plus1)
+                .or_insert(0) += 1;
+        }
+        let controller = prior.objects[&joraga].controller;
+        current
+            .players
+            .iter_mut()
+            .find(|p| p.id == controller)
+            .expect("the Warcaller's controller is on the board")
+            .life += 1;
+        crate::analysis::corpus::settle_layers(&mut current);
+
+        // Reach guard: the anthem moved OTHER objects' stored power, none of them carrying a
+        // counter — which is the whole claim. A per-object licence keyed on "this object's own
+        // definitions" would be reading the wrong population.
+        let moved: Vec<ObjectId> = current
+            .objects
+            .iter()
+            .filter(|&(id, after)| {
+                *id != joraga
+                    && prior
+                        .objects
+                        .get(id)
+                        .is_some_and(|before| before.power != after.power)
+                    && after.counters.is_empty()
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(
+            moved.len() >= 2,
+            "reach-guard: the counter must move at least two OTHER objects' stored power, none \
+             of them carrying a counter, or the class this row is about is a singleton; moved \
+             {moved:?}"
+        );
+
+        // The strict CR 104.4b comparator rejects, so the relaxed gate is what answers.
+        assert!(
+            !crate::types::game_state::loop_states_equal(
+                &prior.normalize_for_loop(),
+                &current.normalize_for_loop()
+            ),
+            "reach-guard: the strict comparator must REJECT this pair, else the relaxed \
+             acceptance below is not the projection's doing"
+        );
+        assert!(
+            loop_states_equal_modulo_resources(&prior, &current),
+            "CR 122.1 + CR 613.4c: the counter is a monotone resource the projection removes, \
+             and the P/T it moved across the whole anthem class is erased with it, so the \
+             relaxed gate must ACCEPT"
+        );
+
+        // Hostile sibling: a REAL board difference on one moved creature must still REJECT.
+        let mut tapped_variant = current.clone();
+        let flipped = moved[0];
+        {
+            let object = tapped_variant
+                .objects
+                .get_mut(&flipped)
+                .expect("just collected this id from this frame");
+            object.tapped = !object.tapped;
+        }
+        assert!(
+            !loop_states_equal_modulo_resources(&prior, &tapped_variant),
+            "the relaxed gate is not `accepts everything`: `tapped` survives the projection, so \
+             flipping it on one moved creature must REJECT"
+        );
+    }
 
     /// Drive one dump through `apply()` until `pred` accepts the board, returning the beat
     /// index and that board.
@@ -13978,7 +14323,8 @@ mod tests {
             continuous_modification_reads_projected_resource(&m),
             "a LifeTotal read is projected"
         );
-        // FIREWALL level: the :1539 descent's projected axis vetoes.
+        // FIREWALL level: the projected axis of the static-definition descent inside
+        // `fire_time_conditions_read_growing_class` vetoes.
         let mut state = GameState::new_two_player(7);
         let src = inert_token(&mut state, 820, 0, "AnthemSource");
         state
@@ -13989,7 +14335,8 @@ mod tests {
             .push(StaticDefinition::continuous().modifications(vec![m]));
         assert!(
             fire_time_conditions_read_growing_class(&state, None),
-            "a projected-reading modification vetoes via the :1539 projected axis (M9)"
+            "a projected-reading modification vetoes via \
+             `continuous_modification_reads_projected_resource` (M9)"
         );
     }
 
@@ -15363,10 +15710,9 @@ mod tests {
         );
     }
 
-    /// The mutate-each-field sync test: each strict-compared
-    /// GameState field that survives projection, mutated one at a time on a covering
-    /// base, must REJECT via `eq_except_growable`. Proves the reused `PartialEq`
-    /// (guarded total by `_gamestate_partition_is_total`) catches every one.
+    /// The mutate-each-field sync test: a strict-compared GameState field that survives
+    /// projection, mutated one at a time on a covering base, must REJECT via
+    /// `eq_except_growable`. Each row's assertion message names the field it moves.
     #[test]
     fn object_growth_r_s3_gamestate_accumulator_sync() {
         // A per-turn accumulator PartialEq compares.

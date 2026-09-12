@@ -2207,13 +2207,13 @@ mod tests {
     /// only ever correct on the day it is written; a `..`-free destructure is correct
     /// until the compiler says otherwise.
     ///
-    /// **Why `CardFace` and not `GameObject`.** `GameObject` has 149 fields, most of them
-    /// runtime state (zone, damage, counters, attachments) with no bearing on what a card
-    /// can do. Destructuring it here would be a churn magnet that every unrelated field
-    /// addition breaks, and it would be blanket-`..`'d back within a round. `CardFace` has
-    /// 33 and is the actual source `printed_cards` reads to populate object rules content,
-    /// so it guards the defect class that occurred rather than the largest surface
-    /// available.
+    /// **Why `CardFace` and not `GameObject`.** `GameObject`'s fields are mostly runtime
+    /// state (zone, damage, counters, attachments) with no bearing on what a card can do,
+    /// and there are far more of them. Destructuring it here would be a churn magnet that
+    /// every unrelated field addition breaks, and it would be blanket-`..`'d back within a
+    /// round. `CardFace` has 33 and is the actual source `printed_cards` reads to populate
+    /// object rules content, so it guards the defect class that occurred rather than the
+    /// largest surface available.
     ///
     /// **Honest scope limit:** this guards fields that reach an object THROUGH
     /// `printed_cards`. A `GameObject` field written by some other path is not covered —
@@ -2449,8 +2449,8 @@ mod tests {
         // `back_face` is the one gated field with no `apply_card_face_to_object` route:
         // `printed_cards::apply_card_face_to_back_face` fills a `BackFaceData` on the
         // transform path instead. Asserted directly, and reusing `game::specialize`'s
-        // existing empty constructor rather than hand-rolling a 22-field literal that would
-        // go stale the moment `BackFaceData` gains a field.
+        // existing empty constructor rather than hand-rolling a full `BackFaceData` literal
+        // that would go stale the moment it gains a field.
         let mut state = GameState::default();
         let id = create_object(
             &mut state,

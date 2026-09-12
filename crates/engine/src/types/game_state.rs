@@ -29854,7 +29854,7 @@ impl GameState {
 const LOOP_DETECT_RING_CAP: usize = 16;
 
 /// CR 104.4b confirmation between two states that have BOTH already been
-/// `normalize_for_loop`d. Reuses `PartialEq` for the ~95 non-object fields and
+/// `normalize_for_loop`d. Reuses `PartialEq` for the non-object fields and
 /// supplements its `objects.len()`-only object check with per-object content
 /// equality. Only a true match permits a draw, so the cheap `loop_fingerprint`
 /// can never cause a wrongful draw.
@@ -29882,14 +29882,40 @@ pub(crate) fn objects_content_eq(
 /// comparator for [`objects_content_eq`] and the PR-7 Phase 4a object-growth
 /// cover gate (`analysis::resource::board_covers`, the non-grown complement).
 ///
-/// The compared set is the partition `_gameobject_partition_is_total` names: every per-object
-/// field a MANDATORY action can
-/// change on a stable (same-zone) object between two loop frames. Fields omitted
-/// here are justified by write site, not doc-string — volatile layer identity
-/// (`timestamp`/`incarnation`/`transformation_count`), projected P/T, cast-fact
-/// latches co-variate of a
-/// compared field, monotone-saturating latches (`foretold`/`monstrous`/…), and
-/// layer-derived characteristics (firewall-scanned statics).
+/// COMPARED — the per-object fields a MANDATORY action can move on a stable (same-zone) object
+/// between two loop frames, MINUS the layer-derived axes the OMITTED paragraph below delegates
+/// to the static firewall: `controller` and `zone`; the tap / face-down / flip /
+/// transform / modal-back-face / phasing status axes; marked damage and the deathtouch flag;
+/// the attachment and pairing links; the counter map; the stored power / toughness / loyalty /
+/// defense family; `name`; the numeric and per-iteration accumulators the static firewall is
+/// blind to; and the designation, door and cast-occurrence toggles. Each conjunct below
+/// carries its own rule anchor where it has one.
+///
+/// OMITTED, each justified by its write site rather than by this doc: volatile layer identity
+/// (`timestamp` / `incarnation` / `transformation_count`); card-intrinsic `base_*`, abilities
+/// and definitions, immutable for a given object id within a game; cast-fact latches
+/// co-variate of a compared field; monotone-saturating latches (`foretold` / `monstrous` / …);
+/// and the layer-derived characteristics the static firewall scans instead — `card_types`,
+/// `keywords` and `color`. `color` is the one worth stating, because it looks accumulable and
+/// is not: `seed_live_characteristics_from_base` assigns it from `base_color` at the head of
+/// every layer flush, so it is re-derived and never accumulated, and CR 105.2 (an object's
+/// colour comes from its mana cost, a colour indicator or a characteristic-defining ability)
+/// with CR 613.1e (Layer 5) put it in that bucket with the other firewall-scanned statics.
+/// Comparing it could only SUPPRESS a draw, while adding an axis a stale un-flushed clone can
+/// differ on.
+///
+/// This is NOT the partition `_gameobject_partition_is_total` names: that guard binds every
+/// field of the struct, so it fixes a TOTAL and forces a classification decision as
+/// `GameObject` grows. It does not define the compared set, which is the conjunct list below.
+///
+/// The power / toughness / loyalty / defense conjuncts are LIVE on any frame pair that has not
+/// passed through `analysis::resource::project_object_for_loop`, and VACUOUS on any pair that
+/// has, because that authority erases all four. So whether those four carry anything is a
+/// property of the FRAMES a call site hands over — decided by the projection authority, per
+/// call site, and never by this comparator or by the gate wrapping it. Attribute a call by
+/// grepping the consult symbols (`object_content_eq`, `objects_content_eq`,
+/// `fodder_content_eq`, `loop_states_equal`) to their enclosing `fn` and reading that call's
+/// frames; a feed list written here would be falsified by the next call site added.
 ///
 /// Strictness here is FAIL-SAFE for the shared 2p CR 104.4b path: a stricter
 /// equality can only SUPPRESS a wrongful draw, and every compared field represents
@@ -29947,11 +29973,22 @@ pub(crate) fn object_content_eq(x: &GameObject, y: &GameObject) -> bool {
 
 /// CR 104.4b compile-time totality guard for the object-growth cover gate's
 /// GameState axis (`analysis::resource::eq_except_growable`, which reuses
-/// `impl PartialEq for GameState` wholesale after stripping grown objects). This
-/// no-`..` destructure breaks the build the instant a GameState field is added,
-/// forcing a reviewer to decide whether `PartialEq` compares it — so no future
-/// field can become a hidden per-cycle accumulator that rides a covering pair to a
-/// false CR 732.2a win. Mirror of `_gameobject_partition_is_total`.
+/// `impl PartialEq for GameState` wholesale after stripping grown objects). Mirror of
+/// `_gameobject_partition_is_total`.
+///
+/// WHAT THIS DESTRUCTURE BUYS is a FORCED DECISION, not an invariant. The no-`..` binding
+/// breaks the build the instant a GameState field is added, until a reviewer decides whether
+/// `impl PartialEq for GameState` compares it — and that decision has repeatedly gone NOT
+/// COMPARED for accumulator-shaped axes. So the guard does not establish that a hidden
+/// per-cycle accumulator cannot ride a covering pair to a false CR 732.2a win; it establishes
+/// only that someone chose, on the record, one field at a time.
+///
+/// Where the cover gate needs such an axis it compensates BY HAND at its own seam, which is
+/// the second site a reader has to know about: `analysis::resource::eq_except_growable`
+/// compares `post_replacement_token_substitution_count` and `last_loop_action_sequence` on top
+/// of its `PartialEq` reuse, each with its own one-sided-safety argument stated there.
+/// `analysis::resource::loyalty_activation_counts_match` is a sibling predicate over a
+/// per-object count, consulted at its own call sites, and not part of that pair.
 #[cfg(test)]
 fn _gamestate_partition_is_total(s: &GameState) {
     let GameState {
