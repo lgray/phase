@@ -29904,8 +29904,9 @@ pub(crate) fn objects_content_eq(
 /// Comparing it could only SUPPRESS a draw, while adding an axis a stale un-flushed clone can
 /// differ on.
 ///
-/// One omission fits none of those buckets and is compensated elsewhere instead, which is the
-/// second site a reader has to know about: `loyalty_activations_this_turn` is a per-turn
+/// `loyalty_activations_this_turn` fits none of those buckets. It is named here not as the only
+/// omission that doesn't, but because its compensation lives in a predicate this comparator
+/// never calls, which makes it the second site a reader has to know about: it is a per-turn
 /// accumulator (CR 606.3 — a permanent's loyalty ability may be activated only if none has been
 /// activated that turn), so it is neither layer-derived nor card-intrinsic nor saturating.
 /// `analysis::resource::loyalty_activation_counts_match` is the sibling predicate over it,

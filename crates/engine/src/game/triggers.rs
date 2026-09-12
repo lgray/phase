@@ -3215,8 +3215,9 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
 /// battlefield, so it stays true however the certificate later WIDENS — and it never rests on
 /// what the proposer may or may not see.
 ///
-/// Therefore a matcher that provably excludes the fodder does not observe the loop and must not
-/// veto the CR 732.2a offer.
+/// Therefore a matcher that provably excludes the fodder cannot fire on the fodder ENTERING, and
+/// does not veto the CR 732.2a offer on that account. It does NOT follow that the def observes
+/// nothing else across the window — see the fail-open residual below.
 ///
 /// Fail-closed on every axis it cannot classify: a broad (`valid_card == None`), disjunctive
 /// (`zone_change_clauses` non-empty), non-battlefield-destination, or genuinely-matching observer
@@ -3231,10 +3232,31 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
 /// the entry matcher and nothing else of the definition, and a `true` here is nevertheless
 /// DEF-SCOPED: `analysis::resource::fire_time_conditions_read_growing_class_scoped` `continue`s
 /// over the WHOLE definition, so neither this trigger's `condition` nor its `execute` body is
-/// scanned afterwards. What licenses skipping them is not a surviving sibling scan but the
-/// ordering premise above: a matcher provably disjoint from the fodder class never fires on the
-/// loop's per-cycle token creation, and a trigger that does not fire evaluates none of its
-/// surfaces.
+/// scanned afterwards.
+///
+/// FAIL-OPEN RESIDUAL, labelled because the residual it stands beside at the consult is labelled
+/// FAIL-CLOSED and the two must not be read as one kind. The ordering premise above reaches
+/// exactly one conclusion: the matcher cannot fire on the FODDER's OWN entry, and a trigger that
+/// does not fire evaluates none of its surfaces. Skipping the two unscanned surfaces needs the
+/// WIDER premise that the matcher fires NOWHERE in the window, so the DEF-scoped `continue`
+/// additionally rests on no entry the matcher DOES match occurring inside it. Neither this gate
+/// nor its consult establishes that, and the cover provably cannot see the case that breaks it:
+/// `analysis::resource::identity_unstable_ids` is the authority — CR 400.7 makes a re-entering
+/// permanent a new object and CR 603.6a has that entry checked against every
+/// enters-the-battlefield trigger on the battlefield, yet a permanent blinked through
+/// `game::zones::move_to_zone` keeps its id and is `object_content_eq` to its pre-blink self, so
+/// a steady-state blink pair passes every gate of
+/// `analysis::resource::loop_states_cover_modulo_fodder_growth`. No conjunct compensates: the
+/// only two consults of the CR 400.7 proof (`analysis::resource::host_identity_is_stable`) are
+/// elsewhere, and this predicate's signature takes no identity set to consult it with.
+///
+/// Nor are the two unscanned surfaces redundant with the frame comparison, which is why the
+/// consult scans them whenever it does not `continue`:
+/// `analysis::resource::project_object_for_loop` erases the stored power / toughness / loyalty /
+/// defense family and drops the monotone counters, and
+/// `analysis::resource::project_out_resources` zeroes marked damage and the per-turn tallies —
+/// so an `execute` body writing the class's growth into any of those leaves the compared frames
+/// identical.
 ///
 /// Liveness `MemberLiveness::Unchecked`, and NOT because the delegate fails closed. It fails
 /// OPEN: `trigger_matchers::valid_card_matches` answers `false` for an id absent from

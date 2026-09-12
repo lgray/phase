@@ -4477,16 +4477,22 @@ pub(crate) enum SoleSource<'a> {
     /// `PtValue` or a `ReplacementCondition` variant, which carry no second axis a read could
     /// hide on. It does not for `game::triggers::etb_observer_provably_excludes_class`, whose
     /// shape gate reads only the entry-matcher fields of a `TriggerDefinition`, and whose relief
-    /// is DEF-SCOPED: `fire_time_conditions_read_growing_class_scoped` `continue`s over the
-    /// WHOLE definition, so once that relief fires neither the trigger's `condition` nor its
-    /// `execute` body is scanned. What covers those two surfaces is not this pre-gate and not a
-    /// surviving sibling scan but the ordering premise stated at that consult — every object
+    /// is DEF-SCOPED: `fire_time_conditions_read_growing_class_scoped` `continue`s over the WHOLE
+    /// definition, so once that relief fires neither the trigger's `condition` nor its `execute`
+    /// body is scanned. NEITHER this pre-gate, NOR a surviving sibling scan, NOR the ordering
+    /// premise stated at that consult covers those two surfaces. That premise — every object
     /// difference between the covered frames is either a fodder-class member or an id the
-    /// period's instructed-departure certificate accounts — under which a matcher provably
-    /// disjoint from the fodder class never fires on the loop's per-cycle creation, and a
-    /// trigger that does not fire evaluates none of its surfaces. Same INAPPLICABILITY shape as
-    /// [`replacement_is_spent_self_entry`], not the relief-by-`continue` defect the
-    /// surface-scoped arms of block (3) warn about.
+    /// period's instructed-departure certificate accounts — reaches only the fodder's OWN entry,
+    /// and the gap from there to "the matcher fires nowhere in the window" is a FAIL-OPEN
+    /// residual, disclosed in full on that predicate with [`identity_unstable_ids`] as the
+    /// authority for the case the cover cannot see.
+    ///
+    /// [`replacement_is_spent_self_entry`] is the nearest sibling, and the INAPPLICABILITY shape
+    /// is shared while its STRENGTH is not: that arm's inapplicability is window-total, and it
+    /// BUYS that with the CR 400.7 [`host_identity_is_stable`] conjunct the ETB gate has no
+    /// parameter for. Its exposure is the narrower one too, since it need only exclude a
+    /// re-entry of its OWN source where the ETB gate would have to exclude a re-entry of
+    /// anything its matcher matches.
     None,
     /// `activation_restrictions` must be EMPTY — `ability_scan::ability_definition_axes`
     /// destructures that field `_`, so the scan is blind to it and the rescan below would
@@ -4532,7 +4538,10 @@ pub(crate) enum MemberLiveness {
 /// definition's read cannot see `class_member`, so its value is invariant across the loop's
 /// growth, and the definition does not observe the loop". Fail-closed at every step, in one
 /// order for every arm: pre-gate, then shape, then member liveness, then the arm's own
-/// delegated fire-time authority.
+/// delegated fire-time authority. One arm's discharge of the final clause is PARTIAL:
+/// `game::triggers::etb_observer_provably_excludes_class` reaches it by NON-FIRING rather than
+/// read-invariance, and only for the fodder's own entry — the fail-open residual is stated on
+/// that predicate.
 ///
 /// The axes the arms actually differ on are PARAMETERS, not copied blocks. `pre` and
 /// `liveness` are each a declaration an arm cannot leave unstated, and `shape` / `excludes`
@@ -6396,15 +6405,14 @@ fn fire_time_conditions_read_growing_class_scoped(
                 }
             }
             // CR 603.2 / CR 603.6a: an enters-the-battlefield observer whose entry matcher
-            // PROVABLY excludes EVERY member of `class_members` never fires on the loop's
-            // per-cycle token creation, so it does not observe the loop — skip rather than
-            // veto. ORDERING IS LOAD-BEARING: this holds only because every object difference
-            // between the covered frames is either a fodder-class member or an id the period's
-            // instructed-departure certificate accounts, guaranteed in order by (a)
-            // `game::engine::derived_fodder_class`'s ONE-CLASS rule over the MINTED set on the
-            // FIRST accept-time frame pair (`None` unless EVERY battlefield object that cycle
-            // minted is the same class under BOTH `fodder_content_eq` AND
-            // `game::printed_cards::intrinsic_copiable_values`) and (b)
+            // PROVABLY excludes EVERY member of `class_members` never fires on the fodder's own
+            // entry — skip rather than veto. ORDERING IS LOAD-BEARING: this holds only because
+            // every object difference between the covered frames is either a fodder-class
+            // member or an id the period's instructed-departure certificate accounts,
+            // guaranteed in order by (a) `game::engine::derived_fodder_class`'s ONE-CLASS rule
+            // over the MINTED set on the FIRST accept-time frame pair (`None` unless EVERY
+            // battlefield object that cycle minted is the same class under BOTH
+            // `fodder_content_eq` AND `game::printed_cards::intrinsic_copiable_values`) and (b)
             // `board_covers_modulo_fodder`'s all-zones stable-partition content equality at its
             // ONLY call site, on the SECOND cover frame pair, which PRECEDES this call. Do not
             // reorder that gate after the firewall.
@@ -6415,6 +6423,12 @@ fn fire_time_conditions_read_growing_class_scoped(
             // still vetoes. The other surfaces (statics scaling with |G| continuously, activated
             // bodies firing on activation, pending stores) do not fire on the fodder *entering*
             // via a `valid_card` matcher, so gating them would be unsound.
+            //
+            // FAIL-OPEN RESIDUAL: the `continue` is DEF-scoped, so it also skips this def's
+            // `condition` and `execute`, and the premise above does not reach that far — it
+            // excludes the fodder's own entry, not a re-entry of something else the matcher
+            // matches. Stated in full on
+            // `game::triggers::etb_observer_provably_excludes_class`.
             if let Some(members) = class_members {
                 // CR 603.6a: relief requires the entry matcher to provably exclude EVERY
                 // member of the set the CALLER supplies. That set is a subset of the growing
