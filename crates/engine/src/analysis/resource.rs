@@ -4476,10 +4476,17 @@ pub(crate) enum SoleSource<'a> {
     /// It does NOT claim the shape gate sees the whole subject. It does where the subject is a
     /// `PtValue` or a `ReplacementCondition` variant, which carry no second axis a read could
     /// hide on. It does not for `game::triggers::etb_observer_provably_excludes_class`, whose
-    /// shape gate reads only the entry-matcher fields of a `TriggerDefinition`; what covers the
-    /// rest of that definition is not this pre-gate but the SIBLING CONJUNCTS at its consult,
-    /// where `fire_time_conditions_read_growing_class_scoped` scans the trigger's `condition`
-    /// and its `execute` body each on its own, so a relief here skips the matcher surface alone.
+    /// shape gate reads only the entry-matcher fields of a `TriggerDefinition`, and whose relief
+    /// is DEF-SCOPED: `fire_time_conditions_read_growing_class_scoped` `continue`s over the
+    /// WHOLE definition, so once that relief fires neither the trigger's `condition` nor its
+    /// `execute` body is scanned. What covers those two surfaces is not this pre-gate and not a
+    /// surviving sibling scan but the ordering premise stated at that consult — every object
+    /// difference between the covered frames is either a fodder-class member or an id the
+    /// period's instructed-departure certificate accounts — under which a matcher provably
+    /// disjoint from the fodder class never fires on the loop's per-cycle creation, and a
+    /// trigger that does not fire evaluates none of its surfaces. Same INAPPLICABILITY shape as
+    /// [`replacement_is_spent_self_entry`], not the relief-by-`continue` defect the
+    /// surface-scoped arms of block (3) warn about.
     None,
     /// `activation_restrictions` must be EMPTY — `ability_scan::ability_definition_axes`
     /// destructures that field `_`, so the scan is blind to it and the rescan below would
@@ -8242,8 +8249,8 @@ pub(crate) fn project_object_for_loop(object: &mut crate::game::game_object::Gam
     // counters that modify P/T). The writer class is the one
     // `game::layers::modification_characteristic_writes` already enumerates exhaustively as
     // `CharacteristicKinds::POWER_TOUGHNESS`; do not re-enumerate it here. Only the counter
-    // half of CR 613.4c is the CR 122.1 monotone resource the `retain` above REMOVES — the
-    // other two layers read the board and have no counter in them at all.
+    // half of CR 613.4c is the CR 122.1 monotone resource the `retain` above REMOVES —
+    // neither of the other two layers has a counter in it at all.
     //
     // Erasing all four is nevertheless sound for a COMPARAND, and this is the whole ground:
     // the layer flush is a pure function of `GameState`, so a stored difference in this family

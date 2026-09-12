@@ -3228,10 +3228,13 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
 ///
 /// Pre-gate `SoleSource::None`: the subject is a `TriggerDefinition`, not an
 /// `AbilityDefinition`, so there is no axis for a `Blank` rescan to blank. The shape gate reads
-/// the entry matcher and nothing else of the definition, and it claims nothing else either —
-/// `analysis::resource::fire_time_conditions_read_growing_class_scoped` scans this trigger's
-/// `condition` and its `execute` body as its own separate conjuncts, so a relief here skips the
-/// entry-matcher surface alone.
+/// the entry matcher and nothing else of the definition, and a `true` here is nevertheless
+/// DEF-SCOPED: `analysis::resource::fire_time_conditions_read_growing_class_scoped` `continue`s
+/// over the WHOLE definition, so neither this trigger's `condition` nor its `execute` body is
+/// scanned afterwards. What licenses skipping them is not a surviving sibling scan but the
+/// ordering premise above: a matcher provably disjoint from the fodder class never fires on the
+/// loop's per-cycle token creation, and a trigger that does not fire evaluates none of its
+/// surfaces.
 ///
 /// Liveness `MemberLiveness::Unchecked`, and NOT because the delegate fails closed. It fails
 /// OPEN: `trigger_matchers::valid_card_matches` answers `false` for an id absent from
