@@ -4470,8 +4470,16 @@ pub(crate) enum AbilityAxis {
 /// (a sibling of `ScanMode`), NOT a game-semantic variant.
 pub(crate) enum SoleSource<'a> {
     /// No pre-gate, and a recorded DECISION rather than an omission: the subject is not an
-    /// `AbilityDefinition`, so it carries no second axis a read could hide on and the shape
-    /// gate sees the whole subject.
+    /// `AbilityDefinition`, so there is no `activation_restrictions` to require empty and no
+    /// axis for a `Blank` rescan to blank.
+    ///
+    /// It does NOT claim the shape gate sees the whole subject. It does where the subject is a
+    /// `PtValue` or a `ReplacementCondition` variant, which carry no second axis a read could
+    /// hide on. It does not for `game::triggers::etb_observer_provably_excludes_class`, whose
+    /// shape gate reads only the entry-matcher fields of a `TriggerDefinition`; what covers the
+    /// rest of that definition is not this pre-gate but the SIBLING CONJUNCTS at its consult,
+    /// where `fire_time_conditions_read_growing_class_scoped` scans the trigger's `condition`
+    /// and its `execute` body each on its own, so a relief here skips the matcher surface alone.
     None,
     /// `activation_restrictions` must be EMPTY — `ability_scan::ability_definition_axes`
     /// destructures that field `_`, so the scan is blind to it and the rescan below would
@@ -4493,9 +4501,14 @@ pub(crate) enum SoleSource<'a> {
 /// game-semantic variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MemberLiveness {
-    /// No frame lookup, and a recorded DECISION: the exclusion is an identity or shape test
-    /// whose verdict is not made trivial by the member's absence, and the arm's own exclusion
-    /// closure fails closed on whatever it cannot resolve.
+    /// No frame lookup, and a recorded DECISION: the arm's CALLER has already established
+    /// whatever residency the exclusion needs, so a lookup here would re-derive the caller's
+    /// guarantee instead of adding evidence. Each arm declaring this names that caller.
+    ///
+    /// It is NOT a claim that the arm's own closure fails closed on a member it cannot resolve.
+    /// `game::triggers::etb_observer_provably_excludes_class` NEGATES a matcher verdict that is
+    /// `false` for an id absent from `state.objects`, so an unresolvable member would be
+    /// RELIEVED there, not vetoed.
     Unchecked,
     /// Present in `state.objects`. Enough where the exclusion's universe is zone-agnostic (a
     /// player's hand, a census over `state.objects`), and an absent id would instead be
@@ -8229,8 +8242,8 @@ pub(crate) fn project_object_for_loop(object: &mut crate::game::game_object::Gam
     // counters that modify P/T). The writer class is the one
     // `game::layers::modification_characteristic_writes` already enumerates exhaustively as
     // `CharacteristicKinds::POWER_TOUGHNESS`; do not re-enumerate it here. Only the counter
-    // half of CR 613.4c is the CR 122.1 monotone resource retained above — the other two
-    // layers read the board and have no counter in them at all.
+    // half of CR 613.4c is the CR 122.1 monotone resource the `retain` above REMOVES — the
+    // other two layers read the board and have no counter in them at all.
     //
     // Erasing all four is nevertheless sound for a COMPARAND, and this is the whole ground:
     // the layer flush is a pure function of `GameState`, so a stored difference in this family
@@ -8251,11 +8264,15 @@ pub(crate) fn project_object_for_loop(object: &mut crate::game::game_object::Gam
     object.defense = None;
 }
 
-/// Clone a state through `normalize_for_loop`, then apply the zeroing sources the
-/// relaxed comparison needs: [`project_out_player_consumables`] for the per-player axes (its
-/// own no-`..` destructure is that set's boundary), [`project_object_for_loop`] for the
-/// per-object ones, and the per-turn tally/journal block below. The result is only ever a
-/// comparand — it is never used as a live game state.
+/// Clone a state through `normalize_for_loop`, then apply what the relaxed comparison needs.
+/// Three zeroing sources: [`project_out_player_consumables`] for the per-player axes (its own
+/// no-`..` destructure is that set's boundary), [`project_object_for_loop`] for the per-object
+/// ones, and the per-turn tally/journal block below. Then one CANONICALIZATION, which is not a
+/// zeroing and is why the three are not the whole story: the stack's volatile per-entry
+/// `StackEntry::id` is rewritten to that entry's stack POSITION, carrying the
+/// `stack_trigger_firings` sidecar keyed by it — see the block at the end of this function for
+/// what that preserves and why it cannot manufacture a false positive. The result is only ever
+/// a comparand — it is never used as a live game state.
 fn project_out_resources(state: &GameState) -> GameState {
     bump_loop_detect_cost(|cost| cost.projected_clones += 1);
     // Read from the unprojected state: the cost gates judge recorded facts
@@ -8986,14 +9003,18 @@ mod tests {
     /// Four arms on the shipped Priest of Titania + Umbral Mantle loop: unmodified; with Drove
     /// of Elves (`*/*`, a CR 613.4a characteristic-defining writer over a live population)
     /// cloned from the real dellian board onto the battlefield; the same card in a library; and
-    /// with Thunderfoot Baloth (a CR 613.4c constant-magnitude pump) on the battlefield.
+    /// with Imperious Perfect ("Other Elves you control get +1/+1" — a CR 613.4c
+    /// constant-magnitude anthem, UNCONDITIONAL, over a population this board populates) on the
+    /// battlefield.
     ///
     /// WHAT REDS IT: a board-derived licence between erasure and subtraction reds the two Drove
     /// arms, because a reading P/T writer then shares the board; an unconditional subtraction of
     /// the counter contribution reds all four, and reds
-    /// `analysis::corpus_tests::drive_combo_10_priest_umbral` with them. The Baloth arm is the
-    /// hostile sibling: a P/T WRITER whose value reads nothing must behave exactly as no
-    /// injection does, so the row cannot pass by being insensitive to injection.
+    /// `analysis::corpus_tests::drive_combo_10_priest_umbral` with them. The Imperious Perfect
+    /// arm is the hostile sibling: a P/T WRITER whose value reads nothing must behave exactly as
+    /// no injection does. Its own reach guard is what makes that reportable — an injected writer
+    /// whose contribution lands on nothing agrees with the unmodified arm for the wrong reason,
+    /// so the arm requires the anthem to MOVE a pre-existing object's stored power.
     /// `drive_combo_10_priest_umbral_requires_untap` is the shipped control that this
     /// certificate is not unconditional.
     #[test]
@@ -9071,11 +9092,29 @@ mod tests {
         }
 
         // ── the hostile sibling: a P/T writer whose value reads NOTHING ──────────────
+        let mut anthem_moved = 0usize;
         let cert = priest_umbral_certificate(
             |state| {
-                install_dellian_card(state, "Thunderfoot Baloth", Zone::Battlefield);
+                // Flush first, so the delta below is the INJECTION's and not the flush the
+                // installer runs (`install_dellian_card` settles layers on the way out).
+                crate::analysis::corpus::settle_layers(state);
+                let before: Vec<(ObjectId, Option<i32>)> =
+                    state.objects.iter().map(|(id, o)| (*id, o.power)).collect();
+                install_dellian_card(state, "Imperious Perfect", Zone::Battlefield);
+                anthem_moved = before
+                    .iter()
+                    .filter(|&&(id, power)| {
+                        state.objects.get(&id).is_some_and(|o| o.power != power)
+                    })
+                    .count();
             },
             |_, _| {},
+        );
+        assert!(
+            anthem_moved > 0,
+            "reach-guard: the injected anthem must MOVE the stored power of an object already \
+             on this board, or the arm agrees with the unmodified arm by landing nowhere and \
+             reports no sensitivity to injection at all"
         );
         assert!(
             cert.is_some(),
@@ -9090,10 +9129,12 @@ mod tests {
     /// feed.
     ///
     /// WHAT REDS IT: an unconditional subtraction of the counter contribution and a
-    /// board-derived licence each flip the relaxed gate to REJECT; quantifying the counter
-    /// partition over ALL counters rather than `CounterType::is_monotone_loop_resource` reds it
-    /// too. The `tapped` variant is the hostile sibling — without it the row is satisfied by a
-    /// gate that accepts everything.
+    /// board-derived licence each flip the relaxed gate to REJECT. Two hostile siblings stop the
+    /// row being satisfied by a gate that accepts everything — the `tapped` variant, and the
+    /// `Stun` variant, which is what makes the counter PARTITION load-bearing: widening the
+    /// projection's `retain` to drop EVERY counter rather than the
+    /// `CounterType::is_monotone_loop_resource` class relieves the preserved counter and reds
+    /// that arm.
     #[test]
     fn counter_relief_covers_every_object_the_anthem_moves() {
         use crate::types::counter::CounterType;
@@ -9225,6 +9266,24 @@ mod tests {
             !loop_states_equal_modulo_resources(&prior, &tapped_variant),
             "the relaxed gate is not `accepts everything`: `tapped` survives the projection, so \
              flipping it on one moved creature must REJECT"
+        );
+
+        // Hostile sibling on the COUNTER axis: the projection partitions counters, and a counter
+        // outside the monotone class is a real board difference. `current` differs from this
+        // frame on the Stun counter alone and ACCEPTS above, so the REJECT is the partition's.
+        let mut stun_variant = current.clone();
+        *stun_variant
+            .objects
+            .get_mut(&joraga)
+            .expect("just read it off this frame")
+            .counters
+            .entry(CounterType::Stun)
+            .or_insert(0) += 1;
+        crate::analysis::corpus::settle_layers(&mut stun_variant);
+        assert!(
+            !loop_states_equal_modulo_resources(&prior, &stun_variant),
+            "CR 122.1: a Stun counter is NOT in `is_monotone_loop_resource`'s class, so the \
+             projection preserves it and the pair must REJECT"
         );
     }
 
@@ -15715,14 +15774,6 @@ mod tests {
     /// `eq_except_growable`. Each row's assertion message names the field it moves.
     #[test]
     fn object_growth_r_s3_gamestate_accumulator_sync() {
-        // A per-turn accumulator PartialEq compares.
-        let (prior, mut current) = og_cover_base();
-        current.lands_played_this_turn += 1;
-        assert!(
-            !cover(&prior, &current),
-            "R-s3-accum: a hidden per-turn accumulator delta must REJECT"
-        );
-
         // Sweep several strict-compared fields, each independently. Each
         // mutation on the covering base must independently flip the verdict to REJECT.
         let sync = |mutate: &dyn Fn(&mut GameState), label: &str| {

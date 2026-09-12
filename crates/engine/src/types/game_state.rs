@@ -29904,6 +29904,13 @@ pub(crate) fn objects_content_eq(
 /// Comparing it could only SUPPRESS a draw, while adding an axis a stale un-flushed clone can
 /// differ on.
 ///
+/// One omission fits none of those buckets and is compensated elsewhere instead, which is the
+/// second site a reader has to know about: `loyalty_activations_this_turn` is a per-turn
+/// accumulator (CR 606.3 — a permanent's loyalty ability may be activated only if none has been
+/// activated that turn), so it is neither layer-derived nor card-intrinsic nor saturating.
+/// `analysis::resource::loyalty_activation_counts_match` is the sibling predicate over it,
+/// consulted BY HAND at the gates that need it rather than through this comparator.
+///
 /// This is NOT the partition `_gameobject_partition_is_total` names: that guard binds every
 /// field of the struct, so it fixes a TOTAL and forces a classification decision as
 /// `GameObject` grows. It does not define the compared set, which is the conjunct list below.

@@ -3224,11 +3224,29 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
 ///
 /// Shares the cluster's ordered obligation through
 /// `analysis::resource::provably_excludes_class`, with both declarations recorded rather than
-/// omitted: pre-gate `SoleSource::None` (the subject is a `TriggerDefinition`, whose whole
-/// matcher the shape gate reads, so there is no second axis a read could hide on) and liveness
-/// `MemberLiveness::Unchecked` (the exclusion delegates to `valid_card_matches`, which answers
-/// about the member's own characteristics and fails closed when it cannot resolve them, so a
-/// frame-presence gate would add no evidence).
+/// omitted.
+///
+/// Pre-gate `SoleSource::None`: the subject is a `TriggerDefinition`, not an
+/// `AbilityDefinition`, so there is no axis for a `Blank` rescan to blank. The shape gate reads
+/// the entry matcher and nothing else of the definition, and it claims nothing else either —
+/// `analysis::resource::fire_time_conditions_read_growing_class_scoped` scans this trigger's
+/// `condition` and its `execute` body as its own separate conjuncts, so a relief here skips the
+/// entry-matcher surface alone.
+///
+/// Liveness `MemberLiveness::Unchecked`, and NOT because the delegate fails closed. It fails
+/// OPEN: `trigger_matchers::valid_card_matches` answers `false` for an id absent from
+/// `state.objects`, and the exclusion closure below NEGATES that answer, so an unresolvable
+/// member would be RELIEVED rather than vetoed. Soundness is the CALLER's. The class-keyed
+/// relief is reached only under a `Some(class_members)` argument, and the one production call
+/// that supplies one — `analysis::resource::loop_states_cover_modulo_fodder_growth` — hands
+/// over exactly the ids its wildcard-free `match obj.zone` keeps ON the battlefield of the
+/// scanned frame (CR 400.1 fixes the seven zones, so an eighth is a compile error there). That
+/// keep reads the frame through `is_some_and`, so an id the frame does not key is dropped with
+/// the off-battlefield residents and never arrives here. CR 603.6a is why the drop is relief
+/// the rules owe rather than a proof the prover failed to find: an enters-the-battlefield
+/// ability triggers only when a permanent ENTERS the battlefield, and an id the scanned frame
+/// keys elsewhere made no entry across the covered cycle. The keep is pinned by
+/// `analysis::resource`'s `an_etb_observer_matching_an_off_battlefield_id_moves_under_the_keep_set`.
 pub(crate) fn etb_observer_provably_excludes_class(
     def: &TriggerDefinition,
     state: &GameState,
