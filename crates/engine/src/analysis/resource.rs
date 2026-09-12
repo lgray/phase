@@ -4447,6 +4447,115 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
         && a.last_loop_action_sequence == b.last_loop_action_sequence
 }
 
+/// Which single field of an [`AbilityDefinition`] a [`SoleSource::Blank`] pre-gate blanks
+/// before it re-runs the growing-class scan. Analysis plumbing (a sibling of `ScanMode`), NOT
+/// a game-semantic variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AbilityAxis {
+    Condition,
+    Effect,
+}
+
+/// The pre-gate an exclusion proof clears before its shape is looked at: proof that the axis
+/// the arm goes on to inspect is the definition's ONLY growing-class read, so no cost,
+/// sub-ability or sibling field hides a second read the arm never examined. Analysis plumbing
+/// (a sibling of `ScanMode`), NOT a game-semantic variant.
+pub(crate) enum SoleSource<'a> {
+    /// No pre-gate, and a recorded DECISION rather than an omission: the subject is not an
+    /// `AbilityDefinition`, so it carries no second axis a read could hide on and the shape
+    /// gate sees the whole subject.
+    None,
+    /// `activation_restrictions` must be EMPTY — `ability_scan::ability_definition_axes`
+    /// destructures that field `_`, so the scan is blind to it and the rescan below would
+    /// answer `false` even with a class-matching restriction on the same def — and blanking
+    /// `axis` must make `ability_definition_reads_growing_class_for_loop` answer `false`.
+    Blank {
+        ability: &'a crate::types::ability::AbilityDefinition,
+        axis: AbilityAxis,
+    },
+    /// Every axis but `kind` and `effect` is at `AbilityDefinition::new`'s value — totality
+    /// instead of a field list, which subsumes both of [`SoleSource::Blank`]'s halves. See
+    /// [`ability_definition_carries_only_its_effect`].
+    CarriesOnlyItsEffect(&'a crate::types::ability::AbilityDefinition),
+}
+
+/// What "the class member is live in the scanned frame" must mean for an arm's exclusion test
+/// to have measured anything. Declared per arm, so the requirement is stated rather than
+/// left to a hand-copied block. Analysis plumbing (a sibling of `ScanMode`), NOT a
+/// game-semantic variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemberLiveness {
+    /// No frame lookup, and a recorded DECISION: the exclusion is an identity or shape test
+    /// whose verdict is not made trivial by the member's absence, and the arm's own exclusion
+    /// closure fails closed on whatever it cannot resolve.
+    Unchecked,
+    /// Present in `state.objects`. Enough where the exclusion's universe is zone-agnostic (a
+    /// player's hand, a census over `state.objects`), and an absent id would instead be
+    /// skipped trivially by the walk that is supposed to measure it.
+    Resolvable,
+    /// Present AND on the battlefield (CR 109.4 gives only battlefield and stack objects a
+    /// controller). Required wherever the exclusion tests membership of a battlefield-scoped
+    /// population: a merely-EXISTING id is absent from such a population for ZONE reasons and
+    /// would satisfy the test having proved nothing about the class.
+    OnBattlefield,
+}
+
+/// CR 608.2h — the shared proof obligation every arm of this cluster discharges: "this
+/// definition's read cannot see `class_member`, so its value is invariant across the loop's
+/// growth, and the definition does not observe the loop". Fail-closed at every step, in one
+/// order for every arm: pre-gate, then shape, then member liveness, then the arm's own
+/// delegated fire-time authority.
+///
+/// The axes the arms actually differ on are PARAMETERS, not copied blocks. `pre` and
+/// `liveness` are each a declaration an arm cannot leave unstated, and `shape` / `excludes`
+/// keep each arm's own typed subject and its own delegated authority — so no arm needs `dyn`,
+/// and none can resolve a member against a frame other than `state`.
+pub(crate) fn provably_excludes_class<S>(
+    state: &GameState,
+    class_member: ObjectId,
+    pre: SoleSource<'_>,
+    liveness: MemberLiveness,
+    shape: impl FnOnce() -> Option<S>,
+    excludes: impl FnOnce(S, ObjectId) -> bool,
+) -> bool {
+    match pre {
+        SoleSource::None => {}
+        SoleSource::Blank { ability, axis } => {
+            if !ability.activation_restrictions.is_empty() {
+                return false;
+            }
+            let mut probe = ability.clone();
+            match axis {
+                AbilityAxis::Condition => probe.condition = None,
+                AbilityAxis::Effect => *probe.effect = crate::types::ability::Effect::NoOp,
+            }
+            if crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&probe) {
+                return false;
+            }
+        }
+        SoleSource::CarriesOnlyItsEffect(ability) => {
+            if !ability_definition_carries_only_its_effect(ability) {
+                return false;
+            }
+        }
+    }
+    let Some(subject) = shape() else {
+        return false;
+    };
+    let live = match liveness {
+        MemberLiveness::Unchecked => true,
+        MemberLiveness::Resolvable => state.objects.contains_key(&class_member),
+        MemberLiveness::OnBattlefield => state
+            .objects
+            .get(&class_member)
+            .is_some_and(|o| o.zone == Zone::Battlefield),
+    };
+    if !live {
+        return false;
+    }
+    excludes(subject, class_member)
+}
+
 /// CR 732.2a + CR 608.2h + CR 608.2i + CR 608.2j: does this trigger's `execute` body observe
 /// the growing class ONLY through a battlefield-entry-ledger condition whose filter PROVABLY
 /// cannot count `class_member`? Returns `true` iff so — then the read's value is invariant
@@ -4515,58 +4624,61 @@ fn execute_ledger_condition_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::{AbilityCondition, QuantityExpr, QuantityRef};
 
-    // (0) the firewall is BLIND to activation restrictions — fail closed.
-    if !exec.activation_restrictions.is_empty() {
-        return false;
-    }
-    // (a) sole-source by single-field clone-and-rescan.
-    let mut probe = exec.clone();
-    probe.condition = None;
-    if crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&probe) {
-        return false;
-    }
-    // (b) shape — single level, `_ => false` via let-else.
-    let Some(AbilityCondition::QuantityCheck {
-        lhs:
-            QuantityExpr::Ref {
-                qty: QuantityRef::BattlefieldEntriesThisTurn { filter, .. },
-            },
-        rhs: QuantityExpr::Fixed { .. },
-        ..
-    }) = exec.condition.as_ref()
-    else {
-        return false;
-    };
-    // (c) exclusion — fail-closed if the member is gone from the scanned frame.
-    //     ARG-EQUIVALENCE: these five arguments mirror the resolver's own call.
-    let Some(member_obj) = state.objects.get(&class_member) else {
-        return false;
-    };
-    let probe_record = crate::game::restrictions::battlefield_entry_record_for(member_obj);
-    // The `std::iter::once` is LOAD-BEARING: it guarantees the iterator is never empty,
-    // so `.all()` cannot be vacuously `true` — the classic fail-open shape for an
-    // `.all()` guard. Do not "optimise" it away when a real record exists. Both
-    // authorities are required because the class member is chosen from the caller's growth
-    // set and can be a pre-existing object that never went through `record_battlefield_entry`
-    // (so real-records-only would be inert), while a Layer-4 type change can make the
-    // live object differ from its genuine entry-time snapshot (so synthesized-only would
-    // ignore the real record).
-    std::iter::once(&probe_record)
-        .chain(
-            state
-                .battlefield_entries_this_turn
-                .iter()
-                .filter(|r| r.object_id == class_member),
-        )
-        .all(|r| {
-            !crate::game::restrictions::battlefield_entry_matches_filter(
-                r,
-                filter,
-                source.controller,
-                &state.all_creature_types,
-                Some(source.id),
-            )
-        })
+    provably_excludes_class(
+        state,
+        class_member,
+        SoleSource::Blank {
+            ability: exec,
+            axis: AbilityAxis::Condition,
+        },
+        MemberLiveness::Resolvable,
+        || {
+            // (b) shape — single level, refusal via let-else.
+            let Some(AbilityCondition::QuantityCheck {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::BattlefieldEntriesThisTurn { filter, .. },
+                    },
+                rhs: QuantityExpr::Fixed { .. },
+                ..
+            }) = exec.condition.as_ref()
+            else {
+                return None;
+            };
+            Some(filter)
+        },
+        |filter, member| {
+            // (c) ARG-EQUIVALENCE: these five arguments mirror the resolver's own call.
+            let Some(member_obj) = state.objects.get(&member) else {
+                return false;
+            };
+            let probe_record = crate::game::restrictions::battlefield_entry_record_for(member_obj);
+            // The `std::iter::once` is LOAD-BEARING: it guarantees the iterator is never
+            // empty, so `.all()` cannot be vacuously `true` — the classic fail-open shape for
+            // an `.all()` guard. Do not "optimise" it away when a real record exists. Both
+            // authorities are required because the class member is chosen from the caller's
+            // growth set and can be a pre-existing object that never went through
+            // `record_battlefield_entry` (so real-records-only would be inert), while a
+            // Layer-4 type change can make the live object differ from its genuine entry-time
+            // snapshot (so synthesized-only would ignore the real record).
+            std::iter::once(&probe_record)
+                .chain(
+                    state
+                        .battlefield_entries_this_turn
+                        .iter()
+                        .filter(|r| r.object_id == member),
+                )
+                .all(|r| {
+                    !crate::game::restrictions::battlefield_entry_matches_filter(
+                        r,
+                        filter,
+                        source.controller,
+                        &state.all_creature_types,
+                        Some(source.id),
+                    )
+                })
+        },
+    )
 }
 
 /// SIBLING DISJUNCT of [`execute_ledger_condition_provably_excludes_class`] at the SAME
@@ -4637,17 +4749,15 @@ fn execute_ledger_condition_provably_excludes_class(
 /// rather than being absorbed by the cover's fix on one object. A filter carrying ANY property
 /// keeps its veto: this arm's coverage ceiling.
 ///
-/// NOT A VISITOR, same as its sibling — fail-closed conjuncts, each keeping the conservative
-/// veto whenever it cannot prove its half:
-///   (0) NO ACTIVATION RESTRICTIONS: `ability_definition_axes` destructures
-///       `activation_restrictions: _`, so the scan is BLIND to them and (a)'s rescan would
-///       answer `false` even with a class-matching restriction on the same def.
-///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the EFFECT with
-///       `Effect::NoOp` and re-run `ability_definition_reads_growing_class_for_loop`. Only if
-///       THAT is `false` is the effect the def's only growing-class read —
-///       `ability_definition_axes` destructures with NO `..`, so the rescan covers
-///       `sub_ability`, `else_ability`, `duration`, `condition`, `multi_target`, `modal`,
-///       `repeat_for`, `unless_pay`, `cost_reduction` and the rest without enumerating them.
+/// NOT A VISITOR, same as its sibling — fail-closed conjuncts through
+/// [`provably_excludes_class`], each keeping the conservative veto whenever it cannot prove its
+/// half. Pre-gate `SoleSource::Blank` on `AbilityAxis::Effect`, whose rescan covers
+/// `sub_ability`, `else_ability`, `duration`, `condition`, `multi_target`, `modal`,
+/// `repeat_for`, `unless_pay`, `cost_reduction` and the rest without enumerating them, because
+/// `ability_definition_axes` destructures with no `..`. Liveness `MemberLiveness::OnBattlefield`
+/// — `object_count_matching_ids`' universe for the only filter shape this arm admits is
+/// battlefield-scoped, so a merely EXISTING id is trivially absent from the population and
+/// would satisfy (d) having proved nothing.
 ///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`, and NO `..` on
 ///       `Effect::Pump`, so a new `Pump` field is a compile error here rather than a silent
 ///       unscanned read.
@@ -4661,10 +4771,6 @@ fn execute_ledger_condition_provably_excludes_class(
 ///       PREDICATE through the scanner's own authority,
 ///       `ability_scan::effect_target_reads_growing_class_for_loop`, which derives the
 ///       `FilterReadContext` from THIS effect via `effect_target_ctx` rather than pinning one.
-///   (c) the member must be LIVE ON THE BATTLEFIELD in the scanned frame. `contains_key` alone
-///       is NOT enough: `object_count_matching_ids`' universe for the only filter shape this
-///       arm admits is battlefield-scoped, so an id that merely EXISTS is trivially absent
-///       from the population and satisfies (d) having proved nothing.
 ///   (d) BOTH P/T halves must be provably invariant — `toughness` as much as `power`
 ///       (`Pump` carries two independent `PtValue`s and either can hold the aggregate).
 fn pump_aggregate_provably_excludes_class(
@@ -4675,60 +4781,57 @@ fn pump_aggregate_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::Effect;
 
-    // (0) the firewall is BLIND to activation restrictions — fail closed.
-    if !exec.activation_restrictions.is_empty() {
-        return false;
-    }
-    // (a) sole-source by single-field clone-and-rescan.
-    let mut probe = exec.clone();
-    *probe.effect = Effect::NoOp;
-    if crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&probe) {
-        return false;
-    }
-    // (b) shape — single level, `_ => false` via let-else, no `..`.
-    let Effect::Pump {
-        power,
-        toughness,
-        target,
-    } = exec.effect.as_ref()
-    else {
-        return false;
-    };
-    // (b-t) the TARGET must itself contribute no growing-class read — conjunct (d) is about
-    // the P/T AGGREGATE and says nothing about what the target reads. Asked through the
-    // scanner's own authority, which derives the census context from THIS effect.
-    if crate::game::ability_scan::effect_target_reads_growing_class_for_loop(
-        exec.effect.as_ref(),
-        target,
-    ) {
-        return false;
-    }
-    // (c) fail-closed unless the member is live ON THE BATTLEFIELD in the scanned frame —
-    // EXISTS is not enough. See this function's doc for why `contains_key` was vacuous.
-    if !state
-        .objects
-        .get(&class_member)
-        .is_some_and(|o| o.zone == Zone::Battlefield)
-    {
-        return false;
-    }
-    // (d) both halves, against the pinned context.
-    let ctx = crate::game::filter::FilterContext::from_source_with_controller(
-        source.id,
-        source.controller,
-    );
-    pt_value_aggregate_provably_excludes_class(power, state, class_member, source.id, &ctx)
-        && pt_value_aggregate_provably_excludes_class(
-            toughness,
-            state,
-            class_member,
-            source.id,
-            &ctx,
-        )
+    provably_excludes_class(
+        state,
+        class_member,
+        SoleSource::Blank {
+            ability: exec,
+            axis: AbilityAxis::Effect,
+        },
+        MemberLiveness::OnBattlefield,
+        || {
+            // (b) shape — single level, refusal via let-else, no `..`.
+            let Effect::Pump {
+                power,
+                toughness,
+                target,
+            } = exec.effect.as_ref()
+            else {
+                return None;
+            };
+            // (b-t) the TARGET must itself contribute no growing-class read — conjunct (d) is
+            // about the P/T AGGREGATE and says nothing about what the target reads. Asked
+            // through the scanner's own authority, which derives the census context from THIS
+            // effect.
+            if crate::game::ability_scan::effect_target_reads_growing_class_for_loop(
+                exec.effect.as_ref(),
+                target,
+            ) {
+                return None;
+            }
+            Some((power, toughness))
+        },
+        |(power, toughness), member| {
+            // (d) both halves, against the pinned context.
+            let ctx = crate::game::filter::FilterContext::from_source_with_controller(
+                source.id,
+                source.controller,
+            );
+            pt_value_aggregate_provably_excludes_class(power, state, member, source.id, &ctx)
+                && pt_value_aggregate_provably_excludes_class(
+                    toughness, state, member, source.id, &ctx,
+                )
+        },
+    )
 }
 
 /// One `PtValue` half of [`pump_aggregate_provably_excludes_class`] — see that function's
 /// doc for the arg-equivalence pin and the context-shape guard, which are implemented here.
+///
+/// Pre-gate `SoleSource::None` (the subject is a `PtValue`, not an `AbilityDefinition`, so it
+/// carries no second axis a read could hide on) and liveness `MemberLiveness::Unchecked`,
+/// recorded as a decision: the caller above declares `OnBattlefield` before splitting the
+/// halves, and a `PtValue::Fixed` half is invariant under growth whatever the member is.
 fn pt_value_aggregate_provably_excludes_class(
     pt: &crate::types::ability::PtValue,
     state: &GameState,
@@ -4741,65 +4844,83 @@ fn pt_value_aggregate_provably_excludes_class(
         TypedFilter,
     };
 
-    let filter = match pt {
-        // A literal reads nothing, so it is invariant under growth by construction.
-        PtValue::Fixed(_) => return true,
-        PtValue::Quantity(QuantityExpr::Ref {
-            qty: QuantityRef::PropertyAggregate(aggregate),
-        }) => match aggregate.source() {
-            // The old `Aggregate { filter }` is now `Objects { filter }` — the same shape
-            // under a parameterized source. Every other source shape was a separate
-            // `QuantityRef` variant before and kept the veto through the fallthrough below,
-            // so it keeps it here.
-            CardTypeSetSource::Objects { filter } => filter,
-            _ => return false,
+    provably_excludes_class(
+        state,
+        class_member,
+        SoleSource::None,
+        MemberLiveness::Unchecked,
+        // The shape yields the aggregate filter this half reads, or an inner `None` for a
+        // literal — which reads nothing, so it is invariant under growth by construction.
+        || {
+            let filter = match pt {
+                PtValue::Fixed(_) => return Some(None),
+                PtValue::Quantity(QuantityExpr::Ref {
+                    qty: QuantityRef::PropertyAggregate(aggregate),
+                }) => match aggregate.source() {
+                    // The old `Aggregate { filter }` is now `Objects { filter }` — the same
+                    // shape under a parameterized source. Every other source shape was a
+                    // separate `QuantityRef` variant before and kept the veto through the
+                    // fallthrough below, so it keeps it here.
+                    CardTypeSetSource::Objects { filter } => filter,
+                    _ => return None,
+                },
+                // `PtValue::Variable` (an announced X, resolved from the ability's own record)
+                // and every other `QuantityExpr` / `QuantityRef` fall through and KEEP the
+                // veto.
+                _ => return None,
+            };
+            // CONTEXT-SHAPE GUARD: only a filter that reads none of the fields the two
+            // `FilterContext` constructors disagree about may be evaluated with the firewall's
+            // own context. Any non-`Typed` `TargetFilter` (`Or`, `Not`, `And`, `TrackedSet`, …)
+            // keeps the veto rather than being walked here. DESTRUCTURED WITH NO `..` AND EVERY
+            // FIELD NAMED, so a new field on `TypedFilter` is an E0027 compile error at this
+            // seam instead of a silently unscanned read inside a guard whose whole job is to
+            // enumerate what the filter may read.
+            let TargetFilter::Typed(TypedFilter {
+                // Bound to `_` so the omission is a DECISION recorded at the seam:
+                // `type_filters` is a `card_types` predicate, and `card_types` is exactly what
+                // this arm's residual (see [`pump_aggregate_provably_excludes_class`]) is
+                // already about.
+                type_filters: _,
+                // CR 109.4: only objects on the stack or on the battlefield have a controller.
+                // This axis is NOT covered by the residual above — `controller` is inside
+                // `object_content_eq`'s compared frame — so it is read, and its allowlist is
+                // enforced below rather than deferred.
+                controller,
+                properties,
+            }) = filter
+            else {
+                return None;
+            };
+            if !properties.is_empty() || !matches!(controller, None | Some(ControllerRef::You)) {
+                return None;
+            }
+            // The resolver's OTHER context branch is unreachable for this shape, and that is a
+            // property of the type rather than of this fixture: `resolve_ref` swaps in a scoped
+            // context when `filter.references_exiled_by_source()`, and that predicate answers
+            // `true` only for `ExiledBySource` / `And` / `Or` / `TrackedSetFiltered`, with
+            // `_ => false` covering `Typed`. The guard above has already refused every
+            // non-`Typed` filter, so this holds by construction. A `debug_assert!` and not a
+            // refusal branch: a runtime arm here would be dead code, and its usual
+            // justification ("a future `TypedFilter` field could reopen it") is FALSE — that
+            // predicate matches on the `TargetFilter` variant and never looks inside
+            // `TypedFilter`.
+            debug_assert!(
+                !filter.references_exiled_by_source(),
+                "a `TargetFilter::Typed` can never reference the source's exile set; if it \
+                 can, the arg-equivalence pin below is against the wrong `FilterContext`"
+            );
+            Some(Some(filter))
         },
-        // `PtValue::Variable` (an announced X, resolved from the ability's own record) and
-        // every other `QuantityExpr` / `QuantityRef` fall through and KEEP the veto.
-        _ => return false,
-    };
-    // CONTEXT-SHAPE GUARD: only a filter that reads none of the fields the two
-    // `FilterContext` constructors disagree about may be evaluated with the firewall's own
-    // context. Any non-`Typed` `TargetFilter` (`Or`, `Not`, `And`, `TrackedSet`, …) keeps the
-    // veto rather than being walked here. DESTRUCTURED WITH NO `..` AND EVERY FIELD NAMED, so
-    // a new field on `TypedFilter` is an E0027 compile error at this seam instead of a
-    // silently unscanned read inside a guard whose whole job is to enumerate what the filter
-    // may read.
-    let TargetFilter::Typed(TypedFilter {
-        // Bound to `_` so the omission is a DECISION recorded at the seam: `type_filters` is a
-        // `card_types` predicate, and `card_types` is exactly what this arm's residual
-        // (see [`pump_aggregate_provably_excludes_class`]) is already about.
-        type_filters: _,
-        // CR 109.4: only objects on the stack or on the battlefield have a controller. This
-        // axis is NOT covered by the residual above — `controller` is inside
-        // `object_content_eq`'s compared frame — so it is read, and its allowlist is enforced
-        // below rather than deferred.
-        controller,
-        properties,
-    }) = filter
-    else {
-        return false;
-    };
-    if !properties.is_empty() || !matches!(controller, None | Some(ControllerRef::You)) {
-        return false;
-    }
-    // The resolver's OTHER context branch is unreachable for this shape, and that is a
-    // property of the type rather than of this fixture: `resolve_ref` swaps in a scoped
-    // context when `filter.references_exiled_by_source()`, and that predicate answers `true`
-    // only for `ExiledBySource` / `And` / `Or` / `TrackedSetFiltered`, with `_ => false`
-    // covering `Typed`. The guard above has already refused every non-`Typed` filter, so this
-    // holds by construction. A `debug_assert!` and not a `return false` branch: a runtime arm
-    // here would be dead code, and its usual justification ("a future `TypedFilter` field
-    // could reopen it") is FALSE — that predicate matches on the `TargetFilter` variant and
-    // never looks inside `TypedFilter`.
-    debug_assert!(
-        !filter.references_exiled_by_source(),
-        "a `TargetFilter::Typed` can never reference the source's exile set; if it can, the \
-         arg-equivalence pin below is against the wrong `FilterContext`"
-    );
-    // ARG-EQUIVALENCE — `game::quantity::object_count_matching_ids`.
-    !crate::game::quantity::object_count_matching_ids(state, filter, ctx, source_id)
-        .contains(&class_member)
+        |filter, member| match filter {
+            None => true,
+            // ARG-EQUIVALENCE — `game::quantity::object_count_matching_ids`.
+            Some(filter) => {
+                !crate::game::quantity::object_count_matching_ids(state, filter, ctx, source_id)
+                    .contains(&member)
+            }
+        },
+    )
 }
 
 /// BLOCK-(2) ARM (Pit of Offerings' exiled-colour mana): does this battlefield ability's
@@ -4855,22 +4976,17 @@ fn pt_value_aggregate_provably_excludes_class(
 /// to cards *still in the exile zone* that were exiled by *this* object, and both conjuncts
 /// live in that function.
 ///
-/// NOT A VISITOR, same as the block-(1b) arms — four fail-closed conjuncts, each keeping the
-/// conservative veto whenever it cannot prove its half:
-///   (0) NO ACTIVATION RESTRICTIONS: `ability_definition_axes` destructures
-///       `activation_restrictions: _`, so the scan is BLIND to them and (a)'s rescan would
-///       answer `false` even with a class-matching restriction on the same def.
-///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, replace the EFFECT with
-///       `Effect::NoOp` and re-run `ability_definition_reads_growing_class_for_loop`. Only if
-///       THAT is `false` is the effect the def's only growing-class read.
+/// NOT A VISITOR, same as the block-(1b) arms — fail-closed conjuncts through
+/// [`provably_excludes_class`], each keeping the conservative veto whenever it cannot prove its
+/// half. Pre-gate `SoleSource::Blank` on `AbilityAxis::Effect`; liveness
+/// `MemberLiveness::OnBattlefield`, because under a bare presence check ANY
+/// battlefield-absent member is excluded from an Exile-only link set by construction and
+/// relieved on no evidence at all.
 ///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`, and NO `..` on
 ///       `Effect::Mana`. `target: None` is part of that shape and is LOAD-BEARING: the
 ///       `LoopFirewall` branch of `scan_effect`'s `Effect::Mana` arm descends `target`'s
 ///       `declared_filters()`, so a `Some(role)` veto can be raised BY THE TARGET's own
 ///       class-reading filter — which conjunct (d)'s link-set argument says nothing about.
-///   (c) the member must be LIVE ON THE BATTLEFIELD in the scanned frame. Under a bare
-///       `contains_key` ANY battlefield-absent member is excluded from an Exile-only link set
-///       by construction and relieved on no evidence at all.
 ///   (d) MEMBER-QUANTIFIED exclusion against that link authority. It is DEFENCE-IN-DEPTH, not
 ///       the fail-closed mechanism: the sole production caller hands over its growth set
 ///       restricted to the ids the scanned frame keys ON THE BATTLEFIELD — the keep set,
@@ -4888,39 +5004,34 @@ fn exiled_colors_provably_exclude_class(
 ) -> bool {
     use crate::types::ability::{Effect, ManaProduction};
 
-    // (0) the firewall is BLIND to activation restrictions — fail closed.
-    if !ability.activation_restrictions.is_empty() {
-        return false;
-    }
-    // (a) sole-source by single-field clone-and-rescan.
-    let mut probe = ability.clone();
-    *probe.effect = Effect::NoOp;
-    if crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&probe) {
-        return false;
-    }
-    // (b) shape — single level, `_ => false` via let-else, no `..`.
-    let Effect::Mana {
-        produced: ManaProduction::ChoiceAmongExiledColors { source: link_scope },
-        target: None,
-        restrictions: _,
-        grants: _,
-        expiry: _,
-    } = ability.effect.as_ref()
-    else {
-        return false;
-    };
-    // (c) fail-closed unless the member is live ON THE BATTLEFIELD in the scanned frame —
-    // EXISTS is not enough. See this function's doc for why `contains_key` was vacuous.
-    if !state
-        .objects
-        .get(&class_member)
-        .is_some_and(|o| o.zone == Zone::Battlefield)
-    {
-        return false;
-    }
-    // (d) ARG-EQUIVALENCE — `game::effects::mana::linked_exiled_ids`.
-    crate::game::effects::mana::linked_exiled_ids(state, *link_scope, source.id)
-        .all(|(id, _)| id != class_member)
+    provably_excludes_class(
+        state,
+        class_member,
+        SoleSource::Blank {
+            ability,
+            axis: AbilityAxis::Effect,
+        },
+        MemberLiveness::OnBattlefield,
+        || {
+            // (b) shape — single level, refusal via let-else, no `..`.
+            let Effect::Mana {
+                produced: ManaProduction::ChoiceAmongExiledColors { source: link_scope },
+                target: None,
+                restrictions: _,
+                grants: _,
+                expiry: _,
+            } = ability.effect.as_ref()
+            else {
+                return None;
+            };
+            Some(*link_scope)
+        },
+        |link_scope, member| {
+            // (d) ARG-EQUIVALENCE — `game::effects::mana::linked_exiled_ids`.
+            crate::game::effects::mana::linked_exiled_ids(state, link_scope, source.id)
+                .all(|(id, _)| id != member)
+        },
+    )
 }
 
 /// BLOCK-(2) ARM (Glittering Stockpile's stash-counter mana): does this battlefield
@@ -4952,17 +5063,19 @@ fn exiled_colors_provably_exclude_class(
 /// branch-independent. Every other scope keeps its veto at conjunct (b), so no other context
 /// field can be reached.
 ///
-/// SAME FOUR FAIL-CLOSED CONJUNCTS as [`exiled_colors_provably_exclude_class`]; see that
-/// doc for (0), (a) and the shared soundness bridge. (b) here is a FOUR-LEVEL but strictly
-/// NON-RECURSIVE match — the load-bearing property is non-recursion, not depth: a compound
-/// `QuantityExpr` (`Offset`, `Multiply`, `DivideRounded`, …) falls to `_` and KEEPS the veto.
-/// `target: None` is load-bearing for the SAME reason as in the sibling arm. (c) does NOT
-/// inherit the siblings' argument: theirs closes a POPULATION vacuity (an off-battlefield id
-/// is absent from a battlefield-scoped population for ZONE reasons), while (d) here is an
-/// IDENTITY test, where an off-battlefield id differs from the source no more trivially than
-/// a battlefield one does. What (c) buys here is that relief is granted only over the class
-/// the sole production caller can build, and that the arm stays fail-closed for every other
-/// caller.
+/// SAME FAIL-CLOSED SHAPE as [`exiled_colors_provably_exclude_class`]; see that doc for the
+/// shared soundness bridge. Pre-gate `SoleSource::Blank` on `AbilityAxis::Effect`, as there.
+/// (b) here is a FOUR-LEVEL but strictly NON-RECURSIVE match — the load-bearing property is
+/// non-recursion, not depth: a compound `QuantityExpr` (`Offset`, `Multiply`, `DivideRounded`,
+/// …) falls to `_` and KEEPS the veto. `target: None` is load-bearing for the SAME reason as in
+/// the sibling arm.
+///
+/// Liveness `MemberLiveness::OnBattlefield`, and it does NOT inherit the sibling's reason:
+/// theirs closes a POPULATION vacuity (an off-battlefield id is absent from a
+/// battlefield-scoped population for ZONE reasons), while (d) here is an IDENTITY test, where
+/// an off-battlefield id differs from the source no more trivially than a battlefield one does.
+/// What the declaration buys here is that relief is granted only over the class the sole
+/// production caller can build, and that the arm stays fail-closed for every other caller.
 fn counters_on_source_provably_excludes_class(
     ability: &crate::types::ability::AbilityDefinition,
     state: &GameState,
@@ -4971,55 +5084,50 @@ fn counters_on_source_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::{Effect, ManaProduction, ObjectScope, QuantityExpr, QuantityRef};
 
-    // (0) the firewall is BLIND to activation restrictions — fail closed.
-    if !ability.activation_restrictions.is_empty() {
-        return false;
-    }
-    // (a) sole-source by single-field clone-and-rescan.
-    let mut probe = ability.clone();
-    *probe.effect = Effect::NoOp;
-    if crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(&probe) {
-        return false;
-    }
-    // (b) shape — bounded, NON-RECURSIVE, `_ => false` via let-else, no `..` at any
-    // level, so a new field on `Effect::Mana` / `AnyOneColor` / `CountersOn` is a
-    // compile error here rather than a silent unscanned read.
-    let Effect::Mana {
-        produced:
-            ManaProduction::AnyOneColor {
-                count:
-                    QuantityExpr::Ref {
-                        qty:
-                            QuantityRef::CountersOn {
-                                scope: ObjectScope::Source,
-                                counter_type: _,
+    provably_excludes_class(
+        state,
+        class_member,
+        SoleSource::Blank {
+            ability,
+            axis: AbilityAxis::Effect,
+        },
+        MemberLiveness::OnBattlefield,
+        || {
+            // (b) shape — bounded, NON-RECURSIVE, refusal via let-else, no `..` at any
+            // level, so a new field on `Effect::Mana` / `AnyOneColor` / `CountersOn` is a
+            // compile error here rather than a silent unscanned read.
+            let Effect::Mana {
+                produced:
+                    ManaProduction::AnyOneColor {
+                        count:
+                            QuantityExpr::Ref {
+                                qty:
+                                    QuantityRef::CountersOn {
+                                        scope: ObjectScope::Source,
+                                        counter_type: _,
+                                    },
                             },
+                        color_options: _,
+                        contribution: _,
                     },
-                color_options: _,
-                contribution: _,
-            },
-        target: None,
-        restrictions: _,
-        grants: _,
-        expiry: _,
-    } = ability.effect.as_ref()
-    else {
-        return false;
-    };
-    // (c) fail-closed unless the member is live ON THE BATTLEFIELD in the scanned frame —
-    // EXISTS is not enough. See this function's doc for why `contains_key` was vacuous.
-    if !state
-        .objects
-        .get(&class_member)
-        .is_some_and(|o| o.zone == Zone::Battlefield)
-    {
-        return false;
-    }
-    // (d) ARG-EQUIVALENCE — `game::quantity::object_id_for_scope`. Fail closed on
-    // `None`: an unresolvable scope proves nothing about which object is read.
-    let ctx = crate::game::quantity::QuantityContext::new(source.id);
-    crate::game::quantity::object_id_for_scope(state, ObjectScope::Source, ctx, &[])
-        .is_some_and(|read_id| read_id != class_member)
+                target: None,
+                restrictions: _,
+                grants: _,
+                expiry: _,
+            } = ability.effect.as_ref()
+            else {
+                return None;
+            };
+            Some(())
+        },
+        |(), member| {
+            // (d) ARG-EQUIVALENCE — `game::quantity::object_id_for_scope`. Fail closed on
+            // `None`: an unresolvable scope proves nothing about which object is read.
+            let ctx = crate::game::quantity::QuantityContext::new(source.id);
+            crate::game::quantity::object_id_for_scope(state, ObjectScope::Source, ctx, &[])
+                .is_some_and(|read_id| read_id != member)
+        },
+    )
 }
 
 /// TOTAL by construction: every axis of `def` other than `kind` and `effect` is at
@@ -5164,7 +5272,8 @@ fn reveal_from_hand_decline_branch_is_arrival_invariant(
 /// argues that `ChoiceAmongExiledColors` EXPOSES NO SUBJECT SET. `RevealFromHand`'s subject
 /// set is entirely IN the AST; what the scanner cannot see is the UNIVERSE it is drawn from.
 ///
-/// The conjuncts, each fail-closed:
+/// The conjuncts, each fail-closed through [`provably_excludes_class`]. Pre-gate
+/// `SoleSource::CarriesOnlyItsEffect`; liveness `MemberLiveness::Resolvable`, and see (c):
 ///   (0) TOTALITY, not a field list: `ability_definition_axes` binds most of
 ///       `AbilityDefinition`'s fields `_`, and `scan_ability_cost` routes one of them straight
 ///       into `scan_effect`, so a scanner-only inertness test is blind to it. See
@@ -5180,7 +5289,7 @@ fn reveal_from_hand_decline_branch_is_arrival_invariant(
 ///       shape check cannot see ("…unless you revealed a Soldier card this way **or you
 ///       control a Soldier**"). Those faces fail closed until a conditional relief proving the
 ///       `on_decline` condition's own census excludes the class lands.
-///   (c) a bare `contains_key` frame-presence guard, and the sibling's `zone == Battlefield`
+///   (c) `MemberLiveness::Resolvable`, and the sibling's `OnBattlefield`
 ///       narrowing does NOT transfer: that narrowing exists because THEIR `(d)` counts a
 ///       battlefield-scoped population, while this `(d)`'s population is the CONTROLLER'S
 ///       HAND — "this battlefield token is not in that hand" IS the universe argument, not a
@@ -5204,44 +5313,47 @@ fn reveal_from_hand_execute_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::Effect;
 
-    // (0) TOTALITY. The scan is blind to most of this struct's axes; rather than fail closed
-    //     on the one axis we happened to notice, require every axis but `kind` and `effect`
-    //     to be at its constructor value. Subsumes the sibling arms' activation-restriction
-    //     guard AND their clone-and-rescan `(a)`. See this function's doc.
-    if !ability_definition_carries_only_its_effect(exec) {
-        return false;
-    }
-    // (b) SHAPE — single level, no `..`, `_ => false` via let-else, so a new field on the
-    //     variant is a compile error here and every sibling carrier keeps its blanket veto.
-    let Effect::RevealFromHand { filter, on_decline } = exec.effect.as_ref() else {
-        return false;
-    };
-    // (b-f) the reveal filter must be ARRIVAL-INVARIANT, not merely class-disjoint.
-    if arrival_can_move_a_nonmember_match(filter) {
-        return false;
-    }
-    // (b-d) the decline branch must clear the SAME authorities. `None` is an admitted decline
-    //       (a no-op branch reads nothing); a present branch must earn it.
-    if on_decline
-        .as_deref()
-        .is_some_and(|d| !reveal_from_hand_decline_branch_is_arrival_invariant(d))
-    {
-        return false;
-    }
-    // (c) an id with no object in the scanned frame proves nothing — fail closed. Bare
-    //     `contains_key` is correct HERE; see this function's doc for why the sibling arm's
-    //     `zone == Battlefield` narrowing does not transfer.
-    if !state.objects.contains_key(&class_member) {
-        return false;
-    }
-    // (d) THE UNIVERSE ARGUMENT. `reveal_from_hand::resolve` draws its subjects from
-    //     `players[controller].hand` and only then filters, so a member absent from that
-    //     hand can never be in the eligible set.
-    let controller = crate::game::replacement::replacement_source_player(source);
-    let Some(player) = state.players.iter().find(|p| p.id == controller) else {
-        return false; // fail closed: no player ⇒ no universe to reason about
-    };
-    !player.hand.iter().any(|&h| h == class_member)
+    provably_excludes_class(
+        state,
+        class_member,
+        // (0) TOTALITY. The scan is blind to most of this struct's axes; rather than fail
+        //     closed on the one axis we happened to notice, require every axis but `kind` and
+        //     `effect` to be at its constructor value. Subsumes the sibling arms' whole
+        //     pre-gate. See this function's doc.
+        SoleSource::CarriesOnlyItsEffect(exec),
+        MemberLiveness::Resolvable,
+        || {
+            // (b) SHAPE — single level, no `..`, refusal via let-else, so a new field on the
+            //     variant is a compile error here and every sibling carrier keeps its blanket
+            //     veto.
+            let Effect::RevealFromHand { filter, on_decline } = exec.effect.as_ref() else {
+                return None;
+            };
+            // (b-f) the reveal filter must be ARRIVAL-INVARIANT, not merely class-disjoint.
+            if arrival_can_move_a_nonmember_match(filter) {
+                return None;
+            }
+            // (b-d) the decline branch must clear the SAME authorities. `None` is an admitted
+            //       decline (a no-op branch reads nothing); a present branch must earn it.
+            if on_decline
+                .as_deref()
+                .is_some_and(|d| !reveal_from_hand_decline_branch_is_arrival_invariant(d))
+            {
+                return None;
+            }
+            Some(())
+        },
+        |(), member| {
+            // (d) THE UNIVERSE ARGUMENT. `reveal_from_hand::resolve` draws its subjects from
+            //     `players[controller].hand` and only then filters, so a member absent from
+            //     that hand can never be in the eligible set.
+            let controller = crate::game::replacement::replacement_source_player(source);
+            let Some(player) = state.players.iter().find(|p| p.id == controller) else {
+                return false; // fail closed: no player ⇒ no universe to reason about
+            };
+            !player.hand.iter().any(|&h| h == member)
+        },
+    )
 }
 
 /// CR 400.7: the object ids whose RULES identity is not stable across this window — either the
@@ -5526,34 +5638,47 @@ fn count_matching_condition_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::ReplacementCondition;
 
-    // Shape: TOP LEVEL ONLY, no `..` at any level, so a new field on the variant is a
-    // compile error here rather than a silently unscanned read.
-    let ReplacementCondition::UnlessControlsCountMatching { minimum: _, filter } = condition else {
-        return false;
-    };
-    // POPULATION-MOVEMENT GUARD — the shared input-domain guard, consumed at COMPLEMENTARY
-    // POLARITY (relief requires `false`); see [`arrival_can_move_a_nonmember_match`] for why
-    // it composes `filter.rs`'s two authorities rather than being a third one. It READS the
-    // filter and never rebinds or reshapes it, so the pin below still passes the ORIGINAL
-    // `filter` and the evaluator's argument identity is untouched.
-    if arrival_can_move_a_nonmember_match(filter) {
-        return false;
-    }
-    // Fail closed on a member with no object in the scanned frame: an id the census cannot
-    // even look up proves nothing about what the census counts. (Its ABSENCE from
-    // `state.objects` would make the arm's `.values()` walk skip it trivially — that is the
-    // population vacuity the sibling arms' conjunct (c) refuses to bank, and it is refused
-    // here for the same reason.)
-    let Some(member) = state.objects.get(&class_member) else {
-        return false;
-    };
-    let ctx = crate::game::filter::FilterContext::from_source_with_controller(
-        source.id,
-        crate::game::replacement::replacement_source_player(source),
-    );
-    !(member.zone == Zone::Battlefield
-        && member.id != source.id
-        && crate::game::filter::matches_target_filter(state, member.id, filter, &ctx))
+    provably_excludes_class(
+        state,
+        class_member,
+        // No pre-gate: the subject is a `ReplacementCondition`, which carries no second axis a
+        // growing-class read could hide on, so the shape gate sees all of it.
+        SoleSource::None,
+        // `Resolvable`: an id absent from `state.objects` would make the census's `.values()`
+        // walk skip it trivially — the population vacuity the sibling arms also refuse.
+        MemberLiveness::Resolvable,
+        || {
+            // Shape: TOP LEVEL ONLY, no `..` at any level, so a new field on the variant is a
+            // compile error here rather than a silently unscanned read.
+            let ReplacementCondition::UnlessControlsCountMatching { minimum: _, filter } =
+                condition
+            else {
+                return None;
+            };
+            // POPULATION-MOVEMENT GUARD — the shared input-domain guard, consumed at
+            // COMPLEMENTARY POLARITY (relief requires `false`); see
+            // [`arrival_can_move_a_nonmember_match`] for why it composes `filter.rs`'s two
+            // authorities rather than being a third one. It READS the filter and never rebinds
+            // or reshapes it, so the pin below still passes the ORIGINAL `filter` and the
+            // evaluator's argument identity is untouched.
+            if arrival_can_move_a_nonmember_match(filter) {
+                return None;
+            }
+            Some(filter)
+        },
+        |filter, class_member| {
+            let Some(member) = state.objects.get(&class_member) else {
+                return false;
+            };
+            let ctx = crate::game::filter::FilterContext::from_source_with_controller(
+                source.id,
+                crate::game::replacement::replacement_source_player(source),
+            );
+            !(member.zone == Zone::Battlefield
+                && member.id != source.id
+                && crate::game::filter::matches_target_filter(state, member.id, filter, &ctx))
+        },
+    )
 }
 
 /// The `UnlessControlsOtherLeq` sibling of
@@ -5582,24 +5707,38 @@ fn other_leq_condition_provably_excludes_class(
 ) -> bool {
     use crate::types::ability::{ReplacementCondition, TargetFilter};
 
-    let ReplacementCondition::UnlessControlsOtherLeq { count: _, filter } = condition else {
-        return false;
-    };
-    // POPULATION-MOVEMENT GUARD — the same shared guard S4 consults, at the same complementary
-    // polarity, applied to the ALREADY-WRAPPED filter so both arms hand it the identical
-    // `TargetFilter` shape the evaluator itself matches on. The wrap is load-bearing here for
-    // a second reason: S5's condition carries a `TypedFilter`, so every anaphor it can express
-    // is nested inside a `FilterProp` and only the guard's shape walk reaches it.
-    let wrapped = TargetFilter::Typed(filter.clone());
-    if arrival_can_move_a_nonmember_match(&wrapped) {
-        return false;
-    }
-    let Some(member) = state.objects.get(&class_member) else {
-        return false;
-    };
-    let ctx = crate::game::filter::FilterContext::from_source(state, source.id);
-    !(member.zone == Zone::Battlefield
-        && crate::game::filter::matches_target_filter(state, member.id, &wrapped, &ctx))
+    provably_excludes_class(
+        state,
+        class_member,
+        // Same two declarations as the sibling arm, for the same two reasons.
+        SoleSource::None,
+        MemberLiveness::Resolvable,
+        || {
+            let ReplacementCondition::UnlessControlsOtherLeq { count: _, filter } = condition
+            else {
+                return None;
+            };
+            // POPULATION-MOVEMENT GUARD — the same shared guard S4 consults, at the same
+            // complementary polarity, applied to the ALREADY-WRAPPED filter so both arms hand
+            // it the identical `TargetFilter` shape the evaluator itself matches on. The wrap
+            // is load-bearing here for a second reason: S5's condition carries a `TypedFilter`,
+            // so every anaphor it can express is nested inside a `FilterProp` and only the
+            // guard's shape walk reaches it.
+            let wrapped = TargetFilter::Typed(filter.clone());
+            if arrival_can_move_a_nonmember_match(&wrapped) {
+                return None;
+            }
+            Some(wrapped)
+        },
+        |wrapped, class_member| {
+            let Some(member) = state.objects.get(&class_member) else {
+                return false;
+            };
+            let ctx = crate::game::filter::FilterContext::from_source(state, source.id);
+            !(member.zone == Zone::Battlefield
+                && crate::game::filter::matches_target_filter(state, member.id, &wrapped, &ctx))
+        },
+    )
 }
 
 /// **THE INPUT-DOMAIN GUARD BOTH RELIEF ARMS CONSULT** — `true` means "a class member's
@@ -19096,6 +19235,226 @@ mod tests {
             .trigger_definitions
             .push(def);
         (state, member, source, artifact)
+    }
+
+    /// [`provably_excludes_class`]'s two declarations each refuse exactly what they are
+    /// responsible for: every `SoleSource` and every `MemberLiveness` value is driven with a
+    /// shape/exclusion pair that accepts unconditionally, so a `false` on any arm is
+    /// attributable to the declaration under test and to nothing downstream of it, and each
+    /// refusal is paired with the accepting input it differs from on one axis.
+    ///
+    /// REVERT-PROBES, one per declaration: dropping `SoleSource::Blank`'s
+    /// `activation_restrictions` guard reds the restricted arm; dropping its rescan reds the
+    /// two surviving-read arms; swapping what `AbilityAxis::Condition` and `AbilityAxis::Effect`
+    /// blank crosses those arms with the two accepting ones; widening
+    /// `MemberLiveness::OnBattlefield` to a bare presence check reds the graveyard arm; widening
+    /// `MemberLiveness::Resolvable` to `Unchecked` reds the absent arm; and letting
+    /// `SoleSource::None` skip the shape gate reds the last arm.
+    #[test]
+    fn provably_excludes_class_refuses_per_declared_pre_gate_and_liveness() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind};
+
+        fn accepts(
+            state: &GameState,
+            pre: SoleSource<'_>,
+            liveness: MemberLiveness,
+            member: ObjectId,
+        ) -> bool {
+            provably_excludes_class(state, member, pre, liveness, || Some(()), |(), _| true)
+        }
+
+        let mut state = GameState::new_two_player(7);
+        let on_battlefield = saproling_class_member(&mut state);
+        let in_graveyard = ObjectId(804);
+        {
+            let mut twin = state.objects[&on_battlefield].clone();
+            twin.id = in_graveyard;
+            twin.zone = Zone::Graveyard;
+            state.objects.insert(in_graveyard, twin);
+        }
+        let absent = ObjectId(9_999);
+        assert!(
+            !state.objects.contains_key(&absent),
+            "reach-guard: the absent id must really be absent from the scanned frame, or the \
+             liveness arms measure nothing"
+        );
+
+        // ── `SoleSource::Blank` — the axis the read lives on ──────────────────────────
+        // A def whose ONLY growing-class read is its `condition`, and one whose only read is
+        // its `effect`. Each is the other's one-axis control: the SAME pre-gate accepts one
+        // and refuses the other, so neither arm can pass by a constant verdict.
+        let condition_reader = trigger_execute_from_oracle(
+            "Whenever this creature deals damage to a player, draw a card if you had two or \
+             more artifacts enter the battlefield under your control this turn.",
+        );
+        let effect_reader = AbilityDefinition::new(AbilityKind::Spell, class_reading_pump_effect());
+        for (label, def) in [
+            ("condition_reader", &condition_reader),
+            ("effect_reader", &effect_reader),
+        ] {
+            assert!(
+                crate::game::ability_scan::ability_definition_reads_growing_class_for_loop(def),
+                "reach-guard: `{label}` must read the growing class before blanking, else the \
+                 rescan is trivially `false` and every pre-gate arm below passes vacuously"
+            );
+        }
+        fn blank(def: &AbilityDefinition, axis: AbilityAxis) -> SoleSource<'_> {
+            SoleSource::Blank { ability: def, axis }
+        }
+        assert!(
+            accepts(
+                &state,
+                blank(&condition_reader, AbilityAxis::Condition),
+                MemberLiveness::Unchecked,
+                on_battlefield
+            ),
+            "blanking `condition` removes this def's only growing-class read, so `condition` \
+             is proven its sole source"
+        );
+        assert!(
+            !accepts(
+                &state,
+                blank(&condition_reader, AbilityAxis::Effect),
+                MemberLiveness::Unchecked,
+                on_battlefield
+            ),
+            "blanking the EFFECT leaves the condition's read standing, so the rescan still \
+             answers `true` and sole-sourceness is NOT proven — the fail-closed direction"
+        );
+        assert!(
+            accepts(
+                &state,
+                blank(&effect_reader, AbilityAxis::Effect),
+                MemberLiveness::Unchecked,
+                on_battlefield
+            ),
+            "the mirror: blanking the effect removes THIS def's only read"
+        );
+        assert!(
+            !accepts(
+                &state,
+                blank(&effect_reader, AbilityAxis::Condition),
+                MemberLiveness::Unchecked,
+                on_battlefield
+            ),
+            "the mirror's refusal: blanking a `condition` this def does not carry leaves its \
+             effect read standing"
+        );
+
+        // The restriction half, which the rescan provably cannot cover:
+        // `ability_definition_axes` binds `activation_restrictions: _`.
+        let mut restricted = condition_reader.clone();
+        restricted
+            .activation_restrictions
+            .push(ActivationRestriction::OnlyOnceEachTurn);
+        assert!(
+            accepts(
+                &state,
+                blank(&condition_reader, AbilityAxis::Condition),
+                MemberLiveness::Unchecked,
+                on_battlefield
+            ),
+            "matched control: the unrestricted def is accepted, so the refusal below is \
+             attributable to `activation_restrictions` and to nothing else"
+        );
+        assert!(
+            !accepts(
+                &state,
+                blank(&restricted, AbilityAxis::Condition),
+                MemberLiveness::Unchecked,
+                on_battlefield
+            ),
+            "the scan is BLIND to `activation_restrictions`, so the rescan would answer \
+             `false` even with a class-matching restriction on the same def — the pre-gate \
+             carries this refusal alone"
+        );
+
+        // ── `SoleSource::CarriesOnlyItsEffect` — totality, not a field list ───────────
+        assert!(
+            accepts(
+                &state,
+                SoleSource::CarriesOnlyItsEffect(&effect_reader),
+                MemberLiveness::Unchecked,
+                on_battlefield
+            ),
+            "a def built by `AbilityDefinition::new` is at its constructor value on every \
+             axis but `kind` and `effect`"
+        );
+        assert!(
+            condition_reader.condition.is_some(),
+            "reach-guard: the refusal below must be carried by a REAL non-constructor axis"
+        );
+        assert!(
+            !accepts(
+                &state,
+                SoleSource::CarriesOnlyItsEffect(&condition_reader),
+                MemberLiveness::Unchecked,
+                on_battlefield
+            ),
+            "a def carrying a `condition` is off its constructor value, so totality refuses \
+             it without anyone enumerating which axis drifted"
+        );
+
+        // ── `MemberLiveness` — what the member's presence has to mean ─────────────────
+        // One `SoleSource::None` pre-gate throughout, so liveness is the only variable, and
+        // every level is driven on all three ids.
+        for member in [on_battlefield, in_graveyard, absent] {
+            assert!(
+                accepts(&state, SoleSource::None, MemberLiveness::Unchecked, member),
+                "`Unchecked` looks the member up at all on no id, by declaration"
+            );
+        }
+        assert!(
+            accepts(
+                &state,
+                SoleSource::None,
+                MemberLiveness::Resolvable,
+                in_graveyard
+            ),
+            "`Resolvable` is satisfied off the battlefield — the graveyard twin is present in \
+             `state.objects`"
+        );
+        assert!(
+            !accepts(&state, SoleSource::None, MemberLiveness::Resolvable, absent),
+            "`Resolvable` refuses an id the scanned frame cannot look up: a walk that skips \
+             it trivially has measured nothing"
+        );
+        assert!(
+            accepts(
+                &state,
+                SoleSource::None,
+                MemberLiveness::OnBattlefield,
+                on_battlefield
+            ),
+            "matched control for the two refusals below — the same declaration accepts the \
+             battlefield member, so each refusal is attributable to `zone` or to absence"
+        );
+        for (member, label) in [(in_graveyard, "a graveyard twin"), (absent, "an absent id")] {
+            assert!(
+                !accepts(
+                    &state,
+                    SoleSource::None,
+                    MemberLiveness::OnBattlefield,
+                    member
+                ),
+                "`OnBattlefield` refuses {label}: it is absent from a battlefield-scoped \
+                 population for reasons that measure nothing about the class"
+            );
+        }
+
+        // ── `SoleSource::None` is no PRE-gate, never no gate ─────────────────────────
+        assert!(
+            !provably_excludes_class(
+                &state,
+                on_battlefield,
+                SoleSource::None,
+                MemberLiveness::Unchecked,
+                || None::<()>,
+                |(), _| true,
+            ),
+            "an arm declaring no pre-gate and no liveness requirement must still refuse on \
+             SHAPE alone, or `SoleSource::None` would read as `no gate`"
+        );
     }
 
     /// The S1 arm (`pump_aggregate_provably_excludes_class`) as the block-(1b) consult

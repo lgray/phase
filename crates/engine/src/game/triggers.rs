@@ -3221,19 +3221,35 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
 /// Fail-closed on every axis it cannot classify: a broad (`valid_card == None`), disjunctive
 /// (`zone_change_clauses` non-empty), non-battlefield-destination, or genuinely-matching observer
 /// returns `false` (it may observe the loop → the firewall keeps its conservative veto).
+///
+/// Shares the cluster's ordered obligation through
+/// `analysis::resource::provably_excludes_class`, with both declarations recorded rather than
+/// omitted: pre-gate `SoleSource::None` (the subject is a `TriggerDefinition`, whose whole
+/// matcher the shape gate reads, so there is no second axis a read could hide on) and liveness
+/// `MemberLiveness::Unchecked` (the exclusion delegates to `valid_card_matches`, which answers
+/// about the member's own characteristics and fails closed when it cannot resolve them, so a
+/// frame-presence gate would add no evidence).
 pub(crate) fn etb_observer_provably_excludes_class(
     def: &TriggerDefinition,
     state: &GameState,
     class_member: ObjectId,
     source_id: ObjectId,
 ) -> bool {
-    matches!(
-        def.mode,
-        TriggerMode::ChangesZone | TriggerMode::ChangesZoneAll
-    ) && def.zone_change_clauses.is_empty()
-        && def.destination == Some(Zone::Battlefield)
-        && def.valid_card.is_some()
-        && {
+    crate::analysis::resource::provably_excludes_class(
+        state,
+        class_member,
+        crate::analysis::resource::SoleSource::None,
+        crate::analysis::resource::MemberLiveness::Unchecked,
+        || {
+            (matches!(
+                def.mode,
+                TriggerMode::ChangesZone | TriggerMode::ChangesZoneAll
+            ) && def.zone_change_clauses.is_empty()
+                && def.destination == Some(Zone::Battlefield)
+                && def.valid_card.is_some())
+            .then_some(())
+        },
+        |(), member| {
             // `valid_card_matches` takes an observation-time source-context snapshot
             // (upstream's LKI-by-incarnation refactor) rather than a bare id, so
             // source-relative refs in the `valid_card` filter resolve against the
@@ -3245,13 +3261,9 @@ pub(crate) fn etb_observer_provably_excludes_class(
                 return false;
             };
             let source_context = trigger_source_context_for_latch(state, source);
-            !crate::game::trigger_matchers::valid_card_matches(
-                def,
-                state,
-                class_member,
-                &source_context,
-            )
-        }
+            !crate::game::trigger_matchers::valid_card_matches(def, state, member, &source_context)
+        },
+    )
 }
 
 /// CR 701.17a: a mill puts a card from the top of a library into a graveyard; CR 614.6
@@ -3262,6 +3274,13 @@ pub(crate) fn etb_observer_provably_excludes_class(
 /// The departure-event sibling of [`etb_observer_provably_excludes_class`], under the
 /// same fail-closed discipline: every axis this predicate cannot classify keeps the
 /// caller's conservative veto.
+///
+/// A CO-EQUAL SIBLING GATE, NOT an arm of `analysis::resource::provably_excludes_class`, and
+/// deliberately so: it takes neither a `&GameState` nor a class member, because its proof is
+/// zone/event-key disjointness against sets its caller supplies. Its one consult sits inside
+/// `certify_instructed_opponent_library_departure`, which runs on both projected and
+/// unprojected frames, so binding this proof to a frame would make its verdict depend on which
+/// caller asked.
 ///
 /// `destinations` is the caller's own certified set's landing zones plus
 /// `Zone::Graveyard`. Taking it as a PARAMETER is what keeps the admitted set and this
