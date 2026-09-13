@@ -24587,14 +24587,14 @@ mod bounded_offer_conjunct_tests {
     /// lives where the reduction can be handed one directly, in the
     /// `analysis::resource` battery.
     ///
-    /// ⚠ SCOPE, stated because the reviewer's probe targeted the OTHER end. Widening the check
-    /// to `1..=MAX_SHORTCUT_CYCLES` flips nothing in the tracked suite, and that is not an
-    /// oversight: the upper end is DOMINATED by step (5). A bound of exactly
-    /// `MAX_SHORTCUT_CYCLES` means no axis narrowed, i.e. the period drives no living seat
-    /// toward any CR 704 threshold, which is precisely what `classify_win_kind` reports as
-    /// `Advantage` — so such a cycle has already been refused two conjuncts earlier. This row
-    /// therefore covers the reachable end and names the reason the other is unreachable rather
-    /// than leaving it as an untested branch of unknown status.
+    /// ⚠ SCOPE: this row's subject is that LOWER end. The upper end — a bound of exactly
+    /// `MAX_SHORTCUT_CYCLES`, i.e. no axis narrowed — is NOT dominated by step (5), because the
+    /// two conjuncts quantify over different populations: `classify_win_kind` reads a controller
+    /// and a period delta and so cannot see `is_eliminated`, while `elimination_bounds` filters
+    /// its seats on it, on the CR 800.4a ground its own annotation there gives. On a board whose
+    /// only consumed seat has left the game the classifier still reports a loss kind from the
+    /// period's own delta while the reduction narrows nothing, so that member reaches step (7)
+    /// and `(1..MAX_SHORTCUT_CYCLES)` is what refuses it.
     ///
     /// The VALUE the bound publishes on each of those two boards is pinned where the pure
     /// function is called directly, in the `analysis::resource` battery: its case (g) is the

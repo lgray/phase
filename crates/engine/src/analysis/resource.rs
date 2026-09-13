@@ -8299,8 +8299,11 @@ pub(crate) fn project_object_for_loop(object: &mut crate::game::game_object::Gam
     // `defense` is outside that argument entirely: `evaluate_layers` never writes it. CR 306.5c
     // and CR 310.4c make the counter count the WHOLE value for a planeswalker or a battle ON
     // THE BATTLEFIELD, so for those two fields erasing the field removes exactly what the
-    // `retain` above already removed; off the battlefield neither field carries that identity,
-    // so one erasure serves every zone.
+    // `retain` above already removed. One erasure serves every zone because the counter-sync
+    // writer is zone-blind: `effects::counters::sync_derived_from_counters` takes no zone, and
+    // its single calling function reaches the object by id through one lookup its add and remove
+    // arms share, with no zone predicate — so an object the counter path touched carries the
+    // counter-derived value wherever it sits.
     object.power = None;
     object.toughness = None;
     object.loyalty = None;
