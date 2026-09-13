@@ -221,6 +221,32 @@ pub(crate) fn drive_to_live_declarable_offer(state: &mut GameState) -> LiveOffer
 /// `ceiling` answers the arm where no seat is consumed at all, which the reduction reports as an
 /// absence; every board this mirror is used on consumes one, and the parameter is what keeps the
 /// arm total rather than panicking.
+/// CR 732.2a + CR 704.5a: the count the PUBLISHED offer measures, given every living seat's
+/// STRICT headroom in whole repetitions — the mirror of `PeriodicDelta::elimination_cascade`'s
+/// reduction, where `relieve_strict_bound` beside it mirrors the divisor's.
+///
+/// A seat with strict headroom `s` crosses on repetition `s + 1`, and the cascade's count is its
+/// LAST entry, so the count is the WIDEST of those crossings. The divisor answers the other
+/// quantifier — the first crossing under any declaration — and the two coincide only where every
+/// consumed seat crosses together.
+///
+/// `proposer_strict` truncates the walk at the proposer's own crossing: no repetition past it is
+/// one the proposer is still in the game to take, so the cascade drops every later entry and its
+/// count becomes that crossing. `None` is the usual untargeted shape, where the period GAINS the
+/// proposer life. `ceiling` answers the arm where no seat is consumed at all, which the reduction
+/// reports as an absence.
+pub(crate) fn cascade_count_from_strict(
+    strict: &[i64],
+    proposer_strict: Option<i64>,
+    ceiling: i64,
+) -> i64 {
+    let Some(&widest) = strict.iter().max() else {
+        return ceiling;
+    };
+    let count = widest + 1;
+    proposer_strict.map_or(count, |own| count.min(own + 1))
+}
+
 pub(crate) fn relieve_strict_bound(strict: &[i64], ceiling: i64) -> i64 {
     let Some(&floor) = strict.iter().min() else {
         return ceiling;
@@ -453,21 +479,55 @@ fn assert_live_offer_is_self_consistent(state: &GameState, offer: LiveOffer) {
         "the published declaration pins the seat the drive aimed at"
     );
 
-    // Row 9 — the two published count fields agree, and the bound's VALUE is the one
-    // `rederive_live_offer_bound` computes from this offer's own published data and the seat
-    // the drive latched. Dropping the aim subtraction moves the published bound off this
-    // re-derivation on every board that charges an aimed slot.
+    // Row 9 — the three published quantifiers, and the ORDER they stand in. The SUGGESTION is
+    // the count this offer's own declaration drives: the cascade it implies, cut where that
+    // declaration stops charging the seat it pinned. The CEILING is CR 732.2a's existential —
+    // the widest count SOME legal declaration may specify — so it never falls below the
+    // suggestion. And the DIVISOR (`rederive_live_offer_bound`) answers a third question, the
+    // FIRST crossing under any declaration, which is why it is no longer either published field.
     let bound = schema.deliverable_capacity;
-    assert_eq!(schema.iteration_count, IterationCount::Fixed(bound));
-    // The MEASURED half is what the board arithmetic re-derives; the capacity above is what the
-    // handler enforces, and on a sub-budget board the two are the same integer.
     assert_eq!(schema.measured_repetition_bound, Some(bound));
+
+    let entries = crate::loop_shortcut::cascade_from(
+        state,
+        *proposer,
+        per_cycle,
+        Some(declaration),
+        &schema.points,
+    );
+    let pinned = pinned_seats(&declaration.decisions);
+    assert!(
+        !pinned.is_empty(),
+        "reach-guard: the published declaration pins a seat (row 8), so the cut below is a real \
+         truncation rather than the untargeted identity"
+    );
+    // CR 732.2a: inclusive at the entry the pinned seat departs on — that entry the declaration
+    // still drives; the ones after it charge a seat this declaration no longer names.
+    let suggestion = entries
+        .iter()
+        .find(|(_, seats)| seats.iter().any(|seat| pinned.contains(seat)))
+        .or_else(|| entries.last())
+        .map(|(repetition, _)| *repetition)
+        .expect("a bounded offer's cascade carries at least one entry");
     assert_eq!(
-        bound,
-        rederive_live_offer_bound(state, offer.aimed_at),
-        "CR 704.5a: `measured_repetition_bound` is the MIN over every living seat's headroom \
-         divided by what one repetition charges it — the slot's magnitude on every seat it \
-         reaches, less what the window saw it aim at that seat"
+        schema.iteration_count,
+        IterationCount::Fixed(suggestion),
+        "CR 732.2a: the published suggestion is the count the offer's OWN declaration drives; \
+         cascade {entries:?} cut at the seats it pins {pinned:?}"
+    );
+
+    let divisor = rederive_live_offer_bound(state, offer.aimed_at);
+    assert!(
+        divisor <= suggestion && suggestion <= bound,
+        "CR 704.5a: the first crossing under ANY declaration cannot outrun the last one under \
+         THIS declaration, and neither outruns the widest count some declaration may specify; \
+         divisor {divisor}, suggestion {suggestion}, ceiling {bound}"
+    );
+    assert!(
+        divisor < suggestion || suggestion < bound,
+        "LIVE INSTRUMENT: the three quantifiers must not collapse into one number on this board, \
+         or the ordering above is satisfied by a producer that publishes one value three times; \
+         divisor {divisor}, suggestion {suggestion}, ceiling {bound}"
     );
 }
 

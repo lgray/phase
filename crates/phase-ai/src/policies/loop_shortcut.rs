@@ -70,9 +70,11 @@
 //! name contradicts — so a count crossing nothing crowns nobody, and a `Fixed(n)` declare is real,
 //! committed board progress needing no crown whoever is latched. A reject that ignored the count
 //! would therefore be wrong for the class. The AI candidate generator itself proposes
-//! `Fixed` at the published capacity against a bounded offer, and offers `UntilLethal` only
-//! against an offer that measured no threshold; `Fixed(n)` is additionally reachable through the
-//! public `GameAction` surface. `handle_declare_shortcut` checks the declared count against the
+//! `Fixed` at the published SUGGESTION against a bounded offer — the count the offer's own
+//! declaration drives, which is at or below the published capacity and is the same integer
+//! wherever a producer's two answers coincide — and offers `UntilLethal` only against an offer
+//! that measured no threshold; `Fixed(n)` is additionally reachable through the public
+//! `GameAction` surface. `handle_declare_shortcut` checks the declared count against the
 //! global cap and against the offer's own `deliverable_capacity`, and refuses `UntilLethal`
 //! against a bounded offer; what it
 //! never checks is the declared shape against the schema's *suggested* `iteration_count` (the
@@ -305,10 +307,10 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // DECIDING side's job, and nothing was doing it: a bounded offer always carries
             // `predicted_winner: None`, so the "hands somebody else the win" arm above is
             // structurally unreachable here, and the AI's only bounded candidate is `Fixed` at
-            // the published capacity — the maximum, never a smaller n, and now a count the
-            // producer carries all the way to the binding seat's own crossing. A self-mill
-            // period whose binding seat is the proposer therefore scored CRITICAL for running
-            // the proposer's own library to exactly 0.
+            // the published SUGGESTION — a count the offer's own declaration drives, at or below
+            // the published capacity, which the producer carries all the way to the binding
+            // seat's own crossing. A self-mill period whose binding seat is the proposer
+            // therefore scored CRITICAL for running the proposer's own library to exactly 0.
             //
             // This arm asks the question the producer declines to ask, on the proposer's behalf
             // only, and REJECTS rather than dropping to `na()`: neutral would still leave the
@@ -873,10 +875,9 @@ mod tests {
     }
 
     /// CR 704.5a — the AI must not declare a bounded loop that runs its OWN life to 0 or less.
-    /// `elimination_bounds` deliberately lets the proposer be the binding seat, and the engine's
-    /// only bounded candidate is `Fixed` at the published capacity, so before this guard the
-    /// heuristic path
-    /// declared a self-killing loop at the CRITICAL band.
+    /// The reduction deliberately lets the proposer be the binding seat, and the engine's only
+    /// bounded candidate is `Fixed` at the published suggestion, so before this guard the
+    /// heuristic path declared a self-killing loop at the CRITICAL band.
     ///
     /// THIS IS THE THRESHOLD DISCRIMINATOR, moved here from the library axis when CR 121.4 struck
     /// library from `cycles_to_proposer_elimination`. Life is a true elimination axis: 0 or less
@@ -924,8 +925,8 @@ mod tests {
     /// The engine publishes a legal bound either way; the AI must refuse only the board where
     /// the seat the bound's arithmetic names is the PROPOSER. That refusal is now load-bearing
     /// rather than redundant: the published bound reaches the binding seat's own crossing, so
-    /// the published capacity can EQUAL `cycles_to_proposer_elimination`, and the AI's only
-    /// bounded candidate is `Fixed` at that capacity. Both boards assert that equality (or its
+    /// the published suggestion can EQUAL `cycles_to_proposer_elimination`, and the AI's only
+    /// bounded candidate is `Fixed` at that suggestion. Both boards assert that equality (or its
     /// absence)
     /// off the predicate itself, so the row states the re-attribution instead of assuming it.
     ///

@@ -10077,7 +10077,7 @@ fn the_collapse_candidate_is_clamped_to_a_bound_restored_from_an_older_save() {
 /// state at that beat. Reads `state.waiting_for` — i.e. the production Path D write inside
 /// `interactive_loop_bridge` — NEVER an out-of-band call to the offer predicate, which
 /// would prove only that the predicate agrees with itself.
-fn drive_to_bounded_offer(state: &mut GameState, cap: usize) -> Option<usize> {
+pub(crate) fn drive_to_bounded_offer(state: &mut GameState, cap: usize) -> Option<usize> {
     let pin = engine_live_opponents(state, P0).first().copied();
     for beat in 0..cap {
         if matches!(
@@ -10313,6 +10313,25 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
          LOSING life per cycle, else the CR 704.5a headroom term never narrows and the bound \
          below would be the safety cap for the wrong reason; measured {losses:?}"
     );
+    // The life axis is the only one this re-derivation reads, so a period that also consumed a
+    // seat's library or poison is a board it cannot answer for.
+    for p in state.players.iter().filter(|p| !p.is_eliminated) {
+        assert_eq!(
+            (
+                per_cycle
+                    .delta
+                    .library_delta
+                    .get(&p.id)
+                    .copied()
+                    .unwrap_or(0),
+                per_cycle.delta.poison.get(&p.id).copied().unwrap_or(0),
+            ),
+            (0, 0),
+            "FIXTURE GAP: the recomputation below narrows on CR 704.5a life alone, and {:?} \
+             carries another consuming axis",
+            p.id
+        );
+    }
     let strict: Vec<i64> = losses
         .iter()
         .filter(|(_, _, loss)| *loss > 0)
@@ -10322,21 +10341,35 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
         !strict.is_empty(),
         "at least one seat is losing life, asserted above"
     );
-    let expected_bound = crate::loop_shortcut_drain_boards::relieve_strict_bound(
+    let proposer_strict = losses
+        .iter()
+        .find(|(id, _, _)| *id == proposer)
+        .filter(|(_, _, loss)| *loss > 0)
+        .map(|(_, life, loss)| (life - 1) / loss);
+    let expected_bound = crate::loop_shortcut_drain_boards::cascade_count_from_strict(
         &strict,
+        proposer_strict,
         i64::from(crate::fantastic_four_bounded_loop::MAX_SHORTCUT_CYCLES_MIRROR),
     );
     assert_eq!(
         schema.measured_repetition_bound.map(i64::from),
         Some(expected_bound),
-        "CR 704.5a: the published bound is the strict per-seat headroom minimum, carried to \
-         the binding seat's own crossing when exactly one seat holds it. Recomputed here from \
-         the offer-beat board {losses:?} at beat {beat}"
+        "CR 704.5a: the published bound spans the WHOLE cascade this period drives — the last \
+         repetition at which a living seat crosses, not the first. Recomputed here from the \
+         offer-beat board {losses:?} at beat {beat}"
+    );
+    assert!(
+        strict.iter().min() != strict.iter().max(),
+        "REACH-GUARD: the consumed seats must cross on DIFFERENT repetitions, or the cascade's \
+         last entry coincides with its first and the assertion above cannot tell the two \
+         quantifiers apart; measured {losses:?}"
     );
     assert_eq!(
         schema.iteration_count,
         engine::analysis::decision_template::IterationCount::Fixed(schema.deliverable_capacity),
-        "CR 732.1b: the SUGGESTION seeded into the picker is the published capacity itself"
+        "CR 732.1b: the offer's own declaration drives the whole cascade here, and with no \
+         charged slot there is nothing for a witness declaration to re-aim, so the SUGGESTION \
+         and the CEILING coincide on this class"
     );
     assert!(
         schema.is_bounded(),
@@ -11274,16 +11307,28 @@ fn multiplayer_pure_life_drain_offers_at_three_and_four_players() {
             !strict.is_empty(),
             "{seats}p: at least one seat is losing life, asserted above"
         );
-        let expected_bound = crate::loop_shortcut_drain_boards::relieve_strict_bound(
+        let proposer_strict = {
+            let loss = -per_cycle.delta.life.get(&proposer).copied().unwrap_or(0);
+            let life = state
+                .players
+                .iter()
+                .find(|p| p.id == proposer)
+                .expect("the proposer is on the board")
+                .life as i64;
+            (loss > 0).then(|| (life - 1) / loss)
+        };
+        let expected_bound = crate::loop_shortcut_drain_boards::cascade_count_from_strict(
             &strict,
+            proposer_strict,
             i64::from(crate::fantastic_four_bounded_loop::MAX_SHORTCUT_CYCLES_MIRROR),
         );
         assert_eq!(
             schema.measured_repetition_bound.map(i64::from),
             Some(expected_bound),
-            "{seats}p: CR 704.5a — the published bound is the strict per-seat headroom \
-             minimum, carried to the binding seat's own crossing when exactly one seat holds \
-             it; recomputed here from the offer-beat board"
+            "{seats}p: CR 704.5a — the published bound spans the whole cascade: the LAST \
+             repetition at which a living seat crosses. The staggered life totals are what make \
+             that a different number from the first crossing; recomputed here from the \
+             offer-beat board"
         );
         assert!(
             schema.is_bounded(),
@@ -12559,7 +12604,7 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 ///
 /// * ⓐ `n = cycles_to_lethal - 1` — the drive runs to completion, every seat survives at
 ///   exactly one point of life, nobody is eliminated.
-/// * ⓑ `n = 2 * cycles_to_lethal` — RE-ADJUDICATED. This arm used to drive and stop at the
+/// * ⓑ `n = published ceiling + 1` — RE-ADJUDICATED. This arm used to drive and stop at the
 ///   first crossing cycle. The consumption ceiling now refuses an over-bound count before any
 ///   cycle runs, so the arm states that refusal instead: not one seat's life moves. What it
 ///   used to witness — a drive reaching the cross-lethal arm — is reached at an HONEST count by
@@ -12569,14 +12614,9 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 /// ⓐ is what keeps the pair non-vacuous: it drives on this very board, so ⓑ's unmoved life
 /// vector is the ceiling firing rather than a fixture that drives nothing.
 ///
-/// ⚠ ⓐ's DOCTORING IS A NO-OP ON THIS FIXTURE, and that is stated rather than dressed up. On a
-/// SYMMETRIC board the published bound equals `cycles_to_lethal - 1`, because the one-faller
-/// conjunct refuses the relief and the strict headroom value stands — so
-/// the widening writes back the value already present. It is asserted
-/// below rather than assumed, so a fixture drift into asymmetry cannot silently turn it into a
-/// real widening. ⓐ is therefore an AT-THE-BOUND instance of
-/// [`bounded_fixed_count_commits_exactly_n_periods`], not an independent stop-short
-/// observation.
+/// ⓐ DOCTORS NOTHING. The published ceiling spans the whole cascade, so one period short of the
+/// first crossing is a count the offer already admits and the drive runs on the offer as
+/// published. That it lies inside the ceiling is asserted rather than assumed.
 ///
 /// # What flips
 ///
@@ -12585,10 +12625,6 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 ///   it is refused before any cycle runs, so no delimiter is consulted.)
 /// * delete the per-offer disjunct from `apply_confirmed_shortcut`'s guard ⇒ ⓑ drives again and
 ///   its unmoved-life assertion FAILS while ⓐ stays green.
-/// * delete the relief's `count() == 1` conjunct ⇒ this symmetric board's bound rises by one to
-///   a count at which BOTH opponents cross together, ⓐ's published-capacity assertion
-///   FAILS, and the offer becomes a two-death proposal. That is what makes the refusal of this
-///   board's relief a tested property rather than a stated one.
 #[test]
 fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
     let mut state = bloodloop_state(3);
@@ -12628,16 +12664,15 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
         .map(|(id, l0)| l0.div_euclid(loss(id)) + i64::from(l0.rem_euclid(loss(id)) != 0))
         .min()
         .expect("at least one seat is losing life, asserted above");
-    let n = u32::try_from(cycles_to_lethal).expect("fits") * 2;
+    // One above the published ceiling: the smallest count the consumption seam must refuse, and
+    // derived from that ceiling rather than from a multiple of the crossing, which the cascade
+    // bound now reaches on its own.
+    let n = bound + 1;
     assert!(
-        i64::from(n) > cycles_to_lethal,
-        "REACH-GUARD: `n` must be COMFORTABLY past the first lethal cycle, else 'stops at the \
-         boundary' and 'ran to completion' are the same observation"
-    );
-    assert!(
-        n > bound,
-        "REACH-GUARD: a lethal `n` is by construction above the honest bound ({bound}) — that \
-         is the contract this row is deliberately violating to test the drive's own behaviour"
+        i64::from(bound) >= cycles_to_lethal,
+        "REACH-GUARD: the published ceiling must CONTAIN the first lethal cycle, or ⓑ's refusal \
+         would be of a count that is merely lethal rather than one above the ceiling; ceiling \
+         {bound} vs first crossing {cycles_to_lethal}"
     );
 
     // ⓐ SURVIVING ARM — one period short of the first crossing. Same doctored offer, so the
@@ -12645,19 +12680,12 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
     {
         let mut survive = state.clone();
         let survivor_n = u32::try_from(cycles_to_lethal - 1).expect("fits");
-        let WaitingFor::LoopShortcut { schema, .. } = &mut survive.waiting_for else {
-            unreachable!("bounded_offer_parts already matched the offer")
-        };
-        // The no-op recorded in this row's doc, pinned so it cannot drift unnoticed: on THIS
-        // fixture the honest bound already equals `cycles_to_lethal - 1`, so the line below
-        // rewrites the value in place. If a fixture change ever makes them differ, ⓐ becomes a
-        // genuine doctored widening and its doc must be re-derived rather than re-read.
-        assert_eq!(
-            schema.deliverable_capacity, survivor_n,
-            "ⓐ's assignment is a NO-OP on this fixture (honest capacity == cycles_to_lethal - \
-             1); a divergence means ⓐ is no longer an at-the-bound instance"
+        assert!(
+            survivor_n < bound,
+            "REACH-GUARD: one period short of the first crossing must lie INSIDE the published \
+             ceiling, or ⓐ is refused at consumption and states a refusal rather than a \
+             completed drive; {survivor_n} vs ceiling {bound}"
         );
-        schema.deliverable_capacity = survivor_n;
         r6a_declare_and_accept_all(&mut survive, proposer, survivor_n);
         assert_eq!(
             survive.players.iter().filter(|p| p.is_eliminated).count(),
@@ -12895,8 +12923,9 @@ fn a_shortened_unsigned_drive_seats_the_shortener_only_where_it_reached_the_name
 /// # What is asserted, and what is deliberately NOT
 ///
 /// Every quantity is derived from the certificate the ENGINE published and the offer-beat board;
-/// no count is pinned as a literal. The row asserts the OBSERVABLE outcome: the honest bound is
-/// the first crossing, exactly one seat is eliminated and it is the unique first crosser, every
+/// no count is pinned as a literal. The row asserts the OBSERVABLE outcome: the published ceiling
+/// spans the cascade and contains the first crossing, an accept AT that crossing eliminates
+/// exactly one seat and it is the unique first crosser, every
 /// survivor is above 0, the detection window is cleared, and the drive hands back to ordinary
 /// priority rather than ending the game.
 ///
@@ -12914,8 +12943,8 @@ fn a_shortened_unsigned_drive_seats_the_shortener_only_where_it_reached_the_name
 ///   elimination assertion reads an empty set and FAILS.
 /// * name any seat other than the reduction's own argmin ⇒ that authority's set comparison
 ///   refuses the terminal cycle for the same reason.
-/// * restore the strict headroom floor (delete the relief's `+ 1`) ⇒ the published bound is one
-///   lower than the first crossing ⇒ the bound assertion FAILS.
+/// * drop the `+ 1` that turns a seat's strict headroom into its crossing repetition ⇒ the
+///   published ceiling lands one below the cascade's last entry ⇒ the bound assertion FAILS.
 /// * delete `|| frames_per_period.is_some_and(|k| frames_this_cycle >= k)` from
 ///   `drive_one_shortcut_cycle` ⇒ the dina drive commits ZERO (`Abort` at cycle 0) ⇒ the
 ///   committed-delta `assert_eq!` FAILS.
@@ -12982,15 +13011,26 @@ fn bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat() {
          routes the drive to the CrossLethal arm; got {survivors} survivors at the first crossing"
     );
 
-    // The honest bound REACHES that crossing: exactly one seat holds the binding value here, so
-    // the reduction carries the count to its final iteration. Asserted, not assumed — it is
-    // what makes the elimination below the HONEST count's own behaviour rather than a doctored
-    // one, and it is what the `over > 0` arms are widened from.
+    // The published ceiling SPANS the cascade, so the crossing driven below is a count it
+    // contains. Asserted, not assumed — it is what makes the elimination below the behaviour of a
+    // count the offer itself admits rather than a doctored one, and it is what the `over > 0` arms
+    // are widened from.
+    let last_crossing = crossings
+        .iter()
+        .map(|(_, c)| *c)
+        .max()
+        .expect("at least two drained seats, asserted above");
     assert_eq!(
         i64::from(honest_bound),
-        first_crossing,
-        "`elimination_bounds` admits the crossing as the sequence's FINAL iteration when \
-         exactly one seat holds the binding value; bound {honest_bound}, crossings {crossings:?}"
+        last_crossing,
+        "`elimination_cascade` carries the count to its LAST entry — the widest crossing this \
+         period drives — so the ceiling contains every crossing before it; bound {honest_bound}, \
+         crossings {crossings:?}"
+    );
+    assert!(
+        first_crossing < last_crossing,
+        "REACH-GUARD: the first and last crossings must DIFFER, else the assertion above cannot \
+         tell the cascade's span from its first entry; crossings {crossings:?}"
     );
 
     // The detection window is LIVE at the offer beat, so the emptiness asserted after the drive
@@ -13277,7 +13317,457 @@ fn an_over_bound_count_is_refused_at_consumption() {
     );
 }
 
-/// **CR 800.4a + CR 704.5a — the accept at the published ceiling commits the cycle its crossing
+/// CR 704.5a + CR 800.4a: the cascade of CR 704 threshold crossings an offer's published data
+/// implies, RE-DERIVED here — every living seat's first crossing under the declaration this offer
+/// publishes, grouped by the repetition it falls on, in departure order.
+///
+/// Independent of the reduction under test in the part that matters: the grouping, the ordering and
+/// the proposer truncation are assembled here, and only the per-repetition CHARGE comes from the
+/// engine — `PeriodicDelta::declared_seat_life_charges`, the published authority, because a
+/// test-side copy of the net/dip charge model would be a second charge model to argue equal rather
+/// than an independent check.
+///
+/// The horizon is the sum of the living seats' life totals, derived from the BOARD and never from
+/// the published count, so a row comparing a published count against this mirror is not comparing
+/// the count against itself.
+pub(crate) fn published_cascade(state: &GameState) -> Vec<(u32, Vec<PlayerId>)> {
+    let (proposer, certificate, schema) = bounded_offer_parts(state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let declaration = match &state.waiting_for {
+        WaitingFor::LoopShortcut { declaration, .. } => declaration.clone(),
+        other => panic!("bounded_offer_parts already matched the offer, got {other:?}"),
+    };
+    cascade_from(
+        state,
+        proposer,
+        &per_cycle,
+        declaration.as_ref(),
+        &schema.points,
+    )
+}
+
+/// [`published_cascade`] over an EXPLICIT signature and declaration, for the rows that drive a
+/// perturbed one through the restore ingress and have to state what cascade that perturbation
+/// implies.
+pub(crate) fn cascade_from(
+    state: &GameState,
+    proposer: PlayerId,
+    per_cycle: &PeriodicDelta,
+    declaration: Option<&engine::analysis::decision_template::DecisionTemplate>,
+    points: &[engine::analysis::decision_template::DecisionPoint],
+) -> Vec<(u32, Vec<PlayerId>)> {
+    let living: Vec<(PlayerId, i32)> = state
+        .players
+        .iter()
+        .filter(|p| !p.is_eliminated)
+        .map(|p| (p.id, p.life))
+        .collect();
+    let horizon: u32 = living
+        .iter()
+        .map(|&(_, life)| u32::try_from(i64::from(life).max(1)).unwrap_or(u32::MAX))
+        .fold(1, u32::saturating_add);
+
+    let mut crossings: Vec<(u32, PlayerId)> = living
+        .iter()
+        .filter_map(|&(seat, life)| {
+            engine::analysis::resource::PeriodicDelta::first_life_crossing(
+                per_cycle.declared_seat_life_charges(seat, declaration, declaration, points, state),
+                i64::from(life),
+                horizon,
+            )
+            .map(|repetition| (repetition, seat))
+        })
+        .collect();
+    crossings.sort_unstable();
+    // CR 800.4a: once the proposer leaves, their objects leave the game with them and the loop
+    // does not continue, so their crossing BOUNDS the cascade.
+    let bound = crossings
+        .iter()
+        .find(|&&(_, seat)| seat == proposer)
+        .map(|&(repetition, _)| repetition);
+    let mut entries: Vec<(u32, Vec<PlayerId>)> = Vec::new();
+    for (repetition, seat) in crossings {
+        if bound.is_some_and(|last| repetition > last) {
+            break;
+        }
+        match entries.last_mut() {
+            Some((at, seats)) if *at == repetition => seats.push(seat),
+            _ => entries.push((repetition, vec![seat])),
+        }
+    }
+    entries
+}
+
+/// **ROW 2 + ROW 3 + ROW 7a — CR 704.5a + CR 104.2a: one accept at the published ceiling crosses
+/// EVERY threshold that ceiling contains, in departure order, and the last one ends the game.**
+///
+/// The two committed untargeted 4p boards, one from each drive arm a crossing cycle can reach: on
+/// one the crossing cycle's published period completes at the forced-window ANSWER beat and the
+/// drive classifies it a RECURRENCE, on the other it completes at the settle beat after the removal
+/// and the drive classifies it `SeatLeft`. A discriminator or a re-scope living in only one arm is
+/// one the other board silently skips, which is why one board is not the population here.
+///
+/// # Everything quantified over is re-derived from the offer's own published data
+///
+/// The count is the offer's published capacity; the cascade is `published_cascade`'s, whose charge
+/// comes from the published per-period signature under the declaration this offer publishes and
+/// whose horizon comes from the board. No count, seat or repetition is written down.
+///
+/// # Reach guards, asserted before the claim
+///
+/// The cascade carries MORE THAN ONE ENTRY and its entries' repetitions STRICTLY INCREASE, so
+/// "every threshold" has more than one member and the departure order is a real order rather than a
+/// single beat. The guard is about the ENTRIES and not about the seats: two seats grouped into one
+/// entry satisfies it, which is row 7a's own subject, and a pairwise-distinct-seats guard would
+/// refuse the very board whose last entry is a tie.
+///
+/// # Non-vacuity — the paired SUB-CASCADE accept, on each board, in the same invocation
+///
+/// The first entry's repetition — the count the single-crossing reduction published before this
+/// phase — eliminates exactly that entry's seats and hands priority back. So the multi-entry
+/// elimination below is the CEILING moving, not the drive losing its stop; and on the board whose
+/// grouped entry is its last, that same leg is row 7a's hostile sibling: one below the tie's
+/// repetition takes only the earlier entry's seat.
+///
+/// REVERT-PROBE: publish the first crossing as the ceiling (the single-crossing reduction) ⇒ the
+/// ceiling accept becomes the sub-cascade accept ⇒ the "more than one eliminated" assertion FAILS
+/// on both boards while the sub-cascade leg stays green. Route the departure verdict only from the
+/// `SeatLeft` arm ⇒ the board whose crossing cycle lands in `Recurred` stops at its first entry.
+#[test]
+fn one_accept_crosses_every_threshold_the_published_ceiling_contains() {
+    for fixture in [
+        &include_bytes!("../fixtures/dina_noff_turn5_4p.json.gz")[..],
+        &include_bytes!("../fixtures/dina_conqueror_4p.json.gz")[..],
+    ] {
+        let mut at_offer = restore_dump(&gunzip_dump(fixture));
+        drive_to_bounded_offer(&mut at_offer, 600)
+            .expect("the bounded offer must fire on this committed 4p drain");
+        let (proposer, _, schema) = bounded_offer_parts(&at_offer);
+        let published = schema.deliverable_capacity;
+        let cascade = published_cascade(&at_offer);
+        let living_opponents = at_offer
+            .players
+            .iter()
+            .filter(|p| !p.is_eliminated && p.id != proposer)
+            .count();
+
+        // ── REACH GUARDS, on the CASCADE's entries ──
+        assert!(
+            cascade.len() > 1,
+            "REACH-GUARD: the cascade must carry more than one entry, or 'every threshold' has \
+             one member and this row is the single-crossing row again; got {cascade:?}"
+        );
+        assert!(
+            cascade.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "REACH-GUARD: the entries' repetitions must strictly increase, or the departure ORDER \
+             below is a single beat; got {cascade:?}"
+        );
+        let (last_repetition, last_seats) = cascade.last().cloned().expect("asserted non-empty");
+        assert_eq!(
+            published, last_repetition,
+            "the published ceiling is the LAST entry's repetition — the whole cascade and not its \
+             first crossing; cascade {cascade:?}"
+        );
+        let (first_repetition, first_seats) = cascade.first().cloned().expect("asserted non-empty");
+        let predicted: Vec<PlayerId> = {
+            let mut all: Vec<PlayerId> = cascade
+                .iter()
+                .flat_map(|(_, seats)| seats.clone())
+                .collect();
+            all.sort_unstable();
+            all
+        };
+        assert_eq!(
+            predicted.len(),
+            living_opponents,
+            "REACH-GUARD: this board's cascade must name every living opponent, so the last entry \
+             takes THE LAST one and CR 104.2a is what ends the drive; cascade {cascade:?}"
+        );
+        assert!(
+            living_opponents > 2,
+            "REACH-GUARD: more than two opponents must be alive, or the FIRST crossing already \
+             takes the last one and the sub-cascade control below cannot hand priority back"
+        );
+
+        // ── ⓐ THE PUBLISHED CEILING — every threshold the count contains, in order ──
+        let mut driven = at_offer.clone();
+        r6a_declare_and_accept_all(&mut driven, proposer, published);
+        assert_eq!(
+            eliminated_seats(&driven),
+            predicted,
+            "CR 704.5a: one accept at the published ceiling takes every seat the cascade named; \
+             cascade {cascade:?}, lives {:?}",
+            seat_lives(&driven)
+        );
+        // ROW 3 — CR 104.2a: the last crossing takes the last remaining opponent, so the game ends
+        // immediately rather than handing priority back. Asserted on the TERMINAL STATE and not on
+        // the arm, so the row is true on either route into it.
+        assert!(
+            matches!(
+                driven.waiting_for,
+                WaitingFor::GameOver { winner } if winner == Some(proposer)
+            ),
+            "CR 104.2a: a player still in the game wins immediately once every opponent has left; \
+             got {:?} with lives {:?}",
+            driven.waiting_for,
+            seat_lives(&driven)
+        );
+
+        // ── ⓑ THE SUB-CASCADE ACCEPT — the first entry's repetition, on this same board ──
+        let mut sub = at_offer.clone();
+        r6a_declare_and_accept_all(&mut sub, proposer, first_repetition);
+        assert_eq!(
+            eliminated_seats(&sub),
+            first_seats,
+            "SUB-CASCADE: the first crossing eliminates exactly its own entry's seats — which is \
+             ROW 7a's hostile sibling where that entry precedes a GROUPED one; cascade \
+             {cascade:?}, lives {:?}",
+            seat_lives(&sub)
+        );
+        assert!(
+            matches!(sub.waiting_for, WaitingFor::Priority { .. }),
+            "SUB-CASCADE: opponents survive it, so CR 732.2a's ending point is a priority window; \
+             got {:?}",
+            sub.waiting_for
+        );
+        assert!(
+            last_seats.len() > first_seats.len() || cascade.len() > 2,
+            "REACH-GUARD: the two legs must differ in more than a name — either the last entry \
+             GROUPS more seats than the first (row 7a's board) or the cascade has a middle entry; \
+             got {cascade:?}"
+        );
+    }
+}
+
+/// **ROW 7a — CR 704.3 + CR 704.5a: the reduction admits a TIE as one entry's seat set, and the
+/// accept at the resulting ceiling takes every seat in it.**
+///
+/// CR 704.3 runs the state-based sweep whenever a player would get priority, so one repetition
+/// taking two seats to their thresholds removes both at the same beat. The reduction answers that
+/// one way — admitted as one entry holding both — and the drive's set comparison agrees.
+///
+/// Separated from the row above because the SUBJECT is the grouping rather than the ordering: this
+/// row asserts the tie exists on this board, that it is a LATER entry, and that the accept takes
+/// both its seats together.
+///
+/// # Reach guards, asserted before the claim
+///
+/// A strictly earlier entry precedes the grouped one, so it is a later entry and not a degenerate
+/// first; and the tied seats' crossings are asserted EQUAL, off the mirror, so the grouping is a
+/// measured tie rather than an artefact of the assertion's shape.
+///
+/// # Discrimination
+///
+/// Refuse the grouping — answer the tie with the segment's floor instead of the entry's repetition,
+/// which is what `ResourceVector::elimination_bounds` does — and the published ceiling stops one
+/// repetition short of the entry, so neither of its seats leaves and both assertions fail. The
+/// accept one below that repetition is in the row above, in its own invocation, and eliminates only
+/// the earlier entry's seat.
+#[test]
+fn a_tied_entry_is_one_seat_set_and_the_accept_takes_all_of_it() {
+    let mut at_offer = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_noff_turn5_4p.json.gz"
+    )));
+    drive_to_bounded_offer(&mut at_offer, 600)
+        .expect("the bounded offer must fire on this committed 4p drain");
+    let (proposer, _, schema) = bounded_offer_parts(&at_offer);
+    let published = schema.deliverable_capacity;
+    let cascade = published_cascade(&at_offer);
+
+    let grouped = cascade
+        .iter()
+        .position(|(_, seats)| seats.len() > 1)
+        .unwrap_or_else(|| {
+            panic!(
+                "REACH-GUARD (live instrument): this board's cascade must carry an entry whose \
+                 seats cross on ONE repetition, or there is no tie to admit; got {cascade:?}"
+            )
+        });
+    assert!(
+        grouped > 0 && cascade[grouped - 1].0 < cascade[grouped].0,
+        "REACH-GUARD: a strictly EARLIER entry must precede the grouped one, so it is a later \
+         entry and not a degenerate first; got {cascade:?}"
+    );
+    let (repetition, tied) = cascade[grouped].clone();
+    assert_eq!(
+        repetition, published,
+        "on this board the grouped entry is the cascade's last, so the published ceiling IS its \
+         repetition; got {cascade:?}"
+    );
+
+    let mut driven = at_offer.clone();
+    r6a_declare_and_accept_all(&mut driven, proposer, published);
+    for seat in &tied {
+        assert!(
+            eliminated_seats(&driven).contains(seat),
+            "CR 704.3 + CR 704.5a: every seat in the tied entry leaves on that one repetition; \
+             {seat:?} did not, with cascade {cascade:?} and lives {:?}",
+            seat_lives(&driven)
+        );
+    }
+}
+
+/// **ROW 5 + ROW 5b — CR 732.2a: the published SUGGESTION is a count the offer's own declaration
+/// drives, and the published CEILING is never below it.**
+///
+/// The population is the committed dumps this walk reaches a bounded offer on, MINUS the offers that
+/// publish decision points but NO declaration. That exclusion is the measured criterion and not a
+/// convenience: with points published and no declaration, `template: None` resolves to nothing for
+/// the handler to validate and decline is the only legal answer there, so such a board would test
+/// the declare handler's pinless fail-closed arm rather than whether the SUGGESTION is drivable.
+/// The walk applies it off the offer's own two published fields, so a board entering or leaving that
+/// class moves the population by itself.
+///
+/// THE LEG EACH BOARD IS DRIVEN ON, stated because it changes what is being verified: two of these
+/// dumps restore ALREADY AT an offer whose published capacity is DESERIALIZED rather than re-derived
+/// by this phase's producer, and `drive_to_bounded_offer` returns at beat 0 on them. The row drives
+/// whichever leg that walk reaches and asserts the pair the offer actually published, which is the
+/// right question for both legs — a deserialized capacity the handler will enforce is as load-bearing
+/// as a freshly derived one.
+///
+/// Row 5's observable is the BOARD MOVING. Declaring `schema.iteration_count` verbatim with
+/// `template: None` opens the CR 732.2b response window (the reach guard, which separates "declare
+/// refused" from "drive aborted"), and the accept then has to commit a change rather than hand a
+/// zero-cycle priority back — which is what publishing a suggestion the consumption seam's
+/// drivability gate refuses would produce.
+///
+/// Row 5b's observable is the pair `deliverable_capacity >= iteration_count`, asserted on every
+/// board in the population, with the boards where the two COINCIDE asserted to coincide in the same
+/// invocation so the row is not satisfied by a difference that exists everywhere.
+///
+/// # A live instrument
+///
+/// The population is asserted non-empty, and every board is asserted to publish a `Fixed`
+/// suggestion, so a walk that reached no offer — or one whose offers publish `UntilLethal` and have
+/// no count to compare — fails rather than passing by absence.
+///
+/// REVERT-PROBE: publish the WITNESS count as the suggestion ⇒ the allocated boards' own
+/// declaration cannot drive it, the declare opens the window and the accept commits zero cycles ⇒
+/// row 5's board-moved assertion FAILS. Publish the SUGGESTION as the ceiling ⇒ row 5b's pair still
+/// holds but the differ leg below finds no board, and its own guard fires.
+#[test]
+fn every_live_bounded_offer_publishes_a_suggestion_its_own_declaration_drives() {
+    let boards: &[(&str, &[u8])] = &[
+        (
+            "dina_noff_turn5_4p",
+            &include_bytes!("../fixtures/dina_noff_turn5_4p.json.gz")[..],
+        ),
+        (
+            "dina_conqueror_4p",
+            &include_bytes!("../fixtures/dina_conqueror_4p.json.gz")[..],
+        ),
+        (
+            "dina_conqueror_phase5_no_offer_4p",
+            &include_bytes!("../fixtures/dina_conqueror_phase5_no_offer_4p.json.gz")[..],
+        ),
+        (
+            "lethal_lifegain_loss_4p",
+            &include_bytes!("../fixtures/lethal_lifegain_loss_4p.json.gz")[..],
+        ),
+        (
+            "weird_drain_4p",
+            &include_bytes!("../fixtures/weird_drain_4p.json.gz")[..],
+        ),
+    ];
+    let mut reached: Vec<&str> = Vec::new();
+    let mut coincide: Vec<&str> = Vec::new();
+    let mut excluded: Vec<&str> = Vec::new();
+    for &(label, gz) in boards {
+        let mut at_offer = restore_dump(&gunzip_dump(gz));
+        if drive_to_bounded_offer(&mut at_offer, 600).is_none() {
+            continue;
+        }
+        let published_declaration = match &at_offer.waiting_for {
+            WaitingFor::LoopShortcut { declaration, .. } => declaration.is_some(),
+            other => panic!("[{label}] expected a bounded offer, got {other:?}"),
+        };
+        let (proposer, _, schema) = bounded_offer_parts(&at_offer);
+        if !schema.points.is_empty() && !published_declaration {
+            excluded.push(label);
+            continue;
+        }
+        reached.push(label);
+        let IterationCount::Fixed(suggestion) = schema.iteration_count else {
+            panic!("[{label}] a bounded offer publishes a `Fixed` suggestion, got {schema:?}");
+        };
+        let capacity = schema.deliverable_capacity;
+
+        // ── ROW 5b — the pair, on every board ──
+        assert!(
+            capacity >= suggestion && suggestion >= 1,
+            "[{label}] CR 732.2a: the declare handler refuses any count above the capacity, so a \
+             ceiling below the suggestion would have it refuse the offer's own suggestion; got \
+             capacity {capacity} vs suggestion {suggestion}"
+        );
+        if capacity == suggestion {
+            coincide.push(label);
+        }
+
+        // ── ROW 5 — the declaration opens the window, and the accept MOVES the board ──
+        let before = seat_lives(&at_offer);
+        let mut driven = at_offer.clone();
+        apply(
+            &mut driven,
+            proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(suggestion),
+                template: None,
+            },
+        )
+        .unwrap_or_else(|e| {
+            panic!("[{label}] the declare handler must accept {suggestion}: {e:?}")
+        });
+        assert!(
+            matches!(driven.waiting_for, WaitingFor::RespondToShortcut { .. }),
+            "[{label}] REACH-GUARD: the declaration must OPEN the CR 732.2b response window, which \
+             is what separates 'declare refused' from 'drive aborted'; got {:?}",
+            driven.waiting_for
+        );
+        while let WaitingFor::RespondToShortcut { player, .. } = driven.waiting_for.clone() {
+            apply(
+                &mut driven,
+                player,
+                GameAction::RespondToShortcut {
+                    response: ShortcutResponse::Accept,
+                },
+            )
+            .unwrap_or_else(|e| panic!("[{label}] each living opponent accepts: {e:?}"));
+        }
+        assert_ne!(
+            seat_lives(&driven),
+            before,
+            "[{label}] CR 732.2c: the accepted sequence is TAKEN — a suggestion the consumption \
+             seam's drivability gate refuses commits zero cycles and hands priority back with the \
+             board unmoved"
+        );
+    }
+    assert!(
+        reached.len() > 1,
+        "LIVE INSTRUMENT: the walk must reach a live bounded offer on more than one committed \
+         board, or every assertion above is an absence-shaped pass; reached {reached:?}"
+    );
+    assert!(
+        !coincide.is_empty(),
+        "LIVE INSTRUMENT: at least one board must publish a capacity EQUAL to its suggestion, so \
+         the inequality above is not satisfied by a difference that exists everywhere; reached \
+         {reached:?}"
+    );
+    // The exclusion is a MEASURED class and not an empty caveat: a board really is in it, so the
+    // criterion is exercised rather than carried. The complementary observation — a board where the
+    // two published numbers DIFFER — is the allocated class's, and lives on the interaction
+    // projection row, because no board this walk reaches publishes a charged victim slot with a
+    // live reach.
+    assert!(
+        !excluded.is_empty(),
+        "LIVE INSTRUMENT: the points-without-a-declaration exclusion must have a MEMBER, or it is \
+         an unexercised criterion rather than the population's boundary; reached {reached:?}"
+    );
+}
+
+/// **CR 800.4a + CR 704.5a — an accept that reaches a crossing commits the cycle that crossing
 /// falls on, and that seat leaves the game.**
 ///
 /// On this committed 4p drain the crossing cycle's published period completes at the forced-window
@@ -13290,9 +13780,13 @@ fn an_over_bound_count_is_refused_at_consumption() {
 ///
 /// # Everything quantified over is re-derived from the offer's own published data
 ///
-/// The count is the offer's published capacity; the crossing seat and the repetition it falls on
-/// come from `PeriodicDelta::first_life_crossing` under the declaration this offer publishes, over
-/// the live lives at the offer beat. No count and no seat is written down here.
+/// The count driven is the FIRST crossing the published cascade contains, and the seat it takes:
+/// both come from `PeriodicDelta::first_life_crossing` under the declaration this offer publishes,
+/// over the live lives at the offer beat, with the published ceiling as the horizon. The ceiling
+/// reaches further — the whole cascade — which is asserted here and driven by
+/// `one_accept_crosses_every_threshold_the_published_ceiling_contains`; this row is about the
+/// conformance scope at ONE crossing cycle, so it drives the first one and keeps its paired
+/// one-below leg. No count and no seat is written down here.
 ///
 /// # Reach guards, asserted before the claim
 ///
@@ -13313,7 +13807,7 @@ fn an_over_bound_count_is_refused_at_consumption() {
 /// `conforms` — and the crossing cycle is dropped whole: nobody is eliminated and the crossing
 /// seat ends at one period's worth of life, which is the sub-cascade leg's own expectation.
 #[test]
-fn the_accept_at_the_published_ceiling_commits_its_crossing_cycle_and_eliminates_that_seat() {
+fn the_accept_at_a_cascade_crossing_commits_that_cycle_and_eliminates_its_seat() {
     let at_offer = {
         let mut state = restore_dump(&gunzip_dump(include_bytes!(
             "../fixtures/dina_noff_turn5_4p.json.gz"
@@ -13327,7 +13821,7 @@ fn the_accept_at_the_published_ceiling_commits_its_crossing_cycle_and_eliminates
         schema.is_bounded(),
         "REACH-GUARD: this row is about a BOUNDED offer's published ceiling"
     );
-    let published = schema.deliverable_capacity;
+    let ceiling = schema.deliverable_capacity;
     let points = schema.points.clone();
     let per_cycle = certificate
         .per_cycle
@@ -13363,22 +13857,33 @@ fn the_accept_at_the_published_ceiling_commits_its_crossing_cycle_and_eliminates
                     &at_offer,
                 ),
                 i64::from(life),
-                published,
+                ceiling,
             )
             .map(|repetition| (seat, repetition))
         })
         .collect();
-    let [(crossing_seat, repetition)] = crossings[..] else {
+    let first = crossings
+        .iter()
+        .map(|&(_, repetition)| repetition)
+        .min()
+        .expect("REACH-GUARD (live instrument): the published ceiling must contain a crossing");
+    let at_first: Vec<(PlayerId, u32)> = crossings
+        .iter()
+        .copied()
+        .filter(|&(_, r)| r == first)
+        .collect();
+    let [(crossing_seat, repetition)] = at_first[..] else {
         panic!(
-            "REACH-GUARD (live instrument): exactly one opponent may cross inside the published \
-             count — one is the claim, and the others' absence is what shows the derivation \
-             discriminates; got {crossings:?} over {opponents:?}"
+            "REACH-GUARD (live instrument): exactly one opponent may cross on the cascade's FIRST \
+             repetition — one is this row's claim, and a tie there would make the single-seat \
+             elimination below the wrong assertion; got {crossings:?} over {opponents:?}"
         );
     };
-    assert_eq!(
-        repetition, published,
-        "the published ceiling is the repetition that crossing falls on, which is what makes the \
-         accept below reach it"
+    assert!(
+        crossings.iter().any(|&(_, r)| r > repetition),
+        "REACH-GUARD: the published ceiling {ceiling} must reach PAST this crossing, else driving \
+         {repetition} is driving the ceiling itself and the cascade holds a single entry; got \
+         {crossings:?}"
     );
     let per_period = -per_cycle
         .delta
@@ -13392,9 +13897,9 @@ fn the_accept_at_the_published_ceiling_commits_its_crossing_cycle_and_eliminates
          states nothing; got {per_period}"
     );
 
-    // ⓐ THE PUBLISHED COUNT — the crossing cycle commits and the seat leaves the game.
+    // ⓐ THE FIRST CROSSING — its cycle commits and the seat leaves the game.
     let mut driven = at_offer.clone();
-    r6a_declare_and_accept_all(&mut driven, proposer, published);
+    r6a_declare_and_accept_all(&mut driven, proposer, repetition);
     let gone: Vec<PlayerId> = driven
         .players
         .iter()
@@ -13404,7 +13909,7 @@ fn the_accept_at_the_published_ceiling_commits_its_crossing_cycle_and_eliminates
     assert_eq!(
         gone,
         vec![crossing_seat],
-        "CR 704.5a: the accept at the published ceiling takes the seat that ceiling crosses, and \
+        "CR 704.5a: the accept at the first crossing takes the seat that crossing names, and \
          only that seat; lives {:?}",
         seat_lives(&driven)
     );
@@ -13426,15 +13931,15 @@ fn the_accept_at_the_published_ceiling_commits_its_crossing_cycle_and_eliminates
             .life;
         assert_eq!(
             i64::from(life - now),
-            i64::from(published) * per_period,
-            "CONTROL: every survivor takes the full published count of periods, so ⓐ drove the \
+            i64::from(repetition) * per_period,
+            "CONTROL: every survivor takes the full accepted count of periods, so ⓐ drove the \
              whole sequence rather than stopping early"
         );
     }
 
     // ⓑ THE PAIRED SUB-CASCADE ACCEPT — one count lower, on this same board.
     let mut sub = at_offer.clone();
-    r6a_declare_and_accept_all(&mut sub, proposer, published - 1);
+    r6a_declare_and_accept_all(&mut sub, proposer, repetition - 1);
     assert!(
         sub.players.iter().all(|p| !p.is_eliminated),
         "SUB-CASCADE: one count below the crossing nobody reaches a threshold; lives {:?}",
@@ -13452,6 +13957,280 @@ fn the_accept_at_the_published_ceiling_commits_its_crossing_cycle_and_eliminates
         "SUB-CASCADE: the crossing seat is left exactly one period short of its threshold, which \
          is what makes ⓐ's elimination the crossing CYCLE and not the count"
     );
+}
+
+/// **ROW 7b — CR 704.3 + CR 704.5a + CR 800.4a: a TIE ENTRY's WHOLE seat set must depart on that
+/// repetition, and a subset is refused.**
+///
+/// The seam this closes was left undiscriminated on purpose: with a one-entry cascade the drive's
+/// only reachable departure was the one that entry named, so no test could fail in the direction
+/// the verdict guards. A cascade that can GROUP two seats into one entry is what makes it
+/// reachable, and this is the member a one-seat entry cannot express.
+///
+/// The mismatch is manufactured in the SIGNATURE, not in the board: a published per-seat charge
+/// above the period's own net loss raises that seat's `dip` — the deepest point inside one
+/// repetition, CR 704.3's own term — so the reduction reads it as crossing on the same repetition
+/// as a seat that really is one point from its threshold. The driven cycle then takes ONE of the
+/// two. This is the `#[serde(default)]`/hostile-restore shape that field's own doc names, reached
+/// through the restore ingress the consumption re-derivation exists for.
+///
+/// # Reach guards, asserted before the claim
+///
+/// The cascade the perturbed signature implies is asserted to carry an entry holding TWO seats at
+/// the accepted repetition (else this row is the co-departure row again, with a one-seat entry),
+/// and both seats are asserted ALIVE going in (else "only one could have left" satisfies the
+/// refusal for free).
+///
+/// # Discrimination
+///
+/// Collapse the entry to one seat — which is what refusing the grouping does — and ⓐ's departure
+/// matches it, so the cycle commits and the unmoved-board assertion FAILS. Compare by LENGTH plus
+/// a membership test rather than by set equality and the subset is admitted, failing the same
+/// assertion. ⓑ is the paired positive on the same board and the same accepted count with only the
+/// inflated charge removed: the identical departure COMMITS against the one-seat entry, so ⓐ's
+/// refusal is the set comparison and not the rig.
+#[test]
+fn a_tie_entrys_seat_set_is_refused_when_only_one_of_them_departs() {
+    let (state, proposer, certificate, _honest) = dina_bounded_offer();
+    let published = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    // P2 is one point from its threshold; P3 is three, with a published charge of three, which
+    // raises its `dip` to three and makes the reduction read both as crossing on repetition 1.
+    let board = || -> GameState {
+        let mut b = state.clone();
+        for (seat, life) in [(P1, 36), (P2, 1), (P3, 3)] {
+            b.players.iter_mut().find(|p| p.id == seat).unwrap().life = life;
+        }
+        b
+    };
+    let with_charge = |charge: Vec<(PlayerId, i64)>| -> PeriodicDelta {
+        let mut pc = published.clone();
+        pc.seat_life_charge = charge;
+        pc
+    };
+
+    // ⓐ THE TIE ENTRY AGAINST A SUBSET DEPARTURE.
+    let mut grouped = board();
+    let before = seat_lives(&grouped);
+    let tied = with_charge(vec![(P2, 1), (P3, 3)]);
+    let cascade = cascade_from(&grouped, proposer, &tied, None, &[]);
+    assert!(
+        cascade
+            .first()
+            .is_some_and(|(repetition, seats)| *repetition == 1 && seats.len() == 2),
+        "REACH-GUARD (live instrument): the perturbed signature must imply an entry holding TWO \
+         seats at the accepted repetition, or this row is the one-seat co-departure row; got \
+         {cascade:?}"
+    );
+    assert!(
+        [P2, P3].iter().all(|seat| !grouped
+            .players
+            .iter()
+            .any(|p| p.id == *seat && p.is_eliminated)),
+        "REACH-GUARD: both seats are ALIVE going in, so the refusal is about a departure that \
+         really happens rather than one that could not"
+    );
+    accept_restored_proposal(
+        &mut grouped,
+        proposer,
+        restored_proposal(&certificate, proposer, 1, tied),
+    );
+    assert_eq!(
+        seat_lives(&grouped),
+        before,
+        "CR 704.3 + CR 800.4a: the entry named two seats and one left, so the sequence performed \
+         is not the one the table agreed to and the cycle is dropped whole; cascade {cascade:?}"
+    );
+    assert_eq!(
+        eliminated_seats(&grouped),
+        Vec::<PlayerId>::new(),
+        "CR 800.4a: a refused cycle removes nobody"
+    );
+    assert!(
+        matches!(grouped.waiting_for, WaitingFor::Priority { player }
+            if !grouped.players.iter().any(|p| p.id == player && p.is_eliminated)),
+        "CR 732.2a: the dropped cycle ends at a place where a player has priority; got {:?}",
+        grouped.waiting_for
+    );
+
+    // ⓑ PAIRED POSITIVE — the same board and the same accepted count, with only P3's inflated
+    //   charge removed, so the entry names the one seat that actually leaves.
+    let mut alone = board();
+    let single = with_charge(vec![(P2, 1)]);
+    let one_seat = cascade_from(&alone, proposer, &single, None, &[]);
+    assert!(
+        one_seat
+            .first()
+            .is_some_and(|(repetition, seats)| *repetition == 1 && seats.len() == 1),
+        "REACH-GUARD: the paired positive's entry must hold exactly ONE seat, or it is not the \
+         sibling of ⓐ; got {one_seat:?}"
+    );
+    accept_restored_proposal(
+        &mut alone,
+        proposer,
+        restored_proposal(&certificate, proposer, 1, single),
+    );
+    assert_eq!(
+        eliminated_seats(&alone),
+        vec![P2],
+        "PAIRED POSITIVE: the identical departure COMMITS against a one-seat entry, so ⓐ's \
+         refusal is the set comparison and not the rig"
+    );
+}
+
+/// **ROW 4 — CR 704.5a + CR 732.2a: an unpredicted departure is refused FROM EITHER ARM, with
+/// every prior cycle committed and priority handed back.**
+///
+/// Where in the published period a crossing falls decides which `CycleOutcome` the drive classifies
+/// the crossing cycle as: a period completing at the forced-window ANSWER beat returns a
+/// RECURRENCE and never reaches the departure arm, while one completing at the settle beat after
+/// the removal returns `SeatLeft`. So a discriminator living in only one arm is one the other
+/// board silently skips — which is why this row drives the SAME perturbation on both committed
+/// untargeted boards rather than on one.
+///
+/// The perturbation is the repetition conjunct: a published per-seat charge above the period's own
+/// net loss makes the reduction name a seat's crossing EARLIER than the drive reaches it, so the
+/// departure the drive observes falls on a repetition no entry names.
+///
+/// # Reach guards, asserted before the claim
+///
+/// At least one cycle is asserted COMMITTED before the stop, else "every prior cycle intact"
+/// quantifies over nothing; the board is asserted to have moved by exactly the committed cycles'
+/// worth of periods, which is what shows the rollback was to a whole cycle boundary; and the seat
+/// that leaves is asserted to have been ALIVE and reachable going in.
+///
+/// # Discrimination
+///
+/// Route the verdict only from the `SeatLeft` arm and the board whose crossing cycle is classified
+/// a recurrence commits the unpredicted departure, so its elimination assertion FAILS while the
+/// other board stays green. Delete the repetition conjunct and both boards commit. The paired
+/// positive on each board — the same accepted count with the inflated charge removed, so the entry
+/// names the repetition the departure lands on — COMMITS and eliminates that seat.
+#[test]
+fn an_unpredicted_departure_is_refused_from_either_drive_arm() {
+    for (label, gz) in [
+        (
+            "crossing cycle classified a RECURRENCE",
+            &include_bytes!("../fixtures/dina_noff_turn5_4p.json.gz")[..],
+        ),
+        (
+            "crossing cycle classified SeatLeft",
+            &include_bytes!("../fixtures/dina_conqueror_4p.json.gz")[..],
+        ),
+    ] {
+        let mut at_offer = restore_dump(&gunzip_dump(gz));
+        drive_to_bounded_offer(&mut at_offer, 600)
+            .expect("the bounded offer must fire on this committed 4p drain");
+        let (proposer, certificate, _) = bounded_offer_parts(&at_offer);
+        let certificate = certificate.clone();
+        let published = certificate
+            .per_cycle
+            .clone()
+            .expect("a bounded offer publishes its per-period signature");
+
+        // The seat the period drains hardest is the one this row moves; read off the published
+        // period so no seat is written down.
+        let victim = *published
+            .delta
+            .life
+            .iter()
+            .filter(|(seat, delta)| **delta < 0 && **seat != proposer)
+            .min_by_key(|(seat, _)| **seat)
+            .map(|(seat, _)| seat)
+            .expect("the untargeted class drains its opponents through the published period");
+        let per_period = -published.delta.life[&victim];
+
+        // Two cycles' worth of headroom plus one, so two whole cycles commit and the third is the
+        // one the departure lands on.
+        let committed_cycles = 2i64;
+        let board = |life: i64| -> GameState {
+            let mut b = at_offer.clone();
+            b.players
+                .iter_mut()
+                .find(|p| p.id == victim)
+                .expect("the drained seat is at the table")
+                .life = i32::try_from(life).expect("a test life total fits an i32");
+            b
+        };
+        let headroom = per_period * (committed_cycles + 1);
+        let accepted = u32::try_from(committed_cycles + 1).expect("a small count fits a u32");
+
+        // ⓐ THE MISMATCH — the inflated charge names the crossing on repetition 1 while the drive
+        //   reaches it on the third.
+        let mut early = board(headroom);
+        let mut inflated = published.clone();
+        inflated.seat_life_charge = vec![(victim, headroom)];
+        let cascade = cascade_from(&early, proposer, &inflated, None, &[]);
+        assert!(
+            cascade
+                .iter()
+                .all(|(repetition, seats)| !(seats.contains(&victim) && *repetition == accepted)),
+            "[{label}] REACH-GUARD (live instrument): no entry may name the victim at the \
+             repetition the drive reaches it on, or there is no mismatch to refuse; got {cascade:?}"
+        );
+        assert!(
+            !early
+                .players
+                .iter()
+                .any(|p| p.id == victim && p.is_eliminated),
+            "[{label}] REACH-GUARD: the departing seat is ALIVE going in"
+        );
+        let before = seat_lives(&early);
+        accept_restored_proposal(
+            &mut early,
+            proposer,
+            restored_proposal(&certificate, proposer, accepted, inflated),
+        );
+        assert_eq!(
+            eliminated_seats(&early),
+            Vec::<PlayerId>::new(),
+            "[{label}] CR 732.2a: the departure fell on a repetition no entry names, so that cycle \
+             is dropped whole and nobody leaves; lives {:?}",
+            seat_lives(&early)
+        );
+        let victim_life = |st: &GameState| -> i64 {
+            i64::from(
+                st.players
+                    .iter()
+                    .find(|p| p.id == victim)
+                    .expect("the seat is still on the board")
+                    .life,
+            )
+        };
+        assert_eq!(
+            headroom - victim_life(&early),
+            per_period * committed_cycles,
+            "[{label}] CR 732.2a: EVERY PRIOR CYCLE IS COMMITTED and the dropped one is rolled \
+             back whole, so the board moved by exactly the committed cycles' worth of periods — \
+             which is also the reach guard that a cycle committed at all; before {before:?}, after \
+             {:?}",
+            seat_lives(&early)
+        );
+        assert!(
+            matches!(early.waiting_for, WaitingFor::Priority { player }
+                if !early.players.iter().any(|p| p.id == player && p.is_eliminated)),
+            "[{label}] CR 732.2a: the ending point is a place where a living player has priority; \
+             got {:?}",
+            early.waiting_for
+        );
+
+        // ⓑ PAIRED POSITIVE — the same board and the same accepted count with the inflated charge
+        //   removed, so the entry names the repetition the departure actually lands on.
+        let mut on_time = board(headroom);
+        accept_restored_proposal(
+            &mut on_time,
+            proposer,
+            restored_proposal(&certificate, proposer, accepted, published.clone()),
+        );
+        assert!(
+            eliminated_seats(&on_time).contains(&victim),
+            "[{label}] PAIRED POSITIVE: the identical departure COMMITS once an entry names its \
+             repetition, so ⓐ's refusal is the repetition conjunct and not the rig; lives {:?}",
+            seat_lives(&on_time)
+        );
+    }
 }
 
 /// **V3 — CR 704.5a + CR 800.4a: the admitted member the set equality must refuse — the
@@ -14062,11 +14841,12 @@ fn the_honest_count_reaches_the_cross_lethal_arm_when_the_crossing_takes_the_las
         "REACH-GUARD: the published period must drain the opponent, else no crossing is derivable"
     );
     let l0 = state.players.iter().find(|p| p.id == victim).unwrap().life as i64;
-    assert_eq!(
-        i64::from(honest),
-        l0.div_euclid(loss) + i64::from(l0.rem_euclid(loss) != 0),
-        "CR 704.5a: with a single consumed seat the relief carries the count TO its crossing, \
-         which is what makes the honest count reach this arm at all"
+    let crossing = l0.div_euclid(loss) + i64::from(l0.rem_euclid(loss) != 0);
+    assert!(
+        crossing <= i64::from(honest),
+        "CR 704.5a: the published ceiling spans the cascade, so it CONTAINS the opponent's \
+         crossing — which is what makes the honest count reach this arm at all; ceiling {honest} \
+         vs crossing {crossing}"
     );
 
     r6a_declare_and_accept_all(&mut state, proposer, honest);
@@ -14164,6 +14944,14 @@ fn the_cross_lethal_arm_crowns_only_the_seat_the_proposal_names() {
         "REACH-GUARD: the published period must drain the opponent, else no crossing is derivable"
     );
     let victim_life = i64::from(player_life(&state, victim));
+    // The repetition the victim crosses on — where the drive stops whatever the accepted count
+    // is, and therefore the cycle ⓐ's refusal drops.
+    let crossing = victim_life.div_euclid(charge) + i64::from(victim_life.rem_euclid(charge) != 0);
+    assert!(
+        crossing <= i64::from(honest),
+        "REACH-GUARD: the published ceiling must CONTAIN the crossing, or neither leg reaches \
+         the `CrossLethal` arm at all; crossing {crossing} vs ceiling {honest}"
+    );
 
     let accept_named = |named: Option<PlayerId>| -> GameState {
         let mut board = state.clone();
@@ -14210,7 +14998,7 @@ fn the_cross_lethal_arm_crowns_only_the_seat_the_proposal_names() {
     );
     assert_eq!(
         i64::from(player_life(&refused, victim)),
-        victim_life - (i64::from(honest) - 1) * charge,
+        victim_life - (crossing - 1) * charge,
         "ⓐ the board is the last CONFORMING cycle — one period's charge above the crossing"
     );
 
@@ -14250,11 +15038,20 @@ fn the_cross_lethal_arm_crowns_only_the_seat_the_proposal_names() {
         sym_lives.iter().all(|l| *l == sym_lives[0]),
         "REACH-GUARD: EQUAL lives, for the same reason; got {sym_lives:?}"
     );
-    // The published bound stops one cycle short of the simultaneous crossing, so the count that
-    // reaches this arm is one past it — admissible because a proposal carrying no per-period
-    // signature supports no consumption ceiling, which is exactly the shape the one
-    // winner-naming mint publishes.
+    // The simultaneous crossing, re-derived from the equal lives and the equal charge asserted
+    // above: the repetition ⓓ ends on and the one ⓒ drops. The count declared is one PAST the
+    // published ceiling — admissible because a proposal carrying no per-period signature supports
+    // no consumption ceiling, which is exactly the shape the one winner-naming mint publishes.
+    let sym_crossing = {
+        let l0 = i64::from(sym_lives[0]);
+        l0.div_euclid(sym_charges[0]) + i64::from(l0.rem_euclid(sym_charges[0]) != 0)
+    };
     let past = sym_schema.deliverable_capacity + 1;
+    assert!(
+        sym_crossing <= i64::from(past),
+        "REACH-GUARD: the declared count must REACH the simultaneous crossing, or neither leg \
+         exercises the arm; crossing {sym_crossing} vs declared {past}"
+    );
     let accept_sym = |named: Option<PlayerId>| -> GameState {
         let mut board = runner.state().clone();
         accept_restored_proposal(
@@ -14304,9 +15101,12 @@ fn the_cross_lethal_arm_crowns_only_the_seat_the_proposal_names() {
             .iter()
             .zip(&sym_lives)
             .zip(&sym_charges)
-            .map(|((seat, l0), charge)| (*seat, l0 - (past as i32 - 1) * *charge as i32))
+            .map(|((seat, l0), charge)| {
+                (*seat, l0 - (sym_crossing as i32 - 1) * *charge as i32)
+            })
             .collect::<Vec<_>>(),
-        "ⓒ the board is the last CONFORMING cycle for BOTH seats, derived the same way as ⓐ"
+        "ⓒ the board is the last CONFORMING cycle for BOTH seats, derived the same way as ⓐ — \
+         the crossing cycle is dropped, so the commits stop one short of it"
     );
 }
 
@@ -14422,7 +15222,7 @@ fn a_cycle_that_does_not_match_the_published_period_is_dropped() {
 /// soundness bug (the AI declines, which is always legal), and it is left for its own round.
 ///
 /// REVERT-PROBE: delete the `schema.points.is_empty() && schema.is_bounded()` block ⇒
-/// assertion (2) FAILS (`Fixed(bound)` absent from the generated candidates).
+/// assertion (2) FAILS (`Fixed(suggestion)` absent from the generated candidates).
 #[test]
 fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
     use engine::analysis::decision_template::IterationCount;
@@ -14434,12 +15234,13 @@ fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
         .per_cycle
         .clone()
         .expect("a bounded offer publishes its per-period signature");
-    let bound = schema.deliverable_capacity;
+    let suggestion = crate::fantastic_four_bounded_loop::published_suggestion(schema);
 
     // (1) reach-guards: this row is about the BOUNDED, UNTARGETED shape the block gates on.
     assert!(
         schema.is_bounded(),
-        "REACH-GUARD: an unbounded offer takes a different generator arm; bound = {bound}"
+        "REACH-GUARD: an unbounded offer takes a different generator arm; suggestion = \
+         {suggestion}"
     );
     assert!(
         schema.points.is_empty(),
@@ -14447,9 +15248,10 @@ fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
         schema.points
     );
 
-    // (2) the production generator offers it.
+    // (2) the production generator offers it — the SUGGESTION the offer publishes, which is the
+    //     count a declarer overriding nothing names.
     let expected = GameAction::DeclareShortcut {
-        count: IterationCount::Fixed(bound),
+        count: IterationCount::Fixed(suggestion),
         template: None,
     };
     let candidates = engine::ai_support::legal_actions(&state);
@@ -14458,9 +15260,44 @@ fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
         "the AI must be able to declare the bounded offer's own count; got {candidates:?}"
     );
 
+    // The cascade's first crossing, re-derived from the published period and the offer-beat
+    // board: the accepted count spans past it, so it is where the drive ends.
+    let lives_before: Vec<(PlayerId, i64)> = state
+        .players
+        .iter()
+        .map(|p| (p.id, p.life as i64))
+        .collect();
+    let loss = |seat: &PlayerId| -per_cycle.delta.life.get(seat).copied().unwrap_or(0);
+    let crossings: Vec<(PlayerId, i64)> = lives_before
+        .iter()
+        .filter(|(id, _)| loss(id) > 0)
+        .map(|(id, l0)| {
+            (
+                *id,
+                l0.div_euclid(loss(id)) + i64::from(l0.rem_euclid(loss(id)) != 0),
+            )
+        })
+        .collect();
+    let first = crossings
+        .iter()
+        .map(|(_, c)| *c)
+        .min()
+        .expect("REACH-GUARD: the published period must consume a seat on the life axis");
+    assert!(
+        first < i64::from(suggestion),
+        "REACH-GUARD: the published suggestion must reach PAST the first crossing — that is the \
+         cascade span this phase publishes, and it is what makes the outcome below the drive's \
+         own stopping rule rather than the count running out; crossings {crossings:?} under \
+         {suggestion}"
+    );
+    let first_victims: Vec<PlayerId> = crossings
+        .iter()
+        .filter(|(_, c)| *c == first)
+        .map(|(id, _)| *id)
+        .collect();
+
     // (3) ...and the reducer ACCEPTS it — which is what makes (2) load-bearing rather than a
     //     restatement of the generator. A refused declaration hands straight back to priority.
-    let lives_before: Vec<i64> = state.players.iter().map(|p| p.life as i64).collect();
     apply(&mut state, proposer, expected)
         .expect("the AI's generated candidate must be accepted by the reducer");
     assert!(
@@ -14470,7 +15307,8 @@ fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
         state.waiting_for
     );
 
-    // (4) ...and the accepted count DRIVES. Bound to the published period, never a literal.
+    // (4) ...and the accepted count DRIVES, to the first crossing the cascade contains. Bound to
+    //     the published period, never a literal.
     while let WaitingFor::RespondToShortcut { player, .. } = state.waiting_for.clone() {
         apply(
             &mut state,
@@ -14481,28 +15319,33 @@ fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
         )
         .expect("each living opponent accepts");
     }
-    for (seat, l0) in state
-        .players
-        .iter()
-        .map(|p| p.id)
-        .zip(&lives_before)
-        .collect::<Vec<_>>()
-    {
-        let now = state.players.iter().find(|p| p.id == seat).unwrap().life as i64;
+    assert_eq!(
+        eliminated_seats(&state),
+        first_victims,
+        "CR 704.5a: the drive commits through the cascade's first entry and exactly its seats \
+         leave; lives {:?}",
+        seat_lives(&state)
+    );
+    for (seat, l0) in &lives_before {
+        if first_victims.contains(seat) {
+            continue;
+        }
+        let now = state.players.iter().find(|p| p.id == *seat).unwrap().life as i64;
         assert_eq!(
             now - l0,
-            i64::from(bound) * per_cycle.delta.life.get(&seat).copied().unwrap_or(0),
-            "{seat:?}: the AI-declared count commits exactly the published capacity's copies \
-             of the published period"
+            first * per_cycle.delta.life.get(seat).copied().unwrap_or(0),
+            "{seat:?}: every seat still in the game has taken exactly the first crossing's \
+             copies of the published period, so the drive reached that cycle and stopped there"
         );
     }
     assert_eq!(
-        state.players.iter().filter(|p| p.is_eliminated).count(),
-        0,
-        "CR 704.5a: bloodloop3 seats its two opponents at EQUAL life, so they hold the binding \
-         value together, the relief's one-faller conjunct refuses, and the published bound \
-         stays one period short of their shared crossing — which is why the AI's own maximal \
-         legal declaration still eliminates nobody ON THIS BOARD"
+        state.waiting_for,
+        WaitingFor::GameOver {
+            winner: Some(proposer)
+        },
+        "CR 104.2a: this board's first crossing takes EVERY living opponent in one CR 704.3 \
+         sweep, so the AI's own declaration ends the game; eliminated {:?}",
+        eliminated_seats(&state)
     );
 }
 
@@ -15860,10 +16703,10 @@ fn an_over_cap_count_is_refused_at_consumption_and_at_the_responders_seam() {
 
 // ─────── AI1 — the AI's bounded-declare candidate withdraws on a 0→1 schema ───────
 
-/// **AI1 — the generator's `Fixed(max)` candidate is keyed to the PUBLISHED PIN SET, measured
+/// **AI1 — the generator's `Fixed(suggestion)` candidate is keyed to the PUBLISHED PIN SET, measured
 /// in BOTH directions on ONE board.**
 ///
-/// CR 732.2a. `ai_support::candidates` emits `DeclareShortcut { count: Fixed(capacity),
+/// CR 732.2a. `ai_support::candidates` emits `DeclareShortcut { count: Fixed(suggestion),
 /// template: None }` only `if schema.points.is_empty() && schema.is_bounded()`, because a
 /// `template: None` declaration fail-closes against a published pin set — the engine would
 /// ACCEPT it and then discard it, handing the search layer an action that looks legal and is
@@ -15931,7 +16774,9 @@ fn ai1_the_bounded_declare_candidate_carries_the_offers_own_pin_when_one_is_publ
         live,
         vec![
             GameAction::DeclareShortcut {
-                count: IterationCount::Fixed(schema.deliverable_capacity),
+                count: IterationCount::Fixed(
+                    crate::fantastic_four_bounded_loop::published_suggestion(&schema)
+                ),
                 template: Some(declaration),
             },
             GameAction::DeclineShortcut,
@@ -15952,7 +16797,7 @@ fn ai1_the_bounded_declare_candidate_carries_the_offers_own_pin_when_one_is_publ
             }
         )),
         "AI1(b) POSITIVE CONTROL: with `points` empty the generator MUST emit the \
-         capacity-valued `Fixed` candidate again. Its absence here would mean arm (a) measured \
+         suggestion-valued `Fixed` candidate again. Its absence here would mean arm (a) measured \
          a generator that emits nothing rather than one keyed to the pin set. got {staged:?}"
     );
     assert!(

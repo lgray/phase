@@ -58,6 +58,28 @@ use engine::types::replacements::ReplacementEvent;
 
 use crate::loop_shortcut_drain_boards::rederive_live_offer_bound;
 
+/// CR 732.2a: the count the offer's OWN published declaration drives — `iteration_count`'s `Fixed`
+/// value, which is what a declarer who overrides nothing names and what `template: None` resolves
+/// to.
+///
+/// NAMED ONCE, because the ceiling and the suggestion are two different numbers on this class. The
+/// ceiling (`deliverable_capacity`) is the widest count SOME legal declaration may specify —
+/// CR 732.2a's existential — and on a board whose charged slot can be re-aimed after the first
+/// crossing that is strictly larger. Every row below whose claim is "this declaration commits its
+/// whole count" is about the suggestion; the rows about what the declare handler REFUSES are about
+/// the ceiling, and they say so by reading `deliverable_capacity` directly.
+pub(crate) fn published_suggestion(
+    schema: &engine::analysis::decision_template::ShortcutDecisionSchema,
+) -> u32 {
+    match schema.iteration_count {
+        IterationCount::Fixed(n) => n,
+        IterationCount::UntilLethal => panic!(
+            "a bounded offer publishes a `Fixed` suggestion; this one measured {:?}",
+            schema.measured_repetition_bound
+        ),
+    }
+}
+
 const P0: PlayerId = PlayerId(0);
 const P1: PlayerId = PlayerId(1);
 const P2: PlayerId = PlayerId(2);
@@ -700,21 +722,34 @@ fn r1_the_bounded_offer_fires_on_the_real_f4_dump() {
     // ── the expectation, re-derived independently of `elimination_bounds` ──
     // `drive_f4_to_offer` aims every re-aimable choice at P1, so P1 is the seat the window
     // observed this slot announce.
+    // THE SUGGESTION, not the capacity: this mirror re-derives the FIRST crossing under the aim
+    // the drive announced, which is exactly the count the offer's own published declaration
+    // drives. The capacity answers CR 732.2a's existential instead — the widest count SOME legal
+    // declaration may specify — and on this board a declaration that re-aims the charged slot
+    // after that crossing reaches further, which is asserted below rather than conflated here.
     let expected = rederive_live_offer_bound(&state, P1);
     assert_eq!(
-        schema.measured_repetition_bound,
-        Some(expected),
-        "CR 732.2a + CR 704.5a: the MEASURED threshold is the MIN over every living seat's \
+        published_suggestion(schema),
+        expected,
+        "CR 732.2a + CR 704.5a: the published SUGGESTION is the MIN over every living seat's \
          elimination headroom, divided by the per-period consumption the certificate itself \
          published PLUS the `victim_slot` magnitude charged to every seat the slot reaches, \
          LESS what the window saw that slot aim at each seat. Re-derived here as {expected}; \
          the offer published {:?}",
-        schema.measured_repetition_bound
+        schema.iteration_count
     );
     assert!(
         schema.is_bounded() && schema.deliverable_capacity < MAX_SHORTCUT_CYCLES_MIRROR,
         "the threshold must be MEASURED and its capacity NARROWED, else this row is satisfied \
          by the un-narrowed default every pre-bounded offer carries"
+    );
+    assert!(
+        schema.deliverable_capacity >= published_suggestion(schema),
+        "CR 732.2a: the ceiling is the widest count SOME legal declaration may specify, so it is \
+         never below the count the offer's own declaration drives; got capacity {} vs suggestion \
+         {}",
+        schema.deliverable_capacity,
+        published_suggestion(schema)
     );
 }
 
@@ -773,9 +808,9 @@ fn r2a_split_the_bounded_offer_still_publishes_a_ranked_seat_pin_and_refuses_a_h
     let schema = schema.clone();
 
     assert_eq!(
-        schema.measured_repetition_bound,
-        Some(rederive_live_offer_bound(&state, P1)),
-        "the CR 704.5a-derived bound at beat {beat} agrees with an independent re-derivation \
+        published_suggestion(&schema),
+        rederive_live_offer_bound(&state, P1),
+        "the CR 704.5a-derived SUGGESTION at beat {beat} agrees with an independent re-derivation \
          from the offer's own published certificate and the seat this drive aimed at. It \
          tracks the charge model rather than a literal; it does NOT compare against a \
          pre-split value, so it is an agreement check and not a spelling-invariance one"
@@ -2287,18 +2322,19 @@ fn d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
             "[{label}] REACH-GUARD: the published point count at beat {beat}"
         );
         assert_eq!(
-            schema.measured_repetition_bound,
-            Some(rederive_live_offer_bound(&state, P1)),
-            "[{label}] REACH-GUARD: the CR 704.5a-derived bound — and the count the reference \
-             below must be built with — re-derived from this offer's own published certificate \
-             and the seat the drive aimed at"
+            published_suggestion(&schema),
+            rederive_live_offer_bound(&state, P1),
+            "[{label}] REACH-GUARD: the CR 704.5a-derived SUGGESTION — and the count the \
+             reference below must be built with, since that is the count the published \
+             declaration is stamped with — re-derived from this offer's own published \
+             certificate and the seat the drive aimed at"
         );
 
         let declaration = offer_declaration(&state)
             .unwrap_or_else(|| panic!("[{label}] the offer publishes a declaration"));
         assert_eq!(
             declaration,
-            f4_pin_template(&schema, proposer, schema.deliverable_capacity),
+            f4_pin_template(&schema, proposer, published_suggestion(&schema)),
             "[{label}] CR 732.2a: the published declaration must CONFORM to the shape this \
              suite's accepted declarations take — one pin per published point, owner == \
              proposer, `replay.count` == the offer's own suggestion"
@@ -2818,14 +2854,20 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
         actions,
         vec![
             GameAction::DeclareShortcut {
-                count: IterationCount::Fixed(schema.deliverable_capacity),
+                // THE SUGGESTION, not the capacity. The candidate has to be an action the declare
+                // handler accepts AND the consumption seam's drivability gate then admits, and
+                // the gate re-derives the cascade under the declaration this candidate carries —
+                // the offer's own. A candidate at the capacity would open the CR 732.2b window and
+                // then commit zero cycles, i.e. the engine refusing its own candidate.
+                count: IterationCount::Fixed(published_suggestion(&schema)),
                 template: Some(declaration.clone()),
             },
             GameAction::DeclineShortcut,
         ],
         "CR 732.2a: exactly two candidates. No `UntilLethal` declaration (gated on \
          `!schema.is_bounded()`, and this offer measured a threshold of {:?}), and the `Fixed` \
-         declaration carries the ENGINE'S OWN pin set for the {} published point(s)",
+         declaration carries the ENGINE'S OWN pin set for the {} published point(s) at the count \
+         that declaration drives",
         schema.measured_repetition_bound,
         schema.points.len()
     );
@@ -2838,7 +2880,7 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
             GameAction::DeclareShortcut {
                 count: IterationCount::Fixed(n),
                 template: Some(t),
-            } if *n == schema.deliverable_capacity && *t == declaration
+            } if *n == published_suggestion(&schema) && *t == declaration
         )),
         "the candidate's template is the offer's own declaration, VALUE-EQUAL — a fabricated \
          template of the same shape would fail here and pass an `is_some()` check"
@@ -3092,9 +3134,8 @@ fn u6_the_declare_owner_firewall_holds_on_the_real_f4_offer() {
 // B5f — the DECLARED term is load-bearing on a real board, in both directions
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
-/// §4 B5f — **the REACH term `seat_life_charges` puts in the divisor can suppress an offer that
-/// is otherwise legal, and the suppression is measured ONE LIFE POINT WIDE on the user's own
-/// board.**
+/// §4 B5f — **the REACH term `seat_life_charges` puts in the DIVISOR binds it, and the binding is
+/// measured ONE LIFE POINT WIDE on the user's own board.**
 ///
 /// CR 704.5a (a seat at 0 or less life has lost) + CR 732.2a (a shortcut describes a sequence
 /// that "may be legally taken", so every legal declaration must fit the bound, not only the one
@@ -3114,19 +3155,37 @@ fn u6_the_declare_owner_firewall_holds_on_the_real_f4_offer() {
 /// division; CHARGED, P2's magnitude is the bare reach term `1` and its headroom binds. That is
 /// what makes the pair a SUPPRESSION rather than an arithmetic coincidence.
 ///
-/// ARM (α), the matched positive: P2 seeded at **3** and at **2** — both OFFER, and the bound
-/// is the cycle the reach term alone takes P2 across on, tracking its life one for one. No
-/// other seat's headroom moves with P2's, which pins the divisor at the reach term.
+/// ARM (α), the matched positive: P2 seeded at **3** and at **2** — the DIVISOR is the cycle the
+/// reach term alone takes P2 across on, tracking its life one for one. No other seat's headroom
+/// moves with P2's, which pins the divisor at the reach term.
 /// ARM (β), the typed refusal: P2 AND P3 — both inside the slot's reach, both carrying no loss
 /// of their own — seeded at **1**. The term charges both, so two seats sit at the strict floor,
-/// the relieved count would admit TWO crossings, and the bound falls back to that floor of 0.
-/// The drive reaches the SAME beat and raises NO window, and the typed verdict on that very
-/// board is `NoNarrowedLegalCount`. Asserted BY REASON, never as a bare absence: a row that only
-/// observes "no offer" stops testing its own conjunct the moment an earlier one refuses first.
+/// the relieved count would admit TWO crossings, and the divisor falls back to that floor of 0.
 ///
 /// (β) carries its own positive control **one life point away**: P3 alone lifted to 2 leaves the
-/// floor P2's alone, the relief applies and the same board OFFERS. Both legs hold P2 at 1, so
-/// the pair is about the term charged to a seat with no loss of its own, not about the board.
+/// floor P2's alone, the relief applies and the divisor is P2's own crossing. Both legs hold P2
+/// at 1, so the pair is about the term charged to a seat with no loss of its own, not about the
+/// board.
+///
+/// # WHAT THIS ROW NOW MEASURES, AND WHAT THE PUBLISHED OFFER DOES INSTEAD
+///
+/// Both arms are statements about the DIVISOR — the first crossing under ANY declaration — and
+/// that is the authority they are now asserted against, through the same test-side mirror the
+/// other rows in this file re-derive it with. What the producer PUBLISHES is no longer that
+/// number: the offer's suggestion is the cascade under the offer's OWN declaration, which aims
+/// Torch at P1 and charges P2 and P3 nothing at all, so neither starved seat enters it.
+///
+/// That has a consequence this row states rather than hides: **(β)'s suppression is gone.** The
+/// divisor still reads 0 there, but the board now raises a bounded offer, because no repetition of
+/// the declaration in hand takes either starved seat anywhere — the suppression was the divisor
+/// charging every reachable seat its full magnitude every repetition, which is the model the
+/// cascade does not inherit. The offer it raises is a count its own declaration drives, so nothing
+/// it publishes is a sequence the table cannot perform; a declaration that DOES aim at a starved
+/// seat is a different declaration, and the wider published ceiling is what admits it.
+///
+/// The typed refusal itself is not weakened and is not asserted here by absence: `(β)` asserts the
+/// divisor's own 0 and asserts that the offer fires, which is a pair no arithmetic satisfies by
+/// accident.
 ///
 /// REVERT-PROBE (DROP): delete the reach term from `seat_life_charges` ⇒ neither P2 nor P3 is
 /// charged at all, their life axes never narrow, and (β) OFFERS at the aimed seat's own bound
@@ -3140,9 +3199,7 @@ fn u6_the_declare_owner_firewall_holds_on_the_real_f4_offer() {
 /// the charged slot's reach is exactly the three opponents and excludes the proposer.
 #[test]
 fn b5f_the_declared_term_can_suppress_an_otherwise_legal_offer() {
-    use engine::game::engine::{
-        try_offer_bounded_cycle_shortcut_metered, BoundedOfferRefusal, ProbeCap,
-    };
+    use engine::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
 
     /// The MODE1 board with the named seats' life REPLACED. Every other field — including the
     /// stored auto-choice guard (b) reads — is the user's own capture, so the only axis that
@@ -3228,11 +3285,23 @@ fn b5f_the_declared_term_can_suppress_an_otherwise_legal_offer() {
     // crossing as the sequence's final iteration.
     let crossing_cycle = |life: i64| (life - 1) / declared + 1;
     assert_eq!(
-        schema.measured_repetition_bound.map(i64::from),
-        Some(crossing_cycle(life_at_offer)),
-        "(α) CR 704.5a: the published bound is the cycle the REACH term alone takes P2 across \
-         on — declared {declared} at P2 life {life_at_offer}. Uncharged, P2's magnitude is 0, \
-         `narrow` never fires for it, and this board is bounded by the aimed seat instead"
+        i64::from(rederive_live_offer_bound(&alpha, P1)),
+        crossing_cycle(life_at_offer),
+        "(α) CR 704.5a: the DIVISOR is the cycle the REACH term alone takes P2 across on — \
+         declared {declared} at P2 life {life_at_offer}. Uncharged, P2's magnitude is 0, the \
+         arming guard never fires for it, and the divisor is the aimed seat's own division instead"
+    );
+    // The PUBLISHED suggestion is NOT that number, and the separation is the point: the cascade
+    // is taken under the offer's own declaration, which aims Torch at P1, so P2 is charged neither
+    // an observed loss nor a landing slot and never enters it.
+    assert_ne!(
+        i64::from(published_suggestion(schema)),
+        crossing_cycle(life_at_offer),
+        "(α) the published SUGGESTION is the cascade under the offer's own declaration, which \
+         charges P2 nothing at all — so it is not the divisor's reach-bounded count; suggestion \
+         {} vs divisor {}",
+        published_suggestion(schema),
+        crossing_cycle(life_at_offer)
     );
 
     let mut alpha2 = seeded(&[(P2, 2)]);
@@ -3241,49 +3310,68 @@ fn b5f_the_declared_term_can_suppress_an_otherwise_legal_offer() {
         Some(alpha_beat),
         "(α) the SECOND positive, one point down: P2 at 2 still offers, at the same beat"
     );
-    let (_, _, alpha2_schema) = offer_parts(&alpha2);
     assert_eq!(
-        alpha2_schema.measured_repetition_bound.map(i64::from),
-        Some(crossing_cycle(2)),
-        "(α) the bound fell by exactly one with P2's life — which pins the divisor at the \
-         reach term rather than at the board"
+        i64::from(rederive_live_offer_bound(&alpha2, P1)),
+        crossing_cycle(2),
+        "(α) the DIVISOR fell by exactly one with P2's life — which pins it at the reach term \
+         rather than at the board"
     );
 
-    // ── ARM (β) — the TYPED refusal, on the same beat the positive offered at ───────────
+    // ── ARM (β) — THE TIE AT THE DIVISOR'S FLOOR, and what the offer does with it ───────
     let mut beta = seeded(&[(P2, 1), (P3, 1)]);
-    assert_eq!(
-        drive_f4_to_offer(&mut beta, alpha_beat + 1),
-        None,
-        "(β) P2 and P3 both at 1: no window may be raised through beat {alpha_beat} — the beat \
-         the (α) arms both offered at"
+    let beta_beat = drive_f4_to_offer(&mut beta, alpha_beat + 1).expect(
+        "(β) the board RAISES a bounded offer at the tie: the divisor's floor of 0 is not the \
+         published count, because the cascade is taken under the offer's own declaration and \
+         that declaration charges neither starved seat. Every earlier conjunct must still pass \
+         here, which an absent offer would hide",
     );
+    assert_eq!(
+        beta_beat, alpha_beat,
+        "(β) REACH-GUARD: the same beat the (α) arms offered at, so the pair differs in the \
+         starved seats' life and in nothing else"
+    );
+    assert_eq!(
+        rederive_live_offer_bound(&beta, P1),
+        0,
+        "(β) CR 704.5a: the reach term {declared} puts BOTH starved seats at the same strict \
+         floor, so the DIVISOR admits two crossings at its relieved count and falls back to a \
+         floor of 0 — the number that used to suppress this very board"
+    );
+    let (_, _, beta_schema) = offer_parts(&beta);
+    assert!(
+        published_suggestion(beta_schema) >= 1,
+        "(β) the published suggestion is a count the offer's own declaration DRIVES, which is \
+         what a divisor reading 0 cannot refuse: no repetition of that declaration takes either \
+         starved seat anywhere; got {:?}",
+        beta_schema.iteration_count
+    );
+    // The typed refusal is still the producer's answer where the CASCADE measures nothing, and
+    // that arm is exercised by the rows about a board no living seat is consumed on. Asserted here
+    // only that it is NOT what this board reaches, so the arm above is attributable.
     let at_priority = replay_at_priority(&beta, proposer);
     let (outcome, meter) =
         try_offer_bounded_cycle_shortcut_metered(&at_priority, false, ProbeCap::Shipped);
     assert!(
-        matches!(outcome, Err(BoundedOfferRefusal::NoNarrowedLegalCount)),
-        "(β) the refusal must name the elimination bound — the reach term {declared} puts BOTH \
-         starved seats at the same strict floor, so the relieved count would admit two \
-         crossings and no legal repetition count survives (CR 704.5a + CR 732.2a). A different \
-         variant here means an EARLIER conjunct refused and this row stopped testing its own. \
-         got {outcome:?}, meter {meter:?}"
+        outcome.is_ok(),
+        "(β) the typed verdict on this very board is an OFFER and not \
+         `NoNarrowedLegalCount` — the divisor's tie at the floor no longer suppresses, because \
+         the published count is not divisor-derived. got {outcome:?}, meter {meter:?}"
     );
 
-    // (β)'s own positive control, ONE life point away: lift P3 alone and the floor is P2's
-    // again, so the relief applies and the very same board offers at P2's crossing.
+    // (β)'s own control, ONE life point away: lift P3 alone and the DIVISOR's floor is P2's
+    // again, so its relief applies and it reads P2's own crossing rather than 0.
     let mut beta_control = seeded(&[(P2, 1), (P3, 2)]);
     assert_eq!(
         drive_f4_to_offer(&mut beta_control, 400),
         Some(alpha_beat),
-        "CONTROL for (β): with P3 one point clear the board OFFERS again, so the refusal above \
-         is the tie at the floor and not a board that had stopped offering anyway"
+        "CONTROL for (β): the same board and beat, one life point apart"
     );
-    let (_, _, control_schema) = offer_parts(&beta_control);
     assert_eq!(
-        control_schema.measured_repetition_bound.map(i64::from),
-        Some(crossing_cycle(1)),
-        "CONTROL for (β): and it offers at P2's own crossing — the single relieved iteration \
-         that CR 732.2a admits because it is the sequence's last"
+        i64::from(rederive_live_offer_bound(&beta_control, P1)),
+        crossing_cycle(1),
+        "CONTROL for (β): with P3 one point clear the divisor's floor is P2's alone, so the \
+         relief applies and it reads P2's own crossing — which is what makes (β)'s 0 the TIE and \
+         not a board whose divisor was 0 anyway"
     );
 }
 
@@ -4790,7 +4878,10 @@ fn t1_a_victim_changing_declaration_commits_its_whole_count_on_the_seats_it_decl
         .clone()
         .expect("a bounded offer publishes its per-period signature");
     let schema = schema.clone();
-    let n = schema.deliverable_capacity;
+    // The count the offer's own published declaration drives. This row's claim is that an accepted
+    // declaration commits its WHOLE count, which is a claim about the suggestion; the ceiling is
+    // the widest count some OTHER legal declaration may specify and is not what this drive runs.
+    let n = published_suggestion(&schema);
 
     let life_rate = -per_cycle.delta.life.values().copied().min().unwrap_or(0);
     assert!(
@@ -4932,7 +5023,10 @@ fn t2_reach_guard_a_same_seat_schedule_shape_already_commits_its_whole_count() {
         .clone()
         .expect("a bounded offer publishes its per-period signature");
     let schema = schema.clone();
-    let n = schema.deliverable_capacity;
+    // The count the offer's own published declaration drives. This row's claim is that an accepted
+    // declaration commits its WHOLE count, which is a claim about the suggestion; the ceiling is
+    // the widest count some OTHER legal declaration may specify and is not what this drive runs.
+    let n = published_suggestion(&schema);
 
     let life_rate = -per_cycle.delta.life.values().copied().min().unwrap_or(0);
     assert!(
@@ -5423,7 +5517,10 @@ fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_c
         .clone()
         .expect("a bounded offer publishes its per-period signature");
     let schema = schema.clone();
-    let n = schema.deliverable_capacity;
+    // The count the offer's own published declaration drives. This row's claim is that an accepted
+    // declaration commits its WHOLE count, which is a claim about the suggestion; the ceiling is
+    // the widest count some OTHER legal declaration may specify and is not what this drive runs.
+    let n = published_suggestion(&schema);
 
     // ── (a) the enumerated consumer moves.
     assert!(
@@ -5574,8 +5671,15 @@ struct F4Allocation {
     /// The CR 601.2c announcement journal's answer at the `Targets` slot — the seat the
     /// drive's LEADING cycle resolves, before anything the allocation governs.
     preannounced: PlayerId,
-    /// The published `InteractionShortcutCountSpec::Fixed` ceiling.
-    max_count: u32,
+    /// CR 732.2a: the published `InteractionShortcutCountSpec::Fixed` SUGGESTION — the count the
+    /// offer's own declaration drives, which is what every allocation row below declares.
+    ///
+    /// NOT the window's `max`. That is the widest count SOME legal declaration may specify, and on
+    /// this class it is strictly larger: a declaration re-aiming the charged slot after the first
+    /// crossing reaches further. Which authored allocations actually drive the wider ceiling is a
+    /// question about which allocations are legal, which is not this file's subject — these rows
+    /// are about what a declaration COMPOSES and REALIZES at a count it certainly drives.
+    drivable_count: u32,
     /// Magnitude of the published per-cycle life charge at `preannounced`.
     rate: i64,
 }
@@ -5685,8 +5789,15 @@ fn f4_allocation_offer(state: &mut GameState) -> F4Allocation {
         "reach-guard: candidate ids are positionally aligned with the published legal victims, \
          which is how every allocation below names a seat without spelling an id"
     );
-    let max_count = match count {
-        InteractionShortcutCountSpec::Fixed { max, .. } => *max,
+    let drivable_count = match count {
+        InteractionShortcutCountSpec::Fixed { suggested, max, .. } => {
+            assert!(
+                *suggested <= *max && *suggested >= 1,
+                "reach-guard: the projected suggestion must lie inside the published window; got \
+                 suggested {suggested} vs max {max}"
+            );
+            *suggested
+        }
         other => panic!("this board publishes a Fixed count window, got {other:?}"),
     };
 
@@ -5721,7 +5832,7 @@ fn f4_allocation_offer(state: &mut GameState) -> F4Allocation {
         published_preview: preview.clone(),
         offer_candidates: offer_candidates.clone(),
         preannounced,
-        max_count,
+        drivable_count,
         rate,
     }
 }
@@ -5872,7 +5983,7 @@ fn f4_pending_announcement(state: &GameState) -> Vec<TargetRef> {
 fn p4_row_1_an_allocation_of_the_published_ceiling_commits_its_whole_count() {
     let mut state = load_f4();
     let offer = f4_allocation_offer(&mut state);
-    let count = offer.max_count;
+    let count = offer.drivable_count;
 
     assert!(
         offer.rate > 0,
@@ -5951,14 +6062,14 @@ fn p4_row_1_an_allocation_of_the_published_ceiling_commits_its_whole_count() {
 fn p4_row_1b_an_authored_non_canonical_distribution_is_accepted() {
     let count_probe = {
         let mut state = load_f4();
-        f4_allocation_offer(&mut state).max_count
+        f4_allocation_offer(&mut state).drivable_count
     };
 
     // ── (a) UNEQUAL PARTS over all three victims ──
     {
         let mut state = f4_at_offer();
         let offer = f4_allocation_offer(&mut state);
-        let count = offer.max_count;
+        let count = offer.drivable_count;
         assert!(
             offer.rate > 0,
             "ANTI-VACUITY: the published rate is positive"
@@ -5990,7 +6101,7 @@ fn p4_row_1b_an_authored_non_canonical_distribution_is_accepted() {
     {
         let mut state = f4_at_offer();
         let offer = f4_allocation_offer(&mut state);
-        let count = offer.max_count;
+        let count = offer.drivable_count;
         let declared: Vec<PlayerId> = offer
             .legal_seats
             .iter()
@@ -6040,7 +6151,7 @@ fn p4_row_1b_an_authored_non_canonical_distribution_is_accepted() {
     {
         let mut state = f4_at_offer();
         let offer = f4_allocation_offer(&mut state);
-        let count = offer.max_count;
+        let count = offer.drivable_count;
         let omitted = *offer
             .legal_seats
             .iter()
@@ -6088,22 +6199,22 @@ fn p4_row_1b_an_authored_non_canonical_distribution_is_accepted() {
     let mut control = f4_at_offer();
     let control_offer = f4_allocation_offer(&mut control);
     assert_eq!(
-        control_offer.max_count, count_probe,
+        control_offer.drivable_count, count_probe,
         "reach-guard: the loaded board is the same one every arm above used"
     );
-    let third = control_offer.max_count / 3;
+    let third = control_offer.drivable_count / 3;
     let control_allocation = [
         (control_offer.legal_seats[0], third),
         (control_offer.legal_seats[1], third),
         (
             control_offer.legal_seats[2],
-            control_offer.max_count - 2 * third,
+            control_offer.drivable_count - 2 * third,
         ),
     ];
     let control_losses = f4_drive_allocation(
         &mut control,
         &control_offer,
-        control_offer.max_count,
+        control_offer.drivable_count,
         &control_allocation,
     );
     let omitted = *control_offer
@@ -6144,7 +6255,7 @@ fn p4_row_1c_a_segment_starting_at_the_last_index_realizes_nothing_but_stays_ann
     let drive = |allocation_of: &dyn Fn(&F4Allocation) -> Vec<(PlayerId, u32)>| {
         let mut state = f4_at_offer();
         let offer = f4_allocation_offer(&mut state);
-        let count = offer.max_count;
+        let count = offer.drivable_count;
         let allocation = allocation_of(&offer);
         let trailing = allocation
             .last()
@@ -6170,19 +6281,19 @@ fn p4_row_1c_a_segment_starting_at_the_last_index_realizes_nothing_but_stays_ann
     // length rather than from a halving, so the axis this pair moves stays 2 against 1 at
     // every published count instead of only at one parity of it.
     let (rate, count, last_len2, total_len2, _, _, losses_len2) = drive(&|o: &F4Allocation| {
-        let head = (o.max_count - 2) / 2;
+        let head = (o.drivable_count - 2) / 2;
         vec![
             (o.legal_seats[0], head),
-            (o.legal_seats[1], o.max_count - 2 - head),
+            (o.legal_seats[1], o.drivable_count - 2 - head),
             (o.legal_seats[2], 2),
         ]
     });
     let (_, _, last_len1, total_len1, trailing_len1, pending_len1, losses_len1) =
         drive(&|o: &F4Allocation| {
-            let head = (o.max_count - 1) / 2;
+            let head = (o.drivable_count - 1) / 2;
             vec![
                 (o.legal_seats[0], head),
-                (o.legal_seats[1], o.max_count - 1 - head),
+                (o.legal_seats[1], o.drivable_count - 1 - head),
                 (o.legal_seats[2], 1),
             ]
         });
@@ -6213,10 +6324,19 @@ fn p4_row_1c_a_segment_starting_at_the_last_index_realizes_nothing_but_stays_ann
     // the published count is that seat's own CR 704.5a crossing, so declaring nearly all of it
     // onto that seat again ends the drive at the removal instead of at the handback this pair
     // reads.
-    let (_, _, two_len2, _, _, _, losses_two_len2) =
-        drive(&|o: &F4Allocation| vec![(o.legal_seats[2], o.max_count - 2), (o.legal_seats[1], 2)]);
+    let (_, _, two_len2, _, _, _, losses_two_len2) = drive(&|o: &F4Allocation| {
+        vec![
+            (o.legal_seats[2], o.drivable_count - 2),
+            (o.legal_seats[1], 2),
+        ]
+    });
     let (_, _, two_len1, _, two_trailing, two_pending, losses_two_len1) =
-        drive(&|o: &F4Allocation| vec![(o.legal_seats[2], o.max_count - 1), (o.legal_seats[1], 1)]);
+        drive(&|o: &F4Allocation| {
+            vec![
+                (o.legal_seats[2], o.drivable_count - 1),
+                (o.legal_seats[1], 1),
+            ]
+        });
     assert_eq!(
         (two_len2, two_len1),
         (rate, 0),
@@ -6307,7 +6427,7 @@ fn p4_row_2_a_later_segment_that_went_illegal_refuses_the_whole_declaration() {
 
     let mut state = load_f4();
     let offer = f4_allocation_offer(&mut state);
-    let count = offer.max_count;
+    let count = offer.drivable_count;
     let third = count / 3;
     let allocation = [
         (offer.legal_seats[0], third),
@@ -7721,8 +7841,8 @@ fn the_published_offer_the_authored_edit_and_the_committed_drive_are_one_chain()
     let mut state = load_f4();
     let offer = f4_allocation_offer(&mut state);
 
-    // ── (a) THE BADGE. The open window's ceiling is the engine-published bound, and that bound
-    //    is the count picker's own — ONE value, which every leg below then runs on.
+    // ── (a) THE BADGE. The open window's ceiling is the engine-published bound; the count the
+    //    legs below run on is the picker's suggestion, which that ceiling contains.
     let (bound, per_cycle) = {
         let (_, certificate, schema) = offer_parts(&state);
         (
@@ -7738,12 +7858,18 @@ fn the_published_offer_the_authored_edit_and_the_committed_drive_are_one_chain()
         Some(bound),
         "CR 732.2a: the open window's ceiling is the schema's own bound {bound}"
     );
-    assert_eq!(
-        bound, offer.max_count,
-        "CR 732.2a: the badge's bound and the count picker's published ceiling are ONE engine \
-         value, which is what makes every leg below run on the same count"
+    // The badge publishes the CEILING. The count picker publishes a SUGGESTION beside it, and on
+    // this allocated board the two are different integers: a declaration re-aiming the charged
+    // slot after a crossing reaches further than the one this offer already states. Every leg
+    // below runs on the suggestion — the count this offer's own declaration drives.
+    assert!(
+        offer.drivable_count < bound,
+        "CR 732.2a: the picker's suggestion must lie strictly inside the badge's ceiling on this \
+         class, or the chain below cannot tell the two published numbers apart; suggestion {} vs \
+         ceiling {bound}",
+        offer.drivable_count
     );
-    let count = offer.max_count;
+    let count = offer.drivable_count;
 
     // ── (b) THE RATES, asserted BEFORE anything multiplies by them, so no product below can
     //    meet its clause as `0 == 0 * n`.

@@ -3300,28 +3300,64 @@ fn certified_bounded_cycle_offer<'a>(
     // CR 119.3 + CR 704.5a: the per-seat divisor, published and then HANDED to the reduction,
     // so the bound cannot be divided by anything other than what the certificate states.
     periodic.seat_life_charge = frame_wise.seat_life_charges(&charged);
-    // On `periodic.delta` rather than on `frame_wise`: with the life term supplied, `self`
-    // contributes only the poison and library axes the accumulation leaves untouched, which is
-    // the shape a re-derivation at consumption will have too.
+    // (7b) THE DECLARATION, BEFORE THE SCHEMA. The cascade below is DECLARATION-RELATIVE, so the
+    // pins have to exist before there is a count to publish. `pin_journalled_declaration` reads
+    // the journal alone and stamps nothing, which is exactly what makes taking it here
+    // non-circular: the publisher's own count is stamped onto it at step (10), after this
+    // producer has decided what that count is.
+    let pins = pin_journalled_declaration(state, proposer, &points);
+
+    // (7c) THE CASCADE, TAKEN TWICE — once under the offer's OWN declaration and once under a
+    // WITNESS, because CR 732.2a's two questions are not one question.
     //
-    // THE PREDICTION THE REDUCTION ALSO RETURNS IS DISCARDED HERE, deliberately rather than by
-    // omission. A departure named at the OFFER beat would have to ride the proposal to
-    // consumption, where the same serde that can tamper the accepted count can tamper it; the
-    // consumption seam derives its own on the board the drive actually runs against.
-    // ONE conjunct at ONE site, over the reduction's own answer: the ABSENCE means no living
-    // seat is consumed, so this producer measured nothing and belongs to another seam; a measured
-    // `0` means two or more seats cross on the first repetition, so no repetition is legal. Both
-    // leave this producer with nothing to state, and each row's board is what distinguishes which
-    // ground it exercised. This is also what makes `schema.is_bounded()` true BY CONSTRUCTION for
-    // every offer this function mints, instead of an inference from step 5's `Advantage`
-    // rejection. NO UPPER END: a threshold above the engine's repetition budget is still a
-    // measured threshold, and the budget is the schema constructor's to apply.
-    let measured_bound = periodic
-        .delta
-        .elimination_bounds(state, &periodic.seat_life_charge)
-        .filter(|bound| bound.count >= 1)
-        .ok_or(BoundedOfferRefusal::NoNarrowedLegalCount)?
-        .count;
+    // The SUGGESTION must be a count the offer's own published declaration can drive: the declare
+    // handler resolves `template: None` to exactly that declaration, and the AI's own candidate
+    // carries it, so publishing a suggestion it cannot drive would have the engine refuse its own
+    // offer. The CEILING answers CR 732.2a's "may be legally taken", which quantifies
+    // EXISTENTIALLY — what SOME legal declaration may specify. Those are different numbers and
+    // the schema carries two fields for them.
+    //
+    // The charge is `PeriodicDelta::declared_seat_life_charges`' and NOT the published divisor.
+    // The divisor charges every reachable seat its full magnitude in every repetition, so a
+    // divisor-derived cascade names departures no repetition of THIS period can cause — and the
+    // drive's discriminator compares the predicted seat set at a repetition against the observed
+    // one, so the entries must be ones a repetition can produce. The divisor keeps its own job at
+    // `ResourceVector::elimination_bounds`: the first crossing under ANY declaration.
+    //
+    // THE PREDICTION IS STILL DISCARDED HERE, deliberately rather than by omission. A cascade
+    // named at the OFFER beat would have to ride the proposal to consumption, where the same
+    // serde that can tamper the accepted count can tamper it; the consumption seam re-derives its
+    // own on the board the drive actually runs against.
+    //
+    // ONE conjunct at ONE site, over the reduction's own answer: the ABSENCE means no living seat
+    // is consumed, so this producer measured nothing and belongs to another seam. A cascade cannot
+    // publish `0` — its entries are repetitions and a repetition is counted from 1 — so the
+    // `count >= 1` filter below NO LONGER DISCRIMINATES and is a fail-closed guard on an authority
+    // value rather than a live gate; it is kept, and said, because a later reader must not mistake
+    // it for one. This is also what makes `schema.is_bounded()` true BY CONSTRUCTION for every
+    // offer this function mints. NO UPPER END: a threshold above the engine's repetition budget is
+    // still a measured threshold, and the budget is the schema constructor's to apply.
+    let own = periodic
+        .elimination_cascade(state, proposer, pins.as_ref(), pins.as_ref(), &points)
+        .map(|cascade| truncate_to_declared_seats(cascade, pins.as_ref(), state))
+        .filter(|cascade| cascade.count >= 1)
+        .ok_or(BoundedOfferRefusal::NoNarrowedLegalCount)?;
+    // The witness needs a published declaration to re-aim and a charged slot to re-aim; without
+    // either it is `None` and the ceiling degenerates to the suggestion — today's shape.
+    let witness_bound = pins
+        .as_ref()
+        .and_then(|observed| periodic.piecewise_witness(state, proposer, observed, &points))
+        .and_then(|witness| {
+            periodic.elimination_cascade(state, proposer, Some(&witness), pins.as_ref(), &points)
+        })
+        .map_or(0, |cascade| cascade.count);
+    // THE LARGER OF THE TWO, and that is not an optimisation. `handle_declare_shortcut` refuses
+    // any `Fixed(n)` above `deliverable_capacity`, so a ceiling below the suggestion would have it
+    // refuse the offer's own suggestion; and nothing about the witness's greedy aim guarantees its
+    // count exceeds the own-declaration count. Both members are legal declarations, so the max
+    // keeps "the ceiling is what SOME legal declaration may specify" true and keeps
+    // `deliverable_capacity >= iteration_count` true by construction rather than by luck.
+    let measured_bound = own.count.max(witness_bound);
 
     // (8) The certificate, with the two fields the bounded class states differently from
     // Path A's spelled out at the site rather than mutated after the fact.
@@ -3336,25 +3372,30 @@ fn certified_bounded_cycle_offer<'a>(
         ..base
     };
 
-    // (9) The schema. This producer MEASURED a threshold, so it hands the constructor
-    // `Some(..)` and `schema.is_bounded()` is true by construction for every offer it mints.
-    // `Fixed(measured_bound)` is the SUGGESTION, and the constructor derives the CEILING the
-    // declare handler enforces — which rejects any `Fixed(n)` above it and rejects
-    // `UntilLethal` outright, both already shipped. The measured threshold handed here may
-    // EXCEED the engine's repetition budget, since nothing above clamps it; the constructor is
-    // the single site that applies that budget, and the two published numbers differ exactly
-    // there. The pre-built `points` go in directly —
-    // the bounded path never calls `pinned_decisions_to_points`, whose legal sets are derived
-    // FROM the declared pins and would let a declaration ratify itself.
+    // (9) The schema, WITH THE TWO NUMBERS SEPARATED. This producer MEASURED a threshold, so it
+    // hands the constructor `Some(..)` and `schema.is_bounded()` is true by construction for every
+    // offer it mints.
+    //
+    // `Fixed(own.count)` is the SUGGESTION — the count the offer's own published declaration
+    // drives. `Some(measured_bound)` is the CEILING the declare handler enforces, which rejects
+    // any `Fixed(n)` above it and rejects `UntilLethal` outright, both already shipped. Either
+    // number handed here may EXCEED the engine's repetition budget, since nothing above clamps
+    // them; the constructor is the single site that applies that budget, and it narrows the
+    // suggestion to the capacity it derives, so `deliverable_capacity >= iteration_count` survives
+    // the clamp. The pre-built `points` go in directly — the bounded path never calls
+    // `pinned_decisions_to_points`, whose legal sets are derived FROM the declared pins and would
+    // let a declaration ratify itself.
     let schema = build_shortcut_schema(
         points,
-        IterationCount::Fixed(measured_bound),
+        IterationCount::Fixed(own.count),
         Some(measured_bound),
     );
-    // (10) The DECLARATION the engine can already specify for this offer, read out of the
-    // answer journal the same window populated. Built AFTER the schema because `points` is
-    // moved into `build_shortcut_schema`, and taking `&schema` keeps one point list rather
-    // than two.
+    // (10) The DECLARATION the engine can already specify for this offer, read out of the same
+    // journal step (7b) read and now STAMPED with the published suggestion and VALIDATED against
+    // the schema that publishes it. Taken again here rather than carried from (7b) because
+    // publication is the half that needs a schema, and the journal read is deterministic: this
+    // returns `Some` over exactly the pins (7b) charged, or `None` where the publisher's own gate
+    // refuses them — the latent arm this function's doc already scopes.
     let declaration = build_bounded_declaration(state, proposer, &schema);
     Ok(WaitingFor::LoopShortcut {
         proposer,
@@ -3363,6 +3404,67 @@ fn certified_bounded_cycle_offer<'a>(
         schema,
         declaration,
     })
+}
+
+/// CR 732.2a: a cascade cut where the declaration that produced it STOPS CHARGING WHAT IT PINNED
+/// — the last entry kept is the first one whose seat set meets the seats those pins name.
+///
+/// `build_bounded_declaration` pins a single-seat ranking. Once that seat departs the pin no longer
+/// names a living seat, `PeriodicDelta::declared_seat_life_charges` reads it as unknown and
+/// fail-closed ("both lands and leaves"), and an unguarded cascade would keep charging every other
+/// seat the reserved dip and publish a SUGGESTION that declaration cannot drive.
+///
+/// INCLUSIVE, and that is a decision rather than an off-by-one: the entry meeting the pins is the
+/// one the pinned seat departs on, which the declaration DOES drive. Dropping it publishes the
+/// entry before it — and where it is the first entry, publishes nothing at all and suppresses the
+/// offer.
+///
+/// READ THROUGH [`crate::analysis::decision_template::resolve`], the same authority
+/// `declared_seat_life_charges` reads a declaration through, rather than by walking `TargetPin`
+/// spellings: the seats this cut sees are then exactly the seats that charge model charges, both
+/// pin classes included, and a pin or schedule shape added later needs no visit here. Resolved AT
+/// each entry's own iteration index, because a scheduled pin names a different seat per repetition.
+///
+/// A declaration naming NO seat — the untargeted class, whose offers publish no points and
+/// therefore no declaration — meets no entry and truncates nothing, which is correct: the period's
+/// own unconditional term is what charges every seat there, and it keeps charging them.
+fn truncate_to_declared_seats(
+    cascade: crate::analysis::resource::EliminationCascade,
+    declaration: Option<&crate::analysis::decision_template::DecisionTemplate>,
+    state: &GameState,
+) -> crate::analysis::resource::EliminationCascade {
+    use crate::analysis::decision_template::{ConcreteDecision, ConcreteTarget};
+    let Some(template) = declaration else {
+        return cascade;
+    };
+    let names_a_seat_of = |entry: &crate::analysis::resource::PredictedDeparture| -> bool {
+        // Repetition `r` is driven by iteration index `r - 1`. A declaration that cannot resolve
+        // at that index is refused at declare time by `validate_pins`, so nothing is cut for it.
+        let Ok(decisions) = crate::analysis::decision_template::resolve(
+            template,
+            entry.repetition.saturating_sub(1),
+            state,
+        ) else {
+            return false;
+        };
+        decisions.iter().any(|decision| {
+            match decision {
+            ConcreteDecision::Targets { targets, .. } => targets.iter().any(|target| {
+                matches!(target, ConcreteTarget::Player(seat) if entry.seats.contains(seat))
+            }),
+            _ => false,
+        }
+        })
+    };
+    let Some(cut) = cascade.entries.iter().position(names_a_seat_of) else {
+        return cascade;
+    };
+    let mut entries = cascade.entries;
+    entries.truncate(cut + 1);
+    let count = entries
+        .last()
+        .map_or(cascade.count, |entry| entry.repetition);
+    crate::analysis::resource::EliminationCascade { count, entries }
 }
 
 /// CR 732.2a: the declaration THIS offer can already state, derived from what the proposer
@@ -4589,32 +4691,81 @@ fn shortcut_consumption_bound(
     let Some(per_cycle) = proposal.per_cycle.as_ref() else {
         return ConsumptionDerivation::Unsigned;
     };
-    // CR 119.3: the divisor the table agreed to, floored by what `PeriodicDelta::conforms`
-    // actually enforces — an emptied publication otherwise divides by nothing.
-    let divisor = per_cycle
-        .delta
-        .consumption_seat_life_charges(&per_cycle.seat_life_charge);
-    let Some(bound) = per_cycle.delta.elimination_bounds(state, &divisor) else {
+    // CR 732.2a + CR 601.2c: the declaration the drive REPLAYS is the one the cascade is taken
+    // under, resolved exactly as `handle_declare_shortcut` resolves it — the proposal's own
+    // template, or the offer's published declaration where the declarer overrode nothing.
+    //
+    // DECLARATION-RELATIVE, AND NOT FLOORED BY THE PUBLISHED DIVISOR — the decision, not an
+    // omission. `declared_seat_life_charges` already floors its net term by the period's own net
+    // loss, which is the very seed `ResourceVector::consumption_seat_life_charges` floors THE
+    // DIVISOR with, so the emptied-publication degradation that floor existed for is already
+    // inside the charge authority: with `seat_life_charge` empty the charge falls to the period's
+    // own net term and the cascade still narrows. Flooring by the divisor's PUBLISHED half instead
+    // would charge every reachable seat its full magnitude in every repetition, which is the
+    // divisor model this phase's charging decision rules out by name, and which would hand the
+    // drive a cascade naming departures no repetition of this period can cause — while the drive's
+    // discriminator compares the predicted seat set at a repetition against the observed one.
+    // `consumption_seat_life_charges` keeps its job wherever the divisor is what is wanted.
+    let template = proposal.template.as_ref();
+    // The published `points` do not ride the proposal, so each charged slot's legal set is
+    // synthesized from the two fields that do: `victim_slot` names the slots and
+    // `declarable_victims` is their reach UNION. A union over-states a single slot's own reach,
+    // which charges a seat a slot cannot name — fail-closed, a lower count.
+    let points: Vec<crate::analysis::decision_template::DecisionPoint> =
+        synthesized_charge_points(per_cycle);
+    let Some(cascade) =
+        per_cycle.elimination_cascade(state, proposal.proposer, template, template, &points)
+    else {
         return ConsumptionDerivation::NoMeasurement;
     };
     ConsumptionDerivation::Measured(ConsumptionBound {
-        ceiling: bound.count,
-        // Every crossing at or below the accepted count, and none above it. This reduction states
-        // one, on the relieved count itself, so an accept strictly under the ceiling keeps none —
-        // the same set of counts the `== accepted` filter this replaces admitted, said in the
-        // shape a cascade of crossings is stated in.
-        entries: bound
-            .predicted_departure
-            .filter(|(_, repetition)| *repetition <= accepted)
-            .and_then(|(seat, repetition)| {
-                crate::analysis::resource::PredictedDeparture::new(
-                    repetition,
-                    BTreeSet::from([seat]),
-                )
-            })
+        ceiling: cascade.count,
+        // Every crossing at or below the accepted count, and none above it: a count accepted
+        // below the ceiling contains only the crossings it reaches.
+        entries: cascade
+            .entries
             .into_iter()
+            .filter(|entry| entry.repetition <= accepted)
             .collect(),
     })
+}
+
+/// CR 115.2 + CR 732.2a: the per-slot published legal sets a consumption-time re-derivation has to
+/// stand in for, synthesized from the two certificate fields that DO ride the proposal.
+///
+/// The offer's `ShortcutDecisionSchema` is not on the proposal and no field is added to put it
+/// there — the charter's own posture is that nothing the serde can tamper may carry a prediction.
+/// So each charged slot is given the reach UNION ([`PeriodicDelta::declarable_victims`]) as its
+/// legal set. That OVER-STATES a single slot's own reach when two slots of different reaches are
+/// charged, which charges a seat some slot cannot actually name. An over-charge is a LOWER count,
+/// so the direction is fail-closed and the drivability gate refuses more counts rather than fewer.
+///
+/// `min_targets`/`max_targets` are `1`, matching what the bounded producer's own point mint
+/// hard-codes, so
+/// [`PeriodicDelta::declared_seat_life_charges`] reads these as published rather than withheld —
+/// a withheld slot is charged against EVERY domain seat, which is the coarser answer.
+fn synthesized_charge_points(
+    per_cycle: &crate::analysis::resource::PeriodicDelta,
+) -> Vec<crate::analysis::decision_template::DecisionPoint> {
+    use crate::analysis::decision_template::{DecisionPoint, DecisionPointKind};
+    let legal_targets: Vec<crate::types::ability::TargetRef> = per_cycle
+        .declarable_victims
+        .iter()
+        .map(|seat| crate::types::ability::TargetRef::Player(*seat))
+        .collect();
+    per_cycle
+        .victim_slot
+        .iter()
+        .map(|(slot, _)| DecisionPoint {
+            slot: slot.clone(),
+            kind: DecisionPointKind::Targets {
+                legal_targets: legal_targets.clone(),
+                min_targets: 1,
+                max_targets: 1,
+                ordered: false,
+            },
+        })
+        .collect()
 }
 
 /// Whether this engine will drive `count` repetitions of `proposal` on this board — the one
@@ -26420,18 +26571,30 @@ mod bounded_offer_conjunct_tests {
         );
     }
 
-    /// **V3d — CR 732.2a: the prediction is derived at the ACCEPTED count, not at the
-    /// ceiling.** A declarer may name any count at or below the offered one and the drive runs
-    /// at that count; the named seat crosses on the relieved count itself and nobody crosses
-    /// below it, so a proposal accepted strictly under the ceiling predicts NO departure at
-    /// all. A discriminator reading a prediction taken at the ceiling would admit that seat's
-    /// departure on a proposal predicting nobody would leave.
+    /// **V3d — CR 732.2a: the prediction is TRUNCATED at the ACCEPTED count, not taken at the
+    /// ceiling.** A declarer may name any count at or below the offered one and the drive runs at
+    /// that count, so the crossings a derivation states are the ones that count CONTAINS — every
+    /// entry at or below it, and none above. A discriminator reading a prediction taken at the
+    /// ceiling would admit a later crossing's departure on a proposal that never reaches it.
     ///
-    /// The PAIR on one board and one proposal is its own reach-guard: a helper always answering
-    /// absent fails the first leg, one always answering present fails the second.
+    /// # What this row stopped assuming
     ///
-    /// REVERT-PROBE: resolve the prediction at `bound.count` instead of at the accepted count
-    /// ⇒ both legs answer present ⇒ the second FAILS.
+    /// It read the ceiling as the FIRST crossing, so "below the ceiling nobody crosses" was the
+    /// whole claim. The ceiling is now the LAST crossing of the cascade, so counts below it do
+    /// contain crossings and the claim is about TRUNCATION rather than about emptiness. Both legs
+    /// are now re-derived from the cascade the ceiling's own accept publishes: nothing is pinned,
+    /// and the row states the property — every retained entry is at or below the accepted count,
+    /// and the last one at the ceiling is the ceiling itself.
+    ///
+    /// # A live instrument, and the pair as its own reach guard
+    ///
+    /// The cascade at the ceiling is asserted NON-EMPTY and its first entry's repetition is
+    /// asserted to exist, so a derivation always answering absent fails before the truncation is
+    /// examined; and the leg below the FIRST entry is asserted empty, so one always answering
+    /// present fails there.
+    ///
+    /// REVERT-PROBE: drop the `repetition <= accepted` filter ⇒ the leg below the first crossing
+    /// answers present ⇒ it FAILS while the ceiling leg stays green.
     #[test]
     fn the_predicted_departure_is_resolved_at_the_accepted_count() {
         let (state, proposal, published) = signmix_offer_at_responder_beat();
@@ -26442,21 +26605,35 @@ mod bounded_offer_conjunct_tests {
         );
 
         let at_ceiling = measured_consumption_bound(&state, &proposal, published);
+        let repetitions: Vec<u32> = at_ceiling
+            .entries
+            .iter()
+            .map(|entry| entry.repetition)
+            .collect();
         assert!(
-            !at_ceiling.entries.is_empty(),
-            "CR 704.5a: at the count the reduction derived, the seat it crosses is named"
+            !repetitions.is_empty(),
+            "CR 704.5a: at the count the reduction derived, the crossings it contains are named"
         );
-        assert_eq!(
-            at_ceiling
-                .entries
+        assert!(
+            repetitions
                 .iter()
-                .map(|entry| entry.repetition)
-                .collect::<Vec<_>>(),
-            vec![published],
-            "the named repetition is the count itself — the final iteration of the sequence"
+                .all(|repetition| *repetition <= published)
+                && repetitions.last() == Some(&published),
+            "CR 732.2a: the accepted count contains every entry at or below it and none above, \
+             and the last one it contains is its own final iteration; got {repetitions:?} at \
+             {published}"
         );
 
-        let below = measured_consumption_bound(&state, &proposal, published - 1);
+        // The count one below the FIRST crossing — the only count this board admits that contains
+        // no crossing at all, which is what the emptiness leg has to be taken at now that the
+        // ceiling reaches past the first.
+        let first = repetitions[0];
+        assert!(
+            first >= 2,
+            "REACH-GUARD: the first crossing must leave a count below it, else the empty leg is \
+             not constructible on this board; got {repetitions:?}"
+        );
+        let below = measured_consumption_bound(&state, &proposal, first - 1);
         assert_eq!(
             below.ceiling, at_ceiling.ceiling,
             "REACH-GUARD: the CEILING is a property of the board and the signature, so it does \
@@ -26465,8 +26642,8 @@ mod bounded_offer_conjunct_tests {
         );
         assert!(
             below.entries.is_empty(),
-            "CR 732.2a: below the ceiling no seat reaches its threshold, so this count \
-             predicts no departure"
+            "CR 732.2a: below the first crossing no seat reaches its threshold, so that count \
+             predicts no departure; cascade at the ceiling {repetitions:?}"
         );
     }
 

@@ -8827,6 +8827,142 @@ pub(crate) fn f4_offer_board() -> (GameState, PlayerId) {
     (state, proposer)
 }
 
+/// The committed UNTARGETED 4p drain at its CR 732.2a offer beat, restored and driven exactly as
+/// [`f4_offer_board`] restores and drives the allocated one, with the interaction authority BOUND.
+///
+/// Its offer publishes no charged victim slot, so there is no aim for a witness declaration to
+/// re-point and the producer's two published numbers coincide there — which is what makes this
+/// board the EQUAL-leg control for the row below rather than a second copy of the same class.
+///
+/// The proposer-only opportunity assertion is this helper's own liveness control, for the reason
+/// [`f4_offer_board`] states.
+fn untargeted_offer_board() -> (GameState, PlayerId) {
+    use std::io::Read;
+
+    let gz: &[u8] = include_bytes!("../fixtures/dina_noff_turn5_4p.json.gz");
+    let mut json = String::new();
+    flate2::read::GzDecoder::new(gz)
+        .read_to_string(&mut json)
+        .expect("the tracked fixture inflates to UTF-8 JSON");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&json).expect("the dump envelope parses as JSON");
+    let mut state = serde_json::from_value::<engine::types::game_state::PersistedGameState>(
+        envelope["gameState"].clone(),
+    )
+    .expect("the dump deserializes through the production decoder")
+    .into_game_state()
+    .expect("the persisted snapshot satisfies the checked restore contract");
+    state.loop_detection = engine::types::game_state::LoopDetectionMode::Interactive;
+
+    // The untargeted class's own drive policy, reused rather than restated: this board raises
+    // CR 603.3b trigger-ordering beats the allocated class's policy never sees, and a second copy
+    // of a drive-to-offer walk is a second policy to keep in step with the producer.
+    crate::loop_shortcut::drive_to_bounded_offer(&mut state, 600)
+        .expect("the drive must reach the CR 732.2a bounded offer on this committed 4p drain");
+    let WaitingFor::LoopShortcut { proposer, .. } = state.waiting_for else {
+        panic!(
+            "the drive must reach the CR 732.2a bounded offer, got {:?}",
+            state.waiting_for
+        );
+    };
+    bind_interaction_authority(
+        &mut state,
+        InteractionSessionId("interaction-contract-untargeted-count-pair".to_string()),
+    )
+    .expect("the interaction authority binds over the live offer");
+    assert_eq!(
+        viewer_interaction(&state, proposer).opportunities.len(),
+        1,
+        "liveness control: the bound offer beat publishes the proposer's own opportunity"
+    );
+    (state, proposer)
+}
+
+/// **ROW 10 — CR 732.2a: the count picker's `max` and `suggested` are two numbers, and the
+/// projection carries them apart.**
+///
+/// `max` is the ceiling the declare handler enforces — what SOME legal declaration may specify,
+/// CR 732.2a's existential. `suggested` is the count the offer's OWN published declaration drives.
+/// Before this phase every bounded producer set both from one integer, so nothing downstream could
+/// show the pair was really two; the separation is a property of the producer, and this row is what
+/// verifies the projection was already carrying both rather than collapsing them.
+///
+/// **Nothing in `game/interaction.rs` changes for this row and that is the claim.** The count spec
+/// already carries `min`/`suggested`/`max` separately and the per-viewer wrap already copies all
+/// three; a row that needed an edit there would be a row about a projection bug instead.
+///
+/// # The two legs, in ONE invocation
+///
+/// The ALLOCATED class publishes a charged victim slot, so a witness declaration can re-aim it
+/// after the first crossing and exhibit a longer cascade than the offer's own declaration drives —
+/// the pair DIFFERS. The UNTARGETED class publishes no charged slot, so there is no aim to move and
+/// the two COINCIDE. Both are asserted, so neither leg is satisfied by a difference that exists
+/// everywhere or by an equality that does.
+///
+/// # Reach guards, asserted before the claim
+///
+/// Both legs assert the spec is the `Fixed` variant and that `max` is strictly positive, so an
+/// `UntilLethal` projection or a zeroed authority fails rather than passing by absence; and
+/// `suggested` is asserted inside `[min, max]`, which is the window the picker renders.
+///
+/// # Discrimination
+///
+/// Have the producer set both fields from one integer — which is what it did before this phase —
+/// and the allocated leg's strict inequality FAILS while the untargeted leg stays green. Publish
+/// the witness count as the suggestion too and the untargeted leg still passes while the allocated
+/// leg's `suggested < max` becomes an equality and fails.
+#[test]
+fn the_count_pickers_ceiling_and_suggestion_are_two_numbers() {
+    let (allocated, allocated_proposer) = f4_offer_board();
+    let (untargeted, untargeted_proposer) = untargeted_offer_board();
+
+    let pair = |state: &GameState, proposer: PlayerId, label: &str| -> (u32, u32, u32) {
+        let view = viewer_interaction(state, proposer);
+        let (count, _) = f4_published(&view);
+        let InteractionShortcutCountSpec::Fixed {
+            min,
+            max,
+            suggested,
+        } = &count
+        else {
+            panic!("[{label}] a bounded offer projects a `Fixed` count window, got {count:?}");
+        };
+        let (min, max, suggested) = (*min, *max, *suggested);
+        assert!(
+            max > 0,
+            "[{label}] REACH-GUARD: a zeroed ceiling is an authority violation, not a number to \
+             compare against"
+        );
+        assert!(
+            min <= suggested && suggested <= max,
+            "[{label}] REACH-GUARD: the suggestion must lie inside the window the picker renders; \
+             got min {min}, suggested {suggested}, max {max}"
+        );
+        (min, suggested, max)
+    };
+
+    // ── THE DIFFER LEG — the allocated class, whose charged slot a witness can re-aim.
+    let (_, allocated_suggested, allocated_max) =
+        pair(&allocated, allocated_proposer, "allocated class");
+    assert!(
+        allocated_suggested < allocated_max,
+        "CR 732.2a: the ceiling is what SOME legal declaration may specify and the suggestion is \
+         what the offer's OWN declaration drives, so on a board where re-aiming the charged slot \
+         reaches a later crossing the two are different numbers; got suggested \
+         {allocated_suggested} vs max {allocated_max}"
+    );
+
+    // ── THE EQUAL LEG, in this same invocation — the untargeted class has no aim to move.
+    let (_, untargeted_suggested, untargeted_max) =
+        pair(&untargeted, untargeted_proposer, "untargeted class");
+    assert_eq!(
+        untargeted_suggested, untargeted_max,
+        "with no charged victim slot there is no aim for a witness to re-point, so the offer's own \
+         declaration IS the widest one and the two published numbers coincide — which is what \
+         keeps the leg above from being an artefact of the projection rather than of the producer"
+    );
+}
+
 /// The offer's own published count window and preview list, read off the projection under test.
 fn f4_published(
     view: &engine::types::interaction::ViewerInteraction,

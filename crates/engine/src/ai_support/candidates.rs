@@ -3699,16 +3699,28 @@ pub fn candidate_actions_broad_with_probe(
             // one. An offer with published points and NO declaration (a seat that never
             // answered, or a `Conflicted` latch) still fail-closes: `declaration` is `None`,
             // the conjunct below is false, and `DeclineShortcut` remains the only candidate.
-            // THE CAPACITY, not the measured threshold: this candidate has to be an action the
-            // declare handler ACCEPTS, and that handler's per-offer arm refuses anything above
-            // the capacity. Which of the two an ideal declarer should name once a cascade can
-            // widen the ceiling past one crossing is `DEFERRED(phase 2)`.
-            if schema.is_bounded() && (schema.points.is_empty() || declaration.is_some()) {
+            // CR 732.2a: THE SUGGESTION, not the capacity — and the two are no longer one number.
+            // The capacity is the widest count SOME legal declaration may specify; the suggestion
+            // is a count the offer's OWN published declaration drives, which is the declaration
+            // this candidate carries (and which `template: None` would resolve to anyway). A
+            // candidate at the capacity opens the CR 732.2b window and is then refused by the
+            // consumption seam's drivability gate, committing zero cycles — the engine refusing
+            // its own candidate. Reading `iteration_count` rather than re-deriving anything keeps
+            // one authority for that count, the producer's.
+            //
+            // WILDCARD-FREE over `IterationCount`: a bounded offer publishes `Fixed`, and the
+            // `UntilLethal` arm above already covers the unbounded case, so an `UntilLethal`
+            // suggestion here has no count to name and emits nothing rather than guessing one.
+            let suggested = match schema.iteration_count {
+                crate::analysis::decision_template::IterationCount::Fixed(n) => Some(n),
+                crate::analysis::decision_template::IterationCount::UntilLethal => None,
+            };
+            if let Some(n) = suggested.filter(|_| {
+                schema.is_bounded() && (schema.points.is_empty() || declaration.is_some())
+            }) {
                 v.push(candidate(
                     GameAction::DeclareShortcut {
-                        count: crate::analysis::decision_template::IterationCount::Fixed(
-                            schema.deliverable_capacity,
-                        ),
+                        count: crate::analysis::decision_template::IterationCount::Fixed(n),
                         template: declaration.clone(),
                     },
                     TacticalClass::Utility,

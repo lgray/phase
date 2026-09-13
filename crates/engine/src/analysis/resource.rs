@@ -960,7 +960,22 @@ impl PeriodicDelta {
         // every entry on both sides, so this compares exactly what it compared before the
         // population became a parameter. Said once here, in code, instead of being restated at
         // each of the callers that leaves unedited.
-        self.conforms_in(observed, pins, &BTreeSet::new())
+        //
+        // NOT `BTreeSet::new()`. An empty population is not the identity — it is the VACUOUS
+        // predicate: `retained_seats` drops every seat-keyed axis on both sides, the two
+        // comparands reduce to their non-seat fields, and a period whose only divergence is on
+        // `life` compares EQUAL. `conforms_is_conforms_in_over_the_union_of_the_two_vectors_seat_keys`
+        // is what holds this to the union.
+        //
+        // Derived through `seat_keyed_axes`, which is the read-side twin of the exhaustive struct
+        // literal in `retained_seats`: an axis added to `ResourceVector` build-breaks at that
+        // literal and must then be classified in that helper, and the union follows.
+        let population: BTreeSet<PlayerId> = seat_keyed_axes(&self.delta)
+            .into_iter()
+            .chain(seat_keyed_axes(observed))
+            .flat_map(|axis| axis.keys().copied())
+            .collect();
+        self.conforms_in(observed, pins, &population)
     }
 
     /// CR 732.2a: whether one committed repetition matches this signature closely enough that
@@ -1257,6 +1272,309 @@ impl PeriodicDelta {
             }
         })
     }
+
+    /// CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4 + CR 800.4a: every CR 704 threshold crossing
+    /// this period produces under `declaration`, in departure order — the ordered cascade an
+    /// accepted count carries the game through.
+    ///
+    /// `None` when no living seat is consumed on any axis, which keeps
+    /// [`ResourceVector::elimination_bounds`]' own spelling of that absence: this reduction
+    /// measured no threshold, which is a different answer from every count it can return.
+    ///
+    /// # The population, and why the proposer is in it but bounds it
+    ///
+    /// CR 800.4 + CR 102.1: an eliminated seat has left the game and is not one of the people in
+    /// it, so the walk quantifies over living seats — including the proposer, exactly as the
+    /// single-crossing reduction does, because CR 732.2a's proposer "need not be the player
+    /// proposing the shortcut" who benefits.
+    ///
+    /// THE PROPOSER'S OWN CROSSING BOUNDS THE CASCADE RATHER THAN JOINING THE REST OF IT: it may
+    /// be the last entry, and no entry may follow it. CR 800.4a is the authority — once the
+    /// proposer leaves, every object they own leaves the game with them, so the loop's own engine
+    /// is gone and no later repetition happens. Admitting the proposer's crossing as a final entry
+    /// is today's behaviour, which the self-mill rows and the `phase-ai` proposer veto both rest
+    /// on; what is refused is a cascade that walks PAST it.
+    ///
+    /// # The arithmetic is the existing arithmetic, per seat, over its own charge stream
+    ///
+    /// The life axis has no divisor (there is nothing to divide): the crossing comes from
+    /// [`PeriodicDelta::first_life_crossing`] over
+    /// [`PeriodicDelta::declared_seat_life_charges`], whose `net`/`dip` pair is what CR 704.3's
+    /// per-priority-beat sweep requires. The poison and library axes have a constant per-period
+    /// magnitude, so their crossing is [`ResourceVector::narrowed_repetitions`]' strict answer
+    /// plus one — the least count PAST the threshold. The seat's crossing is the minimum of the
+    /// three.
+    ///
+    /// ONE PASS PER SEAT OVER THE WHOLE STREAM, and that IS the per-departure walk rather than a
+    /// short cut around it. `declared_seat_life_charges` resolves the declaration's pin AT EACH
+    /// REPETITION, so a declaration that re-aims at a later repetition — the witness below is
+    /// exactly that shape — already charges each seat what that repetition charges it. Spending
+    /// a segment's repetitions out of a seat's headroom and re-dividing the remainder would
+    /// restate the same accumulation with a second rounding step, and the horizon is the seat's
+    /// own remaining headroom for the reason D4 gives: `net` and `dip` are non-negative, so a
+    /// repetition that does not advance the accumulation never brings the crossing nearer.
+    ///
+    /// # The magnitude-constancy premise, stated rather than claimed
+    ///
+    /// The reduction extrapolates ONE measured period. A cascade additionally assumes each
+    /// surviving seat's per-period charge — and the proposer's — is unchanged by another seat's
+    /// departure. That is FALSE IN GENERAL: a drain scaling with the living-opponent count
+    /// charges less once a seat is gone. It is not claimed here and no monotone-magnitude
+    /// conjunct is added (which would reject every two-frame window, for the reason
+    /// [`ResourceVector::seat_headroom_bound`]'s own comment gives).
+    ///
+    /// What stands instead is three live backstops, each of which stops a drive the premise fails
+    /// on with every prior cycle committed: the per-cycle conformance check
+    /// ([`PeriodicDelta::conforms_in`]) refuses a cycle whose observed period moved on a seat
+    /// still in the game; the departure verdict refuses a departure at a repetition no entry
+    /// names or with a seat set no entry holds; and the live CR 704.3 sweep is what actually
+    /// removes a seat, never this prediction. The engine's own measurement of what the committed
+    /// boards do is in this branch's probe record, not restated here.
+    pub(crate) fn elimination_cascade(
+        &self,
+        state: &GameState,
+        proposer: PlayerId,
+        declaration: Option<&DecisionTemplate>,
+        observed: Option<&DecisionTemplate>,
+        points: &[DecisionPoint],
+    ) -> Option<EliminationCascade> {
+        let horizon = cascade_horizon(state);
+        let mut crossings: Vec<(PlayerId, u32)> = state
+            .players
+            .iter()
+            .filter(|p| !p.is_eliminated)
+            .filter_map(|p| {
+                self.seat_crossing(p, declaration, observed, points, state, horizon)
+                    .map(|repetition| (p.id, repetition))
+            })
+            .collect();
+        // By repetition, then by seat, so the grouping below is a linear walk and the entries
+        // come out in departure order with no second sort.
+        crossings.sort_unstable_by_key(|&(seat, repetition)| (repetition, seat));
+
+        // CR 800.4a: the proposer's crossing is the cascade's LAST entry when it happens at all.
+        // Truncating the walk at it is what keeps a cascade from naming a departure caused by a
+        // repetition that cannot occur.
+        let proposer_crossing = crossings
+            .iter()
+            .find(|&&(seat, _)| seat == proposer)
+            .map(|&(_, repetition)| repetition);
+
+        let mut entries: Vec<PredictedDeparture> = Vec::new();
+        for (seat, repetition) in crossings {
+            if proposer_crossing.is_some_and(|bound| repetition > bound) {
+                break;
+            }
+            match entries.last_mut() {
+                Some(last) if last.repetition == repetition => {
+                    last.seats.insert(seat);
+                }
+                // The constructor's refusals are the invariants, so an entry is never built by
+                // a struct literal here.
+                _ => entries.push(PredictedDeparture::new(repetition, BTreeSet::from([seat]))?),
+            }
+        }
+        let count = entries.last()?.repetition;
+        Some(EliminationCascade { count, entries })
+    }
+
+    /// CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: the first repetition at which THIS seat
+    /// crosses a CR 704 threshold under `declaration`, or `None` when no axis takes it there.
+    ///
+    /// The minimum over the three axes, each measured against the headroom its own rule leaves:
+    /// the seat's whole life total (CR 704.5a: 0 or less loses), one short of ten poison
+    /// (CR 704.5c), and the whole remaining library (CR 104.3c + CR 121.4: an empty library is
+    /// lethal at the next DRAW ATTEMPT and not on state alone, so every card left is headroom).
+    ///
+    /// `horizon` is the WALK's, not this seat's, for the reason
+    /// [`PeriodicDelta::elimination_cascade`] states where it derives it.
+    fn seat_crossing(
+        &self,
+        p: &Player,
+        declaration: Option<&DecisionTemplate>,
+        observed: Option<&DecisionTemplate>,
+        points: &[DecisionPoint],
+        state: &GameState,
+        horizon: u32,
+    ) -> Option<u32> {
+        // CR 704.5a: 0 or less life loses, so the whole total is the headroom. A living seat
+        // ALREADY at 0 or less — which a committed board carries — crosses on the first
+        // repetition, since `net` and `dip` are non-negative and the fatal test is `>=`.
+        let remaining_life = i64::from(p.life);
+        let life = Self::first_life_crossing(
+            self.declared_seat_life_charges(p.id, declaration, observed, points, state),
+            remaining_life,
+            horizon,
+        );
+        // The strict answer is the largest count after which no axis has crossed, so the
+        // crossing is the next one — `narrowed_repetitions` is the same division
+        // `seat_headroom_bound` performs, over these two axes' own headrooms.
+        let non_life = ResourceVector::narrowed_repetitions(&[
+            (
+                9 - i64::from(p.poison_counters),
+                self.delta.poison.get(&p.id).copied().unwrap_or(0),
+            ),
+            (
+                p.library.len() as i64,
+                -self.delta.library_delta.get(&p.id).copied().unwrap_or(0),
+            ),
+        ])
+        .and_then(|strict| u32::try_from(strict.saturating_add(1)).ok());
+        [life, non_life].into_iter().flatten().min()
+    }
+
+    /// CR 732.2a: ONE legal declaration that exhibits a longer cascade than the offer's own — the
+    /// witness a candidate ceiling quantifies over.
+    ///
+    /// CR 732.2a admits a sequence "that may be legally taken", which quantifies EXISTENTIALLY,
+    /// so a ceiling backed by one exhibited legal declaration is a correct ceiling. This is a
+    /// WITNESS AND NOT AN OPTIMUM: no claim is made that its greedy aim maximises the count,
+    /// which is why its caller publishes the LARGER of this count and the offer's own rather than
+    /// this one. Nothing downstream depends on which of the two wins.
+    ///
+    /// # The shape
+    ///
+    /// A [`TargetSchedule::Piecewise`] — the existing pre-declared switch-over, whose switch
+    /// points are fixed in advance and therefore CR 732.2a-predictable — replacing ONLY the
+    /// charged slots' pins on `observed`, the offer's own published declaration. Every other pin
+    /// and the `ReplayMode` are carried through untouched, so the witness differs from a
+    /// declaration the publisher already validated in exactly the aim.
+    ///
+    /// Each segment aims at one living reachable seat and the next segment begins one repetition
+    /// after that seat's own crossing, so no segment aims at a seat an earlier segment crossed.
+    /// Seats are taken least-remaining-headroom first, tie-broken by seat — a heuristic, on which
+    /// nothing rests, because the witness's contract is legality and not optimality.
+    ///
+    /// # The two refusals, and the one over-charge
+    ///
+    /// `None` where there is no charged slot to re-aim: the offer's own declaration is then the
+    /// only declaration there is and a witness would be a copy of it. The walk also stops at a
+    /// segment whose start COLLIDES with an earlier one, because `evaluate_schedule` selects the
+    /// greatest start at or below an index and a duplicated start is a segment no drive reads.
+    ///
+    /// A SEAT LEAVING a charged slot is read fail-closed by
+    /// [`PeriodicDelta::declared_seat_life_charges`] — it both lands and leaves — so a seat this
+    /// witness aims AWAY from in a later segment is over-charged for the segments after its own.
+    /// On the population this was measured over that never moves an answer, because such a seat
+    /// has already crossed by then; it is an over-charge and therefore a LOWER count, which is
+    /// the fail-closed direction, and it is stated rather than claimed unreachable.
+    ///
+    /// # Why the proposer is excluded
+    ///
+    /// CR 800.4a: aiming a segment at the proposer bounds the cascade at the proposer's own
+    /// crossing, which is the opposite of what a candidate ceiling wants. That rule is still
+    /// enforced, in [`PeriodicDelta::elimination_cascade`], over whatever declaration it is
+    /// handed.
+    ///
+    /// THE WITNESS IS CHARGED, NEVER DRIVEN. It is an input to a ceiling; nothing resolves it
+    /// against a board, and whether a declaration of this shape is one the engine accepts at the
+    /// declaration ingress is a separate question with its own owner.
+    pub(crate) fn piecewise_witness(
+        &self,
+        state: &GameState,
+        proposer: PlayerId,
+        observed: &DecisionTemplate,
+        points: &[DecisionPoint],
+    ) -> Option<DecisionTemplate> {
+        use crate::analysis::decision_template::{
+            AnnouncementSubject, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+        };
+        if self.victim_slot.is_empty() {
+            return None;
+        }
+        let charged: BTreeSet<&DecisionSlot> =
+            self.victim_slot.iter().map(|(slot, _)| slot).collect();
+        // CR 115.2 + CR 800.4 + CR 102.1: the seats some charged slot can be re-aimed onto that
+        // are still people in the game, least remaining headroom first.
+        let mut order: Vec<(i64, PlayerId)> = self
+            .declarable_victims
+            .iter()
+            .filter(|seat| **seat != proposer)
+            .filter_map(|seat| {
+                state
+                    .players
+                    .iter()
+                    .find(|p| p.id == *seat && !p.is_eliminated)
+                    .map(|p| (i64::from(p.life), p.id))
+            })
+            .collect();
+        order.sort_unstable();
+
+        // Segment by segment, because a segment's own END is the crossing the segments BEFORE it
+        // produce — the switch point is not knowable without them.
+        let mut steps: Vec<(u32, Ranking)> = Vec::new();
+        let mut witness: Option<DecisionTemplate> = None;
+        let mut start = 0u32;
+        for (_, seat) in order {
+            if steps.iter().any(|(existing, _)| *existing == start) {
+                break;
+            }
+            steps.push((start, Ranking::one(AnnouncementSubject::Seat(seat))));
+            let mut candidate = observed.clone();
+            for decision in &mut candidate.decisions {
+                if let PinnedDecision::Targets { slot, targets } = decision {
+                    if charged.contains(slot) {
+                        *targets = vec![TargetPin::Scheduled(TargetSchedule::Piecewise(
+                            steps.clone(),
+                        ))];
+                    }
+                }
+            }
+            let Some(p) = state.players.iter().find(|p| p.id == seat) else {
+                steps.pop();
+                break;
+            };
+            // The horizon this walk is asked within is the cascade's own, so the two cannot
+            // disagree about how far a crossing may be deferred.
+            let Some(crossing) = self.seat_crossing(
+                p,
+                Some(&candidate),
+                Some(observed),
+                points,
+                state,
+                cascade_horizon(state),
+            ) else {
+                // A segment that carries its own seat to no threshold ends the witness: it is
+                // the segment after it that the count would come from, and there is none.
+                steps.pop();
+                break;
+            };
+            // A `Piecewise` start is an ITERATION INDEX and a repetition is counted from 1, so
+            // the segment following a crossing at repetition `r` starts at index `r`.
+            start = crossing;
+            witness = Some(candidate);
+        }
+        witness
+    }
+}
+
+/// CR 704.5a: how far a cascade walk looks for a life crossing — a TERMINATION REQUIREMENT, not
+/// a tuning knob.
+///
+/// [`PeriodicDelta::declared_seat_life_charges`] is a lazy UNBOUNDED stream, and a declaration may
+/// defer a seat's charge to a later segment, so a seat's OWN headroom is not an upper bound on the
+/// repetition its crossing lands on. The sum over living seats of each one's own life headroom is
+/// one, for the declarations this reduction is taken under: a repetition defers a seat's crossing
+/// only by charging some other seat toward its own threshold, so the last segment of a declaration
+/// with one segment per seat begins no later than the sum of the earlier seats' headrooms, and
+/// that seat then crosses within its own.
+///
+/// A declaration reaching past it is answered "no crossing", which is the FAIL-CLOSED direction:
+/// fewer entries means a lower count, and the drivability gate refuses more counts rather than
+/// fewer. Saturating, so a board of implausible life totals answers with the widest walk rather
+/// than wrapping to a narrow one.
+///
+/// ONE STATEMENT, shared by the cascade and by the witness construction, so the two cannot
+/// disagree about how far a crossing may be deferred.
+fn cascade_horizon(state: &GameState) -> u32 {
+    state
+        .players
+        .iter()
+        .filter(|p| !p.is_eliminated)
+        // CR 704.5a: 0 or less life loses, so the whole total is the headroom; the `max(1)` keeps
+        // a seat already at 0 — living but doomed — contributing a repetition rather than none.
+        .map(|p| u32::try_from(i64::from(p.life).max(1)).unwrap_or(u32::MAX))
+        .fold(1u32, u32::saturating_add)
 }
 
 /// CR 119.3 + CR 704.3: what one repetition of a certified period can do to one seat's life
@@ -1460,6 +1778,43 @@ impl PredictedDeparture {
     }
 }
 
+/// CR 704.5a + CR 732.2a + CR 800.4a: the ORDERED cascade of CR 704 threshold crossings one
+/// accepted count carries the game through, under ONE declaration — every departure that count
+/// contains, not just the first.
+///
+/// # The invariants, which are the drive's contract and not documentation
+///
+/// `entries` is ordered by `repetition`, those repetitions STRICTLY INCREASE, and every seat set
+/// is non-empty ([`PredictedDeparture::new`] refuses the empty one). `count` is the LAST entry's
+/// repetition. The ordering is load-bearing at two seams: the drive looks an entry up by the
+/// repetition it is on, so two entries sharing one repetition would make that lookup ambiguous;
+/// and CR 800.4a takes a departed seat's objects out of the game with them, so a seat that left
+/// on an earlier entry cannot appear in a later one.
+///
+/// A tie is ONE entry holding two seats, never two entries: CR 704.3 runs the state-based sweep
+/// whenever a player would get priority, so one repetition taking two seats to their thresholds
+/// removes both at the same beat, and a drive comparing what actually left against a lone seat
+/// would refuse the cycle it was accepted to deliver.
+///
+/// # Why this is not [`EliminationBound`], which keeps its own job
+///
+/// Two functions, two QUANTIFIERS. [`ResourceVector::elimination_bounds`] answers the first
+/// crossing under ANY declaration — the published divisor's question. This answers every crossing
+/// under the ONE declaration in hand. The arithmetic is shared
+/// ([`ResourceVector::narrowed_repetitions`] and [`PeriodicDelta::first_life_crossing`]), so the
+/// two cannot drift on the division while answering different questions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EliminationCascade {
+    /// CR 732.2a: the largest count this declaration may legally be repeated — the last entry's
+    /// own repetition, because CR 704.3's sweep at that crossing is itself a place a player has
+    /// priority and therefore an ending point CR 732.2a admits.
+    pub(crate) count: u32,
+    /// Every crossing, in departure order. NON-EMPTY: a cascade with no entry is the outer
+    /// absence ([`PeriodicDelta::elimination_cascade`] returns `None`), never a cascade holding
+    /// nothing, for the same reason an entry never holds no seat.
+    pub(crate) entries: Vec<PredictedDeparture>,
+}
+
 /// CR 704.5a + CR 732.2a: everything [`ResourceVector::elimination_bounds`] computes — the
 /// largest legal repetition count, and the CR 704 threshold crossing that count spends.
 ///
@@ -1467,6 +1822,15 @@ impl PredictedDeparture {
 /// count past the strict floor is licensed BY there being exactly one seat at that floor, so
 /// naming the count without naming the seat discards a fact the reduction already established.
 /// A consumer re-deriving the seat beside the count would be a second derivation to argue equal.
+///
+/// `#[cfg(test)]`, AND THAT IS A STATEMENT rather than housekeeping. Both of this reduction's
+/// production callers moved to the DECLARATION-RELATIVE cascade
+/// ([`PeriodicDelta::elimination_cascade`]), which answers a different question — every crossing
+/// under the one declaration in hand, rather than the first crossing under ANY declaration. The
+/// divisor's question is still a real one and the rows that ask it are the rows about the
+/// reduction itself, so the function is retained rather than deleted and its visibility says who
+/// asks it.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EliminationBound {
     /// The count itself — the CR 704 threshold this reduction measured, carrying no budget of
@@ -1933,6 +2297,7 @@ impl ResourceVector {
     ///
     /// Composed rather than re-derived: the same producer builds both halves, so a change to
     /// its negative-part convention moves the floor and the publication together.
+    #[cfg(test)]
     pub(crate) fn consumption_seat_life_charges(
         &self,
         published: &[(PlayerId, i64)],
@@ -2023,6 +2388,7 @@ impl ResourceVector {
     /// living seat consumed at all there is no count either. A consumer
     /// holding an absent prediction has been told "this count predicts NO departure", never
     /// "this count predicts nothing in particular".
+    #[cfg(test)]
     pub(crate) fn elimination_bounds(
         &self,
         state: &GameState,
@@ -2104,6 +2470,7 @@ impl ResourceVector {
             .min()
     }
 
+    #[cfg(test)]
     fn seat_headroom_bound(
         &self,
         p: &crate::types::player::Player,
@@ -12833,13 +13200,52 @@ mod tests {
              derivations read the published list; got {:?}",
             per_cycle.victim_slot
         );
+        // CR 704.5a: RE-DERIVED THROUGH THE PUBLISHED CHARGE AUTHORITY, not pinned. The bound is
+        // the victim's own crossing under the declaration this offer publishes — which on a board
+        // whose one announcement is FORCED is no declaration at all, so the charge authority reads
+        // the charged slot as WITHHELD and charges it fail-closed: the period's own net term plus
+        // the slot's full magnitude as reach, since with no published point neither template
+        // speaks for the aim. That is that authority's own documented over-charge, and it is why
+        // this bound is BELOW the divisor-derived one the same board's aim subtraction would give
+        // — a narrower offer, never a wider one.
+        let victim = PlayerId(1);
+        let remaining = i64::from(
+            state
+                .players
+                .iter()
+                .find(|p| p.id == victim)
+                .expect("the harness seats the victim")
+                .life,
+        );
+        let crossing = PeriodicDelta::first_life_crossing(
+            per_cycle.declared_seat_life_charges(victim, None, None, &schema.points, &state),
+            remaining,
+            u32::try_from(remaining).expect("a test life total fits a u32"),
+        );
         assert_eq!(
             schema.measured_repetition_bound,
-            Some(11),
-            "CR 704.5a: headroom `21 - 1` over the charged magnitude \
-             `(observed 2 - aim 2).max(0) + reach 2` is a strict 10, carried to the victim's \
-             own crossing at 11. Dropping the aim subtraction charges `2 + 2` and reads 6, \
-             refusing repetitions the window itself measured as one drain"
+            crossing,
+            "CR 704.5a: the published bound IS the victim's first crossing under the offer's own \
+             declaration, taken over the offer's own published charge and the live headroom \
+             {remaining}; charge at repetition 1 {:?}",
+            per_cycle
+                .declared_seat_life_charges(victim, None, None, &schema.points, &state)
+                .next()
+        );
+        // The CONTROL that the re-derivation above discriminates: the DIVISOR authority, on the
+        // same board and the same published bytes, answers a DIFFERENT count. Without this the
+        // equality could be satisfied by two spellings of one arithmetic.
+        let divisor = per_cycle
+            .delta
+            .elimination_bounds(&state, &per_cycle.seat_life_charge)
+            .expect("CONTROL: the divisor still consumes a living seat on this board")
+            .count;
+        assert_ne!(
+            Some(divisor),
+            crossing,
+            "CONTROL: the published divisor — which subtracts the window's observed aim — \
+             authorises a different count on this very board, so the equality above states WHICH \
+             derivation the producer runs rather than restating one"
         );
     }
 
@@ -35115,13 +35521,19 @@ mod tests {
         );
     }
 
-    /// CR 800.4a: the crossing cycle's divergence is admitted by re-scoping the population, and
-    /// a surviving seat's moved magnitude is still refused.
+    /// CR 800.4a: both divergences a departure produces are admitted by re-scoping the population,
+    /// and a surviving seat's is still refused.
     ///
-    /// The admitted shape is the one the drive observes on the cycle a seat crosses on: the
+    /// The re-scope admits two shapes, one per direction. On the cycle a seat crosses on, the
     /// departing seat's own objects leave the game with them, so the observed period carries a
     /// term for that seat on an axis the published period has NO entry for at all, while the
-    /// seat's life delta still equals the published one.
+    /// seat's life delta still equals the published one. On every cycle after it, the observed
+    /// period is MISSING the life term the published period carries for a seat already gone —
+    /// reachable only from a count that spans past the crossing cycle, which is what the cascade
+    /// bound publishes.
+    ///
+    /// Each admitted direction carries its own hostile sibling on a SURVIVING seat: a loss that
+    /// fell to zero, and a loss absent from the observation altogether.
     ///
     /// # Reach guards, asserted before the claim
     ///
@@ -35135,9 +35547,11 @@ mod tests {
     /// pair. A re-scope written on the `life` axis alone also reds (a), because the term it must
     /// drop is a `library_delta` one. (b) reds if the relaxation is written as a SUBTRACTED term
     /// instead of a population: a surviving seat whose loss falls to exactly zero is the member a
-    /// subtraction admits. (d) reds if the population is allowed to widen the reserved domain.
+    /// subtraction admits. (a2) carries its own unscoped leg, which reds there. (a2') reds if the
+    /// re-scope is written as an intersection of the keys both sides carry rather than a
+    /// population. (d) reds if the population is allowed to widen the reserved domain.
     #[test]
-    fn conforms_in_admits_a_departed_seats_axis_and_still_refuses_a_survivors_magnitude() {
+    fn conforms_in_admits_both_departure_directions_and_still_refuses_a_survivor() {
         // The untargeted class: no charged slot, no pins, so the lift is the identity and this is
         // the plain vector comparison the committed drain boards actually reach.
         let published = charged_signature(
@@ -35170,6 +35584,40 @@ mod tests {
             published.conforms_in(&crossing_cycle, &[], &living),
             "CR 800.4a: a term for a seat no longer in the game is outside the population the \
              comparison quantifies over"
+        );
+
+        // (a2) THE LATER-CYCLE ARM — every cycle after the one the seat left on. The published
+        // period still carries that seat's loss; the observed period has no entry for them at all,
+        // because they are not in the game to lose anything. Same re-scope, opposite direction of
+        // divergence, and only a count that reaches past the crossing cycle observes it.
+        let mut later_cycle = published.delta.clone();
+        later_cycle.life.remove(&departed);
+        assert!(
+            !later_cycle.life.contains_key(&departed)
+                && published.delta.life.contains_key(&departed),
+            "REACH-GUARD: the term must be MISSING on the observed side and PRESENT on the \
+             published side, or this arm repeats (a)"
+        );
+        assert!(
+            published.conforms_in(&later_cycle, &[], &living),
+            "CR 800.4a: a published term for a seat already gone is outside the population, so \
+             the cycles after the crossing one still conform"
+        );
+        assert!(
+            !published.conforms(&later_cycle, &[]),
+            "unscoped, the missing term is a divergence — which is what stops the drive one cycle \
+             after the crossing without the re-scope"
+        );
+
+        // (a2') THE MISSING DIRECTION'S HOSTILE SIBLING — the term absent for a SURVIVING seat.
+        // (b) moves a magnitude to zero; this drops the key entirely, which a re-scope written as
+        // "compare the keys both sides carry" would admit.
+        let mut survivor_missing = published.delta.clone();
+        survivor_missing.life.remove(&PlayerId(2));
+        assert!(
+            !published.conforms_in(&survivor_missing, &[], &living),
+            "a player still in the game whose published loss is absent from the observation has \
+             diverged, exactly as one whose loss changed magnitude has"
         );
 
         // (b) THE HOSTILE SIBLING — a SURVIVING seat whose loss falls to exactly zero. The member
@@ -35234,6 +35682,215 @@ mod tests {
             PredictedDeparture::new(1, BTreeSet::new()),
             None,
             "'crosses nobody' is the absence of an entry, never an entry holding nobody"
+        );
+    }
+
+    /// **THE IDENTITY THE WHOLE `conforms` BATTERY RESTS ON.** [`PeriodicDelta::conforms`] is
+    /// documented as [`PeriodicDelta::conforms_in`] over the union of the two vectors' seat-keyed
+    /// keys; every other row in this battery calls the wrapper and reads its verdict as the
+    /// unscoped question's. If the wrapper ever stopped being that identity, those rows would keep
+    /// passing while measuring a different predicate from the one production runs.
+    ///
+    /// The population is built HERE, out of [`seat_keyed_axes`] over both sides, rather than
+    /// written down: that helper is the read-side twin of the exhaustive struct literal in
+    /// [`retained_seats`], so an axis added to [`ResourceVector`] build-breaks at the filter and
+    /// must then be classified in the helper, and this row walks whatever it classifies.
+    ///
+    /// # A LIVE INSTRUMENT, not an absence-shaped pass
+    ///
+    /// The population is asserted non-empty and asserted to hold every seat both vectors name, so
+    /// a helper that returned no axis — which would make the filter trivially the identity and
+    /// every leg below vacuous — fails before the comparison. And the pairs are the battery's own
+    /// shapes: one that CONFORMS and one that DIVERGES, so a wrapper stuck at either answer fails
+    /// one of them.
+    ///
+    /// # Discrimination
+    ///
+    /// Give the wrapper any population that is not that union — an empty set, or one seat dropped
+    /// — and the divergent leg is admitted while the scoped call still refuses it, so the
+    /// inequality fires. Replace `retained_seats`' filter with a pass-through and the legs agree
+    /// for the wrong reason, which is why the row also asserts the population it built.
+    #[test]
+    fn conforms_is_conforms_in_over_the_union_of_the_two_vectors_seat_keys() {
+        let published = charged_signature(
+            victim_life(&[(0, 1), (1, -1), (2, -1), (3, -1)]),
+            &[],
+            SEATS,
+        );
+        let mut diverged = published.delta.clone();
+        diverged.life.insert(PlayerId(2), 0);
+        let mut extra_axis = published.delta.clone();
+        extra_axis.library_delta.insert(PlayerId(1), -90);
+
+        for (label, observed) in [
+            ("the conforming pair", published.delta.clone()),
+            ("a survivor's moved magnitude", diverged),
+            ("a term on a silent axis", extra_axis),
+        ] {
+            // The union of the two vectors' seat-keyed keys — the population the wrapper's own
+            // doc names, derived rather than restated.
+            let population: BTreeSet<PlayerId> = seat_keyed_axes(&published.delta)
+                .into_iter()
+                .chain(seat_keyed_axes(&observed))
+                .flat_map(|axis| axis.keys().copied())
+                .collect();
+            assert!(
+                !population.is_empty()
+                    && published
+                        .delta
+                        .life
+                        .keys()
+                        .chain(observed.life.keys())
+                        .chain(observed.library_delta.keys())
+                        .all(|seat| population.contains(seat)),
+                "REACH-GUARD ({label}): the population must hold every seat either vector names, \
+                 or the filter is trivially the identity and this row measures nothing; got \
+                 {population:?}"
+            );
+            assert_eq!(
+                published.conforms(&observed, &[]),
+                published.conforms_in(&observed, &[], &population),
+                "{label}: the wrapper IS the population-scoped predicate over the union of the \
+                 two vectors' seat keys"
+            );
+        }
+    }
+
+    /// **THE CASCADE'S INVARIANTS, at its own walk.** `entries` is ordered by `repetition`, those
+    /// repetitions STRICTLY INCREASE, every seat set is non-empty, and `count` is the last entry's
+    /// repetition. The drive looks an entry up BY its repetition, so a duplicate would make that
+    /// lookup ambiguous; CR 800.4a is why a seat that left on an earlier entry cannot reappear.
+    ///
+    /// Driven through the walk rather than asserted on a hand-built value, because the invariants
+    /// are the WALK's contract and a literal would pin the struct instead.
+    ///
+    /// # The board
+    ///
+    /// Four living seats at distinct life totals under a period that drains each opponent by 1 and
+    /// gains the proposer 1 — the untargeted class's shape, with no charged slot, so the charge is
+    /// the period's own unconditional net term and the cascade is one entry per distinct total.
+    ///
+    /// # Discrimination
+    ///
+    /// Drop the sort and the strict-increase assertion fires. Group by anything other than equal
+    /// repetition and the tie leg's entry count moves. Publish the FIRST entry's repetition as
+    /// `count` and the last assertion fires; publish the entry list length and it fires too, since
+    /// the repetitions here are not `1..=n`.
+    #[test]
+    fn the_cascade_entries_strictly_increase_and_its_count_is_the_last() {
+        // Two seats sharing a total, so the walk's GROUPING is exercised and not only its order.
+        let state = bound_board(&[40, 3, 5, 5]);
+        let published =
+            charged_signature(victim_life(&[(0, 1), (1, -1), (2, -1), (3, -1)]), &[], &[]);
+        let cascade = published
+            .elimination_cascade(&state, PlayerId(0), None, None, &[])
+            .expect("three consumed opponents make this a measured cascade");
+
+        assert!(
+            cascade.entries.len() > 1,
+            "REACH-GUARD: a one-entry cascade satisfies every ordering claim vacuously; got {:?}",
+            cascade.entries
+        );
+        assert!(
+            cascade.entries.iter().any(|entry| entry.seats.len() > 1),
+            "REACH-GUARD: one entry must GROUP two seats, or the tie axis is untested; got {:?}",
+            cascade.entries
+        );
+        assert!(
+            cascade.entries.iter().all(|entry| !entry.seats.is_empty()),
+            "an entry holding no seat would equal 'nobody left the game' at the drive's comparison"
+        );
+        assert!(
+            cascade
+                .entries
+                .windows(2)
+                .all(|pair| pair[0].repetition < pair[1].repetition),
+            "the repetitions strictly increase, so the drive's lookup by repetition is \
+             unambiguous; got {:?}",
+            cascade.entries
+        );
+        let mut seen: BTreeSet<PlayerId> = BTreeSet::new();
+        assert!(
+            cascade
+                .entries
+                .iter()
+                .all(|entry| entry.seats.iter().all(|seat| seen.insert(*seat))),
+            "CR 800.4a: a seat that left on an earlier entry cannot appear in a later one; got \
+             {:?}",
+            cascade.entries
+        );
+        assert_eq!(
+            cascade.count,
+            cascade
+                .entries
+                .last()
+                .expect("asserted non-empty above")
+                .repetition,
+            "`count` is the LAST entry's repetition — the ending point CR 732.2a admits, not the \
+             number of entries"
+        );
+    }
+
+    /// **CR 800.4a — the proposer's own crossing BOUNDS the cascade rather than joining it.**
+    ///
+    /// Once the proposer leaves, every object they own leaves the game with them, so the loop's
+    /// own engine is gone and no later repetition happens. The proposer's crossing may be the
+    /// cascade's LAST entry — today's behaviour, which the self-mill rows and the `phase-ai`
+    /// proposer veto both rest on — and no entry may follow it.
+    ///
+    /// # Reach guard, asserted before the claim
+    ///
+    /// The proposer is asserted to cross STRICTLY BEFORE some opponent under this period, so the
+    /// truncation has something to drop; without that the row would pass on a cascade the walk
+    /// never had to cut.
+    ///
+    /// # Discrimination
+    ///
+    /// Delete the truncation and the dropped opponent reappears as a later entry, so both the
+    /// last-entry assertion and the membership assertion fire. The paired leg — the same period
+    /// with the proposer's own drain removed — shows the walk does reach that opponent when the
+    /// proposer survives, so the truncation is what removes it and not the arithmetic.
+    #[test]
+    fn the_proposers_crossing_is_the_cascades_last_entry() {
+        let state = bound_board(&[2, 9, 30]);
+        let proposer = PlayerId(0);
+        let self_draining = charged_signature(victim_life(&[(0, -1), (1, -1), (2, -1)]), &[], &[]);
+        let cascade = self_draining
+            .elimination_cascade(&state, proposer, None, None, &[])
+            .expect("every seat is consumed on this board");
+
+        assert!(
+            cascade
+                .entries
+                .first()
+                .is_some_and(|entry| entry.seats.contains(&proposer)),
+            "REACH-GUARD: the proposer must cross FIRST here, or there is nothing for CR 800.4a \
+             to truncate; got {:?}",
+            cascade.entries
+        );
+        assert_eq!(
+            cascade.entries.len(),
+            1,
+            "CR 800.4a: no entry may follow the proposer's own crossing; got {:?}",
+            cascade.entries
+        );
+
+        // THE PAIRED LEG — the same board and the same opponents, with the proposer's own drain
+        // removed. The opponents the truncation dropped are reached here, which is what shows the
+        // truncation removed them rather than the arithmetic never naming them.
+        let opponents_only = charged_signature(victim_life(&[(0, 1), (1, -1), (2, -1)]), &[], &[]);
+        let survives = opponents_only
+            .elimination_cascade(&state, proposer, None, None, &[])
+            .expect("both opponents are still consumed");
+        assert!(
+            survives.entries.len() > cascade.entries.len()
+                && survives
+                    .entries
+                    .iter()
+                    .all(|entry| !entry.seats.contains(&proposer)),
+            "with the proposer surviving, the walk reaches every opponent's crossing and names \
+             the proposer in none of them; got {:?}",
+            survives.entries
         );
     }
 
