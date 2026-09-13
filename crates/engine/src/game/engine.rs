@@ -4515,11 +4515,12 @@ fn has_no_loss_axis(delta: &crate::analysis::resource::ResourceVector) -> bool {
 /// offer's published CAPACITY can be the smaller of the two; the budget conjunct in
 /// `shortcut_count_is_drivable` is what bounds a drive.
 ///
-/// `None` for a proposal carrying no per-period signature, and equally for one whose re-derived
-/// reduction consumes no living seat on THIS board and so measures no threshold. Such a proposal
-/// supports no derived ceiling at all; `shortcut_count_is_drivable` then bounds it by the budget
-/// alone, which is the same set of counts an un-narrowed re-derivation admitted when it answered
-/// with the budget itself.
+/// TWO ABSENCES, KEPT APART BY THE TYPE ([`ConsumptionDerivation`]): a proposal carrying no
+/// per-period signature is `Unsigned`, and one whose re-derived reduction consumes no living seat
+/// on THIS board is `NoMeasurement`. Neither supports a derived ceiling, so
+/// `shortcut_count_is_drivable` bounds both by the budget alone — the same set of counts an
+/// un-narrowed re-derivation admitted when it answered with the budget itself. They part at the
+/// drive's terminal arm, where only the first may fall through to a commit.
 ///
 /// The prediction is taken AT THE ACCEPTED COUNT. A declarer may name any count at or below the
 /// offered `deliverable_capacity` and the drive runs at that count; because the named seat crosses on
@@ -4535,19 +4536,39 @@ struct ConsumptionBound {
     predicted_departure: Option<(PlayerId, u32)>,
 }
 
+/// CR 704.5a + CR 732.2a: what a consumption-time re-derivation can state about one confirmed
+/// proposal. THREE STATES rather than an `Option`, because the two absences carry different
+/// licences: an unsigned proposal published no prediction to diverge from, while a signed one whose
+/// reduction measures nothing here published a prediction THIS board no longer supports. A consumer
+/// that cannot tell them apart grants the second the first's fall-through.
+enum ConsumptionDerivation {
+    /// No per-period signature: nothing to re-derive, and no prediction to diverge from.
+    Unsigned,
+    /// Signed, and the re-derived reduction consumed no living seat on this board, so it measured
+    /// no CR 704 threshold — CR 800.4 + CR 102.1 put the period's victims outside the population
+    /// the reduction walks.
+    NoMeasurement,
+    /// Signed, with the threshold the reduction measured.
+    Measured(ConsumptionBound),
+}
+
 fn shortcut_consumption_bound(
     state: &GameState,
     proposal: &crate::analysis::loop_check::ShortcutProposal,
     accepted: u32,
-) -> Option<ConsumptionBound> {
-    let per_cycle = proposal.per_cycle.as_ref()?;
+) -> ConsumptionDerivation {
+    let Some(per_cycle) = proposal.per_cycle.as_ref() else {
+        return ConsumptionDerivation::Unsigned;
+    };
     // CR 119.3: the divisor the table agreed to, floored by what `PeriodicDelta::conforms`
     // actually enforces — an emptied publication otherwise divides by nothing.
     let divisor = per_cycle
         .delta
         .consumption_seat_life_charges(&per_cycle.seat_life_charge);
-    let bound = per_cycle.delta.elimination_bounds(state, &divisor)?;
-    Some(ConsumptionBound {
+    let Some(bound) = per_cycle.delta.elimination_bounds(state, &divisor) else {
+        return ConsumptionDerivation::NoMeasurement;
+    };
+    ConsumptionDerivation::Measured(ConsumptionBound {
         ceiling: bound.count,
         predicted_departure: bound
             .predicted_departure
@@ -4565,8 +4586,9 @@ fn shortcut_consumption_bound(
 /// CR 704.5a + CR 732.2a: the second disjunct is the per-board ceiling `shortcut_consumption_bound`
 /// re-derives — CR 732.2a admits only a sequence that "may be legally taken based on the current
 /// game state and the predictable results of the sequence of choices", and CR 704.3 runs the
-/// CR 704.5a check at every priority beat inside it. A proposal carrying no per-period signature
-/// supports no derived ceiling and is bounded by the budget alone.
+/// CR 704.5a check at every priority beat inside it. A proposal with no derived ceiling — no
+/// signature at all, or a signature the reduction measures nothing for on this board — is bounded
+/// by the budget alone.
 ///
 /// Reads `state` and `proposal.per_cycle`; never `proposal.count`. That is what lets the
 /// responder's seam ask it about the count a named place would MINT, on a proposal still
@@ -4577,8 +4599,14 @@ fn shortcut_count_is_drivable(
     count: u32,
 ) -> bool {
     count <= MAX_SHORTCUT_CYCLES
-        && !shortcut_consumption_bound(state, proposal, count)
-            .is_some_and(|bound| count > bound.ceiling)
+        && match shortcut_consumption_bound(state, proposal, count) {
+            // EXHAUSTIVE, no wildcard: the two absences answer ALIKE here, and the arm says so
+            // instead of collapsing them by accident. Neither supports a derived ceiling — an
+            // unsigned proposal publishes none, and a signature whose victims have left the game
+            // measured none — so the budget conjunct above is the only bound either gets.
+            ConsumptionDerivation::Unsigned | ConsumptionDerivation::NoMeasurement => true,
+            ConsumptionDerivation::Measured(bound) => count <= bound.ceiling,
+        }
 }
 
 /// CR 800.4a: the seat that should receive priority when a loop-shortcut resolution hands
@@ -4717,8 +4745,8 @@ fn apply_confirmed_shortcut(
         // this board by `shortcut_consumption_bound`, which is why it is checkable here at all.
         //
         // TWO BOUNDARIES, both deliberate. A proposal carrying no per-period signature supports
-        // no derived ceiling (`shortcut_consumption_bound` answers `None`) and keeps its shipped
-        // behaviour. `UntilLethal` carries no declared count for a ceiling to bound —
+        // no derived ceiling (`shortcut_consumption_bound` answers `Unsigned`) and keeps its
+        // shipped behaviour. `UntilLethal` carries no declared count for a ceiling to bound —
         // `apply_until_lethal_shortcut` drives `shortcut_drive_period` cycles, fixed by the
         // template's pins, and its own `SeatLeft | Abort` arm rolls every departure back through
         // `until_lethal_fallback` — so no repetition past a CR 704.5a threshold can commit
@@ -5814,16 +5842,18 @@ fn materialize_fixed_shortcut(
             // at all, so when the first driven cycle is the terminal one no earlier cycle could
             // have refused it.
             //
-            // An ABSENT prediction admits no departure: the count was accepted below the
-            // ceiling, or the reduction named nobody, and in both the honest answer is that
-            // this count crosses nobody, so a crossing is a divergence.
+            // An ABSENT prediction inside a MEASURED derivation admits no departure: the count
+            // was accepted below the ceiling, or the reduction tied at its floor and named
+            // nobody. In both the honest answer is that this count crosses nobody, so a crossing
+            // is a divergence. A reduction that consumed no living seat measured no count at all
+            // and answers on its own arm, never through the empty set an absence produces.
             //
             // A proposal carrying NO SIGNATURE AT ALL is not that case and is not discriminated
             // here. It supports no re-derivation, so it publishes no prediction to diverge FROM,
             // and the drive keeps the commit-and-stop every producer that publishes none shipped
             // with. That is this seam's population boundary, the same one the guard's per-offer
-            // ceiling stops at — which is why the branch below is taken from the SIGNATURE'S
-            // PRESENCE and never from the emptiness an absence produces.
+            // ceiling stops at — which is why the fall-through below is the `Unsigned` ARM
+            // ALONE, and never an absence a signed re-derivation produced.
             //
             // RE-DERIVED HERE ON `*state`, through the same authority the guard used, rather
             // than stashed at the guard: `materialize_fixed_shortcut` clones `*state` into
@@ -5874,30 +5904,43 @@ fn materialize_fixed_shortcut(
                 state: s,
                 mut events,
             } => {
-                // A SIGNED proposal is discriminated; an unsigned one falls straight through to
-                // the commit below. A signed proposal whose prediction is legitimately empty
-                // still fails closed inside, so the two cases do not collapse into one another.
-                if let Some(bound) = shortcut_consumption_bound(state, proposal, n) {
-                    let predicted: BTreeSet<PlayerId> = bound
-                        .predicted_departure
-                        .filter(|(_, iteration)| *iteration == i + 1)
-                        .map(|(seat, _)| BTreeSet::from([seat]))
-                        .unwrap_or_default();
-                    // CR 800.4a: a seat that has left the game. Read off the two boards rather
-                    // than off the outcome's events, so a departure with no `PlayerEliminated`
-                    // emitted is still seen.
-                    let departed: BTreeSet<PlayerId> = committed
-                        .players
-                        .iter()
-                        .filter(|p| !p.is_eliminated)
-                        .map(|p| p.id)
-                        .filter(|seat| !crate::game::players::is_alive(&s, *seat))
-                        .collect();
-                    // Equality on the SET, never a length check plus a membership test: the
-                    // latter admits a swap. An empty prediction equals no non-empty departure,
-                    // which is the fail-closed direction.
-                    if departed != predicted || predicted.is_empty() {
-                        break 'cycles;
+                // EXHAUSTIVE over the derivation's three states, no wildcard: only an UNSIGNED
+                // proposal falls through to the commit below. Both signed states are
+                // discriminated, so neither can inherit the other's answer.
+                match shortcut_consumption_bound(state, proposal, n) {
+                    // No signature, so no prediction to diverge from — the commit-and-stop every
+                    // producer that publishes none shipped with.
+                    ConsumptionDerivation::Unsigned => {}
+                    // CR 704.5a + CR 732.2a: SIGNED, and the reduction measured no threshold on
+                    // the pre-drive board because CR 800.4 + CR 102.1 put every seat its period
+                    // consumes outside the living population. The table agreed to this count on
+                    // the strength of a crossing this board cannot state, so a seat leaving
+                    // inside the sequence is a departure no prediction covers and the cycle is
+                    // dropped whole. Row:
+                    // `a_signed_proposal_measuring_nothing_drops_the_cycle_a_departure_ends`.
+                    ConsumptionDerivation::NoMeasurement => break 'cycles,
+                    ConsumptionDerivation::Measured(bound) => {
+                        let predicted: BTreeSet<PlayerId> = bound
+                            .predicted_departure
+                            .filter(|(_, iteration)| *iteration == i + 1)
+                            .map(|(seat, _)| BTreeSet::from([seat]))
+                            .unwrap_or_default();
+                        // CR 800.4a: a seat that has left the game. Read off the two boards
+                        // rather than off the outcome's events, so a departure with no
+                        // `PlayerEliminated` emitted is still seen.
+                        let departed: BTreeSet<PlayerId> = committed
+                            .players
+                            .iter()
+                            .filter(|p| !p.is_eliminated)
+                            .map(|p| p.id)
+                            .filter(|seat| !crate::game::players::is_alive(&s, *seat))
+                            .collect();
+                        // Equality on the SET, never a length check plus a membership test: the
+                        // latter admits a swap. An empty prediction equals no non-empty
+                        // departure, which is the fail-closed direction.
+                        if departed != predicted || predicted.is_empty() {
+                            break 'cycles;
+                        }
                     }
                 }
                 committed = *s;
@@ -24237,7 +24280,7 @@ mod kilo_interruptibility_tests {
 mod bounded_offer_conjunct_tests {
     use super::{
         shortcut_consumption_bound, try_offer_bounded_cycle_shortcut, BoundedOfferRefusal,
-        MAX_SHORTCUT_CYCLES,
+        ConsumptionBound, ConsumptionDerivation, MAX_SHORTCUT_CYCLES,
     };
     use crate::analysis::loop_check::ShortcutProposal;
     use crate::game::scenario::GameScenario;
@@ -24557,6 +24600,367 @@ mod bounded_offer_conjunct_tests {
             .expect("seat exists")
             .is_eliminated = true;
         state
+    }
+
+    /// A four-seat board whose retained ring encodes a LIFE period charging exactly `victim`,
+    /// beside an UNCHARGED bystander one life from its CR 704.5a threshold and a stack entry that
+    /// takes it there. The bystander's life is FLAT across every frame, which is what keeps it out
+    /// of the period and therefore out of the reduction's divisor.
+    ///
+    /// FOUR SEATS, not the two every other fixture here uses, and the count is load-bearing: the
+    /// departure this board produces must leave TWO players in the game, or CR 104.2a crowns and
+    /// the drive lands in the `CrossLethal` arm instead of the terminal `SeatLeft` one.
+    ///
+    /// The drain entry is in the frames AND in the live state, the same pairing
+    /// [`drain_ring_at_life`] uses, so the frames stay board-equal to the live board on everything
+    /// but the projected life axis.
+    fn drain_ring_with_a_doomed_bystander(
+        victim: PlayerId,
+        doomed: PlayerId,
+        frames: usize,
+        victim_life: i32,
+    ) -> GameState {
+        use crate::types::ability::{Effect, QuantityExpr, ResolvedAbility};
+        use crate::types::game_state::{StackEntry, StackEntryKind};
+        use crate::types::identifiers::{CardId, ObjectId};
+
+        // CR 119.3: the bystander's OWN life loss, controlled and owned by that seat, so it needs
+        // no target choice and the offer's `stack_choices_are_all_specified` gate is satisfied.
+        let drain = move |st: &mut GameState| {
+            let src = ObjectId(940);
+            let mut source = crate::game::game_object::GameObject::new(
+                src,
+                CardId(0),
+                doomed,
+                "Drainer".to_string(),
+                crate::types::zones::Zone::Battlefield,
+            );
+            source.incarnation = 3;
+            st.objects.insert(src, source);
+            st.stack.push_back(StackEntry {
+                id: ObjectId(951),
+                source_id: src,
+                controller: doomed,
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: src,
+                    ability: Box::new(ResolvedAbility::new(
+                        Effect::LoseLife {
+                            amount: QuantityExpr::Fixed { value: 1 },
+                            target: None,
+                        },
+                        vec![],
+                        src,
+                        doomed,
+                    )),
+                    condition: None,
+                    trigger_event: None,
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                    provenance: None,
+                },
+            });
+        };
+
+        let mut state = ring_state(4, frames, move |frame, i| {
+            frame
+                .players
+                .iter_mut()
+                .find(|p| p.id == victim)
+                .expect("seat exists")
+                .life = victim_life + (frames - i) as i32;
+            frame
+                .players
+                .iter_mut()
+                .find(|p| p.id == doomed)
+                .expect("seat exists")
+                .life = 1;
+            drain(frame);
+        });
+        for (seat, life) in [(victim, victim_life), (doomed, 1)] {
+            state
+                .players
+                .iter_mut()
+                .find(|p| p.id == seat)
+                .expect("seat exists")
+                .life = life;
+        }
+        drain(&mut state);
+        state
+    }
+
+    /// Take [`drain_ring_with_a_doomed_bystander`] through the production mint, declare and
+    /// response window; let the period's only charged seat CONCEDE (CR 104.3a) after answering;
+    /// then have the last responder accept, which consumes the proposal and drives it.
+    ///
+    /// `strip_signature` empties `per_cycle` on the live proposal at the last-accept beat — the
+    /// restored-`RespondToShortcut` shape the consumption guard's own doc names — so the two legs
+    /// differ in the SIGNATURE and in nothing else about the board or the sequence.
+    ///
+    /// Returns the post-drive board beside the derivation the drive's terminal arm read, so the
+    /// caller asserts the arm it reached rather than inferring it.
+    fn drive_the_doomed_bystander_board(
+        doomed: PlayerId,
+        strip_signature: bool,
+    ) -> (GameState, &'static str) {
+        use crate::analysis::loop_check::ShortcutResponse;
+        use crate::types::actions::GameAction;
+
+        let victim = P1;
+        let mut state = drain_ring_with_a_doomed_bystander(victim, doomed, 3, 6);
+
+        // REACH-GUARD BY REFUSAL REASON, and it is also the measurement guard: this producer
+        // refuses `NoNarrowedLegalCount` unless its reduction measured a threshold, so an `Ok`
+        // here is what makes the `NoMeasurement` below attributable to the CONCEDE rather than to
+        // the mint. Read as a reason and not as a bare absence, the way every row in this module
+        // reads a bounded-offer outcome.
+        //
+        // The offer is moved WHOLE into `waiting_for` rather than destructured, deliberately:
+        // `loop_shortcut_offer_writer_census` pins the offer-anchor multiset as an invariance,
+        // and this row needs no field off the schema — CR 732.2a's `deliverable_capacity >= 1`
+        // holds for every schema that reaches a window, so `Fixed(1)` is admissible by
+        // construction.
+        state.waiting_for = try_offer_bounded_cycle_shortcut(&state, false)
+            .expect("REACH-GUARD: this board must MINT, else the row starts from no proposal");
+        assert_eq!(
+            state.waiting_for.variant_name(),
+            "LoopShortcut",
+            "REACH-GUARD: the bounded producer's only success shape is the CR 732.2a offer window"
+        );
+
+        crate::game::engine::apply(
+            &mut state,
+            P0,
+            GameAction::DeclareShortcut {
+                count: crate::analysis::decision_template::IterationCount::Fixed(1),
+                template: None,
+            },
+        )
+        .expect("the proposer declares one repetition");
+
+        // Every responder but the LAST answers, so the board can still be moved before the accept
+        // that consumes the proposal.
+        loop {
+            let WaitingFor::RespondToShortcut {
+                player,
+                remaining_players,
+                ..
+            } = state.waiting_for.clone()
+            else {
+                panic!(
+                    "the declare handler parks on the CR 732.2b window; got {:?}",
+                    state.waiting_for
+                )
+            };
+            if remaining_players.is_empty() {
+                break;
+            }
+            crate::game::engine::apply(
+                &mut state,
+                player,
+                GameAction::RespondToShortcut {
+                    response: ShortcutResponse::Accept,
+                },
+            )
+            .expect("each queued opponent accepts");
+        }
+
+        // CR 104.3a: the period's only charged seat leaves the game inside the still-open APNAP
+        // window, through the production action that is legal at any time. Its consumption-time
+        // effect is CR 800.4 + CR 102.1: the reduction's population no longer holds it.
+        crate::game::engine::apply(
+            &mut state,
+            victim,
+            GameAction::Concede { player_id: victim },
+        )
+        .expect("a seat concedes during the response window");
+
+        if strip_signature {
+            let WaitingFor::RespondToShortcut { proposal, .. } = &mut state.waiting_for else {
+                unreachable!("still the response window")
+            };
+            proposal.per_cycle = None;
+        }
+
+        let WaitingFor::RespondToShortcut {
+            player, proposal, ..
+        } = state.waiting_for.clone()
+        else {
+            panic!(
+                "the response window must survive the concede; got {:?}",
+                state.waiting_for
+            )
+        };
+        let derivation = match shortcut_consumption_bound(&state, &proposal, 1) {
+            ConsumptionDerivation::Unsigned => "Unsigned",
+            ConsumptionDerivation::NoMeasurement => "NoMeasurement",
+            ConsumptionDerivation::Measured(_) => "Measured",
+        };
+        assert!(
+            crate::game::players::is_alive(&state, doomed)
+                && state
+                    .players
+                    .iter()
+                    .find(|p| p.id == doomed)
+                    .expect("seat exists")
+                    .life
+                    == 1,
+            "REACH-GUARD: the bystander must still be IN THE GAME and one life short at the \
+             pre-drive board, else its removal is the window's and not the drive's; seats {:?}",
+            state
+                .players
+                .iter()
+                .map(|p| (p.id, p.life, p.is_eliminated))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "REACH-GUARD: the drain the drive resolves must be ON the pre-drive stack, else no \
+             seat can leave inside the sequence"
+        );
+
+        crate::game::engine::apply(
+            &mut state,
+            player,
+            GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            },
+        )
+        .expect("the last responder accepts and the shortcut is taken");
+        (state, derivation)
+    }
+
+    /// **CR 704.5a + CR 732.2a — A SIGNED PROPOSAL THE BOARD MEASURES NOTHING FOR DROPS THE CYCLE
+    /// A DEPARTURE ENDS.** The offer's licence was one seat crossing on one repetition; once
+    /// CR 800.4 + CR 102.1 take that seat out of the reduction's population the re-derivation
+    /// states no crossing at all, so a seat leaving inside the sequence is a departure no
+    /// prediction covers and CR 732.2a's agreed sequence was not the one performed.
+    ///
+    /// THE PAIR IS ON ONE BOARD AND ONE SEQUENCE, differing only in whether the proposal carries
+    /// its signature, which is what makes each leg the other's reach-guard: a fix that refused
+    /// every terminal cycle fails the unsigned leg, and one that refused none fails the signed
+    /// leg. The unsigned leg doubles as the arm's totality proof — it is the shipped
+    /// commit-and-stop, and it also establishes that this board's drive really does reach the
+    /// terminal `SeatLeft` arm rather than `CrossLethal` or `Abort`.
+    ///
+    /// FIXTURE KIND: CONSTRUCTED. This arm needs a SIGNED proposal whose armed seats have all left
+    /// the game before the drive, and the row reaches that by driving a real CR 104.3a `Concede`
+    /// inside the CR 732.2b window — not by starting from a board that had already lost them, which
+    /// is why "carries an eliminated seat" is not the qualifying property. Three committed dumps
+    /// were walked, and each is excluded by a DIFFERENT measured property. Nothing is claimed about
+    /// the dumps that were not walked, in either direction:
+    ///
+    /// * `tenacity_exquisite_blood_4p` restores AT a shortcut offer, but an UNSIGNED one — its
+    ///   certificate carries no `per_cycle` and its schema measured nothing — so a proposal built
+    ///   from it reaches the `Unsigned` arm and never this one.
+    /// * `weird_drain_4p` restores at a SIGNED bounded offer whose published period arms exactly
+    ///   ONE of its three living seats (a per-period life loss of 1; the published charge is empty
+    ///   and the consumption floor supplies it). Emptying that charged set leaves TWO seats in the
+    ///   game, so the bystander's departure takes the table to one, CR 104.2a crowns, and the drive
+    ///   reaches `CrossLethal` instead of the terminal arm.
+    /// * `vanquish_the_horde_manapayment_4p` restores with an empty loop-detect ring and no
+    ///   recorded period, and driving it forward opens no shortcut window at all, so no signed
+    ///   proposal is obtainable from it.
+    ///
+    /// WHAT A COMMITTED BOARD WOULD NEED to replace this ring, stated so the next writer looks
+    /// rather than re-derives the argument: a signed bounded offer, a charged set of exactly ONE
+    /// seat, and FOUR seats still living at the offer beat — one to give up its charge, one to
+    /// depart inside the sequence, and two to survive it, which is what keeps the drive off the
+    /// CR 104.2a crown and on this arm.
+    ///
+    /// REVERT-PROBE: answer the drive's terminal arm from the SIGNATURE'S PRESENCE alone — i.e.
+    /// let `NoMeasurement` fall through to the commit the way an `Option`-shaped absence did ⇒ the
+    /// signed leg commits the departure and its four assertions read the unsigned leg's values ⇒
+    /// FAILS.
+    #[test]
+    fn a_signed_proposal_measuring_nothing_drops_the_cycle_a_departure_ends() {
+        let doomed = P2;
+
+        // ── THE UNSIGNED LEG: the shipped commit-and-stop, and the proof this board REACHES the
+        //    terminal arm. Run first, so the signed leg's values below are read against a
+        //    measured alternative rather than against an expectation.
+        let (unsigned, unsigned_derivation) = drive_the_doomed_bystander_board(doomed, true);
+        assert_eq!(
+            unsigned_derivation, "Unsigned",
+            "REACH-GUARD: stripping `per_cycle` must be what this leg changes"
+        );
+        assert!(
+            !crate::game::players::is_alive(&unsigned, doomed),
+            "CR 732.2a: a proposal publishing no prediction is not discriminated, so the terminal \
+             cycle commits and the bystander's CR 704.5a removal stands; seats {:?}",
+            unsigned
+                .players
+                .iter()
+                .map(|p| (p.id, p.life, p.is_eliminated))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            unsigned.stack.is_empty(),
+            "REACH-GUARD: the committed cycle resolved the drain, which is what removed the seat"
+        );
+        assert!(
+            unsigned.players.iter().filter(|p| !p.is_eliminated).count() >= 2,
+            "REACH-GUARD: two seats must remain in the game, else CR 104.2a crowns and the drive \
+             took the `CrossLethal` arm instead of the terminal `SeatLeft` one"
+        );
+
+        // ── THE SIGNED LEG: the same board and the same sequence, refused.
+        let (signed, signed_derivation) = drive_the_doomed_bystander_board(doomed, false);
+        assert_eq!(
+            signed_derivation, "NoMeasurement",
+            "REACH-GUARD: the conceding seat is the period's only charged one, so the re-derivation \
+             must measure nothing while the proposal stays SIGNED"
+        );
+        assert!(
+            crate::game::players::is_alive(&signed, doomed),
+            "CR 704.5a + CR 732.2a: the cycle is dropped WHOLE, so the departure inside it never \
+             happened and the bystander is still in the game; seats {:?}",
+            signed
+                .players
+                .iter()
+                .map(|p| (p.id, p.life, p.is_eliminated))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            signed
+                .players
+                .iter()
+                .find(|p| p.id == doomed)
+                .expect("seat exists")
+                .life,
+            1,
+            "the rollback is to the last WHOLE committed cycle, which on a drive that committed \
+             none is the pre-drive board"
+        );
+        assert_eq!(
+            signed.stack.len(),
+            1,
+            "the dropped cycle's drain is back on the stack for manual play, which is what \
+             CR 732.2a asks of an ending point"
+        );
+    }
+
+    /// The MEASURED payload, or a panic naming which of the two absences answered instead — the
+    /// reach-guard the rows below would otherwise each restate. A helper that always answered
+    /// absent fails here rather than passing an assertion vacuously.
+    fn measured_consumption_bound(
+        state: &GameState,
+        proposal: &ShortcutProposal,
+        accepted: u32,
+    ) -> ConsumptionBound {
+        match shortcut_consumption_bound(state, proposal, accepted) {
+            ConsumptionDerivation::Measured(bound) => bound,
+            ConsumptionDerivation::Unsigned => panic!(
+                "REACH-GUARD: the helper must MEASURE on a proposal carrying a signature; it \
+                 read the proposal as unsigned"
+            ),
+            ConsumptionDerivation::NoMeasurement => panic!(
+                "REACH-GUARD: the helper must MEASURE on this board; its reduction consumed no \
+                 living seat"
+            ),
+        }
     }
 
     /// The reduction's answer re-derived from the OFFER's own published divisor and the board's
@@ -24960,7 +25364,7 @@ mod bounded_offer_conjunct_tests {
     /// ⓐ is the living twin, minting in the same invocation, which is what makes ⓑ's refusal
     /// attributable to the seat having left the game rather than to the ring failing to certify.
     ///
-    /// REVERT-PROBE: return any count from the reduction's empty exit ⇒ ⓑ MINTS an offer whose
+    /// REVERT-PROBE: return any count >= 1 from the reduction's empty exit ⇒ ⓑ MINTS an offer whose
     /// `is_bounded()` reads true while its producer measured nothing ⇒ FAILS. Drop the living-seat
     /// filter ⇒ ⓑ mints on a corpse's headroom ⇒ FAILS.
     #[test]
@@ -25865,8 +26269,7 @@ mod bounded_offer_conjunct_tests {
             per_cycle.seat_life_charge
         );
 
-        let derived = shortcut_consumption_bound(&state, &proposal, published)
-            .expect("REACH-GUARD: the helper must ANSWER on a proposal carrying a signature");
+        let derived = measured_consumption_bound(&state, &proposal, published);
         assert_eq!(
             derived.ceiling, published,
             "CR 704.5a: the consumption re-derivation and the mint are one reduction over one \
@@ -25907,8 +26310,7 @@ mod bounded_offer_conjunct_tests {
              be constructible; got {published}"
         );
 
-        let at_ceiling = shortcut_consumption_bound(&state, &proposal, published)
-            .expect("the helper answers on a proposal carrying a signature");
+        let at_ceiling = measured_consumption_bound(&state, &proposal, published);
         assert!(
             at_ceiling.predicted_departure.is_some(),
             "CR 704.5a: at the count the reduction derived, the seat it crosses is named"
@@ -25921,8 +26323,7 @@ mod bounded_offer_conjunct_tests {
             "the named repetition is the count itself — the final iteration of the sequence"
         );
 
-        let below = shortcut_consumption_bound(&state, &proposal, published - 1)
-            .expect("the helper answers on the same proposal at a lower count");
+        let below = measured_consumption_bound(&state, &proposal, published - 1);
         assert_eq!(
             below.ceiling, at_ceiling.ceiling,
             "REACH-GUARD: the CEILING is a property of the board and the signature, so it does \

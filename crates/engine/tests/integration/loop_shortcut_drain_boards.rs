@@ -197,7 +197,7 @@ pub(crate) fn drive_to_live_declarable_offer(state: &mut GameState) -> LiveOffer
     );
 }
 
-/// CR 704.5a: re-derive a live offer's `max_iterations` from PUBLISHED data alone — the
+/// CR 704.5a: re-derive a live offer's `measured_repetition_bound` from PUBLISHED data alone — the
 /// certificate's `per_cycle` delta, its `victim_slot` magnitudes and its `declarable_victims`,
 /// plus the live board's lives and libraries — and the seat the caller's own drive aimed at.
 ///
@@ -465,9 +465,9 @@ fn assert_live_offer_is_self_consistent(state: &GameState, offer: LiveOffer) {
     assert_eq!(
         bound,
         rederive_live_offer_bound(state, offer.aimed_at),
-        "CR 704.5a: `max_iterations` is the MIN over every living seat's headroom divided by \
-         what one repetition charges it — the slot's magnitude on every seat it reaches, less \
-         what the window saw it aim at that seat"
+        "CR 704.5a: `measured_repetition_bound` is the MIN over every living seat's headroom \
+         divided by what one repetition charges it — the slot's magnitude on every seat it \
+         reaches, less what the window saw it aim at that seat"
     );
 }
 

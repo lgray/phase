@@ -387,10 +387,11 @@ impl ShortcutDecisionSchema {
     /// publishes the absence, so an unnarrowed offer is NOT bounded in this sense.
     ///
     /// The SINGLE AUTHORITY for that question, and the reason it is a method rather than an
-    /// inline test repeated at each caller: it is the only reader of
-    /// `measured_repetition_bound`, and it crosses the crate boundary — `phase-ai`'s declare
-    /// policy asks this question and never inspects the field. The question is about what was
-    /// measured, never about the capacity, which every offer carries.
+    /// inline test repeated at each caller: it is the only place `measured_repetition_bound` is
+    /// read as a VERDICT — the per-viewer projection in `game::visibility` copies the field
+    /// through unredacted and asks nothing of it — and it crosses the crate boundary:
+    /// `phase-ai`'s declare policy asks this question and never inspects the field. The question
+    /// is about what was measured, never about the capacity, which every offer carries.
     pub fn is_bounded(&self) -> bool {
         self.measured_repetition_bound.is_some()
     }

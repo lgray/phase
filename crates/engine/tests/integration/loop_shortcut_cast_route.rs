@@ -46,7 +46,8 @@ const SECOND_CONVOKE_FODDER: ObjectId = ObjectId(407);
 /// `game::engine::MAX_SHORTCUT_CYCLES`, mirrored because it is `pub(crate)` and this binary is an
 /// external crate — the same mirror `fantastic_four_bounded_loop.rs` keeps. It is the LARGEST
 /// count `handle_declare_shortcut` accepts (it refuses `Fixed(n)` for `n > MAX_SHORTCUT_CYCLES`
-/// and for `n > schema.max_iterations`, and the object-growth mint publishes exactly this), so the
+/// and for `n > schema.deliverable_capacity`, and the object-growth mint publishes exactly this),
+/// so the
 /// large-N arm below runs at the engine's own ceiling rather than at an arbitrary big number.
 const MAX_SHORTCUT_CYCLES_MIRROR: u32 = 1_000;
 
