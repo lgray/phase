@@ -2029,13 +2029,14 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     views.counter_display = counter_display_views(state);
 
     // CR 732.2a: an open shortcut window states the largest number of repetitions its proposal may
-    // specify. Publish that count; nothing downstream may re-derive it. The `is_bounded()` guard is
-    // the single authority for "the producer narrowed the bound"; an unnarrowed offer publishes
-    // nothing. Emitted HERE, above the Commander short-circuit below, for the same reason the
-    // channels above are.
+    // specify — the capacity the declare handler will accept, never the threshold its producer
+    // measured. Publish that count; nothing downstream may re-derive it. The `is_bounded()` guard
+    // is the single authority for "the producer measured a threshold"; an offer that measured none
+    // publishes nothing. Emitted HERE, above the Commander short-circuit below, for the same
+    // reason the channels above are.
     views.bounded_loop_max_repetitions = match &state.waiting_for {
         WaitingFor::LoopShortcut { schema, .. } if schema.is_bounded() => {
-            Some(schema.max_iterations)
+            Some(schema.deliverable_capacity)
         }
         _ => None,
     };

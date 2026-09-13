@@ -70,10 +70,11 @@
 //! name contradicts — so a count crossing nothing crowns nobody, and a `Fixed(n)` declare is real,
 //! committed board progress needing no crown whoever is latched. A reject that ignored the count
 //! would therefore be wrong for the class. The AI candidate generator itself proposes
-//! `Fixed(max_iterations)` against a bounded offer, and offers `UntilLethal` only against an offer
-//! that narrowed no bound; `Fixed(n)` is additionally reachable through the public `GameAction`
-//! surface. `handle_declare_shortcut` checks the declared count against the global cap and against
-//! the offer's own `max_iterations`, and refuses `UntilLethal` against a bounded offer; what it
+//! `Fixed` at the published capacity against a bounded offer, and offers `UntilLethal` only
+//! against an offer that measured no threshold; `Fixed(n)` is additionally reachable through the
+//! public `GameAction` surface. `handle_declare_shortcut` checks the declared count against the
+//! global cap and against the offer's own `deliverable_capacity`, and refuses `UntilLethal`
+//! against a bounded offer; what it
 //! never checks is the declared shape against the schema's *suggested* `iteration_count` (the
 //! fail-closed pin firewall validates only `template` pins, and it runs against the RESOLVED
 //! template rather than the payload's: the handler shadows it with
@@ -213,8 +214,8 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // unbounded half specifically, and it goes RED via `na()` if this arm is moved back
             // below.
             //
-            // Not reachable from today's generator either way (it emits only
-            // `Fixed(max_iterations)`, and the load seam refuses `max_iterations: 0`), so no
+            // Not reachable from today's generator either way (it emits only the published
+            // capacity, and the load seam refuses a capacity of 0), so no
             // scoring that can occur today is reordered. The arm states the scoring arm's OWN
             // precondition rather than leaving it to an invariant maintained a crate away.
             (_, IterationCount::Fixed(0)) => PolicyVerdict::reject(PolicyReason::new(
@@ -226,7 +227,7 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // below is valid only when it does.
             //
             // UNBOUNDED offer ⇒ neither rejected nor boosted, deliberately. An offer whose
-            // producer could not compute a bound publishes `MAX_SHORTCUT_CYCLES`, so it states
+            // producer measured no threshold publishes its absence, so it states
             // no CR 704 threshold for a domination argument to stand on, and a count-blind
             // reject would be wrong for the CLASS: `materialize_fixed_shortcut` drives and
             // COMMITS `n` whole cycles, and a count that crosses nothing crowns nobody, so a
@@ -243,8 +244,8 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // discharged by the `loop_shortcut_declare_eliminates_proposer` arm BELOW, which asks
             // `cycles_to_proposer_elimination` of the proposer alone. It is NOT discharged by
             // `elimination_bounds`' contract: that bound admits a crossing as the sequence's
-            // FINAL iteration, so `max_iterations` can equal the proposer's own fatal count and
-            // `Fixed(max_iterations)` — the AI's only bounded candidate — can name it. That
+            // FINAL iteration, so the published capacity can equal the proposer's own fatal count
+            // and a capacity-valued `Fixed` — the AI's only bounded candidate — can name it. That
             // arm's remaining limit is stated where it sits, not assumed away here.
             //
             // ⚠ AN EARLIER FORM OF THIS ARM ALSO RESTED ON A DRIVE THAT DID NOT HONOUR THE
@@ -272,11 +273,16 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // committed cycles while the CR 732.2b response window is spent. Weakly dominated
             // by declining: the outcome set is {no-op minus a response window}. Same
             // domination shape the `(None, UntilLethal)` arm above encodes.
-            (_, IterationCount::Fixed(n)) if *n > schema.max_iterations => PolicyVerdict::reject(
-                PolicyReason::new("loop_shortcut_bounded_declare_over_bound")
-                    .with_fact("declared", i64::from(*n))
-                    .with_fact("max_iterations", i64::from(schema.max_iterations)),
-            ),
+            (_, IterationCount::Fixed(n)) if *n > schema.deliverable_capacity => {
+                PolicyVerdict::reject(
+                    PolicyReason::new("loop_shortcut_bounded_declare_over_bound")
+                        .with_fact("declared", i64::from(*n))
+                        .with_fact(
+                            "deliverable_capacity",
+                            i64::from(schema.deliverable_capacity),
+                        ),
+                )
+            }
 
             // CR 732.2a: within the offered bound on a bounded offer ⇒ committed board
             // progress that eliminates at most the binding seat, and only on the sequence's
@@ -297,8 +303,8 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // benefit (engine `game/engine.rs`, `bounded_cycle_offer` doc). That makes it the
             // DECIDING side's job, and nothing was doing it: a bounded offer always carries
             // `predicted_winner: None`, so the "hands somebody else the win" arm above is
-            // structurally unreachable here, and the AI's only bounded candidate is
-            // `Fixed(max_iterations)` — the maximum, never a smaller n, and now a count the
+            // structurally unreachable here, and the AI's only bounded candidate is `Fixed` at
+            // the published capacity — the maximum, never a smaller n, and now a count the
             // producer carries all the way to the binding seat's own crossing. A self-mill
             // period whose binding seat is the proposer therefore scored CRITICAL for running
             // the proposer's own library to exactly 0.
@@ -661,7 +667,7 @@ mod tests {
     /// board progress for ANY latched winner. Proves the reject set is not one state too wide.
     ///
     /// This row stays green LEGITIMATELY, not by luck: `ShortcutDecisionSchema::default()`
-    /// carries `max_iterations == MAX_SHORTCUT_CYCLES`, so `is_bounded()` is FALSE and the
+    /// measures no threshold, so `is_bounded()` is FALSE and the
     /// verdict takes the deliberately-neutral unbounded branch. That branch is asserted
     /// DIRECTLY by `loop_shortcut_unbounded_offer_keeps_fixed_neutral` below, so a future
     /// re-scoping that deletes the `!schema.is_bounded()` guard fails THERE with a message
@@ -683,14 +689,18 @@ mod tests {
 
     /// A BOUNDED offer — the only shape `try_offer_bounded_cycle_shortcut` mints. `points`
     /// stays empty because the engine's `Fixed` candidate generator is gated on that too.
-    fn bounded_offer_state(max_iterations: u32) -> GameState {
+    fn bounded_offer_state(bound: u32) -> GameState {
         let mut state = GameState::new_two_player(0);
         state.waiting_for = WaitingFor::LoopShortcut {
             proposer: P0,
             predicted_winner: None,
             certificate: cert(),
             schema: ShortcutDecisionSchema {
-                max_iterations,
+                // BOTH halves: a fixture setting only the capacity measures nothing, so
+                // `is_bounded()` would be FALSE and every bounded row below would silently take
+                // the unbounded branch instead of its own subject.
+                measured_repetition_bound: Some(bound),
+                deliverable_capacity: bound,
                 ..Default::default()
             },
             declaration: None,
@@ -701,10 +711,10 @@ mod tests {
     /// A BOUNDED offer carrying a real certified period — the shape
     /// `certified_bounded_cycle_offer` actually mints (`per_cycle: Some(periodic)`), as opposed
     /// to [`cert`]'s `None`.
-    fn bounded_offer_with_period(max_iterations: u32, period: PeriodicDelta) -> GameState {
+    fn bounded_offer_with_period(bound: u32, period: PeriodicDelta) -> GameState {
         bounded_offer_declaring(
             GameState::new_two_player(0),
-            max_iterations,
+            bound,
             period,
             Vec::new(),
             None,
@@ -716,7 +726,7 @@ mod tests {
     /// CR 732.2a offer-writer census counts one fixture site however many shapes they stage.
     fn bounded_offer_declaring(
         mut state: GameState,
-        max_iterations: u32,
+        bound: u32,
         period: PeriodicDelta,
         points: Vec<DecisionPoint>,
         declaration: Option<DecisionTemplate>,
@@ -729,7 +739,8 @@ mod tests {
                 ..cert()
             },
             schema: ShortcutDecisionSchema {
-                max_iterations,
+                measured_repetition_bound: Some(bound),
+                deliverable_capacity: bound,
                 points,
                 ..Default::default()
             },
@@ -815,8 +826,8 @@ mod tests {
 
         assert!(
             schema_of(&state).is_bounded(),
-            "REACH-GUARD: the arm under test is bounded-only; max_iterations = {}",
-            schema_of(&state).max_iterations
+            "REACH-GUARD: the arm under test is bounded-only; measured bound = {:?}",
+            schema_of(&state).measured_repetition_bound
         );
         assert!(
             certificate_of(&state).per_cycle.is_some(),
@@ -864,7 +875,8 @@ mod tests {
 
     /// CR 704.5a — the AI must not declare a bounded loop that runs its OWN life to 0 or less.
     /// `elimination_bounds` deliberately lets the proposer be the binding seat, and the engine's
-    /// only bounded candidate is `Fixed(max_iterations)`, so before this guard the heuristic path
+    /// only bounded candidate is `Fixed` at the published capacity, so before this guard the
+    /// heuristic path
     /// declared a self-killing loop at the CRITICAL band.
     ///
     /// THIS IS THE THRESHOLD DISCRIMINATOR, moved here from the library axis when CR 121.4 struck
@@ -888,8 +900,8 @@ mod tests {
         assert_eq!(state.players[P0.0 as usize].life, 20);
         assert!(
             schema_of(&state).is_bounded(),
-            "REACH-GUARD: the arm under test is bounded-only; max_iterations = {}",
-            schema_of(&state).max_iterations
+            "REACH-GUARD: the arm under test is bounded-only; measured bound = {:?}",
+            schema_of(&state).measured_repetition_bound
         );
         assert!(
             certificate_of(&state).per_cycle.is_some(),
@@ -913,8 +925,9 @@ mod tests {
     /// The engine publishes a legal bound either way; the AI must refuse only the board where
     /// the seat the bound's arithmetic names is the PROPOSER. That refusal is now load-bearing
     /// rather than redundant: the published bound reaches the binding seat's own crossing, so
-    /// `max_iterations` can EQUAL `cycles_to_proposer_elimination`, and the AI's only bounded
-    /// candidate is `Fixed(max_iterations)`. Both boards assert that equality (or its absence)
+    /// the published capacity can EQUAL `cycles_to_proposer_elimination`, and the AI's only
+    /// bounded candidate is `Fixed` at that capacity. Both boards assert that equality (or its
+    /// absence)
     /// off the predicate itself, so the row states the re-attribution instead of assuming it.
     ///
     /// REVERT-PROBE: delete the `Some(fatal)` reject branch ⇒ the proposer-as-faller board falls
@@ -1094,8 +1107,8 @@ mod tests {
         let (state, slot) = slot_charged_offer();
         assert!(
             schema_of(&state).is_bounded(),
-            "REACH-GUARD: the arm under test is bounded-only; max_iterations = {}",
-            schema_of(&state).max_iterations
+            "REACH-GUARD: the arm under test is bounded-only; measured bound = {:?}",
+            schema_of(&state).measured_repetition_bound
         );
         let period = certificate_of(&state)
             .per_cycle
@@ -1277,17 +1290,17 @@ mod tests {
 
     /// CR 732.2a — the BOUNDED branch, both halves, on ONE schema differing only in `n`.
     ///
-    /// (i) `Fixed(4)` with `max_iterations == 10` ⇒ committed progress well inside every
+    /// (i) `Fixed(4)` against a published capacity of 10 ⇒ committed progress well inside every
     /// seat's headroom, so the critical band `PolicyVerdict::score` routes `8.0` to. (ii) `Fixed(11)` ⇒ the engine hands it back fail-closed with ZERO committed
     /// cycles and the CR 732.2b window spent, i.e. weakly dominated by declining.
     ///
     /// REVERT-PROBES, each flipping a DIFFERENT subset so neither dominates the other:
     /// * ⓟ1 restore `(_, IterationCount::Fixed(_)) => na()` ⇒ BOTH arms collapse to
     ///   `delta == 0.0` / `"loop_shortcut_na"` ⇒ FAILS.
-    /// * ⓟ2 delete the `n > schema.max_iterations` conjunct ⇒ arm (ii) SCORES instead of
+    /// * ⓟ2 delete the `n > schema.deliverable_capacity` conjunct ⇒ arm (ii) SCORES instead of
     ///   rejecting ⇒ FAILS while arm (i) still passes, which is what proves the reject half is
     ///   not carried by ⓟ1.
-    /// * ⓟ3 invert `ShortcutDecisionSchema::is_bounded()` to `>=` ⇒ the in-test schema reads
+    /// * ⓟ3 invert `ShortcutDecisionSchema::is_bounded()` to `is_none()` ⇒ the in-test schema reads
     ///   unbounded ⇒ both arms take `na()` ⇒ FAILS, and so does
     ///   `loop_shortcut_unbounded_offer_keeps_fixed_neutral`. ⓟ3 flipping BOTH rows plus the
     ///   engine's `until_lethal_against_a_bounded_offer_is_rejected` is the single-authority
@@ -1298,8 +1311,8 @@ mod tests {
         assert!(
             schema_of(&state).is_bounded(),
             "REACH-GUARD: every assertion below is vacuous unless the in-test schema really is \
-             bounded; max_iterations = {}",
-            schema_of(&state).max_iterations
+             bounded; measured bound = {:?}",
+            schema_of(&state).measured_repetition_bound
         );
 
         // (i) within the bound.
@@ -1393,8 +1406,8 @@ mod tests {
             assert!(
                 !schema_of(&state).is_bounded(),
                 "REACH-GUARD: this row is about the UNBOUNDED schema — the bounded row above \
-                 already covers the other half; measured max_iterations {}",
-                schema_of(&state).max_iterations
+                 already covers the other half; measured bound {:?}",
+                schema_of(&state).measured_repetition_bound
             );
             let zero = verdict_for(&state, &declare(IterationCount::Fixed(0)));
             assert!(
@@ -1420,7 +1433,7 @@ mod tests {
     /// SAME `Fixed(n)`, discriminated by ONE field of the schema: a constant-`na()`
     /// implementation fails the row above, a constant-`Score` implementation fails this one.
     ///
-    /// REVERT-PROBES: ⓟ3 (invert `is_bounded()` to `>=`) ⇒ the default schema reads bounded ⇒
+    /// REVERT-PROBES: ⓟ3 (invert `is_bounded()` to `is_none()`) ⇒ the default schema reads bounded ⇒
     /// this row gets `Score` / `"…_progress"` ⇒ FAILS. ⓟ4 delete the
     /// `!schema.is_bounded() => na()` branch ⇒ same failure, and `declare_fixed_is_never_rejected`
     /// fails with it.
@@ -1432,8 +1445,8 @@ mod tests {
                 !schema_of(&state).is_bounded(),
                 "REACH-GUARD: this row asserts the UNBOUNDED branch, so the default schema must \
                  read unbounded — `ShortcutDecisionSchema::default()` carries \
-                 `max_iterations == MAX_SHORTCUT_CYCLES`; measured {}",
-                schema_of(&state).max_iterations
+                 no measured threshold; measured {:?}",
+                schema_of(&state).measured_repetition_bound
             );
             let v = verdict_for(&state, &declare(IterationCount::Fixed(4)));
             assert_eq!(

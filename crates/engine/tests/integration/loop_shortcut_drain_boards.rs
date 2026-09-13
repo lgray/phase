@@ -452,8 +452,11 @@ fn assert_live_offer_is_self_consistent(state: &GameState, offer: LiveOffer) {
     // `rederive_live_offer_bound` computes from this offer's own published data and the seat
     // the drive latched. Dropping the aim subtraction moves the published bound off this
     // re-derivation on every board that charges an aimed slot.
-    let bound = schema.max_iterations;
+    let bound = schema.deliverable_capacity;
     assert_eq!(schema.iteration_count, IterationCount::Fixed(bound));
+    // The MEASURED half is what the board arithmetic re-derives; the capacity above is what the
+    // handler enforces, and on a sub-budget board the two are the same integer.
+    assert_eq!(schema.measured_repetition_bound, Some(bound));
     assert_eq!(
         bound,
         rederive_live_offer_bound(state, offer.aimed_at),

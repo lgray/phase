@@ -1979,11 +1979,12 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
                 declaration,
                 schema: ShortcutDecisionSchema {
                     iteration_count: schema.iteration_count.clone(),
-                    // CR 732.2a: the count bound is derived from PUBLIC board state (life,
-                    // poison, library sizes over the living players), so it carries through
-                    // the per-viewer projection unredacted — only hidden-info legal targets
-                    // are rewritten above.
-                    max_iterations: schema.max_iterations,
+                    // CR 732.2a: BOTH published answers are derived from PUBLIC board state
+                    // (life, poison, library sizes over the living players) and the engine's own
+                    // budget, so the pair carries through the per-viewer projection unredacted —
+                    // only hidden-info legal targets are rewritten above.
+                    measured_repetition_bound: schema.measured_repetition_bound,
+                    deliverable_capacity: schema.deliverable_capacity,
                     points,
                     convoke_tappable_count,
                 },
@@ -9583,7 +9584,8 @@ mod tests {
             },
             schema: ShortcutDecisionSchema {
                 iteration_count: IterationCount::Fixed(3),
-                max_iterations: 3,
+                measured_repetition_bound: Some(3),
+                deliverable_capacity: 3,
                 points: vec![DecisionPoint {
                     slot: slot.clone(),
                     kind: DecisionPointKind::Targets {

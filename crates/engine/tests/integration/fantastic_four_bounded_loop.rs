@@ -575,7 +575,7 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
 /// §6 R1 — the CR 732.2a bounded offer FIRES on the REAL 4-player F4 dump, driven through
-/// `apply()`, and its `max_iterations` equals the bound re-derived by this row from the
+/// `apply()`, and its MEASURED threshold equals the bound re-derived by this row from the
 /// offer-beat board.
 ///
 /// **STATUS: §6 R1's other half is now MEASURED TRUE, in two sibling rows.** R1 as planned also
@@ -702,18 +702,19 @@ fn r1_the_bounded_offer_fires_on_the_real_f4_dump() {
     // observed this slot announce.
     let expected = rederive_live_offer_bound(&state, P1);
     assert_eq!(
-        schema.max_iterations, expected,
-        "CR 732.2a + CR 704.5a: `max_iterations` is the MIN over every living seat's \
+        schema.measured_repetition_bound,
+        Some(expected),
+        "CR 732.2a + CR 704.5a: the MEASURED threshold is the MIN over every living seat's \
          elimination headroom, divided by the per-period consumption the certificate itself \
          published PLUS the `victim_slot` magnitude charged to every seat the slot reaches, \
          LESS what the window saw that slot aim at each seat. Re-derived here as {expected}; \
-         the offer published {}",
-        schema.max_iterations
+         the offer published {:?}",
+        schema.measured_repetition_bound
     );
     assert!(
-        schema.max_iterations < MAX_SHORTCUT_CYCLES_MIRROR,
-        "the bound must be NARROWED, else this row is satisfied by the unnarrowed default \
-         every pre-bounded offer carries"
+        schema.is_bounded() && schema.deliverable_capacity < MAX_SHORTCUT_CYCLES_MIRROR,
+        "the threshold must be MEASURED and its capacity NARROWED, else this row is satisfied \
+         by the un-narrowed default every pre-bounded offer carries"
     );
 }
 
@@ -772,8 +773,8 @@ fn r2a_split_the_bounded_offer_still_publishes_a_ranked_seat_pin_and_refuses_a_h
     let schema = schema.clone();
 
     assert_eq!(
-        schema.max_iterations,
-        rederive_live_offer_bound(&state, P1),
+        schema.measured_repetition_bound,
+        Some(rederive_live_offer_bound(&state, P1)),
         "the CR 704.5a-derived bound at beat {beat} agrees with an independent re-derivation \
          from the offer's own published certificate and the seat this drive aimed at. It \
          tracks the charge model rather than a literal; it does NOT compare against a \
@@ -814,7 +815,7 @@ fn r2a_split_the_bounded_offer_still_publishes_a_ranked_seat_pin_and_refuses_a_h
     // ── PAIRED POSITIVE: the pin is LEGAL against the offer's own schema, before the hostile
     //    change lands ──
     assert!(
-        validate_pins(&schema, &declaration, schema.max_iterations, &state).is_ok(),
+        validate_pins(&schema, &declaration, schema.deliverable_capacity, &state).is_ok(),
         "paired positive: the ranked pin validates at the FULL declared range on the \
          un-hexproofed board — otherwise the refusal below is explained by a seat pin that \
          never validates at all"
@@ -887,7 +888,7 @@ fn r2a_split_the_bounded_offer_still_publishes_a_ranked_seat_pin_and_refuses_a_h
     );
 
     assert!(
-        validate_pins(&schema, &declaration, schema.max_iterations, &hostile).is_err(),
+        validate_pins(&schema, &declaration, schema.deliverable_capacity, &hostile).is_err(),
         "CR 601.2c + CR 702.11c: a TARGET-class seat that has become untargetable is an \
          ILLEGAL pin value, so the declaration is REFUSED rather than driven at a wrong seat. \
          Under the pre-split `TargetPin::Player` this returns Ok — existence alone — which is \
@@ -2242,10 +2243,10 @@ fn offer_declaration(
 ///
 /// # The count trap, measured
 ///
-/// The reference must be built with `count = schema.max_iterations`, NOT the `1` every other
+/// The reference must be built with `count = schema.deliverable_capacity`, NOT the `1` every other
 /// declare row in this file passes: `build_bounded_declaration` sets
 /// `replay: Scheduled { count: schema.iteration_count }`, and `certified_bounded_cycle_offer`
-/// builds the schema with `IterationCount::Fixed(max_iterations)`. Measured on all three boards:
+/// builds the schema with a suggestion narrowed to that capacity. Measured on all three boards:
 /// `REAL == f4_pin_template(count = 1)` is FALSE and `REAL == f4_pin_template(count = max)` is
 /// TRUE.
 ///
@@ -2286,8 +2287,8 @@ fn d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
             "[{label}] REACH-GUARD: the published point count at beat {beat}"
         );
         assert_eq!(
-            schema.max_iterations,
-            rederive_live_offer_bound(&state, P1),
+            schema.measured_repetition_bound,
+            Some(rederive_live_offer_bound(&state, P1)),
             "[{label}] REACH-GUARD: the CR 704.5a-derived bound — and the count the reference \
              below must be built with — re-derived from this offer's own published certificate \
              and the seat the drive aimed at"
@@ -2297,7 +2298,7 @@ fn d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
             .unwrap_or_else(|| panic!("[{label}] the offer publishes a declaration"));
         assert_eq!(
             declaration,
-            f4_pin_template(&schema, proposer, schema.max_iterations),
+            f4_pin_template(&schema, proposer, schema.deliverable_capacity),
             "[{label}] CR 732.2a: the published declaration must CONFORM to the shape this \
              suite's accepted declarations take — one pin per published point, owner == \
              proposer, `replay.count` == the offer's own suggestion"
@@ -2313,7 +2314,7 @@ fn d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump
             "[{label}] and its pin VALUES are legal at iteration 1"
         );
         assert!(
-            validate_pins(&schema, &declaration, schema.max_iterations, &state).is_ok(),
+            validate_pins(&schema, &declaration, schema.deliverable_capacity, &state).is_ok(),
             "[{label}] and at the full declared range — the count the AI's candidate carries"
         );
     }
@@ -2749,7 +2750,7 @@ fn optional_entries(state: &GameState) -> usize {
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
 /// **Row D6 — WIRE / POSITIVE.** At the real F4 bounded offer the AI candidate generator now
-/// emits `DeclareShortcut { Fixed(max_iterations), Some(declaration) }` beside the decline, and
+/// emits `DeclareShortcut { Fixed(capacity), Some(declaration) }` beside the decline, and
 /// the `template` it carries IS THE OFFER'S OWN published declaration — not one the AI built.
 ///
 /// ⚠ **THIS ROW'S PREVIOUS CLAIM WAS THE OPPOSITE, AND IT IS SUPERSEDED, NOT BROKEN.** As
@@ -2791,11 +2792,11 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
     };
 
     assert!(
-        schema.is_bounded() && schema.max_iterations < MAX_SHORTCUT_CYCLES_MIRROR,
+        schema.is_bounded() && schema.deliverable_capacity < MAX_SHORTCUT_CYCLES_MIRROR,
         "reach-guard: the generator's `Fixed` candidate is gated on `is_bounded()`, so an \
-         unbounded offer would decide this row for the wrong reason. bounded={} max_it={}",
+         unbounded offer would decide this row for the wrong reason. bounded={} capacity={}",
         schema.is_bounded(),
-        schema.max_iterations
+        schema.deliverable_capacity
     );
     assert!(
         !schema.points.is_empty(),
@@ -2817,15 +2818,15 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
         actions,
         vec![
             GameAction::DeclareShortcut {
-                count: IterationCount::Fixed(schema.max_iterations),
+                count: IterationCount::Fixed(schema.deliverable_capacity),
                 template: Some(declaration.clone()),
             },
             GameAction::DeclineShortcut,
         ],
         "CR 732.2a: exactly two candidates. No `UntilLethal` declaration (gated on \
-         `!schema.is_bounded()`, and this offer narrowed its bound to {}), and the `Fixed` \
+         `!schema.is_bounded()`, and this offer measured a threshold of {:?}), and the `Fixed` \
          declaration carries the ENGINE'S OWN pin set for the {} published point(s)",
-        schema.max_iterations,
+        schema.measured_repetition_bound,
         schema.points.len()
     );
 
@@ -2837,7 +2838,7 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
             GameAction::DeclareShortcut {
                 count: IterationCount::Fixed(n),
                 template: Some(t),
-            } if *n == schema.max_iterations && *t == declaration
+            } if *n == schema.deliverable_capacity && *t == declaration
         )),
         "the candidate's template is the offer's own declaration, VALUE-EQUAL — a fabricated \
          template of the same shape would fail here and pass an `is_some()` check"
@@ -2918,7 +2919,7 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
     drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
     let (proposer, _certificate, schema) = offer_parts(&state);
     let schema = schema.clone();
-    let max = schema.max_iterations;
+    let max = schema.deliverable_capacity;
 
     assert!(
         state.last_loop_action_sequence.is_empty(),
@@ -3227,8 +3228,8 @@ fn b5f_the_declared_term_can_suppress_an_otherwise_legal_offer() {
     // crossing as the sequence's final iteration.
     let crossing_cycle = |life: i64| (life - 1) / declared + 1;
     assert_eq!(
-        i64::from(schema.max_iterations),
-        crossing_cycle(life_at_offer),
+        schema.measured_repetition_bound.map(i64::from),
+        Some(crossing_cycle(life_at_offer)),
         "(α) CR 704.5a: the published bound is the cycle the REACH term alone takes P2 across \
          on — declared {declared} at P2 life {life_at_offer}. Uncharged, P2's magnitude is 0, \
          `narrow` never fires for it, and this board is bounded by the aimed seat instead"
@@ -3242,8 +3243,8 @@ fn b5f_the_declared_term_can_suppress_an_otherwise_legal_offer() {
     );
     let (_, _, alpha2_schema) = offer_parts(&alpha2);
     assert_eq!(
-        i64::from(alpha2_schema.max_iterations),
-        crossing_cycle(2),
+        alpha2_schema.measured_repetition_bound.map(i64::from),
+        Some(crossing_cycle(2)),
         "(α) the bound fell by exactly one with P2's life — which pins the divisor at the \
          reach term rather than at the board"
     );
@@ -3279,8 +3280,8 @@ fn b5f_the_declared_term_can_suppress_an_otherwise_legal_offer() {
     );
     let (_, _, control_schema) = offer_parts(&beta_control);
     assert_eq!(
-        i64::from(control_schema.max_iterations),
-        crossing_cycle(1),
+        control_schema.measured_repetition_bound.map(i64::from),
+        Some(crossing_cycle(1)),
         "CONTROL for (β): and it offers at P2's own crossing — the single relieved iteration \
          that CR 732.2a admits because it is the sequence's last"
     );
@@ -3396,10 +3397,10 @@ fn accept_a_fixed_grant(
         .expect("a bounded offer publishes its per-period signature");
     let schema = schema.clone();
     assert!(
-        schema.max_iterations >= n,
-        "[{label} n={n}] REACH-GUARD: the published bound {} must admit this count, else the \
+        schema.deliverable_capacity >= n,
+        "[{label} n={n}] REACH-GUARD: the published capacity {} must admit this count, else the \
          declaration is refused for a reason that has nothing to do with the drive",
-        schema.max_iterations
+        schema.deliverable_capacity
     );
     let points = published_point_names(&state);
     let before = commit_axes(&state);
@@ -3741,7 +3742,7 @@ fn a_template_free_declaration_is_admitted_only_by_the_proposers_own_period() {
          set makes this whole row unreachable — which is exactly why it is not on the dina \
          fixture (beat {beat})"
     );
-    let max = schema.max_iterations;
+    let max = schema.deliverable_capacity;
     assert!(
         max >= 1,
         "REACH-GUARD: the published bound must admit `Fixed(1)`, else the arms are refused for \
@@ -3927,7 +3928,7 @@ fn declare_template_free(state: &GameState, proposer: PlayerId, k: u32) -> GameS
 /// The picker's whole point is that any count in `[min, max]` may be declared, so a repair that
 /// only worked at `suggested` would be no repair. `k = 1` is the window's lower edge and
 /// `k = 5` is neither edge nor the suggestion — no implementation that special-cases
-/// `max_iterations` (which this board publishes as `suggested`) satisfies the `k = 5` arm.
+/// the published capacity (which this board publishes as `suggested`) satisfies the `k = 5` arm.
 /// `proposal.count` is asserted per arm, so an engine that accepted the declaration but drove
 /// the suggested count anyway fails here rather than silently overriding the player.
 ///
@@ -3948,7 +3949,7 @@ fn c2_r1_the_browsers_template_free_declaration_reaches_the_accepted_declaration
     let (points, bounded, max) = (
         schema.points.len(),
         schema.is_bounded(),
-        schema.max_iterations,
+        schema.deliverable_capacity,
     );
 
     assert!(
@@ -3967,8 +3968,8 @@ fn c2_r1_the_browsers_template_free_declaration_reaches_the_accepted_declaration
     assert!(
         max >= 5,
         "REACH-GUARD: `k = 5` must be INTERIOR to the declarable window, else R1b's \
-         non-suggested arm is refused by the `Fixed(n) > max_iterations` cap for a reason that \
-         has nothing to do with the repair. max_iterations={max}"
+         non-suggested arm is refused by the `Fixed(n) > deliverable_capacity` cap for a reason \
+         that has nothing to do with the repair. capacity={max}"
     );
 
     // R1 — the suggested count, which is `max` on this board.
@@ -4789,7 +4790,7 @@ fn t1_a_victim_changing_declaration_commits_its_whole_count_on_the_seats_it_decl
         .clone()
         .expect("a bounded offer publishes its per-period signature");
     let schema = schema.clone();
-    let n = schema.max_iterations;
+    let n = schema.deliverable_capacity;
 
     let life_rate = -per_cycle.delta.life.values().copied().min().unwrap_or(0);
     assert!(
@@ -4931,7 +4932,7 @@ fn t2_reach_guard_a_same_seat_schedule_shape_already_commits_its_whole_count() {
         .clone()
         .expect("a bounded offer publishes its per-period signature");
     let schema = schema.clone();
-    let n = schema.max_iterations;
+    let n = schema.deliverable_capacity;
 
     let life_rate = -per_cycle.delta.life.values().copied().min().unwrap_or(0);
     assert!(
@@ -5422,7 +5423,7 @@ fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_c
         .clone()
         .expect("a bounded offer publishes its per-period signature");
     let schema = schema.clone();
-    let n = schema.max_iterations;
+    let n = schema.deliverable_capacity;
 
     // ── (a) the enumerated consumer moves.
     assert!(
@@ -6431,14 +6432,14 @@ fn e1_a_narrowed_offer_publishes_its_bound_beside_an_untouched_infinity_channel(
         drive_f4_to_offer(&mut state, 400)
             .unwrap_or_else(|| panic!("[{label}] reach-guard: the bounded offer must FIRE"));
         let (proposer, _certificate, schema) = offer_parts(&state);
-        let bound = schema.max_iterations;
+        let bound = schema.deliverable_capacity;
         let bounded = schema.is_bounded();
         let schema = schema.clone();
         assert!(
             bounded && bound > 1,
             "[{label}] reach-guard: this offer's producer must have NARROWED the bound below the \
              engine cap, and to more than one repetition — an unnarrowed offer takes the other \
-             arm and a ceiling of 1 could not discriminate. max_iterations={bound} cap={}",
+             arm and a ceiling of 1 could not discriminate. capacity={bound} cap={}",
             MAX_SHORTCUT_CYCLES_MIRROR
         );
 
@@ -6594,7 +6595,7 @@ fn e5_an_unnarrowed_offer_and_every_respond_window_state_no_ceiling() {
         drive_f4_to_offer(&mut state, 400)
             .unwrap_or_else(|| panic!("[{label}] reach-guard: the bounded offer must FIRE"));
         let (proposer, _certificate, schema) = offer_parts(&state);
-        let declared = schema.max_iterations;
+        let declared = schema.deliverable_capacity;
         let schema = schema.clone();
 
         // ── E5a: the same board with its bound un-narrowed to the engine cap.
@@ -6606,7 +6607,10 @@ fn e5_an_unnarrowed_offer_and_every_respond_window_state_no_ceiling() {
         else {
             panic!("[{label}] the driven beat is the CR 732.2a offer");
         };
-        hostile_schema.max_iterations = MAX_SHORTCUT_CYCLES_MIRROR;
+        // Un-narrowing is the ABSENCE, not a budget-valued count: `is_bounded()` reads the
+        // measured field, and the capacity is what the picker publishes.
+        hostile_schema.measured_repetition_bound = None;
+        hostile_schema.deliverable_capacity = MAX_SHORTCUT_CYCLES_MIRROR;
         assert!(
             !hostile_schema.is_bounded(),
             "[{label}] reach-guard: the mutated board really is UNNARROWED, so the absence below \
@@ -6697,7 +6701,7 @@ fn e5_an_unnarrowed_offer_and_every_respond_window_state_no_ceiling() {
 ///
 /// # Discrimination
 ///
-/// Publish `max_iterations + 1` from the new arm ⇒ the equality reds. The hostile leg is the
+/// Publish the capacity `+ 1` from the new arm ⇒ the equality reds. The hostile leg is the
 /// unnarrowed board, where the picker still publishes a ceiling at the cap while this channel
 /// states nothing — so no disagreement is representable there.
 #[test]
@@ -6745,7 +6749,7 @@ fn e7_the_published_bound_is_the_count_pickers_own_ceiling() {
         drive_f4_to_offer(&mut state, 400)
             .unwrap_or_else(|| panic!("[{label}] reach-guard: the bounded offer must FIRE"));
         let (proposer, _certificate, schema) = offer_parts(&state);
-        let bound = schema.max_iterations;
+        let bound = schema.deliverable_capacity;
         assert!(
             schema.is_bounded() && bound > 1,
             "[{label}] reach-guard: a narrowed window with a ceiling above 1 — a ceiling of 1 \
@@ -6769,7 +6773,8 @@ fn e7_the_published_bound_is_the_count_pickers_own_ceiling() {
         else {
             panic!("[{label}] the driven beat is the CR 732.2a offer");
         };
-        hostile_schema.max_iterations = MAX_SHORTCUT_CYCLES_MIRROR;
+        hostile_schema.measured_repetition_bound = None;
+        hostile_schema.deliverable_capacity = MAX_SHORTCUT_CYCLES_MIRROR;
         assert_eq!(
             published_ceiling(&unnarrowed, proposer, label),
             MAX_SHORTCUT_CYCLES_MIRROR,
@@ -7721,7 +7726,7 @@ fn the_published_offer_the_authored_edit_and_the_committed_drive_are_one_chain()
     let (bound, per_cycle) = {
         let (_, certificate, schema) = offer_parts(&state);
         (
-            schema.max_iterations,
+            schema.deliverable_capacity,
             certificate
                 .per_cycle
                 .clone()

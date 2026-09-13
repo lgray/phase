@@ -3742,12 +3742,13 @@ fn loop_shortcut_projection(
     }
     let count = match schema.iteration_count {
         crate::analysis::decision_template::IterationCount::Fixed(suggested) => {
-            // CR 732.2a: the picker's ceiling is the offer's own CR 704 bound, never the raw
-            // global safety limit — a count above it would specify a sequence containing an
-            // elimination, which is a conditional action. The engine owns this number; the
-            // frontend renders it. An unnarrowed offer states `MAX_SHORTCUT_CYCLES`; a bounded
-            // offer states less. Either way this is the offer's own bound, clamped at the same
-            // authority.
+            // CR 732.2a: the picker's ceiling is the capacity this offer published — what the
+            // declare handler will accept — never the CR 704 threshold its producer measured and
+            // never the raw global safety limit. A count above it would specify a sequence
+            // containing an elimination, which is a conditional action. The engine owns this
+            // number; the frontend renders it. An offer that measured no threshold carries a
+            // capacity at `MAX_SHORTCUT_CYCLES`; one that measured a smaller threshold carries
+            // less.
             //
             // CR 704.5a: `elimination_bounds` returns `0` to mean "no legal repetition exists and
             // the caller must not offer". A published offer carrying `0` is an authority
@@ -3765,23 +3766,23 @@ fn loop_shortcut_projection(
             // restored dump into an engine panic.
             //
             // LATENT, NOT LIVE (measured at this head): no in-tree producer can reach this
-            // arm with `0`. `build_shortcut_schema` (`game/engine.rs`) has THREE call sites:
-            // `interactive_loop_bridge` and `try_offer_object_growth_shortcut` pass
-            // `MAX_SHORTCUT_CYCLES`, while `certified_bounded_cycle_offer` passes a NARROWED
-            // `max_iterations` — which cannot be `0` either, because that producer refuses
-            // outright unless `(1..MAX_SHORTCUT_CYCLES).contains(&max_iterations)`. The
-            // per-viewer projection in `game/visibility.rs` only re-projects an existing
-            // schema's value; and
-            // `ShortcutDecisionSchema::default().max_iterations == default_max_iterations()
-            // == MAX_SHORTCUT_CYCLES` (`analysis/decision_template.rs`), which is also the
-            // `#[serde(default)]` for a pre-bound save. The only way `0`
+            // arm with `0`. `build_shortcut_schema` (`game/engine.rs`) has THREE call sites and
+            // derives every capacity itself: `interactive_loop_bridge` and
+            // `try_offer_object_growth_shortcut` measure no threshold, so theirs is
+            // `MAX_SHORTCUT_CYCLES`, while `certified_bounded_cycle_offer` hands it a measured
+            // threshold that cannot be `0` — that producer refuses outright unless the measured
+            // count lies in `(1..MAX_SHORTCUT_CYCLES)`. The per-viewer projection in
+            // `game/visibility.rs` only re-projects an existing schema's pair; and
+            // `ShortcutDecisionSchema::default()` seeds the capacity at `MAX_SHORTCUT_CYCLES`
+            // (`analysis/decision_template.rs`), which is also its `#[serde(default)]` for a save
+            // carrying no capacity key. The only way `0`
             // arrives is a LOADED/PERSISTED authority that explicitly serializes it. This
             // guard is therefore the fail-closed twin of item E: a latent hole shut before
             // it opens.
-            if schema.max_iterations == 0 {
+            if schema.deliverable_capacity == 0 {
                 return Err(InteractionReasonCode::InvalidAuthorityState);
             }
-            let max = schema.max_iterations.min(MAX_SHORTCUT_CYCLES);
+            let max = schema.deliverable_capacity.min(MAX_SHORTCUT_CYCLES);
             InteractionShortcutCountSpec::Fixed {
                 min: 1,
                 max,
@@ -3797,8 +3798,8 @@ fn loop_shortcut_projection(
     // that measured one (`certified_bounded_cycle_offer`); every other mint carries `None`, as
     // does every save written before the field existed. The other authority the magnitudes
     // need — a FINITE count — is `count` above, and the two coincide by construction rather
-    // than by luck: the bounded producer both narrows `max_iterations` and mints
-    // `Fixed(max_iterations)`.
+    // than by luck: that same producer mints a `Fixed` VARIANT, which is what selects the finite
+    // arm, and no clamp can turn a `Fixed` into an `UntilLethal`.
     let per_cycle = certificate.per_cycle.clone();
     let mut candidates = Vec::new();
     let mut points = Vec::with_capacity(schema.points.len());
@@ -10756,7 +10757,7 @@ fn materialize_loop_shortcut_response(
         // 0, so an index-0-only check would accept a declaration whose driven image leaves the
         // offer's published legal set at an index the count reaches. The helper's precondition
         // — a count already bounded — is discharged here by the count-spec projection, which
-        // computes `max = schema.max_iterations.min(MAX_SHORTCUT_CYCLES)` and admits only that
+        // computes `max = schema.deliverable_capacity.min(MAX_SHORTCUT_CYCLES)` and admits only that
         // window.
         //
         // The `required` slot list is still not derived here: `declaration_conforms` derives it

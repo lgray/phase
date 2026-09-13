@@ -427,7 +427,7 @@ fn drive_all_accept_as_offered(state: &mut GameState) -> u32 {
             proposer, schema, ..
         } => (
             *proposer,
-            schema.max_iterations,
+            schema.deliverable_capacity,
             schema.iteration_count.clone(),
         ),
         other => panic!("expected a CR 732.2a loop-shortcut offer, got {other:?}"),
@@ -1168,7 +1168,7 @@ fn kilo_reported_capture_interaction_picker_suggests_the_full_ceiling() {
         );
     };
     assert_eq!(*proposer, P0, "the loop's controller proposes the shortcut");
-    let ceiling = schema.max_iterations;
+    let ceiling = schema.deliverable_capacity;
     // Non-vacuity floor (holds both ways): a ceiling of 1 could not discriminate.
     assert!(ceiling > 1, "the offer publishes a ceiling above 1");
 

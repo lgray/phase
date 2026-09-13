@@ -3457,8 +3457,8 @@ pub fn candidate_actions_broad_with_probe(
         //
         // AI-reachable since the bounded fast-forward landed, which is what stales the older
         // "the arm below only ever proposes `UntilLethal`" note this replaces: the
-        // `WaitingFor::LoopShortcut` arm below also proposes `Fixed(max_iterations)` against a
-        // bounded offer that publishes no pins, and only a `Fixed` count routes through
+        // `WaitingFor::LoopShortcut` arm below also proposes a capacity-valued `Fixed` against
+        // a bounded offer that publishes no pins, and only a `Fixed` count routes through
         // `materialize_fixed_shortcut` — the single path that registers the stash `turns.rs`
         // turns into this prompt. `UntilLethal` still routes to `apply_until_lethal_shortcut`
         // and never gets here; it is now also not offered against a bounded offer at all. A
@@ -3669,10 +3669,10 @@ pub fn candidate_actions_broad_with_probe(
             // i.e. an illegal quantity choice wearing the shape of a legal one, which the
             // policy layer then has to know to score away.
             //
-            // Emit only the quantity choices the offer can actually take. A bounded offer
-            // gets `Fixed(max_iterations)` below when its pin set permits a `template: None`
-            // declaration; where neither applies, `DeclineShortcut` really is the only legal
-            // answer at the node, and representing that honestly is the point.
+            // Emit only the quantity choices the offer can actually take. A bounded offer gets
+            // `Fixed` at the published capacity below when its pin set permits a
+            // `template: None` declaration; where neither applies, `DeclineShortcut` really is
+            // the only legal answer at the node, and representing that honestly is the point.
             let mut v = Vec::new();
             if !schema.is_bounded() {
                 v.push(candidate(
@@ -3699,11 +3699,15 @@ pub fn candidate_actions_broad_with_probe(
             // one. An offer with published points and NO declaration (a seat that never
             // answered, or a `Conflicted` latch) still fail-closes: `declaration` is `None`,
             // the conjunct below is false, and `DeclineShortcut` remains the only candidate.
+            // THE CAPACITY, not the measured threshold: this candidate has to be an action the
+            // declare handler ACCEPTS, and that handler's per-offer arm refuses anything above
+            // the capacity. Which of the two an ideal declarer should name once a cascade can
+            // widen the ceiling past one crossing is `DEFERRED(phase 2)`.
             if schema.is_bounded() && (schema.points.is_empty() || declaration.is_some()) {
                 v.push(candidate(
                     GameAction::DeclareShortcut {
                         count: crate::analysis::decision_template::IterationCount::Fixed(
-                            schema.max_iterations,
+                            schema.deliverable_capacity,
                         ),
                         template: declaration.clone(),
                     },
@@ -9380,9 +9384,8 @@ mod tests {
     /// `WaitingFor::LoopShortcut` anchor exactly once (a counted site in
     /// `tests/integration/loop_shortcut_offer_writer_census.rs`).
     ///
-    /// `ShortcutDecisionSchema::default()` carries `MAX_SHORTCUT_CYCLES`, i.e. `is_bounded()` is
-    /// FALSE — so `max_iterations` is set explicitly below the cap or the row would measure the
-    /// wrong conjunct.
+    /// `ShortcutDecisionSchema::default()` measures no threshold, i.e. `is_bounded()` is FALSE —
+    /// so the measured bound is set explicitly here or the row would measure the wrong conjunct.
     fn d6n_offer(
         declaration: Option<crate::analysis::decision_template::DecisionTemplate>,
     ) -> GameState {
@@ -9402,7 +9405,8 @@ mod tests {
             },
             schema: ShortcutDecisionSchema {
                 iteration_count: IterationCount::Fixed(5),
-                max_iterations: 5,
+                measured_repetition_bound: Some(5),
+                deliverable_capacity: 5,
                 points: vec![DecisionPoint {
                     slot: DecisionSlot::target(d6n_source()),
                     kind: DecisionPointKind::Targets {

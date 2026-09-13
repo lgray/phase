@@ -1821,10 +1821,9 @@ impl ResourceVector {
     /// the threshold. A new axis added to the per-seat reduction inherits the relief with no
     /// edit here.
     ///
-    /// The relief is refused when it would produce `MAX_SHORTCUT_CYCLES` itself: that value
-    /// is the offer gate's *no axis narrowed* sentinel (`ShortcutDecisionSchema::is_bounded`
-    /// reads `max_iterations < MAX_SHORTCUT_CYCLES`), so minting it would make a narrowed
-    /// board look unbounded and suppress its own offer.
+    /// The relief is refused when it would produce `MAX_SHORTCUT_CYCLES` itself: this
+    /// reduction publishes that same value when no living seat is consumed at all, so the two
+    /// answers collide in one integer and a relieved count at the budget is withheld.
     ///
     /// Clamped to `MAX_SHORTCUT_CYCLES`. A return of `0` now means **two or more** seats
     /// cross on the first iteration, so there is still no legal repetition and the caller
@@ -1881,8 +1880,8 @@ impl ResourceVector {
             .collect();
 
         // No axis consumes any living seat ⇒ nothing narrowed. The cap is what an
-        // un-narrowed reduction has always published, and `is_bounded()` reads it as "this
-        // producer stated no CR 704 threshold".
+        // un-narrowed reduction has always published, and the offer gate's closed range
+        // refuses it as "this producer stated no CR 704 threshold".
         let Some(floor) = strict.iter().map(|(_, bound)| *bound).min() else {
             return EliminationBound {
                 count: cap as u32,
@@ -12053,8 +12052,8 @@ mod tests {
     /// because publication skips a `NotProposerChoice` frame and charging does not. First-wins
     /// charging would let a NARROW earlier frame's legal set stand for a slot the schema
     /// publishes from a WIDER later one: the schema states the client may pin P2,
-    /// `declarable_victims` reads `[P1]`, `seat_life_charges` never charges P2, and
-    /// `max_iterations` GROWS. That is the fail-OPEN direction, on the operator whose whole job
+    /// `declarable_victims` reads `[P1]`, `seat_life_charges` never charges P2, and the
+    /// MEASURED bound GROWS. That is the fail-OPEN direction, on the operator whose whole job
     /// is proving the proposed sequence "may be legally taken based on the current game state".
     ///
     /// # The board, and why it is a legal transition rather than a contrived one
@@ -12226,7 +12225,7 @@ mod tests {
             vec![PlayerId(1), PlayerId(2)],
             "CR 119.3: a repeated slot charges the UNION of its announcements' legal player \
              sets. First-wins reads [P1] here, so the schema would offer a P2 pin that \
-             `elimination_bounds` never charges and `max_iterations` would GROW"
+             `elimination_bounds` never charges and the MEASURED bound would GROW"
         );
         assert_eq!(
             charged[0].aimed_at,
@@ -12582,7 +12581,7 @@ mod tests {
     ///
     /// REVERT-PROBE: restore step (7)'s published-point derivation ⇒ `victim_slot` is empty
     /// ⇒ the non-empty assertion FLIPS. REVERT-PROBE (AIM): drop the `- observed_aim` term
-    /// from `seat_life_charges` ⇒ `max_iterations` reads 5 ⇒ the value assertion FLIPS.
+    /// from `seat_life_charges` ⇒ the measured bound reads 5 ⇒ the value assertion FLIPS.
     #[test]
     fn the_bounded_offer_charges_a_forced_victim_it_publishes_no_point_for() {
         use crate::game::engine::{
@@ -12662,7 +12661,8 @@ mod tests {
             per_cycle.victim_slot
         );
         assert_eq!(
-            schema.max_iterations, 11,
+            schema.measured_repetition_bound,
+            Some(11),
             "CR 704.5a: headroom `21 - 1` over the charged magnitude \
              `(observed 2 - aim 2).max(0) + reach 2` is a strict 10, carried to the victim's \
              own crossing at 11. Dropping the aim subtraction charges `2 + 2` and reads 6, \
@@ -17353,7 +17353,7 @@ mod tests {
     /// reports, not a letter list maintained by hand.
     ///
     /// The four real fixture bounds (dump B/C/D/F4) are deliberately NOT asserted here.
-    /// They are shipped-state values while a real `max_iterations` is computed at the OFFER
+    /// They are shipped-state values while a real bound is computed at the OFFER
     /// beat, dozens of beats later, where the lives differ — a literal measured in a
     /// different state than the one under test. This row asserts the PURE FUNCTION against
     /// hand-supplied lives, which is exactly what a unit row is for; every fixture row
@@ -18263,15 +18263,15 @@ mod tests {
         );
     }
 
-    /// CR 732.2a: **the relief never mints the offer gate's un-narrowed sentinel.**
-    /// `ShortcutDecisionSchema::is_bounded()` reads `max_iterations < MAX_SHORTCUT_CYCLES`, so
-    /// a relief that produced the cap itself would make a narrowed board look unbounded and
-    /// suppress its own offer. Both legs derive their lives from the constant.
+    /// CR 732.2a: **the relief never mints the value the un-narrowed answer also publishes.**
+    /// This reduction returns the budget when no living seat is consumed, so a relief that
+    /// produced the budget itself would be indistinguishable from that answer in the single
+    /// integer they share. Both legs derive their lives from the constant.
     ///
-    /// REVERT-PROBE: delete the `relieved < cap` conjunct ⇒ ⓐ publishes the sentinel and its
-    /// `is_bounded()` clause flips. Delete the `+ 1` ⇒ ⓑ publishes one lower ⇒ FAILS. The two
-    /// legs fail under different edits, which is what makes the guard's boundary tested rather
-    /// than stated.
+    /// REVERT-PROBE: delete the `relieved < cap` conjunct ⇒ ⓐ publishes the budget the offer
+    /// gate's closed range refuses ⇒ FAILS. Delete the `+ 1` ⇒ ⓑ publishes one lower ⇒ FAILS.
+    /// The two legs fail under different edits, which is what makes the guard's boundary tested
+    /// rather than stated.
     #[test]
     fn elimination_bounds_refuse_a_relief_that_would_mint_the_sentinel() {
         let cap = crate::game::engine::MAX_SHORTCUT_CYCLES;
@@ -18283,7 +18283,7 @@ mod tests {
         assert_eq!(published, cap - 1);
         assert!(
             published < cap,
-            "the predicate `is_bounded()` reads, stated against the constant it reads"
+            "below the budget the offer gate's range refuses, stated against that constant"
         );
 
         // ⓑ one step lower ⇒ the relieved value is still below the sentinel and DOES fire.

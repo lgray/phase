@@ -313,27 +313,34 @@ pub struct ShortcutDecisionSchema {
     /// CR 732.1b: the proposed repeat mode. `UntilLethal` for a determinate CR 704.5a /
     /// CR 704.5c drain; `Fixed(n)` seeds the frontend count picker for an optional loop.
     pub iteration_count: IterationCount,
-    /// CR 732.2a: the largest number of repetitions this proposal may legally specify — the
+    /// CR 732.2a: the CR 704 repetition threshold this offer's producer MEASURED — the
     /// minimum over every applicable CR 704 elimination bound and finite-pool bound, over
-    /// every LIVING player, aggregated per declarable victim, clamped to
-    /// `MAX_SHORTCUT_CYCLES`. `IterationCount` above is the *suggestion*; this is the
-    /// *bound*, and they are deliberately separate fields: a proposal that exceeds this
-    /// contains a conditional action (an in-proposal CR 704.5a / CR 704.5c / CR 104.3c /
-    /// CR 121.4 elimination would decide what happens next), which CR 732.2a forbids.
+    /// every LIVING player, aggregated per declarable victim. `None` means the producer
+    /// measured none: no axis of the period consumes any living seat, so the board licenses
+    /// no threshold rather than one that happens to be large. This is what the rules say
+    /// about the loop; it wears no implementation ceiling.
     ///
-    /// The single count authority: the declared-count check in `game::engine` rejects a
-    /// `Fixed(n)` above it, and `game::interaction` publishes it as the count picker's
-    /// ceiling. Every offer built before the bounded-offer phase carries
-    /// `MAX_SHORTCUT_CYCLES`, and those checks were inert until the bounded-cycle producer
-    /// began narrowing it.
+    /// Read by [`ShortcutDecisionSchema::is_bounded`] — the one question it answers — and by
+    /// nothing that publishes or enforces a count, because a threshold above what this engine
+    /// will deliver is still the honest threshold.
+    #[serde(default)]
+    pub measured_repetition_bound: Option<u32>,
+    /// The number of repetitions this engine will DELIVER for this offer if it is accepted:
+    /// the measured threshold above, or `MAX_SHORTCUT_CYCLES` where none was measured, capped
+    /// at `MAX_SHORTCUT_CYCLES` either way. Derived once, in
+    /// `game::engine::build_shortcut_schema`. Deliberately CARRIES NO CR NUMBER: the rules
+    /// place no ceiling on how many times a shortcut may be repeated (CR 732.2a's own example
+    /// runs to a million), so this budget is ours, not the game's — the same labelling ground
+    /// the declare handler's budget arm states.
     ///
-    /// DELIBERATELY NOT MIRRORED in `client/src/adapter/types.ts::ShortcutDecisionSchema`:
-    /// the frontend never reads the raw bound, it reads the already-clamped ceiling the
-    /// engine publishes as `InteractionShortcutCountSpec::Fixed { max }`. Mirroring it
-    /// would hand the display layer a second number it would have to reconcile — exactly
-    /// the derive-in-the-frontend the layer rule forbids.
-    #[serde(default = "default_max_iterations")]
-    pub max_iterations: u32,
+    /// The single count authority: a proposal exceeding it contains a conditional action (an
+    /// in-proposal CR 704.5a / CR 704.5c / CR 104.3c / CR 121.4 elimination would decide what
+    /// happens next), which CR 732.2a forbids — so the declared-count check in `game::engine`
+    /// rejects a `Fixed(n)` above it, and `game::interaction` publishes it as the count
+    /// picker's ceiling. `IterationCount` above is the *suggestion*; this is the *ceiling*,
+    /// and they are deliberately separate fields.
+    #[serde(default = "default_deliverable_capacity")]
+    pub deliverable_capacity: u32,
     /// The open per-iteration decision-points needing pins. EMPTY for a choice-free drain.
     pub points: Vec<DecisionPoint>,
     /// CR 702.51a: total untapped creatures the controller may tap for convoke across every
@@ -343,10 +350,19 @@ pub struct ShortcutDecisionSchema {
     pub convoke_tappable_count: usize,
 }
 
-/// A schema deserialized from a pre-bound snapshot carries no CR 732.2a count bound. The
+/// A schema deserialized from a pre-bound snapshot carries no capacity. The
 /// forward-compatible default is the global safety limit, which is what every producer
-/// emitted before the field existed — so an old save round-trips byte-equivalently.
-fn default_max_iterations() -> u32 {
+/// emitted before either field existed. Recovering the BOUNDEDNESS of a pre-split save is
+/// not a default's job — a per-field default cannot read the legacy key that carried both
+/// answers — and is done by `types::game_state`'s migration chain before serde runs.
+///
+/// DELIBERATELY NOT MIRRORED in `client/src/adapter/types.ts::ShortcutDecisionSchema`, neither
+/// this capacity nor the measured bound above it: the frontend never reads either, it reads
+/// the already-clamped ceiling the engine publishes as
+/// `InteractionShortcutCountSpec::Fixed { max }`. Mirroring them would hand the display layer
+/// two numbers it would have to reconcile — exactly the derive-in-the-frontend the layer rule
+/// forbids.
+fn default_deliverable_capacity() -> u32 {
     crate::game::engine::MAX_SHORTCUT_CYCLES
 }
 
@@ -357,7 +373,8 @@ impl Default for ShortcutDecisionSchema {
     fn default() -> Self {
         Self {
             iteration_count: IterationCount::Fixed(0),
-            max_iterations: default_max_iterations(),
+            measured_repetition_bound: None,
+            deliverable_capacity: default_deliverable_capacity(),
             points: Vec::new(),
             convoke_tappable_count: 0,
         }
@@ -365,19 +382,17 @@ impl Default for ShortcutDecisionSchema {
 }
 
 impl ShortcutDecisionSchema {
-    /// CR 732.2a: `true` iff this offer's producer NARROWED the repetition bound below the
-    /// engine-wide safety cap — i.e. it measured a CR 704.5a / CR 704.5c / CR 104.3c
-    /// threshold inside the loop. A producer that cannot compute a real bound publishes
-    /// `MAX_SHORTCUT_CYCLES` (see `max_iterations` above), so an unnarrowed offer is NOT
-    /// bounded in this sense.
+    /// CR 732.2a: `true` iff this offer's producer MEASURED a CR 704.5a / CR 704.5c /
+    /// CR 104.3c repetition threshold inside the loop. A producer that measured none
+    /// publishes the absence, so an unnarrowed offer is NOT bounded in this sense.
     ///
-    /// The SINGLE AUTHORITY for that question, and the reason it is a method rather than
-    /// an inline comparison repeated at each caller: `MAX_SHORTCUT_CYCLES` is `pub(crate)`
-    /// to the engine, so `phase-ai`'s declare policy cannot name it and would otherwise
-    /// hard-code the literal. This predicate crosses the crate boundary; the constant does
-    /// not.
+    /// The SINGLE AUTHORITY for that question, and the reason it is a method rather than an
+    /// inline test repeated at each caller: it is the only reader of
+    /// `measured_repetition_bound`, and it crosses the crate boundary — `phase-ai`'s declare
+    /// policy asks this question and never inspects the field. The question is about what was
+    /// measured, never about the capacity, which every offer carries.
     pub fn is_bounded(&self) -> bool {
-        self.max_iterations < crate::game::engine::MAX_SHORTCUT_CYCLES
+        self.measured_repetition_bound.is_some()
     }
 }
 
@@ -442,7 +457,7 @@ pub enum AnnouncementSubject {
 /// Why a subject list is not a legal [`Ranking`]. Both clauses are refused at CONSTRUCTION,
 /// which is what makes [`Ranking::head`] infallible — no `Option` leaks into the resolver,
 /// and a wire-supplied list fails the LOAD rather than the drive (the same disposition
-/// `reject_zero_bound_shortcut_offer` takes for a wire-sourced `max_iterations`).
+/// `reject_zero_bound_shortcut_offer` takes for a wire-sourced `deliverable_capacity`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RankingError {
     /// An empty ranking names nobody: there is no head to announce.
@@ -934,7 +949,7 @@ fn resolve_target(
         // route the pins are replayed by the accept→materialize drive through
         // `build_recast_template` → `decision_template::resolve`, i.e. through THIS call —
         // so a wire pin's EXISTENCE half is authority-enforced here too. Same class as the
-        // wire-sourced `max_iterations` defect `reject_zero_bound_shortcut_offer` closes: a
+        // wire-sourced `deliverable_capacity` defect `reject_zero_bound_shortcut_offer` closes: a
         // load-seam value the in-process producer census cannot see.
         //
         // DAMAGE MODE if a wire producer does that: `CycleOutcome::Abort` rolls back only
@@ -1579,9 +1594,12 @@ mod tests {
     fn shortcut_decision_schema_round_trips_and_defaults() {
         let schema = ShortcutDecisionSchema {
             iteration_count: IterationCount::UntilLethal,
-            // A NARROWED CR 732.2a bound, deliberately not the default: a round-trip that
-            // carried the default would pass even if the field were dropped from the wire.
-            max_iterations: 17,
+            // BOTH published answers, each deliberately distinct from its own default: a
+            // round-trip carrying a default would pass even if that field were dropped from
+            // the wire. They are also distinct from EACH OTHER, so a wire that serialized one
+            // under both keys cannot pass either.
+            measured_repetition_bound: Some(17),
+            deliverable_capacity: 23,
             points: vec![DecisionPoint {
                 slot: DecisionSlot {
                     source: all_copies(7),
@@ -1601,9 +1619,14 @@ mod tests {
         };
         let json = serde_json::to_value(&schema).expect("serialize");
         assert_eq!(
-            json["max_iterations"], 17,
-            "the CR 732.2a bound must reach the wire — a `#[serde(default)]` field that is \
-             never serialized would silently reset to the cap on every reload"
+            json["measured_repetition_bound"], 17,
+            "the measured CR 704 threshold must reach the wire as a key — a field that is \
+             never serialized would silently decode as UNMEASURED on every reload"
+        );
+        assert_eq!(
+            json["deliverable_capacity"], 23,
+            "the deliverable capacity must reach the wire — a `#[serde(default)]` field that \
+             is never serialized would silently reset to the budget on every reload"
         );
         let back: ShortcutDecisionSchema = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, schema);
@@ -1611,22 +1634,28 @@ mod tests {
             ShortcutDecisionSchema::default(),
             ShortcutDecisionSchema {
                 iteration_count: IterationCount::Fixed(0),
-                max_iterations: crate::game::engine::MAX_SHORTCUT_CYCLES,
+                measured_repetition_bound: None,
+                deliverable_capacity: crate::game::engine::MAX_SHORTCUT_CYCLES,
                 points: vec![],
                 convoke_tappable_count: 0,
             }
         );
-        // A pre-bound snapshot (no `max_iterations` key at all) must load at the cap, which
-        // is exactly what every producer emitted before the field existed.
+        // A save carrying NEITHER key — every snapshot written before the split, and the one
+        // shape a per-field default has to answer on its own — decodes to the absence and the
+        // budget. Recovering a pre-split save's BOUNDEDNESS from its legacy key is the
+        // migration chain's job, not this default's.
         let mut legacy = serde_json::to_value(ShortcutDecisionSchema::default()).unwrap();
-        legacy
+        let fields = legacy
             .as_object_mut()
-            .expect("schema serializes as an object")
-            .remove("max_iterations");
+            .expect("schema serializes as an object");
+        fields.remove("measured_repetition_bound");
+        fields.remove("deliverable_capacity");
+        let decoded = serde_json::from_value::<ShortcutDecisionSchema>(legacy)
+            .expect("a pre-split snapshot still deserializes");
+        assert_eq!(decoded.measured_repetition_bound, None);
+        assert!(!decoded.is_bounded());
         assert_eq!(
-            serde_json::from_value::<ShortcutDecisionSchema>(legacy)
-                .expect("a pre-bound snapshot still deserializes")
-                .max_iterations,
+            decoded.deliverable_capacity,
             crate::game::engine::MAX_SHORTCUT_CYCLES
         );
     }
@@ -2798,7 +2827,7 @@ mod tests {
     /// **Row R1-f — the LOAD-seam invariant.** A wire-supplied empty or duplicated ranking
     /// fails deserialization, which is what makes [`Ranking::head`] infallible: no `Option`
     /// and no panic path leak into the resolver. Same class as the wire-sourced
-    /// `max_iterations` defect `reject_zero_bound_shortcut_offer` closes.
+    /// `deliverable_capacity` defect `reject_zero_bound_shortcut_offer` closes.
     ///
     /// # Non-vacuity / discrimination
     ///

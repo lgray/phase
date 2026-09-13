@@ -12903,6 +12903,76 @@ fn migrate_legacy_dungeon_choice_previews(value: &mut serde_json::Value) -> Resu
     Ok(())
 }
 
+/// Maps the pre-split loop-shortcut offer wire shape onto the two fields that replaced its one
+/// count. The old key answered two questions at once — *what CR 704 threshold did the producer
+/// measure* and *how many repetitions will this engine deliver* — by writing the engine's budget
+/// to mean "measured nothing", so a pre-split save's BOUNDEDNESS is recoverable only from that
+/// value. A `#[serde(default)]` cannot do it: it sees one field at a time and cannot read a
+/// sibling key to decide the other's value.
+///
+/// THE RECEIVER IS NAMED, NOT THE KEY. The rewrite happens only inside an adjacently-tagged
+/// `WaitingFor` object whose `"type"` is `LoopShortcut`, at its `data.schema`. The key name has
+/// unrelated carriers — `RepeatContinuation::WhileCondition` spells it for its own iteration
+/// ceiling, and committed dumps carry several — and a name-keyed walk would turn a bounded
+/// while-condition into an unbounded one.
+///
+/// The inverse of the old encoding: a legacy value below the budget was a measured threshold and
+/// becomes one; a value at or above the budget meant "measured nothing" and becomes the absence;
+/// the capacity becomes the legacy value clamped to the budget, which is the ceiling that
+/// encoding actually published. A legacy value that is not a `u32` is a hard error — corrupt
+/// state, not a migratable shape — matching both siblings. Idempotent because the rewrite removes
+/// the legacy key, and scoped to a schema carrying NEITHER new key so a current save is never
+/// rewritten from a stray legacy one.
+fn migrate_legacy_shortcut_repetition_bound(value: &mut serde_json::Value) -> Result<(), String> {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                migrate_legacy_shortcut_repetition_bound(value)?;
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if object.get("type").and_then(serde_json::Value::as_str) == Some("LoopShortcut") {
+                if let Some(schema) = object
+                    .get_mut("data")
+                    .and_then(|data| data.get_mut("schema"))
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    let already_split = schema.contains_key("measured_repetition_bound")
+                        || schema.contains_key("deliverable_capacity");
+                    if !already_split {
+                        if let Some(legacy) = schema.remove("max_iterations") {
+                            let legacy = legacy
+                                .as_u64()
+                                .and_then(|n| u32::try_from(n).ok())
+                                .ok_or_else(|| {
+                                    "legacy LoopShortcut schema max_iterations must be a u32"
+                                        .to_string()
+                                })?;
+                            let measured = if legacy < crate::game::engine::MAX_SHORTCUT_CYCLES {
+                                serde_json::Value::from(legacy)
+                            } else {
+                                serde_json::Value::Null
+                            };
+                            schema.insert("measured_repetition_bound".to_string(), measured);
+                            schema.insert(
+                                "deliverable_capacity".to_string(),
+                                serde_json::Value::from(
+                                    legacy.min(crate::game::engine::MAX_SHORTCUT_CYCLES),
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            for value in object.values_mut() {
+                migrate_legacy_shortcut_repetition_bound(value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn delayed_trigger_install_command(
     entry: &serde_json::Value,
 ) -> Option<&serde_json::Map<String, serde_json::Value>> {
@@ -12926,10 +12996,11 @@ fn delayed_trigger_install_command_mut(
 /// bound is `0` can describe no such sequence — it admits only the empty one — so the
 /// saved offer is corrupt and the load fails closed rather than reviving it.
 ///
-/// WHY THIS SEAM AND NOT THE DECLARE SEAM. `max_iterations >= 1` holds for every schema
-/// minted IN-PROCESS (`decision_template`'s `Default` via `default_max_iterations`, its
-/// `MAX_SHORTCUT_CYCLES` literal, and `game::engine::build_shortcut_schema`'s clamped
-/// parameter). A WIRE-sourced offer has no such producer, so the guarantee holds
+/// WHY THIS SEAM AND NOT THE DECLARE SEAM. `deliverable_capacity >= 1` holds for every schema
+/// minted IN-PROCESS (`decision_template`'s `Default` seeds the budget, and
+/// `game::engine::build_shortcut_schema` derives every capacity from either the budget or a
+/// measured threshold its producer already refused at zero). A WIRE-sourced offer has no such
+/// producer, so the guarantee holds
 /// everywhere except across deserialization — which is exactly here. This must NEVER be
 /// "fixed" instead by re-refusing the DECLARED count at `handle_declare_shortcut`: a
 /// declared `IterationCount::Fixed(0)` is a legal zero-repetition proposal (CR 732.2a
@@ -12938,16 +13009,18 @@ fn delayed_trigger_install_command_mut(
 /// in a DECLARED COUNT are different values at different seams.
 ///
 /// SCOPED TO `LoopShortcut` ONLY, deliberately. `WaitingFor::RespondToShortcut` carries a
-/// `ShortcutProposal`, which has no `schema`/`max_iterations` field at all — there is no
-/// bound to check. Its only reachable zero is `proposal.count`, the ALREADY-DECLARED
+/// `ShortcutProposal`, which has no `schema` and so no capacity at all — there is no
+/// ceiling to check. Its only reachable zero is `proposal.count`, the ALREADY-DECLARED
 /// count, where `Fixed(0)` is legal; re-refusing it here would re-break the same
 /// over-refusal at a seam no row can see.
 ///
-/// `== 0` is the COMPLETE rejection predicate and must not be widened: `max_iterations`
-/// is `u32`, so negatives fail serde before this runs; values at or above
-/// `MAX_SHORTCUT_CYCLES` mean "unbounded", a legitimate state; and an ABSENT wire key
-/// decodes to `MAX_SHORTCUT_CYCLES` through `#[serde(default = "default_max_iterations")]`,
-/// so every legacy save predating the field is untouched.
+/// `== 0` is the COMPLETE rejection predicate and must not be widened: the capacity is `u32`,
+/// so negatives fail serde before this runs; a capacity AT the budget is the ordinary offer
+/// whose producer measured no threshold, a legitimate state; boundedness is not read off this
+/// value at all any more — `is_bounded()` asks the measured field — so no comparison against
+/// the budget belongs here; and an ABSENT capacity key decodes to the budget through its own
+/// `#[serde(default)]`, while a save written in the pre-split shape has its single legacy count
+/// mapped onto both fields by `migrate_legacy_shortcut_repetition_bound` before serde runs.
 /// CR 732.2a: a certified period spanning ZERO frames is not a period.
 ///
 /// Single authority for the field so both wire hosts enforce identically — the offer's
@@ -12974,35 +13047,34 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
         ..
     } = &state.waiting_for
     {
-        if schema.max_iterations == 0 {
+        if schema.deliverable_capacity == 0 {
             return Err(
-                "persisted LoopShortcut offer states max_iterations 0, which CR 732.2a admits \
-                 no legally takeable sequence for"
+                "persisted LoopShortcut offer states deliverable_capacity 0, which CR 732.2a \
+                 admits no legally takeable sequence for"
                     .to_string(),
             );
         }
-        // THE PAIR NO PRODUCER MINTS. `is_bounded()` says the offer's producer NARROWED the
-        // repetition bound below `MAX_SHORTCUT_CYCLES`; `loop_period_controller()` says a driving
-        // period belonging to THIS proposer is recorded. The engine's three `LoopShortcut` mints
+        // THE PAIR NO PRODUCER MINTS. `is_bounded()` says the offer's producer MEASURED a
+        // CR 704 repetition threshold; `loop_period_controller()` says a driving period belonging
+        // to THIS proposer is recorded. The engine's three `LoopShortcut` mints
         // partition that cross-product and none of them lands in this cell:
         //
         //   * the object-growth mint (`reconcile_terminal_result`, schema from
         //     `try_offer_object_growth_shortcut`) and the Path A drain mint
-        //     (`interactive_loop_bridge`) both hand `build_shortcut_schema` the global
-        //     `MAX_SHORTCUT_CYCLES` verbatim, so neither is EVER `is_bounded()` — the growth mint
-        //     is the one that REQUIRES its proposer's own period, and it is unbounded by
-        //     construction;
+        //     (`interactive_loop_bridge`) both hand `build_shortcut_schema` the ABSENCE, so
+        //     neither is EVER `is_bounded()` — the growth mint is the one that REQUIRES its
+        //     proposer's own period, and it is unbounded by construction;
         //   * the bounded mint (`certified_bounded_cycle_offer`) is `is_bounded()` by construction
         //     — it refuses `NoNarrowedLegalCount` unless `(1..MAX_SHORTCUT_CYCLES)` contains the
-        //     bound — but its caller's gate (1b) (`bounded_cycle_offer`) returns
+        //     measured count — but its caller's gate (1b) (`bounded_cycle_offer`) returns
         //     `BoundedOfferRefusal::ProposerHasDrivingPeriod` while that seat's own period is
         //     accumulating, so it can never mint INTO this cell;
-        //   * `visibility.rs`'s per-viewer re-wrap copies `max_iterations` verbatim off an offer
-        //     one of the three already minted.
+        //   * `visibility.rs`'s per-viewer re-wrap copies the published pair verbatim off an
+        //     offer one of the three already minted.
         //
-        // No live beat can join the two afterwards either. Nothing assigns `schema` or
-        // `max_iterations` in place anywhere in the engine, so an unbounded offer cannot ACQUIRE a
-        // narrowed bound; and every writer that GROWS `last_loop_action_sequence` is priority-side
+        // No live beat can join the two afterwards either. Nothing assigns `schema` or either of
+        // its published answers in place anywhere in the engine, so an unbounded offer cannot
+        // ACQUIRE a measured threshold; and every writer that GROWS `last_loop_action_sequence` is priority-side
         // — the `TapLandForMana` / `ActivateManaSource` / `ActivateAbility` `WaitingFor::Priority`
         // arms (`accumulate_loop_action_step` and the token-creating `vec![step]` beside it) and
         // the cast finalize. A pending offer reaches none of them: its only reducer arms are
@@ -13027,17 +13099,18 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
         // condition, so rejecting it would refuse every legitimate growth capture; a narrowed bound
         // ALONE is the ordinary bounded offer.
         //
-        // ⚠ AFTER THE ZERO-BOUND CHECK, DELIBERATELY: `0 < MAX_SHORTCUT_CYCLES`, so a zero bound is
-        // ALSO `is_bounded()` and hoisting this block would relabel a corrupt zero with the wrong
-        // invariant. Observed, not assumed — see the zero-bound-plus-own-period arm of
+        // ⚠ AFTER THE ZERO-CAPACITY CHECK, DELIBERATELY: a wire carrying a MEASURED threshold of
+        // zero is `is_bounded()` and re-encodes to a zero capacity — a pre-split save spelling the
+        // legacy zero is exactly that shape after migration — so the two blocks are not disjoint
+        // and hoisting this one would relabel a corrupt zero with the wrong invariant. Observed,
+        // not assumed — see the zero-plus-own-period arm of
         // `a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load`.
         //
         // ⚠ THIS BLOCK COVERS ONE OF THE HARM'S TWO WIRE HOSTS, and unlike the zero-bound sibling
         // above the residual is NOT empty. A persisted `WaitingFor::RespondToShortcut { proposal }`
         // whose `proposal.proposer` owns the recorded period reaches the SAME SITE C misroute via
-        // `apply_confirmed_shortcut`. No bound-keyed conjunct can see it — `ShortcutProposal`
-        // carries no `schema`/`max_iterations` at all (the scoping note on the zero-bound guard
-        // above). The candidate discriminator on that host is `proposal.per_cycle.is_some()`; it is
+        // `apply_confirmed_shortcut`. No schema-keyed conjunct can see it — `ShortcutProposal`
+        // carries no `schema` at all (the scoping note on the zero-capacity guard above). The candidate discriminator on that host is `proposal.per_cycle.is_some()`; it is
         // filed rather than shipped because "`per_cycle: Some` ⟺ the bounded mint" is not yet
         // measured per branch, and a guard on an inherited marker is what this seam must not carry.
         if schema.is_bounded() && state.loop_period_controller() == Some(*proposer) {
@@ -13048,9 +13121,9 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
                     .to_string(),
             );
         }
-        // The SIBLING wire zero. `max_iterations` says how many repetitions there are;
+        // The SIBLING wire zero. `deliverable_capacity` says how many repetitions there are;
         // `frames_per_period` says what one repetition IS, and a wire-supplied 0 corrupts the
-        // second question exactly as a 0 bound corrupts the first.
+        // second question exactly as a 0 capacity corrupts the first.
         //
         // ⚠ THIS CALL COVERS ONE OF THE FIELD'S TWO HOSTS. `frames_per_period` rides
         // `PeriodicDelta`, which hangs off BOTH `LoopCertificate` (here) and `ShortcutProposal`
@@ -22733,6 +22806,7 @@ impl GameStateDecode {
         migrate_legacy_turn_face_up_resume(&mut value)?;
         migrate_legacy_dungeon_choice_previews(&mut value)?;
         migrate_legacy_graveyard_paid_cast_cleanup(&mut value)?;
+        migrate_legacy_shortcut_repetition_bound(&mut value)?;
         let mut state = Self::materialize_prepared(value)?;
         normalize_delayed_trigger_allocators(&mut state)?;
         normalize_resolution_cast_offer_allocator(&mut state)?;
@@ -22793,6 +22867,7 @@ impl GameStateDecode {
         // to rebuild those payloads before `RawGameStateFields` sees them.
         migrate_legacy_dungeon_choice_previews(value)?;
         migrate_legacy_graveyard_paid_cast_cleanup(value)?;
+        migrate_legacy_shortcut_repetition_bound(value)?;
         Ok(())
     }
 
@@ -32687,6 +32762,73 @@ mod tests {
         assert_eq!(legacy["zero_x"]["TurnFaceUp"]["announced_x"], 0);
         assert!(legacy["no_x"]["TurnFaceUp"].get("cost_had_x").is_none());
         assert!(legacy["zero_x"]["TurnFaceUp"].get("cost_had_x").is_none());
+    }
+
+    /// The pre-split count maps onto the pair, at the receiver and nowhere else, idempotently.
+    ///
+    /// Every value class in one walk: below the budget is a measured threshold, AT the budget was
+    /// the old "measured nothing" encoding and becomes the absence, zero re-encodes to a zero
+    /// capacity the load guard then refuses, and a `WhileCondition` carrier of the same key is
+    /// left alone. Re-running the walk changes nothing, because the rewrite removes the key.
+    ///
+    /// REVERT-PROBE: move the legacy value into the measured field unconditionally ⇒ the
+    /// at-budget arm mints a threshold for a save whose producer measured none ⇒ FLIPS. Key the
+    /// walk on the name instead of `"type" == "LoopShortcut"` ⇒ the foreign carrier's ceiling is
+    /// rewritten ⇒ FLIPS.
+    #[test]
+    fn legacy_shortcut_repetition_bound_splits_at_its_receiver_only() {
+        let budget = crate::game::engine::MAX_SHORTCUT_CYCLES;
+        let offer = |count: serde_json::Value| {
+            serde_json::json!({
+                "type": "LoopShortcut",
+                "data": { "schema": { "max_iterations": count, "points": [] } }
+            })
+        };
+        let mut tree = serde_json::json!({
+            "narrowed": offer(serde_json::json!(7)),
+            "at_budget": offer(serde_json::json!(budget)),
+            "zero": offer(serde_json::json!(0)),
+            // The same key on a DIFFERENT receiver: a repeat continuation's own ceiling.
+            "foreign": {
+                "type": "WhileCondition",
+                "data": { "max_iterations": 3, "condition": serde_json::Value::Null }
+            },
+        });
+
+        migrate_legacy_shortcut_repetition_bound(&mut tree).expect("the legacy shape migrates");
+
+        let schema = |key: &str| tree[key]["data"]["schema"].clone();
+        assert_eq!(schema("narrowed")["measured_repetition_bound"], 7);
+        assert_eq!(schema("narrowed")["deliverable_capacity"], 7);
+        assert_eq!(
+            schema("at_budget")["measured_repetition_bound"],
+            serde_json::Value::Null,
+            "the budget WAS the old 'no axis narrowed' encoding, so nothing was measured"
+        );
+        assert_eq!(schema("at_budget")["deliverable_capacity"], budget);
+        assert_eq!(schema("zero")["measured_repetition_bound"], 0);
+        assert_eq!(
+            schema("zero")["deliverable_capacity"],
+            0,
+            "a legacy zero re-encodes to a zero capacity, which the load guard refuses"
+        );
+        for key in ["narrowed", "at_budget", "zero"] {
+            assert!(
+                schema(key).get("max_iterations").is_none(),
+                "[{key}] the rewrite REMOVES the legacy key, which is what makes it idempotent"
+            );
+        }
+        assert_eq!(
+            tree["foreign"]["data"]["max_iterations"], 3,
+            "the walk names the LoopShortcut receiver, so a foreign carrier keeps its ceiling"
+        );
+
+        let once = tree.clone();
+        migrate_legacy_shortcut_repetition_bound(&mut tree).expect("a second run is a no-op");
+        assert_eq!(
+            tree, once,
+            "idempotent: the second walk finds no legacy key"
+        );
     }
 
     #[test]

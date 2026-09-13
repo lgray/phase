@@ -2373,13 +2373,13 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
                 unreachable!("interactive bridge only runs during priority")
             };
             // CR 732.2a: a non-targeted drain publishes no decision points, and this path
-            // states no narrowed CR 704 count bound — `UntilLethal` is terminated by the
-            // real SBA, not by a caller-supplied count, so the ceiling stays the global
-            // safety limit.
+            // MEASURES no CR 704 repetition threshold — `UntilLethal` is terminated by the
+            // real SBA, not by a caller-supplied count — so it passes the absence and the
+            // constructor derives the ceiling from the engine's own budget.
             let schema = build_shortcut_schema(
                 Vec::new(),
                 shortcut_iteration_count(certificate.win_kind),
-                MAX_SHORTCUT_CYCLES,
+                None,
             );
             state.waiting_for = WaitingFor::LoopShortcut {
                 proposer,
@@ -3238,7 +3238,7 @@ fn certified_bounded_cycle_offer<'a>(
     // less life, that player loses the game"), and a forced victim loses that life exactly as
     // a chosen one does. Deriving the bound from `points` therefore made the CR 732.2a
     // withhold drop the forced victim out of the charged set entirely, so no slot reached it
-    // and it took the bare `observed_life_loss` — `max_iterations` GREW, and the offer stated
+    // and it took the bare `observed_life_loss` — the MEASURED bound GREW, and the offer stated
     // more legal repetitions than are legal.
     //
     // ON AN ORDINARY FORCED 2p TARGETED DRAIN THE TWO DERIVATIONS NOW AGREE, and that is the
@@ -3306,7 +3306,7 @@ fn certified_bounded_cycle_offer<'a>(
     // omission. A departure named at the OFFER beat would have to ride the proposal to
     // consumption, where the same serde that can tamper the accepted count can tamper it; the
     // consumption seam derives its own on the board the drive actually runs against.
-    let max_iterations = periodic
+    let measured_bound = periodic
         .delta
         .elimination_bounds(state, &periodic.seat_life_charge)
         .count;
@@ -3315,7 +3315,7 @@ fn certified_bounded_cycle_offer<'a>(
     // threshold inside the loop, so an unnarrowed result belongs to another seam. Checking
     // the closed range here makes `schema.is_bounded()` true BY CONSTRUCTION for every offer
     // this function mints, instead of an inference from step 5's `Advantage` rejection.
-    if !(1..MAX_SHORTCUT_CYCLES).contains(&max_iterations) {
+    if !(1..MAX_SHORTCUT_CYCLES).contains(&measured_bound) {
         return Err(BoundedOfferRefusal::NoNarrowedLegalCount);
     }
 
@@ -3332,15 +3332,17 @@ fn certified_bounded_cycle_offer<'a>(
         ..base
     };
 
-    // (9) The schema. `Fixed(max_iterations)` is the SUGGESTION and `max_iterations` the
-    // CEILING; the declare handler rejects any `Fixed(n)` above it and rejects `UntilLethal`
-    // outright, both already shipped. The pre-built `points` go in directly — the bounded
-    // path never calls `pinned_decisions_to_points`, whose legal sets are derived FROM the
-    // declared pins and would let a declaration ratify itself.
+    // (9) The schema. This producer MEASURED a threshold, so it hands the constructor
+    // `Some(..)` and `schema.is_bounded()` is true by construction for every offer it mints.
+    // `Fixed(measured_bound)` is the SUGGESTION, and the constructor derives the CEILING the
+    // declare handler enforces — which rejects any `Fixed(n)` above it and rejects
+    // `UntilLethal` outright, both already shipped. The pre-built `points` go in directly —
+    // the bounded path never calls `pinned_decisions_to_points`, whose legal sets are derived
+    // FROM the declared pins and would let a declaration ratify itself.
     let schema = build_shortcut_schema(
         points,
-        IterationCount::Fixed(max_iterations),
-        max_iterations,
+        IterationCount::Fixed(measured_bound),
+        Some(measured_bound),
     );
     // (10) The DECLARATION the engine can already specify for this offer, read out of the
     // answer journal the same window populated. Built AFTER the schema because `points` is
@@ -3387,8 +3389,9 @@ fn certified_bounded_cycle_offer<'a>(
 ///
 /// The range is `shortcut_validated_range(&schema.iteration_count, ..)`, i.e. this offer's own
 /// ceiling, because it is the WIDEST count any declarer may name against this schema
-/// (`is_bounded()` publishers set `iteration_count == Fixed(max_iterations)` and the handler
-/// rejects anything above the cap). `validate_pins` re-checks `0..range`, so passing at the
+/// (a publisher that measured a threshold seeds `Fixed` at it, which `build_shortcut_schema`
+/// narrows to the published `deliverable_capacity`, and the handler rejects anything above
+/// either that capacity or the budget). `validate_pins` re-checks `0..range`, so passing at the
 /// ceiling implies passing at every shorter `Fixed(n)` the handler could be given.
 ///
 /// LATENT, NOT LIVE, and the distinction is not decoration: no tracked board reaches a
@@ -3687,7 +3690,7 @@ pub(crate) struct EntryPinSlots {
 /// much?* — and shapes the bound. A forced announcement is not a choice, so it is withheld
 /// from the schema; its victim still loses the life, so it is still charged. Deriving the
 /// bound from the PUBLISHED point set made the CR 732.2a withhold silently drop the forced
-/// victim out of every charge's reach and RAISE `max_iterations`.
+/// victim out of every charge's reach and RAISE the MEASURED bound.
 pub(crate) struct AnnouncedTarget {
     /// CR 115.2 target choice — `index: 0`, the same key a published point carries, so a
     /// charge and a publication of the same announcement can never land on different slots.
@@ -4104,7 +4107,7 @@ fn entry_announces(
     // [`entry_publishes_pin_slots`] still withholds it. Before, the shape was destroyed at
     // this line and the CR 704.5a bound — derived from the surviving PUBLISHED points — read
     // the withhold as "no victim", so no slot reached that seat and it took the bare
-    // `observed_life_loss` with no reach term at all, and `max_iterations` GREW: the offer
+    // `observed_life_loss` with no reach term at all, and the MEASURED bound GREW: the offer
     // stated more legal repetitions than CR 732.2a permits.
     let announcement = if slot.chooser.is_some_and(|chooser| chooser != proposer)
         || !ability.target_selection_mode.is_chosen()
@@ -4288,7 +4291,7 @@ pub(crate) fn bounded_cycle_pin_slots_for_window(
 /// player's life total is adjusted accordingly" — and the victim loses that life whether or
 /// not anybody chose it. Deriving the bound from the published set therefore let the
 /// CR 732.2a withhold silently drop a forced victim out of every charge's reach, leaving it
-/// the bare `observed_life_loss`, RAISING `max_iterations`: the offer would state more legal
+/// the bare `observed_life_loss`, RAISING the MEASURED bound: the offer would state more legal
 /// repetitions than CR 732.2a permits, on the very operator whose job is to prove the
 /// proposed sequence "may be legally taken based on the current game state".
 ///
@@ -4301,7 +4304,7 @@ pub(crate) fn bounded_cycle_pin_slots_for_window(
 /// DIFFERENT ONES of a repeated slot: publication skips a `NotProposerChoice` frame entirely,
 /// charging does not. So a first-wins charge could retain a narrow frame's legal set for a
 /// slot the schema publishes from a WIDER later frame — the schema would offer a pin the bound
-/// never charged, and `max_iterations` would GROW.
+/// never charged, and the MEASURED bound would GROW.
 ///
 /// PER SOURCE, NOT PER ENTRY, for the reason [`bounded_cycle_pin_slots`] documents at
 /// length: one state-independent designation specifies every instance of that source's
@@ -4421,19 +4424,39 @@ pub(crate) fn bounded_cycle_charged_targets_for_window(
 }
 
 /// CR 732.2a: assemble a loop-shortcut offer's READ-side schema from its already-reified
-/// decision `points`, its proposed repeat mode, and its CR 704 count bound.
+/// decision `points`, its proposed repeat mode, and whatever CR 704 repetition threshold its
+/// producer measured.
 ///
-/// `iteration_count` and `max_iterations` are separate inputs on purpose: the first is the
-/// SUGGESTION the frontend seeds its picker with, the second is the LEGAL CEILING the
-/// declared-count check enforces. A producer that cannot compute a real bound passes
-/// `MAX_SHORTCUT_CYCLES`. The bounded-cycle producer narrows it; the drain and object-growth
-/// producers do not — so the ceiling is live for bounded offers only.
+/// THE ONE PLACE THE ENGINE'S BUDGET IS APPLIED. The reduction measures what the board
+/// licenses; this constructor decides what this engine will DELIVER, and publishes both: the
+/// measured threshold verbatim (an absence stays an absence, and a threshold above the budget
+/// stays the threshold, because it is what the rules say about the loop), and the deliverable
+/// capacity, which is that threshold or the budget, whichever is smaller. The capacity wears
+/// no CR number — the budget is ours, not the game's, as the declare handler's budget arm
+/// states.
+///
+/// `iteration_count` is the SUGGESTION the frontend seeds its picker with; the capacity is the
+/// LEGAL CEILING the declared-count check enforces. A `Fixed` suggestion is NARROWED to the
+/// capacity here and never raised to it: a suggestion above its own capacity would be refused
+/// by `handle_declare_shortcut` and repaired by the count picker's `clamp`, so the
+/// construction point keeps the published pair consistent while leaving each producer's own
+/// seed alone.
 fn build_shortcut_schema(
     points: Vec<crate::analysis::decision_template::DecisionPoint>,
     iteration_count: crate::analysis::decision_template::IterationCount,
-    max_iterations: u32,
+    measured_repetition_bound: Option<u32>,
 ) -> crate::analysis::decision_template::ShortcutDecisionSchema {
-    use crate::analysis::decision_template::{DecisionPointKind, ShortcutDecisionSchema};
+    use crate::analysis::decision_template::{
+        DecisionPointKind, IterationCount, ShortcutDecisionSchema,
+    };
+    let deliverable_capacity = measured_repetition_bound
+        .map_or(MAX_SHORTCUT_CYCLES, |bound| bound.min(MAX_SHORTCUT_CYCLES));
+    // Wildcard-free so a third `IterationCount` variant build-breaks here instead of
+    // inheriting whichever decision this match happens to make.
+    let iteration_count = match iteration_count {
+        IterationCount::Fixed(n) => IterationCount::Fixed(n.min(deliverable_capacity)),
+        IterationCount::UntilLethal => IterationCount::UntilLethal,
+    };
     // CR 702.51a: engine-owned total of untapped convoke-eligible creatures across every
     // ConvokeTaps point — the frontend renders this directly instead of re-deriving it from
     // `points` (display-layer purity). Identical predicate/sum to the deleted React reduce.
@@ -4446,7 +4469,8 @@ fn build_shortcut_schema(
         .sum();
     ShortcutDecisionSchema {
         iteration_count,
-        max_iterations,
+        measured_repetition_bound,
+        deliverable_capacity,
         points,
         convoke_tappable_count,
     }
@@ -4479,14 +4503,16 @@ fn has_no_loss_axis(delta: &crate::analysis::resource::ResourceVector) -> bool {
 /// so a count carrying a seat past a threshold before its final iteration is not a legal
 /// shortcut whatever minted it. A bound RIDING the proposal would be tampered by the same serde
 /// that tampers the count, so re-deriving is what lets this fail in the direction it guards. On
-/// the bounded-cycle producer the derived ceiling and the published count are the same number:
-/// the same reduction over the same bytes.
+/// the bounded-cycle producer this ceiling is the reduction's OWN answer over the same bytes as
+/// the threshold that offer published — this function applies no budget of its own, so the
+/// offer's published CAPACITY can be the smaller of the two; the budget conjunct in
+/// `shortcut_count_is_drivable` is what bounds a drive.
 ///
 /// `None` for a proposal carrying no per-period signature. Such a proposal supports no derived
 /// ceiling at all, and the shipped behaviour of every producer that publishes none is unchanged.
 ///
 /// The prediction is taken AT THE ACCEPTED COUNT. A declarer may name any count at or below the
-/// offered `max_iterations` and the drive runs at that count; because the named seat crosses on
+/// offered `deliverable_capacity` and the drive runs at that count; because the named seat crosses on
 /// the relieved count itself and no seat crosses below it, a proposal accepted strictly under
 /// the ceiling predicts NO crossing at all. A discriminator that never mentioned the accepted
 /// count would admit a departure equal to the ceiling's own on a proposal predicting nobody
@@ -5061,10 +5087,10 @@ fn shortcut_drive_period(
 /// PRECONDITION, DISCHARGED BY EACH CALLER: the count handed in is already bounded. A caller
 /// that has not bounded it must not call this — an unchecked `Fixed(4e9)` becomes a
 /// four-billion-iteration validation loop. `handle_declare_shortcut` discharges it by running
-/// the `MAX_SHORTCUT_CYCLES` / `max_iterations` match above its pin-validation block;
+/// the `MAX_SHORTCUT_CYCLES` / `deliverable_capacity` match above its pin-validation block;
 /// `build_bounded_declaration` by passing the schema's own `iteration_count`; the interaction
 /// decoder by the count-spec projection, which computes
-/// `max = schema.max_iterations.min(MAX_SHORTCUT_CYCLES)` and admits only that window.
+/// `max = schema.deliverable_capacity.min(MAX_SHORTCUT_CYCLES)` and admits only that window.
 ///
 /// Exhaustive over `IterationCount` with no wildcard, so a future variant build-breaks here
 /// and forces a range decision instead of silently inheriting one.
@@ -7270,15 +7296,19 @@ fn try_offer_object_growth_shortcut(
     // against the live offer-time board.
     let schema_template = build_recast_template(&seq[0]);
     // CR 732.2a: an UNBOUNDED object-growth offer is not repeated a CR 704-limited number of
-    // times — it is materialized once as an unbounded axis — so it states no narrowed count
-    // bound and keeps the global safety limit.
+    // times — it is materialized once as an unbounded axis — so it MEASURES no repetition
+    // threshold and passes the absence, leaving the constructor to derive a capacity at the
+    // engine's own budget.
     //
     // CR 732.2a + CR 732.2c: the count this offer STATES is the count the table binds. There is
     // no declare-time picker (the frontend echoes `iteration_count` verbatim), and once the last
     // player accepts, "the shortcut is taken" at that count, which then caps the CR 500.5
-    // collapse prompt. An offer that narrows no bound must therefore STATE the global limit it
-    // publishes as its ceiling; stating less silently caps the controller's collapse choice.
-    // This mirrors `certified_bounded_cycle_offer`, which already states `Fixed(max_iterations)`.
+    // collapse prompt. An offer that measures no threshold must therefore STATE the capacity it
+    // publishes as its ceiling; stating less silently caps the controller's collapse choice. The
+    // coercion below is what states it: `build_shortcut_schema` only ever NARROWS a suggestion
+    // to the capacity, so deleting this as newly redundant would publish the bare win-kind seed
+    // instead. This mirrors `certified_bounded_cycle_offer`, which states its own measured
+    // threshold as its suggestion.
     //
     // CR 704.5a / CR 704.5c: the `UntilLethal` arm is UNREACHABLE FROM THIS PRODUCER — `delta` is
     // a two-`snapshot` diff, and `ResourceVector::snapshot` writes neither `damage_dealt` nor
@@ -7305,7 +7335,7 @@ fn try_offer_object_growth_shortcut(
         // undeclarable point — see `pinned_decisions_to_points`.
         pinned_decisions_to_points(&schema_template.decisions, state, caster)?,
         iteration_count,
-        MAX_SHORTCUT_CYCLES,
+        None,
     );
     Some((certificate, schema))
 }
@@ -7859,12 +7889,14 @@ fn handle_declare_shortcut(
             reject_shortcut_declaration(state, &mut result);
             return Ok(result);
         }
-        // CR 732.2a: the per-offer CR 704 bound, enforced at the same single authority as the
-        // global cap. A `Fixed(n)` above `max_iterations` would contain a conditional action —
-        // some living player crosses a CR 704.5a / CR 704.5c / CR 104.3c loss threshold inside
-        // the proposal, and what happens next depends on that — so it is not a legal shortcut.
+        // CR 732.2a: the per-offer ceiling, enforced at the same single authority as the
+        // global cap. A `Fixed(n)` above the capacity this offer published would contain a
+        // conditional action — some living player crosses a CR 704.5a / CR 704.5c / CR 104.3c
+        // loss threshold inside the proposal, and what happens next depends on that — so it is
+        // not a legal shortcut. The capacity, never the measured threshold: what an accept may
+        // legally specify is what this engine will deliver.
         crate::analysis::decision_template::IterationCount::Fixed(n)
-            if *n > offer.schema.max_iterations =>
+            if *n > offer.schema.deliverable_capacity =>
         {
             reject_shortcut_declaration(state, &mut result);
             return Ok(result);
@@ -19714,7 +19746,7 @@ mod priority_principal_tests {
 
 #[cfg(test)]
 mod shortcut_schema_tests {
-    use super::shortcut_iteration_count;
+    use super::{build_shortcut_schema, shortcut_iteration_count, MAX_SHORTCUT_CYCLES};
     use crate::analysis::decision_template::IterationCount;
     use crate::analysis::loop_check::WinKind;
 
@@ -19747,6 +19779,65 @@ mod shortcut_schema_tests {
             shortcut_iteration_count(WinKind::Advantage),
             IterationCount::Fixed(1)
         );
+    }
+
+    /// The constructor NARROWS a published suggestion to the capacity it derives and never
+    /// RAISES one — the one site where a producer's seed and this engine's budget meet.
+    ///
+    /// Board class: a producer that measured NO threshold, so the derived capacity is the
+    /// budget, handing a `Fixed` seed strictly below it. The offer-level rows cannot see this
+    /// arm: a producer that measured a threshold seeds exactly that threshold, so narrowing and
+    /// setting-to-capacity publish the same integer there.
+    ///
+    /// REVERT-PROBE: make the `Fixed` arm `Fixed(deliverable_capacity)` (set-to-capacity) ⇒ the
+    /// unmeasured seed is published as the budget and the inequality below FLIPS. Drop the
+    /// `.min(..)` ⇒ the over-capacity seed below is published unnarrowed ⇒ FLIPS.
+    #[test]
+    fn the_constructor_narrows_a_suggestion_and_never_raises_one() {
+        let seed = 3;
+        assert!(
+            seed < MAX_SHORTCUT_CYCLES,
+            "BOARD CLASS: the seed must sit strictly below the budget, else narrowing and \
+             setting-to-capacity publish the same integer and this arm measures nothing"
+        );
+        let unmeasured = build_shortcut_schema(Vec::new(), IterationCount::Fixed(seed), None);
+        assert!(
+            !unmeasured.is_bounded(),
+            "REACH-GUARD: this arm's subject is a producer that measured nothing"
+        );
+        assert_eq!(unmeasured.deliverable_capacity, MAX_SHORTCUT_CYCLES);
+        assert_eq!(
+            unmeasured.iteration_count,
+            IterationCount::Fixed(seed),
+            "the seed is published as handed, not raised to the capacity"
+        );
+        assert_ne!(
+            unmeasured.iteration_count,
+            IterationCount::Fixed(unmeasured.deliverable_capacity),
+            "suggestion and capacity are UNEQUAL here — the shape a set-to-capacity \
+             constructor cannot produce"
+        );
+
+        // The other direction, same invocation: a seed ABOVE the derived capacity comes back
+        // narrowed TO it, so the arm fires both ways rather than passing by inaction.
+        let measured = 5;
+        assert!(
+            measured < MAX_SHORTCUT_CYCLES,
+            "BOARD CLASS: sub-budget threshold"
+        );
+        let over = build_shortcut_schema(
+            Vec::new(),
+            IterationCount::Fixed(measured + 4),
+            Some(measured),
+        );
+        assert_eq!(over.deliverable_capacity, measured);
+        assert_eq!(over.iteration_count, IterationCount::Fixed(measured));
+
+        // Hostile sibling: `UntilLethal` names no count, so there is nothing to narrow — the
+        // member a `match` collapsing both variants would break.
+        let until = build_shortcut_schema(Vec::new(), IterationCount::UntilLethal, Some(measured));
+        assert_eq!(until.iteration_count, IterationCount::UntilLethal);
+        assert_eq!(until.deliverable_capacity, measured);
     }
 }
 
@@ -19817,7 +19908,7 @@ mod bounded_declaration_tests {
                 },
             ],
             IterationCount::Fixed(4),
-            4,
+            Some(4),
         )
     }
 
@@ -19977,7 +20068,7 @@ mod bounded_declaration_tests {
                     },
                 ],
                 IterationCount::Fixed(4),
-                4,
+                Some(4),
             );
             let mut state = recording_state();
             // The OTHER point is answered, so the refusal cannot be attributed to it.
@@ -20030,7 +20121,7 @@ mod bounded_declaration_tests {
     /// fully-answered NON-empty schema — which D1-P-may's positive arm and D3's control refuse.
     #[test]
     fn d4_an_empty_schema_publishes_no_declaration() {
-        let empty = build_shortcut_schema(Vec::new(), IterationCount::Fixed(4), 4);
+        let empty = build_shortcut_schema(Vec::new(), IterationCount::Fixed(4), Some(4));
         assert!(
             empty.points.is_empty(),
             "reach-guard: this fixture is the empty-schema case"
@@ -20065,7 +20156,7 @@ mod bounded_declaration_tests {
     ///
     /// The "handler refuses it" half is measured by calling `validate_pins` DIRECTLY on the
     /// template the pre-fix publisher would have emitted — the handler's own value-legality
-    /// firewall, at the range that handler validates a `Fixed(max_iterations)` declaration over.
+    /// firewall, at the range that handler validates a capacity-valued `Fixed` declaration over.
     /// Only then is the publisher asked. A row that asserted `is_none()` alone would pass on a
     /// publisher that refuses for any unrelated reason.
     ///
@@ -20166,15 +20257,15 @@ mod bounded_declaration_tests {
             );
 
             // ── HALF 1, on the handler's own instrument: would `handle_declare_shortcut` take
-            //    it, at the range it validates the AI's `Fixed(max_iterations)` candidate over?
+            //    it, at the range it validates the AI's capacity-valued `Fixed` candidate over?
             let handler_accepts =
-                validate_pins(&schema, &as_published, schema.max_iterations, &state).is_ok();
+                validate_pins(&schema, &as_published, schema.deliverable_capacity, &state).is_ok();
             assert_eq!(
                 handler_accepts, expect_published,
                 "[{label}] the declare-time pin firewall's verdict on the published shape"
             );
             assert_eq!(
-                declaration_conforms(&schema, &as_published, schema.max_iterations, &state),
+                declaration_conforms(&schema, &as_published, schema.deliverable_capacity, &state),
                 handler_accepts,
                 "[{label}] and the shared authority agrees with its own value half — it is the \
                  conjunction of the two gates, not a third predicate"
@@ -25408,11 +25499,12 @@ mod bounded_offer_conjunct_tests {
         let WaitingFor::LoopShortcut { schema, .. } = &offer else {
             unreachable!("matched above")
         };
-        let published = schema.max_iterations;
+        let published = schema.deliverable_capacity;
         assert!(
-            (1..MAX_SHORTCUT_CYCLES).contains(&published),
-            "REACH-GUARD: the published bound must be a NARROWED count strictly inside the \
-             range — a refusal and the un-narrowed sentinel are both excluded; got {published}"
+            schema.is_bounded() && (1..MAX_SHORTCUT_CYCLES).contains(&published),
+            "REACH-GUARD: the published capacity must be a NARROWED count strictly inside the \
+             range — a refusal and an un-narrowed capacity at the budget are both excluded; got \
+             {published}"
         );
         state.waiting_for = offer;
         // CR 732.2a: a bare declaration (no client template) is admitted only from a proposer
@@ -25696,7 +25788,7 @@ mod bounded_offer_conjunct_tests {
                 per_cycle.delta.life.get(&P1).copied(),
                 per_cycle.victim_slot[0].1,
                 per_cycle.seat_life_charge.clone(),
-                schema.max_iterations,
+                schema.measured_repetition_bound,
             )
         };
 
@@ -25704,7 +25796,7 @@ mod bounded_offer_conjunct_tests {
         // behind is -2 on one and -5 on the other.
         assert_eq!(
             measure([-5, 3]),
-            (Some(-2), 5, vec![(P1, 10)], 2),
+            (Some(-2), 5, vec![(P1, 10)], Some(2)),
             "a period whose legs carry both signs charges the negative parts (5), publishes the \
              reaching slot's magnitude plus the seat's own unattributed loss (10) as the CR \
              704.5a divisor, and still states the endpoint pair (-2) as the delta a committed \
@@ -25712,7 +25804,7 @@ mod bounded_offer_conjunct_tests {
         );
         assert_eq!(
             measure([-2, -3]),
-            (Some(-5), 5, vec![(P1, 10)], 2),
+            (Some(-5), 5, vec![(P1, 10)], Some(2)),
             "CONTROL: with no sign mix the accumulation and the endpoint pair agree, so this \
              board is indifferent to which one the mint reads"
         );

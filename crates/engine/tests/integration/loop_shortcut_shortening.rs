@@ -112,7 +112,7 @@ fn weird_offer_bound() -> u32 {
             state.waiting_for
         );
     };
-    schema.max_iterations
+    schema.deliverable_capacity
 }
 
 /// The driven two-player optional-drain rig, declared at `count` and parked at its responder.
@@ -377,7 +377,7 @@ fn a_place_the_engine_cannot_drive_is_refused_and_the_next_answer_ends_the_loop(
     );
     let before: Vec<i32> = state.players.iter().map(|p| p.life).collect();
 
-    let over_budget = ShortcutDecisionSchema::default().max_iterations + 1;
+    let over_budget = ShortcutDecisionSchema::default().deliverable_capacity + 1;
     assert!(
         admitted_places(&state).contains(&over_budget),
         "reach-guard: CR 732.2b admits this place, so the refusal below is the DRIVE's and not \
@@ -531,7 +531,7 @@ fn the_loop_edge_that_looks_like_the_answer_leaves_the_loop_standing() {
 /// disjunct from the predicate (the middle leg goes red).
 #[test]
 fn a_restored_over_cap_proposal_refuses_what_it_cannot_drive_and_admits_the_repairing_place() {
-    let cap = ShortcutDecisionSchema::default().max_iterations;
+    let cap = ShortcutDecisionSchema::default().deliverable_capacity;
     // The tamper is `cap + 2`, not `cap + 1`: at `cap + 1` the published range ends at `cap` and
     // the boundary member below would be outside it, so the range refusal would do the refusing.
     let tampered = || {
@@ -939,7 +939,7 @@ fn interaction_admits(state: &GameState, at_iteration: u32) -> bool {
 #[test]
 fn the_published_range_and_the_reducer_agree_below_the_budget_and_part_above_it() {
     let bound = weird_offer_bound();
-    let cap = ShortcutDecisionSchema::default().max_iterations;
+    let cap = ShortcutDecisionSchema::default().deliverable_capacity;
     let mut admitted = 0usize;
     let mut refused = 0usize;
     let mut above_budget = 0usize;

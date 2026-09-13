@@ -1873,8 +1873,10 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
     };
     let schema = ShortcutDecisionSchema {
         iteration_count: IterationCount::UntilLethal,
-        // No narrowed CR 732.2a bound — `Default` carries the global cap.
-        max_iterations: ShortcutDecisionSchema::default().max_iterations,
+        // This producer measured no CR 704 threshold — `Default` carries the absence and a
+        // capacity at the global cap.
+        measured_repetition_bound: None,
+        deliverable_capacity: ShortcutDecisionSchema::default().deliverable_capacity,
         points: vec![DecisionPoint {
             slot: slot.clone(),
             kind: DecisionPointKind::Targets {
@@ -2316,9 +2318,9 @@ fn b3_materialize_cross_lethal() {
     );
     assert!(
         !schema.is_bounded(),
-        "the bound stays at the engine-wide cap, so no per-offer ceiling stands between the \
-         declared count and the cross-lethal arm; measured max_iterations {}",
-        schema.max_iterations
+        "this mint measures no threshold, so no per-offer ceiling stands between the \
+         declared count and the cross-lethal arm; measured bound {:?}",
+        schema.measured_repetition_bound
     );
     assert_eq!(
         schema.iteration_count,
@@ -4491,12 +4493,12 @@ fn object_growth_offer_schema_has_live_convoke_taps() {
             schema.points[0].kind
         );
     };
-    // CR 732.2a + CR 732.2c: an optional Advantage loop narrows no CR 704 bound, so the offer
-    // STATES the same global ceiling it publishes — the frontend echoes this value verbatim and
+    // CR 732.2a + CR 732.2c: an optional Advantage loop measures no CR 704 threshold, so the
+    // offer STATES the same capacity it publishes — the frontend echoes this value verbatim and
     // the accepted count caps the CR 500.5 collapse prompt, so a smaller seed would cap it too.
     assert_eq!(
         schema.iteration_count,
-        IterationCount::Fixed(schema.max_iterations)
+        IterationCount::Fixed(schema.deliverable_capacity)
     );
 
     // The tappable set is LIVE-derived from the offer-time board: exactly the untapped creatures
@@ -4594,8 +4596,10 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
     };
     let schema = ShortcutDecisionSchema {
         iteration_count: IterationCount::UntilLethal,
-        // No narrowed CR 732.2a bound — `Default` carries the global cap.
-        max_iterations: ShortcutDecisionSchema::default().max_iterations,
+        // This producer measured no CR 704 threshold — `Default` carries the absence and a
+        // capacity at the global cap.
+        measured_repetition_bound: None,
+        deliverable_capacity: ShortcutDecisionSchema::default().deliverable_capacity,
         points: vec![DecisionPoint {
             slot,
             kind: DecisionPointKind::Targets {
@@ -5475,11 +5479,11 @@ fn loop_shortcut_serializes_schema_under_data() {
 ///
 /// `Fixed(n)` is reachable via the public `GameAction` surface (UI, scripted client, server payload
 /// surface): `handle_declare_shortcut` checks the declared count against the global cap and against
-/// the offer's own `max_iterations`, and refuses `UntilLethal` against a bounded offer — what it
+/// the offer's own `deliverable_capacity`, and refuses `UntilLethal` against a bounded offer — what it
 /// never checks is the declared shape against the schema's *suggested* `iteration_count`, so a
 /// `Fixed` count against an `UntilLethal` suggestion is admitted. The pin firewall validates only
 /// `template` pins and is skipped entirely when `template` is `None`. The AI's own candidate
-/// generator proposes `Fixed(max_iterations)` only against a BOUNDED offer; this row's offer
+/// generator proposes a capacity-valued `Fixed` only against a BOUNDED offer; this row's offer
 /// narrowed no bound, so there the AI declares `UntilLethal` or declines and this row's `Fixed(3)`
 /// arrives from that public surface.
 ///
@@ -6663,14 +6667,15 @@ fn migrated_dump_decodes_through_both_decoders_and_unmigrated_through_neither() 
 /// load, and one whose bound is `5` must not.
 ///
 /// The defect this pins (W15) is real and was measured before the fix: a wire
-/// `max_iterations: 0` deserialized clean, satisfied `is_bounded()`, and reached
+/// count of `0` deserialized clean, satisfied `is_bounded()`, and reached
 /// `ai_support/candidates.rs`, which echoed it as a declared `IterationCount::Fixed(0)` —
 /// so the engine opened the CR 732.2b response window for an offer that admits no legally
 /// takeable sequence. The offer was corrupt one beat BEFORE any count was declared.
 ///
 /// ⚠ THE FIXTURE CHOICE IS LOAD-BEARING — this row uses TENACITY, not the dellian dump the
 /// dual-decode row uses. The dellian value is `TriggerTargetSelection` and carries no
-/// `schema` object at all, so `…schema.max_iterations` cannot even be written onto it: both
+/// `schema` object at all, so the legacy `…schema.max_iterations` key cannot even be written
+/// onto it: both
 /// arms would decode identically, for a reason having nothing to do with the invariant.
 /// The tenacity dump is the only in-tree `LoopShortcut` capture.
 ///
@@ -6687,7 +6692,7 @@ fn migrated_dump_decodes_through_both_decoders_and_unmigrated_through_neither() 
 /// specifically rather than refusing every mutated save.
 /// The SIBLING wire zero on the same offer: `PeriodicDelta::frames_per_period`.
 ///
-/// `max_iterations` says how many repetitions a proposal commits; `frames_per_period` says what
+/// The published capacity says how many repetitions a proposal commits; `frames_per_period` says what
 /// ONE repetition is. `drive_one_shortcut_cycle` closes a cycle on
 /// `frames_per_period.is_some_and(|k| frames_this_cycle >= k)`, and `frames_this_cycle` is a
 /// `u32` — so `k == 0` makes that disjunct a TAUTOLOGY, ending every "cycle" at the first
@@ -6701,7 +6706,7 @@ fn migrated_dump_decodes_through_both_decoders_and_unmigrated_through_neither() 
 /// REVERT-PROBE: delete the `frames_per_period == 0` block in `reject_zero_bound_shortcut_offer`
 /// ⇒ the `0` arm decodes `Ok` ⇒ this row FAILS while
 /// `a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not` stays green, because the
-/// fixture omits `max_iterations` entirely and defaults it to `MAX_SHORTCUT_CYCLES`. The `2` arm
+/// fixture carries no count key at all and defaults its capacity to `MAX_SHORTCUT_CYCLES`. The `2` arm
 /// is the anti-vacuity half: it proves the splice reaches the field and that the guard refuses
 /// `0` specifically rather than refusing every save carrying a period.
 #[test]
@@ -6749,7 +6754,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
     assert!(
         message.contains("frames_per_period 0"),
         "the rejection must NAME the invariant it enforces, and must not be the sibling \
-         max_iterations guard firing instead, got: {message}"
+         zero-capacity guard firing instead, got: {message}"
     );
 
     assert!(
@@ -6819,6 +6824,19 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
     );
 }
 
+/// Row 2 — a PRE-SPLIT persisted offer decodes to the boundedness verdict it had, through both
+/// production raw-JSON ingresses, plus the zero the load still refuses.
+///
+/// The legacy key answered two questions in one integer, writing the engine's budget to mean
+/// "measured nothing". `migrate_legacy_shortcut_repetition_bound` is the inverse of that
+/// encoding, and this row drives it through the ingresses rather than calling it: a legacy value
+/// BELOW the budget decodes bounded with the capacity that value, a legacy value AT the budget
+/// decodes UNBOUNDED (the hostile sibling — a migration moving the value into the measured field
+/// unconditionally would mint a measured threshold for a save whose producer measured none), and
+/// a legacy zero re-encodes to a zero capacity the load still refuses.
+///
+/// REVERT-PROBE: delete the migration ⇒ the narrowed arm's capacity defaults to the budget and
+/// its verdict flips to unbounded ⇒ FAILS, while the zero arm stops failing the load at all.
 #[test]
 fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
     let json = gunzip_dump(include_bytes!(
@@ -6842,7 +6860,8 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
         base["waiting_for"]["data"]["schema"]
             .get("max_iterations")
             .is_none(),
-        "the fixture predates the field, so the mutation below CREATES the key"
+        "the fixture predates the legacy field, so the mutation below CREATES the key the \
+         migration consumes"
     );
 
     let with_bound = |n: u64| {
@@ -6862,19 +6881,48 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
     let zero =
         serde_json::from_value::<engine::types::game_state::PersistedGameState>(with_bound(0));
     let message = zero
-        .expect_err("a wire max_iterations of 0 must fail the load, not revive a corrupt offer")
+        .expect_err("a legacy wire bound of 0 must fail the load, not revive a corrupt offer")
         .to_string();
     assert!(
-        message.contains("max_iterations 0"),
+        message.contains("deliverable_capacity 0"),
         "the rejection must NAME the invariant it enforces, got: {message}"
     );
 
-    // The control: same fixture, same instrument, same mutated key, a legal bound.
-    assert!(
+    // The control: same fixture, same instrument, same mutated key, a legal bound — and the
+    // MIGRATED verdict, which is what tells "recovered from the legacy key" apart from
+    // "defaulted". A legacy 5 was a measured threshold, so the offer reads bounded at 5.
+    let five =
         serde_json::from_value::<engine::types::game_state::PersistedGameState>(with_bound(5))
-            .is_ok(),
-        "a wire max_iterations of 5 is a legal bound and must still load"
+            .expect("a legacy wire bound of 5 is a legal bound and must still load");
+    let engine::types::game_state::PersistedGameState::Raw(five) = five else {
+        panic!("the tenacity envelope restores as a raw persisted state");
+    };
+    let WaitingFor::LoopShortcut { schema, .. } = &five.waiting_for else {
+        panic!("the restored capture must still be parked on its offer");
+    };
+    assert_eq!(schema.measured_repetition_bound, Some(5));
+    assert_eq!(schema.deliverable_capacity, 5);
+    assert!(schema.is_bounded());
+
+    // THE HOSTILE SIBLING: the legacy value AT the budget meant "measured nothing", so it must
+    // decode UNBOUNDED at a capacity of the budget — never bounded at the budget.
+    let sentinel = crate::fantastic_four_bounded_loop::MAX_SHORTCUT_CYCLES_MIRROR;
+    let at_budget = serde_json::from_value::<engine::types::game_state::PersistedGameState>(
+        with_bound(u64::from(sentinel)),
+    )
+    .expect("a legacy wire bound at the budget is the un-narrowed encoding and must load");
+    let engine::types::game_state::PersistedGameState::Raw(at_budget) = at_budget else {
+        panic!("the tenacity envelope restores as a raw persisted state");
+    };
+    let WaitingFor::LoopShortcut { schema, .. } = &at_budget.waiting_for else {
+        panic!("the restored capture must still be parked on its offer");
+    };
+    assert_eq!(
+        schema.measured_repetition_bound, None,
+        "the budget was the OLD encoding's 'measured nothing', so nothing was measured"
     );
+    assert!(!schema.is_bounded());
+    assert_eq!(schema.deliverable_capacity, sentinel);
 
     // ── THE SECOND INGRESS ──────────────────────────────────────────────────────────
     // CR 732.2a again, through the OTHER decode entry point. Upstream #6933 split the
@@ -6891,9 +6939,10 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
     // one flips to `Ok`. That single-site revert is why this row exists and why the
     // arms above cannot stand in for it.
     //
-    // REACH-GUARD FIRST: `DirectCurrentRaw` deliberately SKIPS the legacy migrations, so
-    // if this fixture could not decode bare at all, the `Err` below would prove nothing
-    // about the bound.
+    // REACH-GUARD FIRST: `DirectCurrentRaw` deliberately SKIPS only the MODE-GATED legacy
+    // migrations; those registered outside that guard — the repetition-bound split the
+    // `Some(5)` arm below reads among them — run on every mode. So if this fixture could not
+    // decode bare at all, the `Err` below would prove nothing about the bound.
     assert!(
         serde_json::from_value::<GameState>(base.clone()).is_ok(),
         "reach-guard: the unmutated fixture must decode through the bare-GameState \
@@ -6902,16 +6951,21 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
 
     let bare_zero = serde_json::from_value::<GameState>(with_bound(0));
     let bare_message = bare_zero
-        .expect_err("the bare-GameState ingress must refuse a wire max_iterations of 0 too")
+        .expect_err("the bare-GameState ingress must refuse a legacy wire bound of 0 too")
         .to_string();
     assert!(
-        bare_message.contains("max_iterations 0"),
+        bare_message.contains("deliverable_capacity 0"),
         "the bare-ingress rejection must NAME the same invariant, got: {bare_message}"
     );
-    assert!(
-        serde_json::from_value::<GameState>(with_bound(5)).is_ok(),
-        "a legal bound must still load through the bare-GameState ingress"
-    );
+    // The second ingress recovers the verdict too: a missed registration at either call site is
+    // otherwise silent, because the compiler sees neither.
+    let bare_five = serde_json::from_value::<GameState>(with_bound(5))
+        .expect("a legal bound must still load through the bare-GameState ingress");
+    let WaitingFor::LoopShortcut { schema, .. } = &bare_five.waiting_for else {
+        panic!("the restored capture must still be parked on its offer");
+    };
+    assert_eq!(schema.measured_repetition_bound, Some(5));
+    assert_eq!(schema.deliverable_capacity, 5);
 }
 
 /// R0e — the wire pair NO PRODUCER MINTS: a persisted `LoopShortcut` offer that NARROWS its
@@ -6919,8 +6973,8 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
 /// (`loop_period_controller() == Some(proposer)`) must fail the load.
 ///
 /// The engine's three mints partition that cross-product and none lands in this cell: the
-/// object-growth and Path A drain mints both publish `MAX_SHORTCUT_CYCLES` (never
-/// `is_bounded()`), and the bounded mint's gate (1b) refuses `ProposerHasDrivingPeriod`. Accepting
+/// object-growth and Path A drain mints both measure nothing (never `is_bounded()`), and the
+/// bounded mint's gate (1b) refuses `ProposerHasDrivingPeriod`. Accepting
 /// the pair anyway routes the accepted proposal through `materialize_fixed_shortcut`'s
 /// period-ownership early return into `materialize_object_growth_shortcut` — the table agreed to
 /// `n` cycles and gets NONE.
@@ -6940,7 +6994,7 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
 /// | delete the whole own-period `if` block | A1 → `Ok` | A2, A3, A4, A5, A6 |
 /// | delete `schema.is_bounded() &&` | A3, A5 → `Err` | A1, A2, A4, A6 |
 /// | delete `&& loop_period_controller() == …` | A2, A4 → `Err` | A1, A3, A5, A6 |
-/// | hoist the block ABOVE the `max_iterations == 0` block | A6's message | A1–A5 |
+/// | hoist the block ABOVE the zero-capacity block | A6's message | A1–A5 |
 #[test]
 fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
     let json = gunzip_dump(include_bytes!(
@@ -6964,8 +7018,9 @@ fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
         base["waiting_for"]["data"]["schema"]
             .get("max_iterations")
             .is_none(),
-        "the fixture predates the field, so the bound splice CREATES the key (absent ⇒ \
-         MAX_SHORTCUT_CYCLES ⇒ NOT is_bounded, which is what arms A3/A5 rest on)"
+        "the fixture predates the legacy field, so the bound splice CREATES the key the \
+         migration consumes (no key ⇒ nothing measured ⇒ NOT is_bounded, which is what arms \
+         A3/A5 rest on)"
     );
     assert!(
         base.get("last_loop_action_sequence").is_none(),
@@ -7032,15 +7087,16 @@ fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
          guard firing instead, got: {message}"
     );
 
-    // ── A6 — ORDERING PROBE. `0 < MAX_SHORTCUT_CYCLES`, so a zero bound is ALSO `is_bounded()`:
-    // the two blocks are not disjoint and the zero check must keep answering first. No pre-existing
-    // row observes this — the sibling zero row's fixture carries no period, so the new predicate is
-    // false there regardless of order.
+    // ── A6 — ORDERING PROBE. A legacy zero migrates to a MEASURED threshold of zero, so such a
+    // save is ALSO `is_bounded()` while its capacity is zero: the two blocks are not disjoint and
+    // the zero check must keep answering first. No pre-existing row observes this — the sibling
+    // zero row's fixture carries no period, so the pair predicate is false there regardless of
+    // order.
     let message = decode_persisted(spliced(Some(0), Some(&donor_period)))
         .expect_err("a zero bound must still fail the load when a period rides with it")
         .to_string();
     assert!(
-        message.contains("max_iterations 0"),
+        message.contains("deliverable_capacity 0"),
         "ORDERING: hoisting the own-period block above the zero-bound block relabels a corrupt \
          zero with the wrong invariant, got: {message}"
     );
@@ -7055,7 +7111,7 @@ fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
     // admission condition; rejecting it would refuse every legitimate growth capture.
     assert!(
         decode_persisted(spliced(None, Some(&donor_period))).is_ok(),
-        "an UNNARROWED offer (absent bound ⇒ MAX_SHORTCUT_CYCLES) carrying the proposer's own \
+        "an UNNARROWED offer (no legacy key ⇒ nothing measured) carrying the proposer's own \
          period is the legitimate object-growth shape and must still load"
     );
 
@@ -7133,6 +7189,193 @@ fn engine_live_opponents(state: &GameState, of: PlayerId) -> Vec<PlayerId> {
         .filter(|p| p.id != of && !p.is_eliminated)
         .map(|p| p.id)
         .collect()
+}
+
+/// Row 2, on the COMMITTED-SAVE population: what each dump's own raw JSON spells is what its
+/// decoded pair says, and the legacy key's OTHER receivers are left alone.
+///
+/// Three classes, each read off the raw payload rather than named by hand: saves that carry the
+/// legacy count (it migrates, and the verdict is BOUNDED at that value), saves that carry no count
+/// key at all (they default — unbounded at the budget, which is what tells "migrated" apart from
+/// "defaulted"), and saves whose `RepeatContinuation::WhileCondition` spells the same key for its
+/// own ceiling (a name-keyed walk would rewrite or drop those, turning a bounded while-condition
+/// into an unbounded one). Each class has a member on BOTH raw-JSON ingresses.
+///
+/// REVERT-PROBE: delete the migration ⇒ the legacy-carrying saves decode at the default capacity
+/// and read unbounded ⇒ the first class FAILS. Key the walk on the name instead of the receiver ⇒
+/// the third class's multisets diverge ⇒ FAILS.
+#[test]
+fn committed_saves_decode_to_the_boundedness_verdict_their_raw_json_states() {
+    let mirror = crate::fantastic_four_bounded_loop::MAX_SHORTCUT_CYCLES_MIRROR;
+
+    // The raw `schema` object of a payload parked on a `LoopShortcut` offer.
+    fn raw_schema(state: &serde_json::Value) -> &serde_json::Map<String, serde_json::Value> {
+        assert_eq!(
+            state["waiting_for"]["type"].as_str(),
+            Some("LoopShortcut"),
+            "this class is scoped to saves parked on an offer"
+        );
+        state["waiting_for"]["data"]["schema"]
+            .as_object()
+            .expect("an offer carries a schema object")
+    }
+
+    // Values at every `max_iterations` key under `objects` — i.e. the key's NON-schema receivers,
+    // which are `RepeatContinuation::WhileCondition` ceilings.
+    fn foreign_ceilings(objects: &serde_json::Value) -> Vec<u64> {
+        fn walk(value: &serde_json::Value, out: &mut Vec<u64>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if let Some(n) = map
+                        .get("max_iterations")
+                        .and_then(serde_json::Value::as_u64)
+                    {
+                        out.push(n);
+                    }
+                    for v in map.values() {
+                        walk(v, out);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for v in items {
+                        walk(v, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(objects, &mut out);
+        out.sort_unstable();
+        out
+    }
+
+    // ── CLASS 1 — the legacy count is present and BELOW the budget: it migrates. ───────────
+    for (label, gz) in [
+        (
+            "lethal_lifegain_loss_4p",
+            &include_bytes!("../fixtures/lethal_lifegain_loss_4p.json.gz")[..],
+        ),
+        (
+            "weird_drain_4p",
+            &include_bytes!("../fixtures/weird_drain_4p.json.gz")[..],
+        ),
+    ] {
+        let json = gunzip_dump(gz);
+        let envelope: serde_json::Value =
+            serde_json::from_str(&json).expect("dump envelope parses as JSON");
+        let raw = envelope["gameState"].clone();
+        let legacy = raw_schema(&raw)
+            .get("max_iterations")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| {
+                panic!("[{label}] this class is the saves that CARRY the legacy key")
+            }) as u32;
+        assert!(
+            legacy > 0 && legacy < mirror,
+            "[{label}] BOARD CLASS: a narrowed legacy value, so 'migrated' and 'defaulted' \
+             differ; got {legacy}"
+        );
+
+        let state = restore_dump(&json);
+        let WaitingFor::LoopShortcut { schema, .. } = &state.waiting_for else {
+            panic!("[{label}] the save restores at its offer");
+        };
+        assert_eq!(
+            schema.measured_repetition_bound,
+            Some(legacy),
+            "[{label}] the legacy count WAS the measured threshold and must decode as one"
+        );
+        assert!(schema.is_bounded(), "[{label}] and the verdict is BOUNDED");
+        assert_eq!(
+            schema.deliverable_capacity, legacy,
+            "[{label}] the capacity is the ceiling that encoding published"
+        );
+        assert_eq!(
+            schema.iteration_count,
+            IterationCount::Fixed(legacy),
+            "[{label}] and the suggestion the save carries still agrees with it"
+        );
+    }
+
+    // ── CLASS 2 — NEITHER key: the defaults answer, one member per ingress. ───────────────
+    // This is what tells a migrated save apart from a defaulted one, and it buys the claim that a
+    // per-field `#[serde(default)]` cannot recover a pre-split verdict on its own.
+    let tenacity = gunzip_dump(include_bytes!(
+        "../fixtures/tenacity_exquisite_blood_4p.json.gz"
+    ));
+    let tenacity_raw: serde_json::Value = serde_json::from_str(&tenacity)
+        .map(|v: serde_json::Value| v["gameState"].clone())
+        .expect("dump envelope parses as JSON");
+    assert!(
+        !raw_schema(&tenacity_raw).contains_key("max_iterations"),
+        "REACH-GUARD: the envelope member of this class carries no count key"
+    );
+    let tenacity_state = restore_dump(&tenacity);
+    let WaitingFor::LoopShortcut { schema, .. } = &tenacity_state.waiting_for else {
+        panic!("the tenacity save restores at its offer");
+    };
+    assert_eq!(schema.measured_repetition_bound, None);
+    assert!(!schema.is_bounded());
+    assert_eq!(schema.deliverable_capacity, mirror);
+
+    let combo = gunzip_dump(include_bytes!(
+        "../fixtures/combo_infinite_pile_4p_offer.json.gz"
+    ));
+    let combo_raw: serde_json::Value =
+        serde_json::from_str(&combo).expect("the combo capture is BARE and parses as JSON");
+    assert!(
+        !raw_schema(&combo_raw).contains_key("max_iterations"),
+        "REACH-GUARD: the bare member of this class carries no count key either"
+    );
+    let combo_state: GameState =
+        serde_json::from_str(&combo).expect("the bare ingress decodes the combo capture");
+    let WaitingFor::LoopShortcut { schema, .. } = &combo_state.waiting_for else {
+        panic!("the combo save restores at its offer");
+    };
+    assert_eq!(schema.measured_repetition_bound, None);
+    assert!(!schema.is_bounded());
+    assert_eq!(schema.deliverable_capacity, mirror);
+    // A restored save may carry ANY suggestion against ANY capacity: agreement is an invariant of
+    // freshly minted offers only, and this committed save is the member that shows it.
+    assert_eq!(schema.iteration_count, IterationCount::Fixed(1));
+    assert!(1 < schema.deliverable_capacity);
+
+    // ── CLASS 3 — the key's OTHER receiver, on both ingresses. ────────────────────────────
+    let precast = gunzip_dump(include_bytes!(
+        "../fixtures/combo_infinite_pile_4p_untapped_precast.json.gz"
+    ));
+    let precast_raw: serde_json::Value =
+        serde_json::from_str(&precast).expect("the precast capture is BARE and parses as JSON");
+    let precast_state: GameState =
+        serde_json::from_str(&precast).expect("the bare ingress decodes the precast capture");
+    let dina = gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_phase5_no_offer_4p.json.gz"
+    ));
+    let dina_raw: serde_json::Value = serde_json::from_str(&dina)
+        .map(|v: serde_json::Value| v["gameState"].clone())
+        .expect("dump envelope parses as JSON");
+    let dina_state = restore_dump(&dina);
+
+    for (label, raw, decoded) in [
+        ("precast (bare ingress)", &precast_raw, &precast_state),
+        ("dina (envelope ingress)", &dina_raw, &dina_state),
+    ] {
+        let before = foreign_ceilings(&raw["objects"]);
+        assert!(
+            !before.is_empty(),
+            "[{label}] REACH-GUARD: this save must actually carry while-condition ceilings, \
+             else the comparison below is vacuous"
+        );
+        let reserialized =
+            serde_json::to_value(decoded).expect("a decoded state re-serializes for projection");
+        assert_eq!(
+            foreign_ceilings(&reserialized["objects"]),
+            before,
+            "[{label}] the migration names the LoopShortcut receiver, not the key: every \
+             while-condition ceiling reads what this save's own raw JSON spells"
+        );
+    }
 }
 
 /// Actions a dump driver must never take: they end the game or bypass the reducer, and a
@@ -7684,7 +7927,8 @@ fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
     };
     let schema = ShortcutDecisionSchema {
         iteration_count: IterationCount::UntilLethal,
-        max_iterations: ShortcutDecisionSchema::default().max_iterations,
+        measured_repetition_bound: None,
+        deliverable_capacity: ShortcutDecisionSchema::default().deliverable_capacity,
         points: vec![DecisionPoint {
             slot: DecisionSlot { source, index: 0 },
             kind: DecisionPointKind::Targets {
@@ -10083,22 +10327,22 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
         i64::from(crate::fantastic_four_bounded_loop::MAX_SHORTCUT_CYCLES_MIRROR),
     );
     assert_eq!(
-        i64::from(schema.max_iterations),
-        expected_bound,
+        schema.measured_repetition_bound.map(i64::from),
+        Some(expected_bound),
         "CR 704.5a: the published bound is the strict per-seat headroom minimum, carried to \
          the binding seat's own crossing when exactly one seat holds it. Recomputed here from \
          the offer-beat board {losses:?} at beat {beat}"
     );
     assert_eq!(
         schema.iteration_count,
-        engine::analysis::decision_template::IterationCount::Fixed(schema.max_iterations),
-        "CR 732.1b: the SUGGESTION seeded into the picker is the bound itself"
+        engine::analysis::decision_template::IterationCount::Fixed(schema.deliverable_capacity),
+        "CR 732.1b: the SUGGESTION seeded into the picker is the published capacity itself"
     );
     assert!(
         schema.is_bounded(),
-        "the whole claim of this producer is that it NARROWED the repetition bound; \
-         max_iterations = {}",
-        schema.max_iterations
+        "the whole claim of this producer is that it MEASURED a repetition threshold; \
+         measured bound = {:?}",
+        schema.measured_repetition_bound
     );
 
     // ── siblings: nothing terminal happened, and no revocable-infinity was marked ──
@@ -10135,7 +10379,7 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
     // `UntilLethal` for a lethal drain) ⇒ the offer publishes no `Fixed` window ⇒ this row
     // dies at the `InteractionShortcutCountSpec::Fixed` destructure below, and `preview` is
     // empty at every count.
-    let suggested = i64::from(schema.max_iterations);
+    let suggested = i64::from(schema.deliverable_capacity);
     let life_deltas: Vec<(PlayerId, i64)> = per_cycle
         .delta
         .life
@@ -10840,14 +11084,14 @@ fn bounded_offer_on_a_within_turn_draw_drain_is_basis_b() {
     // `pub(crate)` and unnameable from an integration test; `is_bounded()` is the shipped
     // `pub` predicate for exactly this question.
     assert!(
-        schema.max_iterations >= 1,
-        "a bound of 0 states no repetition and must not be offered"
+        schema.deliverable_capacity >= 1,
+        "a capacity of 0 states no repetition and must not be offered"
     );
     assert!(
         schema.is_bounded(),
         "the whole claim of this producer is that it NARROWED the repetition bound below the \
-         engine-wide safety cap; max_iterations = {}",
-        schema.max_iterations
+         engine-wide safety cap; capacity = {}",
+        schema.deliverable_capacity
     );
 
     // (v) the untargeted class publishes no per-iteration choice.
@@ -11035,8 +11279,8 @@ fn multiplayer_pure_life_drain_offers_at_three_and_four_players() {
             i64::from(crate::fantastic_four_bounded_loop::MAX_SHORTCUT_CYCLES_MIRROR),
         );
         assert_eq!(
-            i64::from(schema.max_iterations),
-            expected_bound,
+            schema.measured_repetition_bound.map(i64::from),
+            Some(expected_bound),
             "{seats}p: CR 704.5a — the published bound is the strict per-seat headroom \
              minimum, carried to the binding seat's own crossing when exactly one seat holds \
              it; recomputed here from the offer-beat board"
@@ -11044,8 +11288,8 @@ fn multiplayer_pure_life_drain_offers_at_three_and_four_players() {
         assert!(
             schema.is_bounded(),
             "{seats}p: this producer's whole claim is that it NARROWED the bound; \
-             max_iterations = {}",
-            schema.max_iterations
+             measured bound = {:?}",
+            schema.measured_repetition_bound
         );
     }
 }
@@ -11301,7 +11545,7 @@ fn a_foreign_driving_period_neither_refuses_nor_recertifies_a_bounded_offer() {
 /// PR-7 Phase 5b — a declared count ABOVE the offered bound is handed back fail-closed.
 ///
 /// **TEST-ONLY ROW, ZERO NEW PRODUCTION CODE.** The guard already ships
-/// (`handle_declare_shortcut`'s `Fixed(n) if *n > offer.schema.max_iterations` arm). It was
+/// (`handle_declare_shortcut`'s `Fixed(n) if *n > offer.schema.deliverable_capacity` arm). It was
 /// unbuildable before this phase because no producer narrowed the bound below
 /// `MAX_SHORTCUT_CYCLES`, so the comparison was inert; the bounded offer is the first
 /// producer that can exercise it. Do not read this row as new mechanism.
@@ -11332,7 +11576,7 @@ fn declared_count_above_the_offered_bound_is_handed_back() {
     drive_to_bounded_offer(&mut state, 400)
         .expect("the bounded offer must fire; see the acceptance row");
     let (proposer, _, schema) = bounded_offer_parts(&state);
-    let bound = schema.max_iterations;
+    let bound = schema.deliverable_capacity;
     assert!(
         schema.is_bounded(),
         "REACH-GUARD: this row is about the PER-OFFER bound, so the offer must have narrowed \
@@ -11380,11 +11624,11 @@ fn declared_count_above_the_offered_bound_is_handed_back() {
 /// **TEST-ONLY ROW** for the same reason as the row above: the guard ships already. It is
 /// also the D-1 rider — the ONLY test that exercises `handle_declare_shortcut`'s
 /// `UntilLethal if offer.schema.is_bounded()` arm, so it is the behavioural proof that
-/// swapping the inline `max_iterations < MAX_SHORTCUT_CYCLES` for the shared predicate is
-/// semantics-preserving.
+/// grounding the shared predicate on the typed measured field rather than on a budget
+/// comparison is semantics-preserving.
 ///
 /// REVERT-PROBES: delete that arm ⇒ an unbounded drive runs past the measured threshold.
-/// Invert `ShortcutDecisionSchema::is_bounded()` to `>=` ⇒ THIS row flips too, together with
+/// Invert `ShortcutDecisionSchema::is_bounded()` to `is_none()` ⇒ THIS row flips too, together with
 /// both `phase-ai` rows — one edit to one predicate measurable at every caller. If that
 /// inversion leaves this row green, the engine kept a private copy of the comparison.
 /// MUST-NOT-FLIP: the whole shipped suite's unbounded offers still accept `UntilLethal`.
@@ -11589,7 +11833,7 @@ fn accept_bounded_fixed(
         .per_cycle
         .clone()
         .expect("a bounded offer publishes the per-period signature its bound was divided by");
-    let bound = schema.max_iterations;
+    let bound = schema.deliverable_capacity;
     let before: Vec<(PlayerId, i64)> = state
         .players
         .iter()
@@ -12283,8 +12527,8 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 /// an undoctored offer, and a mirror row built on one would be unbuildable rather than merely
 /// weak.
 ///
-/// So this row is a HOSTILE fixture: it widens `schema.max_iterations` on the offer the engine
-/// wrote — simulating a producer whose bound is WRONG — and then declares a count that arithmetic
+/// So this row is a HOSTILE fixture: it widens the published capacity on the offer the engine
+/// wrote — simulating a producer whose ceiling is WRONG — and then declares a count that arithmetic
 /// says must kill. Everything downstream is production: `apply()`'s declare handler, the APNAP
 /// window, `apply_confirmed_shortcut`, `materialize_fixed_shortcut`. The question it answers is
 /// the one that matters when a certificate is unsound: does the drive stop at the boundary, or
@@ -12328,7 +12572,7 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 /// ⚠ ⓐ's DOCTORING IS A NO-OP ON THIS FIXTURE, and that is stated rather than dressed up. On a
 /// SYMMETRIC board the published bound equals `cycles_to_lethal - 1`, because the one-faller
 /// conjunct refuses the relief and the strict headroom value stands — so
-/// `schema.max_iterations = survivor_n` writes back the value already present. It is asserted
+/// the widening writes back the value already present. It is asserted
 /// below rather than assumed, so a fixture drift into asymmetry cannot silently turn it into a
 /// real widening. ⓐ is therefore an AT-THE-BOUND instance of
 /// [`bounded_fixed_count_commits_exactly_n_periods`], not an independent stop-short
@@ -12342,7 +12586,7 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 /// * delete the per-offer disjunct from `apply_confirmed_shortcut`'s guard ⇒ ⓑ drives again and
 ///   its unmoved-life assertion FAILS while ⓐ stays green.
 /// * delete the relief's `count() == 1` conjunct ⇒ this symmetric board's bound rises by one to
-///   a count at which BOTH opponents cross together, ⓐ's `schema.max_iterations` assertion
+///   a count at which BOTH opponents cross together, ⓐ's published-capacity assertion
 ///   FAILS, and the offer becomes a two-death proposal. That is what makes the refusal of this
 ///   board's relief a tested property rather than a stated one.
 #[test]
@@ -12355,7 +12599,7 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
         .per_cycle
         .clone()
         .expect("a bounded offer publishes its per-period signature");
-    let bound = schema.max_iterations;
+    let bound = schema.deliverable_capacity;
     let lives_before: Vec<(PlayerId, i64)> = state
         .players
         .iter()
@@ -12409,11 +12653,11 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
         // rewrites the value in place. If a fixture change ever makes them differ, ⓐ becomes a
         // genuine doctored widening and its doc must be re-derived rather than re-read.
         assert_eq!(
-            schema.max_iterations, survivor_n,
-            "ⓐ's assignment is a NO-OP on this fixture (honest bound == cycles_to_lethal - 1); \
-             a divergence means ⓐ is no longer an at-the-bound instance"
+            schema.deliverable_capacity, survivor_n,
+            "ⓐ's assignment is a NO-OP on this fixture (honest capacity == cycles_to_lethal - \
+             1); a divergence means ⓐ is no longer an at-the-bound instance"
         );
-        schema.max_iterations = survivor_n;
+        schema.deliverable_capacity = survivor_n;
         r6a_declare_and_accept_all(&mut survive, proposer, survivor_n);
         assert_eq!(
             survive.players.iter().filter(|p| p.is_eliminated).count(),
@@ -12447,7 +12691,7 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
     let WaitingFor::LoopShortcut { schema, .. } = &mut state.waiting_for else {
         unreachable!("bounded_offer_parts already matched the offer")
     };
-    schema.max_iterations = n;
+    schema.deliverable_capacity = n;
 
     r6a_declare_and_accept_all(&mut state, proposer, n);
 
@@ -12497,7 +12741,7 @@ fn a_shortened_unsigned_drive_seats_the_shortener_only_where_it_reached_the_name
     )));
     drive_to_bounded_offer(&mut base, 400).expect("the bounded offer must fire on the 4p dump");
     let (proposer, _certificate, schema) = bounded_offer_parts(&base);
-    let honest_bound = schema.max_iterations;
+    let honest_bound = schema.deliverable_capacity;
     let lives_before: Vec<(PlayerId, i32)> = base.players.iter().map(|p| (p.id, p.life)).collect();
     assert!(
         base.players.iter().all(|p| !p.is_eliminated),
@@ -12686,7 +12930,7 @@ fn bounded_fixed_drive_commits_the_terminal_cycle_that_eliminates_one_seat() {
         .per_cycle
         .clone()
         .expect("a bounded offer publishes its per-period signature");
-    let honest_bound = schema.max_iterations;
+    let honest_bound = schema.deliverable_capacity;
     let lives_before: Vec<(PlayerId, i64)> = state
         .players
         .iter()
@@ -12880,7 +13124,7 @@ fn dina_bounded_offer() -> (GameState, PlayerId, LoopCertificate, u32) {
         state.clone(),
         proposer,
         certificate.clone(),
-        schema.max_iterations,
+        schema.deliverable_capacity,
     )
 }
 
@@ -12994,7 +13238,7 @@ fn an_over_bound_count_is_refused_at_consumption() {
     let WaitingFor::LoopShortcut { schema, .. } = &mut refused.waiting_for else {
         unreachable!("bounded_offer_parts already matched the offer")
     };
-    schema.max_iterations = over;
+    schema.deliverable_capacity = over;
     r6a_declare_and_accept_all(&mut refused, proposer, over);
     assert_eq!(
         seat_lives(&refused),
@@ -13021,7 +13265,7 @@ fn an_over_bound_count_is_refused_at_consumption() {
     let WaitingFor::LoopShortcut { schema, .. } = &mut driven.waiting_for else {
         unreachable!("bounded_offer_parts already matched the offer")
     };
-    schema.max_iterations = over;
+    schema.deliverable_capacity = over;
     r6a_declare_and_accept_all(&mut driven, proposer, inside);
     assert_ne!(
         seat_lives(&driven),
@@ -13619,7 +13863,7 @@ fn the_honest_count_reaches_the_cross_lethal_arm_when_the_crossing_takes_the_las
         .per_cycle
         .clone()
         .expect("a bounded offer publishes its per-period signature");
-    let honest = schema.max_iterations;
+    let honest = schema.deliverable_capacity;
     let opponents: Vec<PlayerId> = state
         .players
         .iter()
@@ -13721,7 +13965,7 @@ fn the_cross_lethal_arm_crowns_only_the_seat_the_proposal_names() {
         .per_cycle
         .clone()
         .expect("a bounded offer publishes its per-period signature");
-    let honest = schema.max_iterations;
+    let honest = schema.deliverable_capacity;
     let opponents: Vec<PlayerId> = state
         .players
         .iter()
@@ -13831,7 +14075,7 @@ fn the_cross_lethal_arm_crowns_only_the_seat_the_proposal_names() {
     // reaches this arm is one past it — admissible because a proposal carrying no per-period
     // signature supports no consumption ceiling, which is exactly the shape the one
     // winner-naming mint publishes.
-    let past = sym_schema.max_iterations + 1;
+    let past = sym_schema.deliverable_capacity + 1;
     let accept_sym = |named: Option<PlayerId>| -> GameState {
         let mut board = runner.state().clone();
         accept_restored_proposal(
@@ -14011,7 +14255,7 @@ fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
         .per_cycle
         .clone()
         .expect("a bounded offer publishes its per-period signature");
-    let bound = schema.max_iterations;
+    let bound = schema.deliverable_capacity;
 
     // (1) reach-guards: this row is about the BOUNDED, UNTARGETED shape the block gates on.
     assert!(
@@ -14069,8 +14313,8 @@ fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
         assert_eq!(
             now - l0,
             i64::from(bound) * per_cycle.delta.life.get(&seat).copied().unwrap_or(0),
-            "{seat:?}: the AI-declared count commits exactly `max_iterations` copies of the \
-             published period"
+            "{seat:?}: the AI-declared count commits exactly the published capacity's copies \
+             of the published period"
         );
     }
     assert_eq!(
@@ -14104,8 +14348,8 @@ fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
 /// `declare_illegal_pin_falls_back_legal_ingests` plants it — what is under test is the
 /// declare firewall, not the detector that would otherwise mint the offer.
 ///
-/// `max_iterations` is 1_000 (the un-narrowed global cap), so no arm below is refused by the
-/// count cap instead of by the range: the cap and the bound are upstream conjuncts that would
+/// the published capacity is 1_000 (the un-narrowed global cap), so no arm below is refused by
+/// the count cap instead of by the range: the cap and the ceiling are upstream conjuncts that would
 /// otherwise dominate every verdict in the table.
 fn g1_declare_verdict(
     publish_b: bool,
@@ -14139,8 +14383,10 @@ fn g1_declare_verdict(
     }
     let schema = ShortcutDecisionSchema {
         iteration_count: count.clone(),
-        // No narrowed CR 732.2a bound — `Default` carries the global cap.
-        max_iterations: ShortcutDecisionSchema::default().max_iterations,
+        // This producer measured no CR 704 threshold — `Default` carries the absence and a
+        // capacity at the global cap.
+        measured_repetition_bound: None,
+        deliverable_capacity: ShortcutDecisionSchema::default().deliverable_capacity,
         points: vec![DecisionPoint {
             slot: slot.clone(),
             kind: DecisionPointKind::Targets {
@@ -15267,8 +15513,8 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
 /// handback does not take it. The cap is ours and not the game's, and failing closed onto manual
 /// play runs in the more-responder-agency direction.
 ///
-/// The cap is read as `ShortcutDecisionSchema::default().max_iterations`, which IS
-/// `MAX_SHORTCUT_CYCLES` (`default_max_iterations`) — the const itself is `pub(crate)` and
+/// The cap is read as `ShortcutDecisionSchema::default().deliverable_capacity`, which IS
+/// `MAX_SHORTCUT_CYCLES` (`default_deliverable_capacity`) — the const itself is `pub(crate)` and
 /// invisible across this boundary. Reading it rather than hard-coding `u32::MAX` puts the
 /// refused arm on the BOUNDARY member `cap + 1`, where an off-by-one in the comparison shows.
 ///
@@ -15290,7 +15536,7 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
 /// (b) stays green. Leg (c) reds under the sibling restoration, at the responder's seam.
 #[test]
 fn an_over_cap_count_is_refused_at_consumption_and_at_the_responders_seam() {
-    let cap = ShortcutDecisionSchema::default().max_iterations;
+    let cap = ShortcutDecisionSchema::default().deliverable_capacity;
     for count in [cap + 1, 1] {
         let over_cap = count > cap;
         let (mut runner, slot, _bond, _h, lives) = r5_reach_offer();
@@ -15438,7 +15684,7 @@ fn an_over_cap_count_is_refused_at_consumption_and_at_the_responders_seam() {
 /// **AI1 — the generator's `Fixed(max)` candidate is keyed to the PUBLISHED PIN SET, measured
 /// in BOTH directions on ONE board.**
 ///
-/// CR 732.2a. `ai_support::candidates` emits `DeclareShortcut { count: Fixed(max_iterations),
+/// CR 732.2a. `ai_support::candidates` emits `DeclareShortcut { count: Fixed(capacity),
 /// template: None }` only `if schema.points.is_empty() && schema.is_bounded()`, because a
 /// `template: None` declaration fail-closes against a published pin set — the engine would
 /// ACCEPT it and then discard it, handing the search layer an action that looks legal and is
@@ -15506,7 +15752,7 @@ fn ai1_the_bounded_declare_candidate_carries_the_offers_own_pin_when_one_is_publ
         live,
         vec![
             GameAction::DeclareShortcut {
-                count: IterationCount::Fixed(schema.max_iterations),
+                count: IterationCount::Fixed(schema.deliverable_capacity),
                 template: Some(declaration),
             },
             GameAction::DeclineShortcut,
@@ -15527,7 +15773,7 @@ fn ai1_the_bounded_declare_candidate_carries_the_offers_own_pin_when_one_is_publ
             }
         )),
         "AI1(b) POSITIVE CONTROL: with `points` empty the generator MUST emit the \
-         `Fixed(max_iterations)` candidate again. Its absence here would mean arm (a) measured \
+         capacity-valued `Fixed` candidate again. Its absence here would mean arm (a) measured \
          a generator that emits nothing rather than one keyed to the pin set. got {staged:?}"
     );
     assert!(
@@ -15580,7 +15826,8 @@ fn d7_a_pre_declaration_save_decodes_with_no_declaration() {
         certificate: synthetic_lethal_cert(),
         schema: ShortcutDecisionSchema {
             iteration_count: IterationCount::Fixed(3),
-            max_iterations: 3,
+            measured_repetition_bound: Some(3),
+            deliverable_capacity: 3,
             points: vec![DecisionPoint {
                 slot: slot.clone(),
                 kind: DecisionPointKind::Targets {

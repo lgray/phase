@@ -873,10 +873,10 @@ fn v1_live_path_fetchland_seat_accepts_on_the_real_4p_board() {
     );
     assert_eq!(
         schema.iteration_count,
-        IterationCount::Fixed(schema.max_iterations),
+        IterationCount::Fixed(schema.deliverable_capacity),
         "V5: a FINITE count is the point — stage 2 takes the identical rule for it and for \
-         the UntilLethal class. The bounded producer mints the count FROM its own ceiling, so \
-         this re-derives the class instead of pinning whatever the ceiling happens to be"
+         the UntilLethal class. The bounded producer's suggestion is narrowed to the capacity it \
+         publishes, so this re-derives the class instead of pinning whatever that value is"
     );
 
     // ── the row: P2, whose only action is its own fetchland ──
@@ -1028,8 +1028,8 @@ fn v1_control_quiet_board_is_unchanged_and_cannot_discriminate() {
     assert_eq!(predicted_winner, None, "bounded class (offer beat {beat})");
     assert_eq!(
         schema.iteration_count,
-        IterationCount::Fixed(schema.max_iterations),
-        "the bounded producer mints its count FROM its own ceiling"
+        IterationCount::Fixed(schema.deliverable_capacity),
+        "the bounded producer's suggestion is narrowed to its own published capacity"
     );
 
     for seat in [P1, P2, P3] {
