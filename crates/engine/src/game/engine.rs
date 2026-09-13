@@ -3408,7 +3408,8 @@ fn certified_bounded_cycle_offer<'a>(
 /// slot while this schema hard-codes `min/max: 1`. That agreement is an accident of two
 /// functions with two predicates; step (5) is what makes it an invariant.
 ///
-/// FAIL-CLOSED on every uncertainty, because a wrong pin is worse than no offer:
+/// FAIL-CLOSED on every uncertainty, because a wrong pin is worse than no offer. The three
+/// refusals below are [`pin_journalled_declaration`]'s, which is where the journal is read:
 ///
 /// * an empty point set publishes no declaration at all — `handle_declare_shortcut` validates
 ///   every declaration it resolves, whatever the schema published, so one minted against an
@@ -3427,16 +3428,55 @@ fn build_bounded_declaration(
     proposer: PlayerId,
     schema: &crate::analysis::decision_template::ShortcutDecisionSchema,
 ) -> Option<crate::analysis::decision_template::DecisionTemplate> {
+    use crate::analysis::decision_template::ReplayMode;
+    let mut template = pin_journalled_declaration(state, proposer, &schema.points)?;
+    // (4) The published SUGGESTION is stamped here, by the step that knows it, rather than inside
+    // the pinning authority above: the count is the producer's answer and the pins are the
+    // journal's, and nothing reads this copy (see `build_recast_template`'s note and
+    // `analysis::decision_template::resolve`'s doc).
+    template.replay = ReplayMode::Scheduled {
+        count: schema.iteration_count.clone(),
+    };
+    // (5) VALIDATE BEFORE PUBLISHING — the same authority `handle_declare_shortcut` accepts
+    // under. See this function's "Published is validated" doc section for why the range is the
+    // schema's OWN count and why this is not a third derivation.
+    crate::analysis::decision_template::declaration_conforms(
+        schema,
+        &template,
+        shortcut_validated_range(&schema.iteration_count, Some(&template)),
+        state,
+    )
+    .then_some(template)
+}
+
+/// CR 732.2a: the PINS the offer's own declaration carries — the proposer's answer at each
+/// published point, read out of the same journal the detection window populated, and nothing
+/// else.
+///
+/// Split from the publish gate above because the two halves are settled by different things. The
+/// pins are settled by the published `points` alone; the count stamped onto the template is the
+/// producer's own published suggestion, which is not a fact about what the proposer answered.
+/// Keeping them apart is what lets a caller take the declaration BEFORE a schema exists to stamp
+/// from, with no second declaration authority and no circularity.
+///
+/// NOT A PUBLISHER: the returned template is unvalidated, so `is_some()` here means "the journal
+/// named an answer at every point", never "the declare handler will take this" — that reading
+/// belongs to [`build_bounded_declaration`], which is where step (5) runs.
+fn pin_journalled_declaration(
+    state: &GameState,
+    proposer: PlayerId,
+    points: &[crate::analysis::decision_template::DecisionPoint],
+) -> Option<crate::analysis::decision_template::DecisionTemplate> {
     use crate::analysis::decision_template::{
         DecisionGroupKey, DecisionKind, DecisionPointKind, DecisionTemplate, LoopAnswer,
         LoopAnswerValue, PinnedDecision, ReplayMode,
     };
-    // (1) D4's grounds: an empty schema publishes no declaration.
-    if schema.points.is_empty() {
+    // (1) D4's grounds: an empty point set publishes no declaration.
+    if points.is_empty() {
         return None;
     }
-    let mut decisions = Vec::with_capacity(schema.points.len());
-    for point in &schema.points {
+    let mut decisions = Vec::with_capacity(points.len());
+    for point in points {
         // (2) The journal read, under the PROPOSER's own key — the same key
         // `record_trigger_target_answer` and the `DecideOptionalEffect` arm write under.
         let LoopAnswer::Uniform(value) = state.loop_answer(&point.slot, proposer)? else {
@@ -3477,34 +3517,21 @@ fn build_bounded_declaration(
             ) => return None,
         });
     }
-    // (4) The template. `replay.count` carries the offer's own SUGGESTION; the driving count
-    // comes off `GameAction::DeclareShortcut` and nothing reads this copy (see
-    // `build_recast_template`'s note and `analysis::decision_template::resolve`'s doc).
-    let template = DecisionTemplate {
+    // (4) The template. `ReplayMode::Static` is the UNSTAMPED shape: the driving count comes off
+    // `GameAction::DeclareShortcut`, and the publisher above stamps the offer's own suggestion
+    // onto this copy, which nothing reads.
+    Some(DecisionTemplate {
         owner: proposer,
         decisions,
-        replay: ReplayMode::Scheduled {
-            count: schema.iteration_count.clone(),
-        },
+        replay: ReplayMode::Static,
         key: DecisionGroupKey::from_sources(
-            &schema
-                .points
+            &points
                 .iter()
                 .map(|point| point.slot.source.clone())
                 .collect::<Vec<_>>(),
             DecisionKind::LoopChoice,
         ),
-    };
-    // (5) VALIDATE BEFORE PUBLISHING — the same authority `handle_declare_shortcut` accepts
-    // under. See this function's "Published is validated" doc section for why the range is the
-    // schema's OWN count and why this is not a third derivation.
-    crate::analysis::decision_template::declaration_conforms(
-        schema,
-        &template,
-        shortcut_validated_range(&schema.iteration_count, Some(&template)),
-        state,
-    )
-    .then_some(template)
+    })
 }
 
 /// CR 704.5a / CR 704.5c: a determinate lethal drain (0-or-less life / 10-poison) repeats
@@ -4523,17 +4550,19 @@ fn has_no_loss_axis(delta: &crate::analysis::resource::ResourceVector) -> bool {
 /// drive's terminal arm, where only the first may fall through to a commit.
 ///
 /// The prediction is taken AT THE ACCEPTED COUNT. A declarer may name any count at or below the
-/// offered `deliverable_capacity` and the drive runs at that count; because the named seat crosses on
-/// the relieved count itself and no seat crosses below it, a proposal accepted strictly under
-/// the ceiling predicts NO crossing at all. A discriminator that never mentioned the accepted
-/// count would admit a departure equal to the ceiling's own on a proposal predicting nobody
-/// would leave.
+/// offered `deliverable_capacity` and the drive runs at that count, so the crossings this
+/// derivation states are the ones that count CONTAINS — every entry at or below it, and none
+/// above. Because the named seat crosses on the relieved count itself and no seat crosses below
+/// it, a proposal accepted strictly under the ceiling predicts NO crossing at all. A
+/// discriminator that never mentioned the accepted count would admit a departure equal to the
+/// ceiling's own on a proposal predicting nobody would leave.
 struct ConsumptionBound {
     /// CR 704.5a: the largest count legal on this board — the re-derived reduction's own.
     ceiling: u32,
-    /// CR 704.5a: the seat the accepted count takes past its threshold, paired with the
-    /// repetition that does it, or `None` when this count crosses nobody.
-    predicted_departure: Option<(PlayerId, u32)>,
+    /// CR 704.5a: the CR 704 threshold crossings the ACCEPTED count contains, in departure order.
+    /// EMPTY when this count crosses nobody — which is a statement that it crosses nobody, never
+    /// "nothing in particular", and the drive's set comparison reads it that way.
+    entries: Vec<crate::analysis::resource::PredictedDeparture>,
 }
 
 /// CR 704.5a + CR 732.2a: what a consumption-time re-derivation can state about one confirmed
@@ -4570,9 +4599,21 @@ fn shortcut_consumption_bound(
     };
     ConsumptionDerivation::Measured(ConsumptionBound {
         ceiling: bound.count,
-        predicted_departure: bound
+        // Every crossing at or below the accepted count, and none above it. This reduction states
+        // one, on the relieved count itself, so an accept strictly under the ceiling keeps none —
+        // the same set of counts the `== accepted` filter this replaces admitted, said in the
+        // shape a cascade of crossings is stated in.
+        entries: bound
             .predicted_departure
-            .filter(|(_, iteration)| *iteration == accepted),
+            .filter(|(_, repetition)| *repetition <= accepted)
+            .and_then(|(seat, repetition)| {
+                crate::analysis::resource::PredictedDeparture::new(
+                    repetition,
+                    BTreeSet::from([seat]),
+                )
+            })
+            .into_iter()
+            .collect(),
     })
 }
 
@@ -5542,6 +5583,68 @@ fn slot_source_prompted(
     crate::analysis::decision_template::resolve_ability_instance(src, state) == Some(source_id)
 }
 
+/// CR 800.4a: what one driven cycle's departures are, measured against the crossings the
+/// consumption seam re-derived for that repetition.
+///
+/// A TYPED ANSWER, never a `(bool, bool)` or an `Option<Option<_>>`: the three cases carry three
+/// different dispositions at each of the two arms that ask, and a caller that cannot tell them
+/// apart grants one the other's licence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DepartureVerdict {
+    /// No seat left the game across this cycle.
+    NoDeparture,
+    /// Exactly the seat set the entry for this repetition named left the game.
+    Predicted,
+    /// A departure at a repetition no entry names, or one whose seat set differs from the
+    /// entry's — including every departure under the EMPTY prediction a count that crosses
+    /// nobody states.
+    Unpredicted,
+}
+
+/// CR 704.5a + CR 732.2a + CR 800.4a: the single authority on whether the seats that left the
+/// game across one driven cycle are the ones the re-derived cascade named for that repetition.
+///
+/// ONE AUTHORITY, ASKED BY BOTH ARMS THAT CAN OBSERVE A CROSSING, and that is the design rather
+/// than tidiness: WHERE IN THE PUBLISHED PERIOD a crossing falls decides which `CycleOutcome` the
+/// drive classifies the crossing cycle as. A period that completes at the forced-window ANSWER
+/// beat returns `Recurred` and never reaches the departure arm, while one that completes at the
+/// settle beat after the removal returns `SeatLeft`. Both routes occur on tracked boards, so a
+/// discriminator living in only one arm is one the other board silently skips.
+///
+/// TWO CONJUNCTS, AND NEITHER FOLLOWS FROM THE OTHER.
+///
+/// * The SEAT SET, by equality — never a length check plus a membership test, which admits a
+///   swap. `CycleOutcome::SeatLeft` reports that A seat left, never which or how many.
+/// * The REPETITION. `PeriodicDelta::conforms` compares TOTALS under the CR 601.2c re-aim licence
+///   its own doc states, so a conforming cycle may concentrate the period's whole charge onto a
+///   named seat and cross it EARLIER than the entry that named it, with the set still matching.
+///
+/// Read off the two boards rather than off the cycle's events, so a departure with no
+/// `PlayerEliminated` emitted is still seen.
+fn departure_verdict(
+    entries: &[crate::analysis::resource::PredictedDeparture],
+    before: &GameState,
+    after: &GameState,
+    repetition: u32,
+) -> DepartureVerdict {
+    let departed: BTreeSet<PlayerId> = before
+        .players
+        .iter()
+        .filter(|p| !p.is_eliminated)
+        .map(|p| p.id)
+        .filter(|seat| !crate::game::players::is_alive(after, *seat))
+        .collect();
+    if departed.is_empty() {
+        return DepartureVerdict::NoDeparture;
+    }
+    match entries.iter().find(|entry| entry.repetition == repetition) {
+        Some(entry) if entry.seats == departed => DepartureVerdict::Predicted,
+        // An entry naming a different set, and no entry at this repetition at all: both are
+        // sequences the table did not agree to, and an EMPTY entry list is the second of them.
+        Some(_) | None => DepartureVerdict::Unpredicted,
+    }
+}
+
 /// PR-7 Phase 4b: CR 732.2a finite materialization of a confirmed `Fixed(N)` loop
 /// shortcut. Drives `n` whole cycles of the constant-depth (or ω-covering) loop,
 /// committing atomically per cycle. If a cycle crosses lethal, the win arrives
@@ -5765,9 +5868,47 @@ fn materialize_fixed_shortcut(
                     let pins = template
                         .as_ref()
                         .map_or(&[][..], |t| t.decisions.as_slice());
-                    if !pd.conforms(
+                    // CR 704.5a + CR 800.4a: a seat can leave the game inside a cycle this drive
+                    // classified as a RECURRENCE — where in the published period the crossing
+                    // falls is what decides the classification, not whether anyone crossed — so
+                    // this arm asks the same departure authority the `SeatLeft` arm asks.
+                    //
+                    // EXHAUSTIVE over the derivation's three states, no wildcard, and the two
+                    // absences stay apart exactly as they do at that arm: an `Unsigned` proposal
+                    // published no prediction to diverge FROM (unreachable inside this branch,
+                    // which is gated on a published signature, and answered rather than folded
+                    // into the other absence), while a signed derivation that measured nothing on
+                    // the pre-drive board states that THIS board supports no crossing at all.
+                    let derivation = shortcut_consumption_bound(state, proposal, n);
+                    let predicted: Option<&[crate::analysis::resource::PredictedDeparture]> =
+                        match &derivation {
+                            ConsumptionDerivation::Unsigned => None,
+                            ConsumptionDerivation::NoMeasurement => Some(&[]),
+                            ConsumptionDerivation::Measured(bound) => Some(&bound.entries),
+                        };
+                    if let Some(entries) = predicted {
+                        match departure_verdict(entries, &committed, &s, i + 1) {
+                            DepartureVerdict::NoDeparture | DepartureVerdict::Predicted => {}
+                            DepartureVerdict::Unpredicted => break 'cycles,
+                        }
+                    }
+                    // CR 800.4a: the seats still in the game on the board this cycle ended on are
+                    // the population the comparison quantifies over. UNCONDITIONALLY, and not
+                    // only on a cycle that crosses: a seat that left on an EARLIER cycle is
+                    // missing from every later observed period, so a population gated on this
+                    // cycle's own departure would refuse every cycle after the first crossing.
+                    // Where no seat has left, the living set is the whole population and the call
+                    // is `conforms`' own identity.
+                    let still_in_game: BTreeSet<PlayerId> = s
+                        .players
+                        .iter()
+                        .filter(|p| !p.is_eliminated)
+                        .map(|p| p.id)
+                        .collect();
+                    if !pd.conforms_in(
                         &crate::analysis::resource::ResourceVector::period(&committed, &s),
                         pins,
+                        &still_in_game,
                     ) {
                         break 'cycles;
                     }
@@ -5820,33 +5961,22 @@ fn materialize_fixed_shortcut(
                 result.waiting_for = WaitingFor::GameOver { winner };
                 return;
             }
-            // CR 732.2a ENDING POINT: a seat left the game and the game continued. Commit
-            // the cycle and STOP — `break 'cycles` falls into the ending-point block below,
-            // which is already CR 732.2a's ending point for both other exits — but commit it
-            // ONLY when this departure is the one the bound predicted.
+            // CR 732.2a ENDING POINT: a seat left the game and the game continued. Commit the
+            // cycle ONLY when this departure is one the bound predicted; every other exit here
+            // takes `break 'cycles` into the ending-point block below, which is already
+            // CR 732.2a's ending point for both other exits.
             //
-            // THE DISCRIMINATOR IS TWO CONJUNCTS AND NEITHER FOLLOWS FROM THE OTHER.
-            // `CycleOutcome::SeatLeft` says a seat left and never which or how many; its own
-            // gate is a drop of at least one. So the arm compares the SET of seats present in
-            // the last committed board and gone from the driven one against the prediction's
-            // seat, AND the drive's own loop index against the repetition the prediction named.
-            // CR 704.5a licensed the count on the strength of ONE seat crossing on ONE
-            // iteration, so a departure that is not that seat, or not on that repetition, is a
-            // sequence the table never agreed to and the cycle is dropped whole.
-            //
-            // Why the second conjunct is not redundant given the first: `PeriodicDelta::conforms`
-            // compares TOTALS under the CR 601.2c re-aim licence its own doc states, so a
-            // conforming cycle may concentrate the whole period's charge onto the predicted
-            // seat, which then crosses long before the predicted repetition while the departure
-            // SET still equals the prediction. And the terminal cycle runs no conformance check
-            // at all, so when the first driven cycle is the terminal one no earlier cycle could
-            // have refused it.
+            // THE DISCRIMINATOR IS `departure_verdict`, THE AUTHORITY BOTH ARMS ASK, and its two
+            // conjuncts — the departed SEAT SET and the REPETITION — are stated on it. This arm
+            // is one of the two routes a crossing cycle can reach, never the only one: a crossing
+            // whose published period completes at the forced-window ANSWER beat is classified
+            // `Recurred` and is discriminated there, by the same authority.
             //
             // An ABSENT prediction inside a MEASURED derivation admits no departure: the count
             // was accepted below the ceiling, or the reduction tied at its floor and named
             // nobody. In both the honest answer is that this count crosses nobody, so a crossing
             // is a divergence. A reduction that consumed no living seat measured no count at all
-            // and answers on its own arm, never through the empty set an absence produces.
+            // and answers on its own arm, never through the empty entry list an absence produces.
             //
             // A proposal carrying NO SIGNATURE AT ALL is not that case and is not discriminated
             // here. It supports no re-derivation, so it publishes no prediction to diverge FROM,
@@ -5920,29 +6050,30 @@ fn materialize_fixed_shortcut(
                     // `a_signed_proposal_measuring_nothing_drops_the_cycle_a_departure_ends`.
                     ConsumptionDerivation::NoMeasurement => break 'cycles,
                     ConsumptionDerivation::Measured(bound) => {
-                        let predicted: BTreeSet<PlayerId> = bound
-                            .predicted_departure
-                            .filter(|(_, iteration)| *iteration == i + 1)
-                            .map(|(seat, _)| BTreeSet::from([seat]))
-                            .unwrap_or_default();
-                        // CR 800.4a: a seat that has left the game. Read off the two boards
-                        // rather than off the outcome's events, so a departure with no
-                        // `PlayerEliminated` emitted is still seen.
-                        let departed: BTreeSet<PlayerId> = committed
-                            .players
-                            .iter()
-                            .filter(|p| !p.is_eliminated)
-                            .map(|p| p.id)
-                            .filter(|seat| !crate::game::players::is_alive(&s, *seat))
-                            .collect();
-                        // Equality on the SET, never a length check plus a membership test: the
-                        // latter admits a swap. An empty prediction equals no non-empty
-                        // departure, which is the fail-closed direction.
-                        if departed != predicted || predicted.is_empty() {
-                            break 'cycles;
+                        match departure_verdict(&bound.entries, &committed, &s, i + 1) {
+                            // CR 732.2a: a predicted departure is a beat the accepted count
+                            // CONTAINS. The count is bounded by this same derivation's ceiling at
+                            // the guard, so where the crossing is the last one the count contains
+                            // the `continue` IS the loop's own end and the handback below is
+                            // reached unchanged.
+                            DepartureVerdict::Predicted => {
+                                committed = *s;
+                                result.events.append(&mut events);
+                                committed_cycles += 1;
+                                continue 'cycles;
+                            }
+                            // `NoDeparture` is unreachable under this outcome's own gate, which
+                            // fires on a drop in `seats_in_game`; the arm answers it rather than
+                            // folding it into another verdict. `Unpredicted` drops the cycle
+                            // whole.
+                            DepartureVerdict::NoDeparture | DepartureVerdict::Unpredicted => {
+                                break 'cycles
+                            }
                         }
                     }
                 }
+                // THE UNSIGNED FALL-THROUGH ALONE: commit and STOP, the disposition every
+                // producer that publishes no signature shipped with.
                 committed = *s;
                 result.events.append(&mut events);
                 committed_cycles += 1;
@@ -26312,14 +26443,16 @@ mod bounded_offer_conjunct_tests {
 
         let at_ceiling = measured_consumption_bound(&state, &proposal, published);
         assert!(
-            at_ceiling.predicted_departure.is_some(),
+            !at_ceiling.entries.is_empty(),
             "CR 704.5a: at the count the reduction derived, the seat it crosses is named"
         );
         assert_eq!(
             at_ceiling
-                .predicted_departure
-                .map(|(_, iteration)| iteration),
-            Some(published),
+                .entries
+                .iter()
+                .map(|entry| entry.repetition)
+                .collect::<Vec<_>>(),
+            vec![published],
             "the named repetition is the count itself — the final iteration of the sequence"
         );
 
@@ -26330,8 +26463,8 @@ mod bounded_offer_conjunct_tests {
              not move with the accepted count — which is what leaves the prediction as the \
              only thing that changed"
         );
-        assert_eq!(
-            below.predicted_departure, None,
+        assert!(
+            below.entries.is_empty(),
             "CR 732.2a: below the ceiling no seat reaches its threshold, so this count \
              predicts no departure"
         );

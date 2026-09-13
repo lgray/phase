@@ -100,6 +100,7 @@
 
 use engine::analysis::decision_template::{DecisionPoint, DecisionTemplate, IterationCount};
 use engine::analysis::loop_check::LoopCertificate;
+use engine::analysis::resource::PeriodicDelta;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::player::PlayerId;
@@ -366,9 +367,9 @@ impl TacticalPolicy for LoopShortcutPolicy {
 ///   when what the earlier repetitions NETTED plus the deepest DIP inside `k` reaches the life
 ///   total. A period that pays 1 and gains 1 therefore never kills a proposer above 1 life,
 ///   and one that pays 4 and gains 3 kills a 5-life proposer in its second repetition, after
-///   netting only 1. Both numbers come from `PeriodicDelta::declared_seat_life_charges`,
-///   never re-derived here, one pair per repetition because a scheduled pin may name a
-///   different seat at each index. Measured against the net-only rate this replaced, the
+///   netting only 1. The walk itself is `PeriodicDelta::first_life_crossing`, the engine's own
+///   authority over both numbers, so this policy's survival question and the engine's bound are
+///   one reduction by construction rather than by comment. Measured against the net-only rate this replaced, the
 ///   check only tightens: each repetition's net and dip are both at least what the period
 ///   itself nets off the proposer, so every declare that rate refused is still refused.
 /// - **poison**, CR 704.5c — reaching **10 or more** is the threshold.
@@ -433,17 +434,15 @@ fn cycles_to_proposer_elimination(
     let player = state.players.get(proposer.0 as usize)?;
 
     // CR 704.3 + CR 704.5a: the first repetition inside which the proposer can reach 0 or less
-    // life. Accumulated rather than divided, because a scheduled pin may name the proposer at
-    // some repetitions and another seat at the rest.
-    let life = i64::from(player.life);
-    let mut netted = 0i64;
-    let life_fatal = (1..=i64::from(declared))
-        .zip(period.declared_seat_life_charges(proposer, declaration, observed, points, state))
-        .find_map(|(repetition, charge)| {
-            let fatal = netted + charge.dip >= life;
-            netted += charge.net;
-            fatal.then_some(repetition)
-        });
+    // life, off the engine's own authority — accumulated rather than divided, because a scheduled
+    // pin may name the proposer at some repetitions and another seat at the rest. The horizon is
+    // `declared`: the question is whether the proposer dies inside the count they would declare.
+    let life_fatal = PeriodicDelta::first_life_crossing(
+        period.declared_seat_life_charges(proposer, declaration, observed, points, state),
+        i64::from(player.life),
+        declared,
+    )
+    .map(i64::from);
 
     // CR 704.5c: `headroom / rate` rounded UP, the first whole cycle at which ten poison
     // counters is met. Written long-hand rather than with `i64::div_ceil`, which is still
