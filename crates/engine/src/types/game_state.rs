@@ -13065,8 +13065,8 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
         //     neither is EVER `is_bounded()` — the growth mint is the one that REQUIRES its
         //     proposer's own period, and it is unbounded by construction;
         //   * the bounded mint (`certified_bounded_cycle_offer`) is `is_bounded()` by construction
-        //     — it refuses `NoNarrowedLegalCount` unless `(1..MAX_SHORTCUT_CYCLES)` contains the
-        //     measured count — but its caller's gate (1b) (`bounded_cycle_offer`) returns
+        //     — it refuses `NoNarrowedLegalCount` unless the reduction measured a threshold at
+        //     all and measured one of at least 1 — but its caller's gate (1b) (`bounded_cycle_offer`) returns
         //     `BoundedOfferRefusal::ProposerHasDrivingPeriod` while that seat's own period is
         //     accumulating, so it can never mint INTO this cell;
         //   * `visibility.rs`'s per-viewer re-wrap copies the published pair verbatim off an

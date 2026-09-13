@@ -214,17 +214,22 @@ pub(crate) fn drive_to_live_declarable_offer(state: &mut GameState) -> LiveOffer
 /// three test-side re-derivations of that function share one statement of it instead of three.
 ///
 /// The strict minimum is the answer while more than one seat holds it; when exactly one does,
-/// the count reaches that seat's own crossing, unless doing so would mint the offer gate's
-/// un-narrowed sentinel.
+/// the count reaches that seat's own crossing, at whatever magnitude that lands on — the
+/// reduction applies no budget of its own, and the offer's producer is what derives a deliverable
+/// capacity from one.
+///
+/// `ceiling` answers the arm where no seat is consumed at all, which the reduction reports as an
+/// absence; every board this mirror is used on consumes one, and the parameter is what keeps the
+/// arm total rather than panicking.
 pub(crate) fn relieve_strict_bound(strict: &[i64], ceiling: i64) -> i64 {
     let Some(&floor) = strict.iter().min() else {
         return ceiling;
     };
     let relieved = floor + 1;
-    if strict.iter().filter(|b| **b == floor).count() == 1 && relieved < ceiling {
-        relieved.clamp(0, ceiling)
+    if strict.iter().filter(|b| **b == floor).count() == 1 {
+        relieved
     } else {
-        floor.clamp(0, ceiling)
+        floor.max(0)
     }
 }
 

@@ -2404,7 +2404,7 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
     // `GameOver` and returns), so a seam ordered after it could never be reached on a state
     // Path B accepts. The two are disjoint anyway and the ordering does not paper over an
     // overlap: Path B requires `has_no_loss_axis(&delta)`, while this seam only offers when
-    // `elimination_bounds` NARROWED below `MAX_SHORTCUT_CYCLES`, which happens only when the
+    // `elimination_bounds` MEASURED a threshold at all, which happens only when the
     // cycle drives some living seat toward a CR 704.5a / CR 704.5c / CR 104.3c threshold —
     // i.e. exactly a loss axis.
     if let Ok(offer) = try_offer_bounded_cycle_shortcut(state, mandatory) {
@@ -2696,7 +2696,9 @@ pub enum BoundedOfferRefusal {
     AdvantageOnlyCycle,
     /// (6) A per-iteration choice the cycle opens is not specified by a published slot.
     UnspecifiedChoiceWindow,
-    /// (7) `elimination_bounds` produced no count in `1..MAX_SHORTCUT_CYCLES`.
+    /// (7) `elimination_bounds` measured no CR 704 threshold at all, or measured one under
+    /// which no repetition is legal. Both grounds refuse here, because both leave this producer
+    /// with nothing to state: its whole claim is a threshold it measured inside the loop.
     NoNarrowedLegalCount,
 }
 
@@ -3306,18 +3308,20 @@ fn certified_bounded_cycle_offer<'a>(
     // omission. A departure named at the OFFER beat would have to ride the proposal to
     // consumption, where the same serde that can tamper the accepted count can tamper it; the
     // consumption seam derives its own on the board the drive actually runs against.
+    // ONE conjunct at ONE site, over the reduction's own answer: the ABSENCE means no living
+    // seat is consumed, so this producer measured nothing and belongs to another seam; a measured
+    // `0` means two or more seats cross on the first repetition, so no repetition is legal. Both
+    // leave this producer with nothing to state, and each row's board is what distinguishes which
+    // ground it exercised. This is also what makes `schema.is_bounded()` true BY CONSTRUCTION for
+    // every offer this function mints, instead of an inference from step 5's `Advantage`
+    // rejection. NO UPPER END: a threshold above the engine's repetition budget is still a
+    // measured threshold, and the budget is the schema constructor's to apply.
     let measured_bound = periodic
         .delta
         .elimination_bounds(state, &periodic.seat_life_charge)
+        .filter(|bound| bound.count >= 1)
+        .ok_or(BoundedOfferRefusal::NoNarrowedLegalCount)?
         .count;
-    // A bound of 0 states no legal repetition. A bound AT the cap states no narrowing at all
-    // — this producer's whole claim is that it measured a CR 704.5a / CR 704.5c / CR 104.3c
-    // threshold inside the loop, so an unnarrowed result belongs to another seam. Checking
-    // the closed range here makes `schema.is_bounded()` true BY CONSTRUCTION for every offer
-    // this function mints, instead of an inference from step 5's `Advantage` rejection.
-    if !(1..MAX_SHORTCUT_CYCLES).contains(&measured_bound) {
-        return Err(BoundedOfferRefusal::NoNarrowedLegalCount);
-    }
 
     // (8) The certificate, with the two fields the bounded class states differently from
     // Path A's spelled out at the site rather than mutated after the fact.
@@ -3336,7 +3340,10 @@ fn certified_bounded_cycle_offer<'a>(
     // `Some(..)` and `schema.is_bounded()` is true by construction for every offer it mints.
     // `Fixed(measured_bound)` is the SUGGESTION, and the constructor derives the CEILING the
     // declare handler enforces — which rejects any `Fixed(n)` above it and rejects
-    // `UntilLethal` outright, both already shipped. The pre-built `points` go in directly —
+    // `UntilLethal` outright, both already shipped. The measured threshold handed here may
+    // EXCEED the engine's repetition budget, since nothing above clamps it; the constructor is
+    // the single site that applies that budget, and the two published numbers differ exactly
+    // there. The pre-built `points` go in directly —
     // the bounded path never calls `pinned_decisions_to_points`, whose legal sets are derived
     // FROM the declared pins and would let a declaration ratify itself.
     let schema = build_shortcut_schema(
@@ -4508,8 +4515,11 @@ fn has_no_loss_axis(delta: &crate::analysis::resource::ResourceVector) -> bool {
 /// offer's published CAPACITY can be the smaller of the two; the budget conjunct in
 /// `shortcut_count_is_drivable` is what bounds a drive.
 ///
-/// `None` for a proposal carrying no per-period signature. Such a proposal supports no derived
-/// ceiling at all, and the shipped behaviour of every producer that publishes none is unchanged.
+/// `None` for a proposal carrying no per-period signature, and equally for one whose re-derived
+/// reduction consumes no living seat on THIS board and so measures no threshold. Such a proposal
+/// supports no derived ceiling at all; `shortcut_count_is_drivable` then bounds it by the budget
+/// alone, which is the same set of counts an un-narrowed re-derivation admitted when it answered
+/// with the budget itself.
 ///
 /// The prediction is taken AT THE ACCEPTED COUNT. A declarer may name any count at or below the
 /// offered `deliverable_capacity` and the drive runs at that count; because the named seat crosses on
@@ -4536,7 +4546,7 @@ fn shortcut_consumption_bound(
     let divisor = per_cycle
         .delta
         .consumption_seat_life_charges(&per_cycle.seat_life_charge);
-    let bound = per_cycle.delta.elimination_bounds(state, &divisor);
+    let bound = per_cycle.delta.elimination_bounds(state, &divisor)?;
     Some(ConsumptionBound {
         ceiling: bound.count,
         predicted_departure: bound
@@ -24500,6 +24510,77 @@ mod bounded_offer_conjunct_tests {
         })
     }
 
+    /// A [`drain_ring`] whose victim sits at `life`, applied to the live state AND inside the
+    /// frame shape so every retained frame stays exactly one period ahead of it and the
+    /// per-period loss is still one. Raising the headroom alone in the live state turns the
+    /// period into a life GAIN and the win-kind conjunct refuses before the reduction is
+    /// reached, so the two halves are one construction rather than a caller's discipline.
+    ///
+    /// The reduction's answer on such a board is `life` itself — a strict `(life - 1) / 1`
+    /// relieved by one, P1 being its only consumed seat.
+    fn drain_ring_at_life(victim: PlayerId, frames: usize, life: i32) -> GameState {
+        let mut state = ring_state(2, frames, move |frame, i| {
+            let player = frame
+                .players
+                .iter_mut()
+                .find(|p| p.id == victim)
+                .expect("seat exists");
+            player.life = life + (frames - i) as i32;
+        });
+        state
+            .players
+            .iter_mut()
+            .find(|p| p.id == victim)
+            .expect("seat exists")
+            .life = life;
+        state
+    }
+
+    /// A [`drain_ring`] whose victim has LEFT THE GAME, in the live state and in every retained
+    /// frame, so the period the ring encodes is untouched and the only thing that moves is
+    /// whether the reduction's living-seat filter keeps that seat. Setting the flag on the live
+    /// state alone would leave the frames disagreeing with it on a board field.
+    fn drain_ring_with_eliminated_victim(victim: PlayerId, frames: usize) -> GameState {
+        let mut state = ring_state(2, frames, move |frame, i| {
+            let player = frame
+                .players
+                .iter_mut()
+                .find(|p| p.id == victim)
+                .expect("seat exists");
+            player.life += (frames - i) as i32;
+            player.is_eliminated = true;
+        });
+        state
+            .players
+            .iter_mut()
+            .find(|p| p.id == victim)
+            .expect("seat exists")
+            .is_eliminated = true;
+        state
+    }
+
+    /// The reduction's answer re-derived from the OFFER's own published divisor and the board's
+    /// own life, independently of `elimination_bounds`: `ceil(life / magnitude)`, the count that
+    /// reaches the seat's CR 704.5a crossing. Panics unless exactly one seat is charged, which
+    /// is what licenses the relief this identity folds in.
+    fn re_derived_threshold(state: &GameState, seat_life_charge: &[(PlayerId, i64)]) -> u32 {
+        let [(seat, magnitude)] = seat_life_charge else {
+            panic!(
+                "BOARD CLASS: these boards charge exactly one seat, so the argmin is unique and \
+                 the relief applies; got {seat_life_charge:?}"
+            );
+        };
+        let life = i64::from(
+            state
+                .players
+                .iter()
+                .find(|p| p.id == *seat)
+                .expect("the charged seat is at the table")
+                .life,
+        );
+        u32::try_from((life - 1) / magnitude + 1).expect("a headroom division fits a u32")
+    }
+
     /// A [`drain_ring`] whose stack carries `links` in-scope chain links, seeded IDENTICALLY
     /// into `current` and into both halves of every retained frame.
     ///
@@ -24664,10 +24745,10 @@ mod bounded_offer_conjunct_tests {
         );
     }
 
-    /// STEP (7) `NoNarrowedLegalCount`, LOWER end. `elimination_bounds` returning 0 states that
-    /// TWO OR MORE seats cross on the first iteration, so no repetition is legal at all, and
-    /// `1..MAX_SHORTCUT_CYCLES` refuses it rather than minting a `Fixed(0)` offer whose
-    /// acceptance would commit nothing while spending the CR 732.2b window.
+    /// STEP (7) `NoNarrowedLegalCount`, the MEASURED-ZERO ground. `elimination_bounds` returning
+    /// 0 states that TWO OR MORE seats cross on the first iteration, so no repetition is legal at
+    /// all, and the gate's `count >= 1` conjunct refuses it rather than minting a `Fixed(0)` offer
+    /// whose acceptance would commit nothing while spending the CR 732.2b window.
     ///
     /// A board where a SINGLE seat has zero headroom is a different answer: the bound reaches
     /// that seat's own crossing and publishes `1`, a one-iteration proposal whose single,
@@ -24678,21 +24759,17 @@ mod bounded_offer_conjunct_tests {
     /// lives where the reduction can be handed one directly, in the
     /// `analysis::resource` battery.
     ///
-    /// ⚠ SCOPE: this row's subject is that LOWER end. The upper end — a bound of exactly
-    /// `MAX_SHORTCUT_CYCLES`, i.e. no axis narrowed — is NOT dominated by step (5), because the
-    /// two conjuncts quantify over different populations: `classify_win_kind` reads a controller
-    /// and a period delta and so cannot see `is_eliminated`, while `elimination_bounds` filters
-    /// its seats on it, on the CR 800.4a ground its own annotation there gives. On a board whose
-    /// only consumed seat has left the game the classifier still reports a loss kind from the
-    /// period's own delta while the reduction narrows nothing, so that member reaches step (7)
-    /// and `(1..MAX_SHORTCUT_CYCLES)` is what refuses it.
+    /// ⚠ SCOPE: this row's subject is that ground alone. The variant's OTHER ground — the
+    /// reduction measuring no threshold at all — has its own row in
+    /// [`a_loss_kind_that_consumes_no_living_seat_refuses_for_want_of_a_measurement`], whose board
+    /// is the one the two conjuncts' differing populations make reachable.
     ///
     /// The VALUE the bound publishes on each of those two boards is pinned where the pure
     /// function is called directly, in the `analysis::resource` battery: its case (g) is the
     /// single zero-headroom seat publishing `1`, and its two-tied-seats arm is the `0`.
     ///
-    /// REVERT-PROBE: delete the relief's `+ 1` ⇒ ⓑ's board publishes `0`, the
-    /// `1..MAX_SHORTCUT_CYCLES` range refuses it, and ⓑ FAILS while ⓐ stays green.
+    /// REVERT-PROBE: delete the relief's `+ 1` ⇒ ⓑ's board publishes `0`, the gate's
+    /// `count >= 1` conjunct refuses it, and ⓑ FAILS while ⓐ stays green.
     #[test]
     fn a_bound_of_zero_mints_no_bounded_offer() {
         // ⓐ POSITIVE CONTROL: a full library certifies and narrows to a legal count.
@@ -24720,6 +24797,205 @@ mod bounded_offer_conjunct_tests {
             "CR 104.3c + CR 732.2a: the single, FINAL iteration is the one that draws from the \
              emptied library, and that is a sequence whose ending point CR 732.2a admits; got \
              {minted:?}"
+        );
+    }
+
+    /// STEP (7) at the OTHER boundary: **a threshold AT or ABOVE the engine's repetition budget
+    /// is still a measured threshold, and the offer states it.** CR 732.2a places no ceiling on
+    /// how many times a shortcut repeats (its own example repeats 999,999 more times), so the
+    /// budget is this engine's and belongs to the schema constructor; the reduction's answer is
+    /// the rules bound, which may outrun it.
+    ///
+    /// THREE ARMS ON ONE HARNESS, because the two published integers coincide below the budget
+    /// and separate above it: sub-budget (the reach guard, where they agree), exactly at the
+    /// budget (where the measured threshold and the capacity are equal for the last time), and
+    /// above it (where the measurement exceeds what this engine will deliver).
+    ///
+    /// Each arm's threshold is RE-DERIVED from the offer's own published divisor and its own
+    /// board, never pinned: `re_derived_threshold` divides the headroom itself.
+    ///
+    /// REVERT-PROBE: restore the gate's upper end (`(1..MAX_SHORTCUT_CYCLES).contains(..)`) ⇒
+    /// neither boundary arm mints at all ⇒ both FAIL while the sub-budget arm stays green. Clamp
+    /// the reduction ⇒ the above-budget arm's measured bound equals its capacity ⇒ FAILS. Delete
+    /// the constructor's `.min(..)` ⇒ the above-budget arm's capacity is the measurement ⇒ FAILS.
+    #[test]
+    fn a_threshold_at_or_above_the_budget_mints_and_the_capacity_applies_the_budget() {
+        use crate::analysis::decision_template::IterationCount;
+
+        let mut above_budget_pair = None;
+        for (label, threshold) in [
+            ("sub-budget", MAX_SHORTCUT_CYCLES / 2),
+            ("at-budget", MAX_SHORTCUT_CYCLES),
+            ("above-budget", MAX_SHORTCUT_CYCLES + 2),
+        ] {
+            // The per-period life magnitude is a property of the BOARD the detector certifies, and
+            // the victim's life is part of that board, so the life a target threshold needs is
+            // solved to a FIXED POINT rather than assumed: solve from a magnitude, mint, re-read
+            // the magnitude the offer published, re-solve. `t == (life - 1) / m + 1` exactly when
+            // `life == (t - 1) * m + 1`, and `re_derived_threshold` always divides by the arm's OWN
+            // published divisor — so the exit condition is that arm's own arithmetic rather than
+            // the estimate's. Bounded, and it names every pass when it does not converge.
+            let mut magnitude = 1i64;
+            let mut passes: Vec<(i32, i64, u32)> = Vec::new();
+            let solved = loop {
+                let life = ((i64::from(threshold) - 1) * magnitude + 1) as i32;
+                let state = drain_ring_at_life(P1, 3, life);
+                let offer =
+                    try_offer_bounded_cycle_shortcut(&state, false).unwrap_or_else(|refusal| {
+                        panic!("[{label}] the board at life {life} must MINT; got {refusal:?}")
+                    });
+                let (derived, published_magnitude) = {
+                    let WaitingFor::LoopShortcut { certificate, .. } = &offer else {
+                        unreachable!("this producer mints a LoopShortcut offer")
+                    };
+                    let charge = &certificate
+                        .per_cycle
+                        .as_ref()
+                        .expect("a bounded offer publishes its per-period signature")
+                        .seat_life_charge;
+                    let [(_, published_magnitude)] = charge.as_slice() else {
+                        panic!(
+                            "[{label}] BOARD CLASS: this ring charges exactly one seat, which is \
+                             what licenses the relief; got {charge:?}"
+                        )
+                    };
+                    (re_derived_threshold(&state, charge), *published_magnitude)
+                };
+                passes.push((life, published_magnitude, derived));
+                if derived == threshold {
+                    break (state, offer);
+                }
+                assert!(
+                    passes.len() < 4,
+                    "[{label}] the life solve did not reach a fixed point; (life, published \
+                     magnitude, re-derived threshold) per pass: {passes:?}"
+                );
+                magnitude = published_magnitude;
+            };
+            let (state, offer) = solved;
+            let WaitingFor::LoopShortcut {
+                schema,
+                certificate,
+                ..
+            } = &offer
+            else {
+                unreachable!("this producer mints a LoopShortcut offer")
+            };
+            let derived = re_derived_threshold(
+                &state,
+                &certificate
+                    .per_cycle
+                    .as_ref()
+                    .expect("a bounded offer publishes its per-period signature")
+                    .seat_life_charge,
+            );
+
+            // BOARD CLASS, per arm: where this arm's threshold sits relative to the budget is the
+            // whole reason the arm exists, so it is asserted off the re-derivation.
+            match label {
+                "sub-budget" => assert!(
+                    derived < MAX_SHORTCUT_CYCLES,
+                    "[{label}] BOARD CLASS: strictly below the budget; got {derived} over \
+                     {passes:?}"
+                ),
+                "at-budget" => assert_eq!(
+                    derived, MAX_SHORTCUT_CYCLES,
+                    "[{label}] BOARD CLASS: exactly at the budget, over {passes:?}"
+                ),
+                _ => assert!(
+                    derived > MAX_SHORTCUT_CYCLES,
+                    "[{label}] BOARD CLASS: strictly above the budget; got {derived} over \
+                     {passes:?}"
+                ),
+            }
+
+            assert_eq!(
+                schema.measured_repetition_bound,
+                Some(derived),
+                "[{label}] CR 704.5a: the offer publishes the threshold this board's own headroom \
+                 and published divisor give, unclamped"
+            );
+            assert_eq!(
+                schema.deliverable_capacity,
+                derived.min(MAX_SHORTCUT_CYCLES),
+                "[{label}] CR 732.2a: the capacity is what this engine will DELIVER — the \
+                 measurement where it fits inside the budget, the budget where it does not"
+            );
+            assert_eq!(
+                schema.iteration_count,
+                IterationCount::Fixed(schema.deliverable_capacity),
+                "[{label}] CR 732.1b: the SUGGESTION a declarer is offered is the capacity, never \
+                 a count the declare handler would refuse"
+            );
+            if label == "above-budget" {
+                above_budget_pair = Some((
+                    schema.measured_repetition_bound,
+                    schema.deliverable_capacity,
+                ));
+            }
+        }
+
+        // The separation itself, stated once on the only arm that exhibits it: at and below the
+        // budget the two published integers are equal, so a row asserting equality alone would
+        // pass on a producer that published the capacity twice.
+        let (measured, capacity) = above_budget_pair.expect("the above-budget arm ran");
+        assert!(
+            measured > Some(capacity),
+            "CR 704.5a vs CR 732.2a: above the budget the rules bound STRICTLY exceeds the \
+             deliverable capacity, which is the pair no at-or-below-budget board can exhibit; got \
+             {measured:?} against {capacity}"
+        );
+    }
+
+    /// STEP (7) `NoNarrowedLegalCount`, the NO-MEASUREMENT ground: **a board the classifier calls
+    /// a loss kind while the reduction consumes no living seat.**
+    ///
+    /// The two conjuncts quantify over different populations, which is what makes this board
+    /// reachable at all: `classify_win_kind` reads a controller and a period delta, so it cannot
+    /// see `is_eliminated`, while `elimination_bounds` filters its seats on exactly that, on the
+    /// CR 800.4 + CR 102.1 ground its own annotation gives. So the classifier still reports a
+    /// loss kind from the period's own delta while the reduction measures nothing, and this
+    /// producer has nothing to state.
+    ///
+    /// ⓐ is the living twin, minting in the same invocation, which is what makes ⓑ's refusal
+    /// attributable to the seat having left the game rather than to the ring failing to certify.
+    ///
+    /// REVERT-PROBE: return any count from the reduction's empty exit ⇒ ⓑ MINTS an offer whose
+    /// `is_bounded()` reads true while its producer measured nothing ⇒ FAILS. Drop the living-seat
+    /// filter ⇒ ⓑ mints on a corpse's headroom ⇒ FAILS.
+    #[test]
+    fn a_loss_kind_that_consumes_no_living_seat_refuses_for_want_of_a_measurement() {
+        use crate::analysis::loop_check::{classify_win_kind, WinKind};
+
+        // ⓐ THE LIVING TWIN: the same ring with the victim still at the table.
+        let living = try_offer_bounded_cycle_shortcut(&drain_ring(P1, 3), false).expect(
+            "REACH-GUARD: the living-victim ring must MINT, else ⓑ's refusal is the \
+                     ring's and not the seat's",
+        );
+        let WaitingFor::LoopShortcut { certificate, .. } = &living else {
+            unreachable!("this producer mints a LoopShortcut offer")
+        };
+        let delta = &certificate
+            .per_cycle
+            .as_ref()
+            .expect("a bounded offer publishes its per-period signature")
+            .delta;
+
+        // The classifier's own reading, taken off the period PRODUCTION published. The two boards
+        // encode the same frames — `is_eliminated` is not a resource — so this is ⓑ's period too.
+        assert_ne!(
+            classify_win_kind(P0, delta),
+            WinKind::Advantage,
+            "REACH-GUARD: the period must be a LOSS kind, else step (5) refuses ⓑ two conjuncts \
+             earlier and this row measures the wrong one"
+        );
+
+        // ⓑ the same period with its only consumed seat gone.
+        assert_eq!(
+            try_offer_bounded_cycle_shortcut(&drain_ring_with_eliminated_victim(P1, 3), false),
+            Err(BoundedOfferRefusal::NoNarrowedLegalCount),
+            "CR 800.4 + CR 102.1 + CR 732.2a: a seat that has left the game is out of the \
+             reduction's population, so nothing is measured and this producer states nothing"
         );
     }
 
@@ -25502,9 +25778,9 @@ mod bounded_offer_conjunct_tests {
         let published = schema.deliverable_capacity;
         assert!(
             schema.is_bounded() && (1..MAX_SHORTCUT_CYCLES).contains(&published),
-            "REACH-GUARD: the published capacity must be a NARROWED count strictly inside the \
-             range — a refusal and an un-narrowed capacity at the budget are both excluded; got \
-             {published}"
+            "REACH-GUARD: `is_bounded()` excludes a producer that measured nothing, and the range \
+             states this fixture's own board class — a capacity strictly inside the budget, so the \
+             equality below is not satisfied by a capacity the budget supplied; got {published}"
         );
         state.waiting_for = offer;
         // CR 732.2a: a bare declaration (no client template) is admitted only from a proposer
@@ -25601,6 +25877,7 @@ mod bounded_offer_conjunct_tests {
         let net_ceiling = per_cycle
             .delta
             .elimination_bounds(&state, &per_cycle.delta.seat_life_charges(&[]))
+            .expect("CONTROL: the NET divisor still consumes a living seat on this board")
             .count;
         assert_ne!(
             net_ceiling, derived.ceiling,

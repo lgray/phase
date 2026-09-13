@@ -3770,8 +3770,8 @@ fn loop_shortcut_projection(
             // derives every capacity itself: `interactive_loop_bridge` and
             // `try_offer_object_growth_shortcut` measure no threshold, so theirs is
             // `MAX_SHORTCUT_CYCLES`, while `certified_bounded_cycle_offer` hands it a measured
-            // threshold that cannot be `0` — that producer refuses outright unless the measured
-            // count lies in `(1..MAX_SHORTCUT_CYCLES)`. The per-viewer projection in
+            // threshold that cannot be `0` — that producer refuses outright unless the reduction
+            // measured one of at least 1. The per-viewer projection in
             // `game/visibility.rs` only re-projects an existing schema's pair; and
             // `ShortcutDecisionSchema::default()` seeds the capacity at `MAX_SHORTCUT_CYCLES`
             // (`analysis/decision_template.rs`), which is also its `#[serde(default)]` for a save
@@ -11825,6 +11825,121 @@ mod tests {
                 .values()
                 .map(|view| view.cards.len())
                 .sum::<usize>()),
+        );
+    }
+    /// CR 732.2a — **the picker's ceiling is the DELIVERABLE CAPACITY, never the CR 704 threshold
+    /// the offer's producer measured.** What an accept may legally specify is what this engine
+    /// will deliver: the declare handler refuses any `Fixed(n)` above the capacity, so a picker
+    /// publishing the measurement would offer a count that handler then hands back.
+    ///
+    /// THREE ARMS, because only one of them can discriminate WHICH field is read:
+    ///
+    /// * ⓐ THE DISCRIMINATING ARM — the two published answers differ BELOW the budget, so
+    ///   `.min(MAX_SHORTCUT_CYCLES)` cannot mask a swap. No producer mints this pair
+    ///   (`build_shortcut_schema` derives the capacity as `measured.min(budget)`, which is the
+    ///   measurement itself whenever it fits); it is the loaded/persisted authority the
+    ///   zero-capacity guard above exists for, and it is the only board on which reading the
+    ///   measured field is observable at all.
+    /// * ⓑ the production-reachable boundary — a threshold ABOVE the budget, whose capacity is
+    ///   therefore the budget. The pair a real above-budget board carries.
+    /// * ⓒ the hostile sibling — `UntilLethal` publishes NO finite ceiling, stated on the
+    ///   SUGGESTION's variant rather than on `is_bounded()`: an un-narrowed object-growth offer
+    ///   measures no threshold and still publishes a finite ceiling, so the two are not the same
+    ///   question.
+    ///
+    /// REVERT-PROBE: read `measured_repetition_bound` in place of `deliverable_capacity` ⇒ ⓐ's
+    /// `max` is the measurement and FAILS, while ⓑ stays green under the `.min(..)`. Key ⓒ's arm
+    /// on `is_bounded()` instead of on the variant ⇒ ⓒ publishes a finite ceiling and FAILS.
+    #[test]
+    fn the_picker_publishes_the_deliverable_capacity_and_never_the_measured_threshold() {
+        use crate::analysis::decision_template::ShortcutDecisionSchema;
+        use crate::analysis::loop_check::{LoopCertificate, WinKind};
+        use crate::analysis::resource::BoardDelta;
+
+        let viewer = PlayerId(0);
+        let offer_at = |iteration_count: IterationCount, measured: Option<u32>, capacity: u32| {
+            let mut state = GameState::new_two_player(42);
+            state.waiting_for = WaitingFor::LoopShortcut {
+                proposer: viewer,
+                predicted_winner: Some(viewer),
+                certificate: LoopCertificate {
+                    unbounded: Vec::new(),
+                    win_kind: WinKind::LethalDamage,
+                    mandatory: false,
+                    residual_board_delta: BoardDelta::default(),
+                    per_cycle: None,
+                },
+                schema: ShortcutDecisionSchema {
+                    iteration_count,
+                    measured_repetition_bound: measured,
+                    deliverable_capacity: capacity,
+                    ..Default::default()
+                },
+                declaration: None,
+            };
+            bind_interaction_authority(&mut state, InteractionSessionId("picker-ceiling".into()))
+                .expect("a valid interaction authority binding");
+            let filtered = crate::game::visibility::filter_state_for_viewer(&state, viewer);
+            let view = derive_viewer_interaction(&state, &filtered, viewer);
+            let [opportunity] = view.opportunities.as_slice() else {
+                panic!(
+                    "the proposer holds exactly one opportunity at its own offer; got {}",
+                    view.opportunities.len()
+                );
+            };
+            let InteractionOpportunityResponse::Schema {
+                spec: InteractionResponseSpec::Shortcut { count, .. },
+                ..
+            } = &opportunity.response
+            else {
+                panic!("a loop-shortcut offer publishes a shortcut schema");
+            };
+            *count
+        };
+
+        // ⓐ measured 40 against a capacity of 12.
+        let discriminating = offer_at(IterationCount::Fixed(40), Some(40), 12);
+        let InteractionShortcutCountSpec::Fixed { max, .. } = discriminating else {
+            panic!("BOARD CLASS: this arm publishes a finite ceiling");
+        };
+        assert!(
+            max < MAX_SHORTCUT_CYCLES,
+            "BOARD CLASS: the ceiling this arm pins sits strictly below the budget, so the \
+             picker's own `.min(..)` cannot be what produced it; got {max}"
+        );
+        assert_eq!(
+            discriminating,
+            InteractionShortcutCountSpec::Fixed {
+                min: 1,
+                max: 12,
+                suggested: 12,
+            },
+            "CR 732.2a: the ceiling is the capacity (12), and an over-capacity suggestion (40) is \
+             clamped down to it rather than published"
+        );
+
+        // ⓑ the production-reachable pair: a threshold above the budget, capacity at the budget.
+        assert_eq!(
+            offer_at(
+                IterationCount::Fixed(MAX_SHORTCUT_CYCLES),
+                Some(MAX_SHORTCUT_CYCLES + 2),
+                MAX_SHORTCUT_CYCLES,
+            ),
+            InteractionShortcutCountSpec::Fixed {
+                min: 1,
+                max: MAX_SHORTCUT_CYCLES,
+                suggested: MAX_SHORTCUT_CYCLES,
+            },
+            "CR 732.2a: above the budget the deliverable capacity IS the budget, and the picker \
+             publishes it"
+        );
+
+        // ⓒ the hostile sibling: a measured threshold beside an `UntilLethal` suggestion still
+        //   publishes no finite ceiling, because the finite arm is chosen on the VARIANT.
+        assert_eq!(
+            offer_at(IterationCount::UntilLethal, Some(12), 12),
+            InteractionShortcutCountSpec::UntilLethal,
+            "CR 732.2a: `UntilLethal` names no count, so there is no ceiling to publish"
         );
     }
 }

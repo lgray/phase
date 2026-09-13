@@ -13711,23 +13711,24 @@ fn an_unsigned_proposal_commits_the_cycle_a_seat_departs_on() {
 ///
 /// `PeriodicDelta::seat_life_charge` is `#[serde(default)]`, so a restored signature can reach
 /// this seam with an EMPTY charge beside an intact `delta`. Without the floor the consumption
-/// divisor would then be empty, every seat's life axis would be unarmed, the derived ceiling
-/// would be the un-narrowed sentinel, and the over-count below would be admitted. Flooring the
-/// publication by the vector the period's own losses produce is what leaves a ceiling standing.
+/// divisor would then be empty, every seat's life axis would be unarmed, the re-derivation would
+/// measure NO threshold at all — leaving `shortcut_count_is_drivable` bounded by the engine's
+/// budget alone — and the over-count below would be admitted. Flooring the publication by the
+/// vector the period's own losses produce is what leaves a ceiling standing.
 ///
 /// # Why the assertion is an IDENTITY on the life vector and not a bound on a count
 ///
 /// Without the floor the over-count drives, every cycle below the enforced ceiling conforms and
 /// commits, and the ending point restores the LAST COMMITTED cycle — whose life vector is not
 /// the offer board's. A bound of the form "at most X" survives the floor's deletion for every X
-/// below the sentinel, on any board. The identity does not.
+/// below the budget, on any board. The identity does not.
 ///
 /// This board is the measured one: its enforced ceiling is comfortably above 1 and its driven
 /// period equals the published `delta` seat for seat, so every cycle below the ceiling conforms
 /// and the first departure lands on the ceiling itself.
 ///
 /// REVERT-PROBE: return the published charge verbatim from `consumption_seat_life_charges` ⇒
-/// ⓐ's divisor is empty ⇒ the ceiling is the sentinel ⇒ the over-count drives ⇒ the identity
+/// ⓐ's divisor is empty ⇒ no ceiling is derived at all ⇒ the over-count drives ⇒ the identity
 /// FAILS while ⓑ stays green.
 #[test]
 fn an_emptied_charge_still_bounds_the_drive_at_the_guard() {
