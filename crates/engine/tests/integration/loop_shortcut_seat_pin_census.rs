@@ -356,6 +356,7 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
         ranked_files,
         vec![
             ("engine/src/analysis/decision_template.rs", 1),
+            ("engine/src/analysis/resource.rs", 1),
             ("engine/src/game/engine.rs", 1),
             ("engine/src/game/interaction.rs", 3),
             ("engine/src/game/visibility.rs", 1),
@@ -369,7 +370,13 @@ fn no_target_class_producer_constructs_a_choice_class_player_pin() {
          collection arm in `types/actions.rs`. `game/interaction.rs`'s occurrences are the \
          human ingress's mint in `shortcut_announcement_subject`, and \
          `declared_targets_statement`'s declared-subject mint beside its subject-to-candidate \
-         read arm. A MISSING producer is the revert this row exists to catch; an EXTRA file is \
+         read arm. `analysis/resource.rs`'s occurrence is `piecewise_witness`'s per-segment \
+         mint — a CONSTRUCTOR AND NOT A PRODUCER: every `TargetSchedule` variant is typed over \
+         `Ranking`, so no choice-class spelling is expressible there, and the CR 732.2a witness \
+         it builds is charged and never driven, its one consumer reducing it to a cascade \
+         count. Journalling, submitting or driving that witness against a board makes this file \
+         a producer and re-opens that classification. \
+         A MISSING producer is the revert this row exists to catch; an EXTRA file is \
          a new producer that must be classified rather than absorbed. got {ranked:?}"
     );
     assert!(
