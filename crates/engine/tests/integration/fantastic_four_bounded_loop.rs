@@ -5949,9 +5949,10 @@ fn f4_pending_announcement(state: &GameState) -> Vec<TargetRef> {
     }
 }
 
-/// **Row (1)** — an allocation of the published `Fixed` ceiling across all three legal victims
+/// **Row (1)** — an allocation of the published `Fixed` SUGGESTION across all three legal victims
 /// decodes to `TargetSchedule::Piecewise` at the prefix sums its amounts imply, and commits its
-/// whole declared count.
+/// whole declared count. The SUGGESTION, never the window's `max` — the distinction and its
+/// direction on this class are stated on [`F4Allocation`]'s `drivable_count`.
 ///
 /// # Discrimination
 ///
@@ -5980,7 +5981,7 @@ fn f4_pending_announcement(state: &GameState) -> Vec<TargetRef> {
 /// no member in this row; [`p4_row_1b_an_authored_non_canonical_distribution_is_accepted`]'s
 /// third arm is where a real one lives.
 #[test]
-fn p4_row_1_an_allocation_of_the_published_ceiling_commits_its_whole_count() {
+fn p4_row_1_an_allocation_of_the_published_suggestion_commits_its_whole_count() {
     let mut state = load_f4();
     let offer = f4_allocation_offer(&mut state);
     let count = offer.drivable_count;
@@ -7809,7 +7810,7 @@ fn authored_split_is_admissible(
 /// [`e1_a_narrowed_offer_publishes_its_bound_beside_an_untouched_infinity_channel`] and
 /// [`e7_the_published_bound_is_the_count_pickers_own_ceiling`], the token product by
 /// [`t3_the_published_token_rate_is_delivered_by_the_accepted_drive`], the full commit across
-/// an authored allocation by [`p4_row_1_an_allocation_of_the_published_ceiling_commits_its_whole_count`],
+/// an authored allocation by [`p4_row_1_an_allocation_of_the_published_suggestion_commits_its_whole_count`],
 /// the one-producer identity by [`the_responders_element_agrees_with_the_producers_other_two_call_sites`].
 /// What none of them holds is that those surfaces are the SAME object, so this is ONE test with
 /// ONE `load_f4()` and every leg reading what the previous leg produced.

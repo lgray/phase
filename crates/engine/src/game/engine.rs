@@ -4710,7 +4710,8 @@ fn shortcut_consumption_bound(
     // The published `points` do not ride the proposal, so each charged slot's legal set is
     // synthesized from the two fields that do: `victim_slot` names the slots and
     // `declarable_victims` is their reach UNION. A union over-states a single slot's own reach,
-    // which charges a seat a slot cannot name — fail-closed, a lower count.
+    // which charges a seat a slot cannot name — and that moves the count in EITHER direction, as
+    // `synthesized_charge_points` states.
     let points: Vec<crate::analysis::decision_template::DecisionPoint> =
         synthesized_charge_points(per_cycle);
     let Some(cascade) =
@@ -4737,8 +4738,25 @@ fn shortcut_consumption_bound(
 /// there — the charter's own posture is that nothing the serde can tamper may carry a prediction.
 /// So each charged slot is given the reach UNION ([`PeriodicDelta::declarable_victims`]) as its
 /// legal set. That OVER-STATES a single slot's own reach when two slots of different reaches are
-/// charged, which charges a seat some slot cannot actually name. An over-charge is a LOWER count,
-/// so the direction is fail-closed and the drivability gate refuses more counts rather than fewer.
+/// charged, which charges a seat some slot cannot actually name.
+///
+/// THE DIRECTION IS BIDIRECTIONAL, NOT FAIL-CLOSED, because the two terms
+/// [`PeriodicDelta::declared_seat_life_charges`] builds move OPPOSITE ways under the widening. A
+/// widened set makes that function's `reaches` true for a seat the slot cannot name, so an
+/// UNPINNED slot adds its magnitude to the seat's landing term — a deeper charge, an EARLIER
+/// crossing, a LOWER count. But `published == Some(true)` is also the gate on the dip's
+/// `elsewhere` subtraction, so a slot the declaration pins at ANOTHER seat now comes OUT of this
+/// seat's dip — a shallower dip, a LATER crossing, a HIGHER count. With two or more charged
+/// victim slots of differing reach the re-derived ceiling can therefore land on either side of
+/// the producer's per-slot-derived suggestion.
+///
+/// CR 732.2b: on the LOW side that divergence is live rather than conservative.
+/// `shortcut_count_is_drivable` refuses every count above what it re-derives, so a ceiling below
+/// the suggestion has it refuse the offer's OWN suggestion — the declare opens the acceptance
+/// window, each other player accepts, and ZERO cycles commit on an unmoved board. Closing it
+/// means either gating this synthesis on a SINGLE charged slot or carrying the per-slot reaches
+/// on the certificate; the second moves the wire, and the multi-segment allocated class it
+/// serves is not this change's subject.
 ///
 /// `min_targets`/`max_targets` are `1`, matching what the bounded producer's own point mint
 /// hard-codes, so
@@ -5969,6 +5987,14 @@ fn materialize_fixed_shortcut(
 
     let cycle_beat_cap = auto_pass_loop_max_iterations(&committed);
 
+    // LOOP-INVARIANT, so derived ONCE and read by both terminal arms below: all three arguments
+    // are fixed across `'cycles`. The loop writes only `committed`, and the single write to
+    // `*state` inside it (the `CrossLethal` commit) returns immediately, so `*state` is the
+    // pre-drive board at every read — which is the board this derivation is defined on, for the
+    // reason the `SeatLeft` arm states: the last committed board's already-spent headroom would
+    // relieve to a remaining-cycles figure while those arms compare absolute indices.
+    let derivation = shortcut_consumption_bound(state, proposal, n);
+
     'cycles: for i in 0..n {
         // CR 732.2a predictability firewall: `predictability_gate(t, &[])` is a WIRED
         // FORMAL no-op this phase — empty `required_slots` ⇒ always `Ok`
@@ -6030,7 +6056,6 @@ fn materialize_fixed_shortcut(
                     // which is gated on a published signature, and answered rather than folded
                     // into the other absence), while a signed derivation that measured nothing on
                     // the pre-drive board states that THIS board supports no crossing at all.
-                    let derivation = shortcut_consumption_bound(state, proposal, n);
                     let predicted: Option<&[crate::analysis::resource::PredictedDeparture]> =
                         match &derivation {
                             ConsumptionDerivation::Unsigned => None,
@@ -6136,12 +6161,13 @@ fn materialize_fixed_shortcut(
             // ceiling stops at — which is why the fall-through below is the `Unsigned` ARM
             // ALONE, and never an absence a signed re-derivation produced.
             //
-            // RE-DERIVED HERE ON `*state`, through the same authority the guard used, rather
-            // than stashed at the guard: `materialize_fixed_shortcut` clones `*state` into
-            // `committed` before `'cycles` and writes only `committed` inside the loop, so
-            // `*state` is still the pre-drive board. Deliberately NOT the last committed board
-            // — a headroom already spent by earlier cycles would relieve to a REMAINING-cycles
-            // figure, while the conjunct below compares against the drive's ABSOLUTE index.
+            // RE-DERIVED ON `*state` through the same authority the guard used, rather than
+            // stashed at the guard, and taken ONCE above `'cycles` because the derivation is
+            // loop-invariant: this function clones `*state` into `committed` before the loop and
+            // writes only `committed` inside it, so `*state` is the pre-drive board at every
+            // read. Deliberately NOT the last committed board — a headroom already spent by
+            // earlier cycles would relieve to a REMAINING-cycles figure, while the conjunct
+            // below compares against the drive's ABSOLUTE index.
             //
             // NO CONFORMANCE CHECK HERE, and that is the decision rather than an omission.
             // `PeriodicDelta::conforms` protects the REMAINING repetitions of a bound derived
@@ -6188,7 +6214,7 @@ fn materialize_fixed_shortcut(
                 // EXHAUSTIVE over the derivation's three states, no wildcard: only an UNSIGNED
                 // proposal falls through to the commit below. Both signed states are
                 // discriminated, so neither can inherit the other's answer.
-                match shortcut_consumption_bound(state, proposal, n) {
+                match &derivation {
                     // No signature, so no prediction to diverge from — the commit-and-stop every
                     // producer that publishes none shipped with.
                     ConsumptionDerivation::Unsigned => {}
@@ -25607,11 +25633,27 @@ mod bounded_offer_conjunct_tests {
                 "[{label}] CR 732.2a: the capacity is what this engine will DELIVER — the \
                  measurement where it fits inside the budget, the budget where it does not"
             );
+            // CLASS PREMISE of the coincidence below, executable rather than prose: this ring's
+            // period charges a seat DIRECTLY and publishes no stack target, so it mints NO charged
+            // victim slot — and `piecewise_witness` refuses without one, leaving the ceiling
+            // nothing to re-aim above the suggestion.
+            assert!(
+                certificate
+                    .per_cycle
+                    .as_ref()
+                    .expect("a bounded offer publishes its per-period signature")
+                    .victim_slot
+                    .is_empty(),
+                "[{label}] CLASS PREMISE: this board mints no charged victim slot, which is what \
+                 leaves a witness declaration nothing to re-aim and makes the two published \
+                 counts below coincide"
+            );
             assert_eq!(
                 schema.iteration_count,
                 IterationCount::Fixed(schema.deliverable_capacity),
-                "[{label}] CR 732.1b: the SUGGESTION a declarer is offered is the capacity, never \
-                 a count the declare handler would refuse"
+                "[{label}] CR 732.1b: with no charged slot the SUGGESTION and the CEILING \
+                 coincide on this class, so the count a declarer is offered is the capacity and \
+                 never a count the declare handler would refuse"
             );
             if label == "above-budget" {
                 above_budget_pair = Some((
