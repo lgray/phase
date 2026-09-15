@@ -228,65 +228,85 @@ done < "$work_dir/rules.tsv"
 # quietly uses the bundle's own default instead of the operator's server. Whitespace
 # is rejected outright because URL parsing STRIPS a tab or newline rather than
 # failing, which would silently change the host.
-url_case() {
-  local expect=$1 value=$2 out
+url_case() {                      # $1 = value key under web., $2 = render|refuse, $3 = value
+  local key=$1 expect=$2 value=$3 out
   if out=$(helm template phase-server "$chart_dir" --set ingress.host=phase.example.test \
       --set web.enabled=true --set web.image.digest=$web_digest \
-      --set-string web.defaultMultiplayerServerUrl="$value" 2>&1 >/dev/null); then
-    [ "$expect" = "render" ] || fail "web.defaultMultiplayerServerUrl=$(printf %q "$value") rendered, but the client would refuse it"
+      --set-string "web.$key=$value" 2>&1 >/dev/null); then
+    [ "$expect" = "render" ] || fail "web.$key=$(printf %q "$value") rendered, but the client would refuse it"
   else
-    [ "$expect" = "refuse" ] || fail "web.defaultMultiplayerServerUrl=$(printf %q "$value") was refused, but it is a valid address"
+    [ "$expect" = "refuse" ] || fail "web.$key=$(printf %q "$value") was refused, but it is a valid address"
   fi
 }
-url_case render 'wss://play.example.com/ws'
-url_case render 'ws://192.168.1.5:9374/ws'
-url_case render 'wss://play.example.com/ws?region=eu'
-url_case render ''
-url_case refuse 'https://play.example.com'
-url_case refuse 'play.example.com'
-url_case refuse 'wss://'
-url_case refuse 'wss://play.example.com bad'
-url_case refuse "wss://play.example.com$(printf '\t')bad"
-url_case refuse ' wss://play.example.com/ws'
-url_case refuse 'wss://play.example.com/ws '
-url_case refuse 'wss://play.example.com/ws#lobby'
-url_case refuse 'wss://play.example.com/ws#'
+url_case defaultMultiplayerServerUrl render 'wss://play.example.com/ws'
+url_case defaultMultiplayerServerUrl render 'ws://192.168.1.5:9374/ws'
+url_case defaultMultiplayerServerUrl render 'wss://play.example.com/ws?region=eu'
+url_case defaultMultiplayerServerUrl render ''
+url_case defaultMultiplayerServerUrl refuse 'https://play.example.com'
+url_case defaultMultiplayerServerUrl refuse 'play.example.com'
+url_case defaultMultiplayerServerUrl refuse 'wss://'
+url_case defaultMultiplayerServerUrl refuse 'wss://play.example.com bad'
+url_case defaultMultiplayerServerUrl refuse "wss://play.example.com$(printf '\t')bad"
+url_case defaultMultiplayerServerUrl refuse ' wss://play.example.com/ws'
+url_case defaultMultiplayerServerUrl refuse 'wss://play.example.com/ws '
+url_case defaultMultiplayerServerUrl refuse 'wss://play.example.com/ws#lobby'
+url_case defaultMultiplayerServerUrl refuse 'wss://play.example.com/ws#'
+
+# The fragment rule has its own message, and the shape rule refuses "#" too, so a
+# refusal alone does not show which rule fired. The operator must be told the
+# fragment is the problem.
+for value in 'wss://play.example.com/ws#lobby' 'wss://play.example.com/ws#'; do
+  if out=$(helm template phase-server "$chart_dir" --set ingress.host=phase.example.test \
+      --set web.enabled=true --set web.image.digest=$web_digest \
+      --set-string "web.defaultMultiplayerServerUrl=$value" 2>&1 >/dev/null); then
+    fail "web.defaultMultiplayerServerUrl=$value rendered, but the client would refuse it"
+  fi
+  grep -q 'may not carry a fragment' <<<"$out" ||
+    fail "web.defaultMultiplayerServerUrl=$value was refused without the fragment message: $out"
+done
 
 # Authority grammar. The chart's accept-set must stay a SUBSET of what
 # `parseWebSocketUrl` accepts: anything the chart admits and the client drops is
 # a deployment that renders clean and then silently uses the build-time default.
 # Verdicts below are the client's, measured with node's WHATWG URL rather than
 # recalled — the corpus and the comparison live in client/src/config.
-url_case render 'wss://[::1]/ws'
-url_case render 'wss://[::1]:9374/ws'
-url_case render 'wss://[2001:db8::8a2e:370:7334]/ws'
-url_case render 'wss://play.example.com:65535/ws'
-url_case render 'wss://play.example.com:0/ws'
-url_case refuse 'wss://play.example.com:abc/ws'      # non-numeric port
-url_case refuse 'wss://play.example.com:99999/ws'    # port above 65535
-url_case refuse 'wss://play.example.com:-1/ws'       # negative port
-url_case refuse 'wss://[::1/ws'                      # unclosed bracket
-url_case refuse 'wss://[]/ws'                        # empty bracket
-url_case refuse 'wss://]::1[/ws'                     # reversed brackets
-url_case render 'wss://[::]/ws'
-url_case render 'wss://[::ffff:192.168.1.1]/ws'
-url_case refuse 'wss://[:::::]/ws'                   # more than one elision
-url_case refuse 'wss://[1::2::3]/ws'                 # two elisions, no ":::" substring
-url_case refuse 'wss://[1:1:1]/ws'                   # too few groups, no elision
-url_case refuse 'wss://[1:2:3:4:5:6:7:8:9]/ws'       # too many groups
-url_case refuse 'wss://[gggg::1]/ws'                 # non-hex group
-url_case refuse 'wss://:9374/ws'                     # port but no host
-url_case refuse 'wss://@/ws'                         # empty authority
-url_case refuse 'wss://%00.com/ws'                   # percent-encoding in a host
+url_case defaultMultiplayerServerUrl render 'wss://[::1]/ws'
+url_case defaultMultiplayerServerUrl render 'wss://[::1]:9374/ws'
+url_case defaultMultiplayerServerUrl render 'wss://[2001:db8::8a2e:370:7334]/ws'
+url_case defaultMultiplayerServerUrl render 'wss://play.example.com:65535/ws'
+url_case defaultMultiplayerServerUrl render 'wss://play.example.com:0/ws'
+url_case defaultMultiplayerServerUrl refuse 'wss://play.example.com:abc/ws'      # non-numeric port
+url_case defaultMultiplayerServerUrl refuse 'wss://play.example.com:99999/ws'    # port above 65535
+url_case defaultMultiplayerServerUrl refuse 'wss://play.example.com:-1/ws'       # negative port
+url_case defaultMultiplayerServerUrl refuse 'wss://[::1/ws'                      # unclosed bracket
+url_case defaultMultiplayerServerUrl refuse 'wss://[]/ws'                        # empty bracket
+url_case defaultMultiplayerServerUrl refuse 'wss://]::1[/ws'                     # reversed brackets
+url_case defaultMultiplayerServerUrl render 'wss://[::]/ws'
+url_case defaultMultiplayerServerUrl render 'wss://[::ffff:192.168.1.1]/ws'
+url_case defaultMultiplayerServerUrl refuse 'wss://[:::::]/ws'                   # more than one elision
+url_case defaultMultiplayerServerUrl refuse 'wss://[1::2::3]/ws'                 # two elisions, no ":::" substring
+url_case defaultMultiplayerServerUrl refuse 'wss://[1:1:1]/ws'                   # too few groups, no elision
+url_case defaultMultiplayerServerUrl refuse 'wss://[1:2:3:4:5:6:7:8:9]/ws'       # too many groups
+url_case defaultMultiplayerServerUrl refuse 'wss://[gggg::1]/ws'                 # non-hex group
+url_case defaultMultiplayerServerUrl refuse 'wss://:9374/ws'                     # port but no host
+url_case defaultMultiplayerServerUrl refuse 'wss://@/ws'                         # empty authority
+url_case defaultMultiplayerServerUrl refuse 'wss://%00.com/ws'                   # percent-encoding in a host
 
 # Dotted-numeric authorities. URL parsing decides a host is an IPv4 attempt from
 # its final label, so these fail to parse rather than resolving as hostnames.
-url_case render 'wss://192.168.1.5:9374/ws'
-url_case render 'wss://255.255.255.255/ws'
-url_case refuse 'wss://999.999.999.999/ws'           # octets out of range
-url_case refuse 'wss://256.1.1.1/ws'                 # first octet out of range
-url_case refuse 'wss://1.2.3.4.5/ws'                 # five parts
-url_case refuse 'wss://0x7f.0.0.1/ws'                # hex octet: a number, not a name
+url_case defaultMultiplayerServerUrl render 'wss://192.168.1.5:9374/ws'
+url_case defaultMultiplayerServerUrl render 'wss://255.255.255.255/ws'
+url_case defaultMultiplayerServerUrl refuse 'wss://999.999.999.999/ws'           # octets out of range
+url_case defaultMultiplayerServerUrl refuse 'wss://256.1.1.1/ws'                 # first octet out of range
+url_case defaultMultiplayerServerUrl refuse 'wss://1.2.3.4.5/ws'                 # five parts
+url_case defaultMultiplayerServerUrl refuse 'wss://0x7f.0.0.1/ws'                # hex octet: a number, not a name
+
+# Punycode labels. URL parsing throws on an xn-- label that is not valid punycode,
+# and a pattern cannot tell valid from invalid, so every xn-- label in the host is
+# refused. The refusal is confined to the host: the same text in a path renders.
+url_case defaultMultiplayerServerUrl refuse 'wss://xn--a.example/ws'             # leading label
+url_case defaultMultiplayerServerUrl refuse 'wss://a.xn--a/ws'                   # final label
+url_case defaultMultiplayerServerUrl render 'wss://play.example.com/xn--path'
 
 # ── The SPA image must be immutable unless mutability is asked for by name ──
 # The SPA is a sidecar in the pod that serves /ws, so a tag that moves under the
