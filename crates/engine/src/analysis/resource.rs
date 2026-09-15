@@ -1269,7 +1269,7 @@ impl PeriodicDelta {
                 .then(|| resolve_at(declaration, iteration))
                 .flatten();
             let behind = iteration
-                .checked_sub(1)
+                .checked_sub(AnnouncedLead::LEADING)
                 .filter(|_| resolves_behind)
                 .and_then(|index| resolve_at(declaration, index));
             // CR 601.2c: whether this repetition's resolved pin for `slot` names the seat,
@@ -1748,10 +1748,14 @@ pub enum AnnouncedLead<'a> {
 }
 
 impl AnnouncedLead<'_> {
+    /// The repetitions a listed slot leads by, which is also how far behind its own index a
+    /// leading slot resolves the declaration under test.
+    const LEADING: IterationIndex = 1;
+
     fn repetitions(self, slot: &DecisionSlot) -> IterationIndex {
         match self {
-            AnnouncedLead::None => 0,
-            AnnouncedLead::LeadingRepetition(slots) => IterationIndex::from(slots.contains(slot)),
+            AnnouncedLead::LeadingRepetition(slots) if slots.contains(slot) => Self::LEADING,
+            AnnouncedLead::None | AnnouncedLead::LeadingRepetition(_) => 0,
         }
     }
 }

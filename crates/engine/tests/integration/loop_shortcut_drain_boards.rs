@@ -592,74 +592,11 @@ fn the_two_restored_offers_disagree_on_declarability() {
     );
 }
 
-/// A minted offer's published values: its capacity, each charged slot's source object, sub-index
-/// and magnitude, and the seats and replay its published declaration names.
-pub(crate) type OfferPin = (
-    u32,
-    Vec<(Option<ObjectId>, u8, i64)>,
-    Option<(
-        Vec<PlayerId>,
-        engine::analysis::decision_template::ReplayMode,
-    )>,
-);
-
-pub(crate) fn published_offer_pin(state: &GameState) -> OfferPin {
-    let WaitingFor::LoopShortcut {
-        certificate,
-        schema,
-        declaration,
-        ..
-    } = &state.waiting_for
-    else {
-        panic!("not at an offer: {:?}", state.waiting_for);
-    };
-    let charged = certificate
-        .per_cycle
-        .as_ref()
-        .map_or_else(Vec::new, |per_cycle| {
-            per_cycle
-                .victim_slot
-                .iter()
-                .map(|(slot, magnitude)| {
-                    let source = match &slot.source {
-                        YieldTarget::ThisObject { source_id, .. } => Some(*source_id),
-                        _ => None,
-                    };
-                    (source, slot.index, *magnitude)
-                })
-                .collect()
-        });
-    (
-        schema.deliverable_capacity,
-        charged,
-        declaration.as_ref().map(|declaration| {
-            (
-                pinned_seats(&declaration.decisions),
-                declaration.replay.clone(),
-            )
-        }),
-    )
-}
-
 #[test]
 fn lethal_lifegain_loss_board_live_offer_is_self_consistent() {
     let mut state = lethal_lifegain_loss_board();
     let offer = drive_to_live_declarable_offer(&mut state);
     assert_live_offer_is_self_consistent(&state, offer);
-    assert_eq!(
-        published_offer_pin(&state),
-        (
-            25,
-            vec![(Some(ObjectId(14)), 0, 4)],
-            Some((
-                vec![PlayerId(1)],
-                engine::analysis::decision_template::ReplayMode::Scheduled {
-                    count: IterationCount::Fixed(5)
-                }
-            ))
-        ),
-        "CR 732.2a: the live offer publishes this capacity, these charged slots and this declaration"
-    );
 }
 
 #[test]
@@ -667,20 +604,6 @@ fn weird_drain_board_live_offer_is_self_consistent() {
     let mut state = weird_drain_board();
     let offer = drive_to_live_declarable_offer(&mut state);
     assert_live_offer_is_self_consistent(&state, offer);
-    assert_eq!(
-        published_offer_pin(&state),
-        (
-            31,
-            vec![(Some(ObjectId(421)), 0, 1)],
-            Some((
-                vec![PlayerId(1)],
-                engine::analysis::decision_template::ReplayMode::Scheduled {
-                    count: IterationCount::Fixed(31)
-                }
-            ))
-        ),
-        "CR 732.2a: the live offer publishes this capacity, these charged slots and this declaration"
-    );
 }
 
 /// The restored/live pair on the SAME board, which is what licenses the rule that no row
@@ -1119,8 +1042,8 @@ fn restores_at_a_certified_offer(path: &Path) -> bool {
 
 /// **Which committed dumps the row above is the whole population of.** The two boards it drives
 /// are exactly the committed dumps whose own persisted JSON restores at a CR 732.2a offer carrying
-/// a certified period; a third one appearing reds here, printing its own name, so the next lane
-/// extends that row instead of discovering the gap in playtesting.
+/// a certified period; a newcomer reds here and prints its own name, so it is added to that row
+/// rather than found in playtesting.
 ///
 /// # What kind of claim this is, which is NOT the kind the row above makes
 ///

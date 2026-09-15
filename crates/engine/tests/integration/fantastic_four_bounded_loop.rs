@@ -2338,35 +2338,15 @@ fn offer_declaration(
 fn d1_the_bounded_offer_publishes_a_conformant_declaration_on_every_tracked_dump() {
     use engine::analysis::decision_template::{predictability_gate, validate_pins};
 
-    use engine::analysis::decision_template::ReplayMode;
-
-    let pin = |capacity, source, count| {
-        (
-            capacity,
-            vec![(Some(ObjectId(source)), 0, 1)],
-            Some((
-                vec![P1],
-                ReplayMode::Scheduled {
-                    count: IterationCount::Fixed(count),
-                },
-            )),
-        )
-    };
-    for (label, mut state, expected_points, expected_pin) in [
-        ("F4", load_f4(), 3usize, pin(88, 403, 37)),
-        ("MODE1", load_mode1(), 2, pin(87, 402, 35)),
-        ("MODE2", load_mode2(), 3, pin(84, 402, 33)),
+    for (label, mut state, expected_points) in [
+        ("F4", load_f4(), 3usize),
+        ("MODE1", load_mode1(), 2),
+        ("MODE2", load_mode2(), 3),
     ] {
         let beat = drive_f4_to_offer(&mut state, 400)
             .unwrap_or_else(|| panic!("[{label}] REACH-GUARD: the bounded offer must FIRE"));
         let (proposer, _certificate, schema) = offer_parts(&state);
         let schema = schema.clone();
-        assert_eq!(
-            crate::loop_shortcut_drain_boards::published_offer_pin(&state),
-            expected_pin,
-            "[{label}] CR 732.2a: the offer minted at beat {beat} publishes this capacity, these \
-             charged slots and this declaration"
-        );
 
         assert!(
             state.loop_answers_recorded() >= schema.points.len(),

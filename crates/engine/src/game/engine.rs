@@ -4830,7 +4830,8 @@ fn shortcut_consumption_bound(
 /// stand in for, synthesized from the two certificate fields that DO ride the proposal.
 ///
 /// The offer's `ShortcutDecisionSchema` is not on the proposal and no field is added to put it
-/// there — the charter's own posture is that nothing the serde can tamper may carry a prediction.
+/// there: the proposal is persisted with the game, so a restored save can carry any value in it,
+/// and a prediction read from it would reach the drive without being re-derived.
 /// So each charged slot is given the reach UNION ([`PeriodicDelta::declarable_victims`]) as its
 /// legal set. That OVER-STATES a single slot's own reach when two slots of different reaches are
 /// charged, which charges a seat some slot cannot actually name.
