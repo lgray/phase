@@ -10506,7 +10506,10 @@ fn materialize_number_response(
 fn materialize_loop_shortcut_response(
     interaction_id: &InteractionId,
     projection: &LoopShortcutProjection,
-    proposer: PlayerId,
+    // CR 732.2a: the proposer, the certified period and the offer's own published declaration,
+    // carried as ONE value because the seat the minted template is OWNED by and the seat the aim
+    // walk measures against must be the same one.
+    aim: crate::analysis::decision_template::AimContext<'_>,
     authoritative_schema: &crate::analysis::decision_template::ShortcutDecisionSchema,
     authoritative_state: &GameState,
     response: &InteractionResponse,
@@ -10744,7 +10747,7 @@ fn materialize_loop_shortcut_response(
         .map(|point| point.slot.source.clone())
         .collect::<Vec<_>>();
     let template = (!projection.points.is_empty()).then(|| DecisionTemplate {
-        owner: proposer,
+        owner: aim.proposer,
         decisions,
         replay: ReplayMode::Scheduled {
             count: count.clone(),
@@ -10762,10 +10765,18 @@ fn materialize_loop_shortcut_response(
         //
         // The `required` slot list is still not derived here: `declaration_conforms` derives it
         // from the SAME `authoritative_schema` this site already passed.
+        //
+        // CR 732.2a: the preview and the submit paths share this chokepoint, so both answer the
+        // aim question the same way, and a failure here is this entry's `ConstraintUnsatisfied`
+        // rather than the declare handler's priority handback. Of
+        // `InteractionShortcutDecision`'s three variants, `AcceptSuggested` and `Fixed` both fall
+        // through the pin loop above into this call — so the suggestion-count route is validated
+        // here too — while `Decline` returns before any pin is read and reaches no conjunct.
         if !declaration_conforms(
             authoritative_schema,
             template,
             crate::game::engine::shortcut_validated_range(&count, Some(template)),
+            aim.clone(),
             authoritative_state,
         ) {
             return Err(InteractionReasonCode::ConstraintUnsatisfied);
@@ -11191,7 +11202,11 @@ fn materialize_response(
         HumanResponseModel::LoopShortcut => {
             let projection = loop_shortcut_projection(&filtered_state.waiting_for)?;
             let WaitingFor::LoopShortcut {
-                proposer, schema, ..
+                proposer,
+                schema,
+                certificate,
+                declaration,
+                ..
             } = &authoritative_state.waiting_for
             else {
                 return Err(InteractionReasonCode::InvalidAuthorityState);
@@ -11206,7 +11221,11 @@ fn materialize_response(
             return materialize_loop_shortcut_response(
                 interaction_id,
                 &projection,
-                *proposer,
+                crate::analysis::decision_template::AimContext {
+                    proposer: *proposer,
+                    per_cycle: certificate.per_cycle.as_ref(),
+                    published: declaration.as_ref(),
+                },
                 schema,
                 authoritative_state,
                 completed.as_ref().unwrap_or(response),
@@ -11828,9 +11847,9 @@ mod tests {
         );
     }
     /// CR 732.2a — **the picker's ceiling is the DELIVERABLE CAPACITY, never the CR 704 threshold
-    /// the offer's producer measured.** What an accept may legally specify is what this engine
-    /// will deliver: the declare handler refuses any `Fixed(n)` above the capacity, so a picker
-    /// publishing the measurement would offer a count that handler then hands back.
+    /// the offer's producer measured.** The capacity is the highest count an accept may legally
+    /// specify: the declare handler refuses any `Fixed(n)` above it, so a picker publishing the
+    /// measurement would offer a count that handler then hands back.
     ///
     /// THREE ARMS, because only one of them can discriminate WHICH field is read:
     ///

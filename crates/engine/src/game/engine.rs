@@ -3337,8 +3337,19 @@ fn certified_bounded_cycle_offer<'a>(
     // it for one. This is also what makes `schema.is_bounded()` true BY CONSTRUCTION for every
     // offer this function mints. NO UPPER END: a threshold above the engine's repetition budget is
     // still a measured threshold, and the budget is the schema constructor's to apply.
+    //
+    // BOTH cascades below are read at `ChargeBound::Ceiling`, which is the question this seam
+    // asks: what SOME conforming declaration may take from a seat. An over-charge there only
+    // LOWERS a published count, which is the direction a ceiling must fail in.
     let own = periodic
-        .elimination_cascade(state, proposer, pins.as_ref(), pins.as_ref(), &points)
+        .elimination_cascade(
+            state,
+            proposer,
+            pins.as_ref(),
+            pins.as_ref(),
+            &points,
+            crate::analysis::resource::ChargeBound::Ceiling,
+        )
         .map(|cascade| truncate_to_declared_seats(cascade, pins.as_ref(), state))
         .filter(|cascade| cascade.count >= 1)
         .ok_or(BoundedOfferRefusal::NoNarrowedLegalCount)?;
@@ -3348,7 +3359,14 @@ fn certified_bounded_cycle_offer<'a>(
         .as_ref()
         .and_then(|observed| periodic.piecewise_witness(state, proposer, observed, &points))
         .and_then(|witness| {
-            periodic.elimination_cascade(state, proposer, Some(&witness), pins.as_ref(), &points)
+            periodic.elimination_cascade(
+                state,
+                proposer,
+                Some(&witness),
+                pins.as_ref(),
+                &points,
+                crate::analysis::resource::ChargeBound::Ceiling,
+            )
         })
         .map_or(0, |cascade| cascade.count);
     // THE LARGER OF THE TWO, and that is not an optimisation. `handle_declare_shortcut` refuses
@@ -3396,7 +3414,8 @@ fn certified_bounded_cycle_offer<'a>(
     // publication is the half that needs a schema, and the journal read is deterministic: this
     // returns `Some` over exactly the pins (7b) charged, or `None` where the publisher's own gate
     // refuses them — the latent arm this function's doc already scopes.
-    let declaration = build_bounded_declaration(state, proposer, &schema);
+    let declaration =
+        build_bounded_declaration(state, proposer, &schema, certificate.per_cycle.as_ref());
     Ok(WaitingFor::LoopShortcut {
         proposer,
         predicted_winner: None,
@@ -3497,11 +3516,16 @@ fn truncate_to_declared_seats(
 /// derivation of `required` alongside theirs.
 ///
 /// The range is `shortcut_validated_range(&schema.iteration_count, ..)`, i.e. this offer's own
-/// ceiling, because it is the WIDEST count any declarer may name against this schema
-/// (a publisher that measured a threshold seeds `Fixed` at it, which `build_shortcut_schema`
-/// narrows to the published `deliverable_capacity`, and the handler rejects anything above
-/// either that capacity or the budget). `validate_pins` re-checks `0..range`, so passing at the
-/// ceiling implies passing at every shorter `Fixed(n)` the handler could be given.
+/// SUGGESTION. Since the suggestion and the ceiling became separate fields that is NOT the widest
+/// count a declarer may name — `deliverable_capacity` is, and it can be larger. `validate_pins`
+/// re-checks `0..range`, so passing here implies passing at every shorter `Fixed(n)`; what makes
+/// the narrower range sound above the suggestion is that `handle_declare_shortcut` re-validates
+/// through the same authority at the count actually named.
+///
+/// The published declaration satisfies the AIM conjunct at the published count BY CONSTRUCTION:
+/// `truncate_to_declared_seats` cuts the suggestion at the repetition this declaration's own aim
+/// departs on, so no repetition inside it aims past a crossing. That is a statement about this
+/// declaration at this count, and about no other declaration at the same count.
 ///
 /// LATENT, NOT LIVE, and the distinction is not decoration: no tracked board reaches a
 /// declaration this refuses — row D1 measures both gates passing at the full range on all
@@ -3529,6 +3553,7 @@ fn build_bounded_declaration(
     state: &GameState,
     proposer: PlayerId,
     schema: &crate::analysis::decision_template::ShortcutDecisionSchema,
+    per_cycle: Option<&crate::analysis::resource::PeriodicDelta>,
 ) -> Option<crate::analysis::decision_template::DecisionTemplate> {
     use crate::analysis::decision_template::ReplayMode;
     let mut template = pin_journalled_declaration(state, proposer, &schema.points)?;
@@ -3542,10 +3567,17 @@ fn build_bounded_declaration(
     // (5) VALIDATE BEFORE PUBLISHING — the same authority `handle_declare_shortcut` accepts
     // under. See this function's "Published is validated" doc section for why the range is the
     // schema's OWN count and why this is not a third derivation.
+    // `published` is the template under validation: at this seam the declaration the offer is
+    // about to publish and the declaration the aim walk measures against ARE the same one.
     crate::analysis::decision_template::declaration_conforms(
         schema,
         &template,
         shortcut_validated_range(&schema.iteration_count, Some(&template)),
+        crate::analysis::decision_template::AimContext {
+            proposer,
+            per_cycle,
+            published: Some(&template),
+        },
         state,
     )
     .then_some(template)
@@ -4564,7 +4596,8 @@ pub(crate) fn bounded_cycle_charged_targets_for_window(
 /// producer measured.
 ///
 /// THE ONE PLACE THE ENGINE'S BUDGET IS APPLIED. The reduction measures what the board
-/// licenses; this constructor decides what this engine will DELIVER, and publishes both: the
+/// licenses; this constructor decides the highest count this engine will ACCEPT, and publishes
+/// both: the
 /// measured threshold verbatim (an absence stays an absence, and a threshold above the budget
 /// stays the threshold, because it is what the rules say about the loop), and the deliverable
 /// capacity, which is that threshold or the budget, whichever is smaller. The capacity wears
@@ -4714,9 +4747,17 @@ fn shortcut_consumption_bound(
     // `synthesized_charge_points` states.
     let points: Vec<crate::analysis::decision_template::DecisionPoint> =
         synthesized_charge_points(per_cycle);
-    let Some(cascade) =
-        per_cycle.elimination_cascade(state, proposal.proposer, template, template, &points)
-    else {
+    // The DRIVABILITY question, so the charge stream is read at `ChargeBound::Ceiling`:
+    // `shortcut_count_is_drivable` refuses every count above what this re-derives, and an
+    // over-charge refuses more counts rather than fewer.
+    let Some(cascade) = per_cycle.elimination_cascade(
+        state,
+        proposal.proposer,
+        template,
+        template,
+        &points,
+        crate::analysis::resource::ChargeBound::Ceiling,
+    ) else {
         return ConsumptionDerivation::NoMeasurement;
     };
     ConsumptionDerivation::Measured(ConsumptionBound {
@@ -4753,15 +4794,13 @@ fn shortcut_consumption_bound(
 /// CR 732.2b: on the LOW side that divergence is live rather than conservative.
 /// `shortcut_count_is_drivable` refuses every count above what it re-derives, so a ceiling below
 /// the suggestion has it refuse the offer's OWN suggestion — the declare opens the acceptance
-/// window, each other player accepts, and ZERO cycles commit on an unmoved board. Closing it
-/// means either gating this synthesis on a SINGLE charged slot or carrying the per-slot reaches
-/// on the certificate; the second moves the wire, and the multi-segment allocated class it
-/// serves is not this change's subject.
+/// window, each other player accepts, and ZERO cycles commit on an unmoved board.
 ///
-/// `min_targets`/`max_targets` are `1`, matching what the bounded producer's own point mint
-/// hard-codes, so
-/// [`PeriodicDelta::declared_seat_life_charges`] reads these as published rather than withheld —
-/// a withheld slot is charged against EVERY domain seat, which is the coarser answer.
+/// The synthesized point's KIND is `Targets` and its `slot` is the charged slot's, and that pair
+/// is what makes [`PeriodicDelta::declared_seat_life_charges`] read this slot as published rather
+/// than withheld — a withheld slot is charged against EVERY domain seat, which is the coarser
+/// answer. `min_targets`/`max_targets` are `1`, matching what the bounded producer's own point
+/// mint hard-codes; that charge authority reads neither.
 fn synthesized_charge_points(
     per_cycle: &crate::analysis::resource::PeriodicDelta,
 ) -> Vec<crate::analysis::decision_template::DecisionPoint> {
@@ -8254,8 +8293,8 @@ fn handle_declare_shortcut(
         // global cap. A `Fixed(n)` above the capacity this offer published would contain a
         // conditional action — some living player crosses a CR 704.5a / CR 704.5c / CR 104.3c
         // loss threshold inside the proposal, and what happens next depends on that — so it is
-        // not a legal shortcut. The capacity, never the measured threshold: what an accept may
-        // legally specify is what this engine will deliver.
+        // not a legal shortcut. The capacity, never the measured threshold: the threshold
+        // wears no budget, so it can name a count the over-cap arm above already refuses.
         crate::analysis::decision_template::IterationCount::Fixed(n)
             if *n > offer.schema.deliverable_capacity =>
         {
@@ -8360,13 +8399,23 @@ fn handle_declare_shortcut(
             // set at an index the count reaches, and REFUSED conforming declarations
             // whose count is shorter than the schedule.
             let validated_range = shortcut_validated_range(&count, Some(t));
-            // Coverage + value legality via the shared authority, so the predicate this
-            // handler ACCEPTS under is the same one `build_bounded_declaration` PUBLISHES
-            // under and the human ingress EMITS under. The range is this site's own.
+            // Coverage + value legality + aim survival via the shared authority, so the
+            // predicate this handler ACCEPTS under is the same one `build_bounded_declaration`
+            // PUBLISHES under and the human ingress EMITS under. The range is this site's own.
+            //
+            // CR 732.2a: this is the layer that decides whether THIS declaration can deliver the
+            // accepted count. It reads the offer's real published points, which is narrower than
+            // the reach union `synthesized_charge_points` hands the consumption seam — a
+            // different input, not a second copy of the drive's own enforcement.
             if !crate::analysis::decision_template::declaration_conforms(
                 offer.schema,
                 t,
                 validated_range,
+                crate::analysis::decision_template::AimContext {
+                    proposer: offer.proposer,
+                    per_cycle: offer.certificate.per_cycle.as_ref(),
+                    published: offer.declaration,
+                },
                 state,
             ) {
                 reject_shortcut_declaration(state, &mut result);
@@ -20330,7 +20379,7 @@ mod bounded_declaration_tests {
                 "reach-guard: the CR 603.5 answer must be journalled before the consumer runs"
             );
 
-            let declaration = build_bounded_declaration(&state, PROPOSER, &schema)
+            let declaration = build_bounded_declaration(&state, PROPOSER, &schema, None)
                 .expect("both published points are answered, so the declaration is complete");
             assert_eq!(
                 declaration.decisions[0],
@@ -20410,7 +20459,7 @@ mod bounded_declaration_tests {
             LoopAnswer::Uniform(LoopAnswerValue::Targets(vec![TargetPin::Player(AIMED)])),
         );
         assert!(
-            build_bounded_declaration(&control, PROPOSER, &control_schema).is_some(),
+            build_bounded_declaration(&control, PROPOSER, &control_schema, None).is_some(),
             "CONTROL: a fully-answered two-kind schema DOES publish a declaration — without this \
              a consumer that refused everything would pass all four cases below"
         );
@@ -20457,7 +20506,7 @@ mod bounded_declaration_tests {
             );
 
             assert!(
-                build_bounded_declaration(&state, PROPOSER, &schema).is_none(),
+                build_bounded_declaration(&state, PROPOSER, &schema, None).is_none(),
                 "CR 732.2a: {kind:?} has no `LoopAnswerValue` shape, so the declaration must \
                  refuse rather than pin a guess or silently drop the point"
             );
@@ -20500,7 +20549,7 @@ mod bounded_declaration_tests {
             "reach-guard: the journal is NON-empty, so the refusal below is the point set's"
         );
         assert!(
-            build_bounded_declaration(&state, PROPOSER, &empty).is_none(),
+            build_bounded_declaration(&state, PROPOSER, &empty, None).is_none(),
             "CR 732.2a: an offer that publishes no choice states no declaration"
         );
     }
@@ -20625,16 +20674,28 @@ mod bounded_declaration_tests {
                 handler_accepts, expect_published,
                 "[{label}] the declare-time pin firewall's verdict on the published shape"
             );
+            // This row stages no certified period, so the AIM conjunct takes its `per_cycle`
+            // absence arm and the authority's verdict here is its coverage ∧ value half.
             assert_eq!(
-                declaration_conforms(&schema, &as_published, schema.deliverable_capacity, &state),
+                declaration_conforms(
+                    &schema,
+                    &as_published,
+                    schema.deliverable_capacity,
+                    crate::analysis::decision_template::AimContext {
+                        proposer: PROPOSER,
+                        per_cycle: None,
+                        published: Some(&as_published),
+                    },
+                    &state
+                ),
                 handler_accepts,
-                "[{label}] and the shared authority agrees with its own value half — it is the \
-                 conjunction of the two gates, not a third predicate"
+                "[{label}] and the shared authority agrees with its own value half — it is a \
+                 conjunction of its gates, not a separate predicate"
             );
 
             // ── HALF 2: the PUBLISHER's verdict must be the same one ──
             assert_eq!(
-                build_bounded_declaration(&state, PROPOSER, &schema).is_some(),
+                build_bounded_declaration(&state, PROPOSER, &schema, None).is_some(),
                 handler_accepts,
                 "[{label}] CR 732.2a: `declaration.is_some()` is read as 'the declare handler \
                  will accept this'. A template the handler refuses must NOT be published, and a \
@@ -25521,7 +25582,7 @@ mod bounded_offer_conjunct_tests {
     /// THREE ARMS ON ONE HARNESS, because the two published integers coincide below the budget
     /// and separate above it: sub-budget (the reach guard, where they agree), exactly at the
     /// budget (where the measured threshold and the capacity are equal for the last time), and
-    /// above it (where the measurement exceeds what this engine will deliver).
+    /// above it (where the measurement exceeds the engine's own budget).
     ///
     /// Each arm's threshold is RE-DERIVED from the offer's own published divisor and its own
     /// board, never pinned: `re_derived_threshold` divides the headroom itself.
@@ -25630,8 +25691,9 @@ mod bounded_offer_conjunct_tests {
             assert_eq!(
                 schema.deliverable_capacity,
                 derived.min(MAX_SHORTCUT_CYCLES),
-                "[{label}] CR 732.2a: the capacity is what this engine will DELIVER — the \
-                 measurement where it fits inside the budget, the budget where it does not"
+                "[{label}] CR 732.2a: the capacity is the highest count an accept may legally \
+                 specify — the measurement where it fits inside the budget, the budget where \
+                 it does not"
             );
             // CLASS PREMISE of the coincidence below, executable rather than prose: this ring's
             // period charges a seat DIRECTLY and publishes no stack target, so it mints NO charged

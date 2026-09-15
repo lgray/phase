@@ -313,32 +313,40 @@ pub struct ShortcutDecisionSchema {
     /// CR 732.1b: the proposed repeat mode. `UntilLethal` for a determinate CR 704.5a /
     /// CR 704.5c drain; `Fixed(n)` seeds the frontend count picker for an optional loop.
     pub iteration_count: IterationCount,
-    /// CR 732.2a: the CR 704 repetition threshold this offer's producer MEASURED — the
-    /// minimum over every applicable CR 704 elimination bound and finite-pool bound, over
-    /// every LIVING player, aggregated per declarable victim. `None` means the producer
-    /// measured none: no axis of the period consumes any living seat, so the board licenses
-    /// no threshold rather than one that happens to be large. This is what the rules say
-    /// about the loop; it wears no implementation ceiling.
+    /// CR 732.2a: the CR 704 repetition threshold this offer's producer MEASURED — a LEGALITY
+    /// CEILING, what SOME legal declaration may specify, never a count every declaration
+    /// reaches. `game::engine::certified_bounded_cycle_offer` takes the LARGER of two
+    /// declaration-relative cascades: the last crossing under the offer's own published
+    /// declaration and the last one under the re-aimed witness. CR 732.2a's "may be legally
+    /// taken" quantifies existentially over declarations, so the maximum is the reduction that
+    /// answers it. `None` means the producer measured none: no axis of the period consumes any
+    /// living seat, so the board licenses no threshold rather than one that happens to be
+    /// large. This is what the rules say about the loop; it wears no implementation ceiling.
     ///
     /// Read by [`ShortcutDecisionSchema::is_bounded`] — the one question it answers — and by
-    /// nothing that publishes or enforces a count, because a threshold above what this engine
-    /// will deliver is still the honest threshold.
+    /// nothing that publishes or enforces a count, which
+    /// [`ShortcutDecisionSchema::deliverable_capacity`] below is the field for.
     #[serde(default)]
     pub measured_repetition_bound: Option<u32>,
-    /// The number of repetitions this engine will DELIVER for this offer if it is accepted:
-    /// the measured threshold above, or `MAX_SHORTCUT_CYCLES` where none was measured, capped
-    /// at `MAX_SHORTCUT_CYCLES` either way. Derived once, in
+    /// The highest count an accept may legally SPECIFY against this offer: the measured
+    /// threshold above, or `MAX_SHORTCUT_CYCLES` where none was measured, capped at
+    /// `MAX_SHORTCUT_CYCLES` either way. A legality ceiling, not a delivery promise — the
+    /// consumption seam re-derives its own bound on the board the drive runs against
+    /// (`game::engine::shortcut_consumption_bound`) and may stop the drive short of this.
+    /// Derived once, in
     /// `game::engine::build_shortcut_schema`. Deliberately CARRIES NO CR NUMBER: the rules
     /// place no ceiling on how many times a shortcut may be repeated (CR 732.2a's own example
     /// runs to a million), so this budget is ours, not the game's — the same labelling ground
     /// the declare handler's budget arm states.
     ///
-    /// The single count authority: a proposal exceeding it contains a conditional action (an
-    /// in-proposal CR 704.5a / CR 704.5c / CR 104.3c / CR 121.4 elimination would decide what
-    /// happens next), which CR 732.2a forbids — so the declared-count check in `game::engine`
-    /// rejects a `Fixed(n)` above it, and `game::interaction` publishes it as the count
-    /// picker's ceiling. `IterationCount` above is the *suggestion*; this is the *ceiling*,
-    /// and they are deliberately separate fields.
+    /// The single authority for how HIGH a count may go, and only for that: a proposal
+    /// exceeding it contains a conditional action (an in-proposal CR 704.5a / CR 704.5c /
+    /// CR 104.3c / CR 121.4 elimination would decide what happens next), which CR 732.2a
+    /// forbids — so the declared-count check in `game::engine` rejects a `Fixed(n)` above it,
+    /// and `game::interaction` publishes it as the count picker's ceiling. Whether a given
+    /// declaration may legally specify a count at or below it is [`declaration_conforms`]'
+    /// question, not this field's. `IterationCount` above is the *suggestion*; this is the
+    /// *ceiling*, and they are deliberately separate fields.
     #[serde(default = "default_deliverable_capacity")]
     pub deliverable_capacity: u32,
     /// The open per-iteration decision-points needing pins. EMPTY for a choice-free drain.
@@ -1498,10 +1506,147 @@ pub fn validate_pins(
     Ok(())
 }
 
+/// CR 732.2a: the offer-side facts the aim conjunct needs and [`ShortcutDecisionSchema`] cannot
+/// carry — the certified period the crossings are measured from, whose seat the loop belongs to,
+/// and the declaration the offer PUBLISHED.
+///
+/// `published` is [`crate::analysis::resource::PeriodicDelta::declared_seat_life_charges`]'
+/// `observed`, and which USE that authority puts it to depends on the bound it is read at: at
+/// `ChargeBound::Ceiling` it is the aim the reserved charge subtracted, and at
+/// `ChargeBound::Attributable` — the reading [`aims_survive_the_crossings`] asks for — it is the
+/// aim SUBTRACTED OUT of the stream wherever the declaration under test does not make it. Same
+/// latch, same field, opposite use, and the reason a term of the stream may depend on it at all:
+/// subtracting another declaration's aims is attributable to this one, adding them is not.
+/// At [`crate::game::engine`]'s publisher the declaration under validation and the published one
+/// are the same template, so that site passes the template it is validating.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AimContext<'a> {
+    /// CR 800.4a: whose seat the loop belongs to — the cascade's own bound, since no repetition
+    /// follows the proposer's departure.
+    pub proposer: PlayerId,
+    /// The certified period the crossings are measured from. `None` is a typed absence, not a
+    /// default: an offer stating no per-period signature measured no crossing to outlive.
+    pub per_cycle: Option<&'a crate::analysis::resource::PeriodicDelta>,
+    /// The declaration the offer published, snapshotted at offer construction and expiring with
+    /// the window.
+    pub published: Option<&'a DecisionTemplate>,
+}
+
+/// CR 732.2a + CR 102.1: why a declared aim is not a choice this sequence can contain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AimViolation {
+    /// At `repetition` the declaration names `seat`, whom the cascade taken under that same
+    /// declaration removes at `departure` — strictly earlier, so CR 102.1 leaves nobody for the
+    /// choice to name and CR 732.2a's "may be legally taken" is not met.
+    AimsAtDepartedSeat {
+        repetition: u32,
+        seat: PlayerId,
+        departure: u32,
+    },
+}
+
+/// CR 732.2a + CR 102.1: whether every seat this declaration aims at is still one of the people
+/// in the game at the repetition it is aimed, under the departure prediction THIS declaration's
+/// own choices produce — [`crate::analysis::resource::ChargeBound::Attributable`].
+///
+/// THE BOUND IS NAMED BECAUSE THE ENGINE TAKES TWO READINGS OF THE CHARGE MODEL and only one of
+/// them answers this question. A ceiling charges a seat for every aim SOME conforming declaration
+/// could make — including the offer's own pre-announced victim at every repetition this
+/// declaration aims elsewhere — so a refusal taken on it refuses a declaration for choices that
+/// are not its own, which is not what CR 732.2a's "predictable results of the sequence of
+/// choices" quantifies over. The attributable reading subtracts those aims out and lets an
+/// unresolved term fall to the ADMITTING side. That is sound here and nowhere else in this
+/// chain: a wrongly admitted declaration is caught three times at the drive — CR 704.3's live
+/// sweep, [`crate::analysis::resource::PeriodicDelta::conforms_in`], and the departure verdict —
+/// while nothing at all catches a wrongly refused one, which simply loses CR 732.2a's licence
+/// with no instrument that says so.
+///
+/// A departure ON a repetition is admitted — that repetition's choice is made before CR 704.3's
+/// sweep removes the seat, the same inclusive reading `game::engine::truncate_to_declared_seats`
+/// takes. A departure BEFORE it is not: the choice cannot be made, which is the conditional
+/// action CR 732.2a forbids.
+///
+/// Repetitions are counted from 1 and driven by iteration index `repetition - 1`, the convention
+/// [`crate::analysis::resource::PeriodicDelta::declared_seat_life_charges`] and
+/// `truncate_to_declared_seats` already share. It is the CASCADE's convention, chosen so the
+/// declare seam and the consumption seam's own re-derivation are measured against one index;
+/// this function states nothing about how that convention lines up against the drive's own loop
+/// position, which is board-dependent and not visible here.
+///
+/// Monotone in `validated_range`: a shorter range walks a prefix of the repetitions and the
+/// cascade does not depend on the range, so a CR 732.2b shortening can never turn a conforming
+/// declaration non-conforming.
+pub fn aims_survive_the_crossings(
+    points: &[DecisionPoint],
+    template: &DecisionTemplate,
+    validated_range: IterationIndex,
+    aim: AimContext<'_>,
+    state: &GameState,
+) -> Result<(), AimViolation> {
+    // No certified period, so no crossing to outlive. The same posture
+    // `game::engine::ConsumptionDerivation::Unsigned` takes at the drive, stated at its own arm
+    // rather than folded into the absence below.
+    let Some(per_cycle) = aim.per_cycle else {
+        return Ok(());
+    };
+    // The reduction consumed no living seat, so it measured no threshold and no aim can outlive
+    // one. The two absences answer alike; they are kept apart because their grounds differ.
+    let Some(cascade) = per_cycle.elimination_cascade(
+        state,
+        aim.proposer,
+        Some(template),
+        aim.published,
+        points,
+        crate::analysis::resource::ChargeBound::Attributable,
+    ) else {
+        return Ok(());
+    };
+    // Well defined by `EliminationCascade`'s own documented invariant: entry repetitions strictly
+    // increase and a seat that left on an earlier entry cannot appear in a later one, so no seat
+    // is keyed twice.
+    let departures: std::collections::BTreeMap<PlayerId, u32> = cascade
+        .entries
+        .iter()
+        .flat_map(|entry| entry.seats.iter().map(|seat| (*seat, entry.repetition)))
+        .collect();
+    for repetition in 1..=validated_range {
+        // An `Err` names no aim at this repetition and the walk continues — the reading
+        // `truncate_to_declared_seats` takes at the identical call. Every `Targets` pin over this
+        // same range has already been confined by `validate_pins` (the `&&` before this conjunct
+        // at `declaration_conforms`), so what is left is a live re-binding of a non-targeting pin,
+        // whose failure is the drive's own `resolve` backstop and not an aim question.
+        let Ok(decisions) = resolve(template, repetition - 1, state) else {
+            continue;
+        };
+        for decision in &decisions {
+            let ConcreteDecision::Targets { targets, .. } = decision else {
+                continue;
+            };
+            for target in targets {
+                // CR 400.7 + CR 608.2b: an object aim is not a seat, and its identity is re-bound
+                // per index by the drive's own `resolve`.
+                let ConcreteTarget::Player(seat) = target else {
+                    continue;
+                };
+                if let Some(&departure) = departures.get(seat) {
+                    if departure < repetition {
+                        return Err(AimViolation::AimsAtDepartedSeat {
+                            repetition,
+                            seat: *seat,
+                            departure,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// CR 732.2a: THE SINGLE AUTHORITY for *"is this declaration a legal answer to this offer's
-/// schema?"* — [`predictability_gate`]'s COVERAGE half and [`validate_pins`]' VALUE half, run
-/// together against `schema.points` itself rather than against a slot projection each caller
-/// derives.
+/// schema?"* — [`predictability_gate`]'s COVERAGE half, [`validate_pins`]' VALUE half and
+/// [`aims_survive_the_crossings`]' AIM half, run together against `schema.points` itself rather
+/// than against a slot projection each caller derives.
 ///
 /// Three sites ask that question — `game::engine::handle_declare_shortcut` (the declare
 /// firewall), `game::interaction::materialize_loop_shortcut_response` (the human ingress) and
@@ -1509,6 +1654,21 @@ pub fn validate_pins(
 /// PUBLISHED under one predicate but ACCEPTED under another is the divergence this exists to
 /// make unrepresentable: `declaration.is_some()` is read by `ai_support::candidates` as "the
 /// declare handler will take this", and only a shared predicate makes that true.
+///
+/// # The third question, and the layer it belongs to
+///
+/// [`aims_survive_the_crossings`] asks whether THIS declaration's aims survive the crossings the
+/// accepted count contains. That is the declare seam's own question: the offer publishes what
+/// SOME legal declaration may specify, and `game::engine::shortcut_consumption_bound` re-derives
+/// its own bound on the board the drive runs against, so neither trusts a number the other
+/// states. The walk reads `schema.points` — the offer's REAL per-slot legal sets — which is
+/// narrower than the union the consumption seam synthesizes, so a declaration admitted here can
+/// still be stopped short at the drive; that is the layering rather than a divergence. The two
+/// seams also read the charge model in OPPOSITE directions, which is that same layering: the
+/// publisher and the drivability gate take
+/// [`crate::analysis::resource::ChargeBound::Ceiling`], where an over-charge only lowers a count,
+/// while this walk takes `Attributable`, where a refusal rests on this declaration's own
+/// choices.
 ///
 /// # `validated_range` STAYS A PARAMETER, and that is a measurement, not a hedge
 ///
@@ -1518,11 +1678,12 @@ pub fn validate_pins(
 /// * the declare firewall and the human ingress each pass
 ///   `game::engine::shortcut_validated_range(&count, template)` — the range the ACCEPTED COUNT
 ///   will drive;
-/// * the bounded PUBLISHER passes the same helper over the SCHEMA's own `iteration_count`, the
-///   widest count any declarer may name against it. Ranges nest — `0..n` re-checks are a
-///   superset of `0..m` for `m <= n`, so a publisher validating at its ceiling implies passing
-///   at every count a declarer could name, while a declarer must be checked at the count it
-///   actually named. Two questions, one helper, two arguments.
+/// * the bounded PUBLISHER passes the same helper over the SCHEMA's own `iteration_count` — its
+///   own SUGGESTION, which since the suggestion and the ceiling became separate fields is NOT
+///   the widest count a declarer may name (that is `deliverable_capacity`). Ranges nest —
+///   `0..n` re-checks are a superset of `0..m` for `m <= n` — so the publisher's narrower range
+///   is sound only because the handler re-validates at the count actually named, which it does.
+///   Two questions, one helper, two arguments.
 ///
 /// # Returns `bool`, deliberately
 ///
@@ -1535,10 +1696,16 @@ pub fn declaration_conforms(
     schema: &ShortcutDecisionSchema,
     template: &DecisionTemplate,
     validated_range: IterationIndex,
+    aim: AimContext<'_>,
     state: &GameState,
 ) -> bool {
+    // The aim walk runs LAST so it only ever sees a declaration whose pins already resolve over
+    // this range: `validate_pins` has confined every `Targets` pin to the offer's published legal
+    // set at every index the count reaches, which is what makes the walk's `Err` arm a statement
+    // about non-targeting pins rather than a hole.
     predictability_gate(template, &schema.points).is_ok()
         && validate_pins(schema, template, validated_range, state).is_ok()
+        && aims_survive_the_crossings(&schema.points, template, validated_range, aim, state).is_ok()
 }
 
 #[cfg(test)]

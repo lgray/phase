@@ -22,7 +22,7 @@ use engine::analysis::decision_template::{
 use engine::analysis::loop_check::{LoopCertificate, ShortcutProposal, ShortcutResponse, WinKind};
 use engine::analysis::resource::{
     loop_detect_cost, loop_states_equal_modulo_resources, reset_loop_detect_cost, BoardDelta,
-    LoopDetectCost, PeriodicDelta, ResourceAxis,
+    ChargeBound, LoopDetectCost, PeriodicDelta, ResourceAxis,
 };
 use engine::game::derived_views::{FamilyCollapseState, UnboundedFamily};
 use engine::game::engine::{apply, EngineError};
@@ -4493,9 +4493,10 @@ fn object_growth_offer_schema_has_live_convoke_taps() {
             schema.points[0].kind
         );
     };
-    // CR 732.2a + CR 732.2c: an optional Advantage loop measures no CR 704 threshold, so the
-    // offer STATES the same capacity it publishes — the frontend echoes this value verbatim and
-    // the accepted count caps the CR 500.5 collapse prompt, so a smaller seed would cap it too.
+    // CR 732.2a + CR 732.2c: the object-growth mint overwrites the win-kind seed with the budget
+    // and measures no threshold, so this offer's suggestion and capacity coincide — the frontend
+    // echoes this value verbatim and the accepted count caps the CR 500.5 collapse prompt, so a
+    // smaller seed would cap it too.
     assert_eq!(
         schema.iteration_count,
         IterationCount::Fixed(schema.deliverable_capacity)
@@ -13374,7 +13375,16 @@ pub(crate) fn cascade_from(
         .iter()
         .filter_map(|&(seat, life)| {
             engine::analysis::resource::PeriodicDelta::first_life_crossing(
-                per_cycle.declared_seat_life_charges(seat, declaration, declaration, points, state),
+                // The PUBLISHED cascade, so the ceiling direction — what this mirror compares a
+                // published count against.
+                per_cycle.declared_seat_life_charges(
+                    seat,
+                    declaration,
+                    declaration,
+                    points,
+                    state,
+                    ChargeBound::Ceiling,
+                ),
                 i64::from(life),
                 horizon,
             )
@@ -13855,6 +13865,8 @@ fn the_accept_at_a_cascade_crossing_commits_that_cycle_and_eliminates_its_seat()
                     declaration.as_ref(),
                     &points,
                     &at_offer,
+                    // The crossing the PUBLISHED ceiling contains, so the ceiling direction.
+                    ChargeBound::Ceiling,
                 ),
                 i64::from(life),
                 ceiling,

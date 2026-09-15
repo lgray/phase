@@ -9139,13 +9139,17 @@ fn an_authored_split_is_previewed_per_declared_seat() {
     let points = shortcut_points(&view);
     let point = f4_allocation_point(&points);
     let (count_spec, published) = f4_published(&view);
-    let InteractionShortcutCountSpec::Fixed { max, .. } = count_spec else {
+    // CR 732.2a: every declaration below is made at the offer's own published SUGGESTION — the
+    // count this offer's own declaration may legally specify. The window's `max` is what SOME
+    // legal declaration may specify, which is a different declaration; this row's claim is not
+    // about which count is legal.
+    let InteractionShortcutCountSpec::Fixed { suggested, .. } = count_spec else {
         panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
     };
     assert!(
-        point.candidate_ids.len() > 1 && max > 2,
+        point.candidate_ids.len() > 1 && suggested > 2,
         "reach-guard: an UNEQUAL split over MORE THAN ONE announced candidate is what makes a \
-         per-seat attribution observable at all; candidates={} max={max}",
+         per-seat attribution observable at all; candidates={} suggested={suggested}",
         point.candidate_ids.len()
     );
 
@@ -9154,7 +9158,7 @@ fn an_authored_split_is_previewed_per_declared_seat() {
             &state,
             proposer,
             &interaction_id,
-            max,
+            suggested,
             f4_pins(&points, allocation),
         );
         assert_eq!(
@@ -9167,7 +9171,7 @@ fn an_authored_split_is_previewed_per_declared_seat() {
             .shortcut_preview
             .expect("a confirmable authored declaration carries its previewed element");
         assert_eq!(
-            element.count, max,
+            element.count, suggested,
             "the element states the count it was declared at"
         );
         assert_eq!(
@@ -9202,8 +9206,8 @@ fn an_authored_split_is_previewed_per_declared_seat() {
 
     let canonical = published
         .iter()
-        .find(|element| element.count == max)
-        .expect("the window's own ceiling is always published")
+        .find(|element| element.count == suggested)
+        .expect("the producer seeds its element set with the window's suggestion")
         .clone();
     assert!(
         invariant(&canonical)
@@ -9214,10 +9218,10 @@ fn an_authored_split_is_previewed_per_declared_seat() {
         canonical.entries
     );
 
-    let unequal = element(&[(0, max - 1), (1, 1)]);
-    let reordered = element(&[(1, max - 1), (0, 1)]);
-    let first_only = element(&[(0, max)]);
-    let second_only = element(&[(1, max)]);
+    let unequal = element(&[(0, suggested - 1), (1, 1)]);
+    let reordered = element(&[(1, suggested - 1), (0, 1)]);
+    let first_only = element(&[(0, suggested)]);
+    let second_only = element(&[(1, suggested)]);
 
     assert_ne!(
         reordered.entries, unequal.entries,
@@ -9299,12 +9303,16 @@ fn an_unpartitioned_pin_states_no_magnitude_and_accept_suggested_states_the_offe
     );
 
     // ── LEG 1's PAIRED POSITIVE: the same declaration WITH its partition stated.
+    // CR 732.2a: every declaration below is made at the offer's own published SUGGESTION — the
+    // count this offer's own declaration may legally specify. The window's `max` is what SOME
+    // legal declaration may specify, which is a different declaration; this row's claim is not
+    // about which count is legal.
     let partitioned = f4_preview(
         &state,
         proposer,
         &interaction_id,
-        max,
-        f4_pins(&points, &[(0, max)]),
+        suggested,
+        f4_pins(&points, &[(0, suggested)]),
     );
     assert_eq!(partitioned.status, InteractionPreviewStatus::Confirmable);
     assert!(
@@ -9316,7 +9324,7 @@ fn an_unpartitioned_pin_states_no_magnitude_and_accept_suggested_states_the_offe
     );
 
     // ── LEG 1: the same pin, its partition cleared.
-    let unpartitioned: Vec<InteractionShortcutPin> = f4_pins(&points, &[(0, max)])
+    let unpartitioned: Vec<InteractionShortcutPin> = f4_pins(&points, &[(0, suggested)])
         .into_iter()
         .map(|mut pin| {
             if pin.group == point.group {
@@ -9325,7 +9333,7 @@ fn an_unpartitioned_pin_states_no_magnitude_and_accept_suggested_states_the_offe
             pin
         })
         .collect();
-    let preview = f4_preview(&state, proposer, &interaction_id, max, unpartitioned);
+    let preview = f4_preview(&state, proposer, &interaction_id, suggested, unpartitioned);
     assert_eq!(
         preview.status,
         InteractionPreviewStatus::Confirmable,
@@ -9884,11 +9892,15 @@ fn a_refused_shortcut_declaration_carries_no_previewed_magnitude() {
     let points = shortcut_points(&view);
     let point = f4_allocation_point(&points);
     let (count_spec, _published) = f4_published(&view);
-    let InteractionShortcutCountSpec::Fixed { max, .. } = count_spec else {
+    // CR 732.2a: every declaration below is made at the offer's own published SUGGESTION — the
+    // count this offer's own declaration may legally specify. The window's `max` is what SOME
+    // legal declaration may specify, which is a different declaration; this row's claim is not
+    // about which count is legal.
+    let InteractionShortcutCountSpec::Fixed { suggested, .. } = count_spec else {
         panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
     };
     assert!(
-        point.candidate_ids.len() > 1 && max > 2,
+        point.candidate_ids.len() > 1 && suggested > 2,
         "reach-guard: the duplicate-id and subset shapes need more than one announced candidate"
     );
 
@@ -9898,8 +9910,8 @@ fn a_refused_shortcut_declaration_carries_no_previewed_magnitude() {
         &state,
         proposer,
         &interaction_id,
-        max,
-        f4_pins(&points, &[(0, max - 1), (1, 1)]),
+        suggested,
+        f4_pins(&points, &[(0, suggested - 1), (1, 1)]),
     );
     assert_eq!(legal.status, InteractionPreviewStatus::Confirmable);
     assert!(
@@ -9913,17 +9925,17 @@ fn a_refused_shortcut_declaration_carries_no_previewed_magnitude() {
     let refusals: Vec<(&str, Vec<InteractionShortcutPin>, InteractionReasonCode)> = vec![
         (
             "sum below the declared count",
-            f4_pins(&points, &[(0, max - 1)]),
+            f4_pins(&points, &[(0, suggested - 1)]),
             InteractionReasonCode::ConstraintUnsatisfied,
         ),
         (
             "a zero segment",
-            f4_pins(&points, &[(0, max), (1, 0)]),
+            f4_pins(&points, &[(0, suggested), (1, 0)]),
             InteractionReasonCode::ConstraintUnsatisfied,
         ),
         (
             "a duplicate choice id",
-            f4_pins(&points, &[(0, max - 1), (0, 1)]),
+            f4_pins(&points, &[(0, suggested - 1), (0, 1)]),
             InteractionReasonCode::ConstraintUnsatisfied,
         ),
         (
@@ -9938,7 +9950,7 @@ fn a_refused_shortcut_declaration_carries_no_previewed_magnitude() {
                             choice_ids: vec![unknown_id.clone()],
                             amounts: vec![AmountAssignment {
                                 choice_id: unknown_id.clone(),
-                                amount: max,
+                                amount: suggested,
                             }],
                         }
                     } else {
@@ -9955,7 +9967,7 @@ fn a_refused_shortcut_declaration_carries_no_previewed_magnitude() {
     ];
 
     for (name, pins, reason) in refusals {
-        let preview = f4_preview(&state, proposer, &interaction_id, max, pins);
+        let preview = f4_preview(&state, proposer, &interaction_id, suggested, pins);
         assert_eq!(
             preview.status,
             InteractionPreviewStatus::Rejected { reason },
@@ -10066,13 +10078,17 @@ fn both_preview_entry_points_answer_with_the_same_shortcut_element() {
     let interaction_id = view.opportunities[0].interaction_id.clone();
     let points = shortcut_points(&view);
     let (count_spec, _published) = f4_published(&view);
-    let InteractionShortcutCountSpec::Fixed { max, .. } = count_spec else {
+    // CR 732.2a: every declaration below is made at the offer's own published SUGGESTION — the
+    // count this offer's own declaration may legally specify. The window's `max` is what SOME
+    // legal declaration may specify, which is a different declaration; this row's claim is not
+    // about which count is legal.
+    let InteractionShortcutCountSpec::Fixed { suggested, .. } = count_spec else {
         panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
     };
     let request = f4_request(
         &interaction_id,
-        max,
-        f4_pins(&points, &[(0, max - 1), (1, 1)]),
+        suggested,
+        f4_pins(&points, &[(0, suggested - 1), (1, 1)]),
     );
 
     let answered = preview_interaction(&state, proposer, &request);
@@ -10110,7 +10126,11 @@ fn the_shortcut_preview_payload_is_additive_on_the_wire() {
     let interaction_id = view.opportunities[0].interaction_id.clone();
     let points = shortcut_points(&view);
     let (count_spec, _published) = f4_published(&view);
-    let InteractionShortcutCountSpec::Fixed { max, .. } = count_spec else {
+    // CR 732.2a: every declaration below is made at the offer's own published SUGGESTION — the
+    // count this offer's own declaration may legally specify. The window's `max` is what SOME
+    // legal declaration may specify, which is a different declaration; this row's claim is not
+    // about which count is legal.
+    let InteractionShortcutCountSpec::Fixed { suggested, .. } = count_spec else {
         panic!("the F4 offer publishes a Fixed count window, got {count_spec:?}");
     };
 
@@ -10118,15 +10138,15 @@ fn the_shortcut_preview_payload_is_additive_on_the_wire() {
         &state,
         proposer,
         &interaction_id,
-        max,
-        f4_pins(&points, &[(0, max - 1), (1, 1)]),
+        suggested,
+        f4_pins(&points, &[(0, suggested - 1), (1, 1)]),
     );
     let refused = f4_preview(
         &state,
         proposer,
         &interaction_id,
-        max,
-        f4_pins(&points, &[(0, max - 1)]),
+        suggested,
+        f4_pins(&points, &[(0, suggested - 1)]),
     );
     assert!(matches!(
         refused.status,

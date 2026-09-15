@@ -1554,3 +1554,60 @@ fn the_second_shortener_narrows_the_range_and_holds_the_ending_point() {
         "the two runs took different lengths, so the shorter one is not the same board"
     );
 }
+
+/// **CR 732.2b when the accepted count spans a cascade.** A two-segment declaration accepted at a
+/// count containing a predicted CR 704.5a crossing is shortened inside that count: the ending
+/// point is the shortener, exactly as at a count that spans none.
+///
+/// The paired accept leg — same board, same declaration, nobody naming a place — supplies the
+/// fallback seat this row asserts the shortener differs from, so the claim cannot be satisfied by
+/// an ending-point rule that ignores who shortened.
+#[test]
+fn a_shortened_cascade_spanning_declaration_seats_the_shortener() {
+    let (open_window, count, crossing) =
+        crate::fantastic_four_bounded_loop::f4_cascade_spanning_window();
+
+    // Nobody shortens: the ending point falls back to the living priority seat.
+    let mut accepted = open_window.clone();
+    while matches!(accepted.waiting_for, WaitingFor::RespondToShortcut { .. }) {
+        respond(&mut accepted, ShortcutResponse::Accept).expect("CR 732.2c: an accept is legal");
+    }
+    let WaitingFor::Priority { player: fallback } = accepted.waiting_for else {
+        panic!(
+            "CR 732.2c: an all-accepted proposal is taken and the game advances to its ending \
+             point, got {:?}",
+            accepted.waiting_for
+        );
+    };
+
+    let mut shortened = open_window;
+    let (shortener, queued) = window(&shortened);
+    assert!(
+        !queued.is_empty(),
+        "reach-guard: seats must remain behind the shortener, else the accepts below are vacuous"
+    );
+    assert_ne!(
+        shortener, fallback,
+        "reach-guard: the shortener must differ from the seat an accept-only drive hands back, \
+         else the claim below is satisfied by an engine that never reads `shortened_by`"
+    );
+    // Strictly inside the accepted count and strictly before the crossing, so the drive performs
+    // to the named place rather than stopping short of it on a departure.
+    let place = crossing - 1;
+    assert!(
+        place > 0 && admitted_places(&shortened).contains(&place),
+        "reach-guard: the named place must lie inside the proposal's own admitted range; \
+         place={place} count={count} range={:?}",
+        admitted_places(&shortened)
+    );
+    shorten(&mut shortened, place).expect("CR 732.2b: naming a place inside the count is legal");
+    while matches!(shortened.waiting_for, WaitingFor::RespondToShortcut { .. }) {
+        respond(&mut shortened, ShortcutResponse::Accept).expect("CR 732.2c: an accept is legal");
+    }
+    assert_eq!(
+        shortened.waiting_for,
+        WaitingFor::Priority { player: shortener },
+        "CR 732.2b + CR 732.2c: the responder who named the ending point receives priority there, \
+         and a count containing a crossing does not move that seat"
+    );
+}

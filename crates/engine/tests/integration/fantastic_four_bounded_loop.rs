@@ -46,8 +46,10 @@
 //! are DISTINGUISHABLE. The former zero-commit was the fail-closed abort on Reed's unpinned
 //! "may"; with Reed published there is nothing left to abort on.
 
-use engine::analysis::decision_template::{DecisionKind, DecisionPointKind, IterationCount};
-use engine::analysis::resource::ResourceVector;
+use engine::analysis::decision_template::{
+    DecisionKind, DecisionPoint, DecisionPointKind, IterationCount,
+};
+use engine::analysis::resource::{ChargeBound, PeriodicDelta, ResourceVector};
 use engine::game::engine::apply;
 use engine::types::ability::{ReplacementMode, TargetRef};
 use engine::types::actions::GameAction;
@@ -444,6 +446,44 @@ fn f4_pin_template(
             DecisionKind::LoopChoice,
         ),
     }
+}
+
+/// [`f4_pin_template`]'s shape with the `Targets` pin carrying the `TargetSchedule::Piecewise`
+/// the allocation ingress mints for `allocation` — segment starts at the prefix sums its amounts
+/// imply, which is what `decode_sequenced_targets` builds. Lets a row hand the DECLARE HANDLER the
+/// same multi-segment declaration it hands the human ingress, so the two entries are compared on
+/// one declaration rather than on two the test built differently.
+fn f4_allocation_template(
+    schema: &engine::analysis::decision_template::ShortcutDecisionSchema,
+    owner: PlayerId,
+    count: u32,
+    allocation: &[(PlayerId, u32)],
+) -> engine::analysis::decision_template::DecisionTemplate {
+    use engine::analysis::decision_template::{
+        AnnouncementSubject, PinnedDecision, Ranking, TargetPin, TargetSchedule,
+    };
+    let mut template = f4_pin_template(schema, owner, count);
+    let mut start = 0u32;
+    let segments: Vec<(u32, Ranking)> = allocation
+        .iter()
+        .map(|(seat, amount)| {
+            let at = start;
+            start += amount;
+            (at, Ranking::one(AnnouncementSubject::Seat(*seat)))
+        })
+        .collect();
+    assert_eq!(
+        start, count,
+        "an allocation partitions the DECLARED count; this shape does not"
+    );
+    for pin in &mut template.decisions {
+        if let PinnedDecision::Targets { targets, .. } = pin {
+            *targets = vec![TargetPin::Scheduled(TargetSchedule::Piecewise(
+                segments.clone(),
+            ))];
+        }
+    }
+    template
 }
 
 /// Restore the `Priority` window the reconcile bridge consumed when it raised the offer, so
@@ -2904,7 +2944,7 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
 /// and the decline hands priority back.
 ///
 /// **The four one-axis drives below still measure the engine-side guards the generator's gate
-/// depends on, but one of them has FLIPPED, deliberately.** `Fixed(max) + None` used to be a
+/// depends on, but one of them has FLIPPED, deliberately.** `Fixed(declared) + None` used to be a
 /// live fail-closed guard, on the stated grounds that resolving a `template: None` declaration
 /// against the offer's own published declaration was a declare-handler change deferred out of
 /// that commit's partition. Item-4 C2 IS that change: `handle_declare_shortcut` now resolves a
@@ -2924,8 +2964,8 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
 /// |---|---|
 /// | `UntilLethal` + `None` — **the shape the generator emitted before the bounded gate** | REFUSED ⇒ `Priority` |
 /// | `UntilLethal` + a conformant template | REFUSED ⇒ `Priority` (so the refusal is keyed on the COUNT, not on the pins) |
-/// | `Fixed(max)` + `None` | **ACCEPTED** ⇒ item-4 C2 resolves the `None` against the declaration this offer published, so the browser payload reaches the same window the AI's does |
-/// | `Fixed(max)` + a conformant template | **ACCEPTED** ⇒ the CR 732.2b APNAP window opens |
+/// | `Fixed(declared)` + `None` | **ACCEPTED** ⇒ item-4 C2 resolves the `None` against the declaration this offer published, so the browser payload reaches the same window the AI's does |
+/// | `Fixed(declared)` + a conformant template | **ACCEPTED** ⇒ the CR 732.2b APNAP window opens |
 ///
 /// The last row is the ANTI-VACUITY control: without it, "everything reaches `Priority`" would
 /// be satisfied by a board that refuses every declaration for some unrelated reason. With it,
@@ -2961,7 +3001,23 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
     drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
     let (proposer, _certificate, schema) = offer_parts(&state);
     let schema = schema.clone();
-    let max = schema.deliverable_capacity;
+    // CR 732.2a: the count these arms declare is the offer's own published SUGGESTION — the count
+    // this offer's own declaration may legally specify, since `truncate_to_declared_seats` cuts
+    // that suggestion at the repetition its own aim departs on. The published capacity is what
+    // SOME legal declaration may specify, which is a different declaration, and none of this
+    // row's three claims is about which count is legal.
+    let IterationCount::Fixed(declared) = schema.iteration_count else {
+        panic!(
+            "this board publishes a Fixed suggestion, got {:?}",
+            schema.iteration_count
+        );
+    };
+    assert!(
+        declared >= 1 && declared <= schema.deliverable_capacity,
+        "reach-guard: the declared count lies inside the published window, so no arm below is \
+         refused by the capacity cap; declared={declared} capacity={}",
+        schema.deliverable_capacity
+    );
 
     assert!(
         state.last_loop_action_sequence.is_empty(),
@@ -3042,7 +3098,7 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
          positive control below has accepted changes nothing"
     );
     assert_eq!(
-        outcome(IterationCount::Fixed(max), None),
+        outcome(IterationCount::Fixed(declared), None),
         "RespondToShortcut",
         "item-4 C2, and this arm FLIPPED with it: `Fixed` + `template: None` is the browser's \
          own payload, and `handle_declare_shortcut` now resolves that `None` against the \
@@ -3054,8 +3110,8 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
     // ── ANTI-VACUITY CONTROL: this board DOES accept a declaration ──
     assert_eq!(
         outcome(
-            IterationCount::Fixed(max),
-            Some(f4_pin_template(&schema, proposer, max))
+            IterationCount::Fixed(declared),
+            Some(f4_pin_template(&schema, proposer, declared))
         ),
         "RespondToShortcut",
         "the accepted shape is `Fixed(n)` + a template pinning every published point, owner == \
@@ -4015,8 +4071,8 @@ fn declare_template_free(state: &GameState, proposer: PlayerId, k: u32) -> GameS
 ///
 /// The picker's whole point is that any count in `[min, max]` may be declared, so a repair that
 /// only worked at `suggested` would be no repair. `k = 1` is the window's lower edge and
-/// `k = 5` is neither edge nor the suggestion — no implementation that special-cases
-/// the published capacity (which this board publishes as `suggested`) satisfies the `k = 5` arm.
+/// `k = 5` is neither edge nor the suggestion — no implementation that special-cases the
+/// suggestion satisfies the `k = 5` arm.
 /// `proposal.count` is asserted per arm, so an engine that accepted the declaration but drove
 /// the suggested count anyway fails here rather than silently overriding the player.
 ///
@@ -4034,11 +4090,17 @@ fn c2_r1_the_browsers_template_free_declaration_reaches_the_accepted_declaration
     let mut state = load_f4();
     drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
     let (proposer, _certificate, schema) = offer_parts(&state);
-    let (points, bounded, max) = (
-        schema.points.len(),
-        schema.is_bounded(),
-        schema.deliverable_capacity,
-    );
+    let (points, bounded) = (schema.points.len(), schema.is_bounded());
+    // The count every arm declares is the offer's own published SUGGESTION. This row is about the
+    // `or_else` RESOLUTION reaching the published declaration, not about which count is legal, and
+    // that declaration pins ONE seat: above its own aim's crossing it states a choice the sequence
+    // cannot contain.
+    let IterationCount::Fixed(suggested) = schema.iteration_count else {
+        panic!(
+            "this board publishes a Fixed suggestion, got {:?}",
+            schema.iteration_count
+        );
+    };
 
     assert!(
         points > 0,
@@ -4054,16 +4116,16 @@ fn c2_r1_the_browsers_template_free_declaration_reaches_the_accepted_declaration
                  below would be measuring site F's period test, not the repair",
     );
     assert!(
-        max >= 5,
-        "REACH-GUARD: `k = 5` must be INTERIOR to the declarable window, else R1b's \
-         non-suggested arm is refused by the `Fixed(n) > deliverable_capacity` cap for a reason \
-         that has nothing to do with the repair. capacity={max}"
+        suggested >= 5,
+        "REACH-GUARD: `k = 5` must be INTERIOR to the counts this declaration may name, else \
+         R1b's non-suggested arm is refused for a reason that has nothing to do with the repair. \
+         suggested={suggested}"
     );
 
-    // R1 — the suggested count, which is `max` on this board.
-    let at_max = declare_template_free(&state, proposer, max);
+    // R1 — the offer's own published suggestion.
+    let at_suggested = declare_template_free(&state, proposer, suggested);
     assert_eq!(
-        accepted_proposal(&at_max).template.as_ref(),
+        accepted_proposal(&at_suggested).template.as_ref(),
         Some(&published),
         "item-4 C2: the accepted proposal carries the offer's OWN published declaration, \
          value-equal. `is_some()` would also pass on an engine that fabricated an empty \
@@ -4071,12 +4133,12 @@ fn c2_r1_the_browsers_template_free_declaration_reaches_the_accepted_declaration
          `a_template_free_declaration_is_admitted_only_by_the_proposers_own_period` kills"
     );
     assert_eq!(
-        accepted_proposal(&at_max).count,
-        IterationCount::Fixed(max),
+        accepted_proposal(&at_suggested).count,
+        IterationCount::Fixed(suggested),
         "and the count the player named is the count the proposal carries"
     );
 
-    // R1b — a lower-edge count and a strictly interior one. Neither is `suggested`.
+    // R1b — the window's lower edge and a strictly interior count. Neither is `suggested`.
     for k in [1u32, 5] {
         let post = declare_template_free(&state, proposer, k);
         assert_eq!(
@@ -4091,8 +4153,8 @@ fn c2_r1_the_browsers_template_free_declaration_reaches_the_accepted_declaration
             IterationCount::Fixed(k),
             "R1b at k={k}: the proposal drives the count the player NAMED. An engine that \
              accepted the declaration and then substituted `suggested` fails here. k=5 is \
-             neither window edge (1/{max}) nor the suggestion, so no hard-coded value \
-             satisfies this arm"
+             neither the window's floor nor the suggestion ({suggested}), so no hard-coded \
+             value satisfies this arm"
         );
     }
 }
@@ -6716,7 +6778,20 @@ fn e5_an_unnarrowed_offer_and_every_respond_window_state_no_ceiling() {
         drive_f4_to_offer(&mut state, 400)
             .unwrap_or_else(|| panic!("[{label}] reach-guard: the bounded offer must FIRE"));
         let (proposer, _certificate, schema) = offer_parts(&state);
-        let declared = schema.deliverable_capacity;
+        // The CEILING this row's channel assertions are about, and — separately — the COUNT its
+        // declarations are made at. Different numbers: the ceiling is what SOME legal declaration
+        // may specify, while a declaration pinning ONE seat may specify only the count its own aim
+        // survives. Both are read from THIS board, so the three boards below land at three counts
+        // of their own rather than at one.
+        let ceiling = schema.deliverable_capacity;
+        let IterationCount::Fixed(declared) = schema.iteration_count else {
+            panic!("[{label}] this board publishes a Fixed suggestion");
+        };
+        assert!(
+            declared >= 1 && declared <= ceiling,
+            "[{label}] reach-guard: the declared count lies inside the published window, so the \
+             window below opens for its own reason; declared={declared} ceiling={ceiling}"
+        );
         let schema = schema.clone();
 
         // ── E5a: the same board with its bound un-narrowed to the engine cap.
@@ -6783,7 +6858,7 @@ fn e5_an_unnarrowed_offer_and_every_respond_window_state_no_ceiling() {
         // ── E6: the same refusal on a NARROWED offer, with its matched positive one beat back.
         assert_eq!(
             derive_views(&state, None).bounded_loop_max_repetitions,
-            Some(declared),
+            Some(ceiling),
             "[{label}] matched positive: the narrowed offer DOES state its ceiling one beat \
              before the declaration below"
         );
@@ -8133,4 +8208,723 @@ fn the_published_offer_the_authored_edit_and_the_committed_drive_are_one_chain()
         "CR 732.2a: the board mints the published per-cycle token rate {token_rate} on each of \
          the {count} committed cycles: {tokens_before} -> {tokens_after} battlefield tokens"
     );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// The per-segment aim refusal, driven on the real 4p dump through both production entries.
+// ═════════════════════════════════════════════════════════════════════════════════════════
+
+/// A published legal victim that is NOT the seat the drive's leading cycle already announced.
+fn f4_other_victim(offer: &F4Allocation) -> PlayerId {
+    *offer
+        .legal_seats
+        .iter()
+        .find(|seat| **seat != offer.preannounced)
+        .expect("reach-guard: a retarget segment needs a second published legal victim")
+}
+
+/// That seat's published headroom: its own life divided by its own published per-cycle charge.
+fn f4_headroom(state: &GameState, per_cycle: &PeriodicDelta, seat: PlayerId) -> u32 {
+    let life = state
+        .players
+        .iter()
+        .find(|p| p.id == seat)
+        .map(|p| p.life)
+        .expect("a published legal victim is seated");
+    let charge = per_cycle
+        .seat_life_charge
+        .iter()
+        .find(|(charged, _)| *charged == seat)
+        .map(|(_, magnitude)| *magnitude)
+        .expect("a published legal victim carries a published per-cycle charge");
+    assert!(
+        life > 0 && charge > 0,
+        "reach-guard: a seat with no life or no charge has no headroom to size a segment from; \
+         seat={seat:?} life={life} charge={charge}"
+    );
+    (life as u32) / (charge as u32)
+}
+
+/// Both verdicts for one allocation at one count, in the two currencies the two production
+/// entries refuse in: the human ingress `Err`s and mints no action (it borrows the board
+/// immutably, so it cannot move `waiting_for` for any submission, accepted or refused), while the
+/// declare handler returns `Ok` and hands priority back — so the ABSENCE of the CR 732.2b window
+/// is that entry's discriminator.
+fn f4_both_entries_admit(
+    state: &GameState,
+    offer: &F4Allocation,
+    schema: &engine::analysis::decision_template::ShortcutDecisionSchema,
+    count: u32,
+    allocation: &[(PlayerId, u32)],
+) -> (bool, bool) {
+    use engine::game::interaction::resolve_interaction_response;
+    let ingress = resolve_interaction_response(
+        state,
+        offer.proposer,
+        &f4_allocation_submission(offer, count, allocation),
+    );
+    let mut probe = state.clone();
+    apply(
+        &mut probe,
+        offer.proposer,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(count),
+            template: Some(f4_allocation_template(
+                schema,
+                offer.proposer,
+                count,
+                allocation,
+            )),
+        },
+    )
+    .expect("a refused declaration is a HANDBACK, never an error");
+    (
+        ingress.is_ok(),
+        matches!(probe.waiting_for, WaitingFor::RespondToShortcut { .. }),
+    )
+}
+
+/// CR 704.5a: every aimable seat's AIM-INDEPENDENT life charge at this offer — the per-repetition
+/// `net` a TEMPLATE-FREE declaration produces, which is the component no declaration's aim can
+/// move.
+///
+/// Zero at [`ChargeBound::Attributable`] is what makes a count's partition across seats mean what
+/// a partition is supposed to mean: a seat charged whether or not it is aimed crosses on a
+/// repetition that depends on the ORDER of the segments and not only on their sizes, and every row
+/// that reads a refusal as being about the aim would then be reading something else.
+///
+/// The same read at [`ChargeBound::Ceiling`] is the live control in the same invocation, so a zero
+/// is a measurement rather than a dead instrument; the two-seat floor and the caller's own bounded
+/// offer are what keep a board demoted out of this shape from passing vacuously.
+pub(crate) fn assert_no_aim_independent_charge(
+    state: &GameState,
+    per_cycle: &PeriodicDelta,
+    points: &[DecisionPoint],
+    seats: &[PlayerId],
+) {
+    assert!(
+        seats.len() > 1,
+        "reach-guard: this read needs at least two published aimable seats, or a partition across \
+         seats is not a thing this board can express; got {seats:?}"
+    );
+    for &seat in seats {
+        let charge = |bound| {
+            per_cycle
+                .declared_seat_life_charges(seat, None, None, points, state, bound)
+                .next()
+                .expect("the per-repetition charges are unbounded")
+        };
+        let attributable = charge(ChargeBound::Attributable);
+        let ceiling = charge(ChargeBound::Ceiling);
+        assert_eq!(
+            attributable.net, 0,
+            "CR 704.5a: {seat:?} carries an aim-independent per-repetition charge, so its crossing \
+             depends on where the other segments aim; got {attributable:?}"
+        );
+        assert!(
+            ceiling.net > 0,
+            "LIVE CONTROL: the same read at the ceiling bound must be nonzero on {seat:?}, or the \
+             zero above is an instrument that cannot answer; got {ceiling:?}"
+        );
+    }
+}
+
+/// **One count, three allocations, and only the overrunning two are refused.** CR 732.2a +
+/// CR 102.1: a declaration is refused when a segment aims a published victim at a repetition
+/// STRICTLY AFTER the one this declaration's own aims take that seat out on. The SAME count,
+/// partitioned inside every published seat's own headroom, is admitted — so the refusal is
+/// attributable to the allocation and not to the count, which no single half can show.
+///
+/// Both production entries in one invocation, each in its own refusal currency (see
+/// [`f4_both_entries_admit`]).
+///
+/// # Shape, derived from the published offer
+///
+/// The count is the pre-announced victim's own published headroom plus the other published
+/// victim's. The ADMITTED partition gives each seat exactly its own headroom with the
+/// pre-announced victim in the LATER segment; the first REFUSED one moves a single repetition
+/// from the first segment into the second, so the later segment outlives its seat by one; the
+/// second aims the whole count at the pre-announced victim from the first repetition.
+///
+/// # Reach guards, in the same invocation
+///
+/// A strictly positive per-cycle magnitude; two published legal victims; the published suggestion
+/// IS the pre-announced seat's own headroom, which is what makes "inside every seat's headroom"
+/// the same partition the offer itself suggests; all three allocations carry the same count, at or
+/// below the published capacity, so neither the capacity nor the budget arm separates them; and no
+/// aimable seat carries an aim-independent charge ([`assert_no_aim_independent_charge`]).
+///
+/// # The two failing legs
+///
+/// Delete `declaration_conforms`' aim conjunct ⇒ both refused halves are admitted. Restore
+/// `ChargeBound::Ceiling` at that conjunct ⇒ the admitted half is refused, because the ceiling
+/// charges the pre-announced victim its reserved magnitude at every repetition this declaration
+/// aims elsewhere.
+#[test]
+fn p3_one_count_three_allocations_and_only_the_overrunning_ones_are_refused() {
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let (_proposer, certificate, schema) = offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let schema = schema.clone();
+    let capacity = schema.deliverable_capacity;
+    let suggestion = offer.drivable_count;
+    let other = f4_other_victim(&offer);
+    let preannounced = f4_headroom(&state, &per_cycle, offer.preannounced);
+    let remainder = f4_headroom(&state, &per_cycle, other);
+    let count = preannounced + remainder;
+
+    assert!(
+        offer.rate > 0,
+        "reach-guard: a zero per-cycle charge crosses nobody and every verdict below is vacuous"
+    );
+    assert!(
+        offer.legal_seats.len() > 1,
+        "reach-guard: a two-segment allocation needs a second published legal victim; got {:?}",
+        offer.legal_seats
+    );
+    assert_eq!(
+        preannounced, suggestion,
+        "reach-guard: the published suggestion is the pre-announced victim's OWN headroom on this \
+         board, which is what makes the admitted partition below the one the offer itself \
+         suggests; headroom={preannounced} suggestion={suggestion}"
+    );
+    assert!(
+        count <= capacity,
+        "reach-guard: the declared count sits inside the published window, so the capacity arm is \
+         not what refuses either half; count={count} capacity={capacity}"
+    );
+    assert_no_aim_independent_charge(&state, &per_cycle, &schema.points, &offer.legal_seats);
+
+    let inside = [(other, remainder), (offer.preannounced, preannounced)];
+    let overruns_late = [
+        (other, remainder - 1),
+        (offer.preannounced, preannounced + 1),
+    ];
+    let overruns_whole = [(offer.preannounced, count)];
+    for allocation in [
+        inside.as_slice(),
+        overruns_late.as_slice(),
+        overruns_whole.as_slice(),
+    ] {
+        assert_eq!(
+            allocation.iter().map(|(_, n)| n).sum::<u32>(),
+            count,
+            "the three allocations carry the SAME count; only their partitions differ"
+        );
+    }
+
+    assert_eq!(
+        f4_both_entries_admit(&state, &offer, &schema, count, &inside),
+        (true, true),
+        "CR 732.2a: every segment ends at or before its own seat's crossing under the aims this \
+         declaration itself makes, so both production entries admit it — and that acceptance is \
+         what makes the refusals below attributable to the PARTITION rather than to an ingress \
+         that started refusing everything. count={count} allocation={inside:?}"
+    );
+    assert_eq!(
+        f4_both_entries_admit(&state, &offer, &schema, count, &overruns_late),
+        (false, false),
+        "CR 732.2a + CR 102.1: the later segment aims a seat this declaration's own aims have \
+         already taken out of the game, so the choice cannot be made and the DECLARATION is \
+         refused — at the ingress with no action minted, and at the handler with priority handed \
+         back and no CR 732.2b window. count={count} allocation={overruns_late:?}"
+    );
+    assert_eq!(
+        f4_both_entries_admit(&state, &offer, &schema, count, &overruns_whole),
+        (false, false),
+        "CR 732.2a: one segment aimed past its own seat's crossing is refused by the same \
+         conjunct, whether the overrun is a whole count or a single repetition. \
+         count={count} allocation={overruns_whole:?}"
+    );
+}
+
+/// **A later segment aiming the pre-announced victim inside its own headroom is admitted.**
+/// CR 732.2a: the repetitions a declaration spends aiming ELSEWHERE are repetitions that seat is
+/// not charged for, so its own crossing moves out by exactly them. This is the shape the shipped
+/// rule refused, and the refusal was the finding that reopened this phase.
+///
+/// # The pair, at ONE count
+///
+/// One repetition aimed at the other published victim and then the pre-announced victim for its
+/// whole headroom — admitted. The same count aimed at the pre-announced victim from the FIRST
+/// repetition — refused, because nothing moved its crossing and the last repetition aims a seat
+/// the earlier ones removed. The two differ in one repetition's aim, which is what keeps this row
+/// from being satisfied by a conjunct that stopped refusing anything at all.
+///
+/// # Failing legs
+///
+/// Restore `ChargeBound::Ceiling` at `declaration_conforms`' aim conjunct ⇒ the admitted half
+/// flips, because the ceiling charges the pre-announced victim its reserved magnitude at the
+/// repetition this declaration aims elsewhere. Delete the conjunct ⇒ the refused half flips.
+#[test]
+fn p3_a_later_segment_aiming_the_preannounced_victim_within_its_headroom_is_admitted() {
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let (_proposer, certificate, schema) = offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let schema = schema.clone();
+    let capacity = schema.deliverable_capacity;
+    let other = f4_other_victim(&offer);
+    let preannounced = f4_headroom(&state, &per_cycle, offer.preannounced);
+    let count = preannounced + 1;
+
+    assert!(
+        offer.legal_seats.len() > 1,
+        "reach-guard: the deferred half needs a second published legal victim to spend its first \
+         repetition on; got {:?}",
+        offer.legal_seats
+    );
+    assert!(
+        count <= capacity,
+        "reach-guard: the declared count sits inside the published window, so the capacity arm is \
+         not what refuses the immediate half; count={count} capacity={capacity}"
+    );
+
+    let deferred = [(other, 1), (offer.preannounced, preannounced)];
+    let immediate = [(offer.preannounced, count)];
+    assert_eq!(
+        f4_both_entries_admit(&state, &offer, &schema, count, &deferred),
+        (true, true),
+        "CR 732.2a: the repetition aimed elsewhere is one the pre-announced victim is not charged \
+         for, so its own segment ends exactly on its crossing and both entries admit the \
+         declaration. count={count} allocation={deferred:?}"
+    );
+    assert_eq!(
+        f4_both_entries_admit(&state, &offer, &schema, count, &immediate),
+        (false, false),
+        "CR 732.2a + CR 102.1: the SAME count aimed at that seat from the first repetition \
+         outlives it by one, so the declaration is refused — which is what shows the acceptance \
+         above is about where the aims fall and not about the count. count={count} \
+         allocation={immediate:?}"
+    );
+}
+
+/// **The reported departure is the one this declaration's own aims produce.** CR 732.2a +
+/// CR 102.1: for a declaration BOTH readings of the charge model refuse, the departure
+/// `AimViolation::AimsAtDepartedSeat` carries is the repetitions this declaration aims ELSEWHERE
+/// before that seat's own segment plus that seat's own published headroom — while the published
+/// ceiling reports the headroom alone, on the same board, for the same declaration.
+///
+/// Read at the authority itself, because both production entries return a `bool` here and the two
+/// readings agree on it: the REASON is the only place they differ, and a repair whose verdict is
+/// right for the wrong reason is what this row refuses.
+///
+/// # Both sides derived, neither spelled
+///
+/// The attributable side is the violation's own `departure`. The ceiling side is that same seat's
+/// first crossing under the SAME declaration and the SAME published observation, read through the
+/// same public producer at [`ChargeBound::Ceiling`] over the board's own life total. The relation
+/// asserted is the derived one; no count, seat or repetition is written down.
+///
+/// Failing leg: restore `ChargeBound::Ceiling` at the aim conjunct ⇒ the reported departure
+/// collapses onto the ceiling comparand and both equalities below fail.
+#[test]
+fn p3_the_reported_departure_counts_the_repetitions_aimed_elsewhere_first() {
+    use engine::analysis::decision_template::{
+        aims_survive_the_crossings, AimContext, AimViolation,
+    };
+
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let (_proposer, certificate, schema) = offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let schema = schema.clone();
+    let other = f4_other_victim(&offer);
+    let preannounced = f4_headroom(&state, &per_cycle, offer.preannounced);
+    let elsewhere = f4_headroom(&state, &per_cycle, other) - 1;
+    let count = elsewhere + preannounced + 1;
+    assert!(
+        count <= schema.deliverable_capacity,
+        "reach-guard: the declaration under test sits inside the published window, so the refusal \
+         it carries is the aim conjunct's; count={count} capacity={}",
+        schema.deliverable_capacity
+    );
+
+    let allocation = [(other, elsewhere), (offer.preannounced, preannounced + 1)];
+    let template = f4_allocation_template(&schema, offer.proposer, count, &allocation);
+    let published = offer_declaration(&state);
+    assert!(
+        published.is_some(),
+        "reach-guard: the ceiling's over-charge is taken against the declaration this offer \
+         PUBLISHED, so a `None` there would make the two readings coincide"
+    );
+
+    let violation = aims_survive_the_crossings(
+        &schema.points,
+        &template,
+        count,
+        AimContext {
+            proposer: offer.proposer,
+            per_cycle: Some(&per_cycle),
+            published: published.as_ref(),
+        },
+        &state,
+    )
+    .expect_err("CR 732.2a: this declaration outlives the seat its later segment aims");
+    let AimViolation::AimsAtDepartedSeat {
+        repetition,
+        seat,
+        departure,
+    } = violation;
+
+    assert_eq!(
+        seat, offer.preannounced,
+        "the seat the later segment aims is the offer's own pre-announced victim"
+    );
+    assert_eq!(
+        repetition, count,
+        "the violation is reported at the one repetition that outlives the departure, which on \
+         this allocation is its last; got {repetition} of {count}"
+    );
+    assert_eq!(
+        departure,
+        elsewhere + preannounced,
+        "CR 732.2a: the departure this declaration's own aims produce counts the repetitions it \
+         spends elsewhere FIRST — {elsewhere} of them — and then that seat's own headroom \
+         {preannounced}; got {departure}"
+    );
+
+    // The ceiling comparand: the same seat, the same declaration, the same published observation,
+    // read at the direction the publisher and the drivability gate ask for.
+    let life = state
+        .players
+        .iter()
+        .find(|player| player.id == offer.preannounced)
+        .map(|player| i64::from(player.life))
+        .expect("the pre-announced victim is seated");
+    let ceiling = PeriodicDelta::first_life_crossing(
+        per_cycle.declared_seat_life_charges(
+            offer.preannounced,
+            Some(&template),
+            published.as_ref(),
+            &schema.points,
+            &state,
+            ChargeBound::Ceiling,
+        ),
+        life,
+        count,
+    )
+    .expect(
+        "CONTROL: the ceiling reading must cross this seat inside the declared count too, or the \
+         two readings are not being compared on one refusal",
+    );
+    assert_eq!(
+        ceiling, preannounced,
+        "the ceiling charges this seat at every repetition the declaration aims elsewhere, so it \
+         reports the headroom ALONE; got {ceiling}"
+    );
+    assert!(
+        ceiling < departure,
+        "and the two readings differ on this declaration, which is what makes the departure above \
+         a measurement of the repair rather than of an arithmetic both directions share; \
+         ceiling={ceiling} attributable={departure}"
+    );
+}
+
+/// **Carried row (owner Phase 2) — the drive under-delivers, and hands priority back.** An accept
+/// this phase's rule ADMITS still delivers fewer repetitions than the accepted count, every
+/// committed cycle intact and priority handed back. A revert of this phase's refusal leaves this
+/// row green; what it guards is the ceiling-and-drive Phase 2 landed.
+///
+/// # Shape
+///
+/// A count strictly above the published suggestion, over two segments whose FIRST aims a
+/// non-pre-announced legal victim, each segment sized to its own seat's published headroom — the
+/// re-aiming shape whose every segment ends on its own seat's crossing, which is why the aim
+/// conjunct admits it. The ingress's acceptance is this row's own reach guard for that.
+///
+/// # Controls, in the same invocation
+///
+/// The near-equal split the offer's own window publishes commits its WHOLE count at the same
+/// capacity and eliminates a seat, so leg (a)'s short prefix is a property of THIS shape rather
+/// than of every drive on this board, and leg (b)'s empty elimination set is a reading taken by
+/// the same `p.is_eliminated` walk in the same test.
+#[test]
+fn p3_an_admitted_re_aiming_accept_commits_a_strict_prefix_and_hands_priority_back() {
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let (_proposer, certificate, schema) = offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let schema = schema.clone();
+    let capacity = schema.deliverable_capacity;
+    let suggestion = offer.drivable_count;
+    let others: Vec<PlayerId> = offer
+        .legal_seats
+        .iter()
+        .copied()
+        .filter(|seat| *seat != offer.preannounced)
+        .collect();
+    assert!(
+        others.len() > 1,
+        "reach-guard: this shape needs TWO non-pre-announced legal victims; got {:?}",
+        offer.legal_seats
+    );
+    let segments = [
+        (others[0], f4_headroom(&state, &per_cycle, others[0])),
+        (others[1], f4_headroom(&state, &per_cycle, others[1])),
+    ];
+    let count = segments.iter().map(|(_, n)| n).sum::<u32>();
+    assert!(
+        count > suggestion && count <= capacity,
+        "reach-guard: the declared count is strictly ABOVE the published suggestion — so a drive \
+         that merely delivered the suggestion would not satisfy leg (a) trivially — and inside \
+         the published window, so neither the capacity arm nor the budget arm is what shortens \
+         it. count={count} suggestion={suggestion} capacity={capacity}"
+    );
+    assert!(
+        offer.rate > 0,
+        "reach-guard: a zero per-cycle charge makes every life delta below read 0"
+    );
+
+    let losses = f4_drive_allocation(&mut state, &offer, count, &segments);
+    let committed = losses.iter().sum::<i64>() / offer.rate;
+    assert!(
+        committed < i64::from(count),
+        "CR 732.2a: the accepted count is not delivered — the drive stops where its own \
+         re-derivation stops. committed={committed} accepted={count} losses={losses:?}"
+    );
+    assert!(
+        state.players.iter().all(|player| !player.is_eliminated),
+        "and it stops SHORT of the crossing it predicted: no seat left the game. board={:?}",
+        state
+            .players
+            .iter()
+            .map(|p| (p.id, p.life, p.is_eliminated))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "CR 800.4a: priority is handed back to a living seat, degraded rather than errored; \
+         got {:?}",
+        state.waiting_for
+    );
+
+    // ── CONTROL: a different declaration at the SAME capacity commits its whole count and DOES
+    //    eliminate a seat, read by the same walk in the same invocation.
+    let mut control = load_f4();
+    let control_offer = f4_allocation_offer(&mut control);
+    let third = capacity / 3;
+    let spread = [
+        (control_offer.preannounced, third),
+        (others[0], third),
+        (others[1], capacity - 2 * third),
+    ];
+    let control_losses = f4_drive_allocation(&mut control, &control_offer, capacity, &spread);
+    assert_eq!(
+        control_losses.iter().sum::<i64>() / control_offer.rate,
+        i64::from(capacity),
+        "control: this shape commits its WHOLE count at the same capacity, so the short prefix \
+         above belongs to the re-aiming shape and not to every drive on this board. \
+         losses={control_losses:?}"
+    );
+    assert!(
+        control.players.iter().any(|player| player.is_eliminated),
+        "control: the same `is_eliminated` walk DOES report a departure on this board, so the \
+         empty reading above is a measurement and not a field nothing ever sets"
+    );
+}
+
+/// **One authority, structural half.** The aim conjunct lives INSIDE `declaration_conforms` and
+/// at no call site: `aims_survive_the_crossings` is named only in the authority's own file, once
+/// to define it and once for the authority's own call. A caller that invoked it directly would be
+/// a second place deciding whether a declaration is legal, which is the divergence
+/// `declaration_conforms` exists to make unrepresentable.
+///
+/// The walk is the WHOLE crate source, not a named file: a direct call in a THIRD file is exactly
+/// what a named-pair walk cannot see. Line comments are stripped by the shared census helper, so
+/// a mention in a doc cannot satisfy this.
+///
+/// LIVE CONTROL, in the same invocation and over the same walk: `declaration_conforms(` — whose
+/// production sites are spread across three files — must be found in MORE THAN ONE of them. A
+/// walk that reached only the authority's own file would satisfy the claim above by not looking.
+#[test]
+fn p3_the_aim_conjunct_is_named_only_inside_the_declaration_authority() {
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    use super::source_census::code;
+
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut aim: BTreeMap<String, usize> = BTreeMap::new();
+    let mut control: BTreeMap<String, usize> = BTreeMap::new();
+    for path in super::loop_shortcut_offer_writer_census::rs_files(&src) {
+        let rel = path
+            .strip_prefix(&src)
+            .expect("walked path is under src")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+        for line in text.lines() {
+            let line = code(line);
+            if line.contains("aims_survive_the_crossings(") {
+                *aim.entry(rel.clone()).or_default() += 1;
+            }
+            if line.contains("declaration_conforms(") {
+                *control.entry(rel.clone()).or_default() += 1;
+            }
+        }
+    }
+
+    assert!(
+        control.len() > 1,
+        "LIVE CONTROL: the shared authority is called from more than one file, so a walk \
+         reporting one file for the conjunct below is a measurement rather than a walk that \
+         stopped early; got {control:?}"
+    );
+    assert_eq!(
+        aim.into_iter().collect::<Vec<_>>(),
+        vec![("analysis/decision_template.rs".to_string(), 2)],
+        "CR 732.2a: the aim conjunct is the authority's, not a call site's — one definition and \
+         the authority's own call, both in `analysis/decision_template.rs`. A hit in any other \
+         file is a second place deciding whether a declaration is legal"
+    );
+}
+
+/// **The over-ceiling refusal stays observable, and the row names which conjunct each half is
+/// about.** CR 732.2a: a count one above the published capacity opens NO accept-or-shorten window,
+/// while the at-capacity count — declared with an allocation the aim conjunct admits — does, in
+/// the same invocation. The refusal hands priority back rather than erroring, so the window's
+/// ABSENCE is the only discriminator; some waiting state is always present and is not one.
+///
+/// The at-capacity half is also this phase's over-breadth control: the published capacity is what
+/// SOME legal declaration may specify, and this shows at least one still can after the aim
+/// conjunct lands. Without it, a conjunct that refused every declaration at the ceiling would
+/// satisfy the over-capacity half and look correct.
+///
+/// Hostile sibling: a count above the engine's own repetition budget is refused by the BUDGET
+/// arm, which is a different conjunct and is labelled as one.
+#[test]
+fn p3_a_count_above_the_published_capacity_opens_no_window_while_the_capacity_itself_does() {
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let (_proposer, _certificate, schema) = offer_parts(&state);
+    let schema = schema.clone();
+    let capacity = schema.deliverable_capacity;
+    assert!(
+        capacity < MAX_SHORTCUT_CYCLES_MIRROR,
+        "reach-guard: the capacity must sit strictly below the engine's own budget, else the \
+         over-capacity half would be measuring the BUDGET arm; capacity={capacity}"
+    );
+
+    // The near-equal split the offer's own preview publishes: each segment ends on or before its
+    // own seat's crossing, so the aim conjunct admits it at the ceiling.
+    let third = capacity / 3;
+    let others: Vec<PlayerId> = offer
+        .legal_seats
+        .iter()
+        .copied()
+        .filter(|seat| *seat != offer.preannounced)
+        .collect();
+    assert!(
+        others.len() > 1,
+        "reach-guard: the published split needs three announced seats; got {:?}",
+        offer.legal_seats
+    );
+    let split = [
+        (offer.preannounced, third),
+        (others[0], third),
+        (others[1], capacity - 2 * third),
+    ];
+
+    let window_opens = |count: u32, allocation: &[(PlayerId, u32)]| -> bool {
+        let mut probe = state.clone();
+        apply(
+            &mut probe,
+            offer.proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(count),
+                template: Some(f4_allocation_template(
+                    &schema,
+                    offer.proposer,
+                    count,
+                    allocation,
+                )),
+            },
+        )
+        .expect("a refused declaration is a HANDBACK, never an error");
+        matches!(probe.waiting_for, WaitingFor::RespondToShortcut { .. })
+    };
+
+    assert!(
+        window_opens(capacity, &split),
+        "CR 732.2a: the published ceiling is what SOME legal declaration may specify, and this \
+         one does — the paired positive that makes the absence below a discriminator rather than \
+         a board refusing everything. capacity={capacity} allocation={split:?}"
+    );
+
+    let over = [
+        (offer.preannounced, third),
+        (others[0], third),
+        (others[1], capacity + 1 - 2 * third),
+    ];
+    assert!(
+        !window_opens(capacity + 1, &over),
+        "CR 732.2a: the PER-OFFER CAPACITY arm refuses a count one above the ceiling this offer \
+         published — an in-proposal CR 704 crossing would decide what happens next — so no \
+         CR 732.2b window opens. capacity={capacity}"
+    );
+
+    // ── Hostile sibling: the OTHER conjunct. A count above the engine's own repetition budget is
+    //    refused by the budget arm, which wears no CR number because the budget is ours.
+    let over_budget = MAX_SHORTCUT_CYCLES_MIRROR + 1;
+    let budget_split = [
+        (offer.preannounced, third),
+        (others[0], third),
+        (others[1], over_budget - 2 * third),
+    ];
+    assert!(
+        !window_opens(over_budget, &budget_split),
+        "IMPLEMENTATION BUDGET BOUND: a count above the engine's own repetition budget is refused \
+         by the budget arm, not by the per-offer capacity arm"
+    );
+}
+
+/// Park the real F4 dump at an open CR 732.2b window over a TWO-SEGMENT declaration whose
+/// accepted count contains a predicted CR 704 crossing, returning that count and the repetition
+/// the crossing lands on. Built from the offer's own published numbers, never a transcribed pair.
+pub(crate) fn f4_cascade_spanning_window() -> (GameState, u32, u32) {
+    use engine::game::interaction::resolve_interaction_response;
+
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let (_proposer, certificate, _schema) = offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let crossing = offer.drivable_count;
+    let other = f4_other_victim(&offer);
+    let count = crossing + f4_headroom(&state, &per_cycle, other);
+    assert!(
+        crossing < count,
+        "reach-guard: the accepted count must CONTAIN the crossing, else it spans no cascade; \
+         crossing={crossing} count={count}"
+    );
+    let segments = [(offer.preannounced, crossing), (other, count - crossing)];
+    let action = resolve_interaction_response(
+        &state,
+        offer.proposer,
+        &f4_allocation_submission(&offer, count, &segments),
+    )
+    .expect("CR 732.2a: each segment ends on its own seat's crossing, so the ingress admits it");
+    apply(&mut state, offer.proposer, action).expect("the minted declaration is dispatched");
+    assert!(
+        matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "reach-guard: the CR 732.2b window must open, got {:?}",
+        state.waiting_for
+    );
+    (state, count, crossing)
 }

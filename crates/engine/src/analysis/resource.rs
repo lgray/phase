@@ -1109,6 +1109,22 @@ impl PeriodicDelta {
     /// the sequence the certified period was measured under. Lazy and unbounded: the caller
     /// takes as many repetitions as it declares, and may stop at the first fatal one.
     ///
+    /// # The two bounds, and why the direction is a parameter
+    ///
+    /// `bound` fixes which way this stream's error is required to land, because the model is
+    /// asked two questions whose safe failures are opposite ([`ChargeBound`]). At
+    /// [`ChargeBound::Ceiling`] an unresolved aim is held fail-closed and a LEAVING slot keeps
+    /// the seat its reserved charge: that over-charges, which only LOWERS a count, and it is the
+    /// direction a published ceiling and a drivability gate must fail in. At
+    /// [`ChargeBound::Attributable`] the terms are the aims THIS declaration makes (`claimed`)
+    /// less the aims the observation may have made (`leaving`), so no term charges the seat for
+    /// another declaration's choices — CR 732.2a quantifies over the predictable results OF THE
+    /// SEQUENCE under test — and an unresolved term falls to the ADMITTING side instead.
+    ///
+    /// Where no charged slot reaches `seat` under either template every added term is zero and
+    /// the two directions return the same pair, field for field; a period with no charged slot
+    /// at all yields `net = floor` and `dip = floor.max(reserved)` under both.
+    ///
     /// # The net term
     ///
     /// The period's own net loss on `seat` ([`ResourceVector::seat_life_charges`] over the
@@ -1121,12 +1137,19 @@ impl PeriodicDelta {
     /// * the slot may LEAVE `seat`: the observation may have named it and the declaration may
     ///   not. This one cannot be bounded from the net delta. Whatever the slot did to `seat` is
     ///   folded into that delta, including a life GAIN whose departure raises the loss, and
-    ///   including a loss the reserved charge's aim subtraction absorbed. So a leaving slot
-    ///   makes the net term the reserved charge below, which bounds every conforming
-    ///   declaration. Subtracting the leaving slot's magnitude from the reserved charge instead
-    ///   under-charges a two-slot swap with an untargeted loss on the seat, and a re-aimed gain.
+    ///   including a loss the reserved charge's aim subtraction absorbed. So at
+    ///   [`ChargeBound::Ceiling`] a leaving slot makes the net term the reserved charge below,
+    ///   which bounds every conforming declaration; subtracting the leaving slot's magnitude
+    ///   from the reserved charge instead under-charges a two-slot swap with an untargeted loss
+    ///   on the seat, and a re-aimed gain. [`ChargeBound::Attributable`] takes exactly that
+    ///   under-charge, deliberately: the magnitude it drops is one this declaration's own
+    ///   choices do not produce, and an under-charge ADMITS where the ceiling's over-charge
+    ///   refuses.
     ///
-    /// An unknown pin is read fail-closed: it both lands and leaves. A slot with no published
+    /// An unknown pin is read fail-closed at [`ChargeBound::Ceiling`]: it both lands and
+    /// leaves. At [`ChargeBound::Attributable`] the same unknown is assumed to have been aimed
+    /// here by the observation and not by this declaration, which maximises the subtraction and
+    /// is that bound's own admitting side. A slot with no published
     /// `Targets` point is a CR 732.2a withhold whose chooser is not the declarer, so neither
     /// template speaks for it, and a pin that does not resolve on `state`, a missing template,
     /// and a slot a template leaves unpinned are unknown too. A slot lands only on a seat in
@@ -1151,7 +1174,15 @@ impl PeriodicDelta {
     /// in no aim subtraction, and the declaration does not bring it back. Removing it keeps the
     /// charge at or above the gross loss of this declaration, and stops a declaration that
     /// never touches the seat from being charged a slot it pins elsewhere. A slot aimed at the
-    /// seat in the window, a slot either template leaves unknown, and a withheld slot all stay.
+    /// seat in the window, a slot either template leaves unknown, and a withheld slot all stay
+    /// at [`ChargeBound::Ceiling`].
+    ///
+    /// At [`ChargeBound::Attributable`] the slots the observation MAY have aimed here come out
+    /// of this term as well (`leaving`), so it bounds the gross loss THIS declaration can
+    /// inflict inside one repetition rather than every conforming one's. The two subtractions
+    /// are disjoint by construction — `elsewhere` fires only on `before == Some(false)`,
+    /// `leaving` only on `before != Some(false)` — so no slot's magnitude leaves this term
+    /// twice.
     ///
     /// Floored by the net term, so an emptied publication (a pre-field signature, see that
     /// field's doc) degrades to the net term, as
@@ -1184,6 +1215,7 @@ impl PeriodicDelta {
         observed: Option<&'a DecisionTemplate>,
         points: &'a [DecisionPoint],
         state: &'a GameState,
+        bound: ChargeBound,
     ) -> impl Iterator<Item = DeclaredLifeCharge> + 'a {
         let charge_on_seat = |charges: &[(PlayerId, i64)]| {
             charges
@@ -1242,6 +1274,11 @@ impl PeriodicDelta {
             let mut landing = 0i64;
             let mut leaves = false;
             let mut elsewhere = 0i64;
+            // The attributable pair: what THIS declaration's pin announces, and what the
+            // observation's may have. Accumulated beside the terms above under both bounds so
+            // the fold stays one walk; only the arithmetic below reads them.
+            let mut claimed = 0i64;
+            let mut leaving = 0i64;
             for &(slot, magnitude, published) in &slots {
                 let (reaches, now, before) = match published {
                     Some(legal) => (
@@ -1263,12 +1300,43 @@ impl PeriodicDelta {
                 if published == Some(true) && now == Some(false) && before == Some(false) {
                     elsewhere += magnitude;
                 }
+                // CR 601.2c: the aim THIS declaration announces at this repetition, and only
+                // that — a term whose value depends on another declaration's pins is not
+                // attributable to this one.
+                if reaches && now == Some(true) {
+                    claimed += magnitude;
+                }
+                // The aim the observation MAY have announced. Assuming it did maximises the
+                // subtraction, which is the ADMITTING side: a withheld slot and an unresolved
+                // pin fall here rather than into the fail-closed promotion, because the two
+                // bounds answer this case oppositely on purpose.
+                if reaches && before != Some(false) {
+                    leaving += magnitude;
+                }
             }
-            let net = floor + landing;
-            let dip = net.max(reserved - elsewhere);
-            DeclaredLifeCharge {
-                net: if leaves { dip } else { net },
-                dip,
+            let gross = floor + landing;
+            match bound {
+                ChargeBound::Ceiling => {
+                    let dip = gross.max(reserved - elsewhere);
+                    DeclaredLifeCharge {
+                        net: if leaves { dip } else { gross },
+                        dip,
+                    }
+                }
+                // Clamped because `floor` cannot be negative, so a negative sum is never a life
+                // GAIN — it is `SlotCharge::magnitude`'s documented over-estimate exceeding this
+                // seat's own measured loss. `PeriodicDelta::seat_crossing`'s life arm
+                // (CR 704.5a: 0 or less life loses, so a living seat already at or below it
+                // crosses on the first repetition) and `PeriodicDelta::elimination_cascade`'s
+                // horizon both consume the non-negativity of these two numbers in their own
+                // words, so the clamp preserves a premise rather than guarding a mistake.
+                ChargeBound::Attributable => {
+                    let net = (floor + claimed - leaving).max(0);
+                    DeclaredLifeCharge {
+                        net,
+                        dip: net.max(reserved - elsewhere - leaving),
+                    }
+                }
             }
         })
     }
@@ -1312,7 +1380,9 @@ impl PeriodicDelta {
     /// a segment's repetitions out of a seat's headroom and re-dividing the remainder would
     /// restate the same accumulation with a second rounding step, and the horizon is the seat's
     /// own remaining headroom for the reason D4 gives: `net` and `dip` are non-negative, so a
-    /// repetition that does not advance the accumulation never brings the crossing nearer.
+    /// repetition that does not advance the accumulation never brings the crossing nearer. That
+    /// premise survives both [`ChargeBound`]s because the attributable direction clamps its net
+    /// term rather than letting an over-estimated magnitude carry a negative into this walk.
     ///
     /// # The magnitude-constancy premise, stated rather than claimed
     ///
@@ -1337,6 +1407,7 @@ impl PeriodicDelta {
         declaration: Option<&DecisionTemplate>,
         observed: Option<&DecisionTemplate>,
         points: &[DecisionPoint],
+        bound: ChargeBound,
     ) -> Option<EliminationCascade> {
         let horizon = cascade_horizon(state);
         let mut crossings: Vec<(PlayerId, u32)> = state
@@ -1344,7 +1415,7 @@ impl PeriodicDelta {
             .iter()
             .filter(|p| !p.is_eliminated)
             .filter_map(|p| {
-                self.seat_crossing(p, declaration, observed, points, state, horizon)
+                self.seat_crossing(p, declaration, observed, points, state, horizon, bound)
                     .map(|repetition| (p.id, repetition))
             })
             .collect();
@@ -1388,6 +1459,10 @@ impl PeriodicDelta {
     ///
     /// `horizon` is the WALK's, not this seat's, for the reason
     /// [`PeriodicDelta::elimination_cascade`] states where it derives it.
+    // Each parameter is a separate authority the caller states at the call — the two templates,
+    // the published points, the walk's horizon and the bound direction — and bundling them would
+    // hide which question a call site is asking.
+    #[allow(clippy::too_many_arguments)]
     fn seat_crossing(
         &self,
         p: &Player,
@@ -1396,13 +1471,16 @@ impl PeriodicDelta {
         points: &[DecisionPoint],
         state: &GameState,
         horizon: u32,
+        bound: ChargeBound,
     ) -> Option<u32> {
         // CR 704.5a: 0 or less life loses, so the whole total is the headroom. A living seat
         // ALREADY at 0 or less — which a committed board carries — crosses on the first
-        // repetition, since `net` and `dip` are non-negative and the fatal test is `>=`.
+        // repetition, since `net` and `dip` are non-negative and the fatal test is `>=`. That
+        // non-negativity holds under both `ChargeBound`s, and under `Attributable` it is the
+        // producer's clamp that keeps it.
         let remaining_life = i64::from(p.life);
         let life = Self::first_life_crossing(
-            self.declared_seat_life_charges(p.id, declaration, observed, points, state),
+            self.declared_seat_life_charges(p.id, declaration, observed, points, state, bound),
             remaining_life,
             horizon,
         );
@@ -1452,9 +1530,11 @@ impl PeriodicDelta {
     /// segment whose start COLLIDES with an earlier one, because `evaluate_schedule` selects the
     /// greatest start at or below an index and a duplicated start is a segment no drive reads.
     ///
-    /// A SEAT LEAVING a charged slot is read fail-closed by
-    /// [`PeriodicDelta::declared_seat_life_charges`] — it both lands and leaves — so a seat this
-    /// witness aims AWAY from in a later segment is over-charged for the segments after its own.
+    /// THIS CONSTRUCTION ASKS FOR [`ChargeBound::Ceiling`], because what it backs is a published
+    /// ceiling: its error must lower a count, never raise one. So a SEAT LEAVING a charged slot
+    /// is read fail-closed by [`PeriodicDelta::declared_seat_life_charges`] — it both lands and
+    /// leaves — and a seat this witness aims AWAY from in a later segment is over-charged for the
+    /// segments after its own.
     /// On the population this was measured over that never moves an answer, because such a seat
     /// has already crossed by then; it is an over-charge and therefore a LOWER count, which is
     /// the fail-closed direction, and it is stated rather than claimed unreachable.
@@ -1533,6 +1613,9 @@ impl PeriodicDelta {
                 points,
                 state,
                 cascade_horizon(state),
+                // The witness backs a published CEILING, so its own segment ends are read in the
+                // direction that over-charges: a lower count is the fail-closed answer here.
+                ChargeBound::Ceiling,
             ) else {
                 // A segment that carries its own seat to no threshold ends the witness: it is
                 // the segment after it that the count would come from, and there is none.
@@ -1577,19 +1660,46 @@ fn cascade_horizon(state: &GameState) -> u32 {
         .fold(1u32, u32::saturating_add)
 }
 
+/// CR 732.2a: which direction a charge stream's error is required to land in. The model is asked
+/// two questions whose safe failures are opposite, so the direction is a parameter of the one
+/// producer rather than a property of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChargeBound {
+    /// The most a conforming declaration can take from the seat. An over-charge lowers a count,
+    /// which is the direction a published ceiling and a drivability gate must fail in.
+    Ceiling,
+    /// What THIS declaration's own aims take: an aim the observation made and this declaration
+    /// does not is SUBTRACTED rather than held fail-closed, and an unresolved term falls to the
+    /// admitting side, because CR 704.3's live sweep and the drive's own two conformance
+    /// authorities catch a wrongly admitted declaration while nothing catches a wrongly refused
+    /// one.
+    Attributable,
+}
+
 /// CR 119.3 + CR 704.3: what one repetition of a certified period can do to one seat's life
 /// total under one declaration — one item of [`PeriodicDelta::declared_seat_life_charges`].
 ///
 /// Two numbers because CR 704.5a is checked at every priority beat and not only between
 /// repetitions: a seat dies in repetition `k` when what the earlier repetitions took from it
-/// plus the deepest point inside `k` reaches its life total. Both are upper bounds, and
-/// `net <= dip` always.
+/// plus the deepest point inside `k` reaches its life total.
+///
+/// WHAT THE PAIR BOUNDS DEPENDS ON THE [`ChargeBound`] IT WAS PRODUCED UNDER, and that is a
+/// contract on this type rather than a caller's business. At [`ChargeBound::Ceiling`] both are
+/// upper bounds on what ANY conforming declaration can take from the seat. At
+/// [`ChargeBound::Attributable`] neither is: an aim the observation may have made and this
+/// declaration does not is subtracted out, so a seat this declaration never names can read 0
+/// while a conforming declaration could still take its whole magnitude there — the under-charge
+/// that bound exists to take. `net <= dip` holds structurally under both, and both numbers are
+/// non-negative under both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeclaredLifeCharge {
-    /// The most the seat's total can be lower at the end of the repetition than at its start.
+    /// At [`ChargeBound::Ceiling`], the most the seat's total can be lower at the end of the
+    /// repetition than at its start. At [`ChargeBound::Attributable`], what THIS declaration's
+    /// own aims take off it, which is not a bound on what another conforming declaration takes.
     pub net: i64,
-    /// The most the seat's total can fall below the repetition's starting total at any
-    /// priority beat inside it.
+    /// At [`ChargeBound::Ceiling`], the most the seat's total can fall below the repetition's
+    /// starting total at any priority beat inside it. At [`ChargeBound::Attributable`], the
+    /// deepest such fall THIS declaration's own aims produce.
     pub dip: i64,
 }
 
@@ -13218,7 +13328,14 @@ mod tests {
                 .life,
         );
         let crossing = PeriodicDelta::first_life_crossing(
-            per_cycle.declared_seat_life_charges(victim, None, None, &schema.points, &state),
+            per_cycle.declared_seat_life_charges(
+                victim,
+                None,
+                None,
+                &schema.points,
+                &state,
+                ChargeBound::Ceiling,
+            ),
             remaining,
             u32::try_from(remaining).expect("a test life total fits a u32"),
         );
@@ -13229,7 +13346,14 @@ mod tests {
              declaration, taken over the offer's own published charge and the live headroom \
              {remaining}; charge at repetition 1 {:?}",
             per_cycle
-                .declared_seat_life_charges(victim, None, None, &schema.points, &state)
+                .declared_seat_life_charges(
+                    victim,
+                    None,
+                    None,
+                    &schema.points,
+                    &state,
+                    ChargeBound::Ceiling
+                )
                 .next()
         );
         // The CONTROL that the re-derivation above discriminates: the DIVISOR authority, on the
@@ -18463,6 +18587,7 @@ mod tests {
 
     /// The charge [`PeriodicDelta::declared_seat_life_charges`] states for repetition
     /// `iteration`.
+    #[allow(clippy::too_many_arguments)]
     fn nth_charge(
         period: &PeriodicDelta,
         seat: PlayerId,
@@ -18471,9 +18596,10 @@ mod tests {
         points: &[DecisionPoint],
         iteration: usize,
         board: &GameState,
+        bound: ChargeBound,
     ) -> DeclaredLifeCharge {
         period
-            .declared_seat_life_charges(seat, declaration, observed, points, board)
+            .declared_seat_life_charges(seat, declaration, observed, points, board, bound)
             .nth(iteration)
             .expect("the per-repetition charges are unbounded")
     }
@@ -18534,6 +18660,7 @@ mod tests {
                 &points,
                 iteration,
                 &board,
+                ChargeBound::Ceiling,
             );
             (net, dip)
         };
@@ -18574,7 +18701,8 @@ mod tests {
                 Some(&observed),
                 &points,
                 0,
-                &board
+                &board,
+                ChargeBound::Ceiling,
             ),
             DeclaredLifeCharge { net: 2, dip: 2 }
         );
@@ -18610,22 +18738,33 @@ mod tests {
                 Some(&observed),
                 &points,
                 0,
-                &board
+                &board,
+                ChargeBound::Ceiling,
             ),
             DeclaredLifeCharge { net: 5, dip: 8 },
             "CR 704.3: pinned onto P0, the slot's 4 can follow the payment of 4 before the gain"
         );
         assert_eq!(
-            nth_charge(&dipping, p0, None, Some(&observed), &points, 0, &board),
+            nth_charge(
+                &dipping,
+                p0,
+                None,
+                Some(&observed),
+                &points,
+                0,
+                &board,
+                ChargeBound::Ceiling
+            ),
             DeclaredLifeCharge { net: 5, dip: 8 },
             "CR 704.3: an unpinned slot may land on P0 at that same beat"
         );
     }
 
-    /// CR 119.3 + CR 704.3 + CR 704.5a: **a slot that may LEAVE a seat relieves that seat of
-    /// nothing.** The observed net delta folds in whatever the leaving slot did there, so the
-    /// seat's net term falls back to the reserved charge, which bounds every conforming
-    /// declaration.
+    /// CR 119.3 + CR 704.3 + CR 704.5a: **at [`ChargeBound::Ceiling`] a slot that may LEAVE a
+    /// seat relieves that seat of nothing.** The observed net delta folds in whatever the leaving
+    /// slot did there, so the seat's net term falls back to the reserved charge, which bounds
+    /// every conforming declaration. [`ChargeBound::Attributable`] answers this case the other
+    /// way by design, which is why every leg below names the bound it measures.
     ///
     /// * ⓐ the review's two-slot SWAP. S1 ("target player loses 1 life") was seen on P0, S2
     ///   ("target player loses 2 life") on P1, and P0 also pays 2 untargeted: P0 −3, P1 −2, so
@@ -18695,6 +18834,7 @@ mod tests {
             &swap_points,
             0,
             &board,
+            ChargeBound::Ceiling,
         );
         assert!(
             swapped_charge.net >= 4,
@@ -18715,6 +18855,7 @@ mod tests {
             &swap_points,
             0,
             &board,
+            ChargeBound::Ceiling,
         );
         assert_eq!(
             as_published,
@@ -18746,12 +18887,31 @@ mod tests {
         let kept = seat_schedule_declaration(&[(&g, &[0])]);
         let gain_points = [seat_point(&g, &[0, 1])];
         assert_eq!(
-            nth_charge(&gain, p0, Some(&away), Some(&kept), &gain_points, 0, &board),
+            nth_charge(
+                &gain,
+                p0,
+                Some(&away),
+                Some(&kept),
+                &gain_points,
+                0,
+                &board,
+                ChargeBound::Ceiling
+            ),
             DeclaredLifeCharge { net: 2, dip: 2 },
             "CR 119.3: with the gain aimed away P0 loses the 2 it pays each repetition"
         );
         assert_eq!(
-            nth_charge(&gain, p0, Some(&kept), Some(&kept), &gain_points, 0, &board).net,
+            nth_charge(
+                &gain,
+                p0,
+                Some(&kept),
+                Some(&kept),
+                &gain_points,
+                0,
+                &board,
+                ChargeBound::Ceiling
+            )
+            .net,
             0,
             "control: kept on P0, the gain still offsets the payment"
         );
@@ -18765,7 +18925,7 @@ mod tests {
             seat_life_charge: vec![(p0, 1)],
         };
         assert_eq!(
-            nth_charge(&even, p0, None, None, &[], 0, &board),
+            nth_charge(&even, p0, None, None, &[], 0, &board, ChargeBound::Ceiling),
             DeclaredLifeCharge { net: 0, dip: 1 }
         );
     }
@@ -18831,7 +18991,8 @@ mod tests {
                 Some(&both_on_p1),
                 &landing_points,
                 0,
-                &board
+                &board,
+                ChargeBound::Ceiling,
             ),
             DeclaredLifeCharge { net: 0, dip: 1 },
             "CR 115.2: S2 cannot name P0, so leaving it unpinned lands nothing on P0"
@@ -18844,7 +19005,8 @@ mod tests {
                 Some(&both_on_p1),
                 &landing_points,
                 0,
-                &board
+                &board,
+                ChargeBound::Ceiling,
             ),
             DeclaredLifeCharge { net: 0, dip: 1 },
             "CR 704.3: P0 still pays 1 inside each repetition; only S1 was reserved against it"
@@ -18878,7 +19040,8 @@ mod tests {
                 None,
                 &[seat_point(&s, &[1])],
                 0,
-                &board
+                &board,
+                ChargeBound::Ceiling,
             ),
             DeclaredLifeCharge { net: 0, dip: 1 },
             "CR 704.5a: no slot reaches P0, so none can have left it"
@@ -35783,7 +35946,7 @@ mod tests {
         let published =
             charged_signature(victim_life(&[(0, 1), (1, -1), (2, -1), (3, -1)]), &[], &[]);
         let cascade = published
-            .elimination_cascade(&state, PlayerId(0), None, None, &[])
+            .elimination_cascade(&state, PlayerId(0), None, None, &[], ChargeBound::Ceiling)
             .expect("three consumed opponents make this a measured cascade");
 
         assert!(
@@ -35856,7 +36019,7 @@ mod tests {
         let proposer = PlayerId(0);
         let self_draining = charged_signature(victim_life(&[(0, -1), (1, -1), (2, -1)]), &[], &[]);
         let cascade = self_draining
-            .elimination_cascade(&state, proposer, None, None, &[])
+            .elimination_cascade(&state, proposer, None, None, &[], ChargeBound::Ceiling)
             .expect("every seat is consumed on this board");
 
         assert!(
@@ -35880,7 +36043,7 @@ mod tests {
         // truncation removed them rather than the arithmetic never naming them.
         let opponents_only = charged_signature(victim_life(&[(0, 1), (1, -1), (2, -1)]), &[], &[]);
         let survives = opponents_only
-            .elimination_cascade(&state, proposer, None, None, &[])
+            .elimination_cascade(&state, proposer, None, None, &[], ChargeBound::Ceiling)
             .expect("both opponents are still consumed");
         assert!(
             survives.entries.len() > cascade.entries.len()
