@@ -153,6 +153,27 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{- /* Reject every preview site address the client would ignore, and some it
+     would open.
+
+     A release web build's "Try Preview" badge opens this value only when
+     isOpenableExternalUrl accepts it, which takes an http:// or https:// URL,
+     and otherwise opens the preview site built into the image: for a published
+     image, the upstream one. A typo here therefore does not break the badge, it
+     quietly sends players to someone else's preview. A query and a fragment are
+     allowed, since the browser opens both. The authority and punycode rules are
+     the default server's, and chartUrlGrammar.test.ts reads this shape too. */}}
+{{- define "phase-server.validatePreviewSiteUrl" -}}
+{{- $url := .Values.web.previewSiteUrl -}}
+{{- if $url -}}
+{{- $re := printf `^https?://%s([/?#]\S*)?$` (include "phase-server.urlAuthorityPattern" .) -}}
+{{- if not (regexMatch $re $url) -}}
+{{- fail (printf "web.previewSiteUrl is %q, which is not an http:// or https:// address with a well-formed host. It must be a hostname, an IPv4 address or a bracketed IPv6 literal, optionally followed by a port in 0-65535, with no whitespace anywhere. The client ignores an address it cannot open, so a release build's \"Try Preview\" badge would open the preview site built into the image instead." $url) -}}
+{{- end -}}
+{{- include "phase-server.refusePunycodeHost" (dict "key" "web.previewSiteUrl" "url" $url) -}}
+{{- end -}}
+{{- end -}}
+
 {{- /* Require an immutable image reference unless mutability is affirmed.
 
      The SPA is a sidecar in the pod that serves /ws, so a tag that moves under
@@ -620,6 +641,7 @@ containers:
   {{- include "phase-server.validateWebPort" . }}
   {{- include "phase-server.validateWebImage" . }}
   {{- include "phase-server.validateDefaultServerUrl" . }}
+  {{- include "phase-server.validatePreviewSiteUrl" . }}
   - name: web
     image: {{ include "phase-server.webImage" . }}
     imagePullPolicy: {{ .Values.image.pullPolicy }}

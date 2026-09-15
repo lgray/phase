@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { isOpenableExternalUrl } from "../../services/openExternal";
 import { parseWebSocketUrl } from "../multiplayerServer";
 
 // The Helm chart refuses an address the client would silently discard. That only
@@ -128,6 +129,38 @@ const ROWS = [
       "wss://",
     ],
     ordinary: ["wss://play.example.com/ws", "ws://192.168.1.5:9374/ws", "wss://[::1]:9374/ws"],
+  },
+  {
+    key: "previewSiteUrl",
+    clientAccepts: isOpenableExternalUrl,
+    corpus: [
+      // The shape admits a fragment, so every generated host is tried with one.
+      ...HOSTS.flatMap((h) => [`https://${h}/`, `http://${h}/p?q=1#f`]),
+      "https://preview.example.com:65535/",
+      "https://preview.example.com:0/",
+      "https://preview.example.com:abc/",
+      "https://preview.example.com:99999/",
+      "https://preview.example.com:-1/",
+      "https://[::1/",
+      "https://[]/",
+      "https://]::1[/",
+      "https://:8443/",
+      "https://@/",
+      "https://%00.com/",
+      "https://preview.example.com/ bad",
+      "https://preview.example.com/\tbad",
+      "https://preview.example.com/#",
+      "javascript:alert(1)",
+      "wss://preview.example.com",
+      "phase-preview.example.com",
+      "https://",
+    ],
+    ordinary: [
+      "https://phase-preview.example.com",
+      "http://192.168.1.5:8080/",
+      "https://[::1]:8443/p",
+      "https://preview.example.com/play?x=1#top",
+    ],
   },
 ];
 

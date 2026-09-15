@@ -3,8 +3,8 @@
 // compiled into the bundle.
 //
 // Self-hosting? Replace this file (the phase-server helm chart renders it from
-// `web.defaultMultiplayerServerUrl`) — the bundle needs no rebuild. Every key is
-// optional, and the app ignores a malformed value:
+// `web.defaultMultiplayerServerUrl` and `web.previewSiteUrl`) — the bundle needs
+// no rebuild. Every key is optional, and the app ignores a malformed value:
 //
 //   window.__PHASE_CONFIG__ = {
 //     multiplayerServerUrl: "wss://your-host/ws",

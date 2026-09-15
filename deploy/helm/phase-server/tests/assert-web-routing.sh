@@ -223,7 +223,7 @@ while IFS=$'\t' read -r match sticky port; do
   [ "$sticky" = "yes" ] || fail "server rule \"$match\" lost its sticky cookie"
 done < "$work_dir/rules.tsv"
 
-# ── The default-server address is validated the way the client validates it ──
+# ── The chart refuses every default-server address the client would ignore ──
 # A value the client refuses is worse than a render failure: the site comes up and
 # quietly uses the bundle's own default instead of the operator's server. Whitespace
 # is rejected outright because URL parsing STRIPS a tab or newline rather than
@@ -233,7 +233,7 @@ url_case() {                      # $1 = value key under web., $2 = render|refus
   if out=$(helm template phase-server "$chart_dir" --set ingress.host=phase.example.test \
       --set web.enabled=true --set web.image.digest=$web_digest \
       --set-string "web.$key=$value" 2>&1 >/dev/null); then
-    [ "$expect" = "render" ] || fail "web.$key=$(printf %q "$value") rendered, but the client would refuse it"
+    [ "$expect" = "render" ] || fail "web.$key=$(printf %q "$value") rendered, but the chart should refuse it"
   else
     [ "$expect" = "refuse" ] || fail "web.$key=$(printf %q "$value") was refused, but it is a valid address"
   fi
@@ -307,6 +307,51 @@ url_case defaultMultiplayerServerUrl refuse 'wss://0x7f.0.0.1/ws'               
 url_case defaultMultiplayerServerUrl refuse 'wss://xn--a.example/ws'             # leading label
 url_case defaultMultiplayerServerUrl refuse 'wss://a.xn--a/ws'                   # final label
 url_case defaultMultiplayerServerUrl render 'wss://play.example.com/xn--path'
+
+# ── The chart refuses every preview site address the client would ignore ──
+# A release build's "Try Preview" badge opens the value only if the client can
+# open it as an http or https URL, and otherwise opens the image's own preview
+# site. The authority, punycode and whitespace rules are the default server's,
+# so the chart also refuses some addresses the client would open. A query and a
+# fragment are allowed.
+url_case previewSiteUrl render 'https://phase-preview.example.test'
+url_case previewSiteUrl render 'http://192.168.1.5:8080/'                    # LAN host without TLS
+url_case previewSiteUrl render 'https://preview.example.test/play?x=1#top'
+url_case previewSiteUrl render 'https://[::1]:8443/p'
+url_case previewSiteUrl render 'https://host.example/a.xn--b'                # punycode text outside the host
+url_case previewSiteUrl render ''
+url_case previewSiteUrl refuse 'phase-preview.example.test'                  # no scheme
+url_case previewSiteUrl refuse 'wss://preview.example.test'                  # not http or https
+url_case previewSiteUrl refuse 'javascript:alert(1)'
+url_case previewSiteUrl refuse 'https://'                                    # no host
+url_case previewSiteUrl refuse 'https://999.999.999.999/'                    # octets out of range
+url_case previewSiteUrl refuse 'https://host.example:99999/'                 # port above 65535
+url_case previewSiteUrl refuse 'https://xn--a.example/'                      # punycode label
+url_case previewSiteUrl refuse 'https://host.example/ bad'
+url_case previewSiteUrl refuse "https://host.example/$(printf '\t')bad"
+
+# ── config.js carries exactly the values that are set ───────────────────────
+config_js() { extract_doc ConfigMap phase-server-web-conf "$1"; }
+render "$work_dir/web-preview.yaml" --set web.enabled=true --set web.image.digest=$web_digest \
+  --set-string web.previewSiteUrl=https://phase-preview.example.test
+render "$work_dir/web-both.yaml" --set web.enabled=true --set web.image.digest=$web_digest \
+  --set-string web.previewSiteUrl=https://phase-preview.example.test \
+  --set-string web.defaultMultiplayerServerUrl=wss://phase.example.test/ws
+none=$(config_js "$work_dir/web.yaml")
+[ -n "$none" ] || fail "web.enabled rendered no phase-server-web-conf ConfigMap"
+grep -qF 'window.__PHASE_CONFIG__ = {};' <<<"$none" ||
+  fail "with neither value set, config.js is not the empty config: $none"
+! grep -qE '^ *previewSiteUrl:' <<<"$none" || fail "with neither value set, config.js sets previewSiteUrl: $none"
+preview=$(config_js "$work_dir/web-preview.yaml")
+grep -qF 'previewSiteUrl: "https://phase-preview.example.test",' <<<"$preview" ||
+  fail "web.previewSiteUrl did not reach config.js: $preview"
+! grep -qE '^ *multiplayerServerUrl:' <<<"$preview" ||
+  fail "config.js sets multiplayerServerUrl although only web.previewSiteUrl is set: $preview"
+both=$(config_js "$work_dir/web-both.yaml")
+grep -qF 'previewSiteUrl: "https://phase-preview.example.test",' <<<"$both" ||
+  fail "with both values set, config.js lost previewSiteUrl: $both"
+grep -qF 'multiplayerServerUrl: "wss://phase.example.test/ws",' <<<"$both" ||
+  fail "with both values set, config.js lost multiplayerServerUrl: $both"
 
 # ── The SPA image must be immutable unless mutability is asked for by name ──
 # The SPA is a sidecar in the pod that serves /ws, so a tag that moves under the
