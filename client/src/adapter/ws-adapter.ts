@@ -210,6 +210,13 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
+ * 110 — ShortcutDecisionSchema replaced max_iterations with the pair
+ *      measured_repetition_bound and deliverable_capacity, so
+ *      WaitingFor.LoopShortcut publishes the threshold the reduction
+ *      measured separately from the count this engine will deliver. Every
+ *      field involved carries a serde default, so the skew produces no
+ *      parse error: a v109 peer reads a count neither side measured, and the
+ *      handshake is the only place that can be refused.
  * 109 — CR 201.5a granter binding: ObjectScope gains GrantingObject and
  *      SpecificObject, TargetFilter.GrantingObject gains `bound`, PlayerFilter
  *      gains GrantingObjectCaster, and ability, trigger, static, replacement, spell and
@@ -709,7 +716,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 109;
+export const PROTOCOL_VERSION = 110;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.

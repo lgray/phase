@@ -106,6 +106,13 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  92 — game_setup and state_update carry GameState, whose
+ *       WaitingFor::LoopShortcut schema replaced max_iterations with the pair
+ *       measured_repetition_bound and deliverable_capacity. Both new fields
+ *       carry serde defaults, as did the removed one, and the struct has no
+ *       deny_unknown_fields, so the skew is silent in both directions rather
+ *       than a parse error and first contact is the only place it can be
+ *       refused. Bumped in lockstep with full-game protocol 110.
  *  91 — GameState carries the CR 201.5a granter binding (ObjectScope
  *       GrantingObject / SpecificObject, TargetFilter GrantingObject.bound,
  *       PlayerFilter GrantingObjectCaster and the granting_object stamps).
@@ -555,7 +562,7 @@ export type P2PInteractionPreviewAnswer =
   | { type: "preview"; preview: InteractionPreview }
   | { type: "failed"; message: string };
 
-export const WIRE_PROTOCOL_VERSION = 91 as const;
+export const WIRE_PROTOCOL_VERSION = 92 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {

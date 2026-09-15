@@ -3346,6 +3346,13 @@ mod tests {
         }
     }
 
+    /// The bump this number is at: `ShortcutDecisionSchema` replaced
+    /// `max_iterations` with `measured_repetition_bound` and
+    /// `deliverable_capacity`, so a `WaitingFor::LoopShortcut` count a v109 peer
+    /// reads is one neither side measured. Every field involved carries a serde
+    /// default, so the skew produces no parse error and the handshake is the
+    /// only place it can be refused.
+    ///
     /// The CR 201.5a granter binding adds `ObjectScope::GrantingObject` /
     /// `ObjectScope::SpecificObject`, `TargetFilter::GrantingObject { bound }`,
     /// `PlayerFilter::GrantingObjectCaster` and the `granting_object` stamp; v108 state
@@ -3421,8 +3428,8 @@ mod tests {
     /// `check-protocol-version.mjs` requires the current numeral in this name
     /// and refuses the superseded one.
     #[test]
-    fn protocol_version_is_109_for_granter_binding() {
-        assert_eq!(PROTOCOL_VERSION, 109);
+    fn protocol_version_is_110_for_shortcut_capacity_split() {
+        assert_eq!(PROTOCOL_VERSION, 110);
     }
 
     /// The bump alone is inert — a version number nobody enforces prevents no
@@ -3433,7 +3440,7 @@ mod tests {
     ///
     /// REVERT-PROBE: relax to `PROTOCOL_VERSION - 1` — the exact regression
     /// this guards — and this test reds while
-    /// `protocol_version_is_109_for_granter_binding` stays
+    /// `protocol_version_is_110_for_shortcut_capacity_split` stays
     /// green, which is why the two are separate assertions.
     #[test]
     fn full_game_floor_is_current_only_not_a_rollout_window() {
