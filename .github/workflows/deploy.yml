@@ -621,6 +621,9 @@ jobs:
   # The shell uses ENGINE_FINGERPRINT to fetch this exact binary. Keep the
   # server publication in the same workflow graph so Pages can never publish a
   # fingerprint whose signed server artifact is missing from the manifest.
+  # Its publish job waits, up to card-data's own timeout, until the data files
+  # its manifest entry names are served, so the manifest never advertises data
+  # that is not.
   preview-server:
     name: Publish Preview Server
     needs: [deploy-gate, preview-inputs]
