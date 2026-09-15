@@ -161,8 +161,9 @@ web:
   # https:// URL: typically this site's own preview deployment. Rendered into
   # /config.js like defaultMultiplayerServerUrl, and the render fails on an
   # address the client would ignore. Empty = leave the image's build-time
-  # preview site. Only release-built images, such as the published phase-web
-  # release tags, show the badge.
+  # preview site. Only release-built images show the badge, and one built
+  # before this setting existed shows it but opens its built-in preview site
+  # whatever this holds.
   previewSiteUrl: ""
   # Traefik rate limiting for the SPA route. The game API's limiter is sized for
   # API calls (20 req/s), and a cold SPA load is tens of asset requests at once,

@@ -93,13 +93,20 @@ app.kubernetes.io/instance: {{ .Release.Name }}
      rejects, and may refuse what the parser would have taken.
 
      No whitespace is allowed here, and each validator anchors its shape at both
-     ends and keeps whitespace out of the path too, which is deliberately a
-     little stricter than the client. WHATWG URL parsing does not merely reject
-     whitespace — it throws on an embedded space, but SILENTLY STRIPS a tab or
-     newline, so "wss://host<TAB>name" parses to the host "hostname". A
-     literally-equivalent rule would therefore accept a value that sends players
-     to a host the operator never typed, which is the same class of failure
-     these guards exist to prevent, just quieter. Reject the lot and say so. */}}
+     ends and admits only printable ASCII (`!` through `~`) after the authority,
+     so a space, a control character or anything outside ASCII must arrive
+     percent-encoded. That is deliberately stricter than the client. WHATWG URL
+     parsing does not merely reject whitespace — it throws on an embedded space,
+     but SILENTLY STRIPS a tab or newline, so "wss://host<TAB>name" parses to the
+     host "hostname". A literally-equivalent rule would therefore accept a value
+     that sends players to a host the operator never typed, which is the same
+     class of failure these guards exist to prevent, just quieter. Reject the lot
+     and say so.
+
+     The path rule is spelled as a range, not as "not whitespace" (`\S`): helm
+     matches with Go's RE2, chartUrlGrammar.test.ts compiles the same pattern as
+     a JavaScript RegExp, and the two disagree on what whitespace is. That test
+     refuses any construct not compared under both engines. */}}
 {{- define "phase-server.urlAuthorityPattern" -}}
 {{- `(\[(([0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|([0-9A-Fa-f]{1,4}:){1,7}:|([0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|([0-9A-Fa-f]{1,4}:){1,5}(:[0-9A-Fa-f]{1,4}){1,2}|([0-9A-Fa-f]{1,4}:){1,4}(:[0-9A-Fa-f]{1,4}){1,3}|([0-9A-Fa-f]{1,4}:){1,3}(:[0-9A-Fa-f]{1,4}){1,4}|([0-9A-Fa-f]{1,4}:){1,2}(:[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(:[0-9A-Fa-f]{1,4}){1,6}|:((:[0-9A-Fa-f]{1,4}){1,7}|:)|::([Ff]{4}(:0{1,4})?:)?((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|([0-9A-Fa-f]{1,4}:){1,4}:((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))\]|((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|([A-Za-z0-9_-]+\.)*[A-Za-z][A-Za-z0-9_-]*)(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[0-9]{1,4}))?` -}}
 {{- end -}}
@@ -145,9 +152,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if contains "#" $url -}}
 {{- fail (printf "web.defaultMultiplayerServerUrl is %q, and a WebSocket address may not carry a fragment — the browser's WebSocket constructor rejects one outright. Drop everything from the \"#\" onwards." $url) -}}
 {{- end -}}
-{{- $re := printf `^wss?://%s([/?][^\s#]*)?$` (include "phase-server.urlAuthorityPattern" .) -}}
+{{- $re := printf `^wss?://%s([/?][!-"$-~]*)?$` (include "phase-server.urlAuthorityPattern" .) -}}
 {{- if not (regexMatch $re $url) -}}
-{{- fail (printf "web.defaultMultiplayerServerUrl is %q, which is not a ws:// or wss:// address with a well-formed host. It must be a hostname or a bracketed IPv6 literal, optionally followed by a port in 0-65535, with no whitespace anywhere. The client ignores an address it cannot parse and falls back to this build's default server, so the deployment would come up pointing players somewhere you did not choose." $url) -}}
+{{- fail (printf "web.defaultMultiplayerServerUrl is %q, which is not a ws:// or wss:// address with a well-formed host. It must be a hostname, an IPv4 address or a bracketed IPv6 literal, optionally followed by a port in 0-65535, and everything after that must be printable ASCII: percent-encode any space, control character or character outside ASCII. The client ignores an address it cannot parse and falls back to this build's default server, so the deployment would come up pointing players somewhere you did not choose." $url) -}}
 {{- end -}}
 {{- include "phase-server.refusePunycodeHost" (dict "key" "web.defaultMultiplayerServerUrl" "url" $url) -}}
 {{- end -}}
@@ -156,19 +163,20 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- /* Reject every preview site address the client would ignore, and some it
      would open.
 
-     A release web build's "Try Preview" badge opens this value only when
-     isOpenableExternalUrl accepts it, which takes an http:// or https:// URL,
-     and otherwise opens the preview site built into the image: for a published
-     image, the upstream one. A typo here therefore does not break the badge, it
-     quietly sends players to someone else's preview. A query and a fragment are
-     allowed, since the browser opens both. The authority and punycode rules are
-     the default server's, and chartUrlGrammar.test.ts reads this shape too. */}}
+     A release web build that reads this value opens it from its "Try Preview"
+     badge only when isOpenableExternalUrl accepts it, which takes an http:// or
+     https:// URL, and otherwise opens the preview site built into the image. A
+     typo here therefore does not break the badge, it quietly sends players to a
+     preview the operator did not choose. A query and a fragment are allowed,
+     since the browser opens both. The authority, punycode and printable-ASCII
+     path rules are the default server's, and chartUrlGrammar.test.ts reads this
+     shape too. */}}
 {{- define "phase-server.validatePreviewSiteUrl" -}}
 {{- $url := .Values.web.previewSiteUrl -}}
 {{- if $url -}}
-{{- $re := printf `^https?://%s([/?#]\S*)?$` (include "phase-server.urlAuthorityPattern" .) -}}
+{{- $re := printf `^https?://%s([/?#][!-~]*)?$` (include "phase-server.urlAuthorityPattern" .) -}}
 {{- if not (regexMatch $re $url) -}}
-{{- fail (printf "web.previewSiteUrl is %q, which is not an http:// or https:// address with a well-formed host. It must be a hostname, an IPv4 address or a bracketed IPv6 literal, optionally followed by a port in 0-65535, with no whitespace anywhere. The client ignores an address it cannot open, so a release build's \"Try Preview\" badge would open the preview site built into the image instead." $url) -}}
+{{- fail (printf "web.previewSiteUrl is %q, which is not an http:// or https:// address with a well-formed host. It must be a hostname, an IPv4 address or a bracketed IPv6 literal, optionally followed by a port in 0-65535, and everything after that must be printable ASCII: percent-encode any space, control character or character outside ASCII. A release web build that reads this value ignores an address it cannot open, and its \"Try Preview\" badge opens the preview site built into the image instead." $url) -}}
 {{- end -}}
 {{- include "phase-server.refusePunycodeHost" (dict "key" "web.previewSiteUrl" "url" $url) -}}
 {{- end -}}

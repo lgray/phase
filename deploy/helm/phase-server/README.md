@@ -399,8 +399,9 @@ ignored rather than seeded into every profile.
 this site's own preview deployment, as an `http://` or `https://` address. The
 chart renders it into the same `/config.js` and refuses to render an address the
 client would ignore. Leave it empty and the badge keeps the image's build-time
-preview site. Only release-built images, such as the published `phase-web`
-release tags, show the badge.
+preview site. Only release-built images show the badge. A release image built
+before this setting existed shows the badge too, but opens its built-in preview
+site whatever `web.previewSiteUrl` holds.
 
 **Keep the two images on one version.** A client accepts a lobby only within one
 protocol version of its own build, and the server advertises its number without

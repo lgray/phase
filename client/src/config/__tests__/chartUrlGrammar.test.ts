@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -29,24 +29,131 @@ function capture(src: string, pattern: RegExp, what: string): string {
   return m[1];
 }
 
+// Helm matches the chart's patterns with Go's RE2 and this file with JavaScript's
+// RegExp, and the two read some constructs differently: `\s` is ASCII-only in RE2
+// and Unicode in JavaScript, so `\S` admits a vertical tab in one and refuses it
+// in the other. Each token below was compared under helm's regexMatch and
+// JavaScript's RegExp at every code point, alone and inside the chart's patterns,
+// and read the same. Compare a construct the same way before adding it.
+const SHARED_TOKENS = new Set([
+  "$", "(", ")", "*", "+", "-", "/", "0", "1", "2", "3", "5", "6", ":", "?",
+  '[!-"$-~]', "[!-~]", "[/?#]", "[/?]", "[0-2]", "[0-4]", "[0-5]", "[0-9A-Fa-f]",
+  "[0-9]", "[1-5]", "[1-9]", "[A-Za-z0-9_-]", "[A-Za-z]", "[Ff]", "[Nn]", "[Xx]", "[a-z]",
+  "\\.", "\\[", "\\]", "^", "h", "p", "s", "t", "w",
+  "{1,2}", "{1,3}", "{1,4}", "{1,5}", "{1,6}", "{1,7}", "{2}", "{3}", "{4}", "{7}", "|",
+]);
+
+const firstCodePoint = (s: string) => [...s.slice(0, 2)][0];
+
+function lexBracket(re: string, start: number): string {
+  let j = start + 1;
+  if (re[j] === "^") j++;
+  if (re[j] === "]") j++;
+  while (j < re.length && re[j] !== "]") {
+    const posixEnd = re.startsWith("[:", j) ? re.indexOf(":]", j) : -1;
+    j = re[j] === "\\" ? j + 2 : posixEnd > 0 ? posixEnd + 2 : j + 1;
+  }
+  if (j >= re.length) throw new Error(`unclosed [ in the chart pattern ${JSON.stringify(re)}`);
+  return re.slice(start, j + 1);
+}
+
+// Splits a pattern into whole constructs so each is admitted or refused whole: a
+// bracket expression, an escape, a group opener with its `?` extension (`(?:`,
+// `(?=`), a quantifier or count with its lazy `?`, or one character. Read piece
+// by piece, `(?:` would pass as `(` and `?`, which are both in the set.
+function lexPattern(re: string): string[] {
+  const tokens: string[] = [];
+  for (let i = 0; i < re.length; ) {
+    const rest = re.slice(i);
+    let token: string;
+    if (rest[0] === "\\") {
+      if (rest.length < 2) throw new Error(`trailing \\ in the chart pattern ${JSON.stringify(re)}`);
+      token = rest.match(/^\\(?:[xpP]\{[^}]*\}|Q[\s\S]*?(?:\\E|$))/)?.[0] ?? `\\${firstCodePoint(rest.slice(1))}`;
+    } else if (rest[0] === "[") {
+      token = lexBracket(re, i);
+    } else {
+      token = rest.match(/^(?:\(\?[^:=!)>]*[:=!)>]?|[*+?]\??|\{\d+(?:,\d*)?\}\??)/)?.[0] ?? firstCodePoint(rest);
+    }
+    tokens.push(token);
+    i += token.length;
+  }
+  return tokens;
+}
+
+// Every chart pattern reaches RegExp through this guard, as the string helm compiles.
+function guardPattern(re: string): string {
+  for (const token of lexPattern(re)) {
+    if (!SHARED_TOKENS.has(token)) {
+      throw new Error(
+        `token ${JSON.stringify(token)} in the chart pattern ${JSON.stringify(re)} has not been compared under helm's regexMatch and JavaScript's RegExp; compare it under both before adding it to SHARED_TOKENS`,
+      );
+    }
+  }
+  return re;
+}
+
+const compilePattern = (re: string) => new RegExp(guardPattern(re));
+
+// helm assembles a shape with printf and this file with replace, which agree only
+// on a format holding one %, as %s (printf renders %% as a single %). The tokens
+// are checked after assembly, which can join two members into a construct that is
+// not one: "(" and "?:" make "(?:".
+function compileShape(format: string, authority: string): RegExp {
+  if (format.split("%").length !== 2 || !format.includes("%s")) {
+    throw new Error(`the printf format ${JSON.stringify(format)} must hold exactly one %, as %s`);
+  }
+  return compilePattern(format.replace("%s", () => authority));
+}
+
+// Helm reads every file under the chart's templates/ directory, at any depth and
+// with any extension, and each subchart's templates, as one set of named
+// templates, and a define in one file can replace the same name's define in
+// another, depending on the files' names and depths. So each name the extraction
+// reads must be defined in exactly one of those files. No subchart is read here,
+// so a charts/ directory throws.
+function chartTemplates(): Map<string, string> {
+  const charts = resolve(dirname(HELPERS), "../charts");
+  if (existsSync(charts)) throw new Error(`${charts} exists, and this test reads no subchart's templates`);
+  const entries = readdirSync(dirname(HELPERS), { recursive: true, withFileTypes: true });
+  return new Map(
+    entries
+      .filter((entry) => entry.isFile())
+      .map((entry): [string, string] => {
+        const file = resolve(entry.parentPath, entry.name);
+        return [file, readFileSync(file, "utf8")];
+      }),
+  );
+}
+
+function requireOneDefinition(templates: Map<string, string>, name: string): void {
+  const sites = [...templates].flatMap(([file, text]) => text.split(`define "${name}"`).slice(1).map(() => file));
+  if (sites.length !== 1) {
+    throw new Error(`template "${name}" is defined ${sites.length} times among the chart's templates, in ${sites.join(" and ")}`);
+  }
+}
+
 // The chart's verdict on web.<key>: that validator's anchored shape around the
-// shared authority grammar, minus hosts with a punycode label.
-function chartAccepts(key: string): (value: string) => boolean {
-  const src = readFileSync(HELPERS, "utf8");
+// shared authority grammar, minus hosts with a punycode label. Each capture spans
+// the whole action helm evaluates, and each template name read here must be
+// defined once among the chart's templates, so these edits stop the extraction
+// instead of changing what helm compiles: a pipe on the include, a second action
+// in the authority define, a rewrite between the shape and its match, and a
+// second `define "<name>"` of a name read here in any template file.
+function chartAccepts(key: string, templates = chartTemplates()): (value: string) => boolean {
+  const src = templates.get(HELPERS) ?? "";
   const authority = capture(
     src,
-    /define "phase-server\.urlAuthorityPattern" -\}\}\n\{\{- `([^`]+)` -\}\}/,
+    /define "phase-server\.urlAuthorityPattern" -\}\}\n\{\{- `([^`]+)` -\}\}\n\{\{- end -\}\}/,
     "urlAuthorityPattern raw string",
   );
-  const punycode = new RegExp(
-    capture(
-      src,
-      /define "phase-server\.refusePunycodeHost" -\}\}\n\{\{- if regexMatch `([^`]+)` \.url -\}\}/,
-      "refusePunycodeHost raw string",
-    ),
+  const punycodeSource = capture(
+    src,
+    /define "phase-server\.refusePunycodeHost" -\}\}\n\{\{- if regexMatch `([^`]+)` \.url -\}\}/,
+    "refusePunycodeHost raw string",
   );
   const start = src.search(new RegExp(`\\$url := \\.Values\\.web\\.${key} -\\}\\}`));
   if (start < 0) throw new Error(`no web.${key} validator found in ${HELPERS}`);
+  const validator = capture(src.slice(0, start), /define "([^"]+)" -\}\}\n\{\{- $/, `web.${key} validator define`);
   const end = src.indexOf('{{- define "', start);
   const body = src.slice(start, end < 0 ? undefined : end);
   // The verdict below subtracts the refusal, so a validator that stopped
@@ -54,9 +161,19 @@ function chartAccepts(key: string): (value: string) => boolean {
   if (!body.includes(`include "phase-server.refusePunycodeHost" (dict "key" "web.${key}"`)) {
     throw new Error(`the web.${key} validator does not include phase-server.refusePunycodeHost`);
   }
-  const shape = new RegExp(
-    capture(body, /\$re := printf `([^`]+)`/, `web.${key} shape`).replace("%s", () => authority),
+  const format = capture(
+    body,
+    /\{\{- \$re := printf `([^`]+)` \(include "phase-server\.urlAuthorityPattern" \.\) -\}\}\n\{\{- if not \(regexMatch \$re \$url\) -\}\}/,
+    `web.${key} shape`,
   );
+  for (const name of ["phase-server.urlAuthorityPattern", "phase-server.refusePunycodeHost", validator]) {
+    requireOneDefinition(templates, name);
+  }
+  // Compiled only after every capture matched and every name read is defined
+  // once, so a template the extraction cannot read fails as unreadable rather
+  // than on one of its tokens.
+  const punycode = compilePattern(punycodeSource);
+  const shape = compileShape(format, authority);
   return (v) => shape.test(v) && !punycode.test(v);
 }
 
@@ -178,5 +295,57 @@ describe.each(ROWS)("chart web.$key grammar vs the client", ({ key, clientAccept
       expect(accepts(v), v).toBe(true);
       expect(clientAccepts(v), v).toBe(true);
     }
+  });
+});
+
+describe("chart pattern extraction", () => {
+  it("compiles the template's own patterns", () => {
+    for (const { key } of ROWS) expect(() => chartAccepts(key)).not.toThrow();
+  });
+
+  it.each([
+    ["\\s", "^s\\s$"],
+    ["{01}", "^s{01}$"],
+    ["(?=", "^(?=s)s$"],
+  ])("refuses the uncompared token %s", (token, pattern) => {
+    expect(() => compilePattern(pattern)).toThrow(`token ${JSON.stringify(token)} in`);
+  });
+
+  it.each([
+    ["[^0]", "^s[%s]$", "^0"],
+    ["(?:", "^s(%s)$", "?:s"],
+  ])("refuses %s when only the assembled shape holds it", (token, format, authority) => {
+    expect(() => compileShape(format, authority)).toThrow(`token ${JSON.stringify(token)} in`);
+  });
+
+  it.each(["^s%%%s$", "^%s%s$"])("refuses the printf format %s", (format) => {
+    expect(() => compileShape(format, "s")).toThrow("must hold exactly one %, as %s");
+  });
+
+  const templates = chartTemplates();
+  const helpers = readFileSync(HELPERS, "utf8");
+  const include = '(include "phase-server.urlAuthorityPattern" .) -}}';
+  it.each([
+    ["a piped authority include", include, '(include "phase-server.urlAuthorityPattern" . | replace "{1,4}" "{1,9}") -}}'],
+    ["a shape rewritten before its match", `${include}\n`, `${include}\n{{- $re = replace "{1,4}" "{1,9}" $re -}}\n`],
+    ["a second action in the authority define", "` -}}\n{{- end -}}", "` -}}\n{{- `(\\.x)?` -}}\n{{- end -}}"],
+  ])("stops at %s", (_name, from, to) => {
+    const edited = new Map(templates).set(HELPERS, helpers.split(from).join(to));
+    for (const { key } of ROWS) expect(() => chartAccepts(key, edited)).toThrow(/^no .* found in /);
+  });
+
+  const other = resolve(dirname(HELPERS), "_aa.tpl");
+  it.each([
+    ["phase-server.urlAuthorityPattern", "defaultMultiplayerServerUrl"],
+    ["phase-server.urlAuthorityPattern", "previewSiteUrl"],
+    ["phase-server.refusePunycodeHost", "defaultMultiplayerServerUrl"],
+    ["phase-server.refusePunycodeHost", "previewSiteUrl"],
+    ["phase-server.validateDefaultServerUrl", "defaultMultiplayerServerUrl"],
+    ["phase-server.validatePreviewSiteUrl", "previewSiteUrl"],
+  ])("stops at %s defined again in another template file, for web.%s", (name, key) => {
+    const copy = new Map(templates).set(other, `{{- define "${name}" -}}x{{- end -}}\n`);
+    expect(() => chartAccepts(key, copy)).toThrow(
+      `template "${name}" is defined 2 times among the chart's templates, in ${HELPERS} and ${other}`,
+    );
   });
 });

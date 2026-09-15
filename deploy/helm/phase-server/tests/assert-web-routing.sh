@@ -227,7 +227,8 @@ done < "$work_dir/rules.tsv"
 # A value the client refuses is worse than a render failure: the site comes up and
 # quietly uses the bundle's own default instead of the operator's server. Whitespace
 # is rejected outright because URL parsing STRIPS a tab or newline rather than
-# failing, which would silently change the host.
+# failing, which would silently change the host, and past the host and port only
+# printable ASCII is admitted: anything else must be percent-encoded.
 url_case() {                      # $1 = value key under web., $2 = render|refuse, $3 = value
   local key=$1 expect=$2 value=$3 out
   if out=$(helm template phase-server "$chart_dir" --set ingress.host=phase.example.test \
@@ -308,12 +309,22 @@ url_case defaultMultiplayerServerUrl refuse 'wss://xn--a.example/ws'            
 url_case defaultMultiplayerServerUrl refuse 'wss://a.xn--a/ws'                   # final label
 url_case defaultMultiplayerServerUrl render 'wss://play.example.com/xn--path'
 
+# Path and query characters: printable ASCII only, spelled as a range because
+# helm's regex engine and the drift test's disagree on what "not whitespace"
+# covers. The render row leaves out "," and "\", which --set-string splits on
+# and consumes.
+url_case defaultMultiplayerServerUrl render 'wss://host.example/!"$%&()*+-.:;<=>@[]^_`{|}~?q=!"$~'
+url_case defaultMultiplayerServerUrl refuse "wss://host.example/ws$(printf '\v')"               # vertical tab
+url_case defaultMultiplayerServerUrl refuse "wss://host.example/ws$(printf '\342\200\250')"     # U+2028 line separator
+url_case defaultMultiplayerServerUrl refuse "wss://host.example/ws$(printf '\177')"             # DEL
+url_case defaultMultiplayerServerUrl refuse "wss://host.example/ws$(printf '\303\251')"         # U+00E9, a letter outside ASCII
+
 # ── The chart refuses every preview site address the client would ignore ──
-# A release build's "Try Preview" badge opens the value only if the client can
-# open it as an http or https URL, and otherwise opens the image's own preview
-# site. The authority, punycode and whitespace rules are the default server's,
-# so the chart also refuses some addresses the client would open. A query and a
-# fragment are allowed.
+# A release web build that reads the value opens it from its "Try Preview" badge
+# only if the client can open it as an http or https URL, and otherwise opens the
+# image's own preview site. The authority, punycode and printable-ASCII path
+# rules are the default server's, so the chart also refuses some addresses the
+# client would open. A query and a fragment are allowed.
 url_case previewSiteUrl render 'https://phase-preview.example.test'
 url_case previewSiteUrl render 'http://192.168.1.5:8080/'                    # LAN host without TLS
 url_case previewSiteUrl render 'https://preview.example.test/play?x=1#top'
@@ -329,6 +340,14 @@ url_case previewSiteUrl refuse 'https://host.example:99999/'                 # p
 url_case previewSiteUrl refuse 'https://xn--a.example/'                      # punycode label
 url_case previewSiteUrl refuse 'https://host.example/ bad'
 url_case previewSiteUrl refuse "https://host.example/$(printf '\t')bad"
+url_case previewSiteUrl render 'https://host.example/!"$%&()*+-.:;<=>@[]^_`{|}~?q=!~#!"#$~'
+url_case previewSiteUrl refuse "https://host.example/$(printf '\v')x"                  # vertical tab
+url_case previewSiteUrl refuse "https://host.example/$(printf '\302\240')x"            # U+00A0 no-break space
+url_case previewSiteUrl refuse "https://host.example/$(printf '\342\200\250')x"        # U+2028 line separator
+url_case previewSiteUrl refuse "https://host.example/x$(printf '\v')"                  # vertical tab at the end
+url_case previewSiteUrl refuse "https://host.example/$(printf '\177')x"                # DEL
+url_case previewSiteUrl refuse "https://host.example/$(printf '\001')x"                # a C0 control
+url_case previewSiteUrl refuse "https://host.example/caf$(printf '\303\251')"          # U+00E9, a letter outside ASCII
 
 # ── config.js carries exactly the values that are set ───────────────────────
 config_js() { extract_doc ConfigMap phase-server-web-conf "$1"; }
