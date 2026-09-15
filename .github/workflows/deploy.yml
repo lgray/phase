@@ -983,12 +983,13 @@ jobs:
   # makes Docker just apt + COPY (no compile).
   #
   # The binary finds its data under its fingerprint in the signed
-  # preview-server.json, so the push waits for preview-server: `:preview` never
-  # names a fingerprint the manifest does not list yet, and a failed publication
-  # leaves the previous image in place, as it leaves the previous Pages deploy.
-  # The manifest keeps only the current and previous fingerprints, so an older
-  # sha-<12> image needs pre-provisioned data or PHASE_DATA_MANIFEST_URL once its
-  # fingerprint rotates out.
+  # preview-server.json, so the push waits for preview-server: an image is pushed
+  # only once its fingerprint is listed, and a failed publication leaves the
+  # previous image in place, as it leaves the previous Pages deploy. The manifest
+  # keeps only the current and previous fingerprints, and publications that push
+  # no image (a failed build or push here, a manual preview-server dispatch) still
+  # rotate it, so any image, `:preview` included, can outlive its entry and then
+  # needs pre-provisioned data or PHASE_DATA_MANIFEST_URL.
   push-server-image:
     name: Build & push server image
     needs: [build-server-binary, preview-server]
