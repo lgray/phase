@@ -10035,11 +10035,11 @@ mod tests {
         state: &GameState,
         viewer: PlayerId,
     ) -> Option<crate::analysis::decision_template::DecisionTemplate> {
-        d5h_projected_proposal(state, viewer).template
+        projected_proposal(state, viewer).template
     }
 
     /// The proposal AS PROJECTED for `viewer`.
-    fn d5h_projected_proposal(
+    fn projected_proposal(
         state: &GameState,
         viewer: PlayerId,
     ) -> crate::analysis::loop_check::ShortcutProposal {
@@ -10118,13 +10118,13 @@ mod tests {
             "reach-guard: the unprojected proposal carries both declarations"
         );
         assert!(
-            d5h_projected_proposal(&hidden_state, D5H_PROPOSER)
+            projected_proposal(&hidden_state, D5H_PROPOSER)
                 .published_declaration
                 .is_some(),
             "the proposer's own projection keeps the published declaration"
         );
         assert_eq!(
-            d5h_projected_proposal(&hidden_state, D5H_VIEWER).published_declaration,
+            projected_proposal(&hidden_state, D5H_VIEWER).published_declaration,
             None,
             "CR 732.2b: the published declaration carries the same pins and is dropped with the \
              template"
@@ -10151,7 +10151,7 @@ mod tests {
             "and it is genuinely present, not two matching `None`s"
         );
         assert!(
-            d5h_projected_proposal(&visible_state, D5H_VIEWER)
+            projected_proposal(&visible_state, D5H_VIEWER)
                 .published_declaration
                 .is_some(),
             "and so is the published declaration beside it"

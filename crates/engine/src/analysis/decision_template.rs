@@ -1568,9 +1568,10 @@ pub enum AimViolation {
 ///
 /// Repetitions are counted from 1 and read at iteration index `repetition - 1` with no announced
 /// lead ([`crate::analysis::resource::AnnouncedLead::None`]), the convention
-/// `truncate_to_declared_seats` shares. The consumption seam's re-derivation states the drive's
-/// leading repetition instead, because it is matched against the departures a drive realizes;
-/// this conjunct decides which declarations may be specified and states none.
+/// `truncate_to_declared_seats` shares. The consumption seam's re-derivation instead states which
+/// charged slots lead on the board the drive starts from, because it is matched against the
+/// departures a drive realizes; this conjunct decides which declarations may be specified and
+/// states none.
 ///
 /// Monotone in `validated_range`: a shorter range walks a prefix of the repetitions and the
 /// cascade does not depend on the range, so a CR 732.2b shortening can never turn a conforming

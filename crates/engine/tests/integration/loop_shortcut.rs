@@ -6828,7 +6828,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
     );
 }
 
-/// Row 2 — a PRE-SPLIT persisted offer decodes to the boundedness verdict it had, through both
+/// A PRE-SPLIT persisted offer decodes to the boundedness verdict it had, through both
 /// production raw-JSON ingresses, plus the zero the load still refuses.
 ///
 /// The legacy key answered two questions in one integer, writing the engine's budget to mean
@@ -7195,7 +7195,7 @@ fn engine_live_opponents(state: &GameState, of: PlayerId) -> Vec<PlayerId> {
         .collect()
 }
 
-/// Row 2, on the COMMITTED-SAVE population: what each dump's own raw JSON spells is what its
+/// On the COMMITTED-SAVE population, what each dump's own raw JSON spells is what its
 /// decoded pair says, and the legacy key's OTHER receivers are left alone.
 ///
 /// Three classes, each read off the raw payload rather than named by hand: saves that carry the
@@ -13643,13 +13643,13 @@ fn a_tied_entry_is_one_seat_set_and_the_accept_takes_all_of_it() {
 /// right question for both legs — a deserialized capacity the handler will enforce is as load-bearing
 /// as a freshly derived one.
 ///
-/// Row 5's observable is the BOARD MOVING. Declaring `schema.iteration_count` verbatim with
+/// The first observable is the BOARD MOVING. Declaring `schema.iteration_count` verbatim with
 /// `template: None` opens the CR 732.2b response window (the reach guard, which separates "declare
 /// refused" from "drive aborted"), and the accept then has to commit a change rather than hand a
 /// zero-cycle priority back — which is what publishing a suggestion the consumption seam's
 /// drivability gate refuses would produce.
 ///
-/// Row 5b's observable is the pair `deliverable_capacity >= iteration_count`, asserted on every
+/// The second observable is the pair `deliverable_capacity >= iteration_count`, asserted on every
 /// board in the population, with the boards where the two COINCIDE asserted to coincide in the same
 /// invocation so the row is not satisfied by a difference that exists everywhere.
 ///

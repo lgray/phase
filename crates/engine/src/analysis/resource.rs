@@ -1202,13 +1202,15 @@ impl PeriodicDelta {
     ///
     /// Both templates resolve through [`decision_template::resolve`], the authority the drive
     /// replays a declaration with, once per repetition because a scheduled pin may name a
-    /// different seat at each index. `observed` resolves at the repetition's own index and
-    /// `declaration` at that index less `lead` ([`AnnouncedLead`]): a leading repetition resolves
-    /// an announcement made before the shortcut was proposed, so `observed` stands in both
-    /// positions there. When the two are the same template and nothing leads, as on the bounded
-    /// candidate `ai_support::candidates` emits (it carries the offer's own declaration), one
-    /// resolution serves both. Everything else is read once. The
-    /// magnitudes are the engine's charge model: every charged slot carries
+    /// different seat at each index. `observed` resolves at the repetition's own index, and
+    /// `declaration` resolves for each charged slot at that index less the slot's own lead
+    /// ([`AnnouncedLead`]). Which slots lead is a fact of the board the caller hands in: a slot
+    /// whose announcement already sits on that board's stack resolves it at the first repetition,
+    /// so `observed` stands in both positions for that slot there, while a slot with none resolves
+    /// `declaration` from the first repetition. When the two are the same template, as on the
+    /// bounded candidate `ai_support::candidates` emits (it carries the offer's own declaration),
+    /// one resolution serves both for every slot that leads by nothing. Everything else is read
+    /// once. The magnitudes are the engine's charge model: every charged slot carries
     /// [`ResourceVector::worst_seat_life_loss`] whatever its effect, so a charged slot that deals
     /// no damage is still charged when it lands.
     // Each parameter is a separate authority the caller states, for the reason
@@ -1222,7 +1224,7 @@ impl PeriodicDelta {
         points: &'a [DecisionPoint],
         state: &'a GameState,
         bound: ChargeBound,
-        lead: AnnouncedLead,
+        lead: AnnouncedLead<'_>,
     ) -> impl Iterator<Item = DeclaredLifeCharge> + 'a {
         let charge_on_seat = |charges: &[(PlayerId, i64)]| {
             charges
@@ -1235,11 +1237,10 @@ impl PeriodicDelta {
         // CR 704.5a: the seats the bound reserved headroom for. No slot reaches a seat outside
         // them, and `PeriodicDelta::conforms` holds such a seat's loss to the observed one.
         let in_domain = self.declarable_victims.contains(&seat);
-        let lead = lead.repetitions();
-        let one_template = lead == 0 && declaration.is_some() && declaration == observed;
+        let one_template = declaration.is_some() && declaration == observed;
         // CR 115.2: each charged slot with whether its published legal set holds the seat,
-        // `None` for a withheld slot.
-        let slots: Vec<(&DecisionSlot, i64, Option<bool>)> = self
+        // `None` for a withheld slot, and the repetitions it leads by.
+        let slots: Vec<(&DecisionSlot, i64, Option<bool>, IterationIndex)> = self
             .victim_slot
             .iter()
             .map(|(slot, magnitude)| {
@@ -1249,9 +1250,13 @@ impl PeriodicDelta {
                     }
                     _ => None,
                 });
-                (slot, (*magnitude).max(0), published)
+                (slot, (*magnitude).max(0), published, lead.repetitions(slot))
             })
             .collect();
+        // Which resolutions of `declaration` a repetition needs: at its own index for a slot that
+        // leads by nothing, one index behind for a slot that leads.
+        let resolves_own = !one_template && slots.iter().any(|&(.., leads)| leads == 0);
+        let resolves_behind = slots.iter().any(|&(.., leads)| leads > 0);
         (0..).map(move |iteration: IterationIndex| {
             // With no charged slot there is no pin to read and every repetition is alike.
             let resolve_at = |template: Option<&DecisionTemplate>, index: IterationIndex| {
@@ -1259,18 +1264,14 @@ impl PeriodicDelta {
                     .filter(|_| !slots.is_empty())
                     .and_then(|template| decision_template::resolve(template, index, state).ok())
             };
-            // CR 601.2c + CR 603.3d: a leading repetition's target was announced before the
-            // shortcut was proposed, so the aim it resolves is the observed one.
-            let (declared, shared) = match iteration.checked_sub(lead) {
-                Some(index) => (resolve_at(declaration, index), one_template),
-                None => (resolve_at(observed, iteration), true),
-            };
-            let seen_apart = (!shared).then(|| resolve_at(observed, iteration)).flatten();
-            let seen = if shared {
-                declared.as_deref()
-            } else {
-                seen_apart.as_deref()
-            };
+            let seen = resolve_at(observed, iteration);
+            let own = resolves_own
+                .then(|| resolve_at(declaration, iteration))
+                .flatten();
+            let behind = iteration
+                .checked_sub(1)
+                .filter(|_| resolves_behind)
+                .and_then(|index| resolve_at(declaration, index));
             // CR 601.2c: whether this repetition's resolved pin for `slot` names the seat,
             // `None` when the template is absent, unresolvable, or leaves the slot unpinned.
             let names_seat = |decisions: Option<&[ConcreteDecision]>,
@@ -1292,12 +1293,20 @@ impl PeriodicDelta {
             // the fold stays one walk; only the arithmetic below reads them.
             let mut claimed = 0i64;
             let mut leaving = 0i64;
-            for &(slot, magnitude, published) in &slots {
+            for &(slot, magnitude, published, leads) in &slots {
+                // CR 601.2c + CR 603.3d: a slot whose target was announced before the shortcut
+                // was proposed resolves the observed aim at its leading repetition.
+                let declared = match iteration.checked_sub(leads) {
+                    None => seen.as_deref(),
+                    Some(_) if leads > 0 => behind.as_deref(),
+                    Some(_) if one_template => seen.as_deref(),
+                    Some(_) => own.as_deref(),
+                };
                 let (reaches, now, before) = match published {
                     Some(legal) => (
                         legal,
-                        names_seat(declared.as_deref(), slot),
-                        names_seat(seen, slot),
+                        names_seat(declared, slot),
+                        names_seat(seen.as_deref(), slot),
                     ),
                     // CR 732.2a: a withheld slot's chooser is not the declarer, so neither
                     // template speaks for it. Charged against every seat in the domain, a
@@ -1388,9 +1397,9 @@ impl PeriodicDelta {
     ///
     /// ONE PASS PER SEAT OVER THE WHOLE STREAM, and that IS the per-departure walk rather than a
     /// short cut around it. `declared_seat_life_charges` resolves the declaration's pin ONCE PER
-    /// REPETITION, at that repetition's index less the announced lead, so a declaration that
-    /// re-aims at a later repetition — the witness below is exactly that shape — already charges
-    /// each seat what that repetition charges it. Spending
+    /// REPETITION, at that repetition's index less the lead its caller states for each slot, so a
+    /// declaration that re-aims at a later repetition — the witness below is exactly that shape —
+    /// already charges each seat what that repetition charges it. Spending
     /// a segment's repetitions out of a seat's headroom and re-dividing the remainder would
     /// restate the same accumulation with a second rounding step, and the horizon is the seat's
     /// own remaining headroom for the reason D4 gives: `net` and `dip` are non-negative, so a
@@ -1425,7 +1434,7 @@ impl PeriodicDelta {
         observed: Option<&DecisionTemplate>,
         points: &[DecisionPoint],
         bound: ChargeBound,
-        lead: AnnouncedLead,
+        lead: AnnouncedLead<'_>,
     ) -> Option<EliminationCascade> {
         let horizon = cascade_horizon(state);
         let mut crossings: Vec<(PlayerId, u32)> = state
@@ -1499,7 +1508,7 @@ impl PeriodicDelta {
         state: &GameState,
         horizon: u32,
         bound: ChargeBound,
-        lead: AnnouncedLead,
+        lead: AnnouncedLead<'_>,
     ) -> Option<u32> {
         // CR 704.5a: 0 or less life loses, so the whole total is the headroom. A living seat
         // ALREADY at 0 or less — which a committed board carries — crosses on the first
@@ -1652,8 +1661,9 @@ impl PeriodicDelta {
                 // The witness backs a published CEILING, so its own segment ends are read in the
                 // direction that over-charges: a lower count is the fail-closed answer here.
                 ChargeBound::Ceiling,
-                // Read with no lead, each later segment starts a repetition before a drive would
-                // reach it, so its crossing lands no later and the ceiling it backs is no higher.
+                // Read with no lead, each later segment starts no later than a drive reaches it,
+                // whichever slots lead on that drive's board, so its crossing lands no later and
+                // the ceiling it backs is no higher.
                 AnnouncedLead::None,
             ) else {
                 // A segment that carries its own seat to no threshold ends the witness: it is
@@ -1715,28 +1725,33 @@ pub enum ChargeBound {
     Attributable,
 }
 
-/// CR 601.2c + CR 603.3d: how many of a drive's leading repetitions resolve a target announced
-/// before the shortcut was proposed. A triggered ability's targets are chosen as it is put on the
-/// stack, so a repetition whose trigger already sits there when the offer is minted resolves the
-/// aim the offer published, and the declaration under test governs only the repetitions after it.
+/// CR 601.2c + CR 603.3d: which charged slots' first repetition resolves a target announced before
+/// the shortcut was proposed. A triggered ability's targets are chosen as it is put on the stack,
+/// so a charged slot whose trigger already sits on the stack of the board a drive starts from
+/// resolves the aim the offer published at the drive's first repetition, and the declaration under
+/// test governs that slot from the second. A charged slot with no announcement on that stack is
+/// announced inside the drive and resolves the declaration under test from the first repetition.
+/// Which slots lead is a fact of that board, slot by slot, and never of the loop.
 ///
 /// Stated by the caller rather than read off `state`: the declare seam and the consumption seam
 /// hand the walk the same pre-drive board and ask it different questions. Not a bound direction —
 /// that axis is [`ChargeBound`]'s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnnouncedLead {
-    /// Every repetition resolves the declaration under test at its own index.
+pub enum AnnouncedLead<'a> {
+    /// No charged slot leads: every repetition resolves the declaration under test at its own
+    /// index.
     None,
-    /// The first repetition resolves the declaration the offer published, and the declaration
-    /// under test governs from the second, at its index less one.
-    LeadingRepetition,
+    /// The listed charged slots lead by one repetition: each resolves the declaration the offer
+    /// published at the first repetition, and the declaration under test from the second, at its
+    /// index less one. A charged slot not listed leads by nothing.
+    LeadingRepetition(&'a [DecisionSlot]),
 }
 
-impl AnnouncedLead {
-    fn repetitions(self) -> IterationIndex {
+impl AnnouncedLead<'_> {
+    fn repetitions(self, slot: &DecisionSlot) -> IterationIndex {
         match self {
             AnnouncedLead::None => 0,
-            AnnouncedLead::LeadingRepetition => 1,
+            AnnouncedLead::LeadingRepetition(slots) => IterationIndex::from(slots.contains(slot)),
         }
     }
 }

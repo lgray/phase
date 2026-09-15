@@ -3342,10 +3342,11 @@ fn certified_bounded_cycle_offer<'a>(
     // asks: what SOME conforming declaration may take from a seat. An over-charge there only
     // LOWERS a published count, which is the direction a ceiling must fail in.
     //
-    // And both with no announced lead, which the consumption seam states for the drive. The own
-    // declaration pins one aim at every index, where a lead changes nothing; the witness read
-    // without one reaches each later segment a repetition early, so its crossings land no later
-    // than a drive's and the ceiling it backs is no higher.
+    // And both with no announced lead, where the consumption seam reads each charged slot's lead
+    // off the board the drive starts from. The own declaration pins one aim at every index, where
+    // a lead changes nothing; the witness read without one reaches each later segment no later
+    // than a drive does, so its crossings land no later than a drive's and the ceiling it backs is
+    // no higher.
     let own = periodic
         .elimination_cascade(
             state,
@@ -4701,9 +4702,12 @@ fn has_no_loss_axis(delta: &crate::analysis::resource::ResourceVector) -> bool {
 struct ConsumptionBound {
     /// CR 704.5a: the largest count legal on this board — the re-derived reduction's own.
     ceiling: u32,
-    /// CR 704.5a: the CR 704 threshold crossings the ACCEPTED count contains, in departure order.
-    /// EMPTY when this count crosses nobody — which is a statement that it crosses nobody, never
-    /// "nothing in particular", and the drive's set comparison reads it that way.
+    /// CR 704.5a: the CR 704 threshold crossings the ACCEPTED count contains under this
+    /// declaration's own aims, in departure order — the cascade taken at
+    /// `ChargeBound::Attributable`, where `ceiling` is taken at `ChargeBound::Ceiling`. An absent
+    /// published declaration subtracts every aim it may have made, so this list can be empty at a
+    /// count whose `Ceiling` cascade still names a crossing, and the drive's departure verdict
+    /// then refuses that departure.
     entries: Vec<crate::analysis::resource::PredictedDeparture>,
 }
 
@@ -4748,10 +4752,10 @@ fn shortcut_consumption_bound(
     // `consumption_seat_life_charges` keeps its job wherever the divisor is what is wanted.
     let template = proposal.template.as_ref();
     // CR 732.2a: the declaration the offer PUBLISHED stands in the charge authority's `observed`
-    // role — the aim the reserved charge subtracted, and the one the drive's leading repetition
-    // resolves — while `template` stands in the declaration role. Passed as it stands: both reads
-    // below answer an absent one on their refusing side, and standing `template` in for it would
-    // put one declaration back into both roles.
+    // role — the aim the reserved charge subtracted, and the one a leading charged slot resolves —
+    // while `template` stands in the declaration role. Passed as it stands: both reads below answer
+    // an absent one on their refusing side, and standing `template` in for it would put one
+    // declaration back into both roles.
     let published = proposal.published_declaration.as_ref();
     // The published `points` do not ride the proposal, so each charged slot's legal set is
     // synthesized from the two fields that do: `victim_slot` names the slots and
@@ -4760,9 +4764,25 @@ fn shortcut_consumption_bound(
     // `synthesized_charge_points` states.
     let points: Vec<crate::analysis::decision_template::DecisionPoint> =
         synthesized_charge_points(per_cycle);
-    // CR 601.2c + CR 603.3d: the drive's first repetition resolves the trigger already on the
-    // stack when the offer was minted, whose target was announced before the shortcut existed.
-    let lead = crate::analysis::resource::AnnouncedLead::LeadingRepetition;
+    // CR 601.2c + CR 603.3d: a charged slot leads only where its trigger was put on the stack, its
+    // target chosen, before the shortcut was proposed. The drive answers a target prompt raised
+    // inside cycle `i` with the declaration at index `i`, so a slot announced on this pre-drive
+    // stack resolves the published aim at the first repetition, and a slot announced inside the
+    // drive resolves the declaration from it. Which slots lead is read off this board, through
+    // the acceptance authority the charged slots were minted by, over the announcements
+    // `certified_period_touch` seeds from this stack when there is no window.
+    let touch = crate::analysis::resource::certified_period_touch(
+        &[],
+        state,
+        crate::analysis::resource::PeriodCertification::ResourceSignatureOnly,
+    );
+    let announced: Vec<crate::analysis::decision_template::DecisionSlot> = touch
+        .announced
+        .iter()
+        .filter_map(|(frame, entry)| entry_announces(frame, entry, proposal.proposer)?.target)
+        .map(|target| target.slot)
+        .collect();
+    let lead = crate::analysis::resource::AnnouncedLead::LeadingRepetition(&announced);
     // The DRIVABILITY question, so the charge stream is read at `ChargeBound::Ceiling`:
     // `shortcut_count_is_drivable` refuses every count above what this re-derives, and an
     // over-charge refuses more counts rather than fewer.
