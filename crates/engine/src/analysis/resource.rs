@@ -1202,12 +1202,18 @@ impl PeriodicDelta {
     ///
     /// Both templates resolve through [`decision_template::resolve`], the authority the drive
     /// replays a declaration with, once per repetition because a scheduled pin may name a
-    /// different seat at each index; when they are the same template, as on the bounded
+    /// different seat at each index. `observed` resolves at the repetition's own index and
+    /// `declaration` at that index less `lead` ([`AnnouncedLead`]): a leading repetition resolves
+    /// an announcement made before the shortcut was proposed, so `observed` stands in both
+    /// positions there. When the two are the same template and nothing leads, as on the bounded
     /// candidate `ai_support::candidates` emits (it carries the offer's own declaration), one
     /// resolution serves both. Everything else is read once. The
     /// magnitudes are the engine's charge model: every charged slot carries
     /// [`ResourceVector::worst_seat_life_loss`] whatever its effect, so a charged slot that deals
     /// no damage is still charged when it lands.
+    // Each parameter is a separate authority the caller states, for the reason
+    // `PeriodicDelta::seat_crossing` gives.
+    #[allow(clippy::too_many_arguments)]
     pub fn declared_seat_life_charges<'a>(
         &'a self,
         seat: PlayerId,
@@ -1216,6 +1222,7 @@ impl PeriodicDelta {
         points: &'a [DecisionPoint],
         state: &'a GameState,
         bound: ChargeBound,
+        lead: AnnouncedLead,
     ) -> impl Iterator<Item = DeclaredLifeCharge> + 'a {
         let charge_on_seat = |charges: &[(PlayerId, i64)]| {
             charges
@@ -1228,7 +1235,8 @@ impl PeriodicDelta {
         // CR 704.5a: the seats the bound reserved headroom for. No slot reaches a seat outside
         // them, and `PeriodicDelta::conforms` holds such a seat's loss to the observed one.
         let in_domain = self.declarable_victims.contains(&seat);
-        let one_template = declaration.is_some() && declaration == observed;
+        let lead = lead.repetitions();
+        let one_template = lead == 0 && declaration.is_some() && declaration == observed;
         // CR 115.2: each charged slot with whether its published legal set holds the seat,
         // `None` for a withheld slot.
         let slots: Vec<(&DecisionSlot, i64, Option<bool>)> = self
@@ -1246,14 +1254,19 @@ impl PeriodicDelta {
             .collect();
         (0..).map(move |iteration: IterationIndex| {
             // With no charged slot there is no pin to read and every repetition is alike.
-            let resolve_at = |template: Option<&DecisionTemplate>| {
-                template.filter(|_| !slots.is_empty()).and_then(|template| {
-                    decision_template::resolve(template, iteration, state).ok()
-                })
+            let resolve_at = |template: Option<&DecisionTemplate>, index: IterationIndex| {
+                template
+                    .filter(|_| !slots.is_empty())
+                    .and_then(|template| decision_template::resolve(template, index, state).ok())
             };
-            let declared = resolve_at(declaration);
-            let seen_apart = (!one_template).then(|| resolve_at(observed)).flatten();
-            let seen = if one_template {
+            // CR 601.2c + CR 603.3d: a leading repetition's target was announced before the
+            // shortcut was proposed, so the aim it resolves is the observed one.
+            let (declared, shared) = match iteration.checked_sub(lead) {
+                Some(index) => (resolve_at(declaration, index), one_template),
+                None => (resolve_at(observed, iteration), true),
+            };
+            let seen_apart = (!shared).then(|| resolve_at(observed, iteration)).flatten();
+            let seen = if shared {
                 declared.as_deref()
             } else {
                 seen_apart.as_deref()
@@ -1374,9 +1387,10 @@ impl PeriodicDelta {
     /// three.
     ///
     /// ONE PASS PER SEAT OVER THE WHOLE STREAM, and that IS the per-departure walk rather than a
-    /// short cut around it. `declared_seat_life_charges` resolves the declaration's pin AT EACH
-    /// REPETITION, so a declaration that re-aims at a later repetition — the witness below is
-    /// exactly that shape — already charges each seat what that repetition charges it. Spending
+    /// short cut around it. `declared_seat_life_charges` resolves the declaration's pin ONCE PER
+    /// REPETITION, at that repetition's index less the announced lead, so a declaration that
+    /// re-aims at a later repetition — the witness below is exactly that shape — already charges
+    /// each seat what that repetition charges it. Spending
     /// a segment's repetitions out of a seat's headroom and re-dividing the remainder would
     /// restate the same accumulation with a second rounding step, and the horizon is the seat's
     /// own remaining headroom for the reason D4 gives: `net` and `dip` are non-negative, so a
@@ -1400,6 +1414,9 @@ impl PeriodicDelta {
     /// names or with a seat set no entry holds; and the live CR 704.3 sweep is what actually
     /// removes a seat, never this prediction. The engine's own measurement of what the committed
     /// boards do is in this branch's probe record, not restated here.
+    // Each parameter is a separate authority the caller states, for the reason
+    // `PeriodicDelta::seat_crossing` gives.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn elimination_cascade(
         &self,
         state: &GameState,
@@ -1408,6 +1425,7 @@ impl PeriodicDelta {
         observed: Option<&DecisionTemplate>,
         points: &[DecisionPoint],
         bound: ChargeBound,
+        lead: AnnouncedLead,
     ) -> Option<EliminationCascade> {
         let horizon = cascade_horizon(state);
         let mut crossings: Vec<(PlayerId, u32)> = state
@@ -1415,8 +1433,17 @@ impl PeriodicDelta {
             .iter()
             .filter(|p| !p.is_eliminated)
             .filter_map(|p| {
-                self.seat_crossing(p, declaration, observed, points, state, horizon, bound)
-                    .map(|repetition| (p.id, repetition))
+                self.seat_crossing(
+                    p,
+                    declaration,
+                    observed,
+                    points,
+                    state,
+                    horizon,
+                    bound,
+                    lead,
+                )
+                .map(|repetition| (p.id, repetition))
             })
             .collect();
         // By repetition, then by seat, so the grouping below is a linear walk and the entries
@@ -1460,8 +1487,8 @@ impl PeriodicDelta {
     /// `horizon` is the WALK's, not this seat's, for the reason
     /// [`PeriodicDelta::elimination_cascade`] states where it derives it.
     // Each parameter is a separate authority the caller states at the call — the two templates,
-    // the published points, the walk's horizon and the bound direction — and bundling them would
-    // hide which question a call site is asking.
+    // the published points, the walk's horizon, the bound direction and the announced lead — and
+    // bundling them would hide which question a call site is asking.
     #[allow(clippy::too_many_arguments)]
     fn seat_crossing(
         &self,
@@ -1472,6 +1499,7 @@ impl PeriodicDelta {
         state: &GameState,
         horizon: u32,
         bound: ChargeBound,
+        lead: AnnouncedLead,
     ) -> Option<u32> {
         // CR 704.5a: 0 or less life loses, so the whole total is the headroom. A living seat
         // ALREADY at 0 or less — which a committed board carries — crosses on the first
@@ -1480,7 +1508,15 @@ impl PeriodicDelta {
         // producer's clamp that keeps it.
         let remaining_life = i64::from(p.life);
         let life = Self::first_life_crossing(
-            self.declared_seat_life_charges(p.id, declaration, observed, points, state, bound),
+            self.declared_seat_life_charges(
+                p.id,
+                declaration,
+                observed,
+                points,
+                state,
+                bound,
+                lead,
+            ),
             remaining_life,
             horizon,
         );
@@ -1616,6 +1652,9 @@ impl PeriodicDelta {
                 // The witness backs a published CEILING, so its own segment ends are read in the
                 // direction that over-charges: a lower count is the fail-closed answer here.
                 ChargeBound::Ceiling,
+                // Read with no lead, each later segment starts a repetition before a drive would
+                // reach it, so its crossing lands no later and the ceiling it backs is no higher.
+                AnnouncedLead::None,
             ) else {
                 // A segment that carries its own seat to no threshold ends the witness: it is
                 // the segment after it that the count would come from, and there is none.
@@ -1674,6 +1713,32 @@ pub enum ChargeBound {
     /// authorities catch a wrongly admitted declaration while nothing catches a wrongly refused
     /// one.
     Attributable,
+}
+
+/// CR 601.2c + CR 603.3d: how many of a drive's leading repetitions resolve a target announced
+/// before the shortcut was proposed. A triggered ability's targets are chosen as it is put on the
+/// stack, so a repetition whose trigger already sits there when the offer is minted resolves the
+/// aim the offer published, and the declaration under test governs only the repetitions after it.
+///
+/// Stated by the caller rather than read off `state`: the declare seam and the consumption seam
+/// hand the walk the same pre-drive board and ask it different questions. Not a bound direction —
+/// that axis is [`ChargeBound`]'s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnouncedLead {
+    /// Every repetition resolves the declaration under test at its own index.
+    None,
+    /// The first repetition resolves the declaration the offer published, and the declaration
+    /// under test governs from the second, at its index less one.
+    LeadingRepetition,
+}
+
+impl AnnouncedLead {
+    fn repetitions(self) -> IterationIndex {
+        match self {
+            AnnouncedLead::None => 0,
+            AnnouncedLead::LeadingRepetition => 1,
+        }
+    }
 }
 
 /// CR 119.3 + CR 704.3: what one repetition of a certified period can do to one seat's life
@@ -13335,6 +13400,7 @@ mod tests {
                 &schema.points,
                 &state,
                 ChargeBound::Ceiling,
+                AnnouncedLead::None,
             ),
             remaining,
             u32::try_from(remaining).expect("a test life total fits a u32"),
@@ -13352,7 +13418,8 @@ mod tests {
                     None,
                     &schema.points,
                     &state,
-                    ChargeBound::Ceiling
+                    ChargeBound::Ceiling,
+                    AnnouncedLead::None,
                 )
                 .next()
         );
@@ -18599,7 +18666,15 @@ mod tests {
         bound: ChargeBound,
     ) -> DeclaredLifeCharge {
         period
-            .declared_seat_life_charges(seat, declaration, observed, points, board, bound)
+            .declared_seat_life_charges(
+                seat,
+                declaration,
+                observed,
+                points,
+                board,
+                bound,
+                AnnouncedLead::None,
+            )
             .nth(iteration)
             .expect("the per-repetition charges are unbounded")
     }
@@ -23553,6 +23628,7 @@ mod tests {
                 seat_life_charge: vec![],
             }),
             shortened_by: None,
+            published_declaration: None,
         };
         let wait = WaitingFor::RespondToShortcut {
             player: PlayerId(1),
@@ -35946,7 +36022,15 @@ mod tests {
         let published =
             charged_signature(victim_life(&[(0, 1), (1, -1), (2, -1), (3, -1)]), &[], &[]);
         let cascade = published
-            .elimination_cascade(&state, PlayerId(0), None, None, &[], ChargeBound::Ceiling)
+            .elimination_cascade(
+                &state,
+                PlayerId(0),
+                None,
+                None,
+                &[],
+                ChargeBound::Ceiling,
+                AnnouncedLead::None,
+            )
             .expect("three consumed opponents make this a measured cascade");
 
         assert!(
@@ -36019,7 +36103,15 @@ mod tests {
         let proposer = PlayerId(0);
         let self_draining = charged_signature(victim_life(&[(0, -1), (1, -1), (2, -1)]), &[], &[]);
         let cascade = self_draining
-            .elimination_cascade(&state, proposer, None, None, &[], ChargeBound::Ceiling)
+            .elimination_cascade(
+                &state,
+                proposer,
+                None,
+                None,
+                &[],
+                ChargeBound::Ceiling,
+                AnnouncedLead::None,
+            )
             .expect("every seat is consumed on this board");
 
         assert!(
@@ -36043,7 +36135,15 @@ mod tests {
         // truncation removed them rather than the arithmetic never naming them.
         let opponents_only = charged_signature(victim_life(&[(0, 1), (1, -1), (2, -1)]), &[], &[]);
         let survives = opponents_only
-            .elimination_cascade(&state, proposer, None, None, &[], ChargeBound::Ceiling)
+            .elimination_cascade(
+                &state,
+                proposer,
+                None,
+                None,
+                &[],
+                ChargeBound::Ceiling,
+                AnnouncedLead::None,
+            )
             .expect("both opponents are still consumed");
         assert!(
             survives.entries.len() > cascade.entries.len()

@@ -995,6 +995,18 @@ fn both_drain_boards_publish_no_aim_independent_charge_at_their_live_offer() {
     }
 }
 
+/// A committed dump's whole JSON document, inflated and parsed.
+fn committed_document(path: &Path) -> serde_json::Value {
+    let bytes =
+        std::fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let mut json = String::new();
+    flate2::read::GzDecoder::new(bytes.as_slice())
+        .read_to_string(&mut json)
+        .unwrap_or_else(|error| panic!("{} must inflate to UTF-8 JSON: {error}", path.display()));
+    serde_json::from_str(&json)
+        .unwrap_or_else(|error| panic!("{} must parse as JSON: {error}", path.display()))
+}
+
 fn collect_gz(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries =
         std::fs::read_dir(dir).unwrap_or_else(|error| panic!("read {}: {error}", dir.display()));
@@ -1017,16 +1029,7 @@ fn collect_gz(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Both envelope shapes are tried, because committed dumps use each and an envelope-only read
 /// would drop a real board by name.
 fn restores_at_a_certified_offer(path: &Path) -> bool {
-    use std::io::Read;
-
-    let bytes =
-        std::fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    let mut json = String::new();
-    flate2::read::GzDecoder::new(bytes.as_slice())
-        .read_to_string(&mut json)
-        .unwrap_or_else(|error| panic!("{} must inflate to UTF-8 JSON: {error}", path.display()));
-    let document: serde_json::Value = serde_json::from_str(&json)
-        .unwrap_or_else(|error| panic!("{} must parse as JSON: {error}", path.display()));
+    let document = committed_document(path);
     let board = document.get("gameState").unwrap_or(&document);
     let Some(waiting) = board.get("waiting_for") else {
         return false;
@@ -1087,5 +1090,319 @@ fn the_committed_dumps_that_restore_at_a_certified_offer_are_the_two_this_file_d
         "a committed dump restoring at a certified CR 732.2a offer is one of the boards \
          `both_drain_boards_publish_no_aim_independent_charge_at_their_live_offer` reads, and the \
          difference above names the newcomer: add it to that row, or move it out of the corpus"
+    );
+}
+
+/// The published shape of one CR 732.2a offer: whether its count is narrowed, the threshold it
+/// measured, the capacity it grants, and whether it publishes a declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OfferShape {
+    bounded: bool,
+    measured_repetition_bound: Option<u32>,
+    deliverable_capacity: u32,
+    declared: bool,
+}
+
+/// What one committed document answers when restored at the beat it was saved at — one outcome
+/// per document, so a board this walk could not reach is counted rather than read as "no offer".
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SavedBeatOffer {
+    /// No `waiting_for`: a decklist, a census artifact or a card list.
+    NotABoard,
+    /// A board the production restore chokepoint refuses.
+    Unrestorable,
+    /// A board saved at a waiting state the bounded producer's first guard refuses with
+    /// `BoundedOfferRefusal::NotAtPriority`, so nothing downstream of that guard can run on it.
+    NotEnterable(String),
+    /// Restored at an offer already standing.
+    Standing(OfferShape),
+    /// Restored at priority, with the bounded producer's answer there.
+    Asked(Result<OfferShape, engine::game::engine::BoundedOfferRefusal>),
+}
+
+fn offer_shape(waiting: &WaitingFor) -> Option<OfferShape> {
+    let WaitingFor::LoopShortcut {
+        schema,
+        declaration,
+        ..
+    } = waiting
+    else {
+        return None;
+    };
+    Some(OfferShape {
+        bounded: schema.is_bounded(),
+        measured_repetition_bound: schema.measured_repetition_bound,
+        deliverable_capacity: schema.deliverable_capacity,
+        declared: declaration.is_some(),
+    })
+}
+
+/// CR 732.2a: restore `path` through `PersistedGameState::into_game_state` and ask
+/// `try_offer_bounded_cycle_shortcut` once at the saved beat. Only a board saved at `Priority` or
+/// at a standing `LoopShortcut` pays the restore; every other saved state is classified from the
+/// document, and the ground for that is asserted on the standing offers, which are restored
+/// non-priority states that must draw the same typed refusal.
+fn saved_beat_offer(path: &Path) -> SavedBeatOffer {
+    use engine::game::engine::{try_offer_bounded_cycle_shortcut, BoundedOfferRefusal};
+
+    let mut document = committed_document(path);
+    let Some(saved) = document
+        .get("gameState")
+        .unwrap_or(&document)
+        .pointer("/waiting_for/type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    else {
+        return SavedBeatOffer::NotABoard;
+    };
+    if !matches!(saved.as_str(), "Priority" | "LoopShortcut") {
+        return SavedBeatOffer::NotEnterable(saved);
+    }
+    let board = if document.get("gameState").is_some() {
+        document["gameState"].take()
+    } else {
+        document
+    };
+    let Ok(mut state) = serde_json::from_value::<PersistedGameState>(board)
+        .map_err(drop)
+        .and_then(|persisted| persisted.into_game_state().map_err(drop))
+    else {
+        return SavedBeatOffer::Unrestorable;
+    };
+    state.loop_detection = LoopDetectionMode::Interactive;
+    let restored = serde_json::to_value(&state.waiting_for).expect("a WaitingFor serializes");
+    assert_eq!(
+        restored.get("type").and_then(serde_json::Value::as_str),
+        Some(saved.as_str()),
+        "{}: the document's saved waiting state is the one the restore produces",
+        path.display()
+    );
+    let asked = try_offer_bounded_cycle_shortcut(&state, false);
+    match offer_shape(&state.waiting_for) {
+        Some(standing) => {
+            assert_eq!(
+                asked,
+                Err(BoundedOfferRefusal::NotAtPriority),
+                "{}: a restored non-priority board draws the producer's first typed refusal",
+                path.display()
+            );
+            SavedBeatOffer::Standing(standing)
+        }
+        None => SavedBeatOffer::Asked(asked.map(|offer| {
+            offer_shape(&offer).expect("the bounded producer mints a LoopShortcut offer")
+        })),
+    }
+}
+
+/// **The offer every committed board answers at its saved beat is pinned.** CR 732.2a: a change
+/// to what the consumption seam derives a drive against moves no offer, so this projection is the
+/// one measured before that seam's re-derivation changed.
+///
+/// The walk and the claim quantify over the same set: every `*.json.gz` under `crates/`, read
+/// with the `gameState` wrapper stripped where present. A dump captured before its offer beat
+/// answers at the beat it was saved at, which is not its offer beat; the rows that drive such a
+/// dump to its offer are its own file's.
+#[test]
+fn the_offer_each_committed_board_answers_at_its_saved_beat_is_pinned() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    collect_gz(&root, &mut files);
+    let projection: std::collections::BTreeMap<String, SavedBeatOffer> = files
+        .iter()
+        .map(|path| {
+            let name = path
+                .strip_prefix(&root)
+                .expect("walked path is under the walk root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            (name, saved_beat_offer(path))
+        })
+        .collect();
+
+    let standing: Vec<OfferShape> = projection
+        .values()
+        .filter_map(|outcome| match outcome {
+            SavedBeatOffer::Standing(shape) => Some(*shape),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        standing.iter().any(|shape| shape.bounded) && standing.iter().any(|shape| !shape.bounded),
+        "LIVE CONTROL: the walk reaches a board holding a bounded offer and one holding the \
+         unbounded kind, so an unchanged projection is read off offers rather than off a walk \
+         that reached none; standing={standing:?}"
+    );
+    for (name, wrapped) in [
+        (
+            "engine/tests/fixtures/combo_infinite_pile_4p_offer.json.gz",
+            false,
+        ),
+        ("engine/tests/fixtures/weird_drain_4p.json.gz", true),
+    ] {
+        assert!(
+            matches!(projection.get(name), Some(SavedBeatOffer::Standing(_))),
+            "both document shapes restore: {name} (gameState wrapper {wrapped}) is read at its \
+             standing offer; got {:?}",
+            projection.get(name)
+        );
+    }
+    let rows: Vec<(&str, String)> = projection
+        .iter()
+        .map(|(name, outcome)| (name.as_str(), format!("{outcome:?}")))
+        .collect();
+    let bounded_drain = r#"Standing(OfferShape { bounded: true, measured_repetition_bound: Some(10), deliverable_capacity: 10, declared: true })"#;
+    let lethal_pair = r#"Standing(OfferShape { bounded: true, measured_repetition_bound: Some(2), deliverable_capacity: 2, declared: false })"#;
+    let unbounded = r#"Standing(OfferShape { bounded: false, measured_repetition_bound: None, deliverable_capacity: 1000, declared: false })"#;
+    let uncertified = "Asked(Err(NoCertification))";
+    let not_active = "Asked(Err(ProposerIsNotActivePlayer))";
+    let fixtures = "engine/tests/fixtures";
+    let integration = "engine/tests/integration/fixtures";
+    let expected: Vec<(String, &str)> = [
+        (
+            format!("{fixtures}/basalt_power_artifact_infinite_colorless.json.gz"),
+            uncertified,
+        ),
+        (
+            format!("{fixtures}/codie_turn14.json.gz"),
+            r#"NotEnterable("EffectZoneChoice")"#,
+        ),
+        (
+            format!("{fixtures}/combo_infinite_pile_4p_offer.json.gz"),
+            unbounded,
+        ),
+        (
+            format!("{fixtures}/combo_infinite_pile_4p_untapped_precast.json.gz"),
+            uncertified,
+        ),
+        (
+            format!("{fixtures}/combo_infinite_pile_decklist_4p.json.gz"),
+            "NotABoard",
+        ),
+        (
+            format!("{fixtures}/cr733/authority_matrix.json.gz"),
+            "NotABoard",
+        ),
+        (
+            format!("{fixtures}/cr733/blocked_write_sites.json.gz"),
+            "NotABoard",
+        ),
+        (
+            format!("{fixtures}/cr733/rng_allocator_map.json.gz"),
+            "NotABoard",
+        ),
+        (
+            format!("{fixtures}/cr733/side_effect_map.json.gz"),
+            "NotABoard",
+        ),
+        (
+            format!("{fixtures}/dellian_emblem_conqueror_4p.json.gz"),
+            r#"NotEnterable("TriggerTargetSelection")"#,
+        ),
+        (format!("{fixtures}/dina_conqueror_4p.json.gz"), not_active),
+        (
+            format!("{fixtures}/dina_conqueror_phase5_no_offer_4p.json.gz"),
+            not_active,
+        ),
+        (format!("{fixtures}/dina_noff_turn5_4p.json.gz"), not_active),
+        (
+            format!("{fixtures}/f4_user_mode1_no_offer_4p.json.gz"),
+            not_active,
+        ),
+        (
+            format!("{fixtures}/f4_user_mode2_accept_commits_nothing_4p.json.gz"),
+            r#"NotEnterable("TriggerTargetSelection")"#,
+        ),
+        (
+            format!("{fixtures}/fantastic_four_bounded_loop_4p.json.gz"),
+            r#"NotEnterable("TriggerTargetSelection")"#,
+        ),
+        (format!("{fixtures}/integration_cards.json.gz"), "NotABoard"),
+        (
+            format!("{fixtures}/kilo_freed_relic_pentad_4p.json.gz"),
+            uncertified,
+        ),
+        (
+            format!("{fixtures}/kilo_freed_relic_pentad_max_of_one_4p.json.gz"),
+            uncertified,
+        ),
+        (
+            format!("{fixtures}/lethal_lifegain_loss_4p.json.gz"),
+            lethal_pair,
+        ),
+        (
+            format!("{fixtures}/mass_library_order_turn15.json.gz"),
+            r#"NotEnterable("EffectZoneChoice")"#,
+        ),
+        (
+            format!("{fixtures}/sprout_witherbloom_realistic_lands_4p.json.gz"),
+            uncertified,
+        ),
+        (
+            format!("{fixtures}/tenacity_exquisite_blood_4p.json.gz"),
+            unbounded,
+        ),
+        (
+            format!("{fixtures}/vanquish_the_horde_manapayment_4p.json.gz"),
+            r#"NotEnterable("ManaPayment")"#,
+        ),
+        (format!("{fixtures}/weird_drain_4p.json.gz"), bounded_drain),
+        (
+            format!("{fixtures}/witherbloom_altar_sprout_swarm_4p.json.gz"),
+            uncertified,
+        ),
+        (
+            format!("{fixtures}/witherbloom_sprout_lumaret_4p.json.gz"),
+            uncertified,
+        ),
+        (
+            format!("{fixtures}/witherbloom_sprout_lumaret_simple_4p.json.gz"),
+            uncertified,
+        ),
+        (
+            format!("{integration}/issue_7087_recruit_discard_provenance.json.gz"),
+            not_active,
+        ),
+        (
+            format!("{integration}/issue_7212_recruit_with_sibling_trigger.json.gz"),
+            not_active,
+        ),
+        (
+            format!("{integration}/issue_8024_devour_rest_turn10.json.gz"),
+            "Unrestorable",
+        ),
+        (
+            format!("{integration}/issue_8024_spell_rest_turn26.json.gz"),
+            "Unrestorable",
+        ),
+        (
+            format!("{integration}/mycoloth_devour_wedge_turn15.json.gz"),
+            "Unrestorable",
+        ),
+        (
+            format!("{integration}/mycoloth_devour_wedge_turn20.json.gz"),
+            "Unrestorable",
+        ),
+        (
+            format!("{integration}/ureni_turn10_raw_resolution_stack.json.gz"),
+            "Unrestorable",
+        ),
+        (
+            "phase-ai/fixtures/scenarios/galvanic-blast-manapayment-turn4.json.gz".to_string(),
+            r#"NotEnterable("ManaPayment")"#,
+        ),
+        (
+            "phase-ai/fixtures/scenarios/invisible-woman-cosmic-crucible-mana.json.gz".to_string(),
+            r#"NotEnterable("ChooseManaColor")"#,
+        ),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        rows,
+        expected
+            .iter()
+            .map(|(name, outcome)| (name.as_str(), outcome.to_string()))
+            .collect::<Vec<_>>(),
+        "the offer every committed board answers at its saved beat"
     );
 }

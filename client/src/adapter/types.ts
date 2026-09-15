@@ -3812,10 +3812,12 @@ export type DecisionSource =
 export type DecisionTemplate = Record<string, unknown>;
 
 /**
- * Mirrors `engine::analysis::loop_check::ShortcutProposal`. `shortened_by` is the responder
- * whose named place is the proposal's current ending point (CR 732.2b); it is `skip_serializing_if
- * none` on the wire, so an unshortened proposal serializes exactly as before and no protocol
- * version moves — the same posture the two optional fields this interface does not mirror ship.
+ * Mirrors `engine::analysis::loop_check::ShortcutProposal`, less the optional fields the frontend
+ * never reads. `shortened_by` is the responder whose named place is the proposal's current ending
+ * point (CR 732.2b); it is `skip_serializing_if none` on the wire, so an unshortened proposal
+ * serializes exactly as before. No protocol version moved for it because the count a shortening
+ * names rides in `count` itself. The serde posture alone never decides that: an omitted field
+ * whose absence changes what a peer drives still owes a bump.
  */
 export interface ShortcutProposal {
   proposer: PlayerId;

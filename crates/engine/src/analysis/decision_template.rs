@@ -1566,12 +1566,11 @@ pub enum AimViolation {
 /// takes. A departure BEFORE it is not: the choice cannot be made, which is the conditional
 /// action CR 732.2a forbids.
 ///
-/// Repetitions are counted from 1 and driven by iteration index `repetition - 1`, the convention
-/// [`crate::analysis::resource::PeriodicDelta::declared_seat_life_charges`] and
-/// `truncate_to_declared_seats` already share. It is the CASCADE's convention, chosen so the
-/// declare seam and the consumption seam's own re-derivation are measured against one index;
-/// this function states nothing about how that convention lines up against the drive's own loop
-/// position, which is board-dependent and not visible here.
+/// Repetitions are counted from 1 and read at iteration index `repetition - 1` with no announced
+/// lead ([`crate::analysis::resource::AnnouncedLead::None`]), the convention
+/// `truncate_to_declared_seats` shares. The consumption seam's re-derivation states the drive's
+/// leading repetition instead, because it is matched against the departures a drive realizes;
+/// this conjunct decides which declarations may be specified and states none.
 ///
 /// Monotone in `validated_range`: a shorter range walks a prefix of the repetitions and the
 /// cascade does not depend on the range, so a CR 732.2b shortening can never turn a conforming
@@ -1598,6 +1597,7 @@ pub fn aims_survive_the_crossings(
         aim.published,
         points,
         crate::analysis::resource::ChargeBound::Attributable,
+        crate::analysis::resource::AnnouncedLead::None,
     ) else {
         return Ok(());
     };

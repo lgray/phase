@@ -102,7 +102,7 @@
 
 use engine::analysis::decision_template::{DecisionPoint, DecisionTemplate, IterationCount};
 use engine::analysis::loop_check::LoopCertificate;
-use engine::analysis::resource::{ChargeBound, PeriodicDelta};
+use engine::analysis::resource::{AnnouncedLead, ChargeBound, PeriodicDelta};
 use engine::types::actions::GameAction;
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::player::PlayerId;
@@ -445,11 +445,9 @@ fn cycles_to_proposer_elimination(
     // them, and the ceiling is the direction that over-charges. The engine's declare seam asks
     // the same producer the attributable question instead, because a refusal THERE denies
     // CR 732.2a's licence outright; the two directions are the two questions and not a
-    // disagreement. The regression guard on this choice is the swap-board row below,
-    // `loop_shortcut_declare_on_the_swap_board_scores_as_published_and_is_refused_swapped`,
-    // measured the only row in this module that reds when this call is handed `Attributable`.
-    // It predates this parameter and is green on both sides of it, so it guards the direction
-    // rather than exhibiting behaviour this change introduces.
+    // disagreement.
+    //
+    // No announced lead: stating one would move which declarations this veto refuses.
     let life_fatal = PeriodicDelta::first_life_crossing(
         period.declared_seat_life_charges(
             proposer,
@@ -458,6 +456,7 @@ fn cycles_to_proposer_elimination(
             points,
             state,
             ChargeBound::Ceiling,
+            AnnouncedLead::None,
         ),
         i64::from(player.life),
         declared,

@@ -3341,6 +3341,11 @@ fn certified_bounded_cycle_offer<'a>(
     // BOTH cascades below are read at `ChargeBound::Ceiling`, which is the question this seam
     // asks: what SOME conforming declaration may take from a seat. An over-charge there only
     // LOWERS a published count, which is the direction a ceiling must fail in.
+    //
+    // And both with no announced lead, which the consumption seam states for the drive. The own
+    // declaration pins one aim at every index, where a lead changes nothing; the witness read
+    // without one reaches each later segment a repetition early, so its crossings land no later
+    // than a drive's and the ceiling it backs is no higher.
     let own = periodic
         .elimination_cascade(
             state,
@@ -3349,6 +3354,7 @@ fn certified_bounded_cycle_offer<'a>(
             pins.as_ref(),
             &points,
             crate::analysis::resource::ChargeBound::Ceiling,
+            crate::analysis::resource::AnnouncedLead::None,
         )
         .map(|cascade| truncate_to_declared_seats(cascade, pins.as_ref(), state))
         .filter(|cascade| cascade.count >= 1)
@@ -3366,6 +3372,7 @@ fn certified_bounded_cycle_offer<'a>(
                 pins.as_ref(),
                 &points,
                 crate::analysis::resource::ChargeBound::Ceiling,
+                crate::analysis::resource::AnnouncedLead::None,
             )
         })
         .map_or(0, |cascade| cascade.count);
@@ -4740,6 +4747,12 @@ fn shortcut_consumption_bound(
     // discriminator compares the predicted seat set at a repetition against the observed one.
     // `consumption_seat_life_charges` keeps its job wherever the divisor is what is wanted.
     let template = proposal.template.as_ref();
+    // CR 732.2a: the declaration the offer PUBLISHED stands in the charge authority's `observed`
+    // role — the aim the reserved charge subtracted, and the one the drive's leading repetition
+    // resolves — while `template` stands in the declaration role. Passed as it stands: both reads
+    // below answer an absent one on their refusing side, and standing `template` in for it would
+    // put one declaration back into both roles.
+    let published = proposal.published_declaration.as_ref();
     // The published `points` do not ride the proposal, so each charged slot's legal set is
     // synthesized from the two fields that do: `victim_slot` names the slots and
     // `declarable_victims` is their reach UNION. A union over-states a single slot's own reach,
@@ -4747,28 +4760,49 @@ fn shortcut_consumption_bound(
     // `synthesized_charge_points` states.
     let points: Vec<crate::analysis::decision_template::DecisionPoint> =
         synthesized_charge_points(per_cycle);
+    // CR 601.2c + CR 603.3d: the drive's first repetition resolves the trigger already on the
+    // stack when the offer was minted, whose target was announced before the shortcut existed.
+    let lead = crate::analysis::resource::AnnouncedLead::LeadingRepetition;
     // The DRIVABILITY question, so the charge stream is read at `ChargeBound::Ceiling`:
     // `shortcut_count_is_drivable` refuses every count above what this re-derives, and an
     // over-charge refuses more counts rather than fewer.
-    let Some(cascade) = per_cycle.elimination_cascade(
+    let Some(ceiling) = per_cycle.elimination_cascade(
         state,
         proposal.proposer,
         template,
-        template,
+        published,
         &points,
         crate::analysis::resource::ChargeBound::Ceiling,
+        lead,
     ) else {
         return ConsumptionDerivation::NoMeasurement;
     };
-    ConsumptionDerivation::Measured(ConsumptionBound {
-        ceiling: cascade.count,
+    // The DEPARTURE question, so the entries are read at `ChargeBound::Attributable`:
+    // `departure_verdict` matches a real departure against them, and the ceiling charges a seat for
+    // aims this declaration does not make, naming a departure its own choices never cause. An
+    // absent attributable cascade names nobody, which that verdict reads fail-closed.
+    let entries = per_cycle
+        .elimination_cascade(
+            state,
+            proposal.proposer,
+            template,
+            published,
+            &points,
+            crate::analysis::resource::ChargeBound::Attributable,
+            lead,
+        )
         // Every crossing at or below the accepted count, and none above it: a count accepted
         // below the ceiling contains only the crossings it reaches.
-        entries: cascade
-            .entries
-            .into_iter()
-            .filter(|entry| entry.repetition <= accepted)
-            .collect(),
+        .map_or_else(Vec::new, |cascade| {
+            cascade
+                .entries
+                .into_iter()
+                .filter(|entry| entry.repetition <= accepted)
+                .collect()
+        });
+    ConsumptionDerivation::Measured(ConsumptionBound {
+        ceiling: ceiling.count,
+        entries,
     })
 }
 
@@ -8461,6 +8495,10 @@ fn handle_declare_shortcut(
         per_cycle: offer.certificate.per_cycle.clone(),
         // CR 732.2b: a mint is a proposal nobody has answered yet, so no place has been named.
         shortened_by: None,
+        // CR 732.2a: the declaration the offer published, in its own role beside `template`.
+        // Bound here, while the offer carrying it is still in scope: the answer journal it was
+        // pinned from does not survive to the consumption seam that reads it.
+        published_declaration: offer.declaration.cloned(),
     };
     // CR 732.2b: living opponents in APNAP turn order, starting after the proposer.
     let opps: Vec<PlayerId> = crate::game::players::apnap_order_from(
@@ -21095,6 +21133,7 @@ mod stage2_injector_tests {
             template: Some(template),
             per_cycle: None,
             shortened_by: None,
+            published_declaration: None,
         };
         let mut result =
             crate::types::game_state::ActionResult::applied(Vec::new(), state.waiting_for.clone());
@@ -21228,6 +21267,7 @@ mod stage2_injector_tests {
             template: Some(sched),
             per_cycle: None,
             shortened_by: None,
+            published_declaration: None,
         };
         let mut result =
             crate::types::game_state::ActionResult::applied(Vec::new(), state.waiting_for.clone());
@@ -26460,7 +26500,7 @@ mod bounded_offer_conjunct_tests {
              Found {outside:#?}"
         );
     }
-    /// The V1/V3d board: a 3-seat `k = 2` ring whose two drained seats sit at DISTINCT lives,
+    /// The V1 board: a 3-seat `k = 2` ring whose two drained seats sit at DISTINCT lives,
     /// one of them carrying a within-period sign mix.
     ///
     /// Two seats rather than one, deliberately: every map the ceiling's derivation walks — the
@@ -26543,7 +26583,7 @@ mod bounded_offer_conjunct_tests {
         state
     }
 
-    /// Mint the V1/V3d board's offer through the production seam, then take the production
+    /// Mint the V1 board's offer through the production seam, then take the production
     /// DECLARE path to the responder's beat and hand back the live proposal beside the count
     /// the offer published.
     fn signmix_offer_at_responder_beat() -> (GameState, ShortcutProposal, u32) {
@@ -26672,82 +26712,6 @@ mod bounded_offer_conjunct_tests {
             net_ceiling, derived.ceiling,
             "CONTROL: the period's NET divisor authorises a different count on this very \
              board, so the equality above is a statement about WHICH derivation the seam runs"
-        );
-    }
-
-    /// **V3d — CR 732.2a: the prediction is TRUNCATED at the ACCEPTED count, not taken at the
-    /// ceiling.** A declarer may name any count at or below the offered one and the drive runs at
-    /// that count, so the crossings a derivation states are the ones that count CONTAINS — every
-    /// entry at or below it, and none above. A discriminator reading a prediction taken at the
-    /// ceiling would admit a later crossing's departure on a proposal that never reaches it.
-    ///
-    /// # What this row stopped assuming
-    ///
-    /// It read the ceiling as the FIRST crossing, so "below the ceiling nobody crosses" was the
-    /// whole claim. The ceiling is now the LAST crossing of the cascade, so counts below it do
-    /// contain crossings and the claim is about TRUNCATION rather than about emptiness. Both legs
-    /// are now re-derived from the cascade the ceiling's own accept publishes: nothing is pinned,
-    /// and the row states the property — every retained entry is at or below the accepted count,
-    /// and the last one at the ceiling is the ceiling itself.
-    ///
-    /// # A live instrument, and the pair as its own reach guard
-    ///
-    /// The cascade at the ceiling is asserted NON-EMPTY and its first entry's repetition is
-    /// asserted to exist, so a derivation always answering absent fails before the truncation is
-    /// examined; and the leg below the FIRST entry is asserted empty, so one always answering
-    /// present fails there.
-    ///
-    /// REVERT-PROBE: drop the `repetition <= accepted` filter ⇒ the leg below the first crossing
-    /// answers present ⇒ it FAILS while the ceiling leg stays green.
-    #[test]
-    fn the_predicted_departure_is_resolved_at_the_accepted_count() {
-        let (state, proposal, published) = signmix_offer_at_responder_beat();
-        assert!(
-            published >= 2,
-            "REACH-GUARD: a count strictly BELOW the ceiling must exist for the second leg to \
-             be constructible; got {published}"
-        );
-
-        let at_ceiling = measured_consumption_bound(&state, &proposal, published);
-        let repetitions: Vec<u32> = at_ceiling
-            .entries
-            .iter()
-            .map(|entry| entry.repetition)
-            .collect();
-        assert!(
-            !repetitions.is_empty(),
-            "CR 704.5a: at the count the reduction derived, the crossings it contains are named"
-        );
-        assert!(
-            repetitions
-                .iter()
-                .all(|repetition| *repetition <= published)
-                && repetitions.last() == Some(&published),
-            "CR 732.2a: the accepted count contains every entry at or below it and none above, \
-             and the last one it contains is its own final iteration; got {repetitions:?} at \
-             {published}"
-        );
-
-        // The count one below the FIRST crossing — the only count this board admits that contains
-        // no crossing at all, which is what the emptiness leg has to be taken at now that the
-        // ceiling reaches past the first.
-        let first = repetitions[0];
-        assert!(
-            first >= 2,
-            "REACH-GUARD: the first crossing must leave a count below it, else the empty leg is \
-             not constructible on this board; got {repetitions:?}"
-        );
-        let below = measured_consumption_bound(&state, &proposal, first - 1);
-        assert_eq!(
-            below.ceiling, at_ceiling.ceiling,
-            "REACH-GUARD: the CEILING is a property of the board and the signature, so it does \
-             not move with the accepted count — which is what leaves the prediction as the \
-             only thing that changed"
-        );
-        assert!(
-            below.entries.is_empty(),
-            "CR 732.2a: below the first crossing no seat reaches its threshold, so that count \
-             predicts no departure; cascade at the ceiling {repetitions:?}"
         );
     }
 

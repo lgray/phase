@@ -31328,6 +31328,7 @@ mod forced_cascade_window_tests {
                         template: None,
                         per_cycle: None,
                         shortened_by: None,
+                        published_declaration: None,
                     },
                 },
             ),

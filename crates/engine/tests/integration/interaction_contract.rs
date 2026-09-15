@@ -3919,6 +3919,7 @@ fn respond_window_on(
             }),
             per_cycle,
             shortened_by: None,
+            published_declaration: None,
         },
     };
     bind(&mut state, "respond-declared");
@@ -10618,6 +10619,7 @@ fn p10_row_7_a_restored_multi_entry_ranking_still_loads_and_still_drives_head_on
             template: Some(declared),
             per_cycle: None,
             shortened_by: None,
+            published_declaration: None,
         },
     };
     let wire = serde_json::to_string(&carrying).expect("serialize the pending proposal");

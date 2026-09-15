@@ -365,14 +365,15 @@ enum PinCarrier {
 /// object this viewer may not see drops the entire pin vector.
 ///
 /// THE SINGLE AUTHORITY for that decision. It is keyed on `[PinnedDecision]` rather than on
-/// `DecisionTemplate` because this engine has THREE viewer-visible carriers of that same vector,
+/// `DecisionTemplate` because this engine has several viewer-visible carriers of that same vector,
 /// and a per-carrier copy of the predicate is exactly what let them drift before:
 ///
 /// 1. `WaitingFor::LoopShortcut.declaration.decisions` — the proposer-facing offer.
 /// 2. `WaitingFor::RespondToShortcut.proposal.template.decisions` — the responder-facing copy.
 ///    `game::engine::handle_declare_shortcut` moves the identical template verbatim onto
 ///    `ShortcutProposal.template` one state transition later, where every responder and spectator
-///    reads it.
+///    reads it. `ShortcutProposal.published_declaration.decisions` rides the same proposal to the
+///    same readers, carrying the declaration carrier 1 publishes.
 /// 3. `GameState::last_loop_action_sequence[].pins` — the recorded loop period. It is serialized
 ///    whenever non-empty (`skip_serializing_if = "Vec::is_empty"`, not `skip`) and has no other
 ///    redaction seam. Its three writers (the `game::engine::record_loop_pin` call sites: a
@@ -380,7 +381,7 @@ enum PinCarrier {
 ///    permanents and seats today, so that call redacts nothing on any board the engine currently
 ///    mints — it is wired so a fourth writer cannot open the leak silently.
 ///
-/// `GameState::decision_templates` is the fourth carrier and deliberately does NOT route here: it
+/// `GameState::decision_templates` is one more carrier and deliberately does NOT route here: it
 /// is redacted wholesale by the private-access retain
 /// (`filtered.decision_templates.retain(|t| can_view_private_for_player(t.owner))` — CR 723.4, the
 /// SAME predicate carriers 1 and 2 apply), so a template this viewer may not privately view is
@@ -1864,8 +1865,8 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
 
     // A target object is hidden from this viewer iff it sits in a private zone whose
     // owner the viewer can't privately view AND it isn't otherwise revealed/peeked.
-    // Hoisted above the CR 732.2a/b blocks below because all THREE pin carriers
-    // (`LoopShortcut.declaration`, `RespondToShortcut.proposal.template`,
+    // Hoisted above the CR 732.2a/b blocks below because every pin carrier
+    // (`LoopShortcut.declaration`, `RespondToShortcut.proposal.{template, published_declaration}`,
     // `last_loop_action_sequence[].pins`) must answer "may this viewer see that object?" the
     // same way; a per-arm copy is what let the first two drift apart.
     let target_hidden = |id: ObjectId| -> bool {
@@ -2002,13 +2003,24 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
     // (`player`), because the offer's declaration is the proposer's hidden information and every
     // seat but theirs — the current responder, the queued ones, and spectators — receives this
     // same projection.
+    //
+    // The declaration the offer published rides the same proposal carrying the pin vector the
+    // `LoopShortcut` block redacts, so it takes the same guard and the same predicate, each field
+    // asked about its own pins.
     if let WaitingFor::RespondToShortcut { proposal, .. } = &mut filtered.waiting_for {
-        if !can_view_private_for_player(proposal.proposer)
-            && proposal.template.as_ref().is_some_and(|t| {
-                pins_name_hidden_source(&t.decisions, &target_hidden, PinCarrier::PinsOnly)
-            })
-        {
-            proposal.template = None;
+        if !can_view_private_for_player(proposal.proposer) {
+            let names_hidden =
+                |template: Option<&crate::analysis::decision_template::DecisionTemplate>| {
+                    template.is_some_and(|t| {
+                        pins_name_hidden_source(&t.decisions, &target_hidden, PinCarrier::PinsOnly)
+                    })
+                };
+            if names_hidden(proposal.template.as_ref()) {
+                proposal.template = None;
+            }
+            if names_hidden(proposal.published_declaration.as_ref()) {
+                proposal.published_declaration = None;
+            }
         }
     }
 
@@ -9992,6 +10004,14 @@ mod tests {
         );
         let slot = DecisionSlot::target(slot_source(hidden, permanent));
         let decisions = decisions(hidden, &slot);
+        let declaration = DecisionTemplate {
+            owner: D5H_PROPOSER,
+            decisions,
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::Fixed(3),
+            },
+            key: DecisionGroupKey::from_sources(&[slot.source], DecisionKind::LoopChoice),
+        };
         state.waiting_for = WaitingFor::RespondToShortcut {
             player: D5H_VIEWER,
             remaining_players: Vec::new(),
@@ -10001,16 +10021,10 @@ mod tests {
                 count: IterationCount::Fixed(3),
                 unbounded: Vec::new(),
                 win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
-                template: Some(DecisionTemplate {
-                    owner: D5H_PROPOSER,
-                    decisions,
-                    replay: ReplayMode::Scheduled {
-                        count: IterationCount::Fixed(3),
-                    },
-                    key: DecisionGroupKey::from_sources(&[slot.source], DecisionKind::LoopChoice),
-                }),
+                template: Some(declaration.clone()),
                 per_cycle: None,
                 shortened_by: None,
+                published_declaration: Some(declaration),
             },
         };
         state
@@ -10021,8 +10035,16 @@ mod tests {
         state: &GameState,
         viewer: PlayerId,
     ) -> Option<crate::analysis::decision_template::DecisionTemplate> {
+        d5h_projected_proposal(state, viewer).template
+    }
+
+    /// The proposal AS PROJECTED for `viewer`.
+    fn d5h_projected_proposal(
+        state: &GameState,
+        viewer: PlayerId,
+    ) -> crate::analysis::loop_check::ShortcutProposal {
         match filter_state_for_viewer(state, viewer).waiting_for {
-            WaitingFor::RespondToShortcut { proposal, .. } => proposal.template,
+            WaitingFor::RespondToShortcut { proposal, .. } => proposal,
             other => panic!("the fixture parks on the CR 732.2b respond window, got {other:?}"),
         }
     }
@@ -10088,6 +10110,25 @@ mod tests {
             "CR 732.2b: a slot naming an object this viewer may not see drops the ENTIRE \
              template on a carrier that publishes no schema to re-state it"
         );
+        let WaitingFor::RespondToShortcut { proposal, .. } = &hidden_state.waiting_for else {
+            unreachable!("the fixture parks on the respond window");
+        };
+        assert!(
+            proposal.template.is_some() && proposal.published_declaration.is_some(),
+            "reach-guard: the unprojected proposal carries both declarations"
+        );
+        assert!(
+            d5h_projected_proposal(&hidden_state, D5H_PROPOSER)
+                .published_declaration
+                .is_some(),
+            "the proposer's own projection keeps the published declaration"
+        );
+        assert_eq!(
+            d5h_projected_proposal(&hidden_state, D5H_VIEWER).published_declaration,
+            None,
+            "CR 732.2b: the published declaration carries the same pins and is dropped with the \
+             template"
+        );
 
         // ── leg 2, REFUSED: the same declaration whose slot names a battlefield permanent ──
         let visible_state = d5h_proposal_decisions(
@@ -10108,6 +10149,12 @@ mod tests {
         assert!(
             d5h_projected_template(&visible_state, D5H_VIEWER).is_some(),
             "and it is genuinely present, not two matching `None`s"
+        );
+        assert!(
+            d5h_projected_proposal(&visible_state, D5H_VIEWER)
+                .published_declaration
+                .is_some(),
+            "and so is the published declaration beside it"
         );
     }
 

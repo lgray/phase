@@ -49,7 +49,7 @@
 use engine::analysis::decision_template::{
     DecisionKind, DecisionPoint, DecisionPointKind, IterationCount,
 };
-use engine::analysis::resource::{ChargeBound, PeriodicDelta, ResourceVector};
+use engine::analysis::resource::{AnnouncedLead, ChargeBound, PeriodicDelta, ResourceVector};
 use engine::game::engine::apply;
 use engine::types::ability::{ReplacementMode, TargetRef};
 use engine::types::actions::GameAction;
@@ -5748,6 +5748,8 @@ struct F4Allocation {
 
 /// Drive the real dump to its bounded offer, bind the interaction authority, and read the
 /// allocation surface off the published offer.
+///
+/// A test function composing real-board drives pays at most three of them, at most two of them accepts.
 fn f4_allocation_offer(state: &mut GameState) -> F4Allocation {
     use engine::analysis::decision_template::{
         AnnouncementSubject, LoopAnswer, LoopAnswerValue, TargetPin, TargetSchedule,
@@ -5960,16 +5962,27 @@ fn f4_drive_allocation(
     count: u32,
     allocation: &[(PlayerId, u32)],
 ) -> Vec<i64> {
+    f4_declare_allocation(state, offer, count, allocation);
+    f4_accept_window(state)
+}
+
+/// Submit `allocation` through the ingress and dispatch the declaration it mints, returning that
+/// action.
+fn f4_declare_allocation(
+    state: &mut GameState,
+    offer: &F4Allocation,
+    count: u32,
+    allocation: &[(PlayerId, u32)],
+) -> GameAction {
     use engine::game::interaction::resolve_interaction_response;
 
-    let before: Vec<i64> = state.players.iter().map(|p| p.life as i64).collect();
     let action = resolve_interaction_response(
         state,
         offer.proposer,
         &f4_allocation_submission(offer, count, allocation),
     )
     .expect("the allocation ingress accepts a conformant sequenced pin");
-    apply(state, offer.proposer, action).expect("the minted declaration is dispatched");
+    apply(state, offer.proposer, action.clone()).expect("the minted declaration is dispatched");
     // THE DISCRIMINATOR between "declare refused it" and "the drive aborted": a refused
     // declaration hands priority straight back and never opens the APNAP window.
     assert!(
@@ -5977,6 +5990,13 @@ fn f4_drive_allocation(
         "the accepted declaration must open the CR 732.2b APNAP window, got {:?}",
         state.waiting_for
     );
+    action
+}
+
+/// Every living opponent accepts the open CR 732.2c window; returns the per-seat life LOSSES
+/// positionally by `state.players`.
+fn f4_accept_window(state: &mut GameState) -> Vec<i64> {
+    let before: Vec<i64> = state.players.iter().map(|p| p.life as i64).collect();
     assert!(
         accept_all_opponents(state) > 0,
         "the CR 732.2c window must actually take responses"
@@ -5987,6 +6007,61 @@ fn f4_drive_allocation(
         .enumerate()
         .map(|(seat, p)| before[seat] - p.life as i64)
         .collect()
+}
+
+/// A saved board decoded through the production decoder.
+fn f4_restored(saved: serde_json::Value) -> GameState {
+    serde_json::from_value::<PersistedGameState>(saved)
+        .expect("the saved board decodes through the production decoder")
+        .into_game_state()
+        .expect("the saved board satisfies the checked restore contract")
+}
+
+/// The published legal victims other than the pre-announced seat, in published order.
+fn f4_other_victims(offer: &F4Allocation) -> Vec<PlayerId> {
+    let others: Vec<PlayerId> = offer
+        .legal_seats
+        .iter()
+        .copied()
+        .filter(|seat| *seat != offer.preannounced)
+        .collect();
+    assert!(
+        others.len() > 1,
+        "reach-guard: a re-aiming shape needs TWO non-pre-announced legal victims; got {:?}",
+        offer.legal_seats
+    );
+    others
+}
+
+fn f4_life(state: &GameState, seat: PlayerId) -> i64 {
+    state
+        .players
+        .iter()
+        .find(|p| p.id == seat)
+        .map(|p| i64::from(p.life))
+        .unwrap_or_else(|| panic!("{seat:?} is not seated on this board"))
+}
+
+fn f4_eliminated(state: &GameState, seat: PlayerId) -> bool {
+    state
+        .players
+        .iter()
+        .find(|p| p.id == seat)
+        .map(|p| p.is_eliminated)
+        .unwrap_or_else(|| panic!("{seat:?} is not seated on this board"))
+}
+
+/// The F4 dump with `seat`'s life mapped through `life` before any beat is driven.
+fn f4_with_life(seat: PlayerId, life: impl FnOnce(i64) -> i64) -> GameState {
+    let mut state = load_f4();
+    let player = state
+        .players
+        .iter_mut()
+        .find(|p| p.id == seat)
+        .unwrap_or_else(|| panic!("{seat:?} is not seated on this board"));
+    player.life = i32::try_from(life(i64::from(player.life)))
+        .expect("a life total fits the board's own type");
+    state
 }
 
 /// The seat each `state.players` position holds, so a loss vector can be read by seat.
@@ -8310,7 +8385,15 @@ pub(crate) fn assert_no_aim_independent_charge(
     for &seat in seats {
         let charge = |bound| {
             per_cycle
-                .declared_seat_life_charges(seat, None, None, points, state, bound)
+                .declared_seat_life_charges(
+                    seat,
+                    None,
+                    None,
+                    points,
+                    state,
+                    bound,
+                    AnnouncedLead::None,
+                )
                 .next()
                 .expect("the per-repetition charges are unbounded")
         };
@@ -8610,6 +8693,7 @@ fn p3_the_reported_departure_counts_the_repetitions_aimed_elsewhere_first() {
             &schema.points,
             &state,
             ChargeBound::Ceiling,
+            AnnouncedLead::None,
         ),
         life,
         count,
@@ -8631,26 +8715,460 @@ fn p3_the_reported_departure_counts_the_repetitions_aimed_elsewhere_first() {
     );
 }
 
-/// **Carried row (owner Phase 2) — the drive under-delivers, and hands priority back.** An accept
-/// this phase's rule ADMITS still delivers fewer repetitions than the accepted count, every
-/// committed cycle intact and priority handed back. A revert of this phase's refusal leaves this
-/// row green; what it guards is the ceiling-and-drive Phase 2 landed.
+/// The re-aiming shape rows 1, 4 and 5 declare: two segments whose FIRST aims a
+/// non-pre-announced legal victim, each sized to its own seat's published headroom, so every
+/// segment ends on its own seat's crossing and the aim conjunct admits it.
+fn f4_re_aiming_segments(state: &GameState, offer: &F4Allocation) -> [(PlayerId, u32); 2] {
+    let (_proposer, certificate, _schema) = offer_parts(state);
+    let per_cycle = certificate
+        .per_cycle
+        .as_ref()
+        .expect("a bounded offer publishes its per-period signature");
+    let others = f4_other_victims(offer);
+    [
+        (others[0], f4_headroom(state, per_cycle, others[0])),
+        (others[1], f4_headroom(state, per_cycle, others[1])),
+    ]
+}
+
+/// **Row 1 — the drive performs the crossing its own accepted declaration causes.** CR 732.2a +
+/// CR 704.5a: an accept of the re-aiming shape delivers its whole count; the seat the first
+/// segment aims at crosses inside it and leaves the game, and the seat the later segment aims at
+/// is charged less than its headroom and survives.
 ///
-/// # Shape
+/// # Admitted member
 ///
-/// A count strictly above the published suggestion, over two segments whose FIRST aims a
-/// non-pre-announced legal victim, each segment sized to its own seat's published headroom — the
-/// re-aiming shape whose every segment ends on its own seat's crossing, which is why the aim
-/// conjunct admits it. The ingress's acceptance is this row's own reach guard for that.
-///
-/// # Controls, in the same invocation
-///
-/// The near-equal split the offer's own window publishes commits its WHOLE count at the same
-/// capacity and eliminates a seat, so leg (a)'s short prefix is a property of THIS shape rather
-/// than of every drive on this board, and leg (b)'s empty elimination set is a reading taken by
-/// the same `p.is_eliminated` walk in the same test.
+/// The same respond window saved without the published declaration, as a save written before
+/// that field existed is: the crossing cycle drops, every cycle before it commits, and priority
+/// is handed back to a living seat.
 #[test]
-fn p3_an_admitted_re_aiming_accept_commits_a_strict_prefix_and_hands_priority_back() {
+fn p3_an_admitted_re_aiming_accept_delivers_its_whole_count_and_the_crossing_it_declares() {
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let capacity = offer_parts(&state).2.deliverable_capacity;
+    let suggestion = offer.drivable_count;
+    let segments = f4_re_aiming_segments(&state, &offer);
+    let [(first, first_headroom), (later, later_headroom)] = segments;
+    let count = first_headroom + later_headroom;
+    assert!(
+        count > suggestion && count <= capacity,
+        "reach-guard: the declared count is strictly ABOVE the published suggestion and inside \
+         the published window, so neither the capacity arm nor the budget arm shortens it. \
+         count={count} suggestion={suggestion} capacity={capacity}"
+    );
+    assert!(
+        offer.rate > 0,
+        "reach-guard: a zero per-cycle charge makes every life delta below read 0"
+    );
+    f4_declare_allocation(&mut state, &offer, count, &segments);
+    assert_eq!(
+        accepted_proposal(&state).count,
+        IterationCount::Fixed(count),
+        "the declaration is accepted at the declared count"
+    );
+    let window = state.clone();
+    let losses = f4_accept_window(&mut state);
+    assert_eq!(
+        losses.iter().sum::<i64>() / offer.rate,
+        i64::from(count),
+        "CR 732.2a: the accepted count is delivered whole. losses={losses:?}"
+    );
+    assert!(
+        f4_eliminated(&state, first),
+        "CR 704.5a: the first segment's seat crosses inside the count and leaves the game"
+    );
+    assert!(
+        !f4_eliminated(&state, later)
+            && f4_loss(&state, &losses, later) < i64::from(later_headroom) * offer.rate,
+        "the later segment's seat is charged less than its headroom and survives. \
+         losses={losses:?}"
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { player } if !f4_eliminated(&state, player)),
+        "CR 800.4a: priority is handed back to a living seat; got {:?}",
+        state.waiting_for
+    );
+
+    // ── ADMITTED MEMBER: the same window saved without the published declaration.
+    let mut saved = serde_json::to_value(&window).expect("a live GameState serializes");
+    assert!(
+        saved["waiting_for"]["data"]["proposal"]
+            .as_object_mut()
+            .and_then(|proposal| proposal.remove("published_declaration"))
+            .is_some(),
+        "reach-guard: the saved window carries the published declaration this leg removes"
+    );
+    let mut legacy = f4_restored(saved);
+    assert!(
+        accepted_proposal(&legacy).published_declaration.is_none()
+            && accepted_proposal(&legacy).template.is_some(),
+        "reach-guard: the save decodes to a pinned proposal with no published declaration"
+    );
+    let legacy_losses = f4_accept_window(&mut legacy);
+    // The leading repetition resolves the announced seat, so the first segment's seat crosses one
+    // repetition after its headroom.
+    let crossing = 1 + first_headroom;
+    assert_eq!(
+        (
+            legacy_losses.iter().sum::<i64>() / offer.rate,
+            f4_loss(&legacy, &legacy_losses, offer.preannounced),
+            f4_loss(&legacy, &legacy_losses, first),
+        ),
+        (
+            i64::from(crossing - 1),
+            offer.rate,
+            i64::from(crossing - 2) * offer.rate,
+        ),
+        "CR 732.2a: with no published declaration the crossing cycle drops and every cycle \
+         before it commits"
+    );
+    assert!(
+        legacy.players.iter().all(|player| !player.is_eliminated)
+            && matches!(legacy.waiting_for, WaitingFor::Priority { player } if !f4_eliminated(&legacy, player)),
+        "CR 800.4a: priority is handed back to a living seat; got {:?}",
+        legacy.waiting_for
+    );
+}
+
+/// **Row 1's control — the near-equal split commits its whole count.** CR 732.2a: an allocation
+/// spreading the published capacity near-equally over the three legal victims is delivered whole.
+#[test]
+fn p3_the_near_equal_split_at_the_capacity_commits_its_whole_count() {
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let capacity = offer_parts(&state).2.deliverable_capacity;
+    let others = f4_other_victims(&offer);
+    let third = capacity / 3;
+    let spread = [
+        (offer.preannounced, third),
+        (others[0], third),
+        (others[1], capacity - 2 * third),
+    ];
+    let losses = f4_drive_allocation(&mut state, &offer, capacity, &spread);
+    assert_eq!(
+        losses.iter().sum::<i64>() / offer.rate,
+        i64::from(capacity),
+        "CR 732.2a: the near-equal split commits its whole count at the capacity. \
+         losses={losses:?}"
+    );
+}
+
+/// **Row 2 — the proposer's own declaration takes the proposer.** CR 732.2a + CR 704.5b: an
+/// accept at the published capacity delivers its whole count; an opponent the declaration aims at
+/// leaves along the way, another survives, and the proposer then leaves on their own draw from the
+/// library the count emptied.
+#[test]
+fn p4_an_accept_at_the_capacity_delivers_an_opponent_crossing_and_ends_on_the_proposers_own() {
+    let announced = P1;
+
+    // Derived from the F4 dump: the drive's aimed seat's life raised by the cycle ceiling every
+    // published capacity is capped at, so no count inside the capacity takes that seat.
+    let mut state = f4_with_life(announced, |life| {
+        life + i64::from(MAX_SHORTCUT_CYCLES_MIRROR)
+    });
+    let offer = f4_allocation_offer(&mut state);
+    let (proposer, certificate, schema) = offer_parts(&state);
+    let capacity = schema.deliverable_capacity;
+    let victim = f4_other_victim(&offer);
+    let headroom = f4_headroom(
+        &state,
+        certificate
+            .per_cycle
+            .as_ref()
+            .expect("a bounded offer publishes its per-period signature"),
+        victim,
+    );
+    assert_eq!(
+        offer.preannounced, announced,
+        "reach-guard: the raised seat is the pre-announced one on the derived board"
+    );
+    assert!(
+        f4_life(&state, announced) > i64::from(capacity) * offer.rate,
+        "reach-guard: the raised seat's life exceeds everything the capacity can charge it"
+    );
+    assert!(
+        headroom < capacity,
+        "reach-guard: the aimed opponent's crossing lies inside the capacity; headroom={headroom} \
+         capacity={capacity}"
+    );
+    let allocation = [(victim, headroom), (announced, capacity - headroom)];
+    let seats = |board: &GameState| {
+        board
+            .players
+            .iter()
+            .map(|p| (p.id, p.life, p.library.len(), p.is_eliminated))
+            .collect::<Vec<_>>()
+    };
+    let before = seats(&state);
+
+    let losses = f4_drive_allocation(&mut state, &offer, capacity, &allocation);
+    assert_eq!(
+        losses.iter().sum::<i64>() / offer.rate,
+        i64::from(capacity),
+        "CR 732.2a: the accepted count is delivered whole. losses={losses:?}"
+    );
+    let opponents: Vec<(PlayerId, bool)> = state
+        .players
+        .iter()
+        .filter(|p| p.id != proposer)
+        .map(|p| (p.id, p.is_eliminated))
+        .collect();
+    assert!(
+        f4_eliminated(&state, victim) && opponents.iter().any(|(_, gone)| !gone),
+        "CR 104.2a: an opponent leaves and another survives, so the game outlives the opponents' \
+         crossings; opponents={opponents:?}"
+    );
+
+    // CR 704.5b: the count empties the proposer's library; the draw from it resolves on the
+    // priority passes after the handback, which run with detection off so no offer interrupts them.
+    let handback = seats(&state);
+    state.loop_detection = engine::types::game_state::LoopDetectionMode::Off;
+    let mut beats = 0u32;
+    while !f4_eliminated(&state, proposer) {
+        assert!(
+            beats < 64,
+            "the proposer's draw from the emptied library resolves within the passes after the \
+             handback. capacity={capacity} allocation={allocation:?} before={before:?} \
+             handback={handback:?} now={:?} waiting={}",
+            seats(&state),
+            serde_json::to_value(&state.waiting_for).expect("a WaitingFor serializes")["type"]
+        );
+        f4_drive_one_beat_at(&mut state, announced)
+            .unwrap_or_else(|error| panic!("{error}; handback={handback:?}"));
+        beats += 1;
+    }
+    let end = seats(&state);
+    assert!(
+        end.iter()
+            .map(|seat| (seat.0, seat.1))
+            .eq(handback.iter().map(|seat| (seat.0, seat.1)))
+            && state
+                .players
+                .iter()
+                .any(|p| p.id == proposer && p.library.is_empty())
+            && f4_eliminated(&state, victim)
+            && state
+                .players
+                .iter()
+                .any(|p| p.id != proposer && !p.is_eliminated),
+        "CR 704.5b + CR 104.2a: the proposer leaves on their own draw from the library the count \
+         emptied, before any life total moves again, and the game outlives it. \
+         handback={handback:?} end={end:?}"
+    );
+}
+
+/// **Row 3 — a departure coinciding with the pre-announced seat's ceiling crossing is the
+/// declaration's own.** CR 732.2a + CR 704.5a: on a board where the first segment's seat crosses at
+/// the repetition a charge at every repetition would take the pre-announced seat, the whole count
+/// commits and only the aimed seat leaves.
+#[test]
+fn p4_a_departure_coinciding_with_the_announced_seats_ceiling_crossing_commits_the_whole_count() {
+    let mut unaltered = f4_at_offer();
+    let unaltered_offer = f4_allocation_offer(&mut unaltered);
+    let announced = unaltered_offer.preannounced;
+    let victim = f4_other_victim(&unaltered_offer);
+
+    // Derived from the F4 dump: the first non-announced legal victim's life set one below the
+    // pre-announced seat's life at the unaltered offer.
+    let mut state = f4_with_life(victim, |_| f4_life(&unaltered, announced) - 1);
+    let offer = f4_allocation_offer(&mut state);
+    let (_proposer, certificate, schema) = offer_parts(&state);
+    let capacity = schema.deliverable_capacity;
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let points = schema.points.clone();
+    let segments = f4_re_aiming_segments(&state, &offer);
+    let [(first, first_headroom), (later, later_headroom)] = segments;
+    let count = first_headroom + later_headroom;
+    assert_eq!(
+        (offer.preannounced, first),
+        (announced, victim),
+        "reach-guard: the derived board announces the same seat and aims the lowered one first"
+    );
+    assert!(
+        count <= capacity,
+        "reach-guard: inside the published window; count={count} capacity={capacity}"
+    );
+
+    // The coincidence this board is built for, and the unit rate it is counted at.
+    let crossing = 1 + first_headroom;
+    assert_eq!(
+        offer.rate, 1,
+        "the coincidence below is counted in whole repetitions at a unit rate"
+    );
+    assert_eq!(
+        f4_life(&state, announced),
+        i64::from(crossing),
+        "a charge at every repetition takes the pre-announced seat at the repetition the first \
+         segment's seat crosses"
+    );
+
+    f4_declare_allocation(&mut state, &offer, count, &segments);
+    let proposal = accepted_proposal(&state).clone();
+    let announced_crossing = |bound| {
+        PeriodicDelta::first_life_crossing(
+            per_cycle.declared_seat_life_charges(
+                announced,
+                proposal.template.as_ref(),
+                proposal.published_declaration.as_ref(),
+                &points,
+                &state,
+                bound,
+                AnnouncedLead::LeadingRepetition,
+            ),
+            f4_life(&state, announced),
+            count,
+        )
+    };
+    assert_eq!(
+        (
+            announced_crossing(ChargeBound::Ceiling),
+            announced_crossing(ChargeBound::Attributable)
+        ),
+        (Some(crossing), None),
+        "the ceiling direction names the pre-announced seat at that repetition, and the \
+         declaration's own aims never take it"
+    );
+
+    let losses = f4_accept_window(&mut state);
+    assert_eq!(
+        losses.iter().sum::<i64>() / offer.rate,
+        i64::from(count),
+        "CR 732.2a: the whole count commits. losses={losses:?}"
+    );
+    assert_eq!(
+        [announced, first, later].map(|seat| f4_eliminated(&state, seat)),
+        [false, true, false],
+        "CR 704.5a: only the seat the first segment aims at leaves the game"
+    );
+}
+
+/// What an accepted drive leaves behind: the four commit axes, every seat's elimination, and the
+/// kind of state it hands back.
+fn f4_drive_outcome(board: &GameState) -> impl PartialEq + std::fmt::Debug {
+    (
+        commit_axes(board),
+        board
+            .players
+            .iter()
+            .map(|p| p.is_eliminated)
+            .collect::<Vec<_>>(),
+        std::mem::discriminant(&board.waiting_for),
+    )
+}
+
+/// **Row 4, offer half — a game saved at the offer drives to the unsaved outcome.** CR 732.2a: the
+/// restored offer mints the same proposal from the same declaration, and its accept reaches the
+/// outcome of the game that was not saved.
+#[test]
+fn p4_a_save_at_the_offer_drives_to_the_unsaved_outcome() {
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let segments = f4_re_aiming_segments(&state, &offer);
+    let count = segments.iter().map(|(_, n)| n).sum::<u32>();
+
+    let mut from_offer =
+        f4_restored(serde_json::to_value(&state).expect("a live GameState serializes"));
+    let declaration = f4_declare_allocation(&mut state, &offer, count, &segments);
+    apply(&mut from_offer, offer.proposer, declaration)
+        .expect("the minted declaration is dispatched on the restored offer");
+    let proposal = accepted_proposal(&state).clone();
+    assert!(
+        proposal.template.is_some() && proposal.published_declaration.is_some(),
+        "reach-guard: the proposal pins choices and carries the published declaration"
+    );
+    assert_eq!(
+        accepted_proposal(&from_offer),
+        &proposal,
+        "a save at the offer declares the same proposal"
+    );
+
+    f4_accept_window(&mut state);
+    f4_accept_window(&mut from_offer);
+    assert!(
+        state.players.iter().any(|p| p.is_eliminated),
+        "reach-guard: the unsaved drive delivers a crossing, so the outcomes compared are a \
+         departing drive's"
+    );
+    assert_eq!(
+        f4_drive_outcome(&from_offer),
+        f4_drive_outcome(&state),
+        "the save at the offer drives to the unsaved outcome"
+    );
+}
+
+/// **Row 4, window half — a game saved at the respond window drives to the unsaved outcome.**
+/// CR 732.2a: the restored window carries the same proposal, a publishing proposal serializes as
+/// an unpublished one plus exactly the published declaration's key, and its accept reaches the
+/// outcome of the game that was not saved.
+#[test]
+fn p4_a_save_at_the_respond_window_drives_to_the_unsaved_outcome() {
+    let mut state = load_f4();
+    let offer = f4_allocation_offer(&mut state);
+    let segments = f4_re_aiming_segments(&state, &offer);
+    let count = segments.iter().map(|(_, n)| n).sum::<u32>();
+
+    f4_declare_allocation(&mut state, &offer, count, &segments);
+    let mut from_window =
+        f4_restored(serde_json::to_value(&state).expect("a live GameState serializes"));
+    let proposal = accepted_proposal(&state).clone();
+    assert!(
+        proposal.template.is_some() && proposal.published_declaration.is_some(),
+        "reach-guard: the saved proposal pins choices and carries the published declaration"
+    );
+    assert_eq!(
+        accepted_proposal(&from_window),
+        &proposal,
+        "a save at the window restores the same proposal"
+    );
+    let unpublished = engine::analysis::loop_check::ShortcutProposal {
+        published_declaration: None,
+        ..proposal.clone()
+    };
+    let bare = serde_json::to_string(&unpublished).expect("a proposal serializes");
+    let key = format!(
+        ",\"published_declaration\":{}",
+        serde_json::to_string(&proposal.published_declaration).expect("a declaration serializes")
+    );
+    assert_eq!(
+        serde_json::to_string(&proposal).expect("a proposal serializes"),
+        format!(
+            "{}{key}}}",
+            bare.strip_suffix('}')
+                .expect("a proposal serializes to an object")
+        ),
+        "an unpublished proposal serializes without the key, and a publishing one differs from \
+         it in exactly that key"
+    );
+
+    f4_accept_window(&mut state);
+    f4_accept_window(&mut from_window);
+    assert!(
+        state.players.iter().any(|p| p.is_eliminated),
+        "reach-guard: the unsaved drive delivers a crossing, so the outcomes compared are a \
+         departing drive's"
+    );
+    assert_eq!(
+        f4_drive_outcome(&from_window),
+        f4_drive_outcome(&state),
+        "the save at the window drives to the unsaved outcome"
+    );
+}
+
+/// **Row 5 — the drive's template and the published declaration are carried apart.** CR 732.2a: a
+/// declaration that re-aims the charged slot leaves the proposal carrying both, naming different
+/// seats at that slot, and the charge authority reads the first segment's crossing only against
+/// the published one. A declaration that overrides nothing carries one declaration in both roles,
+/// and a carried declaration tampered to name the seat the drive takes refuses the crossing cycle.
+#[test]
+fn p4_the_drive_template_and_the_published_declaration_are_carried_apart() {
+    use engine::analysis::decision_template::{
+        resolve, AnnouncementSubject, ConcreteDecision, ConcreteTarget, DecisionTemplate,
+        PinnedDecision, Ranking, TargetPin, TargetSchedule,
+    };
+
     let mut state = load_f4();
     let offer = f4_allocation_offer(&mut state);
     let (_proposer, certificate, schema) = offer_parts(&state);
@@ -8658,82 +9176,118 @@ fn p3_an_admitted_re_aiming_accept_commits_a_strict_prefix_and_hands_priority_ba
         .per_cycle
         .clone()
         .expect("a bounded offer publishes its per-period signature");
-    let schema = schema.clone();
-    let capacity = schema.deliverable_capacity;
-    let suggestion = offer.drivable_count;
-    let others: Vec<PlayerId> = offer
-        .legal_seats
+    let points = schema.points.clone();
+    let charged: Vec<_> = per_cycle
+        .victim_slot
         .iter()
-        .copied()
-        .filter(|seat| *seat != offer.preannounced)
+        .map(|(slot, _)| slot.clone())
         .collect();
     assert!(
-        others.len() > 1,
-        "reach-guard: this shape needs TWO non-pre-announced legal victims; got {:?}",
-        offer.legal_seats
+        !charged.is_empty(),
+        "reach-guard: the offer charges a slot, so the seats below are named at a slot that exists"
     );
-    let segments = [
-        (others[0], f4_headroom(&state, &per_cycle, others[0])),
-        (others[1], f4_headroom(&state, &per_cycle, others[1])),
-    ];
+    let segments = f4_re_aiming_segments(&state, &offer);
+    let [(first, first_headroom), _] = segments;
     let count = segments.iter().map(|(_, n)| n).sum::<u32>();
-    assert!(
-        count > suggestion && count <= capacity,
-        "reach-guard: the declared count is strictly ABOVE the published suggestion — so a drive \
-         that merely delivered the suggestion would not satisfy leg (a) trivially — and inside \
-         the published window, so neither the capacity arm nor the budget arm is what shortens \
-         it. count={count} suggestion={suggestion} capacity={capacity}"
-    );
-    assert!(
-        offer.rate > 0,
-        "reach-guard: a zero per-cycle charge makes every life delta below read 0"
-    );
+    let at_offer = state.clone();
 
-    let losses = f4_drive_allocation(&mut state, &offer, count, &segments);
-    let committed = losses.iter().sum::<i64>() / offer.rate;
-    assert!(
-        committed < i64::from(count),
-        "CR 732.2a: the accepted count is not delivered — the drive stops where its own \
-         re-derivation stops. committed={committed} accepted={count} losses={losses:?}"
-    );
-    assert!(
-        state.players.iter().all(|player| !player.is_eliminated),
-        "and it stops SHORT of the crossing it predicted: no seat left the game. board={:?}",
-        state
-            .players
-            .iter()
-            .map(|p| (p.id, p.life, p.is_eliminated))
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        matches!(state.waiting_for, WaitingFor::Priority { .. }),
-        "CR 800.4a: priority is handed back to a living seat, degraded rather than errored; \
-         got {:?}",
-        state.waiting_for
-    );
-
-    // ── CONTROL: a different declaration at the SAME capacity commits its whole count and DOES
-    //    eliminate a seat, read by the same walk in the same invocation.
-    let mut control = load_f4();
-    let control_offer = f4_allocation_offer(&mut control);
-    let third = capacity / 3;
-    let spread = [
-        (control_offer.preannounced, third),
-        (others[0], third),
-        (others[1], capacity - 2 * third),
-    ];
-    let control_losses = f4_drive_allocation(&mut control, &control_offer, capacity, &spread);
+    f4_declare_allocation(&mut state, &offer, count, &segments);
+    let proposal = accepted_proposal(&state).clone();
+    let template = proposal
+        .template
+        .as_ref()
+        .expect("the re-aimed declaration is the drive's template");
+    let published = proposal
+        .published_declaration
+        .as_ref()
+        .expect("the offer's declaration rides beside it");
+    let aimed = |declaration: &DecisionTemplate| -> Vec<PlayerId> {
+        resolve(declaration, 0, &state)
+            .expect("the declaration resolves at its first index")
+            .into_iter()
+            .filter_map(|decision| match decision {
+                ConcreteDecision::Targets { slot, targets } if charged.contains(&slot) => {
+                    Some(targets)
+                }
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|target| match target {
+                ConcreteTarget::Player(seat) => Some(seat),
+                ConcreteTarget::Object(_) => None,
+            })
+            .collect()
+    };
     assert_eq!(
-        control_losses.iter().sum::<i64>() / control_offer.rate,
-        i64::from(capacity),
-        "control: this shape commits its WHOLE count at the same capacity, so the short prefix \
-         above belongs to the re-aiming shape and not to every drive on this board. \
-         losses={control_losses:?}"
+        (aimed(template), aimed(published)),
+        (vec![first], vec![offer.preannounced]),
+        "the two roles name different seats at the charged slot"
     );
+    let first_crossing = |observed: &DecisionTemplate| {
+        PeriodicDelta::first_life_crossing(
+            per_cycle.declared_seat_life_charges(
+                first,
+                Some(template),
+                Some(observed),
+                &points,
+                &state,
+                ChargeBound::Attributable,
+                AnnouncedLead::LeadingRepetition,
+            ),
+            f4_life(&state, first),
+            count,
+        )
+    };
+    assert_eq!(
+        first_crossing(published),
+        Some(1 + first_headroom),
+        "read against the published declaration, the first segment's seat crosses where the \
+         drive takes it"
+    );
+    assert_ne!(
+        first_crossing(template),
+        first_crossing(published),
+        "read against the drive's own template in both roles, it does not"
+    );
+
+    // ── NO OVERRIDE: one declaration in both roles.
+    let plain = declare_template_free(&at_offer, offer.proposer, offer.drivable_count);
+    let plain = accepted_proposal(&plain);
     assert!(
-        control.players.iter().any(|player| player.is_eliminated),
-        "control: the same `is_eliminated` walk DOES report a departure on this board, so the \
-         empty reading above is a measurement and not a field nothing ever sets"
+        plain.published_declaration.is_some() && plain.template == plain.published_declaration,
+        "a declaration that overrides nothing carries the published declaration in both roles"
+    );
+
+    // ── TAMPERED: the carried declaration rewritten to name the seat the drive takes first.
+    let mut tampered = state.clone();
+    let WaitingFor::RespondToShortcut {
+        proposal: carried, ..
+    } = &mut tampered.waiting_for
+    else {
+        unreachable!("the declaration opened the respond window");
+    };
+    let carried = carried
+        .published_declaration
+        .as_mut()
+        .expect("the window carries the published declaration");
+    for pin in &mut carried.decisions {
+        if let PinnedDecision::Targets { targets, .. } = pin {
+            *targets = vec![TargetPin::Scheduled(TargetSchedule::Constant(
+                Ranking::one(AnnouncementSubject::Seat(first)),
+            ))];
+        }
+    }
+    assert_eq!(
+        aimed(carried),
+        vec![first],
+        "reach-guard: the tampered declaration names that seat at the charged slot"
+    );
+    let tampered_losses = f4_accept_window(&mut tampered);
+    assert!(
+        tampered_losses.iter().sum::<i64>() / offer.rate < i64::from(count)
+            && !f4_eliminated(&tampered, first),
+        "a carried declaration that hides the crossing refuses the crossing cycle rather than \
+         delivering it. losses={tampered_losses:?}"
     );
 }
 
@@ -8757,23 +9311,33 @@ fn p3_the_aim_conjunct_is_named_only_inside_the_declaration_authority() {
 
     use super::source_census::code;
 
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut aim: BTreeMap<String, usize> = BTreeMap::new();
     let mut control: BTreeMap<String, usize> = BTreeMap::new();
-    for path in super::loop_shortcut_offer_writer_census::rs_files(&src) {
-        let rel = path
-            .strip_prefix(&src)
-            .expect("walked path is under src")
-            .to_string_lossy()
-            .replace('\\', "/");
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
-        for line in text.lines() {
-            let line = code(line);
-            if line.contains("aims_survive_the_crossings(") {
-                *aim.entry(rel.clone()).or_default() += 1;
-            }
-            if line.contains("declaration_conforms(") {
-                *control.entry(rel.clone()).or_default() += 1;
+    for (root, prefix) in [
+        (manifest.join("src"), "engine/src"),
+        (
+            manifest.join("..").join("phase-ai").join("src"),
+            "phase-ai/src",
+        ),
+    ] {
+        for path in super::loop_shortcut_offer_writer_census::rs_files(&root) {
+            let rel = path
+                .strip_prefix(&root)
+                .expect("walked path is under its root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let rel = format!("{prefix}/{rel}");
+            let text =
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+            for line in text.lines() {
+                let line = code(line);
+                if line.contains("aims_survive_the_crossings(") {
+                    *aim.entry(rel.clone()).or_default() += 1;
+                }
+                if line.contains("declaration_conforms(") {
+                    *control.entry(rel.clone()).or_default() += 1;
+                }
             }
         }
     }
@@ -8786,10 +9350,10 @@ fn p3_the_aim_conjunct_is_named_only_inside_the_declaration_authority() {
     );
     assert_eq!(
         aim.into_iter().collect::<Vec<_>>(),
-        vec![("analysis/decision_template.rs".to_string(), 2)],
+        vec![("engine/src/analysis/decision_template.rs".to_string(), 2)],
         "CR 732.2a: the aim conjunct is the authority's, not a call site's — one definition and \
-         the authority's own call, both in `analysis/decision_template.rs`. A hit in any other \
-         file is a second place deciding whether a declaration is legal"
+         the authority's own call, both in `engine/src/analysis/decision_template.rs`. A hit in \
+         any other file of either crate is a second place deciding whether a declaration is legal"
     );
 }
 

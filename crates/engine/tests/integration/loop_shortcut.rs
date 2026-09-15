@@ -1157,6 +1157,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         template: None,
         per_cycle: None,
         shortened_by: None,
+        published_declaration: None,
     };
     let wf_r = WaitingFor::RespondToShortcut {
         player: P2,
@@ -4756,6 +4757,7 @@ fn respond_to_shortcut_template_redacts_a_hidden_pin_for_non_proposers() {
                 }),
                 per_cycle: None,
                 shortened_by: None,
+                published_declaration: None,
             },
         };
         state
@@ -6794,6 +6796,7 @@ fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
                     seat_life_charge: vec![],
                 }),
                 shortened_by: None,
+                published_declaration: None,
             },
         };
         v["waiting_for"] = serde_json::to_value(&waiting).expect("a WaitingFor serializes");
@@ -13222,6 +13225,7 @@ fn restored_proposal(
         template: None,
         per_cycle: Some(per_cycle),
         shortened_by: None,
+        published_declaration: None,
     }
 }
 
@@ -13384,6 +13388,7 @@ pub(crate) fn cascade_from(
                     points,
                     state,
                     ChargeBound::Ceiling,
+                    engine::analysis::resource::AnnouncedLead::None,
                 ),
                 i64::from(life),
                 horizon,
@@ -13867,6 +13872,7 @@ fn the_accept_at_a_cascade_crossing_commits_that_cycle_and_eliminates_its_seat()
                     &at_offer,
                     // The crossing the PUBLISHED ceiling contains, so the ceiling direction.
                     ChargeBound::Ceiling,
+                    engine::analysis::resource::AnnouncedLead::None,
                 ),
                 i64::from(life),
                 ceiling,
