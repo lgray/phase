@@ -2146,29 +2146,22 @@ fn make_executable(_path: &Path) -> Result<(), NativeEngineError> {
     Ok(())
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn target_triple() -> Result<&'static str, NativeEngineError> {
-    Ok("aarch64-apple-darwin")
+/// The triple naming the `phase-server-slim-<triple>` release asset and the
+/// preview `binaries` key a desktop on `(os, arch)` provisions.
+fn server_target_triple(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-musl"),
+        _ => None,
+    }
 }
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn target_triple() -> Result<&'static str, NativeEngineError> {
-    Ok("x86_64-pc-windows-msvc")
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn target_triple() -> Result<&'static str, NativeEngineError> {
-    Ok("x86_64-unknown-linux-musl")
-}
-
-#[cfg(not(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "windows", target_arch = "x86_64"),
-    all(target_os = "linux", target_arch = "x86_64")
-)))]
-fn target_triple() -> Result<&'static str, NativeEngineError> {
-    Err(NativeEngineError::UnsupportedPlatform {
-        detail: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+    let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    server_target_triple(os, arch).ok_or_else(|| NativeEngineError::UnsupportedPlatform {
+        detail: format!("{os}-{arch}"),
     })
 }
 
@@ -3427,6 +3420,34 @@ mod tests {
         assert!(state.bridges.contains_key(&1));
         assert_eq!(read_spawn_record(&files).unwrap().unwrap().key, other);
         fs::remove_dir_all(files.app_directory).unwrap();
+    }
+
+    #[test]
+    fn server_target_triple_maps_every_published_desktop_platform() {
+        for (os, arch, triple) in [
+            ("macos", "aarch64", "aarch64-apple-darwin"),
+            ("windows", "x86_64", "x86_64-pc-windows-msvc"),
+            ("linux", "x86_64", "x86_64-unknown-linux-musl"),
+            ("linux", "aarch64", "aarch64-unknown-linux-musl"),
+        ] {
+            assert_eq!(server_target_triple(os, arch), Some(triple), "{os}-{arch}");
+        }
+        for (os, arch) in [
+            ("macos", "x86_64"),
+            ("windows", "aarch64"),
+            ("linux", "arm"),
+            ("freebsd", "x86_64"),
+        ] {
+            assert_eq!(server_target_triple(os, arch), None, "{os}-{arch}");
+        }
+    }
+
+    #[test]
+    fn target_triple_resolves_the_host_through_the_mapping() {
+        assert_eq!(
+            target_triple().ok(),
+            server_target_triple(std::env::consts::OS, std::env::consts::ARCH)
+        );
     }
 
     #[test]
