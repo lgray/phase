@@ -400,7 +400,7 @@ protocol version of its own build, and the server advertises its number without
 being asked — so a web image two releases from its server yields a site that
 loads and then cannot connect. `web.image.tag` defaults to `image.tag`, so a
 release `vX.Y.Z` or `sha-<12>` server tag names the web image of the same
-version — a `:preview` server tag does not (see
+version — a `:preview` server tag is not guaranteed to (see
 [Building the image](#building-the-image)). Override it only together.
 
 Only `/config.js` differs between deployments, and nginx serves it

@@ -15,6 +15,10 @@ on:
         description: Commit the calling deploy published to Pages
         required: true
         type: string
+      pages_artifact_id:
+        description: Id of the github-pages artifact that build-pages uploaded and deployed
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -38,17 +42,20 @@ jobs:
 
       - name: Download the deployed Pages artifact
         # Kept 1 day (upload-pages-artifact default): re-run only within 24 h
-        # of the Pages upload.
+        # of the Pages upload. By id: if a newer github-pages artifact exists in
+        # the run, download-artifact drops this id and the step fails rather
+        # than packaging the other one.
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: github-pages
+          artifact-ids: ${{ inputs.pages_artifact_id }}
           path: ${{ runner.temp }}/pages
 
       - name: Unpack the bundle
-        # upload-pages-artifact stores the site as a single artifact.tar.
+        # upload-pages-artifact stores the site as a single artifact.tar, and a
+        # download by id lands under the artifact's name.
         run: |
           mkdir -p client/dist
-          tar -xf "$RUNNER_TEMP/pages/artifact.tar" -C client/dist
+          tar -xf "$RUNNER_TEMP/pages/github-pages/artifact.tar" -C client/dist
           test -s client/dist/index.html
 
       - name: Compute image tags

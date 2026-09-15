@@ -734,6 +734,8 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
+    outputs:
+      pages_artifact_id: ${{ steps.upload-pages.outputs.artifact_id }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -869,6 +871,7 @@ jobs:
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
 
       - name: Upload Pages artifact
+        id: upload-pages
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: client/dist
@@ -889,6 +892,7 @@ jobs:
     uses: ./.github/workflows/preview-web.yml
     with:
       deploy_sha: ${{ github.event.workflow_run.head_sha || github.sha }}
+      pages_artifact_id: ${{ needs.build-pages.outputs.pages_artifact_id }}
 
   # ── Server binary compile (parallel with card-data) ─────────────────────────
   # phase-server is compiled NATIVELY as a static musl binary, then uploaded as
