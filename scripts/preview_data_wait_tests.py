@@ -42,7 +42,7 @@ URL_ARG = re.compile(r'--arg (\w+)_url "\$([A-Z_]+)"')
 # GitHub applies success() to an `if` without a status-check function, and its
 # detection and function lookup are both case-insensitive.
 STATUS_FUNCTION = re.compile(r"(?i)\b(success|always|failure|cancelled)\s*\(")
-SCRIPT_REQUIRED = re.compile(r"\$\{(\w+):\?\}")
+SCRIPT_REQUIRED = re.compile(r"\$\{(\w+):\?[^}]*\}")
 STAGING_PREFIX = "https://data.phase-rs.dev/staging/"
 # The two objects a manifest entry names, as the deploy job puts them. Other
 # jobs upload to the same staging prefix, so the key is the object, not it.
