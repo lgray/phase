@@ -3460,8 +3460,9 @@ fn optional_cleared_classification(
 /// field is read: `phase_invariant` and `sole_driver` by the growing-class firewall's
 /// CR 510.2 / CR 506.1 and CR 117.1b guards, `cast_card_ids` by the projected firewall's
 /// CR 601.2f cost guard, `pinned` by [`loop_states_cover_modulo_growth_scoped`]'s CR 732.2a
-/// gates (3) and (6), and `identity_unstable` by the CR 400.7 host-stability conjunct
-/// ([`host_identity_is_stable`]), whose TWO consumers are why it lives in one derivation.
+/// gates (3) and (6), and `identity_unstable` by the CR 400.7 conjuncts — the per-host
+/// [`host_identity_is_stable`] reader and the growing-class firewall's own entry-matcher
+/// relief — which is why it lives in one derivation.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LoopWindowScope<'a> {
     /// `Some(phase)` iff the caller proved both frames are equal on turn number AND
@@ -3491,10 +3492,13 @@ pub(crate) struct LoopWindowScope<'a> {
     period: Option<&'a PeriodTouch<'a>>,
     /// CR 400.7: `Some(ids)` iff the caller DERIVED, from its own two cover frames, the ids
     /// whose RULES identity is not stable across this window — see [`identity_unstable_ids`].
-    /// `None` means NO PROOF, and every consumer reads it through
-    /// [`host_identity_is_stable`], which answers `false` on `None`: the absence of a
-    /// stability proof is not a proof of stability. That is what keeps
-    /// [`LoopWindowScope::unproven`] — and with it the offline classifier — byte-identical.
+    /// `None` means NO PROOF, and EVERY CONSUMER REFUSES ON IT: the absence of a stability
+    /// proof is not a proof of stability. Refusal on absence is the property the consumer set
+    /// shares, not a route — the per-host reader [`host_identity_is_stable`] answers `false`,
+    /// while the entry-matcher relief quantifies over the scanned frame's residents rather
+    /// than one host and refuses for the same reason. The offline classifier keeps its
+    /// pre-change verdict because it supplies no class at all, so no class-keyed relief is
+    /// reachable on its path whatever this field carries.
     ///
     /// A REFERENCE, for the same reason `period` is one: this struct derives `Copy` and a
     /// `HashSet` does not, so an owned field would be E0204 against that derive.
@@ -5214,23 +5218,21 @@ pub(crate) enum SoleSource<'a> {
     /// It does NOT claim the shape gate sees the whole subject. It does where the subject is a
     /// `PtValue` or a `ReplacementCondition` variant, which carry no second axis a read could
     /// hide on. It does not for `game::triggers::etb_observer_provably_excludes_class`, whose
-    /// shape gate reads only the entry-matcher fields of a `TriggerDefinition`, and whose relief
-    /// is DEF-SCOPED: `fire_time_conditions_read_growing_class_scoped` `continue`s over the WHOLE
-    /// definition, so once that relief fires neither the trigger's `condition` nor its `execute`
-    /// body is scanned. NEITHER this pre-gate, NOR a surviving sibling scan, NOR the ordering
-    /// premise stated at that consult covers those two surfaces. That premise — every object
-    /// difference between the covered frames is either a fodder-class member or an id the
-    /// period's instructed-departure certificate accounts — reaches only the fodder's OWN entry,
-    /// and the gap from there to "the matcher fires nowhere in the window" is a FAIL-OPEN
-    /// residual, disclosed in full on that predicate with [`identity_unstable_ids`] as the
-    /// authority for the case the cover cannot see.
+    /// shape gate reads the entry-matcher fields of a `TriggerDefinition` plus the CR 400.7
+    /// identity proof its caller threads, and whose relief is DEF-SCOPED:
+    /// `fire_time_conditions_read_growing_class_scoped` `continue`s over the WHOLE definition,
+    /// so once that relief fires neither the trigger's `condition` nor its `execute` body is
+    /// scanned. What licenses skipping those two surfaces is that identity conjunct: the
+    /// ordering premise stated at that consult — every object difference between the covered
+    /// frames is either a fodder-class member or an id the period's instructed-departure
+    /// certificate accounts — reaches only the fodder's OWN entry, and the proof carries it to
+    /// "the matcher fires nowhere in the window" by refusing wherever the scanned frame keys an
+    /// identity-unstable battlefield resident that matcher matches.
     ///
-    /// [`replacement_is_spent_self_entry`] is the nearest sibling, and the INAPPLICABILITY shape
-    /// is shared while its STRENGTH is not: that arm's inapplicability is window-total, and it
-    /// BUYS that with the CR 400.7 [`host_identity_is_stable`] conjunct the ETB gate has no
-    /// parameter for. Its exposure is the narrower one too, since it need only exclude a
-    /// re-entry of its OWN source where the ETB gate would have to exclude a re-entry of
-    /// anything its matcher matches.
+    /// [`replacement_is_spent_self_entry`] is the nearest sibling: both buy a window-total
+    /// inapplicability with a CR 400.7 conjunct, and they differ in what that conjunct
+    /// quantifies over — that arm over its OWN source's stability, this one over the scanned
+    /// frame's residents, which is the wider obligation.
     None,
     /// `activation_restrictions` must be EMPTY — `ability_scan::ability_definition_axes`
     /// destructures that field `_`, so the scan is blind to it and the rescan below would
@@ -5276,10 +5278,11 @@ pub(crate) enum MemberLiveness {
 /// definition's read cannot see `class_member`, so its value is invariant across the loop's
 /// growth, and the definition does not observe the loop". Fail-closed at every step, in one
 /// order for every arm: pre-gate, then shape, then member liveness, then the arm's own
-/// delegated fire-time authority. One arm's discharge of the final clause is PARTIAL:
-/// `game::triggers::etb_observer_provably_excludes_class` reaches it by NON-FIRING rather than
-/// read-invariance, and only for the fodder's own entry — the fail-open residual is stated on
-/// that predicate.
+/// delegated fire-time authority. One arm discharges the final clause by NON-FIRING rather
+/// than read-invariance: `game::triggers::etb_observer_provably_excludes_class` proves the
+/// matcher fires nowhere in the window, taking the fodder's own entry from the ordering
+/// premise and every other entry from the CR 400.7 identity proof its caller threads. Its
+/// named residual is stated on that predicate.
 ///
 /// The axes the arms actually differ on are PARAMETERS, not copied blocks. `pre` and
 /// `liveness` are each a declaration an arm cannot leave unstated, and `shape` / `excludes`
@@ -7117,11 +7120,12 @@ fn fire_time_conditions_read_growing_class(
 /// Scoped sibling of [`fire_time_conditions_read_growing_class`] — see
 /// [`LoopWindowScope`]. Reads `scope.phase_invariant` (CR 510.2 / CR 506.1, blocks (1)
 /// and (5b)), `scope.sole_driver` (CR 117.1b's foreign-controller relief AND CR 732.2a's
-/// proposal-absence relief, both at block (2)) and `scope.identity_unstable` (CR 400.7, block
-/// (3)'s spent-self-entry relief and block (2)'s proposal-absence relief); every such guard
-/// sits inside an `if let Some(..)` / `is_some_and`, so [`LoopWindowScope::unproven`] still
-/// reaches none of them and the 2-arg wrapper stays identity
-/// (`scoped_wrappers_are_identity`).
+/// proposal-absence relief, both at block (2)) and `scope.identity_unstable` (CR 400.7: block
+/// (1)'s entry-matcher relief, block (3)'s spent-self-entry relief and block (2)'s
+/// proposal-absence relief). Every identity consumer REFUSES on an absent proof, and every
+/// other guard sits inside an `if let Some(..)` / `is_some_and`, so
+/// [`LoopWindowScope::unproven`] takes the conservative arm throughout and the 2-arg wrapper
+/// stays identity with it (`scoped_wrappers_are_identity`).
 fn fire_time_conditions_read_growing_class_scoped(
     state: &GameState,
     class_members: Option<&HashSet<ObjectId>>,
@@ -7176,11 +7180,11 @@ fn fire_time_conditions_read_growing_class_scoped(
             // bodies firing on activation, pending stores) do not fire on the fodder *entering*
             // via a `valid_card` matcher, so gating them would be unsound.
             //
-            // FAIL-OPEN RESIDUAL: the `continue` is DEF-scoped, so it also skips this def's
-            // `condition` and `execute`, and the premise above does not reach that far — it
-            // excludes the fodder's own entry, not a re-entry of something else the matcher
-            // matches. Stated in full on
-            // `game::triggers::etb_observer_provably_excludes_class`.
+            // The `continue` is DEF-scoped, so it also skips this def's `condition` and
+            // `execute`, and the premise above reaches only the fodder's own entry. CR 400.7's
+            // identity proof is what carries it the rest of the way: the gate refuses relief on
+            // a matched identity-unstable battlefield resident, and on an absent proof alike.
+            // Stated in full on `game::triggers::etb_observer_provably_excludes_class`.
             if let Some(members) = class_members {
                 // CR 603.6a: relief requires the entry matcher to provably exclude EVERY
                 // member of the set the CALLER supplies. That set is a subset of the growing
@@ -7203,7 +7207,11 @@ fn fire_time_conditions_read_growing_class_scoped(
                 if !members.is_empty()
                     && members.iter().all(|&member| {
                         crate::game::triggers::etb_observer_provably_excludes_class(
-                            def, state, member, obj.id,
+                            def,
+                            state,
+                            member,
+                            obj.id,
+                            scope.identity_unstable,
                         )
                     })
                 {
@@ -16325,6 +16333,16 @@ mod tests {
         // A broad "whenever a creature enters" matcher that DOES match the P0 Saproling.
         let broad = TargetFilter::Typed(TypedFilter::creature());
 
+        // The CR 400.7 proof this relief's production caller carries, derived through the
+        // SINGLE scope authority from the row's own frames. A single-state row is its own
+        // prior AND current, so the unstable set is EMPTY and the row's original subject —
+        // which matcher the gate skips — is what the verdict reports.
+        let scan_with_proof = |state: &GameState, members: &HashSet<ObjectId>| {
+            let unstable = identity_unstable_ids(state, state);
+            let scope = window_scope_from_cover_frames(state, state, None, None, Some(&unstable));
+            fire_time_conditions_read_growing_class_scoped(state, Some(members), scope)
+        };
+
         // (c) REACH-GUARD (`None` ⇒ no class context): the disjoint observer's body vetoes,
         // proving it reaches the block(1) execute scan; also pins the object-growth path.
         assert!(
@@ -16333,17 +16351,204 @@ mod tests {
         );
         // (a) DISJOINT + `Some(class)`: the gate skips the observer ⇒ NOT vetoed.
         assert!(
-            !fire_time_conditions_read_growing_class(
-                &build(disjoint),
-                Some(&HashSet::from([member]))
-            ),
+            !scan_with_proof(&build(disjoint), &HashSet::from([member])),
             "a provably-disjoint ETB observer is skipped when the proven class is supplied"
         );
         // (b) MATCHING (broad matcher matches the fodder) + `Some(class)`: still vetoed — the
         // gate only skips PROVABLY-disjoint observers.
         assert!(
-            fire_time_conditions_read_growing_class(&build(broad), Some(&HashSet::from([member]))),
+            scan_with_proof(&build(broad), &HashSet::from([member])),
             "a broad ETB observer whose matcher matches the fodder still vetoes"
+        );
+    }
+
+    /// **The entry-matcher relief refuses an ABSENT identity proof, and grants an EMPTY one.**
+    ///
+    /// CR 400.7 + CR 603.6a: the relief skips a definition's `condition` and `execute` on the
+    /// premise that its matcher fires NOWHERE in the covered window. A window carrying no
+    /// identity proof has not established that premise and does not get the relief; a window
+    /// carrying a proof that names NOBODY has established it, and does.
+    ///
+    /// Board cloned from `etb_observer_gate_skips_only_provably_disjoint_observer`, whose
+    /// DISJOINT + `Some(member)` arm already measures this matcher as EXCLUDING this member —
+    /// so the ONLY variable between the two legs below is the proof itself.
+    ///
+    /// HOSTILE SIBLING, and what makes this row the contract's own discriminator rather than a
+    /// restatement of the disjointness rows: an implementation that DEFAULTS the absent case to
+    /// an empty set passes every disjointness row and fails only here, because its two legs
+    /// would agree.
+    ///
+    /// REVERT / MUTATION PROBE: change `let unstable = identity_unstable?;` in
+    /// `game::triggers::etb_observer_provably_excludes_class` to default the absent case to an
+    /// empty set ⇒ the absent-proof leg RELIEVES ⇒ **FAILS**.
+    #[test]
+    fn etb_entry_matcher_relief_refuses_an_absent_proof_and_grants_an_empty_one() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind};
+
+        let mut state = GameState::new_two_player(7);
+        let member = inert_token(&mut state, 900, 0, "Saproling");
+        {
+            let o = state.objects.get_mut(&member).unwrap();
+            o.card_types.core_types = vec![CoreType::Creature];
+            o.card_types.subtypes = vec!["Saproling".to_string()];
+            o.is_token = true;
+        }
+        let observer = inert_token(&mut state, 910, 1, "Eminence Observer");
+        // "another nontoken Wizard you control" — Inalla's matcher, triple-disjoint from the
+        // P0 Saproling token on subtype, controller and tokenness.
+        let disjoint = TargetFilter::Typed(
+            TypedFilter::creature()
+                .subtype("Wizard".to_string())
+                .controller(ControllerRef::You)
+                .properties(vec![FilterProp::NonToken, FilterProp::Another]),
+        );
+        state
+            .objects
+            .get_mut(&observer)
+            .unwrap()
+            .trigger_definitions
+            .push(
+                TriggerDefinition::new(TriggerMode::ChangesZone)
+                    .destination(Zone::Battlefield)
+                    .valid_card(disjoint)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        class_reading_pump_effect(),
+                    )),
+            );
+        let members = HashSet::from([member]);
+
+        // REACH-GUARD: this observer's body genuinely vetoes with no class supplied, so each
+        // verdict below is the entry-matcher gate speaking and not a def with nothing to veto.
+        assert!(
+            fire_time_conditions_read_growing_class(&state, None),
+            "reach-guard: with no class context the observer's class-reading body vetoes, so \
+             both legs below are attributable to the gate"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class_scoped(
+                &state,
+                Some(&members),
+                scope_with_unstable(None)
+            ),
+            "CR 400.7: no identity proof is not a proof of stability, so the relief is refused \
+             and the definition's `condition` and `execute` are scanned"
+        );
+        let empty = HashSet::new();
+        assert!(
+            !fire_time_conditions_read_growing_class_scoped(
+                &state,
+                Some(&members),
+                scope_with_unstable(Some(&empty))
+            ),
+            "a proof naming NOBODY is still a proof: no entry this matcher matches occurs in \
+             the window, so the disjoint observer is relieved. An implementation conflating the \
+             absent case with the empty one reds exactly this leg"
+        );
+    }
+
+    /// A window scope carrying only a CR 400.7 identity proof.
+    ///
+    /// A `fn` rather than a closure: the returned scope borrows the argument, and only an item
+    /// gets the late-bound lifetime that relationship needs.
+    fn scope_with_unstable(unstable: Option<&HashSet<ObjectId>>) -> LoopWindowScope<'_> {
+        LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned: None,
+            cast_card_ids: None,
+            period: None,
+            identity_unstable: unstable,
+        }
+    }
+
+    /// **The relief is keyed on the MATCHER, not on the proof being non-empty.**
+    ///
+    /// CR 400.7 + CR 603.6a: a window whose identity-unstable set names a battlefield resident
+    /// this matcher MATCHES could see that resident re-enter and fire the observer, so the relief
+    /// is refused. A window whose unstable resident the matcher does NOT match keeps it — the
+    /// premise "this matcher fires nowhere in the window" survives an entry it cannot match.
+    ///
+    /// The two legs are mutually controlling: the boards differ only in WHICH battlefield Wizard
+    /// the proof names. A matcher matching neither relieves both legs and reds the first; one
+    /// matching both refuses both and reds the second. Neither leg can pass for want of a match.
+    ///
+    /// HOSTILE SIBLING, and why this row is not a restatement of the absent/empty row: an
+    /// implementation refusing on `!unstable.is_empty()` rather than on the matcher passes the
+    /// absent case, passes the empty case, and fails only the second leg here.
+    ///
+    /// REVERT / MUTATION PROBE: drop `&& matcher_may_match(id)` from the unstable-resident scan
+    /// in `game::triggers::etb_observer_provably_excludes_class` ⇒ the unmatched leg refuses ⇒
+    /// **FAILS**.
+    #[test]
+    fn etb_entry_matcher_relief_keys_on_the_matcher_not_on_proof_emptiness() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind};
+
+        let mut state = GameState::new_two_player(7);
+        let member = inert_token(&mut state, 920, 0, "Saproling");
+        {
+            let o = state.objects.get_mut(&member).unwrap();
+            o.card_types.core_types = vec![CoreType::Creature];
+            o.card_types.subtypes = vec!["Saproling".to_string()];
+            o.is_token = true;
+        }
+        let observer = inert_token(&mut state, 930, 1, "Eminence Observer");
+        // Two nontoken Wizards differing ONLY in seat. `controller You` resolves against the
+        // observer's controller, so the matcher admits the first and rejects the second.
+        let matched = inert_token(&mut state, 931, 1, "Wizard On The Observers Seat");
+        let unmatched = inert_token(&mut state, 932, 0, "Wizard Off The Observers Seat");
+        for id in [matched, unmatched] {
+            let o = state.objects.get_mut(&id).unwrap();
+            o.card_types.core_types = vec![CoreType::Creature];
+            o.card_types.subtypes = vec!["Wizard".to_string()];
+        }
+        // Inalla's matcher: "another nontoken Wizard you control".
+        let disjoint = TargetFilter::Typed(
+            TypedFilter::creature()
+                .subtype("Wizard".to_string())
+                .controller(ControllerRef::You)
+                .properties(vec![FilterProp::NonToken, FilterProp::Another]),
+        );
+        state
+            .objects
+            .get_mut(&observer)
+            .unwrap()
+            .trigger_definitions
+            .push(
+                TriggerDefinition::new(TriggerMode::ChangesZone)
+                    .destination(Zone::Battlefield)
+                    .valid_card(disjoint)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        class_reading_pump_effect(),
+                    )),
+            );
+        let members = HashSet::from([member]);
+
+        // REACH-GUARD: the observer's body vetoes with no class supplied, so both verdicts below
+        // are the entry-matcher gate speaking.
+        assert!(
+            fire_time_conditions_read_growing_class(&state, None),
+            "reach-guard: with no class context the observer's class-reading body vetoes"
+        );
+        assert!(
+            fire_time_conditions_read_growing_class_scoped(
+                &state,
+                Some(&members),
+                scope_with_unstable(Some(&HashSet::from([matched])))
+            ),
+            "CR 400.7: the proof names a battlefield resident this matcher matches, so a re-entry \
+             inside the window could fire the observer and the relief is refused"
+        );
+        assert!(
+            !fire_time_conditions_read_growing_class_scoped(
+                &state,
+                Some(&members),
+                scope_with_unstable(Some(&HashSet::from([unmatched])))
+            ),
+            "the proof's only unstable resident sits on the opposing seat, which `controller You` \
+             rejects, so no entry this matcher matches can occur and the relief holds. An \
+             implementation refusing on mere non-emptiness reds exactly this leg"
         );
     }
 
@@ -21898,8 +22103,19 @@ mod tests {
         //     empty-set vetoes below are attributable to `!is_empty()` and nothing else.
         let etb_class = std::collections::HashSet::from([etb_member]);
         let ledger_class = std::collections::HashSet::from([ledger_member]);
+        // The ETB control is scanned under the CR 400.7 proof its production caller carries,
+        // derived through the SINGLE scope authority from this row's own frames. One state is
+        // its own prior AND current, so the unstable set is empty and this control reports the
+        // `!is_empty()` question it is here for rather than an unthreaded scope.
+        let etb_unstable = identity_unstable_ids(&etb_state, &etb_state);
+        let etb_scope =
+            window_scope_from_cover_frames(&etb_state, &etb_state, None, None, Some(&etb_unstable));
         assert!(
-            !fire_time_conditions_read_growing_class(&etb_state, Some(&etb_class)),
+            !fire_time_conditions_read_growing_class_scoped(
+                &etb_state,
+                Some(&etb_class),
+                etb_scope
+            ),
             "control: a PROVEN one-member class lets the ETB gate skip this provably \
              disjoint observer"
         );
@@ -35607,15 +35823,27 @@ mod tests {
             o.card_types.subtypes = vec!["Wizard".to_string()];
         }
 
+        // The CR 400.7 proof the production caller carries, derived through the SINGLE scope
+        // authority from this row's own frames. One state is its own prior AND current, so the
+        // unstable set is EMPTY and both verdicts below report the KEEP-set question this row
+        // is about rather than an unthreaded scope.
+        let unstable = identity_unstable_ids(&state, &state);
+        let scope = window_scope_from_cover_frames(&state, &state, None, None, Some(&unstable));
+
         assert!(
-            !fire_time_conditions_read_growing_class(&state, Some(&HashSet::from([member]))),
+            !fire_time_conditions_read_growing_class_scoped(
+                &state,
+                Some(&HashSet::from([member])),
+                scope
+            ),
             "reach-guard: under the KEEP set the disjoint observer is skipped, so the veto \
              below is the graveyard resident speaking"
         );
         assert!(
-            fire_time_conditions_read_growing_class(
+            fire_time_conditions_read_growing_class_scoped(
                 &state,
-                Some(&HashSet::from([member, in_graveyard]))
+                Some(&HashSet::from([member, in_graveyard])),
+                scope
             ),
             "under the bare presence set the matcher matches the graveyard resident, the \
              `.all()` fails, and the observer keeps a veto CR 603.6a cannot justify — no \

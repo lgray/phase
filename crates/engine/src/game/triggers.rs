@@ -3234,21 +3234,26 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
 /// over the WHOLE definition, so neither this trigger's `condition` nor its `execute` body is
 /// scanned afterwards.
 ///
-/// FAIL-OPEN RESIDUAL, labelled because the residual it stands beside at the consult is labelled
-/// FAIL-CLOSED and the two must not be read as one kind. The ordering premise above reaches
-/// exactly one conclusion: the matcher cannot fire on the FODDER's OWN entry, and a trigger that
-/// does not fire evaluates none of its surfaces. Skipping the two unscanned surfaces needs the
-/// WIDER premise that the matcher fires NOWHERE in the window, so the DEF-scoped `continue`
-/// additionally rests on no entry the matcher DOES match occurring inside it. Neither this gate
-/// nor its consult establishes that, and the cover provably cannot see the case that breaks it:
+/// THE IDENTITY CONJUNCT (CR 400.7 + CR 603.6a) is what carries the DEF-scoped `continue`. The
+/// ordering premise above reaches exactly one conclusion: the matcher cannot fire on the
+/// FODDER's OWN entry, and a trigger that does not fire evaluates none of its surfaces. Skipping
+/// the two unscanned surfaces needs the WIDER premise that the matcher fires NOWHERE in the
+/// window, so the relief additionally requires that no entry the matcher DOES match occurs
+/// inside it. `identity_unstable` buys exactly that, and the cover cannot supply it:
 /// `analysis::resource::identity_unstable_ids` is the authority — CR 400.7 makes a re-entering
 /// permanent a new object and CR 603.6a has that entry checked against every
 /// enters-the-battlefield trigger on the battlefield, yet a permanent blinked through
 /// `game::zones::move_to_zone` keeps its id and is `object_content_eq` to its pre-blink self, so
 /// a steady-state blink pair passes every gate of
-/// `analysis::resource::loop_states_cover_modulo_fodder_growth`. No conjunct compensates: the
-/// only two consults of the CR 400.7 proof (`analysis::resource::host_identity_is_stable`) are
-/// elsewhere, and this predicate's signature takes no identity set to consult it with.
+/// `analysis::resource::loop_states_cover_modulo_fodder_growth` and only the incarnation epoch
+/// records it. This gate therefore refuses relief wherever the scanned frame keys such an id ON
+/// the battlefield and this definition's own matcher matches it, and refuses on an ABSENT proof
+/// for the reason every consumer of that proof refuses: no proof is not a proof of stability.
+///
+/// NAMED RESIDUAL: two sampled frames cannot witness a permanent that enters the battlefield and
+/// leaves again inside a single cycle, so an unstable id the scanned frame keys in another zone
+/// is refused on only if it entered inside the cycle — which the cover cannot see. Closing that
+/// needs a per-cycle entry ledger the cover does not carry.
 ///
 /// Nor are the two unscanned surfaces redundant with the frame comparison, which is why the
 /// consult scans them whenever it does not `continue`:
@@ -3277,35 +3282,57 @@ pub(crate) fn etb_observer_provably_excludes_class(
     state: &GameState,
     class_member: ObjectId,
     source_id: ObjectId,
+    identity_unstable: Option<&HashSet<ObjectId>>,
 ) -> bool {
+    // ONE matcher question for BOTH halves of this relief — the member exclusion below and
+    // the CR 400.7 refusal in the shape gate — so the two halves can never consult two
+    // different matchers. `valid_card_matches` takes an observation-time source-context
+    // snapshot (upstream's LKI-by-incarnation refactor) rather than a bare id, so
+    // source-relative refs in the `valid_card` filter resolve against the source's
+    // characteristics. Project the live functioning source the same way the trigger pipeline
+    // does (`trigger_source_context_for_latch`). `source_id` is the object being scanned, so
+    // it is always present; answer "it may match" (fail-closed, keeping the veto) if it
+    // somehow isn't.
+    let matcher_may_match = |candidate: ObjectId| {
+        let Some(source) = state.objects.get(&source_id) else {
+            return true;
+        };
+        let source_context = trigger_source_context_for_latch(state, source);
+        crate::game::trigger_matchers::valid_card_matches(def, state, candidate, &source_context)
+    };
     crate::analysis::resource::provably_excludes_class(
         state,
         class_member,
         crate::analysis::resource::SoleSource::None,
         crate::analysis::resource::MemberLiveness::Unchecked,
         || {
-            (matches!(
+            if !(matches!(
                 def.mode,
                 TriggerMode::ChangesZone | TriggerMode::ChangesZoneAll
             ) && def.zone_change_clauses.is_empty()
                 && def.destination == Some(Zone::Battlefield)
                 && def.valid_card.is_some())
+            {
+                return None;
+            }
+            // CR 400.7: an object that moves from one zone to another becomes a new object.
+            // CR 603.6a: each time an event puts one or more permanents onto the battlefield,
+            // all permanents on the battlefield are checked for matching
+            // enters-the-battlefield triggers. So an identity-unstable permanent the scanned
+            // frame keys ON the battlefield is an entry this definition's own matcher may fire
+            // on, and the DEF-scoped relief is refused there. An ABSENT proof refuses too: no
+            // identity proof is not a proof of stability.
+            let unstable = identity_unstable?;
+            (!unstable.iter().any(|&id| {
+                state
+                    .objects
+                    .get(&id)
+                    .is_some_and(|obj| obj.zone == Zone::Battlefield)
+                    && matcher_may_match(id)
+            }))
             .then_some(())
         },
-        |(), member| {
-            // `valid_card_matches` takes an observation-time source-context snapshot
-            // (upstream's LKI-by-incarnation refactor) rather than a bare id, so
-            // source-relative refs in the `valid_card` filter resolve against the
-            // source's characteristics. Project the live functioning source the same
-            // way the trigger pipeline does (`trigger_source_context_for_latch`).
-            // `source_id` is the object being scanned, so it is always present;
-            // fail-closed (keep the veto) if it somehow isn't.
-            let Some(source) = state.objects.get(&source_id) else {
-                return false;
-            };
-            let source_context = trigger_source_context_for_latch(state, source);
-            !crate::game::trigger_matchers::valid_card_matches(def, state, member, &source_context)
-        },
+        |(), member| !matcher_may_match(member),
     )
 }
 
