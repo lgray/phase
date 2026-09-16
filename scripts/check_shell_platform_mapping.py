@@ -30,12 +30,15 @@ attached under a name no desktop derives. A set equality has the opposite blind
 spot -- an extra member completes it instead of breaking it -- so each block is
 also held against something a name this gate invented cannot satisfy. For the
 arm blocks that is the receiver-against-arm comparison. For `ALL`, whose entries
-carry no arms, it is the `[Self; N]` length rustc checks against those entries:
-the one figure here not read out of the same text being checked.
+carry no arms, it is the `[Self; N]` length rustc checks against those entries,
+read out of the same match as the entries themselves so that no other occurrence
+of that shape can supply it.
 
-Non-code text is removed before any pattern reads it, on both sides and against
-each language's own grammar rather than the spelling some defect happened to
-use: Rust's two comment forms, nested to any depth. The release side takes two
+Non-code text is removed once, where the source is read, so nothing downstream
+has raw text in scope to read by mistake. It is removed against each language's
+own grammar rather than the spelling some defect happened to use: Rust's two
+comment forms, nested to any depth, and neither of them opening inside a string
+literal of either kind. The release side takes two
 cuts, because that step's shell carries prose comments and its asset list is
 data inside a quoted heredoc, where a `#` is neither a comment nor a path the
 release attaches. The list is read out of that heredoc alone, and every line of
@@ -102,12 +105,12 @@ ASSET_STEP = "release-assets"
 #: another's contents -- the module also holds a free `target_triple()` function,
 #: whose body carries no arms at all and so would read as an empty mapping rather
 #: than as a wrong one.
+#: `ALL`'s declared length is captured here rather than by a second pattern, so
+#: the figure and the entries it is held against come out of one match. Read
+#: separately it was satisfiable by any `[Self; N]` elsewhere in the file, which
+#: is the whole forgery this cross-check exists to refuse.
 MAPPING_ALL_BLOCK = re.compile(
-    r"const ALL:\s*\[Self;\s*\d+\]\s*=\s*\[(.*?)\n    \];", re.S)
-#: `ALL`'s declared element count, read on its own because rustc checks it
-#: against the entries themselves. That makes it the one authority here a name
-#: this gate read out of something that is not an entry cannot satisfy.
-MAPPING_ALL_LENGTH = re.compile(r"const ALL:\s*\[Self;\s*(\d+)\]")
+    r"const ALL:\s*\[Self;\s*(\d+)\]\s*=\s*\[(.*?)\n    \];", re.S)
 MAPPING_BLOCK = re.compile(r"fn os_arch\b[^{]*\{(.*?)\n    \}", re.S)
 MAPPING_TRIPLE_BLOCK = re.compile(
     r"fn target_triple\(self\)[^{]*\{(.*?)\n    \}", re.S)
@@ -175,7 +178,25 @@ def _mapping_text() -> str:
         raise Refusal(f"{MAPPING_SOURCE} does not exist; the platform mapping "
                       "is missing, so no published platform can be checked "
                       "against it")
-    return path.read_text(encoding="utf-8")
+    return _strip_rust_comments(path.read_text(encoding="utf-8"))
+
+
+def _raw_close(text: str, i: int) -> int | None:
+    """End of the Rust raw string opening at `i`, or `None` if none opens there.
+
+    `r"..."`, `r#"..."#` and any hash count above it. Inside one, `\\` escapes
+    nothing and `//` is data, so a scanner that read it as an ordinary literal
+    would leave literal state open at the first `"` it contains and treat the
+    code after it as a comment.
+    """
+    j = i + 1
+    while j < len(text) and text[j] == "#":
+        j += 1
+    if j >= len(text) or text[j] != '"':
+        return None
+    hashes = j - i - 1
+    end = text.find('"' + "#" * hashes, j + 1)
+    return len(text) if end < 0 else end + 1 + hashes
 
 
 def _strip_rust_comments(text: str) -> str:
@@ -200,6 +221,10 @@ def _strip_rust_comments(text: str) -> str:
     block, or against `ALL`'s declared length -- because the patterns below are
     not literal-aware either: an escaped quote ends a captured value early, so a
     corrupted triple reports on the published-asset axis instead of refusing.
+
+    Both of Rust's literal forms, because this reads whole source files: a raw
+    string read as an ordinary one desynchronises literal state at the first
+    quote it carries, and every comment rule after that point is applied to code.
     """
     out: list[str] = []
     i, n, depth = 0, len(text), 0
@@ -224,6 +249,11 @@ def _strip_rust_comments(text: str) -> str:
             if end < 0:
                 break
             i = end
+        elif (text[i] == "r"
+              and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_"))
+              and (close := _raw_close(text, i)) is not None):
+            out.append(text[i:close])
+            i = close
         elif text[i] == '"':
             out.append('"')
             i += 1
@@ -243,24 +273,37 @@ def _strip_rust_comments(text: str) -> str:
 
 
 def _mapping_block(text: str, pattern: re.Pattern[str], what: str) -> str:
-    """One block's code, every comment removed before anything reads it.
+    """One block's code, out of a source every comment was already removed from.
 
-    The single place all three blocks are read through, so no comment in any of
-    them reaches a receiver or arm pattern, whichever of Rust's two forms it
-    uses and however many lines it spans. Scanning raw block text counted a
-    comment naming a variant as a receiver written twice and diagnosed it as an
-    arm rustfmt broke across lines, sending the reader after a wrapping that is
-    not there.
+    The single place both arm blocks are read through. Comments are gone before
+    this runs, at the read: stripping per block instead left the `//` that opens
+    one outside the captured group, so a comment carrying a declaration's shape
+    moved the block boundary and its contents were read as code.
     """
     match = pattern.search(text)
     if match is None:
         raise Refusal(f"{MAPPING_SOURCE} has no readable `ServerPlatform::{what}`; "
                       "it was renamed or reformatted, and the mapping cannot be "
                       "read")
-    return _strip_rust_comments(match.group(1))
+    return match.group(1)
 
 
-def _refuse_phantom_all_entry(text: str, listed: list[str]) -> None:
+def _all_entries(text: str) -> tuple[int, list[str]]:
+    """`ALL`'s declared length and its entry names, out of one match.
+
+    Two matches let the length come from somewhere the entries did not, and any
+    `[Self; N]` in the file would then serve: that is how this cross-check was
+    satisfiable by a sentence of prose.
+    """
+    match = MAPPING_ALL_BLOCK.search(text)
+    if match is None:
+        raise Refusal(f"{MAPPING_SOURCE} has no readable `ServerPlatform::ALL`; "
+                      "it was renamed or reformatted, and the mapping cannot be "
+                      "read")
+    return int(match.group(1)), MAPPING_RECEIVER.findall(match.group(2))
+
+
+def _refuse_phantom_all_entry(declared: int, listed: list[str]) -> None:
     """Refuse when `ALL` reads as more or fewer entries than rustc counts.
 
     `ALL` is compared to the two arm blocks by name, and a name this gate
@@ -271,12 +314,6 @@ def _refuse_phantom_all_entry(text: str, listed: list[str]) -> None:
     refused. `[Self; N]` is checked by rustc against the entries themselves, so
     it holds against a name no entry produced.
     """
-    match = MAPPING_ALL_LENGTH.search(text)
-    if match is None:
-        raise Refusal(f"{MAPPING_SOURCE}: ServerPlatform::ALL declares no "
-                      "`[Self; N]` length, so the entries this gate read out of "
-                      "it are held against nothing rustc counts")
-    declared = int(match.group(1))
     if len(listed) != declared:
         raise Refusal(
             f"{MAPPING_SOURCE}: ServerPlatform::ALL is declared `[Self; "
@@ -333,9 +370,8 @@ def _refuse_shared(owners: dict[str, object], what: str, why: str) -> None:
 def mapped_platforms() -> dict[str, tuple[str, str, str]]:
     """Each `ServerPlatform` variant as `(os, arch, triple)`. The desktop's authority."""
     text = _mapping_text()
-    listed = MAPPING_RECEIVER.findall(
-        _mapping_block(text, MAPPING_ALL_BLOCK, "ALL"))
-    _refuse_phantom_all_entry(text, listed)
+    declared, listed = _all_entries(text)
+    _refuse_phantom_all_entry(declared, listed)
     pairs = _arms(_mapping_block(text, MAPPING_BLOCK, "os_arch"),
                   MAPPING_ENTRY, "os_arch")
     triples = _arms(_mapping_block(text, MAPPING_TRIPLE_BLOCK, "target_triple"),
@@ -415,8 +451,19 @@ def published_platforms() -> set[tuple[str, str]]:
                       "that publishes desktop packages was renamed, and this "
                       "gate no longer knows which platforms ship")
 
-    include = (job.get("strategy") or {}).get("matrix", {})
-    include = include.get("include") if isinstance(include, dict) else None
+    matrix = (job.get("strategy") or {}).get("matrix", {})
+    # A matrix runs its product axes as well as its `include` entries, so reading
+    # `include` alone reads a subset of what publishes and the platforms an axis
+    # contributes strand silently. This gate identifies a platform by an (os,
+    # arch) pair on one entry, which a product has no single entry for, so an
+    # axis is a shape it cannot read rather than one it reads partially.
+    if isinstance(matrix, dict) and (axes := sorted(set(matrix)
+                                                    - {"include", "exclude"})):
+        raise Refusal(f"{SHELL_RELEASE}: {BUILD_JOB} declares matrix axes "
+                      f"{axes} beside `include`; every combination of those runs "
+                      "and publishes a desktop too, so the published platform "
+                      "set is larger than the `include` list this gate reads")
+    include = matrix.get("include") if isinstance(matrix, dict) else None
     if not isinstance(include, list):
         raise Refusal(f"{SHELL_RELEASE}: {BUILD_JOB} declares no "
                       "strategy.matrix.include list; the published platform set "

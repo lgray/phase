@@ -261,6 +261,10 @@ class MappingTree:
         self._write(RELEASE_REL, release_source(triples, attached=attached,
                                                 omit=omit, **kwargs))
 
+    def write_workflow_text(self, body: str) -> None:
+        """A workflow body the case built itself, for matrix shapes no keyword spells."""
+        self._write(WORKFLOW_REL, body)
+
     def write_mapping_text(self, body: str) -> None:
         """A mapping body the case built itself, for shapes no keyword spells."""
         self._write(MAPPING_REL, body)
@@ -687,6 +691,78 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertEqual(r.returncode, 2, r.stdout)
                 self.assertIn(reason, r.stderr)
                 self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_raw_string_before_the_impl_does_not_desync_comment_removal(self) -> None:
+        # Comment removal reads whole source files, so it passes through every
+        # literal on the way to the blocks. A raw string read as an ordinary one
+        # ends at the first quote it carries, leaving literal state open, and the
+        # `//` inside it then opens a comment that swallows real code after it.
+        # The raw string carries an odd number of interior quotes, which is what
+        # desynchronises a reader that takes `r#"` for an ordinary literal: it
+        # closes at that quote and reopens at the next one in the file, so the
+        # comments below fall inside what it believes is a literal and survive
+        # removal. They then read as receivers written twice. An even number
+        # re-synchronises by accident and would measure nothing, and an interior
+        # quote followed by `#` would close the raw string itself.
+        anchor = "impl ServerPlatform {"
+        body = mapping_source(comment=0)
+        self.assertEqual(body.count(anchor), 1,
+                         "the raw string must be spliced above the one impl, or "
+                         "this case measures a tree it did not build")
+        self.assertIn("// Self::Platform0", body,
+                      "a comment must fall after the raw string, or the desync "
+                      "has nothing to swallow and the case cannot discriminate")
+        raw = 'const NOTE: &str = r#"paths contain a " character"#;\n'
+        t = self.tree()
+        t.write_mapping_text(body.replace(anchor, f"{raw}\n{anchor}"))
+        r = t.run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("shell platform mapping OK", r.stdout)
+
+    def test_a_matrix_product_axis_beside_include_refuses(self) -> None:
+        # `include` is not the whole published set: a product axis publishes its
+        # combinations as well, and this gate reads a platform off one entry's
+        # (os, arch) pair, which a product has no entry for. Reading `include`
+        # and ignoring the rest passes a tree publishing a desktop it never saw,
+        # and the count guard cannot object because `include` still numbers four.
+        anchor = "      matrix:\n        include:\n"
+        body = workflow_source()
+        self.assertEqual(body.count(anchor), 1,
+                         "the axis must be spliced beside the one include, or "
+                         "this case measures a shape it did not build")
+        t = self.tree()
+        t.write_workflow_text(body.replace(
+            anchor, "      matrix:\n        os: [freebsd]\n"
+                    "        arch: [x86_64]\n        include:\n"))
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("declares matrix axes", r.stderr)
+        self.assertIn("'arch'", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
+    def test_an_asset_path_in_another_heredoc_is_not_a_published_asset(self) -> None:
+        # The other half of the release-side cut: the pattern decides what a line
+        # must look like, this decides where it has to be. A perfectly
+        # asset-shaped path inside a different heredoc is not in the list the
+        # release attaches, and counting it hides the signature genuinely
+        # missing from that list -- `attached` being a superset means no later
+        # comparison can object to the addition.
+        triple = DEFAULT_TRIPLES[3]
+        asset = f"phase-server-slim-{triple}"
+        anchor = "          cat <<'EOF'"
+        body = release_source(omit={triple: "signature"})
+        self.assertEqual(body.count(anchor), 1,
+                         "the decoy must precede the one real heredoc, or this "
+                         "case measures a step it did not build")
+        decoy = ("          cat <<'SKIP' > /dev/null\n"
+                 f"          artifacts/{asset}/{asset}.minisig\n"
+                 "          SKIP\n")
+        t = self.tree()
+        t.write_release_text(body.replace(anchor, decoy + anchor))
+        r = t.run()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(f"{asset}.minisig", r.stderr)
+        self.assertIn("does not publish", r.stderr)
 
     def test_the_harness_reads_the_fixture_not_the_real_tree(self) -> None:
         # If SHELL_PLATFORM_MAPPING_ROOT were ignored, every case above would be
