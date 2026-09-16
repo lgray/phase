@@ -857,6 +857,12 @@ class ShellPlatformMappingTests(unittest.TestCase):
              "const Q: (char, char) = ('\\u{41}','\"');", 2),
             ("hex escape beside a quote char",
              "const Q: (char, char) = ('\\x41','\"');", 2),
+            # Underscores are legal inside a unicode escape and do not count
+            # against its digit budget. A scanner that refused this would fail on
+            # compiling source, so the assertion below that the refusal names
+            # `Platform0` is what separates the two exit-2 paths.
+            ("underscored unicode escape beside a quote char",
+             "const Q: (char, char) = ('\\u{1_F_6_0_0}','\"');", 2),
             ("char literal without a quote", "const Q: u8 = b'!';", 2),
             ("a lifetime, not a literal", "struct S<'a>(&'a str);", 2),
         ):
@@ -915,6 +921,12 @@ class ShellPlatformMappingTests(unittest.TestCase):
         self.assertEqual(body.count(anchor), 1)
         for label, decl, code in (
             ("a quote opening no token", "const Q: char = '\\u{41;", 2),
+            # rustc compiles the first and rejects the second as an overlong
+            # escape, so the bound this pins is on hex digits rather than on
+            # characters between the braces.
+            ("an underscored unicode escape",
+             "const Q: char = '\\u{1_F_6_0_0}';", 0),
+            ("an overlong unicode escape", "const Q: char = '\\u{1234567}';", 2),
             ("a char literal", "const Q: char = 'x';", 0),
             ("a lifetime", "struct S<'a>(&'a str);", 0),
         ):
@@ -927,21 +939,36 @@ class ShellPlatformMappingTests(unittest.TestCase):
                     self.assertIn("opens no token", r.stderr)
 
     def test_a_sibling_matrix_this_gate_cannot_read_refuses(self) -> None:
-        # A matrix built by an expression is a job whose platforms are unknown at
-        # read time. Passing over it reads a subset of what publishes, and this
-        # gate soft-fails nowhere else: a file it cannot read refuses.
-        t = self.tree()
-        t.write_workflow_text(workflow_source() + """  build-shell-bsd:
+        # A matrix built at run time is a job whose platforms are unknown at read
+        # time. Passing over it reads a subset of what publishes, and this gate
+        # soft-fails nowhere else. The three shapes are the same unreadability at
+        # two depths -- the matrix, and the `include` inside it. The second depth
+        # is the one a dict filter swallows: a string iterates characters and a
+        # mapping iterates keys, so either becomes an empty list that publishes
+        # nothing, which is the empty set passing a subset check.
+        for label, strategy in (
+            ("the matrix is an expression",
+             "      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}"),
+            ("include is an expression",
+             "      matrix:\n        os: [freebsd]\n"
+             "        include: ${{ fromJSON(needs.setup.outputs.entries) }}"),
+            ("include is a mapping, not a list",
+             "      matrix:\n        os: [freebsd]\n"
+             "        include:\n          arch: x86_64"),
+        ):
+            with self.subTest(sibling=label):
+                t = self.tree()
+                t.write_workflow_text(workflow_source() + f"""  build-shell-bsd:
     runs-on: ubuntu-latest
     strategy:
-      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+{strategy}
     steps:
       - run: echo build
 """)
-        r = t.run()
-        self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn("build-shell-bsd", r.stderr)
-        self.assertIn("cannot read", r.stderr)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn("build-shell-bsd", r.stderr)
+                self.assertIn("cannot read", r.stderr)
 
     def test_an_escaped_quote_inside_a_literal_keeps_its_arm(self) -> None:
         # The bound on the ordinary-literal reader. An escaped quote does not

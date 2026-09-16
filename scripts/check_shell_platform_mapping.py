@@ -194,8 +194,13 @@ RAW_OPEN = re.compile(r'[bc]?r(#*)"')
 #: characters and then demands the closing quote, so `'\u{41}'` matched nothing,
 #: its trailing quote was left loose, and that quote paired with the next one two
 #: characters along and swallowed a real `"`.
+#:
+#: The unicode escape's bound is on hex digits, not on characters between the
+#: braces: `'\u{1_F_6_0_0}'` compiles, and counting its underscores against the
+#: budget refused source rustc accepts. Overlong stays refused -- seven digits is
+#: not a char literal, and this gate does not read what the compiler rejects.
 CHAR_LIT = re.compile(
-    r"b?'(?:\\u\{[0-9a-fA-F_]{1,6}\}|\\x[0-9a-fA-F]{2}|\\.|[^'\\\n])'")
+    r"b?'(?:\\u\{_*(?:[0-9a-fA-F]_*){1,6}\}|\\x[0-9a-fA-F]{2}|\\.|[^'\\\n])'")
 #: A lifetime or loop label: the only other token that opens with a quote and the
 #: reason an unrecognised quote cannot simply be assumed to be a literal. It has
 #: no closing quote, so it is consumed as itself.
@@ -511,7 +516,20 @@ def published_platforms() -> set[tuple[str, str]]:
                           "so whether it publishes desktops is unknown. A job "
                           "that might is not one to pass over")
         axes = set(matrix) - {"include", "exclude"}
-        entries = [e for e in (matrix.get("include") or []) if isinstance(e, dict)]
+        # The same unreadability one level down, and the level a filter would
+        # swallow: a string iterates characters and a mapping iterates keys, so
+        # `[e for e in include if isinstance(e, dict)]` turns either into an empty
+        # list, and an empty list publishes nothing. That is the empty set passing
+        # a subset check, which is what this gate refuses everywhere else --
+        # including on this same key when it belongs to the job being read.
+        include = matrix.get("include")
+        if include is not None and not (isinstance(include, list)
+                                        and all(isinstance(e, dict) for e in include)):
+            raise Refusal(f"{SHELL_RELEASE}: job '{name}' declares a "
+                          f"strategy.matrix.include this gate cannot read "
+                          f"({include!r}), so whether it publishes desktops is "
+                          "unknown. A job that might is not one to pass over")
+        entries = include or []
         return {"os", "arch"} <= axes or any(
             {"os", "arch"} <= (axes | e.keys()) for e in entries)
 
