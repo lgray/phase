@@ -181,22 +181,26 @@ def _mapping_text() -> str:
     return _strip_rust_comments(path.read_text(encoding="utf-8"))
 
 
-def _raw_close(text: str, i: int) -> int | None:
-    """End of the Rust raw string opening at `i`, or `None` if none opens there.
+#: A raw string's opener, matched whole rather than found by looking at what
+#: precedes an `r`. `br#"` and `cr#"` are raw strings whose `r` is preceded by an
+#: identifier character, so a guard reading that character alone declines to
+#: recognise them: it is the prefixed form of the very token it is guarding. The
+#: file this gate reads carries six `br#"` literals today.
+RAW_OPEN = re.compile(r'[bc]?r(#*)"')
 
-    `r"..."`, `r#"..."#` and any hash count above it. Inside one, `\\` escapes
-    nothing and `//` is data, so a scanner that read it as an ordinary literal
-    would leave literal state open at the first `"` it contains and treat the
-    code after it as a comment.
+
+def _raw_close(text: str, opener: re.Match[str]) -> int:
+    """End of the raw string whose opener this match covers.
+
+    Inside one, `\\` escapes nothing and `//` is data, so a scanner reading it as
+    an ordinary literal leaves literal state open at the first `"` the body
+    carries and applies every comment rule after that point to code. An
+    unterminated opener runs to end of input, which preserves the remainder
+    rather than dropping it; it does not compile, so no tree reaches it.
     """
-    j = i + 1
-    while j < len(text) and text[j] == "#":
-        j += 1
-    if j >= len(text) or text[j] != '"':
-        return None
-    hashes = j - i - 1
-    end = text.find('"' + "#" * hashes, j + 1)
-    return len(text) if end < 0 else end + 1 + hashes
+    hashes = opener.group(1)
+    end = text.find('"' + hashes, opener.end())
+    return len(text) if end < 0 else end + 1 + len(hashes)
 
 
 def _strip_rust_comments(text: str) -> str:
@@ -222,9 +226,12 @@ def _strip_rust_comments(text: str) -> str:
     not literal-aware either: an escaped quote ends a captured value early, so a
     corrupted triple reports on the published-asset axis instead of refusing.
 
-    Both of Rust's literal forms, because this reads whole source files: a raw
-    string read as an ordinary one desynchronises literal state at the first
-    quote it carries, and every comment rule after that point is applied to code.
+    Every raw-string form, because this reads whole source files: read as an
+    ordinary literal, one carrying an odd number of interior quotes leaves
+    literal state open and every comment rule after that point is applied to
+    code. The opener is matched whole -- byte and C-string prefixes included --
+    rather than recognised by the character before its `r`, which is a test the
+    prefixed forms fail by construction.
     """
     out: list[str] = []
     i, n, depth = 0, len(text), 0
@@ -249,9 +256,9 @@ def _strip_rust_comments(text: str) -> str:
             if end < 0:
                 break
             i = end
-        elif (text[i] == "r"
-              and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_"))
-              and (close := _raw_close(text, i)) is not None):
+        elif ((i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_"))
+              and (opener := RAW_OPEN.match(text, i)) is not None):
+            close = _raw_close(text, opener)
             out.append(text[i:close])
             i = close
         elif text[i] == '"':
@@ -445,11 +452,34 @@ def published_platforms() -> set[tuple[str, str]]:
     except yaml.YAMLError as exc:
         raise Refusal(f"{SHELL_RELEASE} is not parseable YAML: {exc}") from exc
 
-    job = ((workflow or {}).get("jobs") or {}).get(BUILD_JOB)
+    jobs = (workflow or {}).get("jobs") or {}
+    job = jobs.get(BUILD_JOB)
     if not isinstance(job, dict):
         raise Refusal(f"{SHELL_RELEASE}: job '{BUILD_JOB}' is absent; the job "
                       "that publishes desktop packages was renamed, and this "
                       "gate no longer knows which platforms ship")
+
+    # The published set is anchored on one job id, so a second job publishing
+    # desktops is a population this gate never walks -- the same hole the matrix
+    # axes below close one level down. Any other job whose matrix entries carry
+    # both `os` and `arch` is publishing desktops by this gate's own definition
+    # of a platform, so it refuses rather than reading one job and reporting on
+    # all of them.
+    def _publishes_desktops(other: object) -> bool:
+        strategy = other.get("strategy") if isinstance(other, dict) else None
+        matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+        entries = matrix.get("include") if isinstance(matrix, dict) else None
+        return isinstance(entries, list) and any(
+            isinstance(e, dict) and {"os", "arch"} <= e.keys() for e in entries)
+
+    others = sorted(name for name, other in jobs.items()
+                    if name != BUILD_JOB and _publishes_desktops(other))
+    if others:
+        raise Refusal(f"{SHELL_RELEASE}: {others} also declare matrix entries "
+                      f"carrying both `os` and `arch`, so they publish desktops "
+                      f"too, but this gate reads only '{BUILD_JOB}'. Every "
+                      "platform they ship is one no ServerPlatform variant was "
+                      "checked against")
 
     matrix = (job.get("strategy") or {}).get("matrix", {})
     # A matrix runs its product axes as well as its `include` entries, so reading

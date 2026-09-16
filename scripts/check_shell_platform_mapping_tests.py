@@ -764,6 +764,74 @@ class ShellPlatformMappingTests(unittest.TestCase):
         self.assertIn(f"{asset}.minisig", r.stderr)
         self.assertIn("does not publish", r.stderr)
 
+    def test_every_raw_string_prefix_is_recognised(self) -> None:
+        # The prefixed forms are the members an enumeration written for `r`
+        # omits, and they are the ones a guard reading the character before the
+        # `r` must decline: `b` and `c` are identifier characters. Only a hashed
+        # form can carry an interior quote -- `r"a " b"` closes at that quote and
+        # is not one literal at all -- so the desyncing body belongs to those,
+        # and the hash-less forms stand for recognition alone. An odd interior
+        # quote is what leaves literal state open when the opener goes
+        # unrecognised; the comments below then survive removal and read as
+        # receivers written twice.
+        anchor = "impl ServerPlatform {"
+        for prefix in ("r", "br", "cr"):
+            for hashes in ("", "#"):
+                with self.subTest(prefix=f"{prefix}{hashes}"):
+                    body = mapping_source(comment=0)
+                    self.assertEqual(body.count(anchor), 1)
+                    inner = ('paths contain a " character' if hashes
+                             else "paths look like this")
+                    raw = (f'const NOTE: &str = '
+                           f'{prefix}{hashes}"{inner}"{hashes};\n')
+                    t = self.tree()
+                    t.write_mapping_text(body.replace(anchor, f"{raw}\n{anchor}"))
+                    r = t.run()
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    self.assertIn("shell platform mapping OK", r.stdout)
+
+    def test_a_literal_carrying_the_declaration_shape_does_not_supply_the_count(self) -> None:
+        # Why `ALL`'s count comes out of the same match as its entries. A string
+        # literal is not a comment, so it survives removal and any second pattern
+        # searching the file finds it first -- which is how a sentence of prose
+        # once supplied the figure the entries are held against. The real
+        # declaration says three and the entries read four, so this refuses iff
+        # the count came from the declaration rather than from the literal.
+        body = annotate(mapping_source(listed=3), ALL_ENTRY, '@ "Self::Platform3",')
+        anchor = "impl ServerPlatform {"
+        self.assertEqual(body.count(anchor), 1)
+        t = self.tree()
+        t.write_mapping_text(body.replace(
+            anchor, 'const HELP: &str = "const ALL: [Self; 4]";\n\n' + anchor))
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("declared `[Self; 3]`", r.stderr)
+        self.assertIn("read 4 entry name(s)", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_second_job_publishing_desktops_refuses(self) -> None:
+        # The published set is anchored on one job id, so a sibling job shipping
+        # desktops is a population this gate never walks: its platforms have no
+        # ServerPlatform variant checked against them, and the expected count
+        # cannot object because it counts only the job that was read.
+        t = self.tree()
+        t.write_workflow_text(workflow_source() + """  build-shell-bsd:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: freebsd
+            arch: x86_64
+            runner: ubuntu-latest
+    steps:
+      - run: echo build
+""")
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("build-shell-bsd", r.stderr)
+        self.assertIn("publish desktops", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
     def test_the_harness_reads_the_fixture_not_the_real_tree(self) -> None:
         # If SHELL_PLATFORM_MAPPING_ROOT were ignored, every case above would be
         # measuring this checkout and the passing ones would be vacuous.
