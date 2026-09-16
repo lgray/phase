@@ -4770,7 +4770,9 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     // error here, which makes the next reader place it against the relief predicates' axes
     // instead of silently defaulting it to dropped.
     // ponytail: O(observers x |G|), short-circuiting on the first non-excluding member. If |G|
-    // ever measures hot, hoist the member-independent conjuncts out of the per-member loop.
+    // ever measures hot, hoist the member-independent conjuncts out of the per-member loop,
+    // `etb_observer_provably_excludes_class`'s CR 400.7 identity scan in its `shape` slot among
+    // them — re-run once per member for a verdict that cannot differ.
     let class_members: HashSet<ObjectId> = growing
         .iter()
         .copied()
@@ -6149,8 +6151,9 @@ fn reveal_from_hand_execute_provably_excludes_class(
 /// every real zone move, plus the merge/relatch sites that call it directly), or the object is
 /// ABSENT from `prior`, i.e. it ARRIVED inside the window. A DEPARTED id — in `prior`, absent
 /// from `current` — is deliberately NOT in the set, and walking `current.objects` makes that
-/// structural rather than a filter a later reader could tidy away; both consumers only ask
-/// about a host already resolved on the battlefield of the SCANNED frame.
+/// structural rather than a filter a later reader could tidy away: every consumer resolves this
+/// set against residents of the SCANNED frame's battlefield, so a departed id is out of reach by
+/// construction.
 ///
 /// NOT AVAILABLE FROM THE COVER, which is why it exists. [`object_content_eq`] is keyed by
 /// `ObjectId` (STORAGE identity) and omits `timestamp` / `incarnation` /
@@ -6309,7 +6312,8 @@ fn activated_ability_is_not_a_loop_choice(
     // position, so a recorded index may no longer name the ability it activated — and the
     // record-absence test below would then be reading a stale coordinate. Fail closed on an
     // unstable host, through the SAME shared conjunct block (3)'s spent-self-entry relief uses,
-    // so the two consumers of the CR 400.7 proof cannot drift apart.
+    // so refusal on an absent proof stays ONE property of that proof's readers rather than a
+    // per-reader copy that could drift.
     if !host_identity_is_stable(obj.id, identity_unstable) {
         return false;
     }
@@ -30269,8 +30273,8 @@ mod tests {
             HashSet::from([P1_BLINKED_HOST, P1_ARRIVED]),
             "row 11: CR 400.7 — an object whose incarnation epoch advanced is a NEW object, and \
              one absent from `prior` ARRIVED inside the window. A DEPARTED id is deliberately \
-             absent from the set: both consumers only ask about a host already resolved on the \
-             scanned frame's battlefield, so a departed id is unreachable by construction"
+             absent from the set: every consumer resolves it against residents of the scanned \
+             frame's battlefield, so a departed id is unreachable by construction"
         );
     }
 

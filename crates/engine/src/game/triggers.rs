@@ -3216,8 +3216,9 @@ pub fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone: Zone)
 /// what the proposer may or may not see.
 ///
 /// Therefore a matcher that provably excludes the fodder cannot fire on the fodder ENTERING, and
-/// does not veto the CR 732.2a offer on that account. It does NOT follow that the def observes
-/// nothing else across the window — see the fail-open residual below.
+/// does not veto the CR 732.2a offer on that account. That alone does not reach the def observing
+/// nothing else across the window; THE IDENTITY CONJUNCT below is what carries the rest, within
+/// the NAMED RESIDUAL stated with it.
 ///
 /// Fail-closed on every axis it cannot classify: a broad (`valid_card == None`), disjunctive
 /// (`zone_change_clauses` non-empty), non-battlefield-destination, or genuinely-matching observer
