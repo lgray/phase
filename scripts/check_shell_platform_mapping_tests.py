@@ -302,7 +302,7 @@ def preview_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
     """
     triples = [triple for _, _, triple in platforms]
     url = ('("https://data.phase-rs.dev/desktop/preview-server/" '
-           '+ $fingerprint + "/phase-server-{name}{suffix}")')
+           '+ $fingerprint + "/{name}{suffix}")')
     include = "\n".join(
         f"          - os: {os_name}\n"
         f"            triple: {triple}\n"
@@ -315,16 +315,20 @@ def preview_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
         f"          name: preview-server-{triple}\n"
         f"          path: artifacts/{triple}"
         for triple in triples if triple != drop_download)
+    def artifact(triple: str) -> str:
+        # The step uploads `basename "$binary"` from the array, so the array and
+        # the manifest URLs name the same file -- `.exe` on windows included.
+        return f"phase-server-{triple}{'.exe' if 'windows' in triple else ''}"
+
     array = "\n".join(
-        f"            artifacts/{triple}/phase-server-{triple}"
-        f"{'.exe' if 'windows' in triple else ''}"
+        f"            artifacts/{triple}/{artifact(triple)}"
         for triple in triples if triple != drop_sign)
     entries = ",\n".join(
         f'                         "{triple}": {{\n'
-        f"                           url: {url.format(name=triple, suffix='')}"
+        f"                           url: {url.format(name=artifact(triple), suffix='')}"
         + ("" if triple == drop_sig else
            ",\n                           sig_url: "
-           + url.format(name=triple, suffix=".minisig"))
+           + url.format(name=artifact(triple), suffix=".minisig"))
         + "\n                         }"
         for triple in triples if triple != drop_key)
     return (PREVIEW_TEMPLATE
@@ -842,21 +846,30 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertIn(names, r.stderr)
                 self.assertNotIn("preview provisioning OK", r.stdout)
 
-    def test_a_sig_url_that_is_not_a_signature_strands_a_desktop(self) -> None:
-        # A key can carry both URLs and still leave the desktop unable to verify
-        # what it fetched. Mangled for one triple only, with the binary name left
-        # in the URL, so the signature suffix is the one thing deciding it; the
-        # dropped-sig_url case above removes the URL instead and so cannot
-        # isolate this conjunct.
+    def test_a_url_that_is_not_the_exact_artifact_strands_a_desktop(self) -> None:
+        # The desktop fetches both URLs verbatim, so a name that merely contains
+        # the artifact's resolves a different object. Every case leaves the binary
+        # name present as a substring, so only the terminal-segment rule can
+        # refuse it; the dropped-sig_url case removes the URL instead and proves
+        # nothing about a name that survives with something appended.
         stranded = DEFAULT_TRIPLES[3]
-        t = self.tree()
-        t.write_preview_text(preview_source().replace(
-            f"phase-server-{stranded}.minisig", f"phase-server-{stranded}.sig"))
-        r = t.run()
-        self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn(stranded, r.stderr)
-        self.assertIn("gives a signed URL pair in its manifest", r.stderr)
-        self.assertNotIn("preview provisioning OK", r.stdout)
+        name = (f"phase-server-{stranded}"
+                f"{'.exe' if 'windows' in stranded else ''}")
+        for label, old, new in (
+            ("appended binary name", f'/{name}"', f'/{name}-old"'),
+            ("appended signature", f'/{name}.minisig"', f'/{name}.minisig.bak"'),
+            ("altered signature suffix", f'/{name}.minisig"', f'/{name}.sig"'),
+        ):
+            with self.subTest(case=label):
+                body = preview_source()
+                self.assertIn(old, body)
+                t = self.tree()
+                t.write_preview_text(body.replace(old, new))
+                r = t.run()
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn(stranded, r.stderr)
+                self.assertIn("gives a signed URL pair in its manifest", r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_manifest_data_entry_shaped_like_a_platform_is_not_one(self) -> None:
         # The step's jq also writes a `data:` array beside `binaries`, and a

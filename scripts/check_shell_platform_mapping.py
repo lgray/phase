@@ -789,7 +789,12 @@ def preview_platforms() -> dict[str, set[str]]:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
                       "`binaries=( ... )` array; the signed set was reshaped, and "
                       "a set this gate cannot read is not an empty one")
-    signed = {triple for triple, _ in PREVIEW_ARRAY_LINE.findall(array.group(1))}
+    # The array is the single authority for artifact file names: the step uploads
+    # `basename "$binary"` taken from it, so the name in the manifest's URL has to
+    # be exactly this one -- `.exe` included, which only windows carries.
+    artifacts = {triple: f"phase-server-{triple}{exe}"
+                 for triple, exe in PREVIEW_ARRAY_LINE.findall(array.group(1))}
+    signed = set(artifacts)
     block = PREVIEW_MANIFEST_BLOCK.search(body)
     if block is None:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
@@ -797,20 +802,23 @@ def preview_platforms() -> dict[str, set[str]]:
                       "desktop resolves against cannot be read")
     keys = set(PREVIEW_MANIFEST_KEY.findall(block.group(1)))
 
-    # A desktop reads `url` and `sig_url` from the entry and fetches both, so a
-    # key carrying only one resolves an artifact it cannot verify. Checked per
-    # key, so the report names which key rather than a count that dropped.
+    # A desktop reads `url` and `sig_url` from the entry and fetches both verbatim,
+    # so a name that merely *contains* the artifact's resolves a different object:
+    # `phase-server-<triple>-old` and a `.minisig.bak` signature both carry the
+    # name and neither is the file that was uploaded. Matched as the terminal path
+    # segment -- closing quote included -- against the name the array authorises,
+    # rather than as a substring. Checked per key, so the report names which key
+    # rather than a count that dropped.
     paired: set[str] = set()
     for key in keys:
         entry = re.search(rf'"{re.escape(key)}":\s*\{{(.*?)\n\s*\}}',
                           block.group(1), re.S)
-        if entry is None:
+        if entry is None or key not in artifacts:
             continue
         urls = dict(PREVIEW_MANIFEST_URL.findall(entry.group(1)))
-        binary = f"phase-server-{key}"
-        if (binary in urls.get("url", "")
-                and binary in urls.get("sig_url", "")
-                and ".minisig" in urls.get("sig_url", "")):
+        name = artifacts[key]
+        if (f'/{name}"' in urls.get("url", "")
+                and f'/{name}.minisig"' in urls.get("sig_url", "")):
             paired.add(key)
 
     return {"builds": built, "downloads": downloaded, "signs": signed,
