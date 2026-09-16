@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Exits 0 once every URL argument answers HEAD 200, and 1 if any is still
-# unavailable when another poll would pass DATA_DEADLINE_EPOCH, never on the
-# strength of a single probe: an exhausted deadline still gets a confirming
-# round. HEAD is answered by origin, so a cached 404 cannot hide an upload.
+# unavailable when another poll would pass DATA_WAIT_SECONDS from this run's
+# own start, never on the strength of a single probe. HEAD is answered by
+# origin, so a cached 404 cannot hide an upload.
 set -euo pipefail
-: "${DATA_DEADLINE_EPOCH:?}" "${DATA_POLL_SECONDS:?}"
+: "${DATA_WAIT_SECONDS:?}" "${DATA_POLL_SECONDS:?}"
 (( $# > 0 )) || { echo "::error::no data URLs given"; exit 2; }
+deadline=$(( $(date +%s) + DATA_WAIT_SECONDS ))
 pending=("$@")
 probed=0
 while :; do
@@ -20,12 +21,11 @@ while :; do
     fi
   done
   (( ${#waiting[@]} == 0 )) && exit 0
-  # The build between the gate's clock and this wait routinely spends most of
-  # the deadline, and one HEAD can miss a served object on a 15s cap against a
-  # cold origin, so no URL is declared unavailable on a single probe.
-  if (( probed )) && (( $(date +%s) + DATA_POLL_SECONDS > DATA_DEADLINE_EPOCH )); then
+  # One HEAD can miss a served object on a 15s cap against a cold origin, so no
+  # URL is declared unavailable on a single probe.
+  if (( probed )) && (( $(date +%s) + DATA_POLL_SECONDS > deadline )); then
     for url in "${waiting[@]}"; do
-      echo "::error::Still unavailable at deadline epoch $DATA_DEADLINE_EPOCH: $url"
+      echo "::error::Still unavailable after ${DATA_WAIT_SECONDS}s: $url"
     done
     exit 1
   fi

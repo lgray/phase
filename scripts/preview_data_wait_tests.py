@@ -3,9 +3,10 @@
 
 preview-server.yml's `publish` job signs the desktop preview manifest, and that
 manifest entry names two content-addressed data objects that a job of the
-calling workflow uploads. A reusable workflow cannot `needs:` a caller's job, so
-the ordering is enforced inside `publish`: it waits until both URLs are served
-before it signs anything.
+calling workflow uploads. The deploy caller orders that upload ahead of the
+whole preview-server workflow with a `needs:` edge; a manual dispatch has no
+such edge, so `publish` waits until both URLs are served before it signs
+anything.
 
 The shell under test is `scripts/wait-for-preview-data.sh` itself, driven
 against a local HTTP server that answers HEAD the way the data endpoint does.
@@ -21,7 +22,6 @@ import re
 import subprocess
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 from typing import Iterator
@@ -37,17 +37,19 @@ CARD_DATA = "card-data.json"
 DRAFT_POOLS = "draft-pools.json"
 
 GATE_IF = "steps.publication-gate.outputs.already_published != 'true'"
-WAIT_ENV = {"DATA_DEADLINE_EPOCH": "${{ needs.gate.outputs.data_deadline_epoch }}"}
 WAIT_RUN = re.compile(r'bash scripts/wait-for-preview-data\.sh( "\$[A-Z_]+")+')
 URL_ARG = re.compile(r'--arg (\w+)_url "\$([A-Z_]+)"')
 # GitHub applies success() to an `if` without a status-check function, and its
 # detection and function lookup are both case-insensitive.
 STATUS_FUNCTION = re.compile(r"(?i)\b(success|always|failure|cancelled)\s*\(")
-DEADLINE_LINE = (
-    'echo "data_deadline_epoch=$(( $(date +%s) + CARD_DATA_TIMEOUT_SECONDS'
-    ' + DATA_POLL_SECONDS ))" >> "$GITHUB_OUTPUT"'
-)
+SCRIPT_REQUIRED = re.compile(r"\$\{(\w+):\?\}")
 STAGING_PREFIX = "https://data.phase-rs.dev/staging/"
+# The two objects a manifest entry names, as the deploy job puts them. Other
+# jobs upload to the same staging prefix, so the key is the object, not it.
+MANIFEST_DATA_PUTS = (
+    "phase-rs-data/staging/$CARD_DATA_FILENAME",
+    "phase-rs-data/staging/$DRAFT_POOLS_FILENAME",
+)
 
 
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -81,14 +83,14 @@ class DataWaitScriptTests(unittest.TestCase):
         for name in names:
             self.put(name)
 
-    def wait(self, deadline_in: int, poll: int) -> subprocess.CompletedProcess:
-        # The timeout turns a script that ignores its deadline into an error
+    def wait(self, window: int, poll: int) -> subprocess.CompletedProcess:
+        # The timeout turns a script that ignores its window into an error
         # rather than a hang.
         return subprocess.run(
             ["bash", str(SCRIPT), f"{self.base}/{CARD_DATA}", f"{self.base}/{DRAFT_POOLS}"],
             env={
                 "PATH": "/usr/bin:/bin",
-                "DATA_DEADLINE_EPOCH": str(int(time.time()) + deadline_in),
+                "DATA_WAIT_SECONDS": str(window),
                 "DATA_POLL_SECONDS": str(poll),
             },
             capture_output=True,
@@ -104,7 +106,7 @@ class DataWaitScriptTests(unittest.TestCase):
 
     def test_both_files_served_passes(self) -> None:
         self.uploaded(CARD_DATA, DRAFT_POOLS)
-        result = self.wait(deadline_in=2, poll=1)
+        result = self.wait(window=2, poll=1)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("::error::", result.stdout)
         for name in (CARD_DATA, DRAFT_POOLS):
@@ -114,7 +116,7 @@ class DataWaitScriptTests(unittest.TestCase):
         for absent, present in ((CARD_DATA, DRAFT_POOLS), (DRAFT_POOLS, CARD_DATA)):
             with self.subTest(absent=absent):
                 self.uploaded(present)
-                result = self.wait(deadline_in=2, poll=1)
+                result = self.wait(window=2, poll=1)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 errors = self.errors(result)
                 self.assertIn(absent, errors)
@@ -125,7 +127,7 @@ class DataWaitScriptTests(unittest.TestCase):
         upload = threading.Timer(1.5, self.put, [CARD_DATA])
         upload.start()
         try:
-            result = self.wait(deadline_in=10, poll=1)
+            result = self.wait(window=10, poll=1)
         finally:
             upload.join()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -133,17 +135,16 @@ class DataWaitScriptTests(unittest.TestCase):
         self.assertIn("Waiting (HTTP 404)", result.stdout)
         self.assertIn(f"Available: {self.base}/{CARD_DATA}", result.stdout)
 
-    def test_a_past_deadline_probes_before_giving_up(self) -> None:
-        # A re-run of publish alone reuses the original deadline, and a manual
-        # dispatch can start after it: the existence check still has to happen,
-        # and a served object still answers on the first round.
+    def test_the_tightest_window_probes_before_giving_up(self) -> None:
+        # Zero seconds is the least a caller can ask for: the existence check
+        # still happens, and a served object answers on the first round.
         self.uploaded(CARD_DATA, DRAFT_POOLS)
-        result = self.wait(deadline_in=-60, poll=1)
+        result = self.wait(window=0, poll=1)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
         # Absent, the verdict costs a confirming probe: one HEAD is not proof.
         self.uploaded(DRAFT_POOLS)
-        result = self.wait(deadline_in=-60, poll=1)
+        result = self.wait(window=0, poll=1)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         errors = self.errors(result)
         self.assertIn(CARD_DATA, errors)
@@ -151,15 +152,14 @@ class DataWaitScriptTests(unittest.TestCase):
         self.assertEqual(result.stdout.count(f"Available: {self.base}/{DRAFT_POOLS}"), 1)
         self.assertEqual(result.stdout.count("Waiting (HTTP 404)"), 2)
 
-    def test_a_late_upload_passes_after_an_exhausted_deadline(self) -> None:
-        # The build between the gate's clock and this wait can spend the whole
-        # deadline, so an exhausted one is ordinary rather than a re-run quirk:
-        # an upload the first round misses must still reach the manifest.
+    def test_a_late_upload_passes_after_the_window_is_spent(self) -> None:
+        # An upload the first round misses must still reach the manifest, even
+        # when the window leaves no room for a third round.
         self.uploaded(DRAFT_POOLS)
         upload = threading.Timer(1.5, self.put, [CARD_DATA])
         upload.start()
         try:
-            result = self.wait(deadline_in=-60, poll=3)
+            result = self.wait(window=0, poll=3)
         finally:
             upload.join()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -216,14 +216,13 @@ class PublishWiringTests(unittest.TestCase):
         self.assertEqual(len(signs), 1, "publish must sign manifest data URLs in exactly one step")
         return steps, waits[0], signs[0]
 
-    def test_the_wait_step_carries_nothing_but_its_deadline(self) -> None:
+    def test_the_wait_step_carries_nothing_but_its_run(self) -> None:
         steps, wait_index, _ = self.wait_and_sign()
         wait = steps[wait_index]
         # A `continue-on-error`, `shell`, or `defaults.run.shell` key would let
         # publish proceed past an unavailable-data failure.
-        self.assertEqual(set(wait), {"name", "if", "env", "run"})
+        self.assertEqual(set(wait), {"name", "if", "run"})
         self.assertEqual(wait.get("if"), GATE_IF)
-        self.assertEqual(wait.get("env"), WAIT_ENV)
         self.assertNotIn("defaults", self.preview)
         self.assertNotIn("defaults", self.preview["jobs"]["publish"])
 
@@ -262,58 +261,37 @@ class PublishWiringTests(unittest.TestCase):
                 self.assertIsNotNone(signed, "each data URL must be a probed argument")
                 self.assertIn(signed.group(1), names)
 
-    def test_the_data_deadline_is_card_datas_own_timeout(self) -> None:
-        card_data = self.deploy["jobs"]["card-data"]
-        self.assertEqual(
-            (self.preview.get("env") or {}).get("CARD_DATA_TIMEOUT_SECONDS"),
-            card_data["timeout-minutes"] * 60,
-        )
-        self.bound_once("CARD_DATA_TIMEOUT_SECONDS", "env")
-        self.bound_once("DATA_POLL_SECONDS", "env")
+    def test_every_setting_the_script_requires_reaches_the_wait_step(self) -> None:
+        # The wait step binds no environment of its own, so a workflow-side
+        # rename would otherwise surface only when publish runs.
+        required = set(SCRIPT_REQUIRED.findall(SCRIPT.read_text(encoding="utf-8")))
+        self.assertTrue(required, "the script must require its settings explicitly")
+        for variable in sorted(required):
+            with self.subTest(variable=variable):
+                self.bound_once(variable, "env")
 
-    def test_the_gate_publishes_one_deadline_for_the_wait_to_read(self) -> None:
+    def test_the_gate_publishes_no_deadline_for_the_wait_to_inherit(self) -> None:
+        # Readiness comes from the caller's job graph and from the wait's own
+        # clock; a gate timestamp would be aged by everything in between.
         gate = self.preview["jobs"]["gate"]
-        steps = [step for step in gate.get("steps", []) if step.get("id") == "gate"]
-        self.assertEqual(len(steps), 1)
-        self.assertIn(DEADLINE_LINE, str(steps[0].get("run", "")))
-        writes = sum(
-            len(re.findall(r"\bdata_deadline_epoch=", run)) for run in _run_strings(self.preview)
-        )
-        self.assertEqual(writes, 1, "the deadline must be written once")
-        self.assertEqual(
-            gate.get("outputs", {}).get("data_deadline_epoch"),
-            "${{ steps.gate.outputs.data_deadline_epoch }}",
-        )
+        self.assertEqual(set(gate.get("outputs") or {}), {"already_published"})
+        for run in _run_strings(self.preview):
+            self.assertNotRegex(run, r"data_deadline_epoch")
 
-    def test_deploy_releases_card_data_no_later_than_the_gate(self) -> None:
-        # The deadline counts from the gate, so card-data must not start after
-        # it; a need on card-data alone would leave the wait expiring first.
+    def test_the_deploy_caller_needs_the_job_that_uploads_the_data(self) -> None:
         def needs(job: str) -> set[str]:
             value = self.deploy["jobs"][job].get("needs")
             return {value} if isinstance(value, str) else set(value or [])
 
-        self.assertTrue(
-            needs("card-data") <= needs("preview-server"),
-            f"card-data needs {needs('card-data')}, preview-server needs {needs('preview-server')}",
-        )
-
-    def test_the_deadline_can_be_spent_before_the_wait_runs(self) -> None:
-        # publish reads the deadline the gate wrote before build ran, and build
-        # may legitimately outlast the whole budget, so the wait must be correct
-        # with an exhausted deadline rather than assume a live one. Should this
-        # inequality ever stop holding, the confirming round can be revisited.
-        publish_needs = set(self.preview["jobs"]["publish"].get("needs") or [])
-        self.assertLessEqual({"gate", "build"}, publish_needs, f"publish needs {publish_needs}")
-        build_needs = set(self.preview["jobs"]["build"].get("needs") or [])
-        self.assertIn("gate", build_needs, f"build needs {build_needs}")
-
-        env = self.preview.get("env") or {}
-        budget = int(str(env.get("CARD_DATA_TIMEOUT_SECONDS"))) + int(
-            str(env.get("DATA_POLL_SECONDS"))
-        )
-        build_seconds = int(str(self.preview["jobs"]["build"].get("timeout-minutes"))) * 60
-        self.assertGreater(
-            build_seconds, budget, f"build caps at {build_seconds}s against a {budget}s budget"
+        uploaders = {
+            name
+            for name, job in self.deploy["jobs"].items()
+            for step in job.get("steps") or []
+            if all(put in str(step.get("run", "")) for put in MANIFEST_DATA_PUTS)
+        }
+        self.assertEqual(uploaders, {"card-data"}, f"manifest data is uploaded by {uploaders}")
+        self.assertIn(
+            "card-data", needs("preview-server"), f"preview-server needs {needs('preview-server')}"
         )
 
 

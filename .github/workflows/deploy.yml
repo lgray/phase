@@ -79,8 +79,7 @@ jobs:
   # ── Preview inputs ─────────────────────────────────────────────────────────
   # Generates the immutable card-data/draft-pool pair and derives the engine
   # fingerprint shared by the preview server and frontend. The publication work
-  # follows in `card-data`, so native preview builds can start immediately after
-  # these inputs are ready rather than waiting on ancillary data generation.
+  # follows in `card-data`, which both Pages and the preview server need.
   preview-inputs:
     name: Prepare preview inputs
     needs: [deploy-gate]
@@ -343,9 +342,9 @@ jobs:
 
   # ── Ancillary data + R2 publication ───────────────────────────────────────
   # The preview inputs above are already immutable and fingerprinted. This job
-  # publishes the remaining frontend data while the signed preview-server
-  # matrix builds. Pages still depends on this job, so no browser sees a shell
-  # pointing at data that has not reached R2.
+  # publishes the remaining frontend data, including the content-addressed pair
+  # the preview manifest names. Pages and the preview server both depend on it,
+  # so nothing points at data that has not reached R2.
   card-data:
     name: Publish card data & R2
     needs: [deploy-gate, preview-inputs]
@@ -617,16 +616,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # ── Signed preview server (parallel with data publication) ──────────────────
+  # ── Signed preview server (after data publication) ─────────────────────────
   # The shell uses ENGINE_FINGERPRINT to fetch this exact binary. Keep the
   # server publication in the same workflow graph so Pages can never publish a
   # fingerprint whose signed server artifact is missing from the manifest.
-  # Its publish job waits, up to card-data's own timeout, until the data files
-  # its manifest entry names are served, so the manifest never advertises data
-  # that is not.
+  # It needs `card-data`, which uploads the files its manifest entry names, so
+  # the manifest can never advertise data that is not on R2.
   preview-server:
     name: Publish Preview Server
-    needs: [deploy-gate, preview-inputs]
+    needs: [deploy-gate, preview-inputs, card-data]
     uses: ./.github/workflows/preview-server.yml
     with:
       fingerprint: ${{ needs.preview-inputs.outputs.engine_fingerprint }}

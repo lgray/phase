@@ -63,8 +63,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Deploy Staging's card-data timeout-minutes x 60: how late its uploads can land.
-  CARD_DATA_TIMEOUT_SECONDS: 1800
+  # The deploy caller needs card-data, so this window exists for
+  # workflow_dispatch, which has no such edge. Four poll intervals: enough that
+  # no single origin miss decides the verdict.
+  DATA_WAIT_SECONDS: 120
   DATA_POLL_SECONDS: 30
 
 jobs:
@@ -74,7 +76,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       already_published: ${{ steps.gate.outputs.already_published }}
-      data_deadline_epoch: ${{ steps.gate.outputs.data_deadline_epoch }}
     steps:
       - name: Check manifest membership
         id: gate
@@ -87,8 +88,6 @@ jobs:
           DRAFT_POOLS_HASH16: ${{ inputs.draft_pools_hash16 }}
         run: |
           set -euo pipefail
-
-          echo "data_deadline_epoch=$(( $(date +%s) + CARD_DATA_TIMEOUT_SECONDS + DATA_POLL_SECONDS ))" >> "$GITHUB_OUTPUT"
 
           for value in "$FINGERPRINT" "$CARD_DATA_HASH16" "$DRAFT_POOLS_HASH16"; do
             if ! [[ "$value" =~ ^[0-9a-f]{16}$ ]]; then
@@ -277,11 +276,10 @@ jobs:
 
       - name: Wait for the data files the manifest names
         if: steps.publication-gate.outputs.already_published != 'true'
-        # card-data uploads these in the calling workflow, and a reusable workflow
-        # cannot need a caller's job. The deadline is card-data's own, counted from
-        # gate; if it passes, nothing is signed or published.
-        env:
-          DATA_DEADLINE_EPOCH: ${{ needs.gate.outputs.data_deadline_epoch }}
+        # The deploy caller needs the job that uploads these, so there the check
+        # confirms what the graph already ordered. A manual dispatch has no such
+        # edge: the script times its own DATA_WAIT_SECONDS window from here, and
+        # if it expires nothing is signed or published.
         run: bash scripts/wait-for-preview-data.sh "$CARD_DATA_URL" "$DRAFT_POOLS_URL"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
