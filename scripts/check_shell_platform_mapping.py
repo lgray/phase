@@ -2,9 +2,9 @@
 """Every desktop platform the shell release publishes must have an engine mapping.
 
 `shell-release.yml`'s `build-shell` matrix is the set of desktop platforms a tag
-publishes. `native_engine.rs`'s `SERVER_TARGET_TRIPLES` is how each of those
-desktops resolves which engine binary to fetch. A platform published without a
-mapping entry ships a desktop that cannot acquire an engine at all.
+publishes. `native_engine.rs`'s `ServerPlatform` is how each of those desktops
+resolves which engine binary to fetch. A platform published without a variant
+ships a desktop that cannot acquire an engine at all.
 
 `native_engine.rs`'s own unit test pins the pairs it expects, which is what makes
 it discriminating against the mapping being deleted or broken. What it cannot see
@@ -13,11 +13,16 @@ is that tie, and it runs on every pull request rather than at tag time.
 
 Both populations are counted before the subset is checked, because every way of
 failing to read either file yields an empty set and an empty matrix is a subset
-of any mapping -- a gate that understood nothing would print a pass. A read that
-does not find the expected number of entries refuses instead.
+of any mapping -- a gate that understood nothing would print a pass. The mapping
+is counted twice, as arms read and as distinct platforms: a read that finds the
+wrong number of arms refuses, and so does one where two arms name the same
+platform, which is the expected population of four hiding a fifth arm whose
+triple nothing can reach.
 
-The mapping is read by regex over the constant's source, so reformatting that
-array breaks this gate loudly rather than silently. A matrix that grows from four
+The mapping is read by regex over `ServerPlatform::os_arch`'s match arms rather
+than its triples, because the `(os, arch)` pair is what the matrix is compared
+against and the triple is not -- so renaming that method or reshaping those arms
+breaks this gate loudly rather than silently. A matrix that grows from four
 platforms to five fails its count assertion for the same reason, and that is the
 event this gate exists to announce: the published platform set changed, so the
 mapping has to be checked against it.
@@ -47,12 +52,10 @@ MAPPING_SOURCE = "client/src-tauri/src/native_engine.rs"
 SHELL_RELEASE = ".github/workflows/shell-release.yml"
 BUILD_JOB = "build-shell"
 
-#: Anchored on the symbol name, not on a type spelling: `&[T]`, `[T; N]` and a
-#: type alias all name the same constant.
-MAPPING_BLOCK = re.compile(
-    r"const SERVER_TARGET_TRIPLES\s*:[^=]*=\s*&?\[(.*?)\n\];", re.S)
-MAPPING_ENTRY = re.compile(
-    r'\(\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)\s*,\s*"([^"]+)"\s*\)')
+#: Anchored on the method name and bounded by its own closing brace, so the
+#: sibling `target_triple` arms below it cannot be read as platform pairs.
+MAPPING_BLOCK = re.compile(r"fn os_arch\b[^{]*\{(.*?)\n    \}", re.S)
+MAPPING_ENTRY = re.compile(r'=>\s*\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)')
 
 #: The desktop platforms a tag publishes, and the mapping entries that serve
 #: them. Both are expectations, not observations: a change to either is the event
@@ -69,8 +72,8 @@ class Refusal(Exception):
     """
 
 
-def mapped_platforms() -> dict[tuple[str, str], str]:
-    """The `(os, arch) -> target triple` mapping. The desktop's authority."""
+def mapped_platforms() -> set[tuple[str, str]]:
+    """The `(os, arch)` pairs `ServerPlatform` resolves. The desktop's authority."""
     path = ROOT / MAPPING_SOURCE
     if not path.is_file():
         raise Refusal(f"{MAPPING_SOURCE} does not exist; the platform mapping "
@@ -79,20 +82,27 @@ def mapped_platforms() -> dict[tuple[str, str], str]:
 
     block = MAPPING_BLOCK.search(path.read_text(encoding="utf-8"))
     if block is None:
-        raise Refusal(f"{MAPPING_SOURCE} has no readable `const "
-                      "SERVER_TARGET_TRIPLES` declaration; it was renamed or "
-                      "reformatted, and the mapping cannot be read")
+        raise Refusal(f"{MAPPING_SOURCE} has no readable `ServerPlatform::"
+                      "os_arch` match; it was renamed or reformatted, and the "
+                      "mapping cannot be read")
 
     entries = MAPPING_ENTRY.findall(block.group(1))
-    mapping = {(os_name, arch): triple for os_name, arch, triple in entries}
-    if len(mapping) != MAPPED_PLATFORM_COUNT:
+    platforms = set(entries)
+    if len(platforms) != len(entries):
         raise Refusal(
-            f"{MAPPING_SOURCE}: SERVER_TARGET_TRIPLES reads as "
-            f"{len(mapping)} platform(s), expected {MAPPED_PLATFORM_COUNT}: "
-            f"{sorted(mapping)}. Either the mapping changed -- check it against "
+            f"{MAPPING_SOURCE}: ServerPlatform::os_arch reads {len(entries)} "
+            f"arm(s) naming only {len(platforms)} distinct platform(s): "
+            f"{sorted(entries)}. Two variants claim the same (os, arch), so one "
+            "of their triples is unreachable and the published set would read as "
+            "covered by a mapping that cannot serve it")
+    if len(platforms) != MAPPED_PLATFORM_COUNT:
+        raise Refusal(
+            f"{MAPPING_SOURCE}: ServerPlatform::os_arch reads as "
+            f"{len(platforms)} platform(s), expected {MAPPED_PLATFORM_COUNT}: "
+            f"{sorted(platforms)}. Either the mapping changed -- check it against "
             f"{SHELL_RELEASE}'s {BUILD_JOB} matrix and update the expected "
-            "count -- or its entries no longer match the shape this gate reads")
-    return mapping
+            "count -- or its arms no longer match the shape this gate reads")
+    return platforms
 
 
 def published_platforms() -> set[tuple[str, str]]:
@@ -132,34 +142,34 @@ def published_platforms() -> set[tuple[str, str]]:
             f"{SHELL_RELEASE}: {BUILD_JOB} publishes {len(platforms)} "
             f"platform(s), expected {PUBLISHED_PLATFORM_COUNT}: "
             f"{sorted(platforms)}. If the matrix gained or lost a platform, "
-            f"check {MAPPING_SOURCE}'s SERVER_TARGET_TRIPLES covers the new set "
-            "and update the expected count with it")
+            f"check {MAPPING_SOURCE}'s ServerPlatform covers the new set and "
+            "update the expected count with it")
     return platforms
 
 
 def main() -> int:
     try:
-        mapping = mapped_platforms()
+        mapped = mapped_platforms()
         published = published_platforms()
     except Refusal as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
 
-    unmapped = sorted(published - mapping.keys())
+    unmapped = sorted(published - mapped)
     if unmapped:
         print(f"{SHELL_RELEASE}'s {BUILD_JOB} publishes {len(unmapped)} "
               f"platform(s) that {MAPPING_SOURCE} cannot map to an engine "
               "target:", file=sys.stderr)
         for os_name, arch in unmapped:
             print(f"  {os_name}-{arch}", file=sys.stderr)
-        print("A desktop published for a platform with no SERVER_TARGET_TRIPLES "
-              "entry cannot download an engine. Add the entry, or stop "
+        print("A desktop published for a platform with no ServerPlatform "
+              "variant cannot download an engine. Add the variant, or stop "
               "publishing the platform.", file=sys.stderr)
         return 1
 
     print(f"shell platform mapping OK: {len(published)} published platform(s) "
           f"({', '.join(f'{o}-{a}' for o, a in sorted(published))}) all mapped "
-          f"by SERVER_TARGET_TRIPLES ({len(mapping)} entr(y/ies))")
+          f"by ServerPlatform ({len(mapped)} entr(y/ies))")
     return 0
 
 
