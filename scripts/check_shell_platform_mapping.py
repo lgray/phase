@@ -187,12 +187,19 @@ def _mapping_text() -> str:
 #: recognise them: it is the prefixed form of the very token it is guarding. The
 #: file this gate reads carries six `br#"` literals today.
 RAW_OPEN = re.compile(r'[bc]?r(#*)"')
-#: A char literal, which is the last opener in Rust's literal grammar and the one
-#: this scanner omitted longest. `'"'` and `b'"'` carry a quote that opens no
-#: literal, so reading them as code leaves literal state open from that quote --
-#: and unlike the raw-string omissions this one needs no look-behind to happen.
-#: A lifetime is not matched: `'static` has no closing quote after one character.
-CHAR_LIT = re.compile(r"b?'(?:\\.|[^'\\\n])'")
+#: A char literal, against the Reference's production rather than against the
+#: forms this scanner happened to remember: an ordinary character, an escape, a
+#: `\xNN` byte escape, or a `\u{...}` unicode escape. The two multi-character
+#: escapes are why the bare `\\.` spelling was wrong -- it consumes exactly two
+#: characters and then demands the closing quote, so `'\u{41}'` matched nothing,
+#: its trailing quote was left loose, and that quote paired with the next one two
+#: characters along and swallowed a real `"`.
+CHAR_LIT = re.compile(
+    r"b?'(?:\\u\{[0-9a-fA-F_]{1,6}\}|\\x[0-9a-fA-F]{2}|\\.|[^'\\\n])'")
+#: A lifetime or loop label: the only other token that opens with a quote and the
+#: reason an unrecognised quote cannot simply be assumed to be a literal. It has
+#: no closing quote, so it is consumed as itself.
+LIFETIME = re.compile(r"'[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _raw_close(text: str, opener: re.Match[str]) -> int:
@@ -240,6 +247,12 @@ def _strip_rust_comments(text: str) -> str:
     raw forms with any hash count, and the char literals -- and each is matched
     whole, at its own start, rather than recognised by the character before it,
     which is a test the prefixed forms fail by construction.
+
+    That enumeration has been wrong five times, so it is no longer trusted to be
+    complete: a quote matching no opener refuses rather than being read as code.
+    The bound is the point. A member omitted from here now costs a named refusal
+    a contributor can act on, instead of a file silently mis-stripped -- which is
+    the only failure this gate cannot detect in itself.
     """
     out: list[str] = []
     i, n, depth = 0, len(text), 0
@@ -272,6 +285,16 @@ def _strip_rust_comments(text: str) -> str:
         elif (lit := CHAR_LIT.match(text, i)) is not None:
             out.append(lit.group())
             i = lit.end()
+        elif (life := LIFETIME.match(text, i)) is not None:
+            out.append(life.group())
+            i = life.end()
+        elif text[i] == "'":
+            raise Refusal(
+                f"{MAPPING_SOURCE} carries a quote at offset {i} that opens no "
+                f"token this gate knows ({text[i:i + 12]!r}): it is neither a "
+                "char literal nor a lifetime. Reading it as code would leave "
+                "literal state open and apply every comment rule after it to "
+                "code, so this refuses instead of guessing")
         elif text[i] == '"':
             out.append('"')
             i += 1
@@ -472,23 +495,28 @@ def published_platforms() -> set[tuple[str, str]]:
 
     # The published set is anchored on one job id, so a second job publishing
     # desktops is a population this gate never walks. The axis refusal below is
-    # scoped to this job alone and does not reach siblings, so both of a matrix's
-    # shapes are tested here: a platform is an (os, arch) pair, and a sibling
-    # expresses it either as keys on an `include` entry or as two product axes.
-    # Reading one shape and not the other reads a subset of what publishes.
-    def _publishes_desktops(other: object) -> bool:
+    # scoped to this job alone and does not reach siblings, so a sibling's matrix
+    # is read here in every shape that can produce a platform: a job runs the
+    # product of its axes with each `include` entry merged in, so `os` on an axis
+    # and `arch` on an entry ship a platform neither spells by itself. Reading
+    # only one shape reads a subset of what publishes.
+    def _publishes_desktops(name: str, other: object) -> bool:
         strategy = other.get("strategy") if isinstance(other, dict) else None
-        matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
-        if not isinstance(matrix, dict):
+        if not isinstance(strategy, dict) or "matrix" not in strategy:
             return False
-        if {"os", "arch"} <= set(matrix):
-            return True
-        entries = matrix.get("include")
-        return isinstance(entries, list) and any(
-            isinstance(e, dict) and {"os", "arch"} <= e.keys() for e in entries)
+        matrix = strategy["matrix"]
+        if not isinstance(matrix, dict):
+            raise Refusal(f"{SHELL_RELEASE}: job '{name}' declares a "
+                          f"strategy.matrix this gate cannot read ({matrix!r}), "
+                          "so whether it publishes desktops is unknown. A job "
+                          "that might is not one to pass over")
+        axes = set(matrix) - {"include", "exclude"}
+        entries = [e for e in (matrix.get("include") or []) if isinstance(e, dict)]
+        return {"os", "arch"} <= axes or any(
+            {"os", "arch"} <= (axes | e.keys()) for e in entries)
 
     others = sorted(name for name, other in jobs.items()
-                    if name != BUILD_JOB and _publishes_desktops(other))
+                    if name != BUILD_JOB and _publishes_desktops(name, other))
     if others:
         raise Refusal(f"{SHELL_RELEASE}: {others} also declare matrix entries "
                       f"carrying both `os` and `arch`, so they publish desktops "

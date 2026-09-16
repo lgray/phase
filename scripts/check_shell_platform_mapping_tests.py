@@ -846,6 +846,17 @@ class ShellPlatformMappingTests(unittest.TestCase):
         for label, decl, code in (
             ("char literal holding a quote", "const Q: char = '\"';", 2),
             ("byte char holding a quote", "const Q: u8 = b'\"';", 2),
+            ("escaped quote char", "const Q: char = '\\'';", 2),
+            ("escaped quote byte char", "const Q: u8 = b'\\'';", 2),
+            # The multi-character escapes. A two-character escape rule consumes
+            # `\u` and then demands the closing quote, so these matched nothing
+            # and left a loose quote to pair with the next one along. The absent
+            # space after each comma is load-bearing: it is what leaves the two
+            # quotes two characters apart.
+            ("unicode escape beside a quote char",
+             "const Q: (char, char) = ('\\u{41}','\"');", 2),
+            ("hex escape beside a quote char",
+             "const Q: (char, char) = ('\\x41','\"');", 2),
             ("char literal without a quote", "const Q: u8 = b'!';", 2),
             ("a lifetime, not a literal", "struct S<'a>(&'a str);", 2),
         ):
@@ -866,6 +877,13 @@ class ShellPlatformMappingTests(unittest.TestCase):
         # not fire, or the refusal would be a tripwire on every workflow.
         for label, matrix, code in (
             ("product axes", "        os: [freebsd]\n        arch: [x86_64]", 2),
+            # A job runs the product of its axes with each `include` entry merged
+            # in, so this ships freebsd/x86_64 though neither half spells it.
+            ("an axis and an include entry",
+             "        os: [freebsd]\n        include:\n          - arch: x86_64", 2),
+            # The control that pins the conjunction rather than either half: a
+            # gate refusing on `os` alone would fire on every cross-platform job.
+            ("an os axis alone", "        os: [ubuntu-latest, macos-latest]", 0),
             ("unrelated axes", "        rust: [stable, beta]", 0),
         ):
             with self.subTest(sibling=label):
@@ -880,6 +898,50 @@ class ShellPlatformMappingTests(unittest.TestCase):
 """)
                 r = t.run()
                 self.assertEqual(r.returncode, code, r.stdout)
+                if code:
+                    # The reason, not just the refusal: this file raises in
+                    # twenty-odd places and every one of them exits 2.
+                    self.assertIn("build-shell-bsd", r.stderr)
+                    self.assertIn("publish desktops", r.stderr)
+
+    def test_a_quote_opening_no_known_token_refuses(self) -> None:
+        # The bound on the literal-opener enumeration, which five readers have
+        # now each found one more member of. An unrecognised quote refuses rather
+        # than being read as code, so the next omission costs a named refusal
+        # instead of a file stripped with literal state left open. The two
+        # controls are what the refusal must never fire on.
+        anchor = "impl ServerPlatform {"
+        body = mapping_source(comment=0)
+        self.assertEqual(body.count(anchor), 1)
+        for label, decl, code in (
+            ("a quote opening no token", "const Q: char = '\\u{41;", 2),
+            ("a char literal", "const Q: char = 'x';", 0),
+            ("a lifetime", "struct S<'a>(&'a str);", 0),
+        ):
+            with self.subTest(form=label):
+                t = self.tree()
+                t.write_mapping_text(body.replace(anchor, f"{decl}\n\n{anchor}"))
+                r = t.run()
+                self.assertEqual(r.returncode, code, r.stdout)
+                if code:
+                    self.assertIn("opens no token", r.stderr)
+
+    def test_a_sibling_matrix_this_gate_cannot_read_refuses(self) -> None:
+        # A matrix built by an expression is a job whose platforms are unknown at
+        # read time. Passing over it reads a subset of what publishes, and this
+        # gate soft-fails nowhere else: a file it cannot read refuses.
+        t = self.tree()
+        t.write_workflow_text(workflow_source() + """  build-shell-bsd:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - run: echo build
+""")
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("build-shell-bsd", r.stderr)
+        self.assertIn("cannot read", r.stderr)
 
     def test_an_escaped_quote_inside_a_literal_keeps_its_arm(self) -> None:
         # The bound on the ordinary-literal reader. An escaped quote does not
