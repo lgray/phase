@@ -133,18 +133,38 @@ class DataWaitScriptTests(unittest.TestCase):
         self.assertIn("Waiting (HTTP 404)", result.stdout)
         self.assertIn(f"Available: {self.base}/{CARD_DATA}", result.stdout)
 
-    def test_a_past_deadline_still_checks_once(self) -> None:
+    def test_a_past_deadline_probes_before_giving_up(self) -> None:
         # A re-run of publish alone reuses the original deadline, and a manual
-        # dispatch can start after it: the existence check still has to happen.
+        # dispatch can start after it: the existence check still has to happen,
+        # and a served object still answers on the first round.
         self.uploaded(CARD_DATA, DRAFT_POOLS)
-        result = self.wait(deadline_in=-60, poll=30)
+        result = self.wait(deadline_in=-60, poll=1)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+        # Absent, the verdict costs a confirming probe: one HEAD is not proof.
         self.uploaded(DRAFT_POOLS)
-        result = self.wait(deadline_in=-60, poll=30)
+        result = self.wait(deadline_in=-60, poll=1)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn(CARD_DATA, self.errors(result))
-        self.assertEqual(result.stdout.count("Waiting (HTTP 404)"), 1)
+        errors = self.errors(result)
+        self.assertIn(CARD_DATA, errors)
+        self.assertNotIn(DRAFT_POOLS, errors)
+        self.assertEqual(result.stdout.count(f"Available: {self.base}/{DRAFT_POOLS}"), 1)
+        self.assertEqual(result.stdout.count("Waiting (HTTP 404)"), 2)
+
+    def test_a_late_upload_passes_after_an_exhausted_deadline(self) -> None:
+        # The build between the gate's clock and this wait can spend the whole
+        # deadline, so an exhausted one is ordinary rather than a re-run quirk:
+        # an upload the first round misses must still reach the manifest.
+        self.uploaded(DRAFT_POOLS)
+        upload = threading.Timer(1.5, self.put, [CARD_DATA])
+        upload.start()
+        try:
+            result = self.wait(deadline_in=-60, poll=3)
+        finally:
+            upload.join()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Waiting (HTTP 404)", result.stdout)
+        self.assertIn(f"Available: {self.base}/{CARD_DATA}", result.stdout)
 
 
 def _env_scopes(workflow: dict) -> Iterator[tuple[str, object]]:
@@ -275,6 +295,25 @@ class PublishWiringTests(unittest.TestCase):
         self.assertTrue(
             needs("card-data") <= needs("preview-server"),
             f"card-data needs {needs('card-data')}, preview-server needs {needs('preview-server')}",
+        )
+
+    def test_the_deadline_can_be_spent_before_the_wait_runs(self) -> None:
+        # publish reads the deadline the gate wrote before build ran, and build
+        # may legitimately outlast the whole budget, so the wait must be correct
+        # with an exhausted deadline rather than assume a live one. Should this
+        # inequality ever stop holding, the confirming round can be revisited.
+        publish_needs = set(self.preview["jobs"]["publish"].get("needs") or [])
+        self.assertLessEqual({"gate", "build"}, publish_needs, f"publish needs {publish_needs}")
+        build_needs = set(self.preview["jobs"]["build"].get("needs") or [])
+        self.assertIn("gate", build_needs, f"build needs {build_needs}")
+
+        env = self.preview.get("env") or {}
+        budget = int(str(env.get("CARD_DATA_TIMEOUT_SECONDS"))) + int(
+            str(env.get("DATA_POLL_SECONDS"))
+        )
+        build_seconds = int(str(self.preview["jobs"]["build"].get("timeout-minutes"))) * 60
+        self.assertGreater(
+            build_seconds, budget, f"build caps at {build_seconds}s against a {budget}s budget"
         )
 
 
