@@ -144,13 +144,46 @@ def _mapping_text() -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _code(line: str) -> str:
+    """One line with its comment half removed, after `source_census::code`.
+
+    A comment naming a variant is not an arm. Both exclusions only ever remove
+    text: a leading `/* ... */` drops only through its own close, and a `//`
+    opens a comment only where the quotes before it on that line are balanced,
+    an odd count meaning it sits inside a string literal, so `"http://x"` keeps
+    its arm. The Rust authority spells that second guard as "no quote precedes
+    it", which cannot be borrowed verbatim here: every arm in these blocks
+    carries string literals, so that rule would strip no trailing comment on the
+    one shape this reads. Whatever survives either guard is still scanned, which
+    refuses loudly rather than dropping an arm in silence.
+    """
+    lo = 0
+    stripped = line.lstrip()
+    if stripped.startswith("/*"):
+        start = len(line) - len(stripped)
+        end = line.find("*/", start)
+        lo = len(line) if end < 0 else end + 2
+    slash = line.find("//", lo)
+    if slash >= 0 and line[lo:slash].count('"') % 2 == 0:
+        return line[lo:slash]
+    return line[lo:]
+
+
 def _mapping_block(text: str, pattern: re.Pattern[str], what: str) -> str:
+    """One block's code half, comments removed before anything reads it.
+
+    The single place all three blocks are read through, so a comment naming a
+    variant cannot be counted as a receiver in any of them. Scanning raw text
+    reported such a comment as a receiver written twice -- diagnosed as an arm
+    rustfmt broke across lines, sending the reader after a wrapping that is not
+    there.
+    """
     match = pattern.search(text)
     if match is None:
         raise Refusal(f"{MAPPING_SOURCE} has no readable `ServerPlatform::{what}`; "
                       "it was renamed or reformatted, and the mapping cannot be "
                       "read")
-    return match.group(1)
+    return "\n".join(_code(line) for line in match.group(1).splitlines())
 
 
 def _arms(block: str, pattern: re.Pattern[str],
@@ -221,16 +254,28 @@ def mapped_platforms() -> dict[str, tuple[str, str, str]]:
                    "claim the same (os, arch), so one of their triples is "
                    "unreachable and the published set would read as covered by a "
                    "mapping that cannot serve it")
-    # Over the derived name, not the bare triple: the suffix is part of what a
-    # desktop requests, so two triples differing only by the suffix one of their
-    # platforms appends resolve to a single URL. Comparing triples sees two
-    # distinct values there and lets both desktops download the same binary.
+    # Both axes, because neither collision implies the other. Two variants can
+    # share a bare triple while deriving different names -- exactly one of them
+    # `windows` appends `.exe` to only its own -- and two distinct triples can
+    # collapse onto one derived name when they differ only by that suffix. A
+    # check keyed on either alone reads the other's collision as clean.
+    # The derived name first, because it is the narrower report: when both axes
+    # collide, the single URL is what a desktop actually requests.
     _refuse_shared({name: slim_asset(os_name, triple)
                     for name, (os_name, _, triple) in mapped.items()},
+                   "target_triple's derived asset name",
+                   "derive one asset name, so both desktops request a single URL "
+                   "and the name the second should have asked for is never "
+                   "checked against the release at all")
+    _refuse_shared({name: triple
+                    for name, (_, _, triple) in mapped.items()},
                    "target_triple",
-                   "derive one asset name, so a desktop on one of those platforms "
-                   "downloads the other platform's binary and the name it should "
-                   "have asked for goes unchecked here")
+                   "resolve the same engine triple, so both desktops are served "
+                   "one binary built for one of their platforms and the other "
+                   "runs an engine compiled for a machine it is not. Differing "
+                   "derived names do not separate them: when exactly one of the "
+                   "variants is `windows`, its own `.exe` makes the two names "
+                   "differ and the asset-name check above sees no collision")
     return mapped
 
 

@@ -68,7 +68,8 @@ def mapping_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
                    method: str = "os_arch",
                    triple_method: str = "target_triple",
                    listed: int | None = None,
-                   wrap: int | None = None) -> str:
+                   wrap: int | None = None,
+                   comment: int | None = None) -> str:
     """A stand-in for the real module's `ServerPlatform`.
 
     Variants are indexed rather than named after their platform, so a duplicate
@@ -79,7 +80,9 @@ def mapping_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
     `listed` truncates `ALL` while leaving both matches exhaustive, which is the
     shape a variant added without extending `ALL` takes: it compiles, and
     `from_os_arch` reaches it for no `(os, arch)`. `wrap` renders one arm the way
-    rustfmt breaks one too long for a line, in both matches.
+    rustfmt breaks one too long for a line, in both matches. `comment` names one
+    arm's variant in a legal comment, both above the arm and trailing on it, in
+    both matches: the two shapes such a note takes, neither of which is an arm.
     """
     variants = [f"Platform{i}" for i in range(len(platforms))]
     in_all = variants if listed is None else variants[:listed]
@@ -96,7 +99,7 @@ def mapping_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
         f'            Self::{v} => "{triple}",'
         for i, (v, (_, _, triple)) in enumerate(zip(variants, platforms)))
     declared = "\n".join(f"    {v}," for v in variants)
-    return (f"""//! Fixture stand-in for the real native engine module.
+    body = (f"""//! Fixture stand-in for the real native engine module.
 
 #[derive(Clone, Copy, Debug)]
 enum ServerPlatform {{
@@ -121,6 +124,13 @@ impl ServerPlatform {{
     }}
 }}
 """)
+    if comment is not None:
+        arm = f"            Self::{variants[comment]} =>"
+        note = f"// Self::{variants[comment]} is the desktop this arm serves."
+        body = "\n".join(
+            f"            {note}\n{line} {note}" if line.startswith(arm) else line
+            for line in body.splitlines()) + "\n"
+    return body
 
 
 def workflow_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
@@ -385,6 +395,23 @@ class ShellPlatformMappingTests(unittest.TestCase):
         self.assertIn("no arm it could parse: ['Platform3']", r.stderr)
         self.assertNotIn("mapping OK", r.stdout)
 
+    def test_a_comment_naming_a_variant_is_not_an_arm(self) -> None:
+        # The companion of the case above, pointed the other way. A legal note
+        # naming the variant it documents is not a second arm, but scanning raw
+        # block text counted every mention as a receiver and refused with
+        # "written more than once" -- diagnosed as an arm rustfmt broke across
+        # lines, a wrapping the reader would hunt and never find.
+        body = mapping_source(comment=0)
+        self.assertEqual(
+            body.count("// Self::Platform0"), 4,
+            "the fixture must carry the note in both matches, above each arm "
+            "and trailing on it, or this test passes over an unannotated tree")
+        t = self.tree()
+        t.write_mapping(comment=0)
+        r = t.run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("shell platform mapping OK", r.stdout)
+
     def test_a_windows_asset_without_its_exe_suffix_fails(self) -> None:
         # A desktop derives its asset name from its triple plus the suffix its
         # own platform implies, so a Windows desktop asks for `...-msvc.exe`. A
@@ -476,6 +503,28 @@ class ShellPlatformMappingTests(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn(f"'phase-server-slim-{DEFAULT_TRIPLES[1]}.exe'", r.stderr)
         self.assertIn("'Platform1', 'Platform2'", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
+    def test_two_variants_sharing_one_bare_triple_refuse_when_one_is_windows(self) -> None:
+        # The middle of that class, and the member a derived-name key alone
+        # admits. The windows variant is given the linux-x86_64 variant's
+        # triple, so the two derive `...-musl.exe` and `...-musl` and no asset
+        # name collides at all. The release attaches both of those names, so the
+        # unpublished-asset check has nothing to report and only a key on the
+        # bare triple can object -- while both desktops resolve one engine build
+        # and one of them is not the platform it was compiled for.
+        t = self.tree()
+        shared = DEFAULT_TRIPLES[2]
+        t.write_mapping(with_triple(DEFAULT_PLATFORMS, 1, shared))
+        t.write_release(attached=DEFAULT_TRIPLES + (f"{shared}.exe",))
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn(f"'{shared}'", r.stderr)
+        self.assertIn("'Platform1', 'Platform2'", r.stderr)
+        # Which axis collided, not merely that something did: this is the bare
+        # triple's refusal, and the derived-name one would be the wrong report.
+        self.assertIn("resolve the same engine triple", r.stderr)
+        self.assertNotIn("does not publish", r.stderr)
         self.assertNotIn("mapping OK", r.stdout)
 
     def test_an_unreadable_release_workflow_refuses(self) -> None:
