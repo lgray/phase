@@ -167,10 +167,13 @@ jobs:
         run: python3 scripts/check_shell_platform_mapping_tests.py
 
       - name: Desktop platform mapping coverage
-        # Every platform shell-release.yml's build-shell matrix publishes must be
-        # a native_engine.rs ServerPlatform variant, or that desktop ships unable
-        # to fetch an engine. The Rust-side test pins the pairs it expects and
-        # cannot see the matrix grow past them; this reads both files.
+        # Two directions across three files. Every platform shell-release.yml's
+        # build-shell matrix publishes must be a native_engine.rs ServerPlatform
+        # variant, or that desktop ships unable to fetch an engine; and every
+        # triple that enum resolves must reach release.yml signed, with both the
+        # binary and its signature attached, or the desktop's download 404s on
+        # whichever half is missing. The Rust-side test pins the pairs it expects
+        # and cannot see either set grow past them.
         run: python3 scripts/check_shell_platform_mapping.py
 
       - name: Resolution-frame boundary guard
