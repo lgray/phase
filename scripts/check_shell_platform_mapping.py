@@ -187,6 +187,12 @@ def _mapping_text() -> str:
 #: recognise them: it is the prefixed form of the very token it is guarding. The
 #: file this gate reads carries six `br#"` literals today.
 RAW_OPEN = re.compile(r'[bc]?r(#*)"')
+#: A char literal, which is the last opener in Rust's literal grammar and the one
+#: this scanner omitted longest. `'"'` and `b'"'` carry a quote that opens no
+#: literal, so reading them as code leaves literal state open from that quote --
+#: and unlike the raw-string omissions this one needs no look-behind to happen.
+#: A lifetime is not matched: `'static` has no closing quote after one character.
+CHAR_LIT = re.compile(r"b?'(?:\\.|[^'\\\n])'")
 
 
 def _raw_close(text: str, opener: re.Match[str]) -> int:
@@ -226,12 +232,14 @@ def _strip_rust_comments(text: str) -> str:
     not literal-aware either: an escaped quote ends a captured value early, so a
     corrupted triple reports on the published-asset axis instead of refusing.
 
-    Every raw-string form, because this reads whole source files: read as an
-    ordinary literal, one carrying an odd number of interior quotes leaves
-    literal state open and every comment rule after that point is applied to
-    code. The opener is matched whole -- byte and C-string prefixes included --
-    rather than recognised by the character before its `r`, which is a test the
-    prefixed forms fail by construction.
+    Every opener in Rust's literal grammar, because this reads whole source
+    files and an enumeration of them is falsified by the member it omits. Each
+    omission has the same consequence: a quote that opens no literal is read as
+    one, literal state is left open, and every comment rule after that point is
+    applied to code. The members are the plain, byte and C-string quotes, the
+    raw forms with any hash count, and the char literals -- and each is matched
+    whole, at its own start, rather than recognised by the character before it,
+    which is a test the prefixed forms fail by construction.
     """
     out: list[str] = []
     i, n, depth = 0, len(text), 0
@@ -261,6 +269,9 @@ def _strip_rust_comments(text: str) -> str:
             close = _raw_close(text, opener)
             out.append(text[i:close])
             i = close
+        elif (lit := CHAR_LIT.match(text, i)) is not None:
+            out.append(lit.group())
+            i = lit.end()
         elif text[i] == '"':
             out.append('"')
             i += 1
@@ -460,15 +471,19 @@ def published_platforms() -> set[tuple[str, str]]:
                       "gate no longer knows which platforms ship")
 
     # The published set is anchored on one job id, so a second job publishing
-    # desktops is a population this gate never walks -- the same hole the matrix
-    # axes below close one level down. Any other job whose matrix entries carry
-    # both `os` and `arch` is publishing desktops by this gate's own definition
-    # of a platform, so it refuses rather than reading one job and reporting on
-    # all of them.
+    # desktops is a population this gate never walks. The axis refusal below is
+    # scoped to this job alone and does not reach siblings, so both of a matrix's
+    # shapes are tested here: a platform is an (os, arch) pair, and a sibling
+    # expresses it either as keys on an `include` entry or as two product axes.
+    # Reading one shape and not the other reads a subset of what publishes.
     def _publishes_desktops(other: object) -> bool:
         strategy = other.get("strategy") if isinstance(other, dict) else None
         matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
-        entries = matrix.get("include") if isinstance(matrix, dict) else None
+        if not isinstance(matrix, dict):
+            return False
+        if {"os", "arch"} <= set(matrix):
+            return True
+        entries = matrix.get("include")
         return isinstance(entries, list) and any(
             isinstance(e, dict) and {"os", "arch"} <= e.keys() for e in entries)
 

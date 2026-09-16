@@ -832,6 +832,97 @@ class ShellPlatformMappingTests(unittest.TestCase):
         self.assertIn("publish desktops", r.stderr)
         self.assertNotIn("mapping OK", r.stdout)
 
+    def test_a_char_literal_holding_a_quote_does_not_hide_a_defect(self) -> None:
+        # The last opener in Rust's literal grammar, and the only omission that
+        # needs no look-behind to happen. `'"'` carries a quote that opens no
+        # literal; read as code it leaves literal state open, the comment below
+        # it survives removal, and the commented-out arm this tree is built
+        # around stops being reported. The benign forms are controls: a char
+        # literal with no quote, and a lifetime, must change nothing.
+        defect = annotate(mapping_source(), OS_ARCH_ARM,
+                          "            // " + OS_ARCH_ARM.lstrip())
+        anchor = "impl ServerPlatform {"
+        self.assertEqual(defect.count(anchor), 1)
+        for label, decl, code in (
+            ("char literal holding a quote", "const Q: char = '\"';", 2),
+            ("byte char holding a quote", "const Q: u8 = b'\"';", 2),
+            ("char literal without a quote", "const Q: u8 = b'!';", 2),
+            ("a lifetime, not a literal", "struct S<'a>(&'a str);", 2),
+        ):
+            with self.subTest(form=label):
+                t = self.tree()
+                t.write_mapping_text(defect.replace(anchor, f"{decl}\n\n{anchor}"))
+                r = t.run()
+                self.assertEqual(r.returncode, code, r.stdout)
+                self.assertIn("Platform0", r.stderr)
+                self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_second_job_publishing_desktops_by_product_axes_refuses(self) -> None:
+        # A platform is an (os, arch) pair whichever shape a matrix spells it in,
+        # and the axis refusal elsewhere is scoped to the job this gate reads, so
+        # it never reaches a sibling. Reading only `include` entries on siblings
+        # reads a subset of what publishes. The unrelated-axes case is the
+        # control: a sibling matrixed on something that is not a platform must
+        # not fire, or the refusal would be a tripwire on every workflow.
+        for label, matrix, code in (
+            ("product axes", "        os: [freebsd]\n        arch: [x86_64]", 2),
+            ("unrelated axes", "        rust: [stable, beta]", 0),
+        ):
+            with self.subTest(sibling=label):
+                t = self.tree()
+                t.write_workflow_text(workflow_source() + f"""  build-shell-bsd:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+{matrix}
+    steps:
+      - run: echo build
+""")
+                r = t.run()
+                self.assertEqual(r.returncode, code, r.stdout)
+
+    def test_an_escaped_quote_inside_a_literal_keeps_its_arm(self) -> None:
+        # The bound on the ordinary-literal reader. An escaped quote does not
+        # close the literal, so a reader that stopped there would leave state
+        # open across the rest of the block and swallow the comments after it.
+        anchor = "impl ServerPlatform {"
+        body = mapping_source(comment=0)
+        self.assertEqual(body.count(anchor), 1)
+        t = self.tree()
+        t.write_mapping_text(body.replace(
+            anchor, 'const NOTE: &str = "a \\" quote";\n\n' + anchor))
+        r = t.run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("shell platform mapping OK", r.stdout)
+
+    def test_a_receiver_written_twice_in_one_block_refuses(self) -> None:
+        # The other half of the receiver-against-arm comparison. Two arms naming
+        # one variant is a variant whose second arm is unreachable, and the
+        # dictionary keyed on receivers cannot see it -- the second simply
+        # replaces the first. Counting the receivers is what notices.
+        t = self.tree()
+        t.write_mapping_text(annotate(mapping_source(), OS_ARCH_ARM,
+                                      "@\n" + OS_ARCH_ARM))
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("written more than once: ['Platform0']", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_renamed_publishing_job_refuses(self) -> None:
+        # The vacuous-green direction on the workflow side, and the leg the
+        # mapping and release sides both already have: a job this gate cannot
+        # find is an empty published set, and the empty set is a subset of any
+        # mapping, so a tolerant reader announces a clean pass over nothing.
+        # The reason is asserted, not just the refusal: a renamed job is also a
+        # sibling job publishing desktops, and that refusal names `build-shell`
+        # too, so a case reading only the job name passes whichever check fired.
+        t = self.tree()
+        t.write_workflow(job="build-desktop")
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("is absent", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
     def test_the_harness_reads_the_fixture_not_the_real_tree(self) -> None:
         # If SHELL_PLATFORM_MAPPING_ROOT were ignored, every case above would be
         # measuring this checkout and the passing ones would be vacuous.
