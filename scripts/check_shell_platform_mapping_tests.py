@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Tests for check_shell_platform_mapping.py.
 
-The gate compares populations it reads out of three files, and every way of
+The gate compares populations it reads out of four files, and every way of
 failing to read one yields an empty set -- which is a subset of any mapping. So
 what matters is not that the gate passes a correct tree but that it refuses an
 unreadable one instead of printing a pass over nothing. Each case builds a
-throwaway tree holding all three files and points the real script at it through
+throwaway tree holding all four files and points the real script at it through
 SHELL_PLATFORM_MAPPING_ROOT.
 
-Every fixture materialises all three files even when the case under test concerns
+Every fixture materialises all four files even when the case under test concerns
 only one of them. A partial tree would make the gate refuse for a reason the test
 did not intend, and a refusal that arrives for the wrong reason proves nothing
 about the property being tested.
@@ -28,9 +28,13 @@ SCRIPT = Path(__file__).resolve().parent / "check_shell_platform_mapping.py"
 MAPPING_REL = "client/src-tauri/src/native_engine.rs"
 WORKFLOW_REL = ".github/workflows/shell-release.yml"
 RELEASE_REL = ".github/workflows/release.yml"
+PREVIEW_REL = ".github/workflows/preview-server.yml"
 REAL_MAPPING = Path(__file__).resolve().parent.parent / MAPPING_REL
 REAL_WORKFLOW = Path(__file__).resolve().parent.parent / WORKFLOW_REL
 REAL_RELEASE = Path(__file__).resolve().parent.parent / RELEASE_REL
+REAL_PREVIEW = Path(__file__).resolve().parent.parent / PREVIEW_REL
+#: The publish job's steps carry no ids, so the gate finds this one by name.
+PREVIEW_SIGN_STEP = "Sign binaries, publish manifest, and garbage-collect old pairs"
 
 #: The four published platforms and their triples, as all three files carry them.
 DEFAULT_PLATFORMS = (
@@ -232,6 +236,107 @@ jobs:
 """
 
 
+#: Built by substitution rather than as an f-string: the jq object this mirrors is
+#: dense with braces, and doubling every one of them to satisfy a format string is
+#: a defect waiting to be written into the fixture the tests trust.
+PREVIEW_TEMPLATE = """name: Preview server
+on:
+  workflow_dispatch:
+jobs:
+  __BUILD_JOB__:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+__INCLUDE__
+    steps:
+      - name: Upload preview server binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-server-${{ matrix.triple }}
+          path: phase-server
+  __PUBLISH_JOB__:
+    runs-on: ubuntu-latest
+    steps:
+__DOWNLOADS__
+      - name: __SIGN_STEP__
+        run: |
+          binaries=(
+__ARRAY__
+          )
+          jq -n '{
+                 fingerprints: (
+                   {
+                     ($fingerprint): {
+                       binaries: {
+__ENTRIES__
+                       },
+                       data: [
+                         {
+                           name: "card-data.json"
+                         }
+                       ]
+                     }
+                   }
+                 )
+               }'
+"""
+
+
+def preview_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
+                   build_job: str = "build",
+                   publish_job: str = "publish",
+                   sign_step: str = PREVIEW_SIGN_STEP,
+                   drop_build: str = "",
+                   drop_download: str = "",
+                   drop_sign: str = "",
+                   drop_key: str = "",
+                   drop_sig: str = "") -> str:
+    """The preview channel's four spellings of the platforms it provisions.
+
+    Each `drop_*` removes one triple from one spelling, which is how a platform
+    built but never signed -- or signed but never named in the manifest -- is
+    expressed. The upload step is templated off `matrix.triple` exactly as the
+    real workflow spells it, so a reader that counted artifact names literally
+    would contribute a triple no mapping holds.
+    """
+    triples = [triple for _, _, triple in platforms]
+    url = ('("https://data.phase-rs.dev/desktop/preview-server/" '
+           '+ $fingerprint + "/phase-server-{name}{suffix}")')
+    include = "\n".join(
+        f"          - os: {os_name}\n"
+        f"            triple: {triple}\n"
+        f"            runner: ubuntu-latest"
+        for os_name, _, triple in platforms if triple != drop_build)
+    downloads = "\n".join(
+        f"      - name: Download {triple}\n"
+        f"        uses: actions/download-artifact@v4\n"
+        f"        with:\n"
+        f"          name: preview-server-{triple}\n"
+        f"          path: artifacts/{triple}"
+        for triple in triples if triple != drop_download)
+    array = "\n".join(
+        f"            artifacts/{triple}/phase-server-{triple}"
+        f"{'.exe' if 'windows' in triple else ''}"
+        for triple in triples if triple != drop_sign)
+    entries = ",\n".join(
+        f'                         "{triple}": {{\n'
+        f"                           url: {url.format(name=triple, suffix='')}"
+        + ("" if triple == drop_sig else
+           ",\n                           sig_url: "
+           + url.format(name=triple, suffix=".minisig"))
+        + "\n                         }"
+        for triple in triples if triple != drop_key)
+    return (PREVIEW_TEMPLATE
+            .replace("__BUILD_JOB__", build_job)
+            .replace("__PUBLISH_JOB__", publish_job)
+            .replace("__SIGN_STEP__", sign_step)
+            .replace("__INCLUDE__", include)
+            .replace("__DOWNLOADS__", downloads)
+            .replace("__ARRAY__", array)
+            .replace("__ENTRIES__", entries))
+
+
 class MappingTree:
     """A throwaway tree holding every file the gate reads."""
 
@@ -240,6 +345,7 @@ class MappingTree:
         self.write_mapping()
         self.write_workflow()
         self.write_release()
+        self.write_preview()
 
     def _write(self, rel: str, body: str) -> None:
         path = self.root / rel
@@ -260,6 +366,14 @@ class MappingTree:
                       **kwargs: str) -> None:
         self._write(RELEASE_REL, release_source(triples, attached=attached,
                                                 omit=omit, **kwargs))
+
+    def write_preview(self, platforms: Platforms = DEFAULT_PLATFORMS,
+                      **kwargs: str) -> None:
+        self._write(PREVIEW_REL, preview_source(platforms, **kwargs))
+
+    def write_preview_text(self, body: str) -> None:
+        """A preview body the case built itself."""
+        self._write(PREVIEW_REL, body)
 
     def write_workflow_text(self, body: str) -> None:
         """A workflow body the case built itself, for matrix shapes no keyword spells."""
@@ -677,10 +791,10 @@ class ShellPlatformMappingTests(unittest.TestCase):
              "slim server assets cannot be read"),
             ("renamed signing step",
              lambda t: t.write_release(sign_step="sign-artifacts"),
-             "no step id 'sign-release-artifacts'"),
+             "has no step 'sign-release-artifacts'"),
             ("renamed asset step",
              lambda t: t.write_release(asset_step="assets"),
-             "no step id 'release-assets'"),
+             "has no step 'release-assets'"),
             ("reshaped loop", lambda t: t.write_release(loop_var="target"),
              "`for triple in ...` loop"),
         ):
@@ -691,6 +805,122 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertEqual(r.returncode, 2, r.stdout)
                 self.assertIn(reason, r.stderr)
                 self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_complete_preview_tree_reports_its_provisioning(self) -> None:
+        # The positive control for the line every preview case below asserts the
+        # absence of. Without it a gate that never printed that line at all would
+        # satisfy all of them, and the whole preview block would be vacuous.
+        t = self.tree()
+        r = t.run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("preview provisioning OK", r.stdout)
+        for _, _, triple in DEFAULT_PLATFORMS:
+            self.assertIn(triple, r.stdout)
+
+    def test_a_triple_dropped_from_any_preview_site_strands_a_desktop(self) -> None:
+        # preview-server.yml spells its platform set four times and the desktop
+        # reads only the manifest, so a triple built and signed but never written
+        # there resolves nothing at runtime while every release check stays green.
+        # Each spelling is dropped in turn: an enumeration is falsified by the
+        # member it omits, and one site standing in for the others would be that
+        # omission. `drop_sig` keeps the key and removes half its URL pair, which
+        # is the platform resolvable to an artifact that cannot be verified.
+        stranded = DEFAULT_TRIPLES[3]
+        for knob, names in (
+            ("drop_build", "builds"),
+            ("drop_download", "downloads"),
+            ("drop_sign", "signs"),
+            ("drop_key", "names in its manifest"),
+            ("drop_sig", "gives a signed URL pair in its manifest"),
+        ):
+            with self.subTest(site=knob):
+                t = self.tree()
+                t.write_preview(**{knob: stranded})
+                r = t.run()
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn(stranded, r.stderr)
+                self.assertIn(names, r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_a_sig_url_that_is_not_a_signature_strands_a_desktop(self) -> None:
+        # A key can carry both URLs and still leave the desktop unable to verify
+        # what it fetched. Mangled for one triple only, with the binary name left
+        # in the URL, so the signature suffix is the one thing deciding it; the
+        # dropped-sig_url case above removes the URL instead and so cannot
+        # isolate this conjunct.
+        stranded = DEFAULT_TRIPLES[3]
+        t = self.tree()
+        t.write_preview_text(preview_source().replace(
+            f"phase-server-{stranded}.minisig", f"phase-server-{stranded}.sig"))
+        r = t.run()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(stranded, r.stderr)
+        self.assertIn("gives a signed URL pair in its manifest", r.stderr)
+        self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_a_manifest_data_entry_shaped_like_a_platform_is_not_one(self) -> None:
+        # The step's jq also writes a `data:` array beside `binaries`, and a
+        # pattern taking any quoted key followed by a brace would harvest those as
+        # platforms. The triple missing from `binaries` would then come back
+        # covered by a name that provisions no binary at all -- the admitted
+        # member this population is narrowed at the read to keep out.
+        missing = DEFAULT_TRIPLES[3]
+        body = preview_source(drop_key=missing).replace(
+            'name: "card-data.json"',
+            f'"{missing}": {{\n                           '
+            'name: "card-data.json"')
+        self.assertIn(f'"{missing}"', body)
+        t = self.tree()
+        t.write_preview_text(body)
+        r = t.run()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(missing, r.stderr)
+        self.assertIn("names in its manifest", r.stderr)
+
+    def test_an_unreadable_preview_workflow_refuses(self) -> None:
+        # The vacuous-green direction on the preview side: a set this gate cannot
+        # read comes back empty, and an empty provisioned set makes every mapped
+        # triple stranded or none of them, depending which way a tolerant reader
+        # took the difference. Neither answer was measured, so each shape refuses.
+        for label, prepare, reason in (
+            ("absent file", lambda t: t.delete(PREVIEW_REL),
+             "preview server binaries built per platform cannot be read"),
+            ("renamed build job",
+             lambda t: t.write_preview(build_job="compile"),
+             "job 'build' is absent"),
+            ("renamed publish job",
+             lambda t: t.write_preview(publish_job="ship"),
+             "job 'publish' is absent"),
+            ("renamed signing step",
+             lambda t: t.write_preview(sign_step="Sign and publish"),
+             f"has no step '{PREVIEW_SIGN_STEP}'"),
+            ("matrix product axis",
+             lambda t: t.write_preview_text(preview_source().replace(
+                 "      matrix:\n        include:",
+                 "      matrix:\n        arch: [x86_64]\n        include:")),
+             "declares matrix axes"),
+            ("reshaped binaries array",
+             lambda t: t.write_preview_text(
+                 preview_source().replace("binaries=(", "bins=(")),
+             "`binaries=( ... )` array"),
+            ("reshaped manifest object",
+             lambda t: t.write_preview_text(
+                 preview_source().replace("binaries: {", "bins: {")),
+             "`binaries: {` object"),
+            ("two steps answering to one name",
+             lambda t: t.write_preview_text(
+                 preview_source()
+                 + f"      - name: {PREVIEW_SIGN_STEP}\n"
+                 + "        run: echo not the signing step\n"),
+             "has two steps answering to"),
+        ):
+            with self.subTest(preview=label):
+                t = self.tree()
+                prepare(t)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn(reason, r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_raw_string_before_the_impl_does_not_desync_comment_removal(self) -> None:
         # Comment removal reads whole source files, so it passes through every
@@ -1015,7 +1245,7 @@ class ShellPlatformMappingTests(unittest.TestCase):
     def test_the_harness_reads_the_fixture_not_the_real_tree(self) -> None:
         # If SHELL_PLATFORM_MAPPING_ROOT were ignored, every case above would be
         # measuring this checkout and the passing ones would be vacuous.
-        for real in (REAL_MAPPING, REAL_WORKFLOW, REAL_RELEASE):
+        for real in (REAL_MAPPING, REAL_WORKFLOW, REAL_RELEASE, REAL_PREVIEW):
             body = real.read_text(encoding="utf-8")
             for sentinel in (SENTINEL_ARCH, SENTINEL_TRIPLE):
                 self.assertNotIn(sentinel, body,

@@ -99,6 +99,24 @@ RELEASE_JOB = "release"
 SIGN_STEP = "sign-release-artifacts"
 ASSET_STEP = "release-assets"
 
+#: The preview channel provisions its own servers, and `native_engine.rs` reaches
+#: them by a different route than a release: `ResolvedArtifact` for a Preview key
+#: looks the host's `target_triple()` up in the signed manifest's `binaries` map,
+#: so a triple absent from that map is a desktop that resolves nothing. Nothing
+#: above reads this workflow, and the two populations it declares are spelled four
+#: separate times inside it -- the build matrix, the four artifact downloads, the
+#: shell array that signs and uploads, and the jq object that writes the manifest.
+#: Any one of them can be edited alone, which is exactly the drift this gate
+#: exists to refuse; the release half is held to the same standard two files over.
+#: The publish job's steps carry no `id`, so its signing step is named rather than
+#: identified. Adding an `id` would be an edit to a publishing workflow made to
+#: suit its own observer, and `.github/workflows/**` is a hard stop besides.
+PREVIEW_WORKFLOW = ".github/workflows/preview-server.yml"
+PREVIEW_BUILD_JOB = "build"
+PREVIEW_PUBLISH_JOB = "publish"
+PREVIEW_SIGN_STEP = "Sign binaries, publish manifest, and garbage-collect old pairs"
+PREVIEW_ARTIFACT_PREFIX = "preview-server-"
+
 #: `ALL` is the variant list `from_os_arch` iterates, and the two methods are the
 #: arms it resolves them through. Each is anchored on its own name and bounded by
 #: the closing brace at its indentation, so none of the three can be read as
@@ -153,6 +171,32 @@ ASSET_LINE = re.compile(
 #: commented path names the very asset whose absence was the finding, so the
 #: population is narrowed at the read rather than compared afterwards.
 ASSET_HEREDOC = re.compile(r"cat <<'EOF'\n(.*?)\n\s*EOF\b", re.S)
+
+#: The preview publish step's two spellings, each narrowed to its own block before
+#: any line is read, for the reason the heredoc above is: both sets are compared
+#: by subset, so a name picked up from surrounding prose reads as provisioned and
+#: silences the very desktop whose absence was the finding. The manifest keys are
+#: taken from inside `binaries: {` alone -- the same step's jq also writes a
+#: `data:` array of `{name, sha256, url}` objects, and a pattern matching any
+#: quoted key followed by a brace would read those as platforms too.
+PREVIEW_BINARIES_ARRAY = re.compile(r"binaries=\(\n(.*?)\n\s*\)", re.S)
+PREVIEW_ARRAY_LINE = re.compile(
+    r"^\s*artifacts/[\w.-]+/phase-server-([\w.-]+?)(\.exe)?$", re.M)
+#: Anchored on the `data:` key that follows it, because every entry *inside* the
+#: object also ends in `},` -- stopping at the first one would read a single
+#: platform's interior as the whole map and stranding the other three would look
+#: like a finding rather than like a pattern that stopped early.
+PREVIEW_MANIFEST_BLOCK = re.compile(
+    r"binaries:\s*\{\n(.*?)\n\s*\},\s*\n\s*data:", re.S)
+PREVIEW_MANIFEST_KEY = re.compile(r'^\s*"([\w.-]+)":\s*\{\s*$', re.M)
+#: A signature beside every binary: the desktop derives `sig_url` as well as
+#: `url`, so a key carrying only one of them resolves an artifact it cannot
+#: verify. Matched per key rather than counted, so the report names which.
+#: The whole right-hand side, not its first literal: each URL is a concatenation
+#: (`"...preview-server/" + $fingerprint + "/phase-server-<triple>"`), so the
+#: binary's name is in the second string. A pattern stopping at the first would
+#: never see the name it exists to hold the key against.
+PREVIEW_MANIFEST_URL = re.compile(r"^\s*(url|sig_url):\s*(.+)$", re.M)
 
 #: The desktop platforms a tag publishes and the mapping entries that serve them.
 #: Both are expectations, not observations: a change to either is the event this
@@ -570,34 +614,62 @@ def published_platforms() -> set[tuple[str, str]]:
     return platforms
 
 
-def _release_step_bodies() -> dict[str, str]:
-    """The shell body of each identified step in the release-publishing job."""
-    path = ROOT / RELEASE_WORKFLOW
+def _workflow_job(workflow: str, job_id: str, reads: str) -> dict[str, object]:
+    """One job of one workflow: the only place a workflow file is opened."""
+    path = ROOT / workflow
     if not path.is_file():
-        raise Refusal(f"{RELEASE_WORKFLOW} does not exist; the set of published "
-                      "slim server assets cannot be read")
+        raise Refusal(f"{workflow} does not exist; {reads} cannot be read")
     try:
-        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise Refusal(f"{RELEASE_WORKFLOW} is not parseable YAML: {exc}") from exc
+        raise Refusal(f"{workflow} is not parseable YAML: {exc}") from exc
 
-    job = ((workflow or {}).get("jobs") or {}).get(RELEASE_JOB)
-    steps = job.get("steps") if isinstance(job, dict) else None
+    job = ((parsed or {}).get("jobs") or {}).get(job_id)
+    if not isinstance(job, dict):
+        raise Refusal(f"{workflow}: job '{job_id}' is absent or unreadable; the "
+                      f"job that {reads} depends on was renamed or reshaped, and "
+                      "a job this gate cannot find declares nothing rather than "
+                      "declaring an empty set")
+    return job
+
+
+def _step_bodies(workflow: str, job_id: str, reads: str) -> dict[str, str]:
+    """Each step's shell body, reachable by `id` and by `name`.
+
+    Both, because the two workflows this gate reads identify their steps
+    differently: the release job gives its steps ids, while the preview publish
+    job names them and gives ids to neither. A duplicate key refuses rather than
+    resolving to one of the two bodies -- picking either would read one step's
+    shell as another's, and the set that came back would be a real set read off
+    the wrong step, which no downstream subset check can tell from the right one.
+    """
+    steps = _workflow_job(workflow, job_id, reads).get("steps")
     if not isinstance(steps, list):
-        raise Refusal(f"{RELEASE_WORKFLOW}: job '{RELEASE_JOB}' declares no "
-                      "steps list; the job that publishes the slim server "
-                      "binaries was renamed or reshaped, and this gate no "
-                      "longer knows which triples ship")
-    return {step["id"]: str(step.get("run") or "")
-            for step in steps
-            if isinstance(step, dict) and isinstance(step.get("id"), str)}
+        raise Refusal(f"{workflow}: job '{job_id}' declares no steps list; the "
+                      f"job that {reads} depends on was reshaped, and this gate "
+                      "no longer knows which triples ship")
+    bodies: dict[str, str] = {}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        run = str(step.get("run") or "")
+        for key in (step.get("id"), step.get("name")):
+            if not isinstance(key, str):
+                continue
+            if key in bodies and bodies[key] != run:
+                raise Refusal(f"{workflow}: job '{job_id}' has two steps "
+                              f"answering to '{key}', so {reads} would be read "
+                              "off whichever this gate happened to keep")
+            bodies[key] = run
+    return bodies
 
 
-def _step_body(bodies: dict[str, str], step_id: str, reads: str) -> str:
-    body = bodies.get(step_id)
+def _step_body(bodies: dict[str, str], step: str, workflow: str, job_id: str,
+               reads: str) -> str:
+    body = bodies.get(step)
     if body is None:
-        raise Refusal(f"{RELEASE_WORKFLOW}: {RELEASE_JOB} has no step id "
-                      f"'{step_id}', so {reads} cannot be read")
+        raise Refusal(f"{workflow}: {job_id} has no step '{step}', so {reads} "
+                      "cannot be read")
     return body
 
 
@@ -609,17 +681,20 @@ def published_assets() -> set[str]:
     identity carrying a flag. Whichever of them a release fails to attach is then
     the name that comes back missing, instead of a pair that drops out of a count.
     """
-    bodies = _release_step_bodies()
+    bodies = _step_bodies(RELEASE_WORKFLOW, RELEASE_JOB,
+                          "the set of published slim server assets")
 
     loop = SIGN_LOOP.search(
-        _step_body(bodies, SIGN_STEP, "the triples the release signs"))
+        _step_body(bodies, SIGN_STEP, RELEASE_WORKFLOW, RELEASE_JOB,
+                   "the triples the release signs"))
     if loop is None:
         raise Refusal(f"{RELEASE_WORKFLOW}: {SIGN_STEP} has no readable `for "
                       "triple in ...` loop; the signed set was reshaped, and a "
                       "set this gate cannot read is not an empty one")
     signed = set(SIGN_TRIPLE.findall(loop.group(1)))
     listing = ASSET_HEREDOC.search(
-        _step_body(bodies, ASSET_STEP, "the assets the release attaches"))
+        _step_body(bodies, ASSET_STEP, RELEASE_WORKFLOW, RELEASE_JOB,
+                   "the assets the release attaches"))
     if listing is None:
         raise Refusal(f"{RELEASE_WORKFLOW}: {ASSET_STEP} has no readable `cat "
                       "<<'EOF'` asset list; the attached set was reshaped, and a "
@@ -645,11 +720,110 @@ def published_assets() -> set[str]:
     return attached
 
 
+def preview_platforms() -> dict[str, set[str]]:
+    """Every triple preview provisioning declares, one set per place it says so.
+
+    `native_engine.rs` resolves a Preview key by looking the running host's
+    `target_triple()` up in the signed manifest's `binaries` map, so each of these
+    is a place a platform can be dropped while the release half stays green.
+
+    They are kept apart rather than unioned, because a union is satisfied by any
+    one spelling and the drift is precisely that they disagree: a triple built and
+    signed but never written into the manifest leaves a desktop resolving nothing,
+    and a union would still contain it. Held as subsets for the same reason the
+    release assets are -- an extra triple strands no desktop, a missing one does.
+    """
+    build = _workflow_job(PREVIEW_WORKFLOW, PREVIEW_BUILD_JOB,
+                          "the preview server binaries built per platform")
+    matrix = (build.get("strategy") or {}).get("matrix")
+    if not isinstance(matrix, dict):
+        raise Refusal(f"{PREVIEW_WORKFLOW}: job '{PREVIEW_BUILD_JOB}' declares a "
+                      f"strategy.matrix this gate cannot read ({matrix!r}); the "
+                      "set of platforms preview builds cannot be read")
+    if axes := sorted(set(matrix) - {"include", "exclude"}):
+        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_BUILD_JOB} declares matrix "
+                      f"axes {axes} beside `include`; every combination of those "
+                      "builds a preview server too, so the built set is larger "
+                      "than the `include` list this gate reads")
+    include = matrix.get("include")
+    if not isinstance(include, list):
+        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_BUILD_JOB} declares no "
+                      "strategy.matrix.include list; the built platform set "
+                      "cannot be read from this shape")
+    built: set[str] = set()
+    for entry in include:
+        if not isinstance(entry, dict) or not isinstance(entry.get("triple"), str):
+            raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_BUILD_JOB} matrix has an "
+                          f"entry with no readable `triple`: {entry!r}. That "
+                          "field is the whole identity of a preview binary")
+        built.add(entry["triple"])
+
+    publish = _workflow_job(PREVIEW_WORKFLOW, PREVIEW_PUBLISH_JOB,
+                            "the preview binaries downloaded, signed and published")
+    steps = publish.get("steps")
+    if not isinstance(steps, list):
+        raise Refusal(f"{PREVIEW_WORKFLOW}: job '{PREVIEW_PUBLISH_JOB}' declares "
+                      "no steps list; the job that signs and publishes preview "
+                      "servers was reshaped")
+    downloaded: set[str] = set()
+    for step in steps:
+        with_ = step.get("with") if isinstance(step, dict) else None
+        name = with_.get("name") if isinstance(with_, dict) else None
+        if not isinstance(name, str) or not name.startswith(PREVIEW_ARTIFACT_PREFIX):
+            continue
+        # The build job uploads under this same prefix as `${{ matrix.triple }}`,
+        # which names every platform at once and so identifies none of them. Read
+        # as a literal it would contribute one nonsense triple that no mapping
+        # holds, turning a superset check into a permanent failure.
+        if "${{" in name:
+            continue
+        downloaded.add(name.removeprefix(PREVIEW_ARTIFACT_PREFIX))
+
+    bodies = _step_bodies(PREVIEW_WORKFLOW, PREVIEW_PUBLISH_JOB,
+                          "the preview binaries signed and written to the manifest")
+    body = _step_body(bodies, PREVIEW_SIGN_STEP, PREVIEW_WORKFLOW,
+                      PREVIEW_PUBLISH_JOB,
+                      "the signed binaries and the manifest naming them")
+    array = PREVIEW_BINARIES_ARRAY.search(body)
+    if array is None:
+        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
+                      "`binaries=( ... )` array; the signed set was reshaped, and "
+                      "a set this gate cannot read is not an empty one")
+    signed = {triple for triple, _ in PREVIEW_ARRAY_LINE.findall(array.group(1))}
+    block = PREVIEW_MANIFEST_BLOCK.search(body)
+    if block is None:
+        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
+                      "`binaries: {` object in the manifest it writes; the keys a "
+                      "desktop resolves against cannot be read")
+    keys = set(PREVIEW_MANIFEST_KEY.findall(block.group(1)))
+
+    # A desktop reads `url` and `sig_url` from the entry and fetches both, so a
+    # key carrying only one resolves an artifact it cannot verify. Checked per
+    # key, so the report names which key rather than a count that dropped.
+    paired: set[str] = set()
+    for key in keys:
+        entry = re.search(rf'"{re.escape(key)}":\s*\{{(.*?)\n\s*\}}',
+                          block.group(1), re.S)
+        if entry is None:
+            continue
+        urls = dict(PREVIEW_MANIFEST_URL.findall(entry.group(1)))
+        binary = f"phase-server-{key}"
+        if (binary in urls.get("url", "")
+                and binary in urls.get("sig_url", "")
+                and ".minisig" in urls.get("sig_url", "")):
+            paired.add(key)
+
+    return {"builds": built, "downloads": downloaded, "signs": signed,
+            "names in its manifest": keys,
+            "gives a signed URL pair in its manifest": paired}
+
+
 def main() -> int:
     try:
         mapped = mapped_platforms()
         published = published_platforms()
         attached = published_assets()
+        provisioned = preview_platforms()
     except Refusal as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
@@ -686,6 +860,21 @@ def main() -> int:
               "name, or stop resolving it.", file=sys.stderr)
         status = 1
 
+    triples = {triple for _, _, triple in mapped.values()}
+    for what, declared in sorted(provisioned.items()):
+        stranded = sorted(triples - declared)
+        if not stranded:
+            continue
+        print(f"{MAPPING_SOURCE}'s ServerPlatform resolves {len(stranded)} "
+              f"triple(s) that {PREVIEW_WORKFLOW} never {what}:", file=sys.stderr)
+        for triple in stranded:
+            print(f"  {triple}", file=sys.stderr)
+        print("A desktop on that platform looks its triple up in the signed "
+              "preview manifest and finds no binary, so Try Preview fails there "
+              "while every release check stays green. Provision that triple, or "
+              "stop resolving it.", file=sys.stderr)
+        status = 1
+
     moved: list[str] = []
     if len(pairs) != MAPPED_PLATFORM_COUNT:
         moved.append(f"{MAPPING_SOURCE}: ServerPlatform::os_arch reads as "
@@ -713,6 +902,9 @@ def main() -> int:
           f"({', '.join(sorted(binaries))}), each with its signature, all "
           f"published by {RELEASE_WORKFLOW}'s {RELEASE_JOB} job "
           f"({len(attached)} slim asset URL(s))")
+    print(f"preview provisioning OK: {len(triples)} engine triple(s) "
+          f"({', '.join(sorted(triples))}) each built, downloaded, signed, named "
+          f"in {PREVIEW_WORKFLOW}'s manifest, and given a signed URL pair there")
     return 0
 
 
