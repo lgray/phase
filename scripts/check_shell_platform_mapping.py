@@ -17,17 +17,30 @@ understood nothing would otherwise print a pass. The mapping is read three times
 over -- `ALL`, `os_arch`, `target_triple` -- and the three must name the same
 variants. `ALL` is the only thing `from_os_arch` iterates, so a variant absent
 from it resolves for no platform at runtime while both matches stay exhaustive
-and every population still reads as expected. Each block's `Self::` receivers are
-compared as a set against the arms read out of it as well, because an arm rustfmt
-broke across lines still carries its receiver and would otherwise be dropped in
-silence. Two arms naming one platform, or resolving one triple, refuse for the
-same reason: a variant nothing can reach.
+and every population still reads as expected. Each arm block's `Self::`
+receivers are compared as a set against the arms read out of it as well, because
+an arm rustfmt broke across lines still carries its receiver and would otherwise
+be dropped in silence. Two arms naming one platform, or resolving one triple,
+refuse for the same reason: a variant nothing can reach.
 
-Every comparison here is between sets of fully-qualified names, never between
-their sizes. A size holds while its members are substituted underneath it, which
-is the one defect each of those holes was an instance of: two variants collapsing
-onto one platform, a variant absent from `ALL`, a binary attached under a name no
-desktop derives.
+Every comparison here is between sets of fully-qualified names rather than their
+sizes, because a size holds while its members are substituted underneath it: two
+variants collapsing onto one platform, a variant absent from `ALL`, a binary
+attached under a name no desktop derives. A set equality has the opposite blind
+spot -- an extra member completes it instead of breaking it -- so each block is
+also held against something a name this gate invented cannot satisfy. For the
+arm blocks that is the receiver-against-arm comparison. For `ALL`, whose entries
+carry no arms, it is the `[Self; N]` length rustc checks against those entries:
+the one figure here not read out of the same text being checked.
+
+Non-code text is removed before any pattern reads it, on both sides and against
+each language's own grammar rather than the spelling some defect happened to
+use: Rust's two comment forms, nested to any depth. The release side takes two
+cuts, because that step's shell carries prose comments and its asset list is
+data inside a quoted heredoc, where a `#` is neither a comment nor a path the
+release attaches. The list is read out of that heredoc alone, and every line of
+it must match an `artifacts/<dir>/<asset>` path whole -- a pattern that matched
+only a line's tail read either kind of commented name as an attached one.
 
 The other direction is the same defect pointed the other way. Every variant
 resolves the asset name a desktop on that platform downloads -- its triple plus
@@ -91,6 +104,10 @@ ASSET_STEP = "release-assets"
 #: than as a wrong one.
 MAPPING_ALL_BLOCK = re.compile(
     r"const ALL:\s*\[Self;\s*\d+\]\s*=\s*\[(.*?)\n    \];", re.S)
+#: `ALL`'s declared element count, read on its own because rustc checks it
+#: against the entries themselves. That makes it the one authority here a name
+#: this gate read out of something that is not an entry cannot satisfy.
+MAPPING_ALL_LENGTH = re.compile(r"const ALL:\s*\[Self;\s*(\d+)\]")
 MAPPING_BLOCK = re.compile(r"fn os_arch\b[^{]*\{(.*?)\n    \}", re.S)
 MAPPING_TRIPLE_BLOCK = re.compile(
     r"fn target_triple\(self\)[^{]*\{(.*?)\n    \}", re.S)
@@ -109,13 +126,30 @@ SLIM_PREFIX = "phase-server-slim-"
 
 #: The release job's two spellings of its published set: the `for triple in ...`
 #: loop it signs, and the `phase-server-slim-*` paths it attaches. The asset
-#: pattern is end-anchored so the directory half of each path, which repeats the
-#: asset name, is not counted a second time; it captures the whole filename,
-#: `.exe` included, because that suffix is part of the URL a desktop derives. The
-#: lazy name plus the anchor is what tells a binary line from its signature.
+#: pattern spans the whole line, `artifacts/<dir>/` included, so the directory
+#: half of each path -- which repeats the asset name -- is not counted a second
+#: time and no line that merely *ends* in something asset-shaped can contribute a
+#: name. End-anchoring alone read the tail of any line at all, which a set this
+#: gate only ever grows cannot object to: a `#`-prefixed path names an asset the
+#: release does not attach, and the desktop whose URL 404s stops being reported.
+#: The capture takes the whole filename, `.exe` included, because that suffix is
+#: part of the URL a desktop derives; the lazy name plus the trailing group is
+#: what tells a binary line from its signature.
 SIGN_LOOP = re.compile(r"for triple in((?:\s*\\\s*[\w.-]+)+)\s*;\s*do")
 SIGN_TRIPLE = re.compile(r"[\w.-]+")
-ASSET_LINE = re.compile(rf"({SLIM_PREFIX}[\w.-]+?)(\.minisig)?$", re.M)
+ASSET_LINE = re.compile(
+    rf"^\s*artifacts/[\w.-]+/({SLIM_PREFIX}[\w.-]+?)(\.minisig)?$", re.M)
+#: The attached list is the heredoc body, not the whole step, which is the other
+#: half of the same cut: the pattern above decides what a line must look like,
+#: and this decides where a line has to be to count at all. That step's shell
+#: carries prose comments and conditional `echo`s around this list, and none of
+#: it attaches an asset. Both halves are needed because adding a name is what the
+#: subset check cannot object to -- `attached` is allowed to be a superset -- so a
+#: name read from anywhere else reads as published and the desktop whose URL is
+#: missing stops being reported. Nothing downstream can separate the two: a
+#: commented path names the very asset whose absence was the finding, so the
+#: population is narrowed at the read rather than compared afterwards.
+ASSET_HEREDOC = re.compile(r"cat <<'EOF'\n(.*?)\n\s*EOF\b", re.S)
 
 #: The desktop platforms a tag publishes and the mapping entries that serve them.
 #: Both are expectations, not observations: a change to either is the event this
@@ -144,46 +178,115 @@ def _mapping_text() -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _code(line: str) -> str:
-    """One line with its comment half removed, after `source_census::code`.
+def _strip_rust_comments(text: str) -> str:
+    """`text` with every Rust comment removed, before any pattern reads it.
 
-    A comment naming a variant is not an arm. Both exclusions only ever remove
-    text: a leading `/* ... */` drops only through its own close, and a `//`
-    opens a comment only where the quotes before it on that line are balanced,
-    an odd count meaning it sits inside a string literal, so `"http://x"` keeps
-    its arm. The Rust authority spells that second guard as "no quote precedes
-    it", which cannot be borrowed verbatim here: every arm in these blocks
-    carries string literals, so that rule would strip no trailing comment on the
-    one shape this reads. Whatever survives either guard is still scanned, which
-    refuses loudly rather than dropping an arm in silence.
+    Against the comment grammar whole rather than one of its spellings: `//`
+    runs to end of line, `/* */` nests to any depth, and neither opens a comment
+    inside a string literal, so `"http://x"` keeps its arm. Newlines survive, so
+    the one-arm-per-line shape the callers read is unchanged.
+
+    Nesting is why this scans rather than substitutes: `/\\*.*?\\*/` closes the
+    outer comment at the inner `*/` and leaves the remainder of it standing as
+    code. A line-oriented rule cannot serve either, which is where this parts
+    company with `source_census::code` -- a block comment spans lines, and
+    whether the quotes left of a `//` on one line are balanced is a different
+    question from whether that `//` stands inside a literal. Literal state is
+    tracked instead, so this needs no claim about which blocks carry literals;
+    `ALL`'s entries carry none.
+
+    A name written inside a string literal is not a comment and is still read.
+    It refuses rather than passing -- as a receiver written twice in an arm
+    block, or against `ALL`'s declared length -- because the patterns below are
+    not literal-aware either: an escaped quote ends a captured value early, so a
+    corrupted triple reports on the published-asset axis instead of refusing.
     """
-    lo = 0
-    stripped = line.lstrip()
-    if stripped.startswith("/*"):
-        start = len(line) - len(stripped)
-        end = line.find("*/", start)
-        lo = len(line) if end < 0 else end + 2
-    slash = line.find("//", lo)
-    if slash >= 0 and line[lo:slash].count('"') % 2 == 0:
-        return line[lo:slash]
-    return line[lo:]
+    out: list[str] = []
+    i, n, depth = 0, len(text), 0
+    while i < n:
+        pair = text[i:i + 2]
+        if depth:
+            if pair == "/*":
+                depth += 1
+                i += 2
+            elif pair == "*/":
+                depth -= 1
+                i += 2
+            else:
+                if text[i] == "\n":
+                    out.append("\n")
+                i += 1
+        elif pair == "/*":
+            depth += 1
+            i += 2
+        elif pair == "//":
+            end = text.find("\n", i)
+            if end < 0:
+                break
+            i = end
+        elif text[i] == '"':
+            out.append('"')
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    out.append(text[i:i + 2])
+                    i += 2
+                    continue
+                out.append(text[i])
+                i += 1
+                if text[i - 1] == '"':
+                    break
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
 
 
 def _mapping_block(text: str, pattern: re.Pattern[str], what: str) -> str:
-    """One block's code half, comments removed before anything reads it.
+    """One block's code, every comment removed before anything reads it.
 
-    The single place all three blocks are read through, so a comment naming a
-    variant cannot be counted as a receiver in any of them. Scanning raw text
-    reported such a comment as a receiver written twice -- diagnosed as an arm
-    rustfmt broke across lines, sending the reader after a wrapping that is not
-    there.
+    The single place all three blocks are read through, so no comment in any of
+    them reaches a receiver or arm pattern, whichever of Rust's two forms it
+    uses and however many lines it spans. Scanning raw block text counted a
+    comment naming a variant as a receiver written twice and diagnosed it as an
+    arm rustfmt broke across lines, sending the reader after a wrapping that is
+    not there.
     """
     match = pattern.search(text)
     if match is None:
         raise Refusal(f"{MAPPING_SOURCE} has no readable `ServerPlatform::{what}`; "
                       "it was renamed or reformatted, and the mapping cannot be "
                       "read")
-    return "\n".join(_code(line) for line in match.group(1).splitlines())
+    return _strip_rust_comments(match.group(1))
+
+
+def _refuse_phantom_all_entry(text: str, listed: list[str]) -> None:
+    """Refuse when `ALL` reads as more or fewer entries than rustc counts.
+
+    `ALL` is compared to the two arm blocks by name, and a name this gate
+    invented is what that comparison cannot object to: a phantom entry makes
+    `set(listed)` complete rather than short, so the comparison passes and the
+    variant genuinely missing from `ALL` goes unreported -- the way this block
+    failed open, where the arm blocks' receiver-against-arm comparison already
+    refused. `[Self; N]` is checked by rustc against the entries themselves, so
+    it holds against a name no entry produced.
+    """
+    match = MAPPING_ALL_LENGTH.search(text)
+    if match is None:
+        raise Refusal(f"{MAPPING_SOURCE}: ServerPlatform::ALL declares no "
+                      "`[Self; N]` length, so the entries this gate read out of "
+                      "it are held against nothing rustc counts")
+    declared = int(match.group(1))
+    if len(listed) != declared:
+        raise Refusal(
+            f"{MAPPING_SOURCE}: ServerPlatform::ALL is declared `[Self; "
+            f"{declared}]` but this gate read {len(listed)} entry name(s) in it: "
+            f"{listed}. rustc counts the entries itself, so a name here it does "
+            "not count came out of something that is not an entry -- text no "
+            "comment removal took out, or a name inside a string literal. More "
+            "names than rustc counts is the direction that would otherwise pass: "
+            "an extra one completes the by-name comparison instead of breaking "
+            "it, hiding a variant absent from ALL")
 
 
 def _arms(block: str, pattern: re.Pattern[str],
@@ -232,6 +335,7 @@ def mapped_platforms() -> dict[str, tuple[str, str, str]]:
     text = _mapping_text()
     listed = MAPPING_RECEIVER.findall(
         _mapping_block(text, MAPPING_ALL_BLOCK, "ALL"))
+    _refuse_phantom_all_entry(text, listed)
     pairs = _arms(_mapping_block(text, MAPPING_BLOCK, "os_arch"),
                   MAPPING_ENTRY, "os_arch")
     triples = _arms(_mapping_block(text, MAPPING_TRIPLE_BLOCK, "target_triple"),
@@ -376,8 +480,13 @@ def published_assets() -> set[str]:
                       "triple in ...` loop; the signed set was reshaped, and a "
                       "set this gate cannot read is not an empty one")
     signed = set(SIGN_TRIPLE.findall(loop.group(1)))
-    lines = ASSET_LINE.findall(
+    listing = ASSET_HEREDOC.search(
         _step_body(bodies, ASSET_STEP, "the assets the release attaches"))
+    if listing is None:
+        raise Refusal(f"{RELEASE_WORKFLOW}: {ASSET_STEP} has no readable `cat "
+                      "<<'EOF'` asset list; the attached set was reshaped, and a "
+                      "set this gate cannot read is not an empty one")
+    lines = ASSET_LINE.findall(listing.group(1))
     attached = {f"{asset}{signature}" for asset, signature in lines}
 
     # Compared on triples, because a triple is all the loop names: it appends the

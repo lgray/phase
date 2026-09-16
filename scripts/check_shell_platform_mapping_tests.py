@@ -133,6 +133,24 @@ impl ServerPlatform {{
     return body
 
 
+def annotate(body: str, line: str, note: str) -> str:
+    """`note` spliced onto the one `line`, refusing if it is not there to annotate.
+
+    A comment case that silently annotated nothing would pass over an
+    unmarked tree, so the line it names has to be present exactly once.
+    """
+    if body.count(line) != 1:
+        raise AssertionError(
+            f"fixture carries {body.count(line)} copies of {line!r}; a comment "
+            "case that annotates nothing, or two places, measures neither")
+    return body.replace(line, note.replace("@", line))
+
+
+#: The lines the comment cases annotate, as `mapping_source` writes them.
+ALL_ENTRY = "        Self::Platform2,"
+OS_ARCH_ARM = '            Self::Platform0 => ("macos", "aarch64"),'
+
+
 def workflow_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
                     job: str = "build-shell", os_key: str = "os") -> str:
     include = "\n".join(
@@ -242,6 +260,14 @@ class MappingTree:
                       **kwargs: str) -> None:
         self._write(RELEASE_REL, release_source(triples, attached=attached,
                                                 omit=omit, **kwargs))
+
+    def write_mapping_text(self, body: str) -> None:
+        """A mapping body the case built itself, for shapes no keyword spells."""
+        self._write(MAPPING_REL, body)
+
+    def write_release_text(self, body: str) -> None:
+        """A release body the case built itself."""
+        self._write(RELEASE_REL, body)
 
     def delete(self, rel: str) -> None:
         (self.root / rel).unlink()
@@ -411,6 +437,116 @@ class ShellPlatformMappingTests(unittest.TestCase):
         r = t.run()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("shell platform mapping OK", r.stdout)
+
+    def test_a_block_comment_naming_a_variant_is_not_an_arm(self) -> None:
+        # The case above in Rust's other comment form, which a rule written for
+        # `//` leaves untouched. Every shape it takes is covered, because an
+        # enumeration of comment syntaxes admits the one it omits: trailing on
+        # an arm, spanning lines with the variant in its interior, and nested --
+        # the last of which `/\\*.*?\\*/` closes at the inner `*/`, leaving the
+        # remainder of one comment standing as code.
+        for label, note in (
+            ("trailing", "@ /* Self::Platform3 ships from the other arm */"),
+            ("multi-line interior", "            /* This arm serves\n"
+                                    "               Self::Platform3's neighbour. */\n@"),
+            ("nested", "@ /* outer /* inner */ Self::Platform3 */"),
+        ):
+            with self.subTest(comment=label):
+                body = annotate(mapping_source(), OS_ARCH_ARM, note)
+                self.assertIn("Self::Platform3", body,
+                              "the comment must name a variant, or this case "
+                              "passes over an unannotated tree")
+                t = self.tree()
+                t.write_mapping_text(body)
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("shell platform mapping OK", r.stdout)
+
+    def test_a_comment_hiding_a_variant_absent_from_all_refuses(self) -> None:
+        # Why `ALL` cannot be read raw, in the direction that failed open. The
+        # variant really is missing from `ALL`, so it resolves for no platform at
+        # runtime, while a legal note names it. Counting that note as an entry
+        # makes the three-way comparison *complete* rather than short, so the
+        # gate prints a pass over the one defect it reads `ALL` at all to catch.
+        for label, note in (
+            ("block", "@ /* Self::Platform3 temporarily not shipped */"),
+            ("line", "@ // Self::Platform3 temporarily not shipped"),
+        ):
+            with self.subTest(comment=label):
+                t = self.tree()
+                t.write_mapping_text(
+                    annotate(mapping_source(listed=3), ALL_ENTRY, note))
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn("ServerPlatform::ALL", r.stderr)
+                self.assertIn("Platform3", r.stderr)
+                self.assertIn("Add the variant to ALL", r.stderr)
+                self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_name_all_cannot_count_refuses_against_its_declared_length(self) -> None:
+        # The cross-check for the one block held only by name, and the member no
+        # comment rule can reach: a `Self::` inside a string literal is not a
+        # comment, so it survives every removal there is. It names the variant
+        # genuinely absent from `ALL`, which makes the by-name comparison agree.
+        # Only rustc's own element count objects, because it is the one figure
+        # here not read out of the text being checked.
+        t = self.tree()
+        t.write_mapping_text(annotate(mapping_source(listed=3), ALL_ENTRY,
+                                      '@ "Self::Platform3",'))
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("declared `[Self; 3]`", r.stderr)
+        self.assertIn("read 4 entry name(s)", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_commented_out_arm_refuses(self) -> None:
+        # Removing comments before reading must not let a commented-out arm read
+        # as cleanly absent. The variant is still listed in `ALL` and is still a
+        # platform no arm resolves, which is a desktop that fetches no engine.
+        t = self.tree()
+        t.write_mapping_text(annotate(mapping_source(), OS_ARCH_ARM,
+                                      "            // " + OS_ARCH_ARM.lstrip()))
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("ServerPlatform::ALL", r.stderr)
+        self.assertIn("Platform0", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_double_slash_inside_a_string_literal_keeps_its_arm(self) -> None:
+        # The bound on comment removal: `//` inside a literal is data. Stripping
+        # from it truncates the arm's value, and the arm then reads as one this
+        # gate could not parse -- a refusal naming a wrapping that is not there.
+        platforms = with_arch(DEFAULT_PLATFORMS, 2, "x86//64")
+        t = self.tree()
+        t.write_mapping(platforms)
+        t.write_workflow(platforms)
+        r = t.run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("linux-x86//64", r.stdout)
+
+    def test_a_commented_asset_path_is_not_a_published_asset(self) -> None:
+        # The same fail-open shape on the release side. `attached` is allowed to
+        # be a superset, so no later comparison can object to a name added to
+        # it, and a commented path names exactly the URL whose absence would
+        # otherwise be reported. Both placements count: outside the heredoc,
+        # where the shell reads `#` as a comment, and inside it, where `#` is
+        # literal text and the line is not an attached path either way.
+        triple = DEFAULT_TRIPLES[3]
+        asset = f"phase-server-slim-{triple}"
+        comment = f"          # artifacts/{asset}/{asset}.minisig"
+        body = release_source(omit={triple: "signature"})
+        for label, anchor in (("outside the heredoc", "          cat <<'EOF'"),
+                              ("inside the heredoc", "          EOF")):
+            with self.subTest(placement=label):
+                self.assertEqual(body.count(anchor), 1,
+                                 "the placement must be unambiguous, or this "
+                                 "case injects somewhere it did not intend")
+                t = self.tree()
+                t.write_release_text(body.replace(anchor, f"{comment}\n{anchor}"))
+                r = t.run()
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn(f"{asset}.minisig", r.stderr)
+                self.assertIn("does not publish", r.stderr)
 
     def test_a_windows_asset_without_its_exe_suffix_fails(self) -> None:
         # A desktop derives its asset name from its triple plus the suffix its
