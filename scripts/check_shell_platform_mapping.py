@@ -11,31 +11,47 @@ it discriminating against the mapping being deleted or broken. What it cannot se
 is the matrix growing past them: nothing there refers to the workflow. This gate
 is that tie, and it runs on every pull request rather than at tag time.
 
-Both populations are counted before the subset is checked, because every way of
-failing to read either file yields an empty set and an empty matrix is a subset
-of any mapping -- a gate that understood nothing would print a pass. The mapping
-is counted twice, as arms read and as distinct platforms: a read that finds the
-wrong number of arms refuses, and so does one where two arms name the same
-platform, which is the expected population of four hiding a fifth arm whose
-triple nothing can reach.
+Nothing here soft-fails to an empty set: every way of failing to read a file
+raises, because an empty matrix is a subset of any mapping and a gate that
+understood nothing would otherwise print a pass. The mapping is read three times
+over -- `ALL`, `os_arch`, `target_triple` -- and the three must name the same
+variants. `ALL` is the only thing `from_os_arch` iterates, so a variant absent
+from it resolves for no platform at runtime while both matches stay exhaustive
+and every population still reads as expected. Each block's `Self::` receivers are
+compared as a set against the arms read out of it as well, because an arm rustfmt
+broke across lines still carries its receiver and would otherwise be dropped in
+silence. Two arms naming one platform, or resolving one triple, refuse for the
+same reason: a variant nothing can reach.
 
-The other direction is the same defect pointed the other way. Every triple
-`ServerPlatform::target_triple` resolves names the `phase-server-slim-<triple>`
-asset a desktop on that platform downloads, and `release.yml` is what publishes
-those assets. A triple resolved but never published is a desktop requesting a URL
-that 404s. That side is read twice too, from the signing loop and from the
-attached asset list, because each proves what the other cannot: the loop's
-`test -s` fails the release when the binary was never built, and the asset list
-is what the release actually carries. Two readings that disagree describe no
-published set, so they refuse rather than pick one.
+Every comparison here is between sets of fully-qualified names, never between
+their sizes. A size holds while its members are substituted underneath it, which
+is the one defect each of those holes was an instance of: two variants collapsing
+onto one platform, a variant absent from `ALL`, a binary attached under a name no
+desktop derives.
 
-The mapping is read by regex over `ServerPlatform::os_arch`'s match arms rather
-than its triples, because the `(os, arch)` pair is what the matrix is compared
-against and the triple is not -- so renaming that method or reshaping those arms
-breaks this gate loudly rather than silently. A matrix that grows from four
-platforms to five fails its count assertion for the same reason, and that is the
-event this gate exists to announce: the published platform set changed, so the
-mapping has to be checked against it.
+The other direction is the same defect pointed the other way. Every variant
+resolves the asset name a desktop on that platform downloads -- its triple plus
+the `.exe` a `windows` variant's `executable_suffix` appends -- and `release.yml`
+is what publishes those assets. A name resolved but never published is a desktop
+requesting a URL that 404s. That side is read twice too, from the signing loop
+and from the attached asset list, because each proves what the other cannot: the
+loop's `test -s` fails the release when the binary was never built, and the asset
+list is what the release actually carries. Two readings that disagree describe no
+published set, so they refuse rather than pick one. Their agreement is compared
+on triples, which is all the loop names; the suffix axis is held against the
+mapping instead, where getting it wrong is a silent 404 rather than a release
+that fails its own `test -s`.
+
+The published set is allowed to be a superset. It quantifies over the release's
+slim servers, not over desktop platforms, so a triple published for a consumer
+that is not a desktop strands nothing and is not counted.
+
+The mapping is read by regex over `ServerPlatform`'s own blocks, each anchored on
+its name, so renaming a method or reshaping its arms breaks this gate loudly
+rather than silently. The expected populations are checked last and carry their
+own exit code: a readable set that moved is neither a coverage gap nor a failure
+to read, and checking it first would let a grown matrix hide the very desktop
+that cannot fetch an engine.
 """
 
 from __future__ import annotations
@@ -48,9 +64,10 @@ from pathlib import Path
 try:
     import yaml
 except ModuleNotFoundError:
-    # Exit 2, not 1: `main` reserves 1 for "a published platform has no mapping"
-    # and 2 for "I could not read this". A missing parser is the second kind, and
-    # collapsing them would make the refusal unreadable from the exit code.
+    # Exit 2, not 1: `main` reserves 1 for "a published platform has no mapping",
+    # 2 for "I could not read this", and 3 for "a population I read perfectly has
+    # moved". A missing parser is the second kind, and collapsing them would make
+    # the refusal unreadable from the exit code.
     print("REFUSED: check_shell_platform_mapping: PyYAML is required and was "
           "not found; refusing to check with a weaker method", file=sys.stderr)
     sys.exit(2)
@@ -66,36 +83,47 @@ RELEASE_JOB = "release"
 SIGN_STEP = "sign-release-artifacts"
 ASSET_STEP = "release-assets"
 
-#: Anchored on the method name and bounded by its own closing brace, so the
-#: sibling `target_triple` arms below it cannot be read as platform pairs.
+#: `ALL` is the variant list `from_os_arch` iterates, and the two methods are the
+#: arms it resolves them through. Each is anchored on its own name and bounded by
+#: the closing brace at its indentation, so none of the three can be read as
+#: another's contents -- the module also holds a free `target_triple()` function,
+#: whose body carries no arms at all and so would read as an empty mapping rather
+#: than as a wrong one.
+MAPPING_ALL_BLOCK = re.compile(
+    r"const ALL:\s*\[Self;\s*\d+\]\s*=\s*\[(.*?)\n    \];", re.S)
 MAPPING_BLOCK = re.compile(r"fn os_arch\b[^{]*\{(.*?)\n    \}", re.S)
-MAPPING_ENTRY = re.compile(r'=>\s*\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)')
-
-#: Anchored on the method's receiver: the module also holds a free
-#: `target_triple()` function, whose body carries no platform arms at all and so
-#: would read as an empty mapping rather than as a wrong one.
 MAPPING_TRIPLE_BLOCK = re.compile(
     r"fn target_triple\(self\)[^{]*\{(.*?)\n    \}", re.S)
-MAPPING_TRIPLE_ARM = re.compile(r'=>\s*"([^"]+)"')
+
+#: Every arm is read through its `Self::` receiver, which is what joins the three
+#: blocks into one record per variant. The receivers are also compared as a set
+#: against the arms read beside them: an arm rustfmt broke across lines still
+#: carries its receiver but matches neither value pattern below, so a receiver
+#: with no arm is how a dropped arm announces itself, by name.
+MAPPING_RECEIVER = re.compile(r"Self::(\w+)")
+MAPPING_ENTRY = re.compile(
+    r'Self::(\w+)\s*=>\s*\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)')
+MAPPING_TRIPLE_ARM = re.compile(r'Self::(\w+)\s*=>\s*"([^"]+)"')
+
+SLIM_PREFIX = "phase-server-slim-"
 
 #: The release job's two spellings of its published set: the `for triple in ...`
-#: loop it signs, and the `phase-server-slim-<triple>` paths it attaches. The
-#: asset pattern is end-anchored so the directory half of each path, which
-#: repeats the asset name, is not counted a second time. A triple carries no
-#: `.`, so neither optional suffix can be absorbed into the captured name and
-#: the trailing group is what tells a binary line from its signature.
+#: loop it signs, and the `phase-server-slim-*` paths it attaches. The asset
+#: pattern is end-anchored so the directory half of each path, which repeats the
+#: asset name, is not counted a second time; it captures the whole filename,
+#: `.exe` included, because that suffix is part of the URL a desktop derives. The
+#: lazy name plus the anchor is what tells a binary line from its signature.
 SIGN_LOOP = re.compile(r"for triple in((?:\s*\\\s*[\w.-]+)+)\s*;\s*do")
 SIGN_TRIPLE = re.compile(r"[\w.-]+")
-ASSET_LINE = re.compile(
-    r"phase-server-slim-([\w-]+?)(?:\.exe)?(\.minisig)?$", re.M)
+ASSET_LINE = re.compile(rf"({SLIM_PREFIX}[\w.-]+?)(\.minisig)?$", re.M)
 
-#: The desktop platforms a tag publishes, the mapping entries that serve them,
-#: and the slim server assets the release carries for them. All are expectations,
-#: not observations: a change to any is the event this gate reports, so it fails
-#: and names which side moved.
+#: The desktop platforms a tag publishes and the mapping entries that serve them.
+#: Both are expectations, not observations: a change to either is the event this
+#: gate reports, so it fails and names which side moved. There is deliberately no
+#: expected count for the published slim servers -- that population may exceed the
+#: desktop set without stranding a desktop.
 PUBLISHED_PLATFORM_COUNT = 4
 MAPPED_PLATFORM_COUNT = 4
-PUBLISHED_TRIPLE_COUNT = 4
 
 
 class Refusal(Exception):
@@ -116,59 +144,109 @@ def _mapping_text() -> str:
     return path.read_text(encoding="utf-8")
 
 
-def mapped_platforms() -> set[tuple[str, str]]:
-    """The `(os, arch)` pairs `ServerPlatform` resolves. The desktop's authority."""
-    block = MAPPING_BLOCK.search(_mapping_text())
-    if block is None:
-        raise Refusal(f"{MAPPING_SOURCE} has no readable `ServerPlatform::"
-                      "os_arch` match; it was renamed or reformatted, and the "
-                      "mapping cannot be read")
-
-    entries = MAPPING_ENTRY.findall(block.group(1))
-    platforms = set(entries)
-    if len(platforms) != len(entries):
-        raise Refusal(
-            f"{MAPPING_SOURCE}: ServerPlatform::os_arch reads {len(entries)} "
-            f"arm(s) naming only {len(platforms)} distinct platform(s): "
-            f"{sorted(entries)}. Two variants claim the same (os, arch), so one "
-            "of their triples is unreachable and the published set would read as "
-            "covered by a mapping that cannot serve it")
-    if len(platforms) != MAPPED_PLATFORM_COUNT:
-        raise Refusal(
-            f"{MAPPING_SOURCE}: ServerPlatform::os_arch reads as "
-            f"{len(platforms)} platform(s), expected {MAPPED_PLATFORM_COUNT}: "
-            f"{sorted(platforms)}. Either the mapping changed -- check it against "
-            f"{SHELL_RELEASE}'s {BUILD_JOB} matrix and update the expected "
-            "count -- or its arms no longer match the shape this gate reads")
-    return platforms
+def _mapping_block(text: str, pattern: re.Pattern[str], what: str) -> str:
+    match = pattern.search(text)
+    if match is None:
+        raise Refusal(f"{MAPPING_SOURCE} has no readable `ServerPlatform::{what}`; "
+                      "it was renamed or reformatted, and the mapping cannot be "
+                      "read")
+    return match.group(1)
 
 
-def mapped_triples() -> set[str]:
-    """The target triples `ServerPlatform` resolves, one release asset each."""
-    block = MAPPING_TRIPLE_BLOCK.search(_mapping_text())
-    if block is None:
-        raise Refusal(f"{MAPPING_SOURCE} has no readable `ServerPlatform::"
-                      "target_triple` match; it was renamed or reformatted, and "
-                      "the assets the desktop asks for cannot be read")
+def _arms(block: str, pattern: re.Pattern[str],
+          what: str) -> dict[str, tuple[str, ...]]:
+    """One block's arms, keyed by the `Self::` receiver each is written against.
 
-    arms = MAPPING_TRIPLE_ARM.findall(block.group(1))
-    triples = set(arms)
-    if len(triples) != len(arms):
+    Named, not counted: the receivers present and the arms parsed are compared as
+    sets, so a dropped arm is reported by name. A count of either would hold while
+    one arm was substituted for another.
+    """
+    arms = {match[0]: match[1:] for match in pattern.findall(block)}
+    receivers = MAPPING_RECEIVER.findall(block)
+    unread = sorted(set(receivers) - set(arms))
+    repeated = sorted({name for name in receivers if receivers.count(name) > 1})
+    if unread or repeated:
         raise Refusal(
-            f"{MAPPING_SOURCE}: ServerPlatform::target_triple reads {len(arms)} "
-            f"arm(s) resolving only {len(triples)} distinct triple(s): "
-            f"{sorted(arms)}. Two variants resolve one triple, so a desktop on "
-            "one of those platforms downloads the other platform's binary and "
-            "the triple it should have asked for goes unchecked here")
-    if len(triples) != MAPPED_PLATFORM_COUNT:
+            f"{MAPPING_SOURCE}: ServerPlatform::{what} has arms this gate could "
+            f"not read. Receivers with no arm it could parse: {unread}. Receivers "
+            f"written more than once: {repeated}. An arm rustfmt broke across "
+            "lines still carries its receiver, so it is named here rather than "
+            "dropped in silence; write it on one line, or teach this gate the "
+            "shape it now takes")
+    return arms
+
+
+def _refuse_shared(owners: dict[str, object], what: str, why: str) -> None:
+    """Refuse when two variants resolve to one value, naming the variants.
+
+    The collision itself is the finding, so it is reported as the value and the
+    variants claiming it. A population size cannot see this: two variants
+    collapsing onto one value is exactly the substitution a count admits.
+    """
+    shared = {
+        value: names
+        for value in set(owners.values())
+        if len(names := sorted(n for n, v in owners.items() if v == value)) > 1
+    }
+    if shared:
+        raise Refusal(f"{MAPPING_SOURCE}: ServerPlatform::{what} resolves "
+                      f"{sorted(shared.items(), key=repr)} -- those variants "
+                      f"{why}")
+
+
+def mapped_platforms() -> dict[str, tuple[str, str, str]]:
+    """Each `ServerPlatform` variant as `(os, arch, triple)`. The desktop's authority."""
+    text = _mapping_text()
+    listed = MAPPING_RECEIVER.findall(
+        _mapping_block(text, MAPPING_ALL_BLOCK, "ALL"))
+    pairs = _arms(_mapping_block(text, MAPPING_BLOCK, "os_arch"),
+                  MAPPING_ENTRY, "os_arch")
+    triples = _arms(_mapping_block(text, MAPPING_TRIPLE_BLOCK, "target_triple"),
+                    MAPPING_TRIPLE_ARM, "target_triple")
+
+    if not set(listed) == set(pairs) == set(triples):
         raise Refusal(
-            f"{MAPPING_SOURCE}: ServerPlatform::target_triple resolves "
-            f"{len(triples)} triple(s), expected {MAPPED_PLATFORM_COUNT}: "
-            f"{sorted(triples)}. Either the mapping changed -- check every "
-            f"triple against {RELEASE_WORKFLOW}'s {RELEASE_JOB} job and update "
-            "the expected count -- or its arms no longer match the shape this "
-            "gate reads")
-    return triples
+            f"{MAPPING_SOURCE}: ServerPlatform::ALL lists {sorted(set(listed))} "
+            f"while os_arch covers {sorted(pairs)} and target_triple covers "
+            f"{sorted(triples)}. ALL is the only source from_os_arch iterates, so "
+            "a variant missing from it resolves for no platform at runtime while "
+            "both matches still compile. Add the variant to ALL; its declared "
+            "length is not what this gate reads")
+
+    mapped = {name: (*pairs[name], *triples[name]) for name in pairs}
+
+    _refuse_shared({name: (os_name, arch)
+                    for name, (os_name, arch, _) in mapped.items()},
+                   "os_arch",
+                   "claim the same (os, arch), so one of their triples is "
+                   "unreachable and the published set would read as covered by a "
+                   "mapping that cannot serve it")
+    # Over the derived name, not the bare triple: the suffix is part of what a
+    # desktop requests, so two triples differing only by the suffix one of their
+    # platforms appends resolve to a single URL. Comparing triples sees two
+    # distinct values there and lets both desktops download the same binary.
+    _refuse_shared({name: slim_asset(os_name, triple)
+                    for name, (os_name, _, triple) in mapped.items()},
+                   "target_triple",
+                   "derive one asset name, so a desktop on one of those platforms "
+                   "downloads the other platform's binary and the name it should "
+                   "have asked for goes unchecked here")
+    return mapped
+
+
+def slim_asset(os_name: str, triple: str) -> str:
+    """The release asset a desktop on this platform derives and downloads.
+
+    `native_engine.rs` builds the name from its triple plus `executable_suffix`,
+    which is `.exe` under `cfg(target_os = "windows")` -- the same `windows` this
+    variant's `os_arch` reports as `std::env::consts::OS`.
+    """
+    return f"{SLIM_PREFIX}{triple}{'.exe' if os_name == 'windows' else ''}"
+
+
+def asset_triple(asset: str) -> str:
+    """The triple an attached asset name carries, suffix removed."""
+    return asset.removeprefix(SLIM_PREFIX).removesuffix(".exe")
 
 
 def published_platforms() -> set[tuple[str, str]]:
@@ -202,14 +280,6 @@ def published_platforms() -> set[tuple[str, str]]:
                           f"without both `os` and `arch`: {entry!r}. This gate "
                           "identifies a platform by that pair")
         platforms.add((str(entry["os"]), str(entry["arch"])))
-
-    if len(platforms) != PUBLISHED_PLATFORM_COUNT:
-        raise Refusal(
-            f"{SHELL_RELEASE}: {BUILD_JOB} publishes {len(platforms)} "
-            f"platform(s), expected {PUBLISHED_PLATFORM_COUNT}: "
-            f"{sorted(platforms)}. If the matrix gained or lost a platform, "
-            f"check {MAPPING_SOURCE}'s ServerPlatform covers the new set and "
-            "update the expected count with it")
     return platforms
 
 
@@ -244,13 +314,13 @@ def _step_body(bodies: dict[str, str], step_id: str, reads: str) -> str:
     return body
 
 
-def published_triples() -> set[str]:
-    """The triples published as `phase-server-slim-<triple>` release assets.
+def published_assets() -> set[str]:
+    """Every `phase-server-slim-*` name the release attaches, signatures included.
 
-    Published means every URL a desktop derives from its triple is there: the
-    release signs it, attaches the binary, and attaches the signature beside it.
-    A triple carrying only part of that is a 404 on the part that is missing, so
-    it does not enter this set and the readings disagree instead.
+    A desktop derives two URLs from its platform, the binary and the signature
+    beside it, so each is its own fully-qualified identity here rather than one
+    identity carrying a flag. Whichever of them a release fails to attach is then
+    the name that comes back missing, instead of a pair that drops out of a count.
     """
     bodies = _release_step_bodies()
 
@@ -263,40 +333,44 @@ def published_triples() -> set[str]:
     signed = set(SIGN_TRIPLE.findall(loop.group(1)))
     lines = ASSET_LINE.findall(
         _step_body(bodies, ASSET_STEP, "the assets the release attaches"))
-    attached = ({triple for triple, signature in lines if not signature}
-                & {triple for triple, signature in lines if signature})
+    attached = {f"{asset}{signature}" for asset, signature in lines}
 
-    if signed != attached:
-        half = sorted({triple for triple, _ in lines} - attached)
+    # Compared on triples, because a triple is all the loop names: it appends the
+    # suffix itself, from its own test of which triple is Windows. That test being
+    # wrong is self-announcing -- a Windows triple it failed to special-case fails
+    # `test -s` and takes the release down with it -- whereas a wrong name in the
+    # asset list publishes cleanly and 404s a desktop, which is why the suffix
+    # axis is held against the mapping rather than against this loop.
+    binaries = {asset_triple(asset) for asset, signature in lines if not signature}
+    if signed != binaries:
         raise Refusal(
-            f"{RELEASE_WORKFLOW}: {RELEASE_JOB} signs {len(signed)} triple(s) "
-            f"and attaches assets for {len(attached)}. Signed, never attached: "
-            f"{sorted(signed - attached)}. Attached, never signed: "
-            f"{sorted(attached - signed)}. Attached at only one of the two URLs "
-            f"a desktop derives from a triple: {half}. A binary built and signed "
-            "but never attached, or attached without the signature the desktop "
-            "verifies, is published in neither sense this gate can report")
-    if len(signed) != PUBLISHED_TRIPLE_COUNT:
-        raise Refusal(
-            f"{RELEASE_WORKFLOW}: {RELEASE_JOB} publishes {len(signed)} slim "
-            f"server asset(s), expected {PUBLISHED_TRIPLE_COUNT}: "
-            f"{sorted(signed)}. If the release gained or lost a triple, check "
-            f"{MAPPING_SOURCE}'s ServerPlatform against the new set and update "
-            "the expected count with it")
-    return signed
+            f"{RELEASE_WORKFLOW}: {RELEASE_JOB} signs {sorted(signed)} and "
+            f"attaches binaries for {sorted(binaries)}. Signed, never attached: "
+            f"{sorted(signed - binaries)}. Attached, never signed: "
+            f"{sorted(binaries - signed)}. A binary built and signed but never "
+            "attached, or attached without ever being built, is published in "
+            "neither sense this gate can report")
+    return attached
 
 
 def main() -> int:
     try:
         mapped = mapped_platforms()
         published = published_platforms()
-        triples = mapped_triples()
-        published_assets = published_triples()
+        attached = published_assets()
     except Refusal as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
 
-    unmapped = sorted(published - mapped)
+    pairs = {(os_name, arch) for os_name, arch, _ in mapped.values()}
+    binaries = {slim_asset(os_name, triple)
+                for os_name, _, triple in mapped.values()}
+    # Both URLs, because a desktop derives both and either one 404s on its own.
+    resolved = {name for binary in binaries
+                for name in (binary, f"{binary}.minisig")}
+    status = 0
+
+    unmapped = sorted(published - pairs)
     if unmapped:
         print(f"{SHELL_RELEASE}'s {BUILD_JOB} publishes {len(unmapped)} "
               f"platform(s) that {MAPPING_SOURCE} cannot map to an engine "
@@ -306,26 +380,47 @@ def main() -> int:
         print("A desktop published for a platform with no ServerPlatform "
               "variant cannot download an engine. Add the variant, or stop "
               "publishing the platform.", file=sys.stderr)
-        return 1
+        status = 1
 
-    unpublished = sorted(triples - published_assets)
+    unpublished = sorted(resolved - attached)
     if unpublished:
         print(f"{MAPPING_SOURCE}'s ServerPlatform resolves {len(unpublished)} "
-              f"target triple(s) that {RELEASE_WORKFLOW}'s {RELEASE_JOB} job "
-              "does not publish as a release asset:", file=sys.stderr)
-        for triple in unpublished:
-            print(f"  phase-server-slim-{triple}", file=sys.stderr)
+              f"asset URL(s) that {RELEASE_WORKFLOW}'s {RELEASE_JOB} job "
+              "does not publish:", file=sys.stderr)
+        for asset in unpublished:
+            print(f"  {asset}", file=sys.stderr)
         print("A desktop resolving one of these asks the release for an asset "
-              "that is not there and its download 404s. Publish the triple, or "
-              "stop resolving it.", file=sys.stderr)
-        return 1
+              "that is not there and its download 404s. Publish that exact "
+              "name, or stop resolving it.", file=sys.stderr)
+        status = 1
+
+    moved: list[str] = []
+    if len(pairs) != MAPPED_PLATFORM_COUNT:
+        moved.append(f"{MAPPING_SOURCE}: ServerPlatform::os_arch reads as "
+                     f"{len(pairs)} platform(s), expected "
+                     f"{MAPPED_PLATFORM_COUNT}: {sorted(pairs)}")
+    if len(published) != PUBLISHED_PLATFORM_COUNT:
+        moved.append(f"{SHELL_RELEASE}: {BUILD_JOB} publishes {len(published)} "
+                     f"platform(s), expected {PUBLISHED_PLATFORM_COUNT}: "
+                     f"{sorted(published)}")
+    if moved:
+        print("MOVED: a population this gate holds an expectation about has "
+              "changed. Every check above is by name and ran clean, so this is "
+              "the expectation to re-confirm, not a hole:", file=sys.stderr)
+        for line in moved:
+            print(f"  {line}", file=sys.stderr)
+        status = status or 3
+
+    if status:
+        return status
 
     print(f"shell platform mapping OK: {len(published)} published platform(s) "
           f"({', '.join(f'{o}-{a}' for o, a in sorted(published))}) all mapped "
-          f"by ServerPlatform ({len(mapped)} entr(y/ies))")
-    print(f"engine target triples OK: {len(triples)} resolved triple(s) "
-          f"({', '.join(sorted(triples))}) all published by {RELEASE_WORKFLOW}'s "
-          f"{RELEASE_JOB} job ({len(published_assets)} slim asset(s))")
+          f"by ServerPlatform ({len(mapped)} variant(s))")
+    print(f"engine target triples OK: {len(binaries)} resolved asset(s) "
+          f"({', '.join(sorted(binaries))}), each with its signature, all "
+          f"published by {RELEASE_WORKFLOW}'s {RELEASE_JOB} job "
+          f"({len(attached)} slim asset URL(s))")
     return 0
 
 

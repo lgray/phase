@@ -66,22 +66,35 @@ def with_triple(platforms: Platforms, index: int, triple: str) -> Platforms:
 
 def mapping_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
                    method: str = "os_arch",
-                   triple_method: str = "target_triple") -> str:
+                   triple_method: str = "target_triple",
+                   listed: int | None = None,
+                   wrap: int | None = None) -> str:
     """A stand-in for the real module's `ServerPlatform`.
 
     Variants are indexed rather than named after their platform, so a duplicate
     `(os, arch)` or a duplicate triple is expressible at all. Both methods are
     read populations, and each is also the other's overrun guard: a block regex
     that ran past one reads the other's string literals as its own entries.
+
+    `listed` truncates `ALL` while leaving both matches exhaustive, which is the
+    shape a variant added without extending `ALL` takes: it compiles, and
+    `from_os_arch` reaches it for no `(os, arch)`. `wrap` renders one arm the way
+    rustfmt breaks one too long for a line, in both matches.
     """
     variants = [f"Platform{i}" for i in range(len(platforms))]
-    listed = "\n".join(f"        Self::{v}," for v in variants)
+    in_all = variants if listed is None else variants[:listed]
+    all_arms = "\n".join(f"        Self::{v}," for v in in_all)
     pairs = "\n".join(
+        f'            Self::{v} => (\n                "{os_name}",\n'
+        f'                "{arch}",\n            ),'
+        if i == wrap else
         f'            Self::{v} => ("{os_name}", "{arch}"),'
-        for v, (os_name, arch, _) in zip(variants, platforms))
+        for i, (v, (os_name, arch, _)) in enumerate(zip(variants, platforms)))
     triples = "\n".join(
+        f'            Self::{v} => {{\n                "{triple}"\n            }}'
+        if i == wrap else
         f'            Self::{v} => "{triple}",'
-        for v, (_, _, triple) in zip(variants, platforms))
+        for i, (v, (_, _, triple)) in enumerate(zip(variants, platforms)))
     declared = "\n".join(f"    {v}," for v in variants)
     return (f"""//! Fixture stand-in for the real native engine module.
 
@@ -91,8 +104,8 @@ enum ServerPlatform {{
 }}
 
 impl ServerPlatform {{
-    const ALL: [Self; {len(platforms)}] = [
-{listed}
+    const ALL: [Self; {len(in_all)}] = [
+{all_arms}
     ];
 
     fn {method}(self) -> (&'static str, &'static str) {{
@@ -133,14 +146,16 @@ jobs:
 """
 
 
-def slim_asset_lines(triple: str, omit: str = "") -> str:
+def slim_asset_lines(triple: str, omit: str = "", exe: str = ".exe") -> str:
     """The binary and signature paths the release attaches for one triple.
 
     `omit` drops one half, which is how a triple published at only one of the
-    two URLs a desktop derives from it is expressed.
+    two URLs a desktop derives from it is expressed. `exe` is the suffix a
+    Windows triple's asset carries; emptying it attaches a complete pair under a
+    name no Windows desktop asks for.
     """
     name = f"phase-server-slim-{triple}"
-    ext = ".exe" if "windows" in triple else ""
+    ext = exe if "windows" in triple else ""
     halves = {"binary": f"          artifacts/{name}/{name}{ext}",
               "signature": f"          artifacts/{name}/{name}{ext}.minisig"}
     return "\n".join(line for half, line in halves.items() if half != omit)
@@ -151,7 +166,8 @@ def release_source(triples: tuple[str, ...] = DEFAULT_TRIPLES, *,
                    omit: dict[str, str] | None = None,
                    sign_step: str = "sign-release-artifacts",
                    asset_step: str = "release-assets",
-                   loop_var: str = "triple") -> str:
+                   loop_var: str = "triple",
+                   exe: str = ".exe") -> str:
     """A stand-in for the release job's slim-server signing and asset steps.
 
     `attached` defaults to `triples`, so the two readings agree unless a case
@@ -159,7 +175,7 @@ def release_source(triples: tuple[str, ...] = DEFAULT_TRIPLES, *,
     release leaves behind.
     """
     signed = " \\\n            ".join(triples)
-    files = "\n".join(slim_asset_lines(t, (omit or {}).get(t, ""))
+    files = "\n".join(slim_asset_lines(t, (omit or {}).get(t, ""), exe)
                       for t in (triples if attached is None else attached))
     return f"""name: Release
 on:
@@ -203,7 +219,7 @@ class MappingTree:
         path.write_text(body, encoding="utf-8")
 
     def write_mapping(self, platforms: Platforms = DEFAULT_PLATFORMS,
-                      **kwargs: str) -> None:
+                      **kwargs: str | int | None) -> None:
         self._write(MAPPING_REL, mapping_source(platforms, **kwargs))
 
     def write_workflow(self, platforms: Platforms = DEFAULT_PLATFORMS,
@@ -255,17 +271,19 @@ class ShellPlatformMappingTests(unittest.TestCase):
         self.assertIn(SENTINEL_ARCH, r.stderr)
         self.assertIn("cannot map to an engine target", r.stderr)
 
-    def test_a_new_published_platform_refuses(self) -> None:
-        # The mapping is readable and the matrix grew past it. Reporting this as
-        # a coverage gap would be true but weaker than what it is: the set this
-        # gate's expectations describe has changed.
+    def test_a_new_published_platform_names_the_gap_and_the_moved_count(self) -> None:
+        # The matrix grew past a readable mapping, so the new platform is both an
+        # unmapped desktop and evidence that this gate's expected population
+        # moved. The population having moved must not cost the run the name of
+        # the desktop that cannot fetch an engine.
         t = self.tree()
         t.write_workflow(
             DEFAULT_PLATFORMS + (("freebsd", "x86_64", "x86_64-unknown-freebsd"),))
         r = t.run()
-        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("freebsd-x86_64", r.stderr)
+        self.assertIn("cannot map to an engine target", r.stderr)
         self.assertIn("publishes 5 platform(s)", r.stderr)
-        self.assertIn("REFUSED", r.stderr)
 
     def test_a_renamed_matrix_key_refuses(self) -> None:
         # The vacuous-green direction: a matrix this gate cannot read is an empty
@@ -281,43 +299,103 @@ class ShellPlatformMappingTests(unittest.TestCase):
     def test_an_unreadable_mapping_refuses(self) -> None:
         # Both ways the authority goes unread. An absent mapping and a renamed
         # accessor are the same empty set, and it maps no published platform.
-        for label, prepare in (
-            ("absent file", lambda t: t.delete(MAPPING_REL)),
-            ("renamed method", lambda t: t.write_mapping(method="platform_pair")),
+        # Each leg names its own reason, because "REFUSED" alone is also what an
+        # interpreter with no YAML parser prints for every one of them.
+        for label, prepare, reason in (
+            ("absent file", lambda t: t.delete(MAPPING_REL),
+             "the platform mapping is missing"),
+            ("renamed method", lambda t: t.write_mapping(method="platform_pair"),
+             "ServerPlatform::os_arch"),
             ("renamed triple method",
-             lambda t: t.write_mapping(triple_method="server_triple")),
+             lambda t: t.write_mapping(triple_method="server_triple"),
+             "ServerPlatform::target_triple"),
         ):
             with self.subTest(mapping=label):
                 t = self.tree()
                 prepare(t)
                 r = t.run()
                 self.assertEqual(r.returncode, 2, r.stdout)
-                self.assertIn("REFUSED", r.stderr)
+                self.assertIn(reason, r.stderr)
                 self.assertNotIn("mapping OK", r.stdout)
 
     def test_a_duplicate_os_arch_entry_refuses(self) -> None:
-        # Five arms, two claiming linux-aarch64: counting distinct keys alone
-        # reads this as the expected population of four and exits 0, while the
-        # fifth variant's triple is unreachable. Both counts are checked for
-        # this reason.
+        # Five arms, two claiming linux-aarch64, so the fifth variant's triple is
+        # unreachable while the distinct platforms still number the expected four.
+        # The finding is which variants collided, so both are named.
         t = self.tree()
         t.write_mapping(DEFAULT_PLATFORMS + (("linux", "aarch64", "wrong-triple"),))
         r = t.run()
         self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn("5 arm(s) naming only 4 distinct platform(s)", r.stderr)
+        self.assertIn("('linux', 'aarch64')", r.stderr)
+        self.assertIn("'Platform3', 'Platform4'", r.stderr)
         self.assertNotIn("mapping OK", r.stdout)
 
-    def test_a_fifth_distinct_mapping_arm_refuses(self) -> None:
-        # The other half of the two counts: five arms naming five platforms is a
-        # readable mapping whose population moved, and the matrix has to be
-        # checked against the new one rather than credited with covering it.
+    def test_a_fifth_distinct_mapping_arm_names_its_unpublished_asset(self) -> None:
+        # Five arms naming five platforms is a readable mapping whose population
+        # moved, and the fifth resolves an asset the release does not carry. Both
+        # are reported: the moved count explains why, the asset is what 404s.
         t = self.tree()
         t.write_mapping(
             DEFAULT_PLATFORMS + (("freebsd", "x86_64", "x86_64-unknown-freebsd"),))
         r = t.run()
-        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("phase-server-slim-x86_64-unknown-freebsd", r.stderr)
         self.assertIn("reads as 5 platform(s)", r.stderr)
         self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_shrunken_platform_set_reports_a_moved_population(self) -> None:
+        # Every population read perfectly and no desktop is stranded, so this is
+        # neither a coverage gap nor a failure to read. It is the expected set
+        # moving, which the exit code has to distinguish from both.
+        t = self.tree()
+        t.write_mapping(DEFAULT_PLATFORMS[:3])
+        t.write_workflow(DEFAULT_PLATFORMS[:3])
+        t.write_release(DEFAULT_TRIPLES[:3])
+        r = t.run()
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn("reads as 3 platform(s)", r.stderr)
+        self.assertIn("publishes 3 platform(s)", r.stderr)
+        self.assertNotIn("REFUSED", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_variant_absent_from_all_refuses(self) -> None:
+        # ALL is the only thing from_os_arch iterates, so a variant left out of
+        # it resolves for no (os, arch) at runtime while both matches stay
+        # exhaustive and every population still counts four.
+        t = self.tree()
+        t.write_mapping(listed=3)
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("ServerPlatform::ALL", r.stderr)
+        self.assertIn("Platform3", r.stderr)
+        # A refusal that tells the reader to adjust a number teaches them to
+        # switch it off. The repair is the variant, so that is what it asks for.
+        self.assertIn("Add the variant to ALL", r.stderr)
+        self.assertNotIn("count", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_wrapped_match_arm_refuses(self) -> None:
+        # rustfmt breaks an arm too long for one line, and an arm pattern written
+        # for the single-line shape reads straight past it. Every arm carries its
+        # `Self::` receiver whatever its shape, so counting those is what notices.
+        t = self.tree()
+        t.write_mapping(wrap=3)
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("no arm it could parse: ['Platform3']", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
+    def test_a_windows_asset_without_its_exe_suffix_fails(self) -> None:
+        # A desktop derives its asset name from its triple plus the suffix its
+        # own platform implies, so a Windows desktop asks for `...-msvc.exe`. A
+        # release attaching a complete, signed pair under the bare triple
+        # publishes nothing at either URL that desktop requests.
+        t = self.tree()
+        t.write_release(exe="")
+        r = t.run()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("phase-server-slim-x86_64-pc-windows-msvc.exe", r.stderr)
+        self.assertIn("does not publish", r.stderr)
 
     def test_a_mapped_triple_the_release_does_not_publish_fails(self) -> None:
         # Four triples on each side, so neither count assertion fires and only
@@ -330,17 +408,15 @@ class ShellPlatformMappingTests(unittest.TestCase):
         self.assertIn(SENTINEL_TRIPLE, r.stderr)
         self.assertIn("does not publish", r.stderr)
 
-    def test_a_published_triple_the_mapping_does_not_name_refuses(self) -> None:
-        # An asset no variant resolves breaks no desktop, so this is not a
-        # coverage gap in the direction above. It is the published set moving
-        # out from under this gate's expectations, which is the event a grown
-        # build-shell matrix reports, and it refuses for the same reason.
+    def test_a_published_triple_the_mapping_does_not_name_passes(self) -> None:
+        # The release's slim-server set is not the desktop platform set. A triple
+        # published for a consumer that is not a desktop is a superset no variant
+        # resolves, and a superset cannot 404 anything a desktop asks for.
         t = self.tree()
         t.write_release(DEFAULT_TRIPLES + ("x86_64-unknown-freebsd",))
         r = t.run()
-        self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn("publishes 5 slim server asset(s)", r.stderr)
-        self.assertNotIn("mapping OK", r.stdout)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("engine target triples OK", r.stdout)
 
     def test_a_signed_triple_the_release_never_attaches_refuses(self) -> None:
         # The signing loop and the asset list are two readings of one published
@@ -354,30 +430,52 @@ class ShellPlatformMappingTests(unittest.TestCase):
         self.assertIn(DEFAULT_TRIPLES[3], r.stderr)
         self.assertNotIn("mapping OK", r.stdout)
 
-    def test_a_half_attached_triple_refuses(self) -> None:
-        # A desktop derives two URLs from its triple, the binary and the
-        # signature beside it. A release carrying one of them 404s on the other,
-        # and an asset list read for the triple's name alone counts the pair as
-        # published from either line. Both halves are dropped in turn because an
-        # enumeration is falsified by the member it omits.
-        for half in ("binary", "signature"):
+    def test_each_half_of_a_derived_pair_is_its_own_identity(self) -> None:
+        # A desktop derives two URLs from its platform, the binary and the
+        # signature beside it, and whichever is missing 404s on its own. Each is
+        # therefore its own name here: the unbuilt binary disagrees with the
+        # signing loop, while the unattached signature is simply a URL nobody
+        # published. Both are dropped in turn because an enumeration is falsified
+        # by the member it omits.
+        triple = DEFAULT_TRIPLES[3]
+        for half, code, reason in (
+            ("binary", 2, f"Signed, never attached: ['{triple}']"),
+            ("signature", 1, f"phase-server-slim-{triple}.minisig"),
+        ):
             with self.subTest(missing=half):
                 t = self.tree()
-                t.write_release(omit={DEFAULT_TRIPLES[3]: half})
+                t.write_release(omit={triple: half})
                 r = t.run()
-                self.assertEqual(r.returncode, 2, r.stdout)
-                self.assertIn(DEFAULT_TRIPLES[3], r.stderr)
+                self.assertEqual(r.returncode, code, r.stdout)
+                self.assertIn(reason, r.stderr)
                 self.assertNotIn("mapping OK", r.stdout)
 
     def test_a_duplicate_target_triple_arm_refuses(self) -> None:
-        # Four arms resolving three triples: counting distinct triples alone
-        # reads this as the expected population of four and exits 0, while one
-        # platform's desktop downloads another platform's binary.
+        # Four arms resolving three triples, so one platform's desktop downloads
+        # another platform's binary. The two variants sharing the triple are the
+        # finding; the size of the distinct set is not.
         t = self.tree()
         t.write_mapping(with_triple(DEFAULT_PLATFORMS, 2, DEFAULT_TRIPLES[3]))
         r = t.run()
         self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn("4 arm(s) resolving only 3 distinct triple(s)", r.stderr)
+        self.assertIn(f"'phase-server-slim-{DEFAULT_TRIPLES[3]}'", r.stderr)
+        self.assertIn("'Platform2', 'Platform3'", r.stderr)
+        self.assertNotIn("mapping OK", r.stdout)
+
+    def test_two_triples_that_derive_one_asset_name_refuse(self) -> None:
+        # The other end of the same class. The suffix is part of the name a
+        # desktop requests, so two variants whose triples differ only by the
+        # suffix one of their platforms appends derive a single URL: the Windows
+        # desktop and the linux-x86_64 desktop ask for the same file and one of
+        # them gets a binary built for the other OS. Compared as bare triples
+        # these are two distinct values and the tree reads as clean.
+        t = self.tree()
+        t.write_mapping(
+            with_triple(DEFAULT_PLATFORMS, 2, f"{DEFAULT_TRIPLES[1]}.exe"))
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn(f"'phase-server-slim-{DEFAULT_TRIPLES[1]}.exe'", r.stderr)
+        self.assertIn("'Platform1', 'Platform2'", r.stderr)
         self.assertNotIn("mapping OK", r.stdout)
 
     def test_an_unreadable_release_workflow_refuses(self) -> None:
@@ -385,20 +483,24 @@ class ShellPlatformMappingTests(unittest.TestCase):
         # gate cannot read is empty, and an empty published set makes every
         # mapped triple unpublished or none of them, depending on which way a
         # tolerant reader took the difference. Neither answer was measured.
-        for label, prepare in (
-            ("absent file", lambda t: t.delete(RELEASE_REL)),
+        for label, prepare, reason in (
+            ("absent file", lambda t: t.delete(RELEASE_REL),
+             "slim server assets cannot be read"),
             ("renamed signing step",
-             lambda t: t.write_release(sign_step="sign-artifacts")),
+             lambda t: t.write_release(sign_step="sign-artifacts"),
+             "no step id 'sign-release-artifacts'"),
             ("renamed asset step",
-             lambda t: t.write_release(asset_step="assets")),
-            ("reshaped loop", lambda t: t.write_release(loop_var="target")),
+             lambda t: t.write_release(asset_step="assets"),
+             "no step id 'release-assets'"),
+            ("reshaped loop", lambda t: t.write_release(loop_var="target"),
+             "`for triple in ...` loop"),
         ):
             with self.subTest(release=label):
                 t = self.tree()
                 prepare(t)
                 r = t.run()
                 self.assertEqual(r.returncode, 2, r.stdout)
-                self.assertIn("REFUSED", r.stderr)
+                self.assertIn(reason, r.stderr)
                 self.assertNotIn("mapping OK", r.stdout)
 
     def test_the_harness_reads_the_fixture_not_the_real_tree(self) -> None:
