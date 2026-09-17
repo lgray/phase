@@ -178,15 +178,51 @@ ASSET_HEREDOC = re.compile(r"cat <<'EOF'\n(.*?)\n\s*EOF\b", re.S)
 #: silences the very desktop whose absence was the finding. The manifest keys are
 #: taken from inside `binaries: {` alone -- the same step's jq also writes a
 #: `data:` array of `{name, sha256, url}` objects, and a pattern matching any
-#: quoted key followed by a brace would read those as platforms too. The array
-#: is read only on a line that is not a comment and only as `binaries` itself --
-#: `declare -a` or `local` ahead of it still reads -- because the step's arrays
-#: are counted, and a commented-out block or a `keep_binaries=(` array is not a
-#: second assignment of what either loop walks.
-PREVIEW_BINARIES_ARRAY = re.compile(
-    r"^(?![ \t]*#)[^\n]*?\bbinaries=\(\n(.*?)\n\s*\)", re.M | re.S)
+#: quoted key followed by a brace would read those as platforms too.
+#:
+#: The array is not found by a pattern, because bash assigns it from spellings a
+#: pattern does not name. Every `binaries` in the step must be one of three: the
+#: standalone assignment (a `binaries=(` line, artifact lines, a `)` line), the
+#: loops' `"${binaries[@]}"`, or the manifest's `binaries: {` line. Any other
+#: refuses -- a one-line, appended, `declare`d or `mapfile`d array, a commented
+#: one, prose. Names are matched with quotes and backslashes removed, because
+#: `declare` assigns `"bin""aries=(...)"`; a line continuation onto a non-blank
+#: and `$'...'` or `$"..."` quoting refuse instead, because bash joins a name
+#: across the first and decodes one out of the second.
+PREVIEW_ARRAY_MENTION = re.compile(r"(?<![A-Za-z0-9_])binaries(?![A-Za-z0-9_])")
+PREVIEW_ARRAY_SPLICE = re.compile(r"[\\'\"]")
+#: A line continuation bash joins onto a word, or that is not a continuation
+#: at all (after `\\` or in a comment); either way the break is not one a
+#: text reader can place.
+PREVIEW_ARRAY_JOIN = re.compile(r"\\\n(?![ \t])")
+#: `$'...'` and `$"..."` remove characters and decode escapes in a name.
+PREVIEW_QUOTE_DECODE = re.compile(r"\$['\"]")
+PREVIEW_ARRAY_OPEN = re.compile(r"[ \t]*binaries=\(")
+PREVIEW_ARRAY_CLOSE = re.compile(r"[ \t]*\)")
+PREVIEW_ARRAY_READ = '"${binaries[@]}"'
+PREVIEW_MANIFEST_OPEN = re.compile(r"[ \t]*binaries: \{")
 PREVIEW_ARRAY_LINE = re.compile(
-    r"^\s*artifacts/[\w.-]+/phase-server-([\w.-]+?)(\.exe)?$", re.M)
+    r"[ \t]*artifacts/[\w.-]+/phase-server-([\w.-]+?)(\.exe)?")
+#: Commands that run text the step does not hold as lines of its own; each
+#: takes an argument, so a word followed by a blank is the command.
+PREVIEW_EVAL = re.compile(r"(?<![^\s;&|(<>$])(?:eval|source|\.)[ \t]")
+#: Words that make bash rewrite a line before parsing it: an alias replaces a
+#: command word with its text, and history expansion replaces `!` designators.
+PREVIEW_REWRITE = re.compile(r"(?<!\w)(?:alias|BASH_ALIASES|history)(?!\w)")
+#: A heredoc operator with a bare or wholly quoted delimiter. The scanner below
+#: models no other delimiter spelling.
+SHELL_HEREDOC = re.compile(
+    r"<<(-?)[ \t]*(?:([A-Za-z_]\w*)|'([A-Za-z_]\w*)'|\"([A-Za-z_]\w*)\")"
+    r"(?=[\s;&|()<>]|$)")
+SHELL_CASE = re.compile(r"case(?=[\s;&|()<>])")
+SHELL_METACHARS = " \t\n;&|()<>"
+SHELL_CONTEXTS = {
+    "single": "a single-quoted string",
+    "double": "a double-quoted string",
+    "comsub": "a `$( ... )` command substitution",
+    "backtick": "a backtick command substitution",
+    "param": "a `${ ... }` expansion",
+}
 #: Anchored on the `data:` key that follows it, because every entry *inside* the
 #: object also ends in `},` -- stopping at the first one would read a single
 #: platform's interior as the whole map and stranding the other three would look
@@ -768,6 +804,229 @@ def published_assets() -> set[str]:
     return attached
 
 
+def _shell_context(body: str, stop: int, where: str) -> str | None:
+    """What the line starting at `stop` sits inside, or None for a command line.
+
+    Bash assigns the array only from a line that is a command: not inside a
+    quoted string, a heredoc body, a command substitution, or an unclosed `(`
+    or `[` -- arithmetic, a pattern, a subscript, a subshell. Constructs outside
+    the modelled set refuse, because one misread construct moves every quote
+    after it. `$((` is scanned as a substitution holding parentheses, and a `)`
+    with no `(` open is a `case` pattern's and closes nothing. Branches,
+    functions and pipelines are not modelled: the line is a command inside them
+    too.
+    """
+    frames: list[list] = [["code", 0, 0]]
+    heredocs: list[tuple[str, bool, bool, int]] = []
+    word_start, joined, i = True, False, 0
+
+    def unmodelled(what: str) -> Refusal:
+        line = body.count("\n", 0, i) + 1
+        return Refusal(f"{where} uses {what} on line {line}, ahead of its "
+                       "`binaries=(` line, which this gate does not read as "
+                       "shell; a construct read wrongly moves every quote after "
+                       "it, so where the array sits cannot be told")
+
+    while i < stop:
+        kind, char = frames[-1][0], body[i]
+        if kind == "comment":
+            if char == "\n":
+                frames.pop()
+                continue
+        elif kind == "single":
+            if char == "'":
+                frames.pop()
+                word_start = False
+        elif kind == "backtick":
+            if char == "\\":
+                i += 1
+            elif char == "`":
+                frames.pop()
+                word_start = False
+        elif kind == "param":
+            if char in "'\"`$\\{":
+                raise unmodelled(f"`{char}` inside `${{ ... }}`")
+            if char == "}":
+                frames.pop()
+                word_start = False
+        elif char == "\\":
+            if body.startswith("\\\n", i):
+                joined = True
+            else:
+                word_start = joined = False
+            i += 2
+            continue
+        elif body.startswith("$(", i):
+            frames.append(["comsub", 0, 0])
+            word_start = True
+            i += 2
+            continue
+        elif body.startswith("${", i):
+            frames.append(["param", 0, 0])
+            i += 1
+        elif char == "`":
+            frames.append(["backtick", 0, 0])
+        elif kind == "double":
+            if char == '"':
+                frames.pop()
+                word_start = False
+        elif char == "'":
+            frames.append(["single", 0, 0])
+        elif char == '"':
+            frames.append(["double", 0, 0])
+        elif char == "#" and word_start:
+            if frames[-1][1] or frames[-1][2]:
+                raise unmodelled("a `#` inside an unclosed `(` or `[`")
+            frames.append(["comment", 0, 0])
+        elif body.startswith("<<<", i):
+            i += 2
+        elif body.startswith("<<", i):
+            if frames[-1][1] or frames[-1][2]:
+                raise unmodelled("`<<` inside an unclosed `(` or `[`")
+            op = SHELL_HEREDOC.match(body, i)
+            if op is None:
+                raise unmodelled("a heredoc delimiter")
+            strip, bare, single, double = op.groups()
+            heredocs.append((bare or single or double, bool(strip), bare is None,
+                             len(frames)))
+            i = op.end() - 1
+        elif char == "\n" and heredocs:
+            if (frames[-1][1] or frames[-1][2]
+                    or any(depth != len(frames) for *_, depth in heredocs)):
+                raise unmodelled("a heredoc whose body starts inside another "
+                                 "construct")
+            i += 1
+            for delimiter, strip, quoted, _ in heredocs:
+                while True:
+                    if i >= stop:
+                        return "a heredoc body"
+                    end = body.find("\n", i) % (len(body) + 1)
+                    line = body[i:end]
+                    if (line.lstrip("\t") if strip else line) == delimiter:
+                        i = end + 1
+                        break
+                    if not quoted and line.endswith("\\"):
+                        raise unmodelled("a heredoc body line ending in `\\`")
+                    i = end + 1
+            heredocs.clear()
+            word_start, joined = True, False
+            continue
+        elif kind == "comsub" and word_start and SHELL_CASE.match(body, i):
+            raise unmodelled("`case` inside `$( ... )`")
+        elif kind in ("code", "comsub") and char in "[]":
+            frames[-1][2] = max(0, frames[-1][2] + (1 if char == "[" else -1))
+        elif kind in ("code", "comsub") and char in "()":
+            if frames[-1][2]:
+                raise unmodelled("a parenthesis inside an unclosed `[`")
+            frames[-1][1] += 1 if char == "(" else -1
+            if frames[-1][1] < 0 and kind == "code":
+                # A `case` pattern's `)` closes nothing.
+                frames[-1][1] = 0
+            elif frames[-1][1] < 0:
+                frames.pop()
+                word_start = False
+                i += 1
+                continue
+        if kind in ("code", "comsub") and frames[-1][0] == kind:
+            word_start, joined = char in SHELL_METACHARS, False
+        i += 1
+
+    if len(frames) > 1:
+        return SHELL_CONTEXTS[frames[-1][0]]
+    if frames[0][1] or frames[0][2]:
+        return "an unclosed `(` or `[`, which bash reads as one word or expression"
+    if joined:
+        return "the line before it, which ends in a line continuation"
+    return None
+
+
+def _preview_artifacts(body: str) -> dict[str, str]:
+    """The file name each triple is signed and uploaded under, from `binaries`.
+
+    This reads the step's `run` text, not its execution: an assignment inside a
+    branch, loop, function or pipeline still reads, a name built by expansion is
+    not seen, and neither is anything outside that text that changes how bash
+    runs it, such as a step `shell:` or a `BASH_ENV` startup file.
+    """
+    where = f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP}"
+    origin: list[int] = []
+    kept = 0
+    for cut in PREVIEW_ARRAY_SPLICE.finditer(body):
+        origin.extend(range(kept, cut.start()))
+        kept = cut.end()
+    origin.extend(range(kept, len(body)))
+    flat = "".join(body[at] for at in origin)
+    for pattern, what in ((PREVIEW_ARRAY_JOIN, "a line continuation onto a "
+                           "non-blank"), (PREVIEW_QUOTE_DECODE, "`$'...'` or "
+                                          '`$"..."` quoting')):
+        if found := pattern.search(body):
+            line = body.count("\n", 0, found.start()) + 1
+            raise Refusal(f"{where} uses {what} on line {line}; a name spelled "
+                          "through it is not a name this gate can read, so "
+                          "`binaries` could be assigned where it does not look")
+    if rewrites := PREVIEW_REWRITE.search(flat):
+        raise Refusal(f"{where} uses `{rewrites.group()}`, which makes bash rewrite "
+                      "the step's lines before parsing them, so what the array "
+                      "sits inside cannot be told from their text")
+    if runs := PREVIEW_EVAL.search(flat):
+        raise Refusal(f"{where} runs `{runs.group().strip()}`, which executes text "
+                      "that is not a line of the step, so `binaries` could be "
+                      "assigned where this gate does not read")
+
+    opens: list[int] = []
+    reads: list[int] = []
+    for mention in PREVIEW_ARRAY_MENTION.finditer(flat):
+        start = origin[mention.start()]
+        line_start = body.rfind("\n", 0, start) + 1
+        line = body[line_start:body.find("\n", start) % (len(body) + 1)]
+        if PREVIEW_ARRAY_OPEN.fullmatch(line):
+            opens.append(line_start)
+        elif start >= 3 and body.startswith(PREVIEW_ARRAY_READ, start - 3):
+            reads.append(start)
+        elif not PREVIEW_MANIFEST_OPEN.fullmatch(line):
+            raise Refusal(f"{where} names `binaries` on the line {line.strip()!r}; "
+                          "the array both loops walk may only be assigned by one "
+                          "standalone `binaries=(` line and read as "
+                          f"`{PREVIEW_ARRAY_READ}`, because any other spelling can "
+                          "assign it where this gate does not read")
+    # Exactly one: bash expands `binaries` to its latest assignment, so a second
+    # array ahead of either loop changes what that loop signs or uploads while a
+    # read of either array alone still passes.
+    if len(opens) != 1:
+        raise Refusal(f"{where} has no readable `binaries=( ... )` array (found "
+                      f"{len(opens)}); the set every preview binary is signed and "
+                      "uploaded from must be unambiguous, and a set this gate "
+                      "cannot read is not an empty one")
+    context = _shell_context(body, opens[0], where)
+    if context is not None:
+        raise Refusal(f"{where} has its `binaries=(` line inside {context}, so "
+                      "bash never assigns the array from it and the array both "
+                      "loops walk is not the one this gate would read")
+
+    artifacts: dict[str, str] = {}
+    for line in body[opens[0]:].rstrip("\n").split("\n")[1:]:
+        if PREVIEW_ARRAY_CLOSE.fullmatch(line):
+            break
+        element = PREVIEW_ARRAY_LINE.fullmatch(line)
+        if element is None:
+            raise Refusal(f"{where} has the line {line.strip()!r} inside its "
+                          "`binaries=( ... )` array, which is not one artifact "
+                          "path; bash reads that line as something this gate "
+                          "does not")
+        triple, exe = element.groups()
+        artifacts[triple] = f"phase-server-{triple}{exe or ''}"
+    else:
+        raise Refusal(f"{where} has no `)` line closing its `binaries=( ... )` "
+                      "array")
+    # A read ahead of the assignment walks an unset array, which `set -u` lets
+    # expand to nothing: that loop signs or uploads no binary at all.
+    if not reads or min(reads) < opens[0]:
+        raise Refusal(f"{where} reads `{PREVIEW_ARRAY_READ}` ahead of its "
+                      "`binaries=(` line, or nowhere; a loop that walks the array "
+                      "before it is assigned signs and uploads nothing")
+    return artifacts
+
+
 def preview_platforms() -> dict[str, set[str]]:
     """Every triple preview provisioning declares, one set per place it says so.
 
@@ -832,21 +1091,10 @@ def preview_platforms() -> dict[str, set[str]]:
     body = _step_body(bodies, PREVIEW_SIGN_STEP, PREVIEW_WORKFLOW,
                       PREVIEW_PUBLISH_JOB,
                       "the signed binaries and the manifest naming them")
-    # Exactly one: bash expands `binaries` to its latest assignment, so a second
-    # array ahead of either loop changes what that loop signs or uploads while a
-    # read of either array alone still passes.
-    arrays = PREVIEW_BINARIES_ARRAY.findall(body)
-    if len(arrays) != 1:
-        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
-                      f"`binaries=( ... )` array (found {len(arrays)}); the set "
-                      "every preview binary is signed and uploaded from must be "
-                      "unambiguous, and a set this gate cannot read is not an "
-                      "empty one")
     # The array is the single authority for artifact file names: the step uploads
     # `basename "$binary"` taken from it, so the name in the manifest's URL has to
     # be exactly this one -- `.exe` included, which only windows carries.
-    artifacts = {triple: f"phase-server-{triple}{exe}"
-                 for triple, exe in PREVIEW_ARRAY_LINE.findall(arrays[0])}
+    artifacts = _preview_artifacts(body)
     signed = set(artifacts)
     block = PREVIEW_MANIFEST_BLOCK.search(body)
     if block is None:

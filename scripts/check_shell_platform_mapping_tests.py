@@ -349,6 +349,21 @@ def preview_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
             .replace("__ENTRIES__", entries))
 
 
+STEP_INDENT = " " * 10
+
+
+def step_lines(*lines: str) -> str:
+    """Shell lines at the signing step's indentation inside the template."""
+    return "".join(f"{STEP_INDENT}{line}\n" for line in lines)
+
+
+def split_array(body: str) -> tuple[str, str, str]:
+    """A preview body around its one `binaries` array: before, array, after."""
+    start = body.index(f"{STEP_INDENT}binaries=(\n")
+    end = body.index(f"{STEP_INDENT})\n", start) + len(STEP_INDENT) + 2
+    return body[:start], body[start:end], body[end:]
+
+
 class MappingTree:
     """A throwaway tree holding every file the gate reads."""
 
@@ -964,25 +979,14 @@ class ShellPlatformMappingTests(unittest.TestCase):
         self.assertIn("`binaries=( ... )` array (found 2)", r.stderr)
         self.assertNotIn("preview provisioning OK", r.stdout)
 
-    def test_text_that_assigns_no_binaries_is_not_counted(self) -> None:
-        # Both loops walk `binaries` alone, so neither a commented-out block nor
-        # an array whose name only ends in `binaries` is a second assignment:
-        # counting one refuses a working step, and reading one ahead of the real
-        # array hides the triple that array dropped. `declare -a` is the one
-        # array spelled through its builtin, so it still reads.
+    def test_a_name_that_only_contains_binaries_is_not_a_mention(self) -> None:
+        # Both loops walk `binaries` alone, so a name that merely contains it
+        # assigns nothing they read: reading a complete `keep_binaries=(` ahead
+        # of the real array hides the triple that array dropped, and refusing
+        # one refuses a working step. A second read in the loops' own spelling
+        # assigns nothing either.
         real = "          binaries=(\n"
         close = "          )\n"
-        original = 'prefix="desktop/preview-server/$FINGERPRINT"'
-        commented = (f"# binaries=(\n          #   artifacts/{DEFAULT_TRIPLES[2]}/"
-                     f"phase-server-{DEFAULT_TRIPLES[2]}\n          # )\n          ")
-        with self.subTest(shape="commented-out block after the array"):
-            body = preview_source()
-            self.assertEqual(body.count(original), 1)
-            t = self.tree()
-            t.write_preview_text(body.replace(original, commented + original))
-            r = t.run()
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn("preview provisioning OK", r.stdout)
         with self.subTest(shape="complete keep_binaries array ahead of the array"):
             stranded = DEFAULT_TRIPLES[0]
             full = preview_source()
@@ -997,15 +1001,256 @@ class ShellPlatformMappingTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
             self.assertIn(stranded, r.stderr)
             self.assertIn("signs", r.stderr)
-        with self.subTest(shape="declare -a spelling of the one array"):
-            body = preview_source()
-            self.assertEqual(body.count(real), 1)
+        with self.subTest(shape="longer names and a second read beside the array"):
+            head, array, tail = split_array(preview_source())
             t = self.tree()
-            t.write_preview_text(
-                body.replace(real, "          declare -a binaries=(\n"))
+            t.write_preview_text(head + array + step_lines(
+                "old_binaries=()", "binaries_seen=0", 'echo "${binaries[@]}"')
+                + tail)
             r = t.run()
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("preview provisioning OK", r.stdout)
+
+    def test_every_other_spelling_of_binaries_refuses(self) -> None:
+        # bash assigns `binaries` from each of these. Most sit after the real
+        # array, so they are what both loops walk; the `declare -a` and `local`
+        # openings replace it. Only the standalone assignment, the loops' read
+        # and the manifest key are read, so each refuses and names its line. A
+        # continuation onto a non-blank and `$'...'` quoting refuse wherever they
+        # sit, because bash joins a name across the first and decodes one out of
+        # the second; `alias`, `BASH_ALIASES` and `history` rewrite lines before
+        # bash parses them; the last three run text that is not a line of the
+        # step at all.
+        path = f"artifacts/{DEFAULT_TRIPLES[2]}/phase-server-{DEFAULT_TRIPLES[2]}"
+        head, array, tail = split_array(preview_source())
+        cases = [
+            (label, head + array + step_lines(*lines) + tail,
+             f"names `binaries` on the line {lines[0].strip()!r}")
+            for label, lines in (
+                ("one-line array", (f"binaries=({path})",)),
+                ("comment after the opening",
+                 ("binaries=( # one platform", f"  {path}", ")")),
+                ("continuation after the opening",
+                 ("binaries=(\\", f"  {path}", ")")),
+                ("trailing space after the opening",
+                 ("binaries=( ", f"  {path}", ")")),
+                ("path on the opening line", (f"binaries=({path}", ")")),
+                ("append", (f"binaries+=({path})",)),
+                ("element assignment", (f"binaries[0]={path}",)),
+                ("mapfile", ("mapfile -t binaries < platforms.txt",)),
+                ("read -a", (f'read -ra binaries <<< "{path}"',)),
+                ("printf -v", (f"printf -v binaries %s {path}",)),
+                ("nameref", ("declare -n list=binaries",)),
+                ("readonly", ("readonly binaries",)),
+                ("commented-out array", ("# binaries=(", f"#   {path}", "# )")),
+                ("prose", ('echo "signed the binaries"',)),
+                ("name split across quotes",
+                 (f'declare -a "bin""aries=({path})"',)),
+            )
+        ]
+        for label, lines in (
+                ("name split across a continuation", ("bin\\", f"aries=({path})")),
+                ("escaped backslash before the line", ("echo x\\\\", f"binaries+=({path})")),
+                ("comment ending in a backslash", ("# see x\\", f"binaries+=({path})"))):
+            cases.append((label, head + array + step_lines(*lines) + tail,
+                          "a line continuation onto a non-blank"))
+        for label, line in (
+                ("name decoded from $'...'", f"declare -a $'\\x62inaries+=({path})'"),
+                ('name split by $"..."', f'declare -a "bin"$"a""ries+=({path})"')):
+            cases.append((label, head + array + step_lines(line) + tail,
+                          "`$'...'` or `$\"...\"` quoting"))
+        for word, lines, close in (
+                ("alias", ("shopt -s expand_aliases", "alias note=\"note='\"", "note"), "'"),
+                ("BASH_ALIASES", ("shopt -s expand_aliases",
+                                  "BASH_ALIASES[note]=\"note='\"", "note"), "'"),
+                ("history", ("set -o history -o histexpand",
+                             "echo \"a'b/c\" >/dev/null", ": !:1:h"), '"')):
+            cases.append((word, head + step_lines(*lines) + array + step_lines(close) + tail,
+                          f"uses `{word}`, which makes bash rewrite"))
+        for opening in ("declare -a binaries=(", "local binaries=("):
+            cases.append((opening,
+                          head + array.replace("binaries=(", opening, 1) + tail,
+                          f"names `binaries` on the line {opening!r}"))
+        cases.append(("declare -a continued onto the array",
+                      head + step_lines("declare -a \\")
+                      + array.replace("binaries=(", "  binaries=(", 1) + tail,
+                      "the line before it, which ends in a line continuation"))
+        for word, line in (("eval", 'eval "$more"'),
+                           ("source", "source ./more.sh"),
+                           (".", ". ./more.sh")):
+            cases.append((word, head + array + step_lines(line) + tail,
+                          f"runs `{word}`"))
+        for label, body, reason in cases:
+            with self.subTest(spelling=label):
+                t = self.tree()
+                t.write_preview_text(body)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(reason, r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_a_binaries_array_bash_never_assigns_refuses(self) -> None:
+        # Each wraps the step's only array in text bash does not run as a
+        # command, so both loops walk an unset array while its lines still read
+        # as four platforms. Some are contexts the scanner models; the others are
+        # constructs it does not, each chosen so that modelling it the simpler
+        # way would read the array.
+        head, array, tail = split_array(preview_source())
+        comsub = "a `$( ... )` command substitution"
+        for label, before, after, reason in (
+            ("single-quoted string", ("note='",), ("'",), "a single-quoted string"),
+            ("double-quoted string", ('note="',), ('"',), "a double-quoted string"),
+            ("quoted heredoc body", ("cat <<'EOF' >/dev/null",), ("EOF",),
+             "a heredoc body"),
+            ("<<- heredoc body", ("cat <<-EOF >/dev/null",), ("\tEOF",),
+             "a heredoc body"),
+            ("$( ... )", ("note=$(",), (")",), comsub),
+            ("$( ... ) holding a subshell", ("note=$(", "(true)"), (")",), comsub),
+            ("$( ... ) holding ${x%)}", ("note=$(echo ${x%)}",), (")",), comsub),
+            ("backticks", ("note=`",), ("`",), "a backtick command substitution"),
+            ("ANSI-C string", ("note=$'it\\'s",), ("'",), "`$'...'` or"),
+            ("case inside $( ... )", ("note=$(case x in x) :;; esac",), (")",),
+             "`case` inside"),
+            ("heredoc delimiter built from quotes",
+             ('cat <<E"O"F >/dev/null', 'E"O"F'), ("EOF",), "a heredoc delimiter"),
+            ("heredoc line continued onto its delimiter",
+             ("cat <<-EOF >/dev/null", "note \\", "\tEOF"), ("EOF",),
+             "a heredoc body line ending in"),
+            ("heredoc opened on a $( ... ) line",
+             ("cat <<EOF >/dev/null $(echo", "EOF", ")"), ("EOF",),
+             "starts inside another construct"),
+            ("quote inside ${ ... }", ("note=${x:-'}'}", "echo '"), ("'",),
+             "inside `${ ... }`"),
+            ("arithmetic", ("(( 0 +",), ("0 )) || true",), "an unclosed `(` or `[`"),
+            ("extglob pattern", ("shopt -s extglob", "note=@("), (")",),
+             "an unclosed `(` or `[`"),
+            ("subscript", ("declare -A seen", "seen["), ("]=1",), "an unclosed `(` or `[`"),
+            ("<< as a shift", ("y=1", "(( n = 1 << y ))", "note='", "y"), ("'",),
+             "`<<` inside an unclosed"),
+            ("# inside an extglob pattern",
+             ("shopt -s extglob", "note=@(a #(", ")"), (")",), "a `#` inside an unclosed"),
+            ("parenthesis inside a subscript in $( ... )",
+             ("note=$(declare -A seen; seen[)]=1",), (")",),
+             "a parenthesis inside an unclosed `[`"),
+            ("heredoc body after a pattern spanning lines",
+             ("shopt -s extglob", "cat <<EOF >/dev/null; note=@(", "EOF", ")"), ("EOF",),
+             "starts inside another construct"),
+            ("`#` after a closed quote", ("note='a'#'",), ("'",), "a single-quoted string"),
+            ("`#` after a closed double quote", ('note="a"#"',), ('"',),
+             "a double-quoted string"),
+            ("`#` after a closed $( ... )", ("note=$(echo a)#'",), ("'",),
+             "a single-quoted string"),
+        ):
+            with self.subTest(context=label):
+                t = self.tree()
+                t.write_preview_text(
+                    head + step_lines(*before) + array + step_lines(*after) + tail)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(reason, r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_closed_shell_ahead_of_the_array_still_reads(self) -> None:
+        # The positive control for the scanner: each construct closes before the
+        # array and carries the characters that would leave a scanner which
+        # mishandled it inside a string, so the array would refuse. The last
+        # case is the real step's own shapes, `case` patterns included; the dots
+        # are what a looser `.` pattern reads as the command.
+        head, array, tail = split_array(preview_source())
+        for label, lines in (
+            ("single quotes over two lines with a '\\'' splice",
+             ("note='a \"quote\", $(, `, # and )", "and it'\\''s done'")),
+            ("double quotes over two lines",
+             ("note=\"it's \\\"escaped\\\", ${HOME}, $(printf ')'), # and )",
+              "still quoted\"")),
+            ("heredoc bodies",
+             ("cat <<'EOF' >/dev/null", "it's $( unbalanced", "note \\", " joined", "EOF",
+              "cat <<-EOF >/dev/null", "\"unbalanced", "\tEOF")),
+            ("substitutions holding parentheses and a comment",
+             ("note=$(", "  (printf '%s' \")\") # a ) in a comment",
+              "  echo $(( (1 + 2) * $# ))", ")", "old=`echo \"it's\"`")),
+            ("comments and $# beside quotes",
+             ("# Cloudflare's API", "args=$# note='spans", "two lines'")),
+            ("closed arithmetic, subscripts and arrays",
+             ("(( n = (1 + 2) ))", "declare -A seen; seen[a]=1", "x=(a b) # it's",
+              "cat <<EOF >/dev/null", "it's", "EOF")),
+            ("dots that are not the `.` command",
+             ('cp "$manifest" .', 'echo "signed (4). Done"')),
+            ("a here-string on a continued line",
+             ("jq -r '.x' <<<\"$page\" \\", "  >/dev/null")),
+            ("the real step's shapes",
+             ("trap 'rm -f \"$key_file\"' EXIT", "sign() {",
+              "  printf '\\n' | minisign -S -m \"$1\"", "}",
+              "case \"$status\" in", "  200)",
+              "    jq -e 'type == \"object\"' \"$f\" >/dev/null", "    ;;",
+              "  *)", "    echo \"::error::failed (HTTP ${status:-curl failure}).\"",
+              "    exit 1", "    ;;", "esac")),
+        ):
+            with self.subTest(construct=label):
+                t = self.tree()
+                t.write_preview_text(head + step_lines(*lines) + array + tail)
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
+
+    def test_a_line_in_the_array_that_is_not_one_artifact_refuses(self) -> None:
+        # Bash splits the array into words, not lines, so a line holding
+        # anything but one artifact path assigns something other than what it
+        # reads as: wrapped in `$( ... )` the four paths run as commands and the
+        # array is empty.
+        head, array, tail = split_array(preview_source())
+        opening, *elements, closing, _ = array.split("\n")
+        first = elements[0].strip()
+        for label, lines, fragment in (
+            ("paths wrapped in $( ... )",
+             [opening, f"{STEP_INDENT}$(printf '%s\\n'", *elements,
+              f"{STEP_INDENT})", closing], "printf"),
+            ("quoted path",
+             [opening, elements[0].replace(first, f'"{first}"'), *elements[1:],
+              closing], first),
+            ("two paths on one line",
+             [opening, f"{elements[0]} {elements[1].strip()}", *elements[2:],
+              closing], first),
+            ("comment line",
+             [opening, f"{STEP_INDENT}# every platform", *elements, closing],
+             "every platform"),
+            ("closing line with trailing syntax",
+             [opening, *elements, f"{closing} | cat"], "| cat"),
+        ):
+            with self.subTest(shape=label):
+                t = self.tree()
+                t.write_preview_text(head + "\n".join(lines) + "\n" + tail)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("inside its `binaries=( ... )` array", r.stderr)
+                self.assertIn(fragment, r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+        with self.subTest(shape="no closing line before the step ends"):
+            t = self.tree()
+            t.write_preview_text(head + tail + "\n".join([opening, *elements]) + "\n")
+            r = t.run()
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("has no `)` line", r.stderr)
+
+    def test_a_binaries_array_its_loops_do_not_walk_after_it_refuses(self) -> None:
+        # With `set -u`, bash expands an unset array to nothing, so a loop that
+        # walks `binaries` before its assignment signs and uploads no binary and
+        # the step still succeeds. Loops that walk something else never read it.
+        head, array, tail = split_array(preview_source())
+        read = '"${binaries[@]}"'
+        self.assertEqual(tail.count(read), 1)
+        for label, body in (
+            ("array after the loop", head + tail + array),
+            ("loop over a glob instead",
+             head + array + tail.replace(read, "artifacts/*/phase-server-*")),
+        ):
+            with self.subTest(shape=label):
+                t = self.tree()
+                t.write_preview_text(body)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("ahead of its `binaries=(` line, or nowhere", r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_second_binding_of_the_fingerprint_name_refuses(self) -> None:
         # jq expands `$fingerprint` from one binding of a repeated name, so a
