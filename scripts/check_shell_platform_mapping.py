@@ -178,8 +178,13 @@ ASSET_HEREDOC = re.compile(r"cat <<'EOF'\n(.*?)\n\s*EOF\b", re.S)
 #: silences the very desktop whose absence was the finding. The manifest keys are
 #: taken from inside `binaries: {` alone -- the same step's jq also writes a
 #: `data:` array of `{name, sha256, url}` objects, and a pattern matching any
-#: quoted key followed by a brace would read those as platforms too.
-PREVIEW_BINARIES_ARRAY = re.compile(r"binaries=\(\n(.*?)\n\s*\)", re.S)
+#: quoted key followed by a brace would read those as platforms too. The array
+#: is read only on a line that is not a comment and only as `binaries` itself --
+#: `declare -a` or `local` ahead of it still reads -- because the step's arrays
+#: are counted, and a commented-out block or a `keep_binaries=(` array is not a
+#: second assignment of what either loop walks.
+PREVIEW_BINARIES_ARRAY = re.compile(
+    r"^(?![ \t]*#)[^\n]*?\bbinaries=\(\n(.*?)\n\s*\)", re.M | re.S)
 PREVIEW_ARRAY_LINE = re.compile(
     r"^\s*artifacts/[\w.-]+/phase-server-([\w.-]+?)(\.exe)?$", re.M)
 #: Anchored on the `data:` key that follows it, because every entry *inside* the
@@ -827,16 +832,21 @@ def preview_platforms() -> dict[str, set[str]]:
     body = _step_body(bodies, PREVIEW_SIGN_STEP, PREVIEW_WORKFLOW,
                       PREVIEW_PUBLISH_JOB,
                       "the signed binaries and the manifest naming them")
-    array = PREVIEW_BINARIES_ARRAY.search(body)
-    if array is None:
+    # Exactly one: bash expands `binaries` to its latest assignment, so a second
+    # array ahead of either loop changes what that loop signs or uploads while a
+    # read of either array alone still passes.
+    arrays = PREVIEW_BINARIES_ARRAY.findall(body)
+    if len(arrays) != 1:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
-                      "`binaries=( ... )` array; the signed set was reshaped, and "
-                      "a set this gate cannot read is not an empty one")
+                      f"`binaries=( ... )` array (found {len(arrays)}); the set "
+                      "every preview binary is signed and uploaded from must be "
+                      "unambiguous, and a set this gate cannot read is not an "
+                      "empty one")
     # The array is the single authority for artifact file names: the step uploads
     # `basename "$binary"` taken from it, so the name in the manifest's URL has to
     # be exactly this one -- `.exe` included, which only windows carries.
     artifacts = {triple: f"phase-server-{triple}{exe}"
-                 for triple, exe in PREVIEW_ARRAY_LINE.findall(array.group(1))}
+                 for triple, exe in PREVIEW_ARRAY_LINE.findall(arrays[0])}
     signed = set(artifacts)
     block = PREVIEW_MANIFEST_BLOCK.search(body)
     if block is None:
@@ -867,13 +877,25 @@ def preview_platforms() -> dict[str, set[str]]:
                       f"'{prefix}', which carries no variable; every fingerprint "
                       "would publish over one path, so the manifest could not "
                       "name a per-fingerprint object at all")
-    bound = [jq for jq, sh in PREVIEW_JQ_ARG.findall(body)
-             if sh == shell.group(1)]
+    jq_args = PREVIEW_JQ_ARG.findall(body)
+    bound = [jq for jq, sh in jq_args if sh == shell.group(1)]
     if len(bound) != 1:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} binds "
                       f"${shell.group(1)} to {len(bound)} jq argument(s) "
                       f"{sorted(bound)}; exactly one is what lets the manifest's "
                       "variable be checked against the uploaded path")
+    # Exactly one binding of that jq name, whatever shell value each carries: jq
+    # expands the name from only one of them and which one is jq's own detail, so
+    # a second binding on either side leaves the URLs checked against a value jq
+    # may not use.
+    rebound = [sh for jq, sh in jq_args if jq == bound[0]]
+    if len(rebound) != 1:
+        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
+                      f"`--arg {bound[0]}` binding (found {len(rebound)}: "
+                      f"{sorted('$' + sh for sh in rebound)}); the fingerprint "
+                      "every manifest URL names must be unambiguous, and a "
+                      "second binding would check the upload path against a "
+                      "value jq may not use")
     head, tail = prefix[:shell.start()], prefix[shell.end():]
 
     def expected(name: str) -> list[tuple[str, str]]:

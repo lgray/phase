@@ -945,6 +945,99 @@ class ShellPlatformMappingTests(unittest.TestCase):
         self.assertIn('`prefix="..."` assignment (found 2)', r.stderr)
         self.assertNotIn("preview provisioning OK", r.stdout)
 
+    def test_a_second_binaries_array_refuses(self) -> None:
+        # bash expands `binaries` to its latest assignment, so a second array
+        # ahead of the upload loop is what gets uploaded. It names one platform,
+        # so a read of the first array passes a step that uploads nothing for the
+        # other three. The template carries one array, so the fixture carries two.
+        original = 'prefix="desktop/preview-server/$FINGERPRINT"'
+        second = (f"binaries=(\n            artifacts/{DEFAULT_TRIPLES[2]}/"
+                  f"phase-server-{DEFAULT_TRIPLES[2]}\n          )")
+        body = preview_source()
+        self.assertEqual(body.count(original), 1)
+        self.assertEqual(body.count("binaries=(\n"), 1)
+        t = self.tree()
+        t.write_preview_text(
+            body.replace(original, f"{second}\n          {original}"))
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("`binaries=( ... )` array (found 2)", r.stderr)
+        self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_text_that_assigns_no_binaries_is_not_counted(self) -> None:
+        # Both loops walk `binaries` alone, so neither a commented-out block nor
+        # an array whose name only ends in `binaries` is a second assignment:
+        # counting one refuses a working step, and reading one ahead of the real
+        # array hides the triple that array dropped. `declare -a` is the one
+        # array spelled through its builtin, so it still reads.
+        real = "          binaries=(\n"
+        close = "          )\n"
+        original = 'prefix="desktop/preview-server/$FINGERPRINT"'
+        commented = (f"# binaries=(\n          #   artifacts/{DEFAULT_TRIPLES[2]}/"
+                     f"phase-server-{DEFAULT_TRIPLES[2]}\n          # )\n          ")
+        with self.subTest(shape="commented-out block after the array"):
+            body = preview_source()
+            self.assertEqual(body.count(original), 1)
+            t = self.tree()
+            t.write_preview_text(body.replace(original, commented + original))
+            r = t.run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preview provisioning OK", r.stdout)
+        with self.subTest(shape="complete keep_binaries array ahead of the array"):
+            stranded = DEFAULT_TRIPLES[0]
+            full = preview_source()
+            start = full.index(real)
+            decoy = "          keep_" + full[start:full.index(close, start)
+                                            + len(close)].lstrip()
+            body = preview_source(drop_sign=stranded)
+            self.assertEqual(body.count(real), 1)
+            t = self.tree()
+            t.write_preview_text(body.replace(real, decoy + real))
+            r = t.run()
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn(stranded, r.stderr)
+            self.assertIn("signs", r.stderr)
+        with self.subTest(shape="declare -a spelling of the one array"):
+            body = preview_source()
+            self.assertEqual(body.count(real), 1)
+            t = self.tree()
+            t.write_preview_text(
+                body.replace(real, "          declare -a binaries=(\n"))
+            r = t.run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preview provisioning OK", r.stdout)
+
+    def test_a_second_binding_of_the_fingerprint_name_refuses(self) -> None:
+        # jq expands `$fingerprint` from one binding of a repeated name, so a
+        # second one bound to another shell value leaves the URLs checked against
+        # an upload path jq may not be expanding. Which binding jq keeps is its own
+        # detail, so both placements refuse.
+        original = '--arg fingerprint "$FINGERPRINT"'
+        other = '--arg fingerprint "$COMMIT"'
+        for label, spliced in (("ahead", f"{other} {original}"),
+                               ("behind", f"{original} {other}")):
+            with self.subTest(placement=label):
+                body = preview_source()
+                self.assertEqual(body.count(original), 1)
+                t = self.tree()
+                t.write_preview_text(body.replace(original, spliced))
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("`--arg fingerprint` binding (found 2", r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+        with self.subTest(
+                sibling="a name that is not exactly fingerprint is not counted"):
+            body = preview_source()
+            self.assertEqual(body.count(original), 1)
+            t = self.tree()
+            t.write_preview_text(body.replace(
+                original, f'{original} --arg fingerprint_old "$COMMIT" '
+                '--arg old_fingerprint "$COMMIT" --arg finger "$COMMIT" '
+                '--arg Fingerprint "$COMMIT"'))
+            r = t.run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preview provisioning OK", r.stdout)
+
     def test_a_duplicate_manifest_key_with_a_later_bad_url_refuses(self) -> None:
         # jq keeps the later value for a duplicate object key. A checker that
         # reduces keys to a set and reads the first matching block sees the valid
