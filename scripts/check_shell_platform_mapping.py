@@ -197,20 +197,49 @@ PREVIEW_MANIFEST_KEY = re.compile(r'^\s*"([\w.-]+)":\s*\{\s*$', re.M)
 #: binary's name is in the second string. A pattern stopping at the first would
 #: never see the name it exists to hold the key against.
 PREVIEW_MANIFEST_URL = re.compile(r"^\s*(url|sig_url):\s*(.+)$", re.M)
-#: The whole URL, rebuilt from the two authorities that produce it, rather than
-#: pieces of it matched in place. The step uploads to `$prefix/$name` with
-#: `prefix="desktop/preview-server/$FINGERPRINT"`, and the desktop fetches
-#: `url`/`sig_url` verbatim, so the object a manifest entry names is fixed by the
-#: prefix, the fingerprint and the array-authorised file name together. Matching
-#: any subset leaves the rest free: a changed prefix or a different fingerprint
-#: variable keeps the terminal name and still resolves a missing object.
-PREVIEW_URL_TEMPLATE = ('("https://data.phase-rs.dev/desktop/preview-server/"'
-                        ' + $fingerprint + "/{name}")')
+#: The upload path, read from the step that writes it. Every object goes to
+#: `$prefix/$name`, so this assignment -- not a spelling of it kept here -- is
+#: what fixes the path a manifest entry has to name. A gate holding its own copy
+#: of the path passes whenever the manifest agrees with that copy, including when
+#: both disagree with the upload the step performs.
+PREVIEW_PREFIX_ASSIGN = re.compile(r'^\s*prefix="([^"\n]*)"\s*$', re.M)
+#: jq's own binding of a shell variable to the name its program uses. The prefix
+#: is shell (`$FINGERPRINT`) and the manifest URL is jq (`$fingerprint`); this
+#: flag is the only thing that says the two are one value, so the pairing is read
+#: from it rather than inferred from the two spellings looking alike.
+PREVIEW_JQ_ARG = re.compile(r'--arg\s+(\w+)\s+"\$(\w+)"')
+#: The one comparand this gate cannot derive: the step uploads into the R2 bucket
+#: `phase-rs-data`, and the bucket's public hostname is Cloudflare configuration
+#: that this repository does not contain. Everything after it -- prefix,
+#: fingerprint variable, file name -- is read from the step itself.
+PREVIEW_DATA_HOST = "https://data.phase-rs.dev/"
+#: A jq concatenation split into the pieces whose identity matters. String
+#: contents are captured whole, so whitespace *inside* a literal stays
+#: significant -- R2 holds nothing under `preview- server/` -- while whitespace
+#: *between* tokens is dropped, so reformatting the expression stays free. A
+#: character matching nothing else becomes an `other` token, so a reshaped
+#: expression cannot quietly tokenise into the expected sequence.
+PREVIEW_JQ_TOKEN = re.compile(r'"((?:[^"\\]|\\.)*)"|\$(\w+)|([()+])|(\S)')
 
 
-def _squash(text: str) -> str:
-    """Drop whitespace and one trailing comma, so formatting is free and content is not."""
-    return "".join(text.split()).rstrip(",")
+def _jq_tokens(expression: str) -> list[tuple[str, str]]:
+    """A jq expression as typed tokens, less one optional trailing comma.
+
+    The manifest writes `url: (...),` ahead of `sig_url:`, so the first of the
+    pair carries a separator the second does not.
+    """
+    tokens: list[tuple[str, str]] = []
+    for literal, variable, operator, other in PREVIEW_JQ_TOKEN.findall(
+            expression.strip().removesuffix(",")):
+        if variable:
+            tokens.append(("var", variable))
+        elif operator:
+            tokens.append(("op", operator))
+        elif other:
+            tokens.append(("other", other))
+        else:
+            tokens.append(("str", literal))
+    return tokens
 
 #: The desktop platforms a tag publishes and the mapping entries that serve them.
 #: Both are expectations, not observations: a change to either is the event this
@@ -816,14 +845,41 @@ def preview_platforms() -> dict[str, set[str]]:
                       "desktop resolves against cannot be read")
     keys = set(PREVIEW_MANIFEST_KEY.findall(block.group(1)))
 
-    # A desktop reads `url` and `sig_url` from the entry and fetches both verbatim,
-    # so the entry has to name the object the step actually uploaded. Rebuilt whole
-    # from the array-authorised name and compared for equality, because every
-    # weaker rule leaves some part of the URL free to differ: a substring admits
-    # `phase-server-<triple>-old`, a terminal segment admits a changed prefix or a
-    # swapped fingerprint variable, and each of those resolves an object that was
-    # never published. Checked per key, so the report names which key rather than a
-    # count that dropped.
+    assign = PREVIEW_PREFIX_ASSIGN.search(body)
+    if assign is None:
+        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
+                      '`prefix="..."` assignment; the path every preview object '
+                      "is uploaded to cannot be read, and a path this gate "
+                      "supplies itself would check the manifest against nothing")
+    prefix = assign.group(1)
+    shell = re.search(r"\$(\w+)", prefix)
+    if shell is None:
+        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} uploads to "
+                      f"'{prefix}', which carries no variable; every fingerprint "
+                      "would publish over one path, so the manifest could not "
+                      "name a per-fingerprint object at all")
+    bound = [jq for jq, sh in PREVIEW_JQ_ARG.findall(body)
+             if sh == shell.group(1)]
+    if len(bound) != 1:
+        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} binds "
+                      f"${shell.group(1)} to {len(bound)} jq argument(s) "
+                      f"{sorted(bound)}; exactly one is what lets the manifest's "
+                      "variable be checked against the uploaded path")
+    head, tail = prefix[:shell.start()], prefix[shell.end():]
+
+    def expected(name: str) -> list[tuple[str, str]]:
+        """The one URL that names the object this step uploads for `name`."""
+        return [("op", "("), ("str", f"{PREVIEW_DATA_HOST}{head}"),
+                ("op", "+"), ("var", bound[0]), ("op", "+"),
+                ("str", f"{tail}/{name}"), ("op", ")")]
+
+    # A desktop fetches `url` and `sig_url` verbatim, so an entry has to name the
+    # object the step uploaded. Compared as tokens against a URL derived from that
+    # step's own prefix, fingerprint binding and array-authorised name, because
+    # every weaker rule leaves something free: a substring admits
+    # `phase-server-<triple>-old`, a terminal segment admits a moved prefix, and a
+    # comparison against a path spelled here admits a prefix that moves in the
+    # workflow alone. Per key, so the report names which key rather than a count.
     paired: set[str] = set()
     for key in keys:
         entry = re.search(rf'"{re.escape(key)}":\s*\{{(.*?)\n\s*\}}',
@@ -832,10 +888,9 @@ def preview_platforms() -> dict[str, set[str]]:
             continue
         urls = dict(PREVIEW_MANIFEST_URL.findall(entry.group(1)))
         name = artifacts[key]
-        if (_squash(urls.get("url", ""))
-                == _squash(PREVIEW_URL_TEMPLATE.format(name=name))
-                and _squash(urls.get("sig_url", ""))
-                == _squash(PREVIEW_URL_TEMPLATE.format(name=f"{name}.minisig"))):
+        if (_jq_tokens(urls.get("url", "")) == expected(name)
+                and _jq_tokens(urls.get("sig_url", ""))
+                == expected(f"{name}.minisig")):
             paired.add(key)
 
     return {"builds": built, "downloads": downloaded, "signs": signed,

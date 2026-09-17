@@ -264,7 +264,15 @@ __DOWNLOADS__
           binaries=(
 __ARRAY__
           )
-          jq -n '{
+          prefix="desktop/preview-server/$FINGERPRINT"
+          for binary in "${binaries[@]}"; do
+            name=$(basename "$binary")
+            npx wrangler r2 object put "phase-rs-data/$prefix/$name" --file "$binary" --remote
+            npx wrangler r2 object put "phase-rs-data/$prefix/$name.minisig" --file "$binary.minisig" --remote
+          done
+          jq -n \
+            --arg fingerprint "$FINGERPRINT" \
+            '{
                  fingerprints: (
                    {
                      ($fingerprint): {
@@ -849,11 +857,11 @@ class ShellPlatformMappingTests(unittest.TestCase):
     def test_a_url_that_is_not_the_exact_artifact_strands_a_desktop(self) -> None:
         # The desktop fetches both URLs verbatim, so an entry naming anything but
         # the uploaded object strands it. Every case keeps the terminal file name
-        # intact, so only equality over the whole URL can refuse them: the first
-        # three append to or alter that name, and the last two leave it untouched
-        # while moving the upload prefix and swapping the fingerprint authority for
-        # another real jq variable. Each `old` carries the name, so exactly one
-        # platform's `url` line is rewritten and the report can still name it.
+        # intact, so only comparing the whole URL can refuse them: the first three
+        # append to or alter that name, and the last two leave it untouched while
+        # moving the upload prefix and swapping the fingerprint for a variable the
+        # step never binds. Each `old` carries the name, so exactly one platform's
+        # `url` line is rewritten and the report can still name it.
         stranded = DEFAULT_TRIPLES[3]
         name = (f"phase-server-{stranded}"
                 f"{'.exe' if 'windows' in stranded else ''}")
@@ -893,6 +901,47 @@ class ShellPlatformMappingTests(unittest.TestCase):
         r = t.run()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("preview provisioning OK", r.stdout)
+
+    def test_moving_the_upload_authority_alone_strands_every_desktop(self) -> None:
+        # The manifest is untouched in both cases: only the step's own upload path
+        # moves. A gate comparing the manifest against a path spelled in the gate
+        # would stay green here, because neither side of that comparison changed --
+        # which is why the path is read from this assignment instead. Moving it
+        # strands every platform (exit 1); pointing it at an unbound variable is a
+        # shape the gate cannot read at all (exit 2), and the two are kept apart so
+        # a refusal can never be mistaken for a finding.
+        for label, old, new, code in (
+            ("upload prefix path",
+             'prefix="desktop/preview-server/$FINGERPRINT"',
+             'prefix="desktop/preview-server-v2/$FINGERPRINT"', 1),
+            ("upload fingerprint variable",
+             'prefix="desktop/preview-server/$FINGERPRINT"',
+             'prefix="desktop/preview-server/$COMMIT"', 2),
+        ):
+            with self.subTest(case=label):
+                body = preview_source()
+                self.assertIn(old, body)
+                t = self.tree()
+                t.write_preview_text(body.replace(old, new))
+                r = t.run()
+                self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_whitespace_inside_a_url_literal_is_not_free(self) -> None:
+        # Normalising the expression must not reach inside its strings. R2 holds no
+        # object under `preview- server/`, so a space there names a missing file
+        # while leaving the token sequence and the terminal name intact -- the
+        # member a whitespace-blind normalisation admits.
+        body = preview_source()
+        old = '"https://data.phase-rs.dev/desktop/preview-server/"'
+        new = '"https://data.phase-rs.dev/desktop/preview- server/"'
+        self.assertIn(old, body)
+        t = self.tree()
+        t.write_preview_text(body.replace(old, new))
+        r = t.run()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("gives a signed URL pair in its manifest", r.stderr)
+        self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_manifest_data_entry_shaped_like_a_platform_is_not_one(self) -> None:
         # The step's jq also writes a `data:` array beside `binaries`, and a
