@@ -847,11 +847,13 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_url_that_is_not_the_exact_artifact_strands_a_desktop(self) -> None:
-        # The desktop fetches both URLs verbatim, so a name that merely contains
-        # the artifact's resolves a different object. Every case leaves the binary
-        # name present as a substring, so only the terminal-segment rule can
-        # refuse it; the dropped-sig_url case removes the URL instead and proves
-        # nothing about a name that survives with something appended.
+        # The desktop fetches both URLs verbatim, so an entry naming anything but
+        # the uploaded object strands it. Every case keeps the terminal file name
+        # intact, so only equality over the whole URL can refuse them: the first
+        # three append to or alter that name, and the last two leave it untouched
+        # while moving the upload prefix and swapping the fingerprint authority for
+        # another real jq variable. Each `old` carries the name, so exactly one
+        # platform's `url` line is rewritten and the report can still name it.
         stranded = DEFAULT_TRIPLES[3]
         name = (f"phase-server-{stranded}"
                 f"{'.exe' if 'windows' in stranded else ''}")
@@ -859,6 +861,12 @@ class ShellPlatformMappingTests(unittest.TestCase):
             ("appended binary name", f'/{name}"', f'/{name}-old"'),
             ("appended signature", f'/{name}.minisig"', f'/{name}.minisig.bak"'),
             ("altered signature suffix", f'/{name}.minisig"', f'/{name}.sig"'),
+            ("mutated upload prefix",
+             f'preview-server/" + $fingerprint + "/{name}"',
+             f'preview-server-old/" + $fingerprint + "/{name}"'),
+            ("mutated fingerprint authority",
+             f'+ $fingerprint + "/{name}"',
+             f'+ $commit + "/{name}"'),
         ):
             with self.subTest(case=label):
                 body = preview_source()

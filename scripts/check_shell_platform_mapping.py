@@ -197,6 +197,20 @@ PREVIEW_MANIFEST_KEY = re.compile(r'^\s*"([\w.-]+)":\s*\{\s*$', re.M)
 #: binary's name is in the second string. A pattern stopping at the first would
 #: never see the name it exists to hold the key against.
 PREVIEW_MANIFEST_URL = re.compile(r"^\s*(url|sig_url):\s*(.+)$", re.M)
+#: The whole URL, rebuilt from the two authorities that produce it, rather than
+#: pieces of it matched in place. The step uploads to `$prefix/$name` with
+#: `prefix="desktop/preview-server/$FINGERPRINT"`, and the desktop fetches
+#: `url`/`sig_url` verbatim, so the object a manifest entry names is fixed by the
+#: prefix, the fingerprint and the array-authorised file name together. Matching
+#: any subset leaves the rest free: a changed prefix or a different fingerprint
+#: variable keeps the terminal name and still resolves a missing object.
+PREVIEW_URL_TEMPLATE = ('("https://data.phase-rs.dev/desktop/preview-server/"'
+                        ' + $fingerprint + "/{name}")')
+
+
+def _squash(text: str) -> str:
+    """Drop whitespace and one trailing comma, so formatting is free and content is not."""
+    return "".join(text.split()).rstrip(",")
 
 #: The desktop platforms a tag publishes and the mapping entries that serve them.
 #: Both are expectations, not observations: a change to either is the event this
@@ -803,12 +817,13 @@ def preview_platforms() -> dict[str, set[str]]:
     keys = set(PREVIEW_MANIFEST_KEY.findall(block.group(1)))
 
     # A desktop reads `url` and `sig_url` from the entry and fetches both verbatim,
-    # so a name that merely *contains* the artifact's resolves a different object:
-    # `phase-server-<triple>-old` and a `.minisig.bak` signature both carry the
-    # name and neither is the file that was uploaded. Matched as the terminal path
-    # segment -- closing quote included -- against the name the array authorises,
-    # rather than as a substring. Checked per key, so the report names which key
-    # rather than a count that dropped.
+    # so the entry has to name the object the step actually uploaded. Rebuilt whole
+    # from the array-authorised name and compared for equality, because every
+    # weaker rule leaves some part of the URL free to differ: a substring admits
+    # `phase-server-<triple>-old`, a terminal segment admits a changed prefix or a
+    # swapped fingerprint variable, and each of those resolves an object that was
+    # never published. Checked per key, so the report names which key rather than a
+    # count that dropped.
     paired: set[str] = set()
     for key in keys:
         entry = re.search(rf'"{re.escape(key)}":\s*\{{(.*?)\n\s*\}}',
@@ -817,8 +832,10 @@ def preview_platforms() -> dict[str, set[str]]:
             continue
         urls = dict(PREVIEW_MANIFEST_URL.findall(entry.group(1)))
         name = artifacts[key]
-        if (f'/{name}"' in urls.get("url", "")
-                and f'/{name}.minisig"' in urls.get("sig_url", "")):
+        if (_squash(urls.get("url", ""))
+                == _squash(PREVIEW_URL_TEMPLATE.format(name=name))
+                and _squash(urls.get("sig_url", ""))
+                == _squash(PREVIEW_URL_TEMPLATE.format(name=f"{name}.minisig"))):
             paired.add(key)
 
     return {"builds": built, "downloads": downloaded, "signs": signed,
