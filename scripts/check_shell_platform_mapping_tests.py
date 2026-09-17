@@ -927,6 +927,60 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertEqual(r.returncode, code, r.stdout + r.stderr)
                 self.assertNotIn("preview provisioning OK", r.stdout)
 
+    def test_a_second_upload_prefix_assignment_refuses(self) -> None:
+        # Shell assignment is sequential: the later value controls every upload,
+        # so accepting the first assignment checks a path the step does not use.
+        # A different second value ensures this case reaches the ambiguity guard
+        # rather than merely duplicating harmless text.
+        original = 'prefix="desktop/preview-server/$FINGERPRINT"'
+        body = preview_source()
+        self.assertEqual(body.count(original), 1)
+        t = self.tree()
+        t.write_preview_text(body.replace(
+            original,
+            f'{original}\n          prefix="desktop/preview-server-old/$FINGERPRINT"',
+        ))
+        r = t.run()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('`prefix="..."` assignment (found 2)', r.stderr)
+        self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_a_duplicate_manifest_key_with_a_later_bad_url_refuses(self) -> None:
+        # jq keeps the later value for a duplicate object key. A checker that
+        # reduces keys to a set and reads the first matching block sees the valid
+        # entry instead, so this inserts a later key whose URL or signature is
+        # bad while preserving the original complete entry.
+        triple = DEFAULT_TRIPLES[3]
+        name = f"phase-server-{triple}"
+        closing = "                       },\n                       data: ["
+        for field, suffix in (("url", "-old"), ("sig_url", ".bak")):
+            with self.subTest(field=field):
+                url_suffix = suffix if field == "url" else ""
+                bad_url = (
+                    f'("https://data.phase-rs.dev/desktop/preview-server/" '
+                    f'+ $fingerprint + "/{name}{url_suffix}")'
+                )
+                duplicate = (
+                    f'                         "{triple}": {{\n'
+                    f'                           url: {bad_url},\n'
+                    f'                           sig_url: '
+                    f'("https://data.phase-rs.dev/desktop/preview-server/" '
+                    f'+ $fingerprint + "/{name}.minisig")\n'
+                    "                         },\n"
+                )
+                if field == "sig_url":
+                    duplicate = duplicate.replace(
+                        f'/{name}.minisig")', f'/{name}.minisig{suffix}")')
+                body = preview_source()
+                self.assertEqual(body.count(closing), 1)
+                t = self.tree()
+                t.write_preview_text(body.replace(closing, ",\n" + duplicate + closing))
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("duplicate manifest binary key", r.stderr)
+                self.assertIn(triple, r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+
     def test_whitespace_inside_a_url_literal_is_not_free(self) -> None:
         # Normalising the expression must not reach inside its strings. R2 holds no
         # object under `preview- server/`, so a space there names a missing file

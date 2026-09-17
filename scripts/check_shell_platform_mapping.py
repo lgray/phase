@@ -843,15 +843,24 @@ def preview_platforms() -> dict[str, set[str]]:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
                       "`binaries: {` object in the manifest it writes; the keys a "
                       "desktop resolves against cannot be read")
-    keys = set(PREVIEW_MANIFEST_KEY.findall(block.group(1)))
+    manifest_keys = PREVIEW_MANIFEST_KEY.findall(block.group(1))
+    duplicate_keys = sorted({key for key in manifest_keys
+                             if manifest_keys.count(key) > 1})
+    if duplicate_keys:
+        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} writes duplicate "
+                      f"manifest binary key(s) {duplicate_keys}; jq keeps the "
+                      "later value, so every emitted URL pair must have one "
+                      "unambiguous key")
+    keys = set(manifest_keys)
 
-    assign = PREVIEW_PREFIX_ASSIGN.search(body)
-    if assign is None:
+    assignments = PREVIEW_PREFIX_ASSIGN.findall(body)
+    if len(assignments) != 1:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
-                      '`prefix="..."` assignment; the path every preview object '
-                      "is uploaded to cannot be read, and a path this gate "
-                      "supplies itself would check the manifest against nothing")
-    prefix = assign.group(1)
+                      f'`prefix="..."` assignment (found {len(assignments)}); the '
+                      "path every preview object is uploaded to must be "
+                      "unambiguous, and a path this gate supplies itself would "
+                      "check the manifest against nothing")
+    prefix = assignments[0]
     shell = re.search(r"\$(\w+)", prefix)
     if shell is None:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} uploads to "
