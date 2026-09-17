@@ -1068,7 +1068,8 @@ fn indexed_ability_window_reach(
 }
 
 /// CR 603.2: can a CONFINED action's event stream ever match this trigger's
-/// trigger event? Returns `true` iff it PROVABLY cannot.
+/// trigger event? Returns `true` iff it PROVABLY cannot, where the proof covers
+/// only the events the `## Boundary` section below considers.
 ///
 /// # This predicate is NOT a fact about the trigger
 ///
@@ -1109,9 +1110,12 @@ fn indexed_ability_window_reach(
 /// `true` in [`any_action_may_interfere`] without consulting this. Events are
 /// counted from announcement through full resolution, INCLUDING cost payment
 /// (CR 601.2b–i for a spell, CR 602.2b for an activated ability, which routes to
-/// the same process). `GameAction::PassPriority` is excluded by construction (it
-/// returns `false` before the fold), so phase advance is out of domain and a
-/// beginning-of-phase trigger cannot be reached through this predicate's callers.
+/// the same process). The arms below reason over what the allowlisted costs and
+/// effects themselves produce; an event that a replacement effect's `execute`
+/// produces while replacing one of the action's own events is not considered.
+/// `GameAction::PassPriority` is excluded by construction (it returns `false`
+/// before the fold), so phase advance is out of domain and a beginning-of-phase
+/// trigger cannot be reached through this predicate's callers.
 ///
 /// ## Fail-closed
 ///
@@ -1213,7 +1217,12 @@ fn trigger_event_unreachable_by_confined_action(
         // * `TokenCreated`/`TokenCreatedOnce` — CR 111.1: tokens are put onto the
         //   battlefield by effects that say so. `Effect::Token` is not allowlisted,
         //   and `match_token_created` keys on the dedicated
-        //   `GameEvent::TokenCreated`.
+        //   `GameEvent::TokenCreated`. That ground does not cover a token that a
+        //   replacement effect (CR 614.1a) creates while replacing the confined
+        //   action's own event, and a `TokenCreated` observer sees that token: an
+        //   opponent's Kalitas, Traitor of Ghet replaces the death of a Sakura-Tribe
+        //   Elder sacrificed to its own ability with exile plus a Zombie token, and
+        //   that opponent's Akim, the Soaring Wind triggers on the token.
         //
         // `Milled`/`MilledOnce`/`MilledAll` are DELIBERATELY ABSENT — see below.
         TriggerMode::Drawn
