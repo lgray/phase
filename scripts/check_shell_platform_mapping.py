@@ -191,11 +191,16 @@ ASSET_HEREDOC = re.compile(r"cat <<'EOF'\n(.*?)\n\s*EOF\b", re.S)
 #: `$'...'` or `$"..."` quoting refuse instead, because bash joins a name across
 #: the first and decodes one out of the second.
 PREVIEW_ARRAY_MENTION = re.compile(r"(?<![A-Za-z0-9_])binaries(?![A-Za-z0-9_])")
-#: The characters bash removes from a word before any command sees it. Not a
-#: quoting model: it removes these wherever they sit, which is sound only beside
-#: the two refusals below, the constructs that would make removing them join or
-#: decode more than the step typed.
-SHELL_SPLICE = re.compile(r"[\\'\"]")
+#: What bash removes from a word before any command sees it: a quote, an escape,
+#: and a line continuation -- which it deletes along with its newline rather than
+#: leaving the break behind, so a word spelled across one is read as the word the
+#: command is handed. That spelling is not exotic: the step ends every one of its
+#: jq binding lines with one. Not a quoting model: it removes these wherever they
+#: sit, which is sound only beside the two refusals below, the constructs that
+#: would make removing them join or decode more than the step typed. The join
+#: cannot fuse two words, because a continuation onto a non-blank refuses first
+#: and what is left at the break is the next line's own indentation.
+SHELL_SPLICE = re.compile(r"\\\n|[\\'\"]")
 #: A line continuation bash joins onto a word, or that is not a continuation
 #: at all (after `\\` or in a comment); either way the break is not one a
 #: text reader can place.
@@ -220,18 +225,30 @@ PREVIEW_ARRAY_LOOP = re.compile(
 #: stays green over it. Looked for across every loop and unioned, so one merged
 #: loop running all three and separate loops running one each are equally legal.
 #:
-#: Where a command sits, not whether bash reaches it: a consumer under a
-#: condition that is never true, or in a function nothing calls, is counted like
-#: any other, so a decoy built that way is admitted. Modelling reachability is a
-#: different reader than this one, and its absence is the older admission --
-#: `_preview_artifacts` reads the array assignment the same way.
+#: Where a command sits, not what it reaches: a consumer under a condition that
+#: is never true, or in a function nothing calls, is counted like any other, and
+#: a call is read as the word it spells rather than as the body of the function
+#: behind it, so a helper that rebinds the loop variable rebinds nothing any line
+#: here spells. Decoys built either way are admitted. Reading a call site as its
+#: callee, like modelling reachability, is a different reader than this one, and
+#: its absence is the older admission -- `_preview_artifacts` reads the array
+#: assignment the same way.
+#:
+#: The text between the command word and the option is crossed as words rather
+#: than as characters. `.*?` in its place reaches inside a quoted argument, where
+#: the option it finds is a literal bash passes along rather than one the command
+#: reads: `--cache-control '--file "$binary" x'` is one word, and matching its
+#: interior counts an upload of a file the step never uploads.
+SHELL_WORD_GAP = r"""(?:\\.|[^'"\\]|'[^']*'|"(?:\\.|[^"\\])*")*?"""
 PREVIEW_CONSUMERS = (
     ("signs it", r'^[ \t]*sign[ \t]+{binary}(?=[ \t;&|]|$)'),
-    ("uploads it", r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?![\w-]).*?'
-                   r'--file[ \t]+{binary}(?=[ \t;&|]|$)'),
+    ("uploads it", r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?![\w-])'
+                   + SHELL_WORD_GAP
+                   + r'--file[ \t]+{binary}(?=[ \t;&|]|$)'),
     ("uploads its signature",
-     r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?![\w-]).*?'
-     r'--file[ \t]+{signature}(?=[ \t;&|]|$)'),
+     r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?![\w-])'
+     + SHELL_WORD_GAP
+     + r'--file[ \t]+{signature}(?=[ \t;&|]|$)'),
 )
 #: `do` closing a loop header, and `done` opening a line. Counted so a loop
 #: nested in the body does not end it early. The opener must *begin* with the
@@ -240,20 +257,37 @@ PREVIEW_CONSUMERS = (
 #: body past its own `done` and counts commands that sit outside the loop, which
 #: is the fail-open direction. `done` keeps its line to itself but for a
 #: redirection or a list operator, neither of which changes which loop it closes.
-PREVIEW_LOOP_OPEN = re.compile(r"[ \t]*(?:for|while|until|select)(?![\w-]).*"
-                               r"(?:^|[ \t;])do$")
+SHELL_LOOP_KEYWORD = r"[ \t]*(?:for|while|until|select)(?![\w-])"
+PREVIEW_LOOP_OPEN = re.compile(SHELL_LOOP_KEYWORD
+                               + r".*(?:^|[ \t;])do$")
 PREVIEW_LOOP_CLOSE = re.compile(r"[ \t]*done(?![\w-])")
-#: A command that gives the loop variable a value the loop did not: an
-#: assignment, a nested `for`/`select` over the same name, or a `read` into it.
-#: Past one of these the variable no longer names an element of the array, so
-#: `sign "$binary"` below it signs whatever was rebound -- the loop still walks
-#: `binaries` and publishes none of it. Each binds the bare name, so an expansion
-#: of it is a use and never one of these. Matched against the whole line and
-#: applied ahead of the nesting count, because the rebinding spelling that hides
-#: best is a nested loop header, which ends in `do` like any other.
-PREVIEW_REBIND = (r'(?:^|[ \t;&|(]){name}(?:\[[^]]*\])?\+?=',
-                  r'(?:^|[ \t;&|(])(?:for|select)[ \t]+{name}(?![\w-])',
-                  r'(?:^|[ \t;&|(])read(?![\w-])[^;&|]*?[ \t]{name}(?![\w-])')
+#: A header that puts its `do` on a line of its own, which POSIX allows and which
+#: opens exactly what the joined spelling above does. Read as two lines rather
+#: than refused, so a loop written that way is delimited instead of closing its
+#: parent early -- which truncates the body and reports a member as missing, a
+#: refusal naming a reason that is not the reason. The keyword line is what
+#: licenses the bare `do`: a `do` no header precedes opens nothing, because
+#: opening on it would carry the body past the `done` that closes the real loop.
+PREVIEW_LOOP_KEYWORD = re.compile(SHELL_LOOP_KEYWORD)
+PREVIEW_LOOP_DO = re.compile(r"[ \t]*do(?![\w-])")
+#: A line that gives the loop variable a value the loop did not. Past one the
+#: variable no longer names an element of the array, so `sign "$binary"` below it
+#: signs whatever was rebound -- the loop still walks `binaries` and publishes
+#: none of it.
+#:
+#: Stated as the complement of a use, the name written any way but as an
+#: expansion of itself, rather than as the commands that bind it. A list of those
+#: is falsified by the spelling it omits, and every omission here is silent:
+#: `printf -v binary`, `let "binary = 1"` and `(( binary = 1 ))` each sign and
+#: publish the wrong file under the step's own `set -euo pipefail`, so a reader
+#: enumerating binding commands fails open on the one it has not met yet. The
+#: expansion spellings are matched first so each consumes its own copy of the
+#: name and only a bare occurrence is left to report. Matched against the whole
+#: line and applied ahead of the nesting count, because the rebinding spelling
+#: that hides best is a nested loop header, which ends in `do` like any other.
+PREVIEW_REBIND = (r'\$\{{[#!]?{name}[^}}]*\}}'
+                  r'|\${name}(?!\w)'
+                  r'|(?<!\w)({name})(?!\w)')
 PREVIEW_MANIFEST_OPEN = re.compile(r"[ \t]*binaries: \{")
 PREVIEW_ARRAY_LINE = re.compile(
     r"[ \t]*artifacts/[\w.-]+/phase-server-([\w.-]+?)(\.exe)?")
@@ -1133,8 +1167,17 @@ def _consumer_word(var: str, suffix: str = "") -> str:
     return rf'"\$(?:{name}|\{{{name}\}}){suffix}"'
 
 
-def _loop_consumers(step: ShellStep, header: int, var: str) -> set[str]:
+def _loop_consumers(step: ShellStep, header: int,
+                    var: str) -> tuple[set[str], tuple[int, str] | None]:
     """Which of `PREVIEW_CONSUMERS` this loop's body runs on the loop variable.
+
+    Returned beside the set: the line that ended the countable part of the body,
+    as this step's own line number and text, or None when nothing ended it. It is
+    what the caller's refusal has to name -- a body cut above its `sign` is
+    missing the same member as a body with no `sign` anywhere in it, and a reader
+    told to add the call is sent looking for a line already there. Carried out
+    rather than acted on: which lines end a region, and which commands are
+    counted before one does, are what they were.
 
     The body is the executable lines between the header and the `done` closing
     it, and the countable part of it ends at the first line that rebinds the
@@ -1146,17 +1189,20 @@ def _loop_consumers(step: ShellStep, header: int, var: str) -> set[str]:
     variable is not counted, because the array is only published by commands that
     name what the loop bound.
 
-    Where the command sits, not whether bash runs it: a consumer under a false
-    condition or in a function nothing calls is counted like any other, and a
-    decoy built that way is admitted. Rebinding is read the same way -- the
-    variable is taken as rebound from the line that spells it onward, whether or
-    not that line runs.
+    The loop's own lines, not the code they reach: a command is read where it
+    sits rather than by whether bash runs it, so a consumer under a false
+    condition is counted like any other, and a call is read as the word it
+    spells rather than as the body of the function behind it, so a helper that
+    rebinds the variable rebinds nothing this reader sees. Decoys built either
+    way are admitted. Rebinding is read the same way -- the variable is taken as
+    rebound from the line that spells it onward, whether or not that line runs.
     """
     binary = _consumer_word(var)
     signature = _consumer_word(var, r"\.minisig")
-    rebinds = [re.compile(p.format(name=re.escape(var))) for p in PREVIEW_REBIND]
+    rebind = re.compile(PREVIEW_REBIND.format(name=re.escape(var)))
     found: set[str] = set()
-    depth, binds = 1, True
+    ended: tuple[int, str] | None = None
+    depth, binds, pending = 1, True, False
     for at in sorted(start for start in step.line_context if start > header):
         if step.context(at) is not None:
             continue
@@ -1165,16 +1211,22 @@ def _loop_consumers(step: ShellStep, header: int, var: str) -> set[str]:
         if PREVIEW_LOOP_CLOSE.match(line):
             depth -= 1
             if depth == 0:
-                return found
+                return found, ended
+            pending = False
             continue
-        if any(rebind.search(line) for rebind in rebinds):
+        # Only the first: `binds` never goes back to True, so the lines after it
+        # end nothing that is still open and naming one would point past the cut.
+        if binds and any(spelling.group(1) for spelling in rebind.finditer(line)):
             binds = False
-        if PREVIEW_LOOP_OPEN.match(line):
+            ended = (step.raw.count("\n", 0, at) + 1, step.raw[at:end].strip())
+        joined = PREVIEW_LOOP_OPEN.match(line)
+        if joined or (pending and PREVIEW_LOOP_DO.match(line)):
             depth += 1
         elif binds:
             found.update(name for name, pattern in PREVIEW_CONSUMERS
                          if re.search(pattern.format(binary=binary,
                                                      signature=signature), line))
+        pending = bool(PREVIEW_LOOP_KEYWORD.match(line)) and not joined
     raise Refusal(f"{step.where} has a `for {var} in {PREVIEW_ARRAY_READ}; do` "
                   "loop with no `done` line closing it; which commands that loop "
                   "runs cannot be told, so neither can whether they are the ones "
@@ -1274,12 +1326,28 @@ def _preview_artifacts(step: ShellStep) -> dict[str, str]:
                       "`binaries=(` line, or nowhere; a loop that walks the array "
                       "before it is assigned signs and uploads nothing")
     consumed: set[str] = set()
+    cuts: list[str] = []
     for header_at, var in loops:
-        consumed |= _loop_consumers(step, header_at, var)
+        names, ended = _loop_consumers(step, header_at, var)
+        consumed |= names
+        if ended is not None:
+            cuts.append(f"line {ended[0]} names `{var}` other than as an "
+                        f"expansion of it ({ended[1]!r})")
     if missing := [name for name, _ in PREVIEW_CONSUMERS if name not in consumed]:
+        head = (f"{where} walks {PREVIEW_ARRAY_READ} but never "
+                f"{', nor '.join(missing)} inside a loop over it")
+        # Which member is missing does not say why, and a loop cut above the
+        # command that would supply it reads as a loop that never had one. The
+        # cut is what a reader has to see to find the line to edit.
+        if cuts:
+            raise Refusal(
+                f"{head}; {', and '.join(cuts)}, which ends the part of that loop "
+                "counted here -- past that line the variable no longer names an "
+                "element of the array, so the commands below it publish none of "
+                "what the loop walks. Spell the name there as an expansion of "
+                "itself, or put the missing commands above it")
         raise Refusal(
-            f"{where} walks {PREVIEW_ARRAY_READ} but never "
-            f"{', nor '.join(missing)} inside a loop over it; the array is the "
+            f"{head}; the array is the "
             "authority for what is published only when the commands that publish "
             "are the ones walking it, each naming the loop's own variable -- "
             '`sign "$<name>"`, `wrangler r2 object put ... --file "$<name>"` and '

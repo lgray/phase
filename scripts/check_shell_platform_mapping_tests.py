@@ -17,6 +17,7 @@ about the property being tested.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1358,6 +1359,13 @@ class ShellPlatformMappingTests(unittest.TestCase):
              head + array + pre + walk_lines('test -s "$binary"',
                                              'sign "$binary"') + unsigned + post),
             ("the brace spelling of the same variable", head + array + braced),
+            # The gap to the option is crossed as words, so a complete quoted
+            # argument standing in it is stepped over rather than entered.
+            ("a quoted argument ahead of the real --file",
+             head + array + tail.replace(
+                 '--file "$binary" --remote',
+                 '--content-type "application/octet-stream" '
+                 '--file "$binary" --remote')),
             ("the manifest signed and uploaded outside every loop",
              head + array + tail + step_lines(
                  'sign "$manifest"',
@@ -1382,6 +1390,22 @@ class ShellPlatformMappingTests(unittest.TestCase):
             ("only the binary's own upload is decoyed",
              pre + loop.replace('--file "$binary" ', '--file "$other" ') + post,
              ("uploads it",)),
+            # The real option names another file and the accepted spelling sits
+            # inside a quoted argument of the same command, which bash passes
+            # along as a literal word. Both quoting forms, because the escaped
+            # quote in the second closes the word early for a reader that pairs
+            # quotes without reading escapes, leaving the interior bare.
+            ("the accepted spelling inside a single-quoted argument",
+             pre + loop.replace(
+                 '--file "$binary" --remote',
+                 '--file "$other" --remote '
+                 '--cache-control \'--file "$binary" x\'') + post,
+             ("uploads it",)),
+            ("the accepted spelling inside a word an escaped quote reopens",
+             pre + loop.replace(
+                 'put "phase-rs-data/$prefix/$name" --file "$binary" --remote',
+                 'put "x\\" --file "$binary" y" --file "$other" --remote')
+             + post, ("uploads it",)),
             ("only the signature's upload is decoyed",
              pre + loop.replace('--file "$binary.minisig"',
                                 '--file "$other.minisig"') + post,
@@ -1404,26 +1428,44 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn(f"but never {', nor '.join(missing)} inside a loop",
                               r.stderr)
+                # Nothing in these bodies ends a loop's countable region -- every
+                # one spells the variable as an expansion -- so the refusal is the
+                # member list and the spelling that supplies it, with no cut to
+                # name.
+                self.assertIn("in one loop or in several", r.stderr)
                 self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_consumer_the_loop_no_longer_binds_does_not_publish(self) -> None:
         # A consumer counts for naming the loop variable, which says what it
         # publishes only while the loop is what put the value there. Past a
-        # rebinding -- an assignment, a nested loop over the same name, a `read`
-        # into it -- `sign "$binary"` signs whatever was rebound, and the loop
-        # walks the array while publishing none of it. Nesting itself stays legal,
-        # and so does the body after a nested `done`.
+        # rebinding -- the name written any way but as an expansion of itself --
+        # `sign "$binary"` signs whatever was rebound, and the loop walks the
+        # array while publishing none of it. The decoys below are one binding
+        # mechanism each rather than one command each: a reader enumerating the
+        # commands that bind is falsified by the next one, and every miss here is
+        # silent, the job succeeding while it publishes the wrong file. Nesting
+        # itself stays legal, and so does the body after a nested `done`.
         others = '"${others[@]}"'
         head, array, tail = split_array(preview_source())
         pre, _, post = split_loop(tail)
         signs, *uploads = PREVIEW_CONSUMER_LINES
-        with self.subTest(shape="a retry loop around a consumer"):
-            t = self.tree()
-            t.write_preview_text(head + array + pre + walk_lines(
-                "for attempt in 1 2; do", f"  {signs}", "done", *uploads) + post)
-            r = t.run()
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn("preview provisioning OK", r.stdout)
+        for shape, body in (
+            ("a retry loop around a consumer",
+             walk_lines("for attempt in 1 2; do", f"  {signs}", "done",
+                        *uploads)),
+            # Every expansion of the name is a use, so the rule that reads a bare
+            # occurrence as a binding cannot be reading the name itself.
+            ("the variable expanded through a brace, a length and a suffix",
+             walk_lines('test -s "${binary}"',
+                        'echo "${#binary}" "${binary%.exe}" "${binary}"',
+                        *PREVIEW_CONSUMER_LINES)),
+        ):
+            with self.subTest(shape=shape):
+                t = self.tree()
+                t.write_preview_text(head + array + pre + body + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
         every = ("signs it", "uploads it", "uploads its signature")
         for label, body, missing in (
             ("a nested loop rebinding the variable",
@@ -1435,6 +1477,25 @@ class ShellPlatformMappingTests(unittest.TestCase):
             ("the variable read from a file before the consumers",
              walk_lines("read -r binary < /dev/null", *PREVIEW_CONSUMER_LINES),
              every),
+            ("the variable printed into", walk_lines(
+                "printf -v binary /dev/null", *PREVIEW_CONSUMER_LINES), every),
+            ("the variable printed into under a quoted name", walk_lines(
+                'printf -v "binary" /dev/null', *PREVIEW_CONSUMER_LINES), every),
+            ("the variable assigned by `let`, spaced around the operator",
+             walk_lines('let "binary = 1"', *PREVIEW_CONSUMER_LINES), every),
+            ("the variable assigned in an arithmetic command",
+             walk_lines("(( binary = 1 ))", *PREVIEW_CONSUMER_LINES), every),
+            ("the variable filled from a file by `mapfile`",
+             walk_lines("mapfile -t binary < /dev/null",
+                        *PREVIEW_CONSUMER_LINES), every),
+            ("the variable filled from a file by `readarray`",
+             walk_lines("readarray -t binary < /dev/null",
+                        *PREVIEW_CONSUMER_LINES), every),
+            ("the variable unset", walk_lines("unset binary",
+                                              *PREVIEW_CONSUMER_LINES), every),
+            ("the variable named as another command's target",
+             walk_lines("declare -n ref=binary", "ref=/dev/null",
+                        *PREVIEW_CONSUMER_LINES), every),
             ("a nested loop whose consumer names its own variable",
              walk_lines(f"for other in {others}; do", '  sign "$other"', "done",
                         *uploads), ("signs it",)),
@@ -1447,6 +1508,31 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertIn(f"but never {', nor '.join(missing)} inside a loop",
                               r.stderr)
                 self.assertNotIn("preview provisioning OK", r.stdout)
+        # Which member is missing does not say why it is: a body cut above its
+        # `sign` reports what a body with no `sign` at all reports, and a reader
+        # sent to add the call finds it on the next line. The cut is named with
+        # the line that made it, prose and assignment alike -- the first is one
+        # legal line between the loop's own commands.
+        for label, body, cut in (
+            ("prose naming the variable between the loop's own commands",
+             walk_lines('test -s "$binary"', 'echo "signing binary $binary"',
+                        *PREVIEW_CONSUMER_LINES),
+             'echo "signing binary $binary"'),
+            ("an assignment ahead of the same consumers",
+             walk_lines("binary=/dev/null", *PREVIEW_CONSUMER_LINES),
+             "binary=/dev/null"),
+        ):
+            with self.subTest(names=label):
+                t = self.tree()
+                t.write_preview_text(head + array + pre + body + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                names = re.escape(f" names `binary` other than as an expansion "
+                                  f"of it ({cut!r})")
+                self.assertRegex(r.stderr, rf"line \d+{names}")
+                self.assertIn("the commands below it publish none of what the "
+                              "loop walks", r.stderr)
+                self.assertNotIn("in one loop or in several", r.stderr)
 
     def test_a_loop_over_the_array_the_gate_cannot_delimit_refuses(self) -> None:
         # Which commands a loop runs cannot be told without the `done` closing it,
@@ -1454,7 +1540,10 @@ class ShellPlatformMappingTests(unittest.TestCase):
         # as a header carries the body past its own `done`, so commands sitting
         # outside the loop count as the ones publishing the array. The pass legs
         # run the same consumers inside a loop the walk still has to delimit: one
-        # nesting a second loop, one closed by a redirected `done`.
+        # nesting a second loop, one closed by a redirected `done`, and one whose
+        # nested header puts its `do` on a line of its own -- which POSIX allows
+        # and which the walk has to pair with its keyword line, or the nested
+        # `done` closes the outer loop and truncates the body.
         head, array, tail = split_array(preview_source())
         pre, _, post = split_loop(tail)
         signs, *uploads = PREVIEW_CONSUMER_LINES
@@ -1466,6 +1555,9 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 PREVIEW_LOOP_HEADER,
                 *(f"  {line}" for line in PREVIEW_CONSUMER_LINES),
                 "done < /dev/null")),
+            ("a nested header whose `do` is on its own line",
+             walk_lines("for attempt in 1 2", "do", "  :", "done",
+                        *PREVIEW_CONSUMER_LINES)),
         ):
             with self.subTest(shape=label):
                 t = self.tree()
@@ -1482,6 +1574,12 @@ class ShellPlatformMappingTests(unittest.TestCase):
              walk_lines(*uploads)
              + step_lines(PREVIEW_LOOP_HEADER, f"  {signs}"),
              "loop with no `done` line closing it"),
+            # The keyword line is what licenses the bare `do`: taking any of them
+            # as an opener would carry the body past the `done` that closes the
+            # real loop and count this consumer, which sits outside it.
+            ("a bare `do` line no header precedes",
+             walk_lines("echo x", "do", ":", "done", *PREVIEW_CONSUMER_LINES),
+             "never signs it, nor uploads it, nor uploads its signature"),
         ):
             with self.subTest(shape=label):
                 t = self.tree()
@@ -1578,16 +1676,20 @@ class ShellPlatformMappingTests(unittest.TestCase):
             self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_binding_hidden_behind_quotes_or_escapes_still_collides(self) -> None:
-        # Bash removes quotes and escapes before jq is handed a word, so every
-        # spelling here binds `fingerprint` exactly as the bare one does. Both
-        # words of a binding carry the class: an option hidden this way hides the
-        # collision as well as a hidden name does, so a reader holding either to
-        # its spelling counts the second binding as nothing.
+        # Bash removes quotes, escapes and line continuations before jq is handed
+        # a word, so every spelling here binds `fingerprint` exactly as the bare
+        # one does. Both words of a binding carry the class: an option hidden this
+        # way hides the collision as well as a hidden name does, so a reader
+        # holding either to its spelling counts the second binding as nothing.
+        # The continuation is the spelling the step itself uses for every binding
+        # it writes, and bash deletes the newline with the backslash.
         original = '--arg fingerprint "$FINGERPRINT"'
         collisions = (("quoted name", '--argjson "fingerprint" 1'),
                       ("escaped name", "--argjson fing\\erprint 1"),
                       ("quoted option", '"--argjson" fingerprint 1'),
-                      ("escaped option", "--argjs\\on fingerprint 1"))
+                      ("escaped option", "--argjs\\on fingerprint 1"),
+                      ("name across a continuation",
+                       "--argjson \\\n            fingerprint 1"))
         for spelling, second in collisions:
             with self.subTest(spelling=spelling):
                 body = preview_source()
@@ -1603,10 +1705,13 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertIn("(found 2: ['--arg', '--argjson'])", r.stderr)
                 self.assertNotIn("preview provisioning OK", r.stdout)
         # The hidden word is read, not merely refused for being hidden: these
-        # spell the same two mechanisms over a name jq keeps separate, and a
-        # reader that took any quote or escape as a collision would refuse them.
+        # spell the same mechanisms over a name jq keeps separate, and a reader
+        # that took any quote, escape or continuation as a collision would refuse
+        # them.
         for spelling, second in (("quoted name", '--argjson "commit" 1'),
-                                 ("escaped option", "--argjs\\on commit 1")):
+                                 ("escaped option", "--argjs\\on commit 1"),
+                                 ("name across a continuation",
+                                  "--argjson \\\n            commit 1")):
             with self.subTest(sibling=f"{spelling}, binding another name"):
                 t = self.tree()
                 t.write_preview_text(preview_source().replace(
