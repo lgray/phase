@@ -2265,8 +2265,8 @@ mod tests {
                     forge_triggers: _,
                     forge_statics: _,
                     forge_replacements: _,
-                    // Names tokens this card can make; MAKING one runs through
-                    // `Effect::Token` in `abilities`, which this fold already reads.
+                    // Names tokens this card can make; MAKING one runs through the
+                    // effects in `abilities`, which this fold already reads.
                     related_token_ids: _,
                     // Image/catalog identifiers.
                     source_printing_ids: _,

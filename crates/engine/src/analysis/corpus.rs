@@ -1,4 +1,4 @@
-//! Shared combo-corpus harness: the 54-row acceptance corpus + the bespoke driver
+//! Shared combo-corpus harness: the acceptance corpus + the bespoke driver
 //! toolkit, parameterized on a `&CardDatabase` so BOTH the `#[cfg(test)]`
 //! acceptance suite (`corpus_tests`) and the `combo-verify` CLI drive ONE shared
 //! implementation. Gated `#[cfg(any(test, feature = "combo-verify"))]`, so it is
@@ -29,11 +29,11 @@ use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
 // ===========================================================================
-// Data layer: the 54-row corpus.
+// Data layer: the corpus.
 // ===========================================================================
 
 /// One row of the acceptance corpus: a combo, its documented unbounded resource
-/// family, the expected [`WinKind`], and (for the 4 card-gated combos) the card
+/// family, the expected [`WinKind`], and (for a card-gated combo) the card
 /// whose completion unblocks it.
 ///
 /// Fields are `pub(crate)` so the `#[cfg(test)]` meta-tests can read them
@@ -89,9 +89,10 @@ pub enum ResourceFamily {
 /// measured structural classes (no bespoke driver on the current in-place model).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeferralBucket {
-    /// Tokens / blink / persist / undying / recur engines: a permanent that
-    /// dies/blinks/bounces and returns gets a FRESH `ObjectId` each cycle, so the
-    /// id-keyed per-object loop equality sees a different board.
+    /// Tokens / blink / persist / undying / recur engines: every cycle makes a new
+    /// object. A token mint (CR 111.1) allocates a fresh `ObjectId`; a permanent that
+    /// leaves the battlefield and returns is a new object (CR 400.7) that the zone
+    /// mover keeps under its storage `ObjectId` with a new incarnation.
     ObjectReentry,
     /// Extra-turn / extra-combat re-entry: each cycle advances `turn_number` /
     /// combat count, so the loop point is a different turn/phase — not board-
@@ -105,12 +106,12 @@ pub enum DeferralBucket {
     Other,
 }
 
-/// The full 54-row acceptance corpus: 3 driving combos + the 51 card-disjoint
-/// corpus combos. The 4 `gated_on`-nonempty rows correspond to the cards with
-/// Unimplemented parts; the 37 `deferral`-nonempty rows are the non-driven,
+/// The full acceptance corpus: the driving combos + the card-disjoint corpus
+/// combos. The `gated_on`-nonempty rows correspond to the cards with
+/// Unimplemented parts; the `deferral`-nonempty rows are the non-driven,
 /// non-gated combos with a measured structural deferral reason.
 pub(crate) const CORPUS: &[ComboRow] = &[
-    // ---- 3 driving combos ----
+    // ---- driving combos ----
     ComboRow {
         name: "Heliod, Sun-Crowned + Walking Ballista",
         cards: &["Heliod, Sun-Crowned", "Walking Ballista"],
@@ -143,7 +144,7 @@ pub(crate) const CORPUS: &[ComboRow] = &[
         gated_on: Some("Doc Aurlock, Grizzled Genius"),
         deferral: None,
     },
-    // ---- 50 corpus combos (§12) ----
+    // ---- corpus combos (§12) ----
     ComboRow {
         name: "Basalt Monolith + Rings of Brighthearth",
         cards: &["Basalt Monolith", "Rings of Brighthearth"],
@@ -651,7 +652,7 @@ pub enum RowStatus {
     },
     /// Driver ran but produced no/mismatched confirmation — a regression.
     Failed { detail: String },
-    /// Card-gated on an unimplemented card (the 4 gated rows).
+    /// Card-gated on an unimplemented card (a `gated_on`-nonempty row).
     Gated { card: &'static str },
     /// Testable but no driver yet (measured structural bucket).
     Deferred { bucket: DeferralBucket },
@@ -679,7 +680,7 @@ pub(crate) enum ComboDriver {
     PrecastShortcut,
 }
 
-/// Static map `idx -> driver` for the 13 confirmable rows. The single source of
+/// Static map `idx -> driver` for the confirmable rows. The single source of
 /// truth for "which rows are driven" (the `#[cfg(test)]` meta/partition tests read
 /// it, so adding a driver here is automatically reflected — no hand-listed index
 /// array to drift).

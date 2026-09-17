@@ -1647,6 +1647,7 @@ mod living_conundrum_skip_empty_draw;
 mod living_death_ordering_2932;
 mod locus_once_per_turn_cap;
 mod loop_counter_growth;
+mod loop_period_token_family_arming;
 mod loop_shortcut;
 mod loop_shortcut_activation;
 mod loop_shortcut_cast_route;

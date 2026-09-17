@@ -19,12 +19,12 @@
 //! (`drive_damage_loop_certificate` plus the negatives) exercise the same pipeline
 //! without the export. Reverting either `detect_loop` gate flips an assertion.
 //!
-//! Corpus card-availability over all 54 rows
+//! Corpus card-availability over every corpus row
 //! (`corpus_cards_present_and_implementation_status_matches_gating`): every card
 //! present, and every non-gated combo fully modeled (no top-level `Unimplemented`).
 //! Skips gracefully when the gitignored export is absent.
 //!
-//! Corpus table (`corpus::CORPUS`) + shape/partition-lock meta-tests: all 54 rows
+//! Corpus table (`corpus::CORPUS`) + shape/partition-lock meta-tests: every corpus row
 //! partitioned into driven ∪ gated ∪ deferred. The `combo-verify` CLI
 //! ([`corpus::drive_row`]) classifies each via the same drivers;
 //! `drive_row_classifies_corpus_via_shared_pipeline` and the `classify_status`
@@ -58,14 +58,10 @@ fn card_db() -> &'static CardDatabase {
 // ===========================================================================
 
 /// META-TEST: lock the corpus shape so an accidental row deletion or miscount
-/// fails loudly. 54 rows total (3 driving + 51 corpus), exactly 4 card-gated.
+/// fails loudly: the row total, the card-gated rows, and their testable complement.
 #[test]
 fn corpus_table_shape_is_locked() {
-    assert_eq!(
-        corpus::corpus_len(),
-        54,
-        "corpus must hold all 3 driving + 51 combos"
-    );
+    assert_eq!(corpus::corpus_len(), 54, "corpus must hold all 54 rows");
     let gated = (0..corpus::corpus_len())
         .filter(|&i| corpus::row(i).gated_on.is_some())
         .count();
@@ -87,13 +83,13 @@ fn corpus_table_shape_is_locked() {
             | WinKind::Advantage => {}
         }
     }
-    // 50 of 54 are testable today (gated count is the complement).
+    // The testable rows are the complement of the gated rows.
     let testable = corpus::corpus_len() - gated;
     assert_eq!(testable, 50, "50 corpus combos are testable once driven");
 }
 
 /// META-TEST: the corpus is a clean partition — every row is exactly one of
-/// {driven, gated, deferred}, pairwise disjoint, covering all 54. The driven set
+/// {driven, gated, deferred}, pairwise disjoint, covering every row. The driven set
 /// is `corpus::DRIVERS`, gated is `gated_on.is_some()`, deferred is
 /// `deferral.is_some()`; a driven/gated row must NOT also carry a deferral bucket.
 #[test]
@@ -161,7 +157,7 @@ fn face_has_unimplemented(face: &crate::types::card::CardFace) -> bool {
             .any(|t| t.execute.as_deref().is_some_and(ability_unimpl))
 }
 
-/// ACCEPTANCE OVER THE WHOLE CORPUS (all 54 rows): every card of every combo is
+/// ACCEPTANCE OVER THE WHOLE CORPUS (every row): every card of every combo is
 /// present in the real card-data export, and its implementation status matches
 /// the row's `gated_on` — a non-gated combo has zero `Effect::Unimplemented`
 /// across all its cards, while a gated combo legitimately contains an unmodeled
@@ -181,7 +177,7 @@ fn corpus_cards_present_and_implementation_status_matches_gating() {
             match db.get_face_by_name(card) {
                 None => missing.push(format!("{} (in {})", card, row.name)),
                 Some(face) => {
-                    // Only the non-gated rows must be fully modeled; the 4 gated
+                    // Only the non-gated rows must be fully modeled; the gated
                     // rows legitimately contain an unmodeled card. A nested
                     // Unimplemented in a cost/replacement may not be surfaced by
                     // `face_has_unimplemented` (it walks top-level ability/trigger

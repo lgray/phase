@@ -11772,6 +11772,13 @@ enum ReturnedCreatureCostMove {
     Delivered,
 }
 
+/// CR 601.2a + CR 111.1: whether the effect handed in puts a token onto the battlefield when the
+/// spell resolves, asked as the spell is cast. The buyback recast capture (CR 702.27a) hands in the
+/// spell's root effect only. Membership is `resolution_token_mint`'s.
+pub(crate) fn recast_creates_token(effect: &crate::types::ability::Effect) -> bool {
+    crate::analysis::ability_graph::resolution_token_mint(effect).is_some()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finalize_cast_with_phyrexian_choices_inner(
     state: &mut GameState,
@@ -12054,8 +12061,7 @@ fn finalize_cast_with_phyrexian_choices_inner(
     // APPENDS, engine.rs) honest. `ability.effect` is read here before `ability` is moved into
     // `stack_ability` below.
     {
-        let is_token_creating =
-            matches!(ability.effect, crate::types::ability::Effect::Token { .. });
+        let is_token_creating = recast_creates_token(&ability.effect);
         let (has_buyback, convoke) = state.objects.get(&object_id).map_or((false, None), |obj| {
             let has_buyback = obj
                 .keywords

@@ -582,6 +582,25 @@ fn project_mana_production(p: &ManaProduction) -> (Vec<(usize, i64)>, AxisMagnit
     }
 }
 
+/// CR 111.1: the count of tokens this effect's own resolution puts onto the battlefield, for the
+/// effects the resource projection models as minting; `None` for every other effect, including a
+/// mint the projection leaves unmodeled. A site asking whether an effect's resolution puts a token
+/// onto the battlefield consults this rather than listing members, so a member added here reaches
+/// the projection and both loop-period arming beats (`activation_creates_token`,
+/// `recast_creates_token`). CR 701.36b: populate is not a member, because whether it mints depends
+/// on the creature tokens its controller holds at resolution, which the effect does not carry.
+pub(crate) fn resolution_token_mint(effect: &Effect) -> Option<&QuantityExpr> {
+    static ONE: QuantityExpr = QuantityExpr::Fixed { value: 1 };
+    match effect {
+        Effect::Token { count, .. }
+        | Effect::CopyTokenOf { count, .. }
+        | Effect::CreateTokenCopyFromPool { count, .. } => Some(count),
+        // CR 701.16a: investigate creates one Clue token.
+        Effect::Investigate => Some(&ONE),
+        _ => None,
+    }
+}
+
 /// The central deliverable: project a single [`Effect`] onto its static resource
 /// contribution. Exhaustive **no-wildcard** match over all 207 `Effect` variants
 /// — five priority families modeled (CR 106.1 / 122.1 / 120.1 / 701.26 / 601.2),
@@ -589,6 +608,13 @@ fn project_mana_production(p: &ManaProduction) -> (Vec<(usize, i64)>, AxisMagnit
 /// reclassifies unmodeled arms without touching this match's exhaustiveness.
 fn effect_projection(effect: &Effect) -> Projection {
     let mut b = Proj::default();
+    // CR 111.1 + CR 603.6a: a token's entry is an enters-the-battlefield event.
+    if let Some(count) = resolution_token_mint(effect) {
+        let (a, mag) = count_seed(count);
+        b.add_tokens(a, mag);
+        b.add_etb(a, mag);
+        return b.finish();
+    }
     match effect {
         // ----- MANA family (CR 106.1) -----
         Effect::Mana { produced, .. } => {
@@ -730,19 +756,6 @@ fn effect_projection(effect: &Effect) -> Projection {
         Effect::LoseLife { amount, target } => {
             let (a, _) = count_seed(amount);
             b.add_life(target_player_opt(target), -a, AxisMagnitude::Fixed(0));
-        }
-        // ----- TOKEN family (CR 111.1) — a token entry IS an ETB (CR 603.6a) -----
-        Effect::Token { count, .. }
-        | Effect::CopyTokenOf { count, .. }
-        | Effect::CreateTokenCopyFromPool { count, .. } => {
-            let (a, mag) = count_seed(count);
-            b.add_tokens(a, mag);
-            b.add_etb(a, mag);
-        }
-        // CR 701.16 + CR 111.1: Investigate creates one Clue token (CR 603.6a ETB).
-        Effect::Investigate => {
-            b.add_tokens(1, AxisMagnitude::Fixed(1));
-            b.add_etb(1, AxisMagnitude::Fixed(1));
         }
         // ----- ZONE-CHANGE family (CR 603.6a ETB / CR 603.6c LTB / CR 700.4 dies) -----
         Effect::ChangeZone {
@@ -1045,6 +1058,11 @@ fn effect_projection(effect: &Effect) -> Projection {
         // runtime choice) — Unmodeled, like the other choice effects.
         | Effect::ChooseCounterKind { .. }
         | Effect::PutChosenCounter { .. }
+        // Projected by `resolution_token_mint` above; never reached here.
+        | Effect::Token { .. }
+        | Effect::CopyTokenOf { .. }
+        | Effect::CreateTokenCopyFromPool { .. }
+        | Effect::Investigate
         | Effect::Unimplemented { .. } => return Projection::Unmodeled,
     }
     b.finish()
@@ -2867,6 +2885,80 @@ mod tests {
         assert_eq!(np.net.etb_triggers, 2);
         assert!(np.produces.contains(&AxisKey::Tokens));
         assert!(np.produces.contains(&AxisKey::Etb));
+    }
+
+    /// `[authority, projection seeds tokens, activation predicate, recast predicate]` for `effect`.
+    fn token_family_readers(effect: &Effect) -> [bool; 4] {
+        let projection_seeds_tokens = matches!(
+            effect_projection(effect),
+            Projection::Modeled { ref vector, .. } if vector.tokens_created > 0
+        );
+        [
+            resolution_token_mint(effect).is_some(),
+            projection_seeds_tokens,
+            crate::game::engine::activation_creates_token(&activated(effect.clone())),
+            crate::game::casting_costs::recast_creates_token(effect),
+        ]
+    }
+
+    #[test]
+    fn token_family_authority_is_what_the_projection_and_both_arming_predicates_read() {
+        let members = [
+            Effect::Investigate,
+            token(fixed(2)),
+            Effect::CopyTokenOf {
+                target: default_target_filter_any(),
+                owner: TargetFilter::Controller,
+                source_filter: None,
+                enters_attacking: false,
+                tapped: false,
+                count: fixed(3),
+                extra_keywords: Vec::new(),
+                additional_modifications: Vec::new(),
+            },
+            Effect::CreateTokenCopyFromPool {
+                owner: TargetFilter::Controller,
+                type_filter: default_target_filter_any(),
+                mv: crate::types::ability::Comparator::EQ,
+                mv_bound: fixed(2),
+                selection: crate::types::ability::CardSelectionMode::Random,
+                count: dynamic(),
+                tapped: false,
+                enters_attacking: false,
+            },
+        ];
+        for effect in &members {
+            let name: &'static str = effect.into();
+            let count = resolution_token_mint(effect).expect("a member answers with its count");
+            let (amount, magnitude) = count_seed(count);
+            let Projection::Modeled {
+                vector, magnitudes, ..
+            } = effect_projection(effect)
+            else {
+                panic!("{name}: a member's projection is modeled");
+            };
+            // CR 111.1 + CR 603.6a: the token axis and the entry axis carry the authority's count.
+            assert_eq!(
+                (vector.tokens_created, vector.etb_triggers),
+                (amount, amount),
+                "{name}"
+            );
+            assert_eq!(
+                (
+                    magnitudes.get(&AxisKey::Tokens),
+                    magnitudes.get(&AxisKey::Etb)
+                ),
+                (Some(&magnitude), Some(&magnitude)),
+                "{name}"
+            );
+            assert_eq!(token_family_readers(effect), [true; 4], "{name}");
+        }
+        // CR 701.16a: investigate creates one Clue token.
+        assert_eq!(resolution_token_mint(&Effect::Investigate), Some(&fixed(1)));
+
+        // CR 701.36b: whether populate mints depends on a creature token its controller holds at
+        // resolution, which the effect does not carry.
+        assert_eq!(token_family_readers(&Effect::Populate), [false; 4]);
     }
 
     #[test]

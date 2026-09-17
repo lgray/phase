@@ -2274,9 +2274,10 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
     // is structurally unreachable for it. Detect it here by driving the captured loop-action
     // sequence on a clone. Gated identically (opt-in + top-level-only) plus a cheap
     // `last_loop_action_sequence` precondition (armed only on a buyback-paid token-creating
-    // cast or a multi-activation engine's accumulated beats — so the clone-drive runs ~never for
-    // the recast class; a mana engine arms per mana activation but its drive aborts fast when
-    // unsustainable). INV-2: this OFFERS the interactive shortcut (never auto-resolves — CR 732.2a).
+    // cast, a lone token-creating activation, or a multi-activation engine's accumulated beats —
+    // so the clone-drive runs ~never for the recast class; a mana engine arms per mana activation
+    // but its drive aborts fast when unsustainable). INV-2: this OFFERS the interactive shortcut
+    // (never auto-resolves — CR 732.2a).
     //
     // SITE A (CR 732.2a): the precondition asks whose period it is, not merely whether one exists.
     // BEHAVIOUR-PRESERVING by construction — `try_offer_object_growth_shortcut` below applies the
@@ -6435,6 +6436,17 @@ fn loop_action_expected_def(
     }
 }
 
+/// CR 602.2a + CR 111.1: whether any effect anywhere in this activated ability's tree puts a token
+/// onto the battlefield when it resolves, asked as the activation goes on the stack. Membership is
+/// `resolution_token_mint`'s; the whole-tree reach is this beat's own.
+pub(crate) fn activation_creates_token(def: &crate::types::ability::AbilityDefinition) -> bool {
+    let mut effects = Vec::new();
+    crate::analysis::ability_graph::collect_effects(def, &mut effects);
+    effects
+        .into_iter()
+        .any(|effect| crate::analysis::ability_graph::resolution_token_mint(effect).is_some())
+}
+
 /// P7 v3 (CR 602.2a + CR 732.2a): append a driving activation to the current loop-action period
 /// (`state.last_loop_action_sequence`). A CONTROLLER CHANGE resets to a fresh single-step period
 /// (a period belongs to one controller — a mid-period controller switch is a different loop); a
@@ -6601,7 +6613,7 @@ fn activation_awaiting_target_settlement(
 /// (the multi-activation engine's continuation beat, e.g. Basalt's `{3}: Untap`
 /// after its mana beat); (2) else if this activation CREATES A TOKEN → SEED a
 /// fresh 1-step period (the P3 object-growth path — the activation-shaped dual of
-/// the recast capture's STATIC `is_token_creating` predicate); (3) else → CLEAR
+/// the recast capture's STATIC `recast_creates_token` predicate); (3) else → CLEAR
 /// (a lone non-token, non-continuing activation seeds nothing). ⛔ A
 /// `battlefield.len() > before` gate is STRUCTURALLY DEAD (B1): the ability only
 /// goes on the STACK at this beat; its token appears on RESOLUTION. The
@@ -6630,12 +6642,10 @@ fn record_non_mana_activation_accepted(
         {
             Some(o) => {
                 let card_id = o.card_id;
-                let creates_token = o.abilities.get(ability_index).is_some_and(|def| {
-                    let mut es = Vec::new();
-                    crate::analysis::ability_graph::collect_effects(def, &mut es);
-                    es.iter()
-                        .any(|e| matches!(e, crate::types::ability::Effect::Token { .. }))
-                });
+                let creates_token = o
+                    .abilities
+                    .get(ability_index)
+                    .is_some_and(activation_creates_token);
                 let continuing = state
                     .last_loop_action_sequence
                     .first()
@@ -7206,10 +7216,11 @@ fn build_recast_template(
 }
 
 /// CR 400.7: normalize a settle frame for the object-growth board cover — strip the
-/// self-returning recast card and clear the per-cycle token-id bookkeeping. Both churn a
-/// FRESH ObjectId every cycle (the card via its hand→stack→hand round-trip; the
-/// `last_created_token_ids` anaphora slot via each new token), which the id-keyed
-/// stable-engine compare would read as a false board drift. The recast card's presence in
+/// self-returning recast card and clear the per-cycle token-id bookkeeping. Both change every
+/// cycle (the card keeps its storage ObjectId through its hand→stack→hand round-trip while its
+/// incarnation advances with each move; the `last_created_token_ids` anaphora slot takes each
+/// new token's fresh ObjectId), which the id-keyed stable-engine compare would read as a false
+/// board drift. The recast card's presence in
 /// `ctx.from_zone` is a verified loop invariant (the hook precondition + the injector's
 /// per-cycle re-find), and `last_created_token_ids` is pure ephemeral anaphora bookkeeping
 /// (no observer reads it at the empty-stack settle beat), so clearing them identically from
