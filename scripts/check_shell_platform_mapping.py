@@ -238,17 +238,21 @@ PREVIEW_ARRAY_LOOP = re.compile(
 #: than as characters. `.*?` in its place reaches inside a quoted argument, where
 #: the option it finds is a literal bash passes along rather than one the command
 #: reads: `--cache-control '--file "$binary" x'` is one word, and matching its
-#: interior counts an upload of a file the step never uploads.
+#: interior counts an upload of a file the step never uploads. The option must
+#: begin the word it sits in for the same reason: bash hands
+#: `--cache-control=--file` and `x--file` over as single words, and wrangler
+#: receives no `--file` from either.
 SHELL_WORD_GAP = r"""(?:\\.|[^'"\\]|'[^']*'|"(?:\\.|[^"\\])*")*?"""
+SHELL_FILE_OPTION = r"(?<![\w=-])--file[ \t]+"
 PREVIEW_CONSUMERS = (
     ("signs it", r'^[ \t]*sign[ \t]+{binary}(?=[ \t;&|]|$)'),
     ("uploads it", r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?![\w-])'
-                   + SHELL_WORD_GAP
-                   + r'--file[ \t]+{binary}(?=[ \t;&|]|$)'),
+                   + SHELL_WORD_GAP + SHELL_FILE_OPTION
+                   + r'{binary}(?=[ \t;&|]|$)'),
     ("uploads its signature",
      r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?![\w-])'
-     + SHELL_WORD_GAP
-     + r'--file[ \t]+{signature}(?=[ \t;&|]|$)'),
+     + SHELL_WORD_GAP + SHELL_FILE_OPTION
+     + r'{signature}(?=[ \t;&|]|$)'),
 )
 #: `do` closing a loop header, and `done` opening a line. Counted so a loop
 #: nested in the body does not end it early. The opener must *begin* with the
@@ -280,8 +284,17 @@ PREVIEW_LOOP_DO = re.compile(r"[ \t]*do(?![\w-])")
 #: is falsified by the spelling it omits, and every omission here is silent:
 #: `printf -v binary`, `let "binary = 1"` and `(( binary = 1 ))` each sign and
 #: publish the wrong file under the step's own `set -euo pipefail`, so a reader
-#: enumerating binding commands fails open on the one it has not met yet. The
-#: expansion spellings are matched first so each consumes its own copy of the
+#: enumerating binding commands fails open on the one it has not met yet.
+#:
+#: The complement is taken over the lines bash hands this step as its own words,
+#: which is narrower than every spelling that binds the name: an assignment
+#: inside `$(( ... ))` is blanked before this is read, and `${binary:=x}` is one
+#: of the expansions counted as a use. Neither publishes a wrong file quietly --
+#: arithmetic binds a number, which the step's own `sign` then fails on under
+#: `set -euo pipefail`, and the default never fires, every element of the array
+#: having been proven a non-empty path already.
+#:
+#: The expansion spellings are matched first so each consumes its own copy of the
 #: name and only a bare occurrence is left to report. Matched against the whole
 #: line and applied ahead of the nesting count, because the rebinding spelling
 #: that hides best is a nested loop header, which ends in `do` like any other.
@@ -1167,17 +1180,20 @@ def _consumer_word(var: str, suffix: str = "") -> str:
     return rf'"\$(?:{name}|\{{{name}\}}){suffix}"'
 
 
-def _loop_consumers(step: ShellStep, header: int,
-                    var: str) -> tuple[set[str], tuple[int, str] | None]:
+def _loop_consumers(step: ShellStep, header: int, var: str) -> tuple[
+        set[str], set[str], tuple[int, str] | None]:
     """Which of `PREVIEW_CONSUMERS` this loop's body runs on the loop variable.
 
-    Returned beside the set: the line that ended the countable part of the body,
-    as this step's own line number and text, or None when nothing ended it. It is
-    what the caller's refusal has to name -- a body cut above its `sign` is
-    missing the same member as a body with no `sign` anywhere in it, and a reader
-    told to add the call is sent looking for a line already there. Carried out
-    rather than acted on: which lines end a region, and which commands are
-    counted before one does, are what they were.
+    Returned beside that set: the same consumers found below the line that ended
+    the countable part of the body, and that line as this step's own number and
+    text, or None when nothing ended it. A body cut above its `sign` is missing
+    the same member as a body with no `sign` anywhere in it, and a reader told to
+    add the call is sent looking for a line already there -- so the caller has to
+    name the cut, but only for a member the second set holds. A cut below the
+    commands it was thought to suppress hid nothing, and naming it points at a
+    line in a loop the refusal is not about. Carried out rather than acted on:
+    which lines end a region, and which commands are counted before one does, are
+    what they were.
 
     The body is the executable lines between the header and the `done` closing
     it, and the countable part of it ends at the first line that rebinds the
@@ -1201,6 +1217,7 @@ def _loop_consumers(step: ShellStep, header: int,
     signature = _consumer_word(var, r"\.minisig")
     rebind = re.compile(PREVIEW_REBIND.format(name=re.escape(var)))
     found: set[str] = set()
+    cut_off: set[str] = set()
     ended: tuple[int, str] | None = None
     depth, binds, pending = 1, True, False
     for at in sorted(start for start in step.line_context if start > header):
@@ -1211,7 +1228,7 @@ def _loop_consumers(step: ShellStep, header: int,
         if PREVIEW_LOOP_CLOSE.match(line):
             depth -= 1
             if depth == 0:
-                return found, ended
+                return found, cut_off, ended
             pending = False
             continue
         # Only the first: `binds` never goes back to True, so the lines after it
@@ -1222,10 +1239,11 @@ def _loop_consumers(step: ShellStep, header: int,
         joined = PREVIEW_LOOP_OPEN.match(line)
         if joined or (pending and PREVIEW_LOOP_DO.match(line)):
             depth += 1
-        elif binds:
-            found.update(name for name, pattern in PREVIEW_CONSUMERS
-                         if re.search(pattern.format(binary=binary,
-                                                     signature=signature), line))
+        else:
+            (found if binds else cut_off).update(
+                name for name, pattern in PREVIEW_CONSUMERS
+                if re.search(pattern.format(binary=binary,
+                                            signature=signature), line))
         pending = bool(PREVIEW_LOOP_KEYWORD.match(line)) and not joined
     raise Refusal(f"{step.where} has a `for {var} in {PREVIEW_ARRAY_READ}; do` "
                   "loop with no `done` line closing it; which commands that loop "
@@ -1278,8 +1296,9 @@ def _preview_artifacts(step: ShellStep) -> dict[str, str]:
             header = PREVIEW_ARRAY_LOOP.fullmatch(line)
             if header is None:
                 raise Refusal(f"{where} reads `{PREVIEW_ARRAY_READ}` on the line "
-                              f"{line.strip()!r}, which is not a loop over it; "
-                              "the array is the authority for what is signed and "
+                              f"{line.strip()!r}, which is not spelled as a "
+                              "header ending in `; do`; the array is the "
+                              "authority for what is signed and "
                               "uploaded, so every executable read of it must be a "
                               f'`for <name> in {PREVIEW_ARRAY_READ}; do` header')
             reads.append(start)
@@ -1326,26 +1345,30 @@ def _preview_artifacts(step: ShellStep) -> dict[str, str]:
                       "`binaries=(` line, or nowhere; a loop that walks the array "
                       "before it is assigned signs and uploads nothing")
     consumed: set[str] = set()
-    cuts: list[str] = []
+    cuts: list[tuple[set[str], str]] = []
     for header_at, var in loops:
-        names, ended = _loop_consumers(step, header_at, var)
+        names, cut_off, ended = _loop_consumers(step, header_at, var)
         consumed |= names
         if ended is not None:
-            cuts.append(f"line {ended[0]} names `{var}` other than as an "
-                        f"expansion of it ({ended[1]!r})")
+            cuts.append((cut_off, f"line {ended[0]} names `{var}` other than as "
+                                  f"an expansion of it ({ended[1]!r})"))
     if missing := [name for name, _ in PREVIEW_CONSUMERS if name not in consumed]:
         head = (f"{where} walks {PREVIEW_ARRAY_READ} but never "
                 f"{', nor '.join(missing)} inside a loop over it")
         # Which member is missing does not say why, and a loop cut above the
         # command that would supply it reads as a loop that never had one. The
-        # cut is what a reader has to see to find the line to edit.
-        if cuts:
+        # cut is what a reader has to see to find the line to edit -- but only
+        # the cut that hid one of these members: any other names an innocent line
+        # in place of the spelling that would supply what is missing.
+        if named := [text for suppressed, text in cuts
+                     if suppressed.intersection(missing)]:
             raise Refusal(
-                f"{head}; {', and '.join(cuts)}, which ends the part of that loop "
-                "counted here -- past that line the variable no longer names an "
-                "element of the array, so the commands below it publish none of "
-                "what the loop walks. Spell the name there as an expansion of "
-                "itself, or put the missing commands above it")
+                f"{head}; {', and '.join(named)}, which ends the part of that "
+                "loop counted here -- past that line the variable no longer names "
+                "an element of the array, so the commands below it publish none "
+                "of what the loop walks. Put the missing commands above that "
+                "line; where it only reads the variable, spelling the name as an "
+                "expansion of itself leaves it a use")
         raise Refusal(
             f"{head}; the array is the "
             "authority for what is published only when the commands that publish "

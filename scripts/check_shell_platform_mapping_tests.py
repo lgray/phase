@@ -1313,6 +1313,9 @@ class ShellPlatformMappingTests(unittest.TestCase):
             ("echo", (f"echo {read}",)),
             ("array assignment", (f"x=({read})",)),
             ("printf", (f"printf '%s\\n' {read}",)),
+            # The last is a loop over the array, and the walk reads it as one
+            # everywhere else, so the refusal names the spelling it wants rather
+            # than denying what the line is.
             ("`do` on the line after the header",
              (f"for binary in {read}", "do", '  test -s "$binary"', "done")),
         ):
@@ -1322,6 +1325,7 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 r = t.run()
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn(form, r.stderr)
+                self.assertNotIn("is not a loop over it", r.stderr)
                 self.assertNotIn("preview provisioning OK", r.stdout)
         for label, before, after, context in (
             ("quoted heredoc body", ("cat <<'EOF' >/dev/null",), ("EOF",),
@@ -1405,6 +1409,19 @@ class ShellPlatformMappingTests(unittest.TestCase):
              pre + loop.replace(
                  'put "phase-rs-data/$prefix/$name" --file "$binary" --remote',
                  'put "x\\" --file "$binary" y" --file "$other" --remote')
+             + post, ("uploads it",)),
+            # bash hands `--cache-control=--file` and `x--file` over as single
+            # words, so wrangler is passed no `--file` at all: the option has to
+            # begin the word it sits in.
+            ("the accepted spelling glued behind an option and its `=`",
+             pre + loop.replace(
+                 '--file "$binary" --remote',
+                 '--file "$other" --cache-control=--file "$binary" --remote')
+             + post, ("uploads it",)),
+            ("the accepted spelling glued behind a word of its own",
+             pre + loop.replace(
+                 '--file "$binary" --remote',
+                 '--file "$other" --remote x--file "$binary"')
              + post, ("uploads it",)),
             ("only the signature's upload is decoyed",
              pre + loop.replace('--file "$binary.minisig"',
@@ -1533,6 +1550,31 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertIn("the commands below it publish none of what the "
                               "loop walks", r.stderr)
                 self.assertNotIn("in one loop or in several", r.stderr)
+        # A cut below the commands it was thought to hide suppressed nothing, so
+        # it is not why any member is missing: naming it points the reader at an
+        # innocent line in the loop the refusal is not about, in place of the
+        # spelling that would supply what is missing. One arrangement per
+        # direction, the cut in the loop the member does not come from.
+        for label, body, missing in (
+            ("a cut below the signing loop's own `sign`",
+             walk_lines(signs, 'echo "signed binary $binary"')
+             + walk_lines(uploads[0],
+                          uploads[1].replace('--file "$binary.minisig"',
+                                             '--file "$other.minisig"')),
+             "uploads its signature"),
+            ("a cut below the upload loop's own uploads",
+             walk_lines(signs.replace('"$binary"', '"$other"'))
+             + walk_lines(*uploads, 'echo "uploaded binary $binary"'),
+             "signs it"),
+        ):
+            with self.subTest(innocent=label):
+                t = self.tree()
+                t.write_preview_text(head + array + pre + body + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(f"but never {missing} inside a loop", r.stderr)
+                self.assertIn("in one loop or in several", r.stderr)
+                self.assertNotIn("other than as an expansion of it", r.stderr)
 
     def test_a_loop_over_the_array_the_gate_cannot_delimit_refuses(self) -> None:
         # Which commands a loop runs cannot be told without the `done` closing it,
