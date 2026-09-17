@@ -1410,9 +1410,6 @@ class ShellPlatformMappingTests(unittest.TestCase):
                  'put "phase-rs-data/$prefix/$name" --file "$binary" --remote',
                  'put "x\\" --file "$binary" y" --file "$other" --remote')
              + post, ("uploads it",)),
-            # bash hands `--cache-control=--file` and `x--file` over as single
-            # words, so wrangler is passed no `--file` at all: the option has to
-            # begin the word it sits in.
             ("the accepted spelling glued behind an option and its `=`",
              pre + loop.replace(
                  '--file "$binary" --remote',
@@ -1422,6 +1419,21 @@ class ShellPlatformMappingTests(unittest.TestCase):
              pre + loop.replace(
                  '--file "$binary" --remote',
                  '--file "$other" --remote x--file "$binary"')
+             + post, ("uploads it",)),
+            ("the accepted spelling glued behind a dot",
+             pre + loop.replace(
+                 '--file "$binary" --remote',
+                 '--file "$other" --remote .--file "$binary"')
+             + post, ("uploads it",)),
+            ("the accepted spelling glued behind a closing quote",
+             pre + loop.replace(
+                 '--file "$binary" --remote',
+                 '--file "$other" --remote "x"--file "$binary"')
+             + post, ("uploads it",)),
+            ("the subcommand glued to a word of its own",
+             pre + loop.replace(
+                 'object put "phase-rs-data/$prefix/$name"',
+                 'object put.x "phase-rs-data/$prefix/$name"')
              + post, ("uploads it",)),
             ("only the signature's upload is decoyed",
              pre + loop.replace('--file "$binary.minisig"',
@@ -1550,11 +1562,6 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertIn("the commands below it publish none of what the "
                               "loop walks", r.stderr)
                 self.assertNotIn("in one loop or in several", r.stderr)
-        # A cut below the commands it was thought to hide suppressed nothing, so
-        # it is not why any member is missing: naming it points the reader at an
-        # innocent line in the loop the refusal is not about, in place of the
-        # spelling that would supply what is missing. One arrangement per
-        # direction, the cut in the loop the member does not come from.
         for label, body, missing in (
             ("a cut below the signing loop's own `sign`",
              walk_lines(signs, 'echo "signed binary $binary"')

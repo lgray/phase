@@ -239,18 +239,21 @@ PREVIEW_ARRAY_LOOP = re.compile(
 #: the option it finds is a literal bash passes along rather than one the command
 #: reads: `--cache-control '--file "$binary" x'` is one word, and matching its
 #: interior counts an upload of a file the step never uploads. The option must
-#: begin the word it sits in for the same reason: bash hands
-#: `--cache-control=--file` and `x--file` over as single words, and wrangler
-#: receives no `--file` from either.
+#: begin the word it sits in for the same reason, and the subcommand must be the
+#: whole word it sits in: bash hands `--cache-control=--file` and `put.x` over as
+#: single words, and wrangler is passed no `--file` by the first and no `put` by
+#: the second. A boundary spelled as characters that must not precede a token
+#: admits every character the list forgot, so these patterns require the
+#: separator that must be there instead.
 SHELL_WORD_GAP = r"""(?:\\.|[^'"\\]|'[^']*'|"(?:\\.|[^"\\])*")*?"""
-SHELL_FILE_OPTION = r"(?<![\w=-])--file[ \t]+"
+SHELL_FILE_OPTION = r"[ \t]--file[ \t]+"
 PREVIEW_CONSUMERS = (
     ("signs it", r'^[ \t]*sign[ \t]+{binary}(?=[ \t;&|]|$)'),
-    ("uploads it", r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?![\w-])'
+    ("uploads it", r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?=[ \t])'
                    + SHELL_WORD_GAP + SHELL_FILE_OPTION
                    + r'{binary}(?=[ \t;&|]|$)'),
     ("uploads its signature",
-     r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?![\w-])'
+     r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?=[ \t])'
      + SHELL_WORD_GAP + SHELL_FILE_OPTION
      + r'{signature}(?=[ \t;&|]|$)'),
 )
