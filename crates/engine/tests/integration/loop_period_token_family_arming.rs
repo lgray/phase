@@ -1,8 +1,8 @@
-//! CR 602.2a + CR 111.1: an on-stack activation opens a loop period of its own when anything in its
-//! ability tree puts a token onto the battlefield, whichever effect makes that token, and clears a
-//! foreign period otherwise. Driven on the committed `witherbloom_altar_sprout_swarm_4p` dump: seat
-//! 0's buyback Sprout Swarm cast (CR 702.27a) opens a period, then another seat activates with the
-//! spell still on the stack.
+//! CR 602.2a + CR 111.1: an on-stack activation opens a loop period of its own when an effect
+//! anywhere in its ability tree is one `resolution_token_mint` counts as putting a token onto the
+//! battlefield, and clears a foreign period otherwise. Driven on the committed
+//! `witherbloom_altar_sprout_swarm_4p` dump: seat 0's buyback Sprout Swarm cast (CR 702.27a) opens a
+//! period, then another seat activates with the spell still on the stack.
 
 use engine::game::scenario::GameRunner;
 use engine::types::actions::GameAction;

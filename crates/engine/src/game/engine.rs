@@ -7216,11 +7216,11 @@ fn build_recast_template(
 }
 
 /// CR 400.7: normalize a settle frame for the object-growth board cover — strip the
-/// self-returning recast card and clear the per-cycle token-id bookkeeping. Both change every
-/// cycle (the card keeps its storage ObjectId through its hand→stack→hand round-trip while its
-/// incarnation advances with each move; the `last_created_token_ids` anaphora slot takes each
-/// new token's fresh ObjectId), which the id-keyed stable-engine compare would read as a false
-/// board drift. The recast card's presence in
+/// self-returning recast card and clear the per-cycle token-id bookkeeping. The recast card makes
+/// a hand→stack→hand round-trip every cycle, keeping its storage ObjectId while its incarnation
+/// advances with each move. The `last_created_token_ids` anaphora slot takes each new token's
+/// fresh ObjectId, which the id-keyed stable-engine compare would read as a false board drift.
+/// The recast card's presence in
 /// `ctx.from_zone` is a verified loop invariant (the hook precondition + the injector's
 /// per-cycle re-find), and `last_created_token_ids` is pure ephemeral anaphora bookkeeping
 /// (no observer reads it at the empty-stack settle beat), so clearing them identically from
