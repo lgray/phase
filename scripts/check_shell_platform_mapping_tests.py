@@ -1400,6 +1400,44 @@ class ShellPlatformMappingTests(unittest.TestCase):
             self.assertIn("(found 2: ['--arg', '--argjson'])", r.stderr)
             self.assertNotIn("preview provisioning OK", r.stdout)
 
+    def test_a_binding_hidden_behind_quotes_or_escapes_still_collides(self) -> None:
+        # Bash removes quotes and escapes before jq is handed a word, so every
+        # spelling here binds `fingerprint` exactly as the bare one does. Both
+        # words of a binding carry the class: an option hidden this way hides the
+        # collision as well as a hidden name does, so a reader holding either to
+        # its spelling counts the second binding as nothing.
+        original = '--arg fingerprint "$FINGERPRINT"'
+        collisions = (("quoted name", '--argjson "fingerprint" 1'),
+                      ("escaped name", "--argjson fing\\erprint 1"),
+                      ("quoted option", '"--argjson" fingerprint 1'),
+                      ("escaped option", "--argjs\\on fingerprint 1"))
+        for spelling, second in collisions:
+            with self.subTest(spelling=spelling):
+                body = preview_source()
+                self.assertEqual(body.count(original), 1)
+                t = self.tree()
+                t.write_preview_text(body.replace(original,
+                                                  f"{original} {second}"))
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                # The same pair the bare spelling is named by: a spelling read as
+                # some other option would refuse here while still counting the
+                # families wrong.
+                self.assertIn("(found 2: ['--arg', '--argjson'])", r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+        # The hidden word is read, not merely refused for being hidden: these
+        # spell the same two mechanisms over a name jq keeps separate, and a
+        # reader that took any quote or escape as a collision would refuse them.
+        for spelling, second in (("quoted name", '--argjson "commit" 1'),
+                                 ("escaped option", "--argjs\\on commit 1")):
+            with self.subTest(sibling=f"{spelling}, binding another name"):
+                t = self.tree()
+                t.write_preview_text(preview_source().replace(
+                    original, f"{original} {second}"))
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
+
     def test_a_decoy_authority_bash_never_runs_is_not_read(self) -> None:
         # Each authority is read out of the text the step hands to a command, so
         # a copy of it in a heredoc body sets no prefix, writes no manifest and

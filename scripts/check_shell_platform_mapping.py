@@ -186,12 +186,16 @@ ASSET_HEREDOC = re.compile(r"cat <<'EOF'\n(.*?)\n\s*EOF\b", re.S)
 #: standalone assignment (a `binaries=(` line, artifact lines, a `)` line), the
 #: loops' `"${binaries[@]}"`, or the manifest's `binaries: {` line. Any other
 #: refuses -- a one-line, appended, `declare`d or `mapfile`d array, a commented
-#: one, prose. Names are matched with quotes and backslashes removed, because
-#: `declare` assigns `"bin""aries=(...)"`; a line continuation onto a non-blank
-#: and `$'...'` or `$"..."` quoting refuse instead, because bash joins a name
-#: across the first and decodes one out of the second.
+#: one, prose. Names are matched as `_spliced` leaves them, because `declare`
+#: assigns `"bin""aries=(...)"`; a line continuation onto a non-blank and
+#: `$'...'` or `$"..."` quoting refuse instead, because bash joins a name across
+#: the first and decodes one out of the second.
 PREVIEW_ARRAY_MENTION = re.compile(r"(?<![A-Za-z0-9_])binaries(?![A-Za-z0-9_])")
-PREVIEW_ARRAY_SPLICE = re.compile(r"[\\'\"]")
+#: The characters bash removes from a word before any command sees it. Not a
+#: quoting model: it removes these wherever they sit, which is sound only beside
+#: the two refusals below, the constructs that would make removing them join or
+#: decode more than the step typed.
+SHELL_SPLICE = re.compile(r"[\\'\"]")
 #: A line continuation bash joins onto a word, or that is not a continuation
 #: at all (after `\\` or in a comment); either way the break is not one a
 #: text reader can place.
@@ -289,9 +293,12 @@ PREVIEW_JQ_ARG = re.compile(r'--arg\s+(\w+)\s+"\$(\w+)"')
 #: name to a shell variable is still read from `--arg name "$VAR"` alone, because
 #: no other spelling states that the two are one value. A family rebinding the
 #: name leaves the manifest URLs checked against a value jq may not be expanding.
+#: Read against `_spliced` text, so both words of a binding are counted as jq
+#: receives them rather than as the step spells them: a quoted or escaped option
+#: hides a collision exactly as well as a quoted or escaped name does.
 #: The name ends on any character a word cannot continue through, so a binding at
-#: the end of a line or ahead of a `\` continuation is counted too; `-` is
-#: excluded so a hyphenated word is not read as the bare name plus a remainder.
+#: the end of a line or of a continuation is counted too; `-` is excluded so a
+#: hyphenated word is not read as the bare name plus a remainder.
 PREVIEW_JQ_BIND = re.compile(
     r"--(argjson|arg|slurpfile|rawfile|argfile)[ \t]+(\w+)(?=[^\w-]|$)")
 #: The one comparand this gate cannot derive: the step uploads into the R2 bucket
@@ -1057,6 +1064,28 @@ def _shell_step(body: str, where: str) -> ShellStep:
     return ShellStep(body, "".join(out), line_context, where)
 
 
+def _spliced(text: str) -> tuple[str, list[int]]:
+    """`text` as bash hands it to a command, and where each kept character was.
+
+    A word's spelling is not what the command receives: bash removes quotes and
+    escapes first, so `"bin""aries"=(` assigns `binaries`, `--argjs\\on` is the
+    option `--argjson`, and `--argjson "fingerprint"` binds the same jq name as
+    the bare spelling. A pattern read against the text as typed matches none of
+    them, and for a gate that counts what it matches that is the silent
+    direction: the spelling is not refused, it is not seen at all.
+
+    The offsets are kept so a match can be reported and placed against the text
+    as the step spells it.
+    """
+    origin: list[int] = []
+    kept = 0
+    for cut in SHELL_SPLICE.finditer(text):
+        origin.extend(range(kept, cut.start()))
+        kept = cut.end()
+    origin.extend(range(kept, len(text)))
+    return "".join(text[at] for at in origin), origin
+
+
 def _preview_artifacts(step: ShellStep) -> dict[str, str]:
     """The file name each triple is signed and uploaded under, from `binaries`.
 
@@ -1066,13 +1095,7 @@ def _preview_artifacts(step: ShellStep) -> dict[str, str]:
     runs it, such as a step `shell:` or a `BASH_ENV` startup file.
     """
     where, body = step.where, step.raw
-    origin: list[int] = []
-    kept = 0
-    for cut in PREVIEW_ARRAY_SPLICE.finditer(body):
-        origin.extend(range(kept, cut.start()))
-        kept = cut.end()
-    origin.extend(range(kept, len(body)))
-    flat = "".join(body[at] for at in origin)
+    flat, origin = _spliced(body)
     for pattern, what in ((PREVIEW_ARRAY_JOIN, "a line continuation onto a "
                            "non-blank"), (PREVIEW_QUOTE_DECODE, "`$'...'` or "
                                           '`$"..."` quoting')):
@@ -1271,8 +1294,11 @@ def preview_platforms() -> dict[str, set[str]]:
     # which one is jq's own detail, so a second binding on either side leaves the
     # URLs checked against a value jq may not use. The options are named in the
     # refusal rather than counted, so the family that collided is readable from it.
+    # Counted over the spliced text, so a second binding is counted by the words
+    # jq is handed rather than by their spelling; the same step's array read has
+    # already refused the constructs that would make splicing it unsound.
     rebound = [found.group(1)
-               for found in PREVIEW_JQ_BIND.finditer(step.executed)
+               for found in PREVIEW_JQ_BIND.finditer(_spliced(step.executed)[0])
                if found.group(2) == bound[0]]
     if len(rebound) != 1:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
