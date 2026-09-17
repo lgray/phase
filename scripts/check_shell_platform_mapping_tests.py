@@ -974,7 +974,7 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 body = preview_source()
                 self.assertEqual(body.count(closing), 1)
                 t = self.tree()
-                t.write_preview_text(body.replace(closing, ",\n" + duplicate + closing))
+                t.write_preview_text(body.replace("}\n" + closing, "},\n" + duplicate + closing))
                 r = t.run()
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn("duplicate manifest binary key", r.stderr)
