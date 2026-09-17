@@ -266,6 +266,7 @@ __ARRAY__
           )
           prefix="desktop/preview-server/$FINGERPRINT"
           for binary in "${binaries[@]}"; do
+            sign "$binary"
             name=$(basename "$binary")
             npx wrangler r2 object put "phase-rs-data/$prefix/$name" --file "$binary" --remote
             npx wrangler r2 object put "phase-rs-data/$prefix/$name.minisig" --file "$binary.minisig" --remote
@@ -350,6 +351,15 @@ def preview_source(platforms: Platforms = DEFAULT_PLATFORMS, *,
 
 
 STEP_INDENT = " " * 10
+PREVIEW_LOOP_HEADER = 'for binary in "${binaries[@]}"; do'
+#: The three commands a loop over the array must run on its own variable, as a
+#: case builds a loop body out of them.
+PREVIEW_CONSUMER_LINES = (
+    'sign "$binary"',
+    'npx wrangler r2 object put "$prefix/$name" --file "$binary" --remote',
+    'npx wrangler r2 object put "$prefix/$name.minisig" '
+    '--file "$binary.minisig" --remote',
+)
 
 
 def step_lines(*lines: str) -> str:
@@ -362,6 +372,19 @@ def split_array(body: str) -> tuple[str, str, str]:
     start = body.index(f"{STEP_INDENT}binaries=(\n")
     end = body.index(f"{STEP_INDENT})\n", start) + len(STEP_INDENT) + 2
     return body[:start], body[start:end], body[end:]
+
+
+def split_loop(tail: str) -> tuple[str, str, str]:
+    """A preview tail around its one `binaries` loop: before, loop, after."""
+    start = tail.index(f"{STEP_INDENT}{PREVIEW_LOOP_HEADER}\n")
+    end = tail.index(f"{STEP_INDENT}done\n", start) + len(STEP_INDENT) + 5
+    return tail[:start], tail[start:end], tail[end:]
+
+
+def walk_lines(*body: str) -> str:
+    """A loop over the array running `body`, each line one indent deeper."""
+    return step_lines(PREVIEW_LOOP_HEADER,
+                      *(f"  {line}" for line in body), "done")
 
 
 class MappingTree:
@@ -1312,6 +1335,160 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 r = t.run()
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn(f"reads the array inside {context}", r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_the_array_is_only_walked_by_the_commands_that_publish_it(self) -> None:
+        # A loop header binds the array to nothing by itself: with the signing and
+        # upload commands iterating another collection, a no-op loop over
+        # `binaries` publishes none of the validated set while a gate that asked
+        # only for a loop stays green over it. The members are named one at a
+        # time, so a decoy that moves a single upload is refused for that upload.
+        read = '"${binaries[@]}"'
+        others = '"${others[@]}"'
+        head, array, tail = split_array(preview_source())
+        pre, loop, post = split_loop(tail)
+        sign = step_lines('  sign "$binary"')
+        self.assertIn(sign, loop)
+        unsigned = loop.replace(sign, "")
+        braced = tail.replace('"$binary', '"${binary}')
+        self.assertNotIn('"$binary', braced)
+        for label, body in (
+            ("one loop signs and uploads", head + array + tail),
+            ("a signing loop beside an upload loop",
+             head + array + pre + walk_lines('test -s "$binary"',
+                                             'sign "$binary"') + unsigned + post),
+            ("the brace spelling of the same variable", head + array + braced),
+            ("the manifest signed and uploaded outside every loop",
+             head + array + tail + step_lines(
+                 'sign "$manifest"',
+                 'npx wrangler r2 object put "d/m.json" --file "$manifest" --remote',
+                 'npx wrangler r2 object put "d/m.json.minisig" --file '
+                 '"$manifest.minisig" --remote')),
+        ):
+            with self.subTest(shape=label):
+                t = self.tree()
+                t.write_preview_text(body)
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
+        every = ("signs it", "uploads it", "uploads its signature")
+        for label, body, missing in (
+            ("every consumer walks another array",
+             pre + walk_lines(":") + loop.replace(read, others) + post, every),
+            ("only the uploads walk another array",
+             pre + unsigned.replace(read, others)
+             + walk_lines('sign "$binary"') + post,
+             ("uploads it", "uploads its signature")),
+            ("only the binary's own upload is decoyed",
+             pre + loop.replace('--file "$binary" ', '--file "$other" ') + post,
+             ("uploads it",)),
+            ("only the signature's upload is decoyed",
+             pre + loop.replace('--file "$binary.minisig"',
+                                '--file "$other.minisig"') + post,
+             ("uploads its signature",)),
+            ("every consumer names another variable",
+             pre + loop.replace('"$binary', '"$other') + post, every),
+            ("the only signing consumer sits outside every loop",
+             pre + unsigned + step_lines('sign "$binary"') + post, ("signs it",)),
+            ("a consumer spelled inside a quoted word",
+             pre + loop.replace(sign, step_lines('  echo "sign \\"$binary\\""'))
+             + post, ("signs it",)),
+            ("a consumer whose argument is a substitution",
+             pre + loop.replace(sign, step_lines(
+                 '  sign "$(readlink -f "$binary")"')) + post, ("signs it",)),
+        ):
+            with self.subTest(decoy=label):
+                t = self.tree()
+                t.write_preview_text(head + array + body)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(f"but never {', nor '.join(missing)} inside a loop",
+                              r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_a_consumer_the_loop_no_longer_binds_does_not_publish(self) -> None:
+        # A consumer counts for naming the loop variable, which says what it
+        # publishes only while the loop is what put the value there. Past a
+        # rebinding -- an assignment, a nested loop over the same name, a `read`
+        # into it -- `sign "$binary"` signs whatever was rebound, and the loop
+        # walks the array while publishing none of it. Nesting itself stays legal,
+        # and so does the body after a nested `done`.
+        others = '"${others[@]}"'
+        head, array, tail = split_array(preview_source())
+        pre, _, post = split_loop(tail)
+        signs, *uploads = PREVIEW_CONSUMER_LINES
+        with self.subTest(shape="a retry loop around a consumer"):
+            t = self.tree()
+            t.write_preview_text(head + array + pre + walk_lines(
+                "for attempt in 1 2; do", f"  {signs}", "done", *uploads) + post)
+            r = t.run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preview provisioning OK", r.stdout)
+        every = ("signs it", "uploads it", "uploads its signature")
+        for label, body, missing in (
+            ("a nested loop rebinding the variable",
+             walk_lines(f"for binary in {others}; do",
+                        *(f"  {line}" for line in PREVIEW_CONSUMER_LINES),
+                        "done"), every),
+            ("the variable assigned before the consumers",
+             walk_lines("binary=/dev/null", *PREVIEW_CONSUMER_LINES), every),
+            ("the variable read from a file before the consumers",
+             walk_lines("read -r binary < /dev/null", *PREVIEW_CONSUMER_LINES),
+             every),
+            ("a nested loop whose consumer names its own variable",
+             walk_lines(f"for other in {others}; do", '  sign "$other"', "done",
+                        *uploads), ("signs it",)),
+        ):
+            with self.subTest(decoy=label):
+                t = self.tree()
+                t.write_preview_text(head + array + pre + body + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(f"but never {', nor '.join(missing)} inside a loop",
+                              r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_a_loop_over_the_array_the_gate_cannot_delimit_refuses(self) -> None:
+        # Which commands a loop runs cannot be told without the `done` closing it,
+        # and a line that merely ends in the word `do` opens nothing: reading one
+        # as a header carries the body past its own `done`, so commands sitting
+        # outside the loop count as the ones publishing the array. The pass legs
+        # run the same consumers inside a loop the walk still has to delimit: one
+        # nesting a second loop, one closed by a redirected `done`.
+        head, array, tail = split_array(preview_source())
+        pre, _, post = split_loop(tail)
+        signs, *uploads = PREVIEW_CONSUMER_LINES
+        for label, body in (
+            ("a nested loop and a line ending in the word `do`",
+             walk_lines("echo nothing to do", "while :; do", f"  {signs}",
+                        "  break", "done", *uploads)),
+            ("a redirection on the `done` closing the loop", step_lines(
+                PREVIEW_LOOP_HEADER,
+                *(f"  {line}" for line in PREVIEW_CONSUMER_LINES),
+                "done < /dev/null")),
+        ):
+            with self.subTest(shape=label):
+                t = self.tree()
+                t.write_preview_text(head + array + pre + body + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
+        for label, body, refusal in (
+            ("a line ending in `do` and the consumer outside the loop",
+             step_lines("while :; do") + walk_lines("echo nothing to do", *uploads)
+             + step_lines(f"  {signs}", "  break", "done"),
+             "but never signs it inside a loop"),
+            ("a header with no `done`",
+             walk_lines(*uploads)
+             + step_lines(PREVIEW_LOOP_HEADER, f"  {signs}"),
+             "loop with no `done` line closing it"),
+        ):
+            with self.subTest(shape=label):
+                t = self.tree()
+                t.write_preview_text(head + array + pre + body + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(refusal, r.stderr)
                 self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_second_binding_of_the_fingerprint_name_refuses(self) -> None:

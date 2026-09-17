@@ -212,7 +212,48 @@ PREVIEW_ARRAY_READ = '"${binaries[@]}"'
 #: entirely. Stated per read rather than as a count of reads, so a third loop, a
 #: merged single loop, or a refactor to another iterator each land on the rule.
 PREVIEW_ARRAY_LOOP = re.compile(
-    r'[ \t]*for [A-Za-z_]\w* in "\$\{binaries\[@\]\}"; do')
+    r'[ \t]*for ([A-Za-z_]\w*) in "\$\{binaries\[@\]\}"; do')
+#: What a loop over the array must run on the loop's own variable. Naming the
+#: commands is what ties the array to what bash does with it: a loop that walks
+#: `binaries` while the signing and upload commands walk another collection
+#: leaves the validated set unpublished, and a gate that asked only for a loop
+#: stays green over it. Looked for across every loop and unioned, so one merged
+#: loop running all three and separate loops running one each are equally legal.
+#:
+#: Where a command sits, not whether bash reaches it: a consumer under a
+#: condition that is never true, or in a function nothing calls, is counted like
+#: any other, so a decoy built that way is admitted. Modelling reachability is a
+#: different reader than this one, and its absence is the older admission --
+#: `_preview_artifacts` reads the array assignment the same way.
+PREVIEW_CONSUMERS = (
+    ("signs it", r'^[ \t]*sign[ \t]+{binary}(?=[ \t;&|]|$)'),
+    ("uploads it", r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?![\w-]).*?'
+                   r'--file[ \t]+{binary}(?=[ \t;&|]|$)'),
+    ("uploads its signature",
+     r'^[ \t]*(?:npx[ \t]+)?wrangler r2 object put(?![\w-]).*?'
+     r'--file[ \t]+{signature}(?=[ \t;&|]|$)'),
+)
+#: `do` closing a loop header, and `done` opening a line. Counted so a loop
+#: nested in the body does not end it early. The opener must *begin* with the
+#: keyword whose header the `do` closes: a line merely ending in that word --
+#: `echo nothing to do` -- opens nothing, and reading one as an opener pushes the
+#: body past its own `done` and counts commands that sit outside the loop, which
+#: is the fail-open direction. `done` keeps its line to itself but for a
+#: redirection or a list operator, neither of which changes which loop it closes.
+PREVIEW_LOOP_OPEN = re.compile(r"[ \t]*(?:for|while|until|select)(?![\w-]).*"
+                               r"(?:^|[ \t;])do$")
+PREVIEW_LOOP_CLOSE = re.compile(r"[ \t]*done(?![\w-])")
+#: A command that gives the loop variable a value the loop did not: an
+#: assignment, a nested `for`/`select` over the same name, or a `read` into it.
+#: Past one of these the variable no longer names an element of the array, so
+#: `sign "$binary"` below it signs whatever was rebound -- the loop still walks
+#: `binaries` and publishes none of it. Each binds the bare name, so an expansion
+#: of it is a use and never one of these. Matched against the whole line and
+#: applied ahead of the nesting count, because the rebinding spelling that hides
+#: best is a nested loop header, which ends in `do` like any other.
+PREVIEW_REBIND = (r'(?:^|[ \t;&|(]){name}(?:\[[^]]*\])?\+?=',
+                  r'(?:^|[ \t;&|(])(?:for|select)[ \t]+{name}(?![\w-])',
+                  r'(?:^|[ \t;&|(])read(?![\w-])[^;&|]*?[ \t]{name}(?![\w-])')
 PREVIEW_MANIFEST_OPEN = re.compile(r"[ \t]*binaries: \{")
 PREVIEW_ARRAY_LINE = re.compile(
     r"[ \t]*artifacts/[\w.-]+/phase-server-([\w.-]+?)(\.exe)?")
@@ -1086,6 +1127,60 @@ def _spliced(text: str) -> tuple[str, list[int]]:
     return "".join(text[at] for at in origin), origin
 
 
+def _consumer_word(var: str, suffix: str = "") -> str:
+    """The loop variable as a command's word, in either expansion spelling."""
+    name = re.escape(var)
+    return rf'"\$(?:{name}|\{{{name}\}}){suffix}"'
+
+
+def _loop_consumers(step: ShellStep, header: int, var: str) -> set[str]:
+    """Which of `PREVIEW_CONSUMERS` this loop's body runs on the loop variable.
+
+    The body is the executable lines between the header and the `done` closing
+    it, and the countable part of it ends at the first line that rebinds the
+    variable: a consumer is counted for naming the variable, which says what it
+    consumes only while the loop is what put the value there. A line the walk
+    blanked carries no consumer either: its words are not this step's, so the
+    argument bash would pass is not readable here and the command is not counted
+    -- refusal by absence, the fail-closed direction. A consumer naming any other
+    variable is not counted, because the array is only published by commands that
+    name what the loop bound.
+
+    Where the command sits, not whether bash runs it: a consumer under a false
+    condition or in a function nothing calls is counted like any other, and a
+    decoy built that way is admitted. Rebinding is read the same way -- the
+    variable is taken as rebound from the line that spells it onward, whether or
+    not that line runs.
+    """
+    binary = _consumer_word(var)
+    signature = _consumer_word(var, r"\.minisig")
+    rebinds = [re.compile(p.format(name=re.escape(var))) for p in PREVIEW_REBIND]
+    found: set[str] = set()
+    depth, binds = 1, True
+    for at in sorted(start for start in step.line_context if start > header):
+        if step.context(at) is not None:
+            continue
+        end = step.raw.find("\n", at) % (len(step.raw) + 1)
+        line = step.executed[at:end].rstrip("\0 \t")
+        if PREVIEW_LOOP_CLOSE.match(line):
+            depth -= 1
+            if depth == 0:
+                return found
+            continue
+        if any(rebind.search(line) for rebind in rebinds):
+            binds = False
+        if PREVIEW_LOOP_OPEN.match(line):
+            depth += 1
+        elif binds:
+            found.update(name for name, pattern in PREVIEW_CONSUMERS
+                         if re.search(pattern.format(binary=binary,
+                                                     signature=signature), line))
+    raise Refusal(f"{step.where} has a `for {var} in {PREVIEW_ARRAY_READ}; do` "
+                  "loop with no `done` line closing it; which commands that loop "
+                  "runs cannot be told, so neither can whether they are the ones "
+                  "that sign and upload the array")
+
+
 def _preview_artifacts(step: ShellStep) -> dict[str, str]:
     """The file name each triple is signed and uploaded under, from `binaries`.
 
@@ -1115,6 +1210,7 @@ def _preview_artifacts(step: ShellStep) -> dict[str, str]:
 
     opens: list[int] = []
     reads: list[int] = []
+    loops: list[tuple[int, str]] = []
     for mention in PREVIEW_ARRAY_MENTION.finditer(flat):
         start = origin[mention.start()]
         line_start = body.rfind("\n", 0, start) + 1
@@ -1127,13 +1223,15 @@ def _preview_artifacts(step: ShellStep) -> dict[str, str]:
                 raise Refusal(f"{where} reads the array inside {read_context}, "
                               "where bash never runs it, so the loop this gate "
                               "read as walking the array walks nothing")
-            if not PREVIEW_ARRAY_LOOP.fullmatch(line):
+            header = PREVIEW_ARRAY_LOOP.fullmatch(line)
+            if header is None:
                 raise Refusal(f"{where} reads `{PREVIEW_ARRAY_READ}` on the line "
                               f"{line.strip()!r}, which is not a loop over it; "
                               "the array is the authority for what is signed and "
                               "uploaded, so every executable read of it must be a "
                               f'`for <name> in {PREVIEW_ARRAY_READ}; do` header')
             reads.append(start)
+            loops.append((line_start, header.group(1)))
         elif not PREVIEW_MANIFEST_OPEN.fullmatch(line):
             raise Refusal(f"{where} names `binaries` on the line {line.strip()!r}; "
                           "the array both loops walk may only be assigned by one "
@@ -1175,6 +1273,17 @@ def _preview_artifacts(step: ShellStep) -> dict[str, str]:
         raise Refusal(f"{where} reads `{PREVIEW_ARRAY_READ}` ahead of its "
                       "`binaries=(` line, or nowhere; a loop that walks the array "
                       "before it is assigned signs and uploads nothing")
+    consumed: set[str] = set()
+    for header_at, var in loops:
+        consumed |= _loop_consumers(step, header_at, var)
+    if missing := [name for name, _ in PREVIEW_CONSUMERS if name not in consumed]:
+        raise Refusal(
+            f"{where} walks {PREVIEW_ARRAY_READ} but never "
+            f"{', nor '.join(missing)} inside a loop over it; the array is the "
+            "authority for what is published only when the commands that publish "
+            "are the ones walking it, each naming the loop's own variable -- "
+            '`sign "$<name>"`, `wrangler r2 object put ... --file "$<name>"` and '
+            '`... --file "$<name>.minisig"`, in one loop or in several')
     return artifacts
 
 
