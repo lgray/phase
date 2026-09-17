@@ -983,8 +983,7 @@ class ShellPlatformMappingTests(unittest.TestCase):
         # Both loops walk `binaries` alone, so a name that merely contains it
         # assigns nothing they read: reading a complete `keep_binaries=(` ahead
         # of the real array hides the triple that array dropped, and refusing
-        # one refuses a working step. A second read in the loops' own spelling
-        # assigns nothing either.
+        # one refuses a working step.
         real = "          binaries=(\n"
         close = "          )\n"
         with self.subTest(shape="complete keep_binaries array ahead of the array"):
@@ -1001,12 +1000,11 @@ class ShellPlatformMappingTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
             self.assertIn(stranded, r.stderr)
             self.assertIn("signs", r.stderr)
-        with self.subTest(shape="longer names and a second read beside the array"):
+        with self.subTest(shape="longer names beside the array"):
             head, array, tail = split_array(preview_source())
             t = self.tree()
             t.write_preview_text(head + array + step_lines(
-                "old_binaries=()", "binaries_seen=0", 'echo "${binaries[@]}"')
-                + tail)
+                "old_binaries=()", "binaries_seen=0") + tail)
             r = t.run()
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("preview provisioning OK", r.stdout)
@@ -1020,7 +1018,9 @@ class ShellPlatformMappingTests(unittest.TestCase):
         # sit, because bash joins a name across the first and decodes one out of
         # the second; `alias`, `BASH_ALIASES` and `history` rewrite lines before
         # bash parses them; the last three run text that is not a line of the
-        # step at all.
+        # step at all. A `#` inside the opening's own unclosed `(` is a construct
+        # the shell walk does not model, so that spelling refuses on the
+        # construct rather than on the line.
         path = f"artifacts/{DEFAULT_TRIPLES[2]}/phase-server-{DEFAULT_TRIPLES[2]}"
         head, array, tail = split_array(preview_source())
         cases = [
@@ -1028,8 +1028,6 @@ class ShellPlatformMappingTests(unittest.TestCase):
              f"names `binaries` on the line {lines[0].strip()!r}")
             for label, lines in (
                 ("one-line array", (f"binaries=({path})",)),
-                ("comment after the opening",
-                 ("binaries=( # one platform", f"  {path}", ")")),
                 ("continuation after the opening",
                  ("binaries=(\\", f"  {path}", ")")),
                 ("trailing space after the opening",
@@ -1048,6 +1046,10 @@ class ShellPlatformMappingTests(unittest.TestCase):
                  (f'declare -a "bin""aries=({path})"',)),
             )
         ]
+        cases.append(("comment after the opening",
+                      head + array + step_lines("binaries=( # one platform",
+                                                f"  {path}", ")") + tail,
+                      "a `#` inside an unclosed `(` or `[`"))
         for label, lines in (
                 ("name split across a continuation", ("bin\\", f"aries=({path})")),
                 ("escaped backslash before the line", ("echo x\\\\", f"binaries+=({path})")),
@@ -1124,7 +1126,8 @@ class ShellPlatformMappingTests(unittest.TestCase):
             ("arithmetic", ("(( 0 +",), ("0 )) || true",), "an unclosed `(` or `[`"),
             ("extglob pattern", ("shopt -s extglob", "note=@("), (")",),
              "an unclosed `(` or `[`"),
-            ("subscript", ("declare -A seen", "seen["), ("]=1",), "an unclosed `(` or `[`"),
+            ("subscript", ("declare -A seen", "seen["), ("]=1",),
+             "a parenthesis inside an unclosed `[`"),
             ("<< as a shift", ("y=1", "(( n = 1 << y ))", "note='", "y"), ("'",),
              "`<<` inside an unclosed"),
             ("# inside an extglob pattern",
@@ -1197,33 +1200,37 @@ class ShellPlatformMappingTests(unittest.TestCase):
         # Bash splits the array into words, not lines, so a line holding
         # anything but one artifact path assigns something other than what it
         # reads as: wrapped in `$( ... )` the four paths run as commands and the
-        # array is empty.
+        # array is empty. A comment line is the one shape the shell walk reaches
+        # first -- the `#` sits inside the opening's own unclosed `(` -- so it
+        # refuses on the construct and names no line.
         head, array, tail = split_array(preview_source())
         opening, *elements, closing, _ = array.split("\n")
         first = elements[0].strip()
-        for label, lines, fragment in (
+        for label, lines, fragments in (
             ("paths wrapped in $( ... )",
              [opening, f"{STEP_INDENT}$(printf '%s\\n'", *elements,
-              f"{STEP_INDENT})", closing], "printf"),
+              f"{STEP_INDENT})", closing],
+             ("inside its `binaries=( ... )` array", "printf")),
             ("quoted path",
              [opening, elements[0].replace(first, f'"{first}"'), *elements[1:],
-              closing], first),
+              closing], ("inside its `binaries=( ... )` array", first)),
             ("two paths on one line",
              [opening, f"{elements[0]} {elements[1].strip()}", *elements[2:],
-              closing], first),
+              closing], ("inside its `binaries=( ... )` array", first)),
             ("comment line",
              [opening, f"{STEP_INDENT}# every platform", *elements, closing],
-             "every platform"),
+             ("a `#` inside an unclosed `(` or `[`",)),
             ("closing line with trailing syntax",
-             [opening, *elements, f"{closing} | cat"], "| cat"),
+             [opening, *elements, f"{closing} | cat"],
+             ("inside its `binaries=( ... )` array", "| cat")),
         ):
             with self.subTest(shape=label):
                 t = self.tree()
                 t.write_preview_text(head + "\n".join(lines) + "\n" + tail)
                 r = t.run()
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-                self.assertIn("inside its `binaries=( ... )` array", r.stderr)
-                self.assertIn(fragment, r.stderr)
+                for fragment in fragments:
+                    self.assertIn(fragment, r.stderr)
                 self.assertNotIn("preview provisioning OK", r.stdout)
         with self.subTest(shape="no closing line before the step ends"):
             t = self.tree()
@@ -1250,6 +1257,61 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 r = t.run()
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn("ahead of its `binaries=(` line, or nowhere", r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+
+    def test_an_array_read_that_is_not_a_loop_header_refuses(self) -> None:
+        # The array is the authority for what is signed and uploaded, so a read
+        # that is not a loop over it is no evidence that anything walks it: with
+        # both loop headers pointed at another array, a later `echo` keeps a gate
+        # that asks only for some read green while nothing walks `binaries` at
+        # all. A read in text bash never runs is not one either.
+        head, array, tail = split_array(preview_source())
+        read = '"${binaries[@]}"'
+        restored = head + array + step_lines(
+            f"for binary in {read}; do", '  test -s "$binary"', "done") + tail
+        self.assertEqual(restored.count(read), 2)
+        form = f'`for <name> in {read}; do` header'
+        with self.subTest(shape="two loop headers and no other read"):
+            t = self.tree()
+            t.write_preview_text(restored)
+            r = t.run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preview provisioning OK", r.stdout)
+        with self.subTest(shape="both headers decoyed and a trailing echo"):
+            t = self.tree()
+            t.write_preview_text(restored.replace(read, '"${others[@]}"')
+                                 + step_lines(f"echo {read}"))
+            r = t.run()
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn(form, r.stderr)
+            self.assertNotIn("preview provisioning OK", r.stdout)
+        for label, lines in (
+            ("echo", (f"echo {read}",)),
+            ("array assignment", (f"x=({read})",)),
+            ("printf", (f"printf '%s\\n' {read}",)),
+            ("`do` on the line after the header",
+             (f"for binary in {read}", "do", '  test -s "$binary"', "done")),
+        ):
+            with self.subTest(spelling=label):
+                t = self.tree()
+                t.write_preview_text(head + array + step_lines(*lines) + tail)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(form, r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+        for label, before, after, context in (
+            ("quoted heredoc body", ("cat <<'EOF' >/dev/null",), ("EOF",),
+             "a heredoc body"),
+            ("single-quoted string", ("note='",), ("'",),
+             "a single-quoted string"),
+        ):
+            with self.subTest(context=label):
+                t = self.tree()
+                t.write_preview_text(head + array + step_lines(
+                    *before, f"for binary in {read}; do", *after) + tail)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(f"reads the array inside {context}", r.stderr)
                 self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_second_binding_of_the_fingerprint_name_refuses(self) -> None:
@@ -1282,6 +1344,99 @@ class ShellPlatformMappingTests(unittest.TestCase):
             r = t.run()
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("preview provisioning OK", r.stdout)
+
+    def test_every_jq_option_that_binds_the_fingerprint_name_refuses(self) -> None:
+        # jq's option table binds a name five ways, and jq expands the name from
+        # one of them whichever spelled it, so a second binding of any family
+        # leaves the manifest URLs checked against a value jq may not be
+        # expanding. `--args` and `--jsonargs` bind `$ARGS.positional`, which
+        # names nothing, and a family binding another name collides with nothing.
+        original = '--arg fingerprint "$FINGERPRINT"'
+        families = (("--arg", '"$COMMIT"'), ("--argjson", "1"),
+                    ("--slurpfile", '"$EXISTING"'), ("--rawfile", '"$EXISTING"'),
+                    ("--argfile", '"$EXISTING"'))
+        for option, value in families:
+            second = f"{option} fingerprint {value}"
+            for placement, spliced in (("ahead", f"{second} {original}"),
+                                       ("behind", f"{original} {second}")):
+                with self.subTest(option=option, placement=placement):
+                    body = preview_source()
+                    self.assertEqual(body.count(original), 1)
+                    t = self.tree()
+                    t.write_preview_text(body.replace(original, spliced))
+                    r = t.run()
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn("`--arg fingerprint` binding (found 2", r.stderr)
+                    self.assertIn(option, r.stderr)
+                    self.assertNotIn("preview provisioning OK", r.stdout)
+        for option, value in families:
+            with self.subTest(sibling=f"{option} binding another name"):
+                t = self.tree()
+                t.write_preview_text(preview_source().replace(
+                    original, f"{original} {option} existing {value}"))
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
+        with self.subTest(sibling="options that bind no name"):
+            t = self.tree()
+            t.write_preview_text(preview_source().replace(
+                original, f"{original} --args --jsonargs"))
+            r = t.run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preview provisioning OK", r.stdout)
+
+    def test_a_decoy_authority_bash_never_runs_is_not_read(self) -> None:
+        # Each authority is read out of the text the step hands to a command, so
+        # a copy of it in a heredoc body sets no prefix, writes no manifest and
+        # binds no jq name. The second leg of each pair leaves only the decoy:
+        # without it the first leg would also pass on a reader gone blind to the
+        # region, which is what makes the pair discriminating rather than quiet.
+        head, array, tail = split_array(preview_source())
+        prefix = 'prefix="desktop/preview-server/$FINGERPRINT"'
+        binding = '--arg fingerprint "$FINGERPRINT"'
+        manifest = (
+            "binaries: {",
+            '  "decoy-triple": {',
+            '    url: ("https://data.phase-rs.dev/decoy/" + $fingerprint'
+            ' + "/phase-server-decoy-triple")',
+            "  }",
+            "},",
+            "data: [",
+            "]",
+        )
+        for label, decoy, disable, refusal in (
+            ("upload prefix", ('prefix="decoy/$FINGERPRINT"',),
+             lambda text: text.replace(prefix, "true"),
+             '`prefix="..."` assignment (found 0)'),
+            ("manifest object", manifest,
+             lambda text: text.replace("binaries: {", "bins: {"),
+             "`binaries: {` object in the manifest it writes (found 0)"),
+            ("jq fingerprint binding", (binding,),
+             lambda text: text.replace(binding, '--arg commit "$COMMIT"'),
+             "binds $FINGERPRINT to 0 jq argument(s)"),
+        ):
+            hidden = step_lines("cat <<'EOF' >/dev/null", *decoy, "EOF")
+            with self.subTest(decoy=label, authority="the real one still there"):
+                t = self.tree()
+                t.write_preview_text(head + array + hidden + tail)
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
+            with self.subTest(decoy=label, authority="the decoy is all there is"):
+                t = self.tree()
+                t.write_preview_text(head + array + hidden + disable(tail))
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(refusal, r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+        with self.subTest(decoy="a second manifest object bash does run"):
+            t = self.tree()
+            t.write_preview_text(head + array + step_lines(*manifest) + tail)
+            r = t.run()
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("`binaries: {` object in the manifest it writes (found 2)",
+                          r.stderr)
+            self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_duplicate_manifest_key_with_a_later_bad_url_refuses(self) -> None:
         # jq keeps the later value for a duplicate object key. A checker that
@@ -1739,6 +1894,28 @@ class ShellPlatformMappingTests(unittest.TestCase):
         r = t.run()
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn(SENTINEL_TRIPLE, r.stderr)
+
+    def test_the_real_preview_step_reads_every_authority(self) -> None:
+        # This checkout, the way CI invokes the gate: the signing step's four
+        # authorities all sit in text bash runs, so a pass here is what says the
+        # masking pass reads the real step rather than refusing it. The override
+        # is removed from the child's environment rather than left to the
+        # default, because MappingTree.run forwards this process's own. The
+        # control runs the same command against an empty tree, where it must
+        # refuse -- otherwise a leg that read no workflow at all would pass too.
+        env = {name: value for name, value in os.environ.items()
+               if name != "SHELL_PLATFORM_MAPPING_ROOT"}
+        r = subprocess.run([sys.executable, str(SCRIPT)], env=env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("preview provisioning OK", r.stdout)
+        with tempfile.TemporaryDirectory() as empty:
+            control = subprocess.run(
+                [sys.executable, str(SCRIPT)],
+                env={**env, "SHELL_PLATFORM_MAPPING_ROOT": empty},
+                capture_output=True, text=True)
+        self.assertEqual(control.returncode, 2, control.stdout + control.stderr)
+        self.assertNotIn("preview provisioning OK", control.stdout)
 
 
 if __name__ == "__main__":

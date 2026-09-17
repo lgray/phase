@@ -76,6 +76,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 try:
     import yaml
@@ -200,6 +201,14 @@ PREVIEW_QUOTE_DECODE = re.compile(r"\$['\"]")
 PREVIEW_ARRAY_OPEN = re.compile(r"[ \t]*binaries=\(")
 PREVIEW_ARRAY_CLOSE = re.compile(r"[ \t]*\)")
 PREVIEW_ARRAY_READ = '"${binaries[@]}"'
+#: The only executable read this gate accepts. The array is the authority for
+#: what is signed and uploaded, so a read that is not a loop over it is not
+#: evidence that anything walks it: a later `echo "${binaries[@]}"` keeps a gate
+#: that asks only for some read green while both loops iterate something else
+#: entirely. Stated per read rather than as a count of reads, so a third loop, a
+#: merged single loop, or a refactor to another iterator each land on the rule.
+PREVIEW_ARRAY_LOOP = re.compile(
+    r'[ \t]*for [A-Za-z_]\w* in "\$\{binaries\[@\]\}"; do')
 PREVIEW_MANIFEST_OPEN = re.compile(r"[ \t]*binaries: \{")
 PREVIEW_ARRAY_LINE = re.compile(
     r"[ \t]*artifacts/[\w.-]+/phase-server-([\w.-]+?)(\.exe)?")
@@ -223,6 +232,25 @@ SHELL_CONTEXTS = {
     "backtick": "a backtick command substitution",
     "param": "a `${ ... }` expansion",
 }
+#: The frames whose text the step never hands to a command as its own words: a
+#: comment is not run at all, and each substitution form runs as its own command
+#: whose output becomes a word here. Heredoc bodies are blanked beside them,
+#: though a heredoc is not a frame.
+#:
+#: `single` and `double` are deliberately not members, and cannot become ones: a
+#: quoted word is part of the command bash runs, so blanking `single` takes the
+#: manifest object's match count to zero and blanking `double` the upload
+#: prefix's. `param` carries no authority any reader takes out of `executed`
+#: today -- the array's reads are scanned from the step as written -- and it
+#: stays out for the same reason, so that an authority which moves inside a
+#: `${ ... }` is read rather than erased.
+SHELL_HIDDEN = {"comment", "comsub", "backtick"}
+#: Read out of the step's executable text, and matched exactly once: taking the
+#: first match let a decoy object -- one a heredoc body carries, or one spelled
+#: ahead of the real jq program -- substitute the whole map. The object itself
+#: lives inside the jq program's single-quoted word, which is a word bash hands
+#: to jq, so it is held to being executable text and not to beginning a command
+#: line; requiring the latter would refuse the step this gate exists to read.
 #: Anchored on the `data:` key that follows it, because every entry *inside* the
 #: object also ends in `},` -- stopping at the first one would read a single
 #: platform's interior as the whole map and stranding the other three would look
@@ -238,17 +266,34 @@ PREVIEW_MANIFEST_KEY = re.compile(r'^\s*"([\w.-]+)":\s*\{\s*$', re.M)
 #: binary's name is in the second string. A pattern stopping at the first would
 #: never see the name it exists to hold the key against.
 PREVIEW_MANIFEST_URL = re.compile(r"^\s*(url|sig_url):\s*(.+)$", re.M)
-#: The upload path, read from the step that writes it. Every object goes to
+#: The upload path, read out of the step's executable text and out of a command
+#: line, because an assignment bash never runs sets nothing. Every object goes to
 #: `$prefix/$name`, so this assignment -- not a spelling of it kept here -- is
 #: what fixes the path a manifest entry has to name. A gate holding its own copy
 #: of the path passes whenever the manifest agrees with that copy, including when
 #: both disagree with the upload the step performs.
 PREVIEW_PREFIX_ASSIGN = re.compile(r'^\s*prefix="([^"\n]*)"\s*$', re.M)
-#: jq's own binding of a shell variable to the name its program uses. The prefix
-#: is shell (`$FINGERPRINT`) and the manifest URL is jq (`$fingerprint`); this
-#: flag is the only thing that says the two are one value, so the pairing is read
-#: from it rather than inferred from the two spellings looking alike.
+#: jq's own binding of a shell variable to the name its program uses, read out of
+#: the step's executable text. The prefix is shell (`$FINGERPRINT`) and the
+#: manifest URL is jq (`$fingerprint`); this flag is the only thing that says the
+#: two are one value, so the pairing is read from it rather than inferred from
+#: the two spellings looking alike. The bindings sit on backslash-continued lines
+#: of the jq command, so like the manifest object they are held to being
+#: executable text rather than to beginning a command line.
 PREVIEW_JQ_ARG = re.compile(r'--arg\s+(\w+)\s+"\$(\w+)"')
+#: Every jq option that binds a name into the program's namespace, from jq's own
+#: option table (`jq --help`): `--arg`, `--argjson`, `--slurpfile`, `--rawfile`,
+#: and `--argfile`, which jq 1.7 removed and older jq still honours. `--args` and
+#: `--jsonargs` bind `$ARGS.positional`, which names nothing, and are not
+#: members. This is what counts the selected name's bindings; the pairing of a jq
+#: name to a shell variable is still read from `--arg name "$VAR"` alone, because
+#: no other spelling states that the two are one value. A family rebinding the
+#: name leaves the manifest URLs checked against a value jq may not be expanding.
+#: The name ends on any character a word cannot continue through, so a binding at
+#: the end of a line or ahead of a `\` continuation is counted too; `-` is
+#: excluded so a hyphenated word is not read as the bare name plus a remainder.
+PREVIEW_JQ_BIND = re.compile(
+    r"--(argjson|arg|slurpfile|rawfile|argfile)[ \t]+(\w+)(?=[^\w-]|$)")
 #: The one comparand this gate cannot derive: the step uploads into the R2 bucket
 #: `phase-rs-data`, and the bucket's public hostname is Cloudflare configuration
 #: that this repository does not contain. Everything after it -- prefix,
@@ -804,31 +849,90 @@ def published_assets() -> set[str]:
     return attached
 
 
-def _shell_context(body: str, stop: int, where: str) -> str | None:
-    """What the line starting at `stop` sits inside, or None for a command line.
+class ShellStep(NamedTuple):
+    """The signing step read as shell: what bash runs, and where commands start.
 
-    Bash assigns the array only from a line that is a command: not inside a
-    quoted string, a heredoc body, a command substitution, or an unclosed `(`
-    or `[` -- arithmetic, a pattern, a subscript, a subshell. Constructs outside
-    the modelled set refuse, because one misread construct moves every quote
-    after it. `$((` is scanned as a substitution holding parentheses, and a `)`
-    with no `(` open is a `case` pattern's and closes nothing. Branches,
-    functions and pipelines are not modelled: the line is a command inside them
-    too.
+    `executed` is `raw` with every region the step does not hand to a command as
+    its own words blanked. That is narrower than "text bash does not run": bash
+    does run `$( ... )` and backticks, but as a separate command whose output
+    becomes a word here, so an authority moved inside one is not this step saying
+    anything. Such an authority is then not read at all and its reader refuses
+    with a found count of zero, which is the fail-closed direction; the real step
+    carries none.
+
+    `line_context` answers what each line start sits inside, so the four
+    authorities read out of one step each ask about their own line without the
+    body being walked again.
+    """
+
+    raw: str
+    executed: str
+    line_context: dict[int, str | None]
+    where: str
+
+    def context(self, at: int) -> str | None:
+        """What the line holding `at` sits inside, or None when bash runs it."""
+        return self.line_context[self.raw.rfind("\n", 0, at) + 1]
+
+
+def _shell_step(body: str, where: str) -> ShellStep:
+    """One walk over the whole step: what bash runs, and where commands start.
+
+    Bash runs a line as a command only when it is not inside a quoted string, a
+    heredoc body, a command substitution, or an unclosed `(` or `[` --
+    arithmetic, a pattern, a subscript, a subshell. Constructs outside the
+    modelled set refuse, because one misread construct moves every quote after
+    it. `$((` is scanned as a substitution holding parentheses, and a `)` with no
+    `(` open is a `case` pattern's and closes nothing. Branches, functions and
+    pipelines are not modelled: the line is a command inside them too.
+
+    Every line start is recorded, the ones a heredoc swallows included, and the
+    walk runs to the end of the body rather than to one authority's offset: four
+    authorities are read out of this step and the last of them sits after every
+    construct the first passes through.
+
+    Blanking leaves `executed` the same length as `body` with its newlines in
+    place, so offsets, line numbers and `re.M` anchoring are the same in both.
+    The blank is NUL rather than a space, so a blanked line satisfies no
+    `^\\s*...$` authority pattern and splices none of its neighbours together.
     """
     frames: list[list] = [["code", 0, 0]]
     heredocs: list[tuple[str, bool, bool, int]] = []
     word_start, joined, i = True, False, 0
+    line_context: dict[int, str | None] = {}
+    out = list(body)
 
     def unmodelled(what: str) -> Refusal:
         line = body.count("\n", 0, i) + 1
-        return Refusal(f"{where} uses {what} on line {line}, ahead of its "
-                       "`binaries=(` line, which this gate does not read as "
-                       "shell; a construct read wrongly moves every quote after "
-                       "it, so where the array sits cannot be told")
+        return Refusal(f"{where} uses {what} on line {line}, which this gate does "
+                       "not read as shell; a construct read wrongly moves every "
+                       "quote after it, so which of the step's lines bash runs "
+                       "cannot be told")
 
-    while i < stop:
+    def context_now() -> str | None:
+        if len(frames) > 1:
+            return SHELL_CONTEXTS[frames[-1][0]]
+        if frames[0][1] or frames[0][2]:
+            return ("an unclosed `(` or `[`, which bash reads as one word or "
+                    "expression")
+        if joined:
+            return "the line before it, which ends in a line continuation"
+        return None
+
+    def blank(start: int, end: int) -> None:
+        for at in range(start, end):
+            if body[at] != "\n":
+                out[at] = "\0"
+
+    while i < len(body):
+        if i == 0 or body[i - 1] == "\n":
+            line_context[i] = context_now()
         kind, char = frames[-1][0], body[i]
+        # Any hidden frame, not just the innermost: a quoted word inside `$( ... )`
+        # is still the inner command's word rather than this step's.
+        hidden = any(frame[0] in SHELL_HIDDEN for frame in frames)
+        if hidden:
+            blank(i, i + 1)
         if kind == "comment":
             if char == "\n":
                 frames.pop()
@@ -839,6 +943,7 @@ def _shell_context(body: str, stop: int, where: str) -> str | None:
                 word_start = False
         elif kind == "backtick":
             if char == "\\":
+                blank(i, i + 2)
                 i += 1
             elif char == "`":
                 frames.pop()
@@ -854,18 +959,24 @@ def _shell_context(body: str, stop: int, where: str) -> str | None:
                 joined = True
             else:
                 word_start = joined = False
+            if hidden:
+                blank(i, i + 2)
             i += 2
             continue
         elif body.startswith("$(", i):
             frames.append(["comsub", 0, 0])
             word_start = True
+            blank(i, i + 2)
             i += 2
             continue
         elif body.startswith("${", i):
             frames.append(["param", 0, 0])
+            if hidden:
+                blank(i, i + 2)
             i += 1
         elif char == "`":
             frames.append(["backtick", 0, 0])
+            blank(i, i + 1)
         elif kind == "double":
             if char == '"':
                 frames.pop()
@@ -878,7 +989,10 @@ def _shell_context(body: str, stop: int, where: str) -> str | None:
             if frames[-1][1] or frames[-1][2]:
                 raise unmodelled("a `#` inside an unclosed `(` or `[`")
             frames.append(["comment", 0, 0])
+            blank(i, i + 1)
         elif body.startswith("<<<", i):
+            if hidden:
+                blank(i, i + 3)
             i += 2
         elif body.startswith("<<", i):
             if frames[-1][1] or frames[-1][2]:
@@ -889,6 +1003,8 @@ def _shell_context(body: str, stop: int, where: str) -> str | None:
             strip, bare, single, double = op.groups()
             heredocs.append((bare or single or double, bool(strip), bare is None,
                              len(frames)))
+            if hidden:
+                blank(i, op.end())
             i = op.end() - 1
         elif char == "\n" and heredocs:
             if (frames[-1][1] or frames[-1][2]
@@ -897,9 +1013,11 @@ def _shell_context(body: str, stop: int, where: str) -> str | None:
                                  "construct")
             i += 1
             for delimiter, strip, quoted, _ in heredocs:
-                while True:
-                    if i >= stop:
-                        return "a heredoc body"
+                # Each body line is a line start of its own, so an unterminated
+                # heredoc running to the end of the step still answers for every
+                # line it swallowed rather than for none of them.
+                while i < len(body):
+                    line_context[i] = "a heredoc body"
                     end = body.find("\n", i) % (len(body) + 1)
                     line = body[i:end]
                     if (line.lstrip("\t") if strip else line) == delimiter:
@@ -907,6 +1025,7 @@ def _shell_context(body: str, stop: int, where: str) -> str | None:
                         break
                     if not quoted and line.endswith("\\"):
                         raise unmodelled("a heredoc body line ending in `\\`")
+                    blank(i, end)
                     i = end + 1
             heredocs.clear()
             word_start, joined = True, False
@@ -931,16 +1050,10 @@ def _shell_context(body: str, stop: int, where: str) -> str | None:
             word_start, joined = char in SHELL_METACHARS, False
         i += 1
 
-    if len(frames) > 1:
-        return SHELL_CONTEXTS[frames[-1][0]]
-    if frames[0][1] or frames[0][2]:
-        return "an unclosed `(` or `[`, which bash reads as one word or expression"
-    if joined:
-        return "the line before it, which ends in a line continuation"
-    return None
+    return ShellStep(body, "".join(out), line_context, where)
 
 
-def _preview_artifacts(body: str) -> dict[str, str]:
+def _preview_artifacts(step: ShellStep) -> dict[str, str]:
     """The file name each triple is signed and uploaded under, from `binaries`.
 
     This reads the step's `run` text, not its execution: an assignment inside a
@@ -948,7 +1061,7 @@ def _preview_artifacts(body: str) -> dict[str, str]:
     not seen, and neither is anything outside that text that changes how bash
     runs it, such as a step `shell:` or a `BASH_ENV` startup file.
     """
-    where = f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP}"
+    where, body = step.where, step.raw
     origin: list[int] = []
     kept = 0
     for cut in PREVIEW_ARRAY_SPLICE.finditer(body):
@@ -982,6 +1095,17 @@ def _preview_artifacts(body: str) -> dict[str, str]:
         if PREVIEW_ARRAY_OPEN.fullmatch(line):
             opens.append(line_start)
         elif start >= 3 and body.startswith(PREVIEW_ARRAY_READ, start - 3):
+            read_context = step.context(start)
+            if read_context is not None:
+                raise Refusal(f"{where} reads the array inside {read_context}, "
+                              "where bash never runs it, so the loop this gate "
+                              "read as walking the array walks nothing")
+            if not PREVIEW_ARRAY_LOOP.fullmatch(line):
+                raise Refusal(f"{where} reads `{PREVIEW_ARRAY_READ}` on the line "
+                              f"{line.strip()!r}, which is not a loop over it; "
+                              "the array is the authority for what is signed and "
+                              "uploaded, so every executable read of it must be a "
+                              f'`for <name> in {PREVIEW_ARRAY_READ}; do` header')
             reads.append(start)
         elif not PREVIEW_MANIFEST_OPEN.fullmatch(line):
             raise Refusal(f"{where} names `binaries` on the line {line.strip()!r}; "
@@ -997,7 +1121,7 @@ def _preview_artifacts(body: str) -> dict[str, str]:
                       f"{len(opens)}); the set every preview binary is signed and "
                       "uploaded from must be unambiguous, and a set this gate "
                       "cannot read is not an empty one")
-    context = _shell_context(body, opens[0], where)
+    context = step.context(opens[0])
     if context is not None:
         raise Refusal(f"{where} has its `binaries=(` line inside {context}, so "
                       "bash never assigns the array from it and the array both "
@@ -1094,13 +1218,17 @@ def preview_platforms() -> dict[str, set[str]]:
     # The array is the single authority for artifact file names: the step uploads
     # `basename "$binary"` taken from it, so the name in the manifest's URL has to
     # be exactly this one -- `.exe` included, which only windows carries.
-    artifacts = _preview_artifacts(body)
+    step = _shell_step(body, f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP}")
+    artifacts = _preview_artifacts(step)
     signed = set(artifacts)
-    block = PREVIEW_MANIFEST_BLOCK.search(body)
-    if block is None:
+    blocks = list(PREVIEW_MANIFEST_BLOCK.finditer(step.executed))
+    if len(blocks) != 1:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
-                      "`binaries: {` object in the manifest it writes; the keys a "
-                      "desktop resolves against cannot be read")
+                      f"`binaries: {{` object in the manifest it writes (found "
+                      f"{len(blocks)}); the keys a desktop resolves against must "
+                      "be unambiguous, and a set this gate cannot read is not an "
+                      "empty one")
+    block = blocks[0]
     manifest_keys = PREVIEW_MANIFEST_KEY.findall(block.group(1))
     duplicate_keys = sorted({key for key in manifest_keys
                              if manifest_keys.count(key) > 1})
@@ -1111,7 +1239,9 @@ def preview_platforms() -> dict[str, set[str]]:
                       "unambiguous key")
     keys = set(manifest_keys)
 
-    assignments = PREVIEW_PREFIX_ASSIGN.findall(body)
+    assignments = [found.group(1)
+                   for found in PREVIEW_PREFIX_ASSIGN.finditer(step.executed)
+                   if step.context(found.start()) is None]
     if len(assignments) != 1:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
                       f'`prefix="..."` assignment (found {len(assignments)}); the '
@@ -1125,24 +1255,27 @@ def preview_platforms() -> dict[str, set[str]]:
                       f"'{prefix}', which carries no variable; every fingerprint "
                       "would publish over one path, so the manifest could not "
                       "name a per-fingerprint object at all")
-    jq_args = PREVIEW_JQ_ARG.findall(body)
+    jq_args = PREVIEW_JQ_ARG.findall(step.executed)
     bound = [jq for jq, sh in jq_args if sh == shell.group(1)]
     if len(bound) != 1:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} binds "
                       f"${shell.group(1)} to {len(bound)} jq argument(s) "
                       f"{sorted(bound)}; exactly one is what lets the manifest's "
                       "variable be checked against the uploaded path")
-    # Exactly one binding of that jq name, whatever shell value each carries: jq
-    # expands the name from only one of them and which one is jq's own detail, so
-    # a second binding on either side leaves the URLs checked against a value jq
-    # may not use.
-    rebound = [sh for jq, sh in jq_args if jq == bound[0]]
+    # Exactly one binding of that jq name, by any option that binds one and
+    # whatever value each carries: jq expands the name from only one of them and
+    # which one is jq's own detail, so a second binding on either side leaves the
+    # URLs checked against a value jq may not use. The options are named in the
+    # refusal rather than counted, so the family that collided is readable from it.
+    rebound = [found.group(1)
+               for found in PREVIEW_JQ_BIND.finditer(step.executed)
+               if found.group(2) == bound[0]]
     if len(rebound) != 1:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
                       f"`--arg {bound[0]}` binding (found {len(rebound)}: "
-                      f"{sorted('$' + sh for sh in rebound)}); the fingerprint "
-                      "every manifest URL names must be unambiguous, and a "
-                      "second binding would check the upload path against a "
+                      f"{sorted('--' + option for option in rebound)}); the "
+                      "fingerprint every manifest URL names must be unambiguous, "
+                      "and a second binding would check the upload path against a "
                       "value jq may not use")
     head, tail = prefix[:shell.start()], prefix[shell.end():]
 
