@@ -879,6 +879,21 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertIn("gives a signed URL pair in its manifest", r.stderr)
                 self.assertNotIn("preview provisioning OK", r.stdout)
 
+    def test_reformatted_url_whitespace_still_names_the_exact_artifact(self) -> None:
+        # Equality over the whole URL is one keystroke from refusing what it should
+        # admit, so the normalisation that keeps formatting free needs its own
+        # control: respacing the jq concatenation names the same object and must
+        # still pass. Without this the normalisation is unobservable, because the
+        # template and the workflow happen to share their spacing.
+        body = preview_source()
+        respaced = body.replace('" + $fingerprint + "', '"  +  $fingerprint  +  "')
+        self.assertNotEqual(respaced, body)
+        t = self.tree()
+        t.write_preview_text(respaced)
+        r = t.run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("preview provisioning OK", r.stdout)
+
     def test_a_manifest_data_entry_shaped_like_a_platform_is_not_one(self) -> None:
         # The step's jq also writes a `data:` array beside `binaries`, and a
         # pattern taking any quoted key followed by a brace would harvest those as
