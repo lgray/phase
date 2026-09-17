@@ -920,7 +920,11 @@ def _shell_step(body: str, where: str) -> ShellStep:
         return None
 
     def blank(start: int, end: int) -> None:
-        for at in range(start, end):
+        # Clamped here rather than at the callers: an operator's own length is
+        # what two of them pass, and a body ending mid-operator is a step whose
+        # last construct is unterminated, which the walk already reads as running
+        # to the end of the body.
+        for at in range(start, min(end, len(body))):
             if body[at] != "\n":
                 out[at] = "\0"
 

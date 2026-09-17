@@ -1367,7 +1367,10 @@ class ShellPlatformMappingTests(unittest.TestCase):
                     r = t.run()
                     self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                     self.assertIn("`--arg fingerprint` binding (found 2", r.stderr)
-                    self.assertIn(option, r.stderr)
+                    # The families are named, not counted: the refusal's own
+                    # `--arg <name>` phrase carries the word `--arg` whatever
+                    # collided, so only the listed pair can fail on every leg.
+                    self.assertIn(f"(found 2: {sorted(['--arg', option])})", r.stderr)
                     self.assertNotIn("preview provisioning OK", r.stdout)
         for option, value in families:
             with self.subTest(sibling=f"{option} binding another name"):
@@ -1384,6 +1387,18 @@ class ShellPlatformMappingTests(unittest.TestCase):
             r = t.run()
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("preview provisioning OK", r.stdout)
+        with self.subTest(placement="the name last on a continued line"):
+            # bash deletes the `\` and the newline, so the word ends there and
+            # jq is handed the binding whole. A name held to ending on a blank
+            # would read this one as unbound and count the collision as nothing.
+            t = self.tree()
+            t.write_preview_text(preview_source().replace(
+                original, f"{original} \\\n            --argjson fingerprint\\\n"
+                "            1"))
+            r = t.run()
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("(found 2: ['--arg', '--argjson'])", r.stderr)
+            self.assertNotIn("preview provisioning OK", r.stdout)
 
     def test_a_decoy_authority_bash_never_runs_is_not_read(self) -> None:
         # Each authority is read out of the text the step hands to a command, so
@@ -1437,6 +1452,40 @@ class ShellPlatformMappingTests(unittest.TestCase):
             self.assertIn("`binaries: {` object in the manifest it writes (found 2)",
                           r.stderr)
             self.assertNotIn("preview provisioning OK", r.stdout)
+        # A subshell is not a region bash never runs, so the mask leaves this
+        # assignment in place and only its line context says bash reads it as a
+        # word rather than as the command that sets the upload path.
+        moved = tail.replace(prefix, "true")
+        with self.subTest(decoy="the only assignment is inside an unclosed `(`"):
+            t = self.tree()
+            t.write_preview_text(head + array + moved + step_lines("(", prefix))
+            r = t.run()
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn('`prefix="..."` assignment (found 0)', r.stderr)
+            self.assertNotIn("preview provisioning OK", r.stdout)
+        with self.subTest(decoy="the same assignment on a command line"):
+            t = self.tree()
+            t.write_preview_text(head + array + moved + step_lines(prefix))
+            r = t.run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preview provisioning OK", r.stdout)
+
+    def test_a_step_body_ending_inside_a_hidden_construct_still_reads(self) -> None:
+        # A body whose last line ends at a `\` inside `$( ... )` or a backtick
+        # runs the blanking pass one character past the end of the step. The
+        # construct is unterminated, which the walk reads as running to the end
+        # of the body, so every authority ahead of it is still read.
+        for label, last in (("$( ... )", "x=$(date -u \\"),
+                            ("backtick", "x=`date -u \\")):
+            with self.subTest(construct=label):
+                body = preview_source().replace("run: |\n", "run: |-\n")
+                self.assertEqual(body.count("run: |-\n"), 1)
+                t = self.tree()
+                t.write_preview_text(body.rstrip("\n") + "\n" + STEP_INDENT + last)
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
 
     def test_a_duplicate_manifest_key_with_a_later_bad_url_refuses(self) -> None:
         # jq keeps the later value for a duplicate object key. A checker that
