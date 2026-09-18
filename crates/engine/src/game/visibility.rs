@@ -2203,15 +2203,12 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     // carry deck-pool contents is while that player's own sideboarding prompt is live.
     // Outside it the pools are registration data no viewer reads — `sideboard_projection`
     // and the client's BetweenGamesSideboard modal are their only consumers, and both run
-    // under this prompt. Gating on `can_view_private_for_player` rather than on the viewer
-    // keeps this predicate identical to every sibling redaction in this function and to the
-    // authority `sideboard_projection` resolves its semantic owner to.
+    // under this prompt. The gate is the owner, not `can_view_private_for_player`: CR 723.5b
+    // bars a player controlling another from making choices the tournament rules call for,
+    // and sideboarding between games is one of those, so a turn controller has no
+    // sideboarding role to serve and the seat's registered list stays with its owner.
     let sideboarding_player = match &state.waiting_for {
-        WaitingFor::BetweenGamesSideboard { player, .. }
-            if can_view_private_for_player(*player) =>
-        {
-            Some(*player)
-        }
+        WaitingFor::BetweenGamesSideboard { player, .. } if *player == viewer => Some(*player),
         _ => None,
     };
     for pool in &mut filtered.deck_pools {

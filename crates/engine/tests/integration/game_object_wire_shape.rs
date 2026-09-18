@@ -4,9 +4,11 @@
 //! must agree exactly with the default its own field declares.
 //!
 //! `wire_round_trip_is_a_fixpoint` is corpus-bounded, not exhaustive: a skipped field that
-//! no fixture object holds at a non-default value is never exercised by the walk. What
-//! closes the class is construction — each predicate is written in terms of its own field's
-//! `Default` — not the corpus.
+//! no fixture object holds at a non-default value is never exercised by the walk. Nor does
+//! construction close the class: the struct draws its skip predicates from a set of shared
+//! ones and pairs each with its field's default by hand rather than deriving one from the
+//! other, and `mismatched_default_and_predicate_breaks_the_fixpoint` is the leg that names
+//! what a diverged pair costs.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

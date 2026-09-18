@@ -274,12 +274,14 @@ fn keeps_pool_of(state: &GameState, viewer: PlayerId, owner: PlayerId) -> bool {
         .is_empty()
 }
 
-/// The arm `can_view_private_for_player` adds over plain owner-equality: the prompt's pool
-/// also reaches whoever `turn_control::authorized_submitter_for_player` resolves the
-/// sideboarding seat to. It is the only arm that puts another seat's registered 75 on a
-/// viewer's wire, and the test above never reaches it.
+/// The one arm a `can_view_private_for_player` gate would add over owner-equality: the
+/// prompt's pool following `turn_control::authorized_submitter_for_player` to whoever
+/// controls the sideboarding seat's turn, which is the only way another seat's registered
+/// 75 reaches a viewer's wire. CR 723.5b bars a controlling player from making choices the
+/// tournament rules call for, and sideboarding between games is one, so the pool stops at
+/// its owner and the controller never receives it.
 #[test]
-fn turn_controller_of_the_sideboarding_seat_keeps_that_pool() {
+fn turn_controller_of_the_sideboarding_seat_is_denied_that_pool() {
     let mut state = sideboarding_state(P0);
     state.active_player = P0;
     state.turn_decision_controller = Some(P1);
@@ -288,9 +290,10 @@ fn turn_controller_of_the_sideboarding_seat_keeps_that_pool() {
         let viewer = PlayerId(seat);
         assert_eq!(
             keeps_pool_of(&state, viewer, P0),
-            viewer == P0 || viewer == P1,
-            "P0 sideboards under P1's turn control: exactly P0 and P1 keep P0's pool, \
-             so seat {seat} is on the wrong side of it"
+            viewer == P0,
+            "P0 sideboards under P1's turn control: only P0 keeps P0's pool — the \
+             controller has no sideboarding role to serve — so seat {seat} is on the \
+             wrong side of it"
         );
         // Turn control over the sideboarding seat is not a key to anyone else's pool —
         // including the controller's own, which is not the seat being prompted.
@@ -302,15 +305,15 @@ fn turn_controller_of_the_sideboarding_seat_keeps_that_pool() {
         }
     }
 
-    // Turn control over a seat that is *not* sideboarding grants nothing: the authority
-    // resolves per semantic player, not "this viewer controls someone".
+    // Sibling state: the same seats with turn control pointed at a seat that is not
+    // sideboarding. Same verdict, reached through a different `active_player`.
     state.active_player = P2;
     for seat in 0..SEATS {
         let viewer = PlayerId(seat);
         assert_eq!(
             keeps_pool_of(&state, viewer, P0),
             viewer == P0,
-            "P1 controls P2's turn, not P0's, so only P0 keeps P0's pool — not seat {seat}"
+            "only P0 keeps P0's pool while P0 is the seat being prompted — not seat {seat}"
         );
     }
 }
