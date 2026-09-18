@@ -2724,10 +2724,11 @@ fn finish_cost_object_moves(
                         .is_some_and(|object| object.zone == Zone::Exile)
                 })
                 .collect();
-            // CR 608.2c: this completion's placement names its producer — the
-            // members are the cards the cost's exile delivered — so a "cards
-            // exiled this way" count reads them here exactly as it does on the
-            // sibling path that never paused for a replacement.
+            // CR 608.2c: this arm's own placement names its producer. It is
+            // reached only behind a cost move whose destination is
+            // `Zone::Exile`, and it keeps exactly the members that arrived
+            // there, so a "cards exiled this way" count bound to that action
+            // reads them.
             let cause = super::effects::this_way_cause_for_action(
                 crate::types::ability::EffectKind::ChangeZone,
                 Some(Zone::Exile),
@@ -18035,6 +18036,121 @@ mod tests {
             "co-departing LTB observer must fire once per permanent sacrificed to \
              pay one additional cost (20 + 2 = 22)"
         );
+    }
+
+    /// CR 608.2c + CR 701.13a: an aggregate-threshold exile cost that pauses in
+    /// `PendingCostMoveCompletion::PublishExileTrackedSet` publishes the cards
+    /// that reached exile AND the action that put them there, so a "cards exiled
+    /// this way" count bound to `Exiled` reads them. Drives the real
+    /// `apply_action` payment path. Dropping the cause from that arm leaves the
+    /// side map absent and the second leg reads zero while the first still
+    /// passes.
+    #[test]
+    fn exile_aggregate_cost_publishes_the_action_that_exiled_its_members() {
+        use crate::types::ability::{AggregateFunction, ObjectProperty, ThisWayCause};
+        use crate::types::phase::Phase;
+
+        let mut state = GameState::new_two_player(42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+
+        let spell = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Aggregate Exiler".to_string(),
+            Zone::Hand,
+        );
+        let mut fodder = Vec::new();
+        for (index, name) in ["Fodder A", "Fodder B"].into_iter().enumerate() {
+            let id = create_object(
+                &mut state,
+                CardId(10 + index as u64),
+                PlayerId(0),
+                name.to_string(),
+                Zone::Graveyard,
+            );
+            state.players[0].graveyard.push_back(id);
+            fodder.push(id);
+        }
+
+        // No-kicker, no-target spell so the payment lands the cast in the same
+        // action (`finish_pending_cost_or_cast` → `pay_and_push`).
+        let mut pending = make_pending(spell);
+        pending.activation_ability_index = None;
+        pending.card_id = CardId(1);
+        pending.origin_zone = Zone::Hand;
+
+        // CR 601.2a: the announcement entry the real cast flow leaves on the
+        // stack while costs are paid.
+        state.stack.push_back(StackEntry {
+            id: spell,
+            source_id: spell,
+            controller: PlayerId(0),
+            kind: StackEntryKind::Spell {
+                card_id: CardId(1),
+                ability: None,
+                casting_variant: CastingVariant::Normal,
+                actual_mana_spent: 0,
+            },
+        });
+
+        state.waiting_for = WaitingFor::PayCost {
+            player: PlayerId(0),
+            kind: PayCostKind::ExileAggregate {
+                zone: Zone::Graveyard,
+                function: AggregateFunction::Sum,
+                property: ObjectProperty::ManaValue,
+                comparator: Comparator::GE,
+                value: 0,
+                filter: TargetFilter::Any,
+            },
+            choices: fodder.clone(),
+            count: fodder.len(),
+            min_count: 0,
+            resume: CostResume::Spell {
+                spell: Box::new(pending),
+            },
+        };
+
+        apply_as_current(
+            &mut state,
+            GameAction::SelectCards {
+                cards: fodder.clone(),
+            },
+        )
+        .expect("exiling both graveyard cards satisfies the aggregate threshold");
+
+        let published = state
+            .chain_tracked_set_id
+            .expect("the cost completion binds a chain tracked set");
+        let mut members = state
+            .tracked_object_sets
+            .get(&published)
+            .cloned()
+            .unwrap_or_default();
+        members.sort_unstable_by_key(|id| id.0);
+        let mut expected = fodder.clone();
+        expected.sort_unstable_by_key(|id| id.0);
+        // Reach guard: the cost really moved both cards and the arm really ran.
+        assert_eq!(
+            members, expected,
+            "the cost publishes exactly the cards that reached exile"
+        );
+
+        let causes = state
+            .tracked_set_member_causes
+            .get(&published)
+            .expect("the completion records the action that exiled its members");
+        for id in &fodder {
+            assert_eq!(
+                causes.get(id),
+                Some(&ThisWayCause::Exiled),
+                "each member carries the action the cost's exile named"
+            );
+        }
     }
 
     /// CR 603.6c + CR 603.10a + CR 603.3b (DEFERRED kicker/target-paused

@@ -10154,7 +10154,14 @@ pub(crate) fn run_batch_completion(
                         .is_some_and(|obj| obj.zone == destination)
                 })
                 .collect();
-            effects::publish_fresh_tracked_set(state, delivered);
+            // CR 608.2c: this completion's placement names its producer — the
+            // members are exactly the cards this batch moved to `destination`,
+            // so a count bound to that move's action reads them here. The
+            // destination the completion already carries is the one the table
+            // keys on, so the verb is not decided a second time.
+            let cause =
+                effects::this_way_cause_for_action(EffectKind::ChangeZone, Some(destination));
+            effects::publish_fresh_tracked_set_with_causes(state, delivered, cause);
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::Dig,
                 source_id,
@@ -13689,6 +13696,76 @@ mod tests {
             members.len(),
             2,
             "a cause-unbound count reads every member of the merged set"
+        );
+    }
+
+    /// CR 608.2c + CR 614.1: a mass Dig's batch completion publishes the cards
+    /// that actually reached its destination, and stamps the action that move
+    /// names. Reverting it to the cause-less publication leaves the side map
+    /// absent and the first leg reads zero.
+    #[test]
+    fn dig_mass_put_all_completion_stamps_the_destination_it_delivered_to() {
+        use crate::types::ability::ThisWayCause;
+        use crate::types::game_state::BatchCompletion;
+
+        /// Run the completion over one member already settled in `destination`
+        /// and report the published membership plus what it recorded.
+        fn complete(destination: Zone) -> (usize, Vec<ThisWayCause>) {
+            let mut state = GameState::new_two_player(42);
+            let source = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(0),
+                "Source".to_string(),
+                Zone::Battlefield,
+            );
+            let member = create_object(
+                &mut state,
+                CardId(2),
+                PlayerId(0),
+                "Delivered".to_string(),
+                destination,
+            );
+            let mut events = Vec::new();
+            run_batch_completion(
+                &mut state,
+                BatchCompletion::DigMassPutAllComplete {
+                    player: PlayerId(0),
+                    source_id: source,
+                    selected: vec![member],
+                    destination,
+                },
+                &mut events,
+            );
+            let chain = state
+                .chain_tracked_set_id
+                .expect("the completion binds a chain tracked set");
+            let members = state
+                .tracked_object_sets
+                .get(&chain)
+                .map(Vec::len)
+                .unwrap_or_default();
+            let causes = state
+                .tracked_set_member_causes
+                .get(&chain)
+                .map(|by_object| by_object.values().copied().collect())
+                .unwrap_or_default();
+            (members, causes)
+        }
+
+        // CR 701.13a: the delivered exile records the action that delivered it.
+        let (members, causes) = complete(Zone::Exile);
+        assert_eq!(members, 1, "the settled card is published");
+        assert_eq!(causes, vec![ThisWayCause::Exiled]);
+
+        // A destination whose zone names no such verb records nothing, so the
+        // leg above cannot pass by the completion stamping indiscriminately;
+        // its membership leg is the reach guard proving the arm ran.
+        let (members, causes) = complete(Zone::Library);
+        assert_eq!(members, 1, "the settled card is published");
+        assert!(
+            causes.is_empty(),
+            "a library destination names no \"this way\" action"
         );
     }
 

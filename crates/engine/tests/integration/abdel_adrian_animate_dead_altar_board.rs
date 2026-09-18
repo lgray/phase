@@ -9,7 +9,8 @@
 //! | Abdel Adrian, Gorion's Ward | P0 graveyard | the creature Animate Dead returns; its enters trigger is what the row below drives |
 //! | Animate Dead | P0 hand | returns Abdel Adrian, and is itself one of the nonland permanents the enters trigger offers |
 //! | Altar of the Brood | P0 battlefield | the enabler, and the other nonland permanent Abdel Adrian may exile |
-//! | two basic Swamps | P0 battlefield | P0's black sources; the drive funds Animate Dead's `{1}{B}` from the pool they produce |
+//! | two basic Swamps | P0 battlefield | P0's lands; the enters trigger names *nonland* permanents, so they stay out of its choice |
+//! | seeded `{B}{B}` | P0's mana pool | what pays Animate Dead's `{1}{B}`; the drive taps nothing and activates no mana ability |
 //! | basic Swamps, `LIBRARY_PER_SEAT` each | every seat's library | sized so no seat decks out under the decline policy below |
 //!
 //! Verbatim Oracle text, as the fixture stores it:

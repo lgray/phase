@@ -8751,8 +8751,9 @@ fn copy_spell_self_ref_keeps_resolving_spell_source(sub: &ResolvedAbility) -> bo
 ///     (CR 701.13a), Battlefield → `Returned` (CR 400.7), Hand → `Bounced`
 ///     (CR 400.7); other destinations are not "this way"-referenced verbs, so
 ///     they carry no cause (consumed only by `caused_by: None`).
-///   - BounceAll → `Bounced` if its destination is Hand, `Returned` if
-///     Battlefield (default Hand → `Bounced`, CR 400.7).
+///   - BounceAll → by destination, exactly as ChangeZone above; an undeclared
+///     one is resolved by [`declared_this_way_destination`], which owns that
+///     convention.
 ///   - ExileTop / ExileFromTopUntil → `Exiled` (CR 701.13a).
 ///   - RevealUntil's kept card / counter whose CR 614.1a exile rider did not
 ///     apply (see `this_way_cause_for_resolved`) / reveal / tap-untap producers do not
@@ -8842,15 +8843,19 @@ pub(crate) fn this_way_cause_for_effect(effect: &Effect) -> Option<ThisWayCause>
     )
 }
 
-/// The declared destination of a destination-bearing effect, exactly as the AST
-/// states it. It invents no default: every default belongs to
-/// [`this_way_cause_for_action`], so no destination convention is written twice.
+/// The destination a destination-bearing effect declares. `BounceAll` is the
+/// one arm whose AST destination is optional, and an absent one is the AST's
+/// own mass-bounce convention for the owner's hand — not a rule, so it carries
+/// no number — resolved HERE, where the declared destination is read. That
+/// keeps the convention in one place and leaves `None` at
+/// [`this_way_cause_for_action`] meaning only "no destination", which is what a
+/// completion seam holding no destination hands it.
 fn declared_this_way_destination(effect: &Effect) -> Option<Zone> {
     match effect {
         Effect::Mill { destination, .. }
         | Effect::ChangeZone { destination, .. }
         | Effect::ChangeZoneAll { destination, .. } => Some(*destination),
-        Effect::BounceAll { destination, .. } => *destination,
+        Effect::BounceAll { destination, .. } => Some(destination.unwrap_or(Zone::Hand)),
         _ => None,
     }
 }
@@ -8880,12 +8885,12 @@ pub(crate) fn this_way_cause_for_action(
             None => None,
         },
         EffectKind::Discard | EffectKind::DiscardCard => Some(ThisWayCause::Discarded),
-        EffectKind::ChangeZone | EffectKind::ChangeZoneAll => {
+        // No destination convention lives here: an absent `destination` means
+        // the caller holds none (see [`declared_this_way_destination`], which
+        // resolves the mass-bounce one), so these arms name no action.
+        EffectKind::ChangeZone | EffectKind::ChangeZoneAll | EffectKind::BounceAll => {
             destination.and_then(this_way_cause_for_zone)
         }
-        // An absent `destination` is the AST's own mass-bounce convention for
-        // the owner's hand, not a rule, so it carries no number.
-        EffectKind::BounceAll => this_way_cause_for_zone(destination.unwrap_or(Zone::Hand)),
         EffectKind::ExileTop | EffectKind::ExileFromTopUntil => Some(ThisWayCause::Exiled),
         // CR 608.2c: a coercion (mass MustAttack) names no "<verb>ed this way" set —
         // "those creatures" is a bare frozen population, so its members carry no
@@ -13525,7 +13530,7 @@ fn perform_player_scope_sacrifices(
         // member carries the action this completion names — otherwise
         // `FilteredTrackedSetSize { caused_by: Sacrificed }` reads 0 (Hunger
         // Tide Rises chapter IV, #5977). The completion carries no destination,
-        // so a kind whose verb depends on one names no cause here.
+        // so the table answers from the kind alone.
         let cause = completion
             .effect_kind
             .and_then(|kind| this_way_cause_for_action(kind, None));
@@ -14762,7 +14767,7 @@ fn reset_top_level_resolution_state(state: &mut GameState) {
     // resumes at depth 1), so clearing it only at depth-0 chain entry
     // disposes of any residue without disturbing an in-flight Balance.
     state.clause_minimum_snapshot = None;
-    // CR 603.7: Chain-local tracked-set identity — resets per top-level
+    // CR 608.2c: Chain-local tracked-set identity — resets per top-level
     // ability resolution so compound zone changes within one chain
     // coalesce into a single tracked set, while unrelated resolutions
     // stay isolated.
@@ -22015,8 +22020,10 @@ mod tests {
     }
 
     /// CR 608.2c + CR 614.6: the table answers on the destination it is handed,
-    /// not on the kind alone. Reds when an arm ignores its `destination`
-    /// argument — such an arm answers `Bounced` for a declared library return.
+    /// and applies no destination convention of its own — an absent one means
+    /// the caller holds none, so a destination-reading kind names no action.
+    /// Reds when an arm ignores its `destination` argument, and when the table
+    /// takes a default back from [`declared_this_way_destination`].
     #[test]
     fn this_way_cause_for_action_reads_the_destination_it_is_handed() {
         assert_eq!(
@@ -22024,12 +22031,16 @@ mod tests {
             None,
             "a declared library return names no \"this way\" verb"
         );
+        assert_eq!(
+            this_way_cause_for_action(EffectKind::BounceAll, None),
+            None,
+            "a seam holding no destination gets no default from the table"
+        );
         // Both legs are the live controls, in this same row: a table answering
         // `Some` for everything, or `None` for everything, fails one of them.
         assert_eq!(
-            this_way_cause_for_action(EffectKind::BounceAll, None),
-            Some(ThisWayCause::Bounced),
-            "an absent destination takes the table's own mass-bounce default"
+            this_way_cause_for_action(EffectKind::BounceAll, Some(Zone::Hand)),
+            Some(ThisWayCause::Bounced)
         );
         assert_eq!(
             this_way_cause_for_action(EffectKind::ChangeZone, Some(Zone::Exile)),
@@ -22037,10 +22048,11 @@ mod tests {
         );
     }
 
-    /// CR 608.2c: the `&Effect` entry projects each arm's DECLARED destination
-    /// and invents none. Reds when `declared_this_way_destination` returns
-    /// `None` for every arm — the library case would then arrive as an absent
-    /// destination and take the mass-bounce default.
+    /// CR 608.2c: the `&Effect` entry projects each arm's destination, resolving
+    /// the AST's mass-bounce convention for an absent one so the table never
+    /// has to. Reds when `declared_this_way_destination` stops supplying that
+    /// destination: a mass bounce declaring none would then answer no action at
+    /// all.
     #[test]
     fn this_way_cause_for_effect_projects_the_declared_destination() {
         let bounce_all = |destination| Effect::BounceAll {
@@ -22055,7 +22067,8 @@ mod tests {
         );
         assert_eq!(
             this_way_cause_for_effect(&bounce_all(None)),
-            Some(ThisWayCause::Bounced)
+            Some(ThisWayCause::Bounced),
+            "a mass bounce declaring no destination still names the hand"
         );
     }
 
@@ -26341,7 +26354,7 @@ mod tests {
 
     /// Regression (issue #1977, Party Thrasher): "you may discard a card. If you
     /// do, exile the top two cards of your library, then choose one of them."
-    /// CR 608.2c + CR 603.7: the discard is a gating action behind the
+    /// CR 608.2c: the discard is a gating action behind the
     /// `If you do` boundary; its discarded card must NOT unify into the tracked
     /// set the rider's `ChooseFromZone` consumes. The choice must offer exactly
     /// the two exiled cards — never three (the discard plus the two exiled).
@@ -32834,8 +32847,8 @@ mod tests {
         let mut events = Vec::new();
         // Depth=1 simulates being inside a larger chain (Winds of Abandon's
         // outer chain publishes the tracked set in its first sub-ability).
-        // Calling at depth=0 would clear `chain_tracked_set_id` per CR 603.7's
-        // chain-local reset, defeating the test's setup.
+        // Calling at depth=0 would clear `chain_tracked_set_id` at the
+        // CR 608.2c chain-local reset, defeating the test's setup.
         resolve_ability_chain(&mut state, &ability, &mut events, 1).unwrap();
 
         // First iteration must prompt P1 — controller of `creature_a`, the
@@ -38319,7 +38332,7 @@ mod tests {
         );
     }
 
-    /// CR 603.7 + CR 608.2c: Compound zone-changing effects in one resolution
+    /// CR 608.2c: Compound zone-changing effects in one resolution
     /// chain coalesce into a single tracked set. Shape modeled on Suspend
     /// Aggression: "Exile target permanent AND exile the top card ... For
     /// each of those cards, its owner may play it." The two exile steps must
