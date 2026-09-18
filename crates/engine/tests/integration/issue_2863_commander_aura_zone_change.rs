@@ -106,7 +106,7 @@ fn issue_2863_aura_put_in_graveyard_when_commander_exiled_and_returns() {
     );
     assert!(
         runner.state().objects[&inviolability].attached_to.is_none(),
-        "aura must not remain attached after CR 704.5n"
+        "aura must not remain attached after the commander's departure (CR 701.3d)"
     );
     assert_eq!(
         runner.state().objects[&arcades].zone,

@@ -1494,8 +1494,8 @@ fn check_unattached_auras(
                 }
                 // Note: the parser also routes player-attached Auras here.
                 // CR 303.4c: A player who has left the game is an illegal host.
-                // CR 704.5n: An Aura that is "unattached and on the
-                // battlefield" is also put into its owner's graveyard —
+                // CR 704.5m: An Aura that is "not attached to an object or
+                // player" is also put into its owner's graveyard —
                 // covers the case where a target legally chosen at
                 // announcement is removed before resolution can attach
                 // (target destroyed by another stack effect, target left
@@ -2441,9 +2441,9 @@ fn check_token_cease_to_exist(state: &mut GameState, any_performed: &mut bool) {
 
 /// CR 301.5 / CR 301.6: The permanent core type(s) a non-Aura attacher's
 /// subtypes structurally require its host to have. An Equipment "can't
-/// legally be attached to anything that isn't a creature" (CR 301.5c); a
+/// legally be attached to anything that isn't a creature" (CR 301.5); a
 /// Fortification "can't legally be attached to an object that isn't a land"
-/// (CR 301.6, applying CR 301.5c by analogy). Unlike an Aura's per-card
+/// (CR 301.6, the land analog of CR 301.5). Unlike an Aura's per-card
 /// `Keyword::Enchant` filter, this requirement is fixed by the subtype
 /// itself — every Equipment requires a creature host and every Fortification
 /// requires a land host, with no Oracle-text exception to either.
@@ -2451,7 +2451,7 @@ fn check_token_cease_to_exist(state: &mut GameState, any_performed: &mut bool) {
 /// Each matching subtype contributes its own requirement independently —
 /// not a single either/or choice — so a (no current Oracle precedent, but
 /// rule-text-legal) card with both subtypes requires a host that is BOTH a
-/// creature AND a land (e.g. an animated land-creature), per CR 301.5c +
+/// creature AND a land (e.g. an animated land-creature), per CR 301.5 +
 /// CR 301.6 applying simultaneously. A card with neither subtype (or only
 /// the Aura subtype, whose requirement is carried by `Keyword::Enchant`
 /// instead) returns no requirements, and the caller's `all()` check is
@@ -2516,7 +2516,7 @@ pub(crate) fn is_valid_attachment_target(
     });
     let Some(filter) = enchant_filter else {
         // Equipment / Fortification (non-Enchant attacher): the battlefield
-        // is a legal host, AND CR 301.5c / CR 301.6 each require the host to
+        // is a legal host, AND CR 301.5 / CR 301.6 each require the host to
         // actually be of the matching permanent type — "An Equipment ...
         // can't legally be attached to anything that isn't a creature" /
         // "A Fortification ... can't legally be attached to an object that
@@ -4013,13 +4013,16 @@ mod tests {
     // Fortification identically ("If an Equipment or Fortification is
     // attached to an illegal permanent or to a player, it becomes
     // unattached..."). `check_unattached_equipment` previously matched only
-    // the "Equipment" subtype, so a Fortification whose land host left the
-    // battlefield (destroyed, sacrificed, bounced) kept a stale `attached_to`
-    // forever — the SBA pass that should have unattached it never ran for
-    // that subtype. These tests mirror the existing Equipment SBA tests
-    // above so the two attachment kinds are held to the same bar; the
-    // Equipment cases are re-asserted here too as a regression guard that
-    // broadening the filter to `||` did not change Equipment's own behavior.
+    // the "Equipment" subtype, so a Fortification attached to an illegal host
+    // that stays on the battlefield (a land that gained protection from
+    // artifacts, a nonland permanent, a player) kept a stale `attached_to`
+    // forever — this sweep never ran for that subtype. A host that LEAVES the
+    // battlefield is a different authority: the departure itself ends the
+    // edge (CR 701.3d), not this pass. These tests mirror the existing
+    // Equipment SBA tests above so the two attachment kinds are held to the
+    // same bar; the Equipment cases are re-asserted here too as a regression
+    // guard that broadening the filter to `||` did not change Equipment's own
+    // behavior.
     // ---------------------------------------------------------------------
 
     #[test]
@@ -4137,7 +4140,7 @@ mod tests {
 
     #[test]
     fn sba_equipment_unattaches_when_attached_to_a_noncreature_permanent() {
-        // Symmetric Equipment case for the same CR 301.5c host-type axis:
+        // Symmetric Equipment case for the same CR 301.5 host-type axis:
         // "An Equipment ... can't legally be attached to anything that isn't
         // a creature." Wired directly onto a land host (bypassing Equip
         // activation) to isolate the SBA re-check.
@@ -4196,7 +4199,7 @@ mod tests {
 
     #[test]
     fn sba_dual_subtype_attachment_unattaches_from_creature_missing_land_type() {
-        // CR 301.5c + CR 301.6 apply simultaneously to a card with both the
+        // CR 301.5 + CR 301.6 apply simultaneously to a card with both the
         // "Equipment" and "Fortification" subtypes: its host must be BOTH a
         // creature AND a land. A plain creature host (no land type) satisfies
         // only the Equipment half of the requirement, so the SBA must still
@@ -4289,7 +4292,7 @@ mod tests {
         // would leave one of them attached.
         //
         // Every host stays in the zone it was in for the whole pass, so the
-        // illegality is in place (CR 301.5c, CR 301.6) and the sweep is the
+        // illegality is in place (CR 301.5, CR 301.6) and the sweep is the
         // only authority that can end these edges. Each host also carries a
         // LEGAL attachment of the other kind, so the same pass that catches an
         // under-collecting sweep also catches an over-collecting one. The
@@ -4299,7 +4302,7 @@ mod tests {
         let creature = create_creature(&mut state, CardId(1), PlayerId(0), "Bear", 2, 2);
         let land = create_land(&mut state, CardId(2), PlayerId(0), "Forest");
 
-        // CR 301.5c: an Equipment can't legally be attached to a non-creature.
+        // CR 301.5: an Equipment can't legally be attached to a non-creature.
         let equip_on_land = create_object(
             &mut state,
             CardId(3),
