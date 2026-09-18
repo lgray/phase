@@ -9,7 +9,14 @@ use flate2::Compression;
 const FORMAT_RAW: u8 = 0x00;
 const FORMAT_GZIP: u8 = 0x01;
 const COMPRESSION_THRESHOLD: usize = 256;
+/// Deflate level for the outgoing envelope. Level 3 is the knee of `miniz_oxide`'s
+/// bytes-per-CPU curve for state frames; level 4 is not monotone in bytes on them, so
+/// this is not a dial to round up. `flate2::Compression::fast()` is level 1.
+const COMPRESSION_LEVEL: u32 = 3;
 
+/// This envelope is the single compression authority on the egress path: gzip output is
+/// incompressible, so a transport-level compressor above it (RFC 7692 permessage-deflate)
+/// would spend CPU for nothing and must not be enabled.
 pub async fn encode_json_message(json: String, use_envelope: bool) -> Result<Message, String> {
     if !use_envelope {
         return Ok(Message::text(json));
@@ -24,7 +31,7 @@ pub async fn encode_json_message(json: String, use_envelope: bool) -> Result<Mes
     }
 
     let framed = tokio::task::spawn_blocking(move || {
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::new(COMPRESSION_LEVEL));
         encoder
             .write_all(&bytes)
             .map_err(|error| error.to_string())?;
@@ -117,6 +124,28 @@ mod tests {
         assert!(decode_envelope(&oversized_gzip, 8)
             .unwrap_err()
             .contains("exceeds"));
+    }
+
+    #[tokio::test]
+    async fn gzip_envelope_uses_a_level_above_fastest() {
+        let json =
+            serde_json::to_string(&ServerMessage::error("x".repeat(COMPRESSION_THRESHOLD * 2)))
+                .unwrap();
+        let Message::Binary(framed) = encode_json_message(json.clone(), true).await.unwrap() else {
+            panic!("negotiated large frame must use the binary envelope");
+        };
+        assert_eq!(framed[0], FORMAT_GZIP);
+
+        let mut fastest = GzEncoder::new(Vec::new(), Compression::fast());
+        fastest.write_all(json.as_bytes()).unwrap();
+        let fastest = fastest.finish().unwrap();
+        assert!(
+            framed.len() - 1 < fastest.len(),
+            "production envelope compresses harder than Compression::fast(): {} vs {}",
+            framed.len() - 1,
+            fastest.len()
+        );
+        assert_eq!(decode_envelope(&framed, 4096).unwrap(), json);
     }
 
     #[tokio::test]
