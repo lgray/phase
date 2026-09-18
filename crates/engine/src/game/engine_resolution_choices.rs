@@ -16,7 +16,7 @@ use crate::types::game_state::{
     PendingPlayerScopeSacrificeCompletion, PersistentAxisMaterialization, WaitingFor,
     ZoneOpponentChooserPurpose,
 };
-use crate::types::identifiers::{ObjectId, TrackedSetId};
+use crate::types::identifiers::ObjectId;
 use crate::types::resolved_commands::{
     ResolvedInformationAudience, ResolvedInformationEdit, ResolvedInformationLifetime,
 };
@@ -6588,6 +6588,7 @@ pub(super) fn handle_resolution_choice(
                     publish_effect_zone_choice_tracked_set(
                         state,
                         effect_kind,
+                        destination,
                         &[],
                         library_position,
                         false,
@@ -6832,6 +6833,7 @@ pub(super) fn handle_resolution_choice(
                                 publish_effect_zone_choice_tracked_set(
                                     state,
                                     effect_kind,
+                                    destination,
                                     &chosen_ids,
                                     library_position,
                                     true,
@@ -6909,6 +6911,7 @@ pub(super) fn handle_resolution_choice(
                                 publish_effect_zone_choice_tracked_set(
                                     state,
                                     effect_kind,
+                                    destination,
                                     &chosen_ids,
                                     library_position,
                                     true,
@@ -7522,6 +7525,7 @@ pub(super) fn handle_resolution_choice(
                 publish_effect_zone_choice_tracked_set(
                     state,
                     effect_kind,
+                    destination,
                     &tracked,
                     library_position,
                     false,
@@ -8770,9 +8774,16 @@ fn action_result_outcome(
 /// choice / replacement ordering still open). When false (terminal completion),
 /// an empty `up_to` selection must rebind a fresh empty chain set so a following
 /// `TargetFilter::TrackedSet` cannot reuse a prior non-empty set.
+///
+/// CR 608.2c + CR 608.2h: the choice IS the producing instruction here, so its
+/// own `(effect_kind, destination)` names the action each member carries. A
+/// later count bound to that action ("for each permanent exiled this way")
+/// therefore reads exactly the members this choice produced, by last known
+/// information once they have left the zone.
 fn publish_effect_zone_choice_tracked_set(
     state: &mut GameState,
     effect_kind: EffectKind,
+    destination: Option<Zone>,
     chosen: &[ObjectId],
     library_position: Option<LibraryPosition>,
     mid_pause: bool,
@@ -8848,10 +8859,11 @@ fn publish_effect_zone_choice_tracked_set(
     if tracked.is_empty() && mid_pause && !narrowed {
         return;
     }
-    let tracked_id = TrackedSetId(state.next_tracked_set_id);
-    state.next_tracked_set_id += 1;
-    state.tracked_object_sets.insert(tracked_id, tracked);
-    state.chain_tracked_set_id = Some(tracked_id);
+    // A narrowed set holds the cards this choice left BEHIND, which no action of
+    // this choice produced; `PutAtLibraryPosition` names no verb, so the table
+    // answers `None` for it either way.
+    let cause = effects::this_way_cause_for_action(effect_kind, destination);
+    effects::publish_fresh_tracked_set_with_causes(state, tracked, cause);
 }
 
 fn set_priority(state: &mut GameState, player: crate::types::player::PlayerId) {
@@ -9189,10 +9201,11 @@ fn finish_effect_zone_put_at_library_position(
         } else {
             chosen.clone()
         };
-        let tracked_id = TrackedSetId(state.next_tracked_set_id);
-        state.next_tracked_set_id += 1;
-        state.tracked_object_sets.insert(tracked_id, tracked);
-        state.chain_tracked_set_id = Some(tracked_id);
+        // This seam's placement fixes its producer: it resolves as
+        // `PutAtLibraryPosition`, which names no "<verb>ed this way" set and
+        // carries no destination, so the table records no cause here.
+        let cause = effects::this_way_cause_for_action(EffectKind::PutAtLibraryPosition, None);
+        effects::publish_fresh_tracked_set_with_causes(state, tracked, cause);
     }
     state.last_effect_count = Some(chosen.len() as i32);
     events.push(GameEvent::EffectResolved {
@@ -10039,23 +10052,18 @@ pub(crate) fn run_batch_completion(
                 } else {
                     kept
                 };
-                let published_set_id = effects::publish_fresh_tracked_set(state, published.clone());
                 // CR 608.2c + CR 400.7: when this publish carries the REST
                 // partition for a downstream count (Dihada, Binder of Wills
-                // class — `dig_continuation_wants_rest_pile_for_count`), stamp
-                // every member with the cause so its
+                // class — `dig_continuation_wants_rest_pile_for_count`), every
+                // member carries the cause this completion was handed, so its
                 // `QuantityRef::FilteredTrackedSetSize { caused_by: Some(_), .. }`
                 // finds them. Every other publish (including the unchanged
-                // kept-pile default) carries `None` here and this is a no-op.
-                if let Some(cause) = publish_tracked_set_cause {
-                    let causes = state
-                        .tracked_set_member_causes
-                        .entry(published_set_id)
-                        .or_default();
-                    for &id in &published {
-                        causes.insert(id, cause);
-                    }
-                }
+                // kept-pile default) carries `None`.
+                effects::publish_fresh_tracked_set_with_causes(
+                    state,
+                    published.clone(),
+                    publish_tracked_set_cause,
+                );
                 if let Some(frame) = state.active_ability_continuation_frame_mut() {
                     let continuation = if continuation_targets.is_empty() {
                         published
@@ -10434,7 +10442,7 @@ mod tests {
         TypedFilter,
     };
     use crate::types::card_type::CoreType;
-    use crate::types::identifiers::CardId;
+    use crate::types::identifiers::{CardId, TrackedSetId};
     use crate::types::player::PlayerId;
     use crate::types::proposed_event::ReplacementId;
     use crate::types::replacements::ReplacementEvent;
@@ -13313,7 +13321,14 @@ mod tests {
         state.chain_tracked_set_id = Some(TrackedSetId(1));
 
         // Mid-pause empty must not rebind (Storm Herald Aura-host pause).
-        publish_effect_zone_choice_tracked_set(&mut state, EffectKind::ChangeZone, &[], None, true);
+        publish_effect_zone_choice_tracked_set(
+            &mut state,
+            EffectKind::ChangeZone,
+            Some(Zone::Battlefield),
+            &[],
+            None,
+            true,
+        );
         assert_eq!(state.chain_tracked_set_id, Some(TrackedSetId(1)));
         assert_eq!(
             state.tracked_object_sets.get(&TrackedSetId(1)),
@@ -13497,6 +13512,184 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// CR 608.2c + CR 614.6: the zone choice stamps the action its own
+    /// `(effect_kind, destination)` names, and nothing else. A kind that names
+    /// no "<verb>ed this way" verb, and a declared destination no such verb
+    /// covers, publish membership without provenance; only a destination whose
+    /// verb exists records one.
+    #[test]
+    fn effect_zone_choice_stamps_only_the_action_it_names() {
+        use crate::types::ability::ThisWayCause;
+        use crate::types::game_state::PendingContinuation;
+        use crate::types::identifiers::TrackedSetId;
+
+        /// Publish one selection through the production seam and report the
+        /// chain set it bound plus the provenance recorded for that set.
+        fn publish(
+            effect_kind: EffectKind,
+            destination: Option<Zone>,
+        ) -> (Vec<ObjectId>, Vec<ThisWayCause>) {
+            let mut state = GameState::new_two_player(42);
+            let source = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(0),
+                "Source".to_string(),
+                Zone::Battlefield,
+            );
+            let member = create_object(
+                &mut state,
+                CardId(2),
+                PlayerId(0),
+                "Member".to_string(),
+                Zone::Battlefield,
+            );
+            // The publication returns early without a parked continuation, so
+            // the membership leg below is the reach guard, not decoration.
+            state.park_ability_continuation(PendingContinuation::new(
+                Box::new(crate::types::ability::ResolvedAbility::new(
+                    crate::types::ability::Effect::GrantCastingPermission {
+                        permission: crate::types::ability::CastingPermission::Plotted {
+                            turn_plotted: 0,
+                        },
+                        target: TargetFilter::TrackedSet {
+                            id: TrackedSetId(0),
+                        },
+                        grantee: crate::types::ability::PermissionGrantee::ObjectOwner,
+                    },
+                    vec![],
+                    source,
+                    PlayerId(0),
+                )),
+                &state,
+            ));
+
+            publish_effect_zone_choice_tracked_set(
+                &mut state,
+                effect_kind,
+                destination,
+                &[member],
+                None,
+                false,
+            );
+
+            let chain = state
+                .chain_tracked_set_id
+                .expect("the publication binds a chain tracked set");
+            let members = state
+                .tracked_object_sets
+                .get(&chain)
+                .cloned()
+                .unwrap_or_default();
+            let causes = state
+                .tracked_set_member_causes
+                .get(&chain)
+                .map(|by_object| by_object.values().copied().collect())
+                .unwrap_or_default();
+            (members, causes)
+        }
+
+        // A kind that names no "<verb>ed this way" action records nothing.
+        for kind in [
+            EffectKind::Tap,
+            EffectKind::Untap,
+            EffectKind::PutAtLibraryPosition,
+            EffectKind::CastFromZone,
+        ] {
+            let (members, causes) = publish(kind, None);
+            assert_eq!(members.len(), 1, "{kind:?} must publish its selection");
+            assert!(causes.is_empty(), "{kind:?} names no producer action");
+        }
+
+        // A DECLARED destination whose zone names no such action records
+        // nothing either — the leg the kind axis cannot see.
+        let (members, causes) = publish(EffectKind::ChangeZone, Some(Zone::Library));
+        assert_eq!(
+            members.len(),
+            1,
+            "a library move must publish its selection"
+        );
+        assert!(
+            causes.is_empty(),
+            "a library destination names no \"this way\" action"
+        );
+
+        // CR 701.13a: the same call with a destination whose action exists
+        // records it — the live control, so no leg above can pass by the
+        // recording path being dead.
+        let (members, causes) = publish(EffectKind::ChangeZone, Some(Zone::Exile));
+        assert_eq!(members.len(), 1, "an exile must publish its selection");
+        assert_eq!(causes, vec![ThisWayCause::Exiled]);
+    }
+
+    /// CR 608.2c + CR 614.6: on one chain set fed by two producers carrying
+    /// different actions, a count bound to the first producer's action counts
+    /// only that producer's members, while a cause-unbound count counts every
+    /// member. This refuses a repair that buys its counts by counting
+    /// everything, and it reds under a stamper that writes one action for every
+    /// member of the merged set.
+    #[test]
+    fn a_cause_bound_count_reads_only_its_own_producers_members() {
+        use crate::types::ability::ThisWayCause;
+
+        let mut state = GameState::new_two_player(42);
+        let exiled = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Exiled Member".to_string(),
+            Zone::Exile,
+        );
+        let sacrificed = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Sacrificed Member".to_string(),
+            Zone::Graveyard,
+        );
+
+        // Publish with one action, then extend the SAME chain set through the
+        // existing multi-cause publication with a member carrying another.
+        let set_id = effects::publish_fresh_tracked_set_with_causes(
+            &mut state,
+            vec![exiled],
+            Some(ThisWayCause::Exiled),
+        );
+        effects::publish_tracked_set_with_causes(
+            &mut state,
+            vec![(sacrificed, Some(ThisWayCause::Sacrificed))],
+        );
+        assert_eq!(
+            state.chain_tracked_set_id,
+            Some(set_id),
+            "the second producer extends the same chain set"
+        );
+
+        let members = state
+            .tracked_object_sets
+            .get(&set_id)
+            .expect("the merged set exists");
+        let causes = state
+            .tracked_set_member_causes
+            .get(&set_id)
+            .expect("both producers recorded");
+
+        let bound_to_exiled = members
+            .iter()
+            .filter(|id| causes.get(id) == Some(&ThisWayCause::Exiled))
+            .count();
+
+        assert_eq!(
+            bound_to_exiled, 1,
+            "a count bound to one action reads only that producer's members"
+        );
+        assert_eq!(
+            members.len(),
+            2,
+            "a cause-unbound count reads every member of the merged set"
+        );
     }
 
     /// Minimal 1/1 `CopiableValues` for the `Tokens` stash kind — only the VARIANT is under

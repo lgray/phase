@@ -8,6 +8,7 @@
 mod source_census;
 
 mod aang_compound_tail;
+mod abdel_adrian_animate_dead_altar_board;
 mod abigale_integration;
 mod ability_block_display_clone_gate;
 mod ability_cost_block_readout;

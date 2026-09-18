@@ -20523,9 +20523,12 @@ declare_game_state! {
     /// `tracked_object_sets` (the id-only membership read by every existing
     /// consumer) byte-identical while letting a single merged exile→sacrifice
     /// chain set serve both an "exiled this way" return and a sibling
-    /// "sacrificed this way" reference (issue #2932). Members published without
-    /// action provenance (selection sets via `publish_fresh_tracked_set`) are
-    /// absent here and are read only by `caused_by: None` references.
+    /// "sacrificed this way" reference (issue #2932). A publication whose own
+    /// placement names the producing action records here too, including one
+    /// that starts a fresh resolution scope — a selection made as the ability
+    /// resolves is still produced by that instruction. Members are absent only
+    /// where the producer names no "<verb>ed this way" action at all, and those
+    /// are read by `caused_by: None` references.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_map_of_hash_map")]
     pub tracked_set_member_causes: HashMap<TrackedSetId, HashMap<ObjectId, ThisWayCause>>,
