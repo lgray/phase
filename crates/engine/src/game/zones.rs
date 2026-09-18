@@ -5813,6 +5813,246 @@ mod tests {
         );
     }
 
+    /// Build a merged permanent (CR 730.2) whose absorbed component carries a
+    /// live attachment edge in both directions. Returns
+    /// `(survivor, component, attachment)`.
+    fn merged_permanent_with_attached_component(
+        state: &mut GameState,
+    ) -> (ObjectId, ObjectId, ObjectId) {
+        use crate::game::effects::attach::attach_to;
+        use crate::types::card_type::CoreType;
+
+        let survivor = create_object(
+            state,
+            CardId(1),
+            PlayerId(0),
+            "Survivor".to_string(),
+            Zone::Battlefield,
+        );
+        let component = create_object(
+            state,
+            CardId(2),
+            PlayerId(0),
+            "Component".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [survivor, component] {
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+        }
+        let attachment = create_object(
+            state,
+            CardId(3),
+            PlayerId(0),
+            "Equipment".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&attachment).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.card_types.subtypes.push("Equipment".to_string());
+        }
+        attach_to(state, attachment, component);
+
+        // CR 730.2b: the component is absorbed into the survivor — it is no
+        // longer an independent member of the battlefield list, and the
+        // survivor's component list is what routes it on the way out.
+        absorb_component(state, component, Some(Zone::Battlefield));
+        state.objects.get_mut(&survivor).unwrap().merged_components = vec![survivor, component];
+        (survivor, component, attachment)
+    }
+
+    /// CR 730.3: an absorbed component is delivered to its owner's zone by
+    /// `route_component`, which runs no sever. The authority that ends an
+    /// attachment edge when an object leaves the zone it was in (CR 701.3d) is
+    /// `sever_battlefield_attachment_graph_on_exit`, reached from the departure
+    /// routes in this file and not from the delivery — so the delivered
+    /// component keeps its edge in both directions and announces nothing.
+    #[test]
+    fn merge_component_delivery_leaves_the_component_attachment_edge_intact() {
+        let mut state = setup();
+        let (survivor, component, attachment) =
+            merged_permanent_with_attached_component(&mut state);
+        assert_eq!(
+            state.objects[&attachment].attached_to,
+            Some(crate::game::game_object::AttachTarget::Object(component)),
+            "precondition: the component must hold the edge before the delivery"
+        );
+        assert!(
+            state.objects[&component].attachments.contains(&attachment),
+            "precondition: the edge must be live in both directions"
+        );
+        let incarnation_before = state.objects[&component].incarnation;
+
+        let mut events = Vec::new();
+        move_to_zone(&mut state, survivor, Zone::Graveyard, &mut events);
+
+        // CR 400.7: the component became a new object in its owner's zone.
+        // This is what fails when the route did not run: both
+        // `split_merged_permanent_on_leave` and `put_component_into_zone`
+        // return silently on an absent component, and the intact edge the
+        // assertions below read is also what an unrun route leaves behind.
+        assert!(
+            state.objects[&component].incarnation > incarnation_before,
+            "the delivery route must run to its end and bump the component's incarnation"
+        );
+        assert_eq!(
+            state.objects[&component].zone,
+            Zone::Graveyard,
+            "the component must reach its owner's destination zone"
+        );
+
+        assert_eq!(
+            state.objects[&attachment].attached_to,
+            Some(crate::game::game_object::AttachTarget::Object(component)),
+            "the delivery leaves the attachment's own reference intact"
+        );
+        assert!(
+            state.objects[&component].attachments.contains(&attachment),
+            "the delivery leaves the component's record of the attachment intact"
+        );
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                GameEvent::Unattached { attachment_id, .. } if *attachment_id == attachment
+            )),
+            "a delivery that severs nothing announces no unattachment"
+        );
+
+        // Live control at the same reading point: the same constructed state
+        // whose component leaves by the departure primitive instead has both
+        // directions ended and the unattachment announced. Without it, an
+        // intact verdict above could be a reading taken before anything could
+        // have severed.
+        let mut control = setup();
+        let (_, control_component, control_attachment) =
+            merged_permanent_with_attached_component(&mut control);
+        let mut control_events = Vec::new();
+        move_to_zone(
+            &mut control,
+            control_component,
+            Zone::Graveyard,
+            &mut control_events,
+        );
+        assert_eq!(
+            control.objects[&control_attachment].attached_to, None,
+            "a departure ends the attachment's own reference (CR 701.3d)"
+        );
+        assert!(
+            control.objects[&control_component].attachments.is_empty(),
+            "a departure ends the host's record of the attachment (CR 701.3d)"
+        );
+        assert!(
+            control_events.iter().any(|event| matches!(
+                event,
+                GameEvent::Unattached { attachment_id, .. } if *attachment_id == control_attachment
+            )),
+            "a departure announces the unattachment it performed"
+        );
+    }
+
+    /// A delivery carrying no attachment edge announces nothing, so a route
+    /// that ended edges indiscriminately is refused by this row rather than by
+    /// the intact verdict above.
+    #[test]
+    fn merge_component_delivery_without_an_edge_announces_nothing() {
+        let mut state = setup();
+        let (survivor, component, attachment) =
+            merged_permanent_with_attached_component(&mut state);
+        // Take the edge away in both directions before the delivery.
+        state.objects.get_mut(&attachment).unwrap().attached_to = None;
+        state
+            .objects
+            .get_mut(&component)
+            .unwrap()
+            .attachments
+            .clear();
+        let incarnation_before = state.objects[&component].incarnation;
+
+        let mut events = Vec::new();
+        move_to_zone(&mut state, survivor, Zone::Graveyard, &mut events);
+
+        // CR 400.7: the route ran, so this row is not green for the trivial
+        // reason that nothing happened.
+        assert!(
+            state.objects[&component].incarnation > incarnation_before,
+            "the delivery route must still run to its end"
+        );
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                GameEvent::Unattached { attachment_id, .. } if *attachment_id == attachment
+            )),
+            "a delivery with nothing attached announces no unattachment"
+        );
+    }
+
+    /// CR 701.3d binds the edge that is live at the moment of the departure: an
+    /// attachment re-pointed to a different host before the delivery keeps that
+    /// edge and announces nothing, so a sever driven by the departing object's
+    /// `attachments` list rather than by the live edge is refused here.
+    #[test]
+    fn merge_component_delivery_leaves_a_repointed_attachment_on_its_new_host() {
+        use crate::types::card_type::CoreType;
+
+        let mut state = setup();
+        let (survivor, component, attachment) =
+            merged_permanent_with_attached_component(&mut state);
+        let new_host = create_object(
+            &mut state,
+            CardId(4),
+            PlayerId(0),
+            "New host".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&new_host)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        // Re-point the attachment while the component still lists it.
+        state.objects.get_mut(&attachment).unwrap().attached_to =
+            Some(crate::game::game_object::AttachTarget::Object(new_host));
+        state
+            .objects
+            .get_mut(&new_host)
+            .unwrap()
+            .attachments
+            .push(attachment);
+
+        let incarnation_before = state.objects[&component].incarnation;
+        let mut events = Vec::new();
+        move_to_zone(&mut state, survivor, Zone::Graveyard, &mut events);
+
+        assert!(
+            state.objects[&component].incarnation > incarnation_before,
+            "the delivery route must still run to its end"
+        );
+        assert_eq!(
+            state.objects[&attachment].attached_to,
+            Some(crate::game::game_object::AttachTarget::Object(new_host)),
+            "the re-pointed attachment keeps the host it actually names"
+        );
+        assert!(
+            state.objects[&new_host].attachments.contains(&attachment),
+            "the new host keeps its record of the attachment"
+        );
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                GameEvent::Unattached { attachment_id, .. } if *attachment_id == attachment
+            )),
+            "no unattachment is announced for an edge that did not end"
+        );
+    }
+
     #[test]
     fn sba_pipeline_graveyard_clears_attached_to() {
         use crate::game::effects::attach::attach_to;
