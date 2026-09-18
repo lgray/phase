@@ -394,6 +394,12 @@ def walk_lines(*body: str) -> str:
                       *(f"  {line}" for line in body), "done")
 
 
+def in_loop_tail(loop: str, line: str) -> str:
+    """`loop` with `line` run at the tail of its body, below every consumer."""
+    at = loop.index(f"{STEP_INDENT}done\n")
+    return loop[:at] + step_lines(f"  {line}") + loop[at:]
+
+
 class MappingTree:
     """A throwaway tree holding every file the gate reads."""
 
@@ -1670,9 +1676,10 @@ class ShellPlatformMappingTests(unittest.TestCase):
     def test_an_upload_prefix_bound_by_another_line_refuses(self) -> None:
         # The objects go to the last value assigned before they are uploaded, and
         # the spelling this gate reads the path out of is one of many that assign
-        # it. Every other line naming the name up to the last one that expands it
-        # is a value read here and uploaded under there, so each of these leaves
-        # the manifest checked against a path no object was ever put at.
+        # it. Each of these leaves the manifest checked against a path no object
+        # was ever put at: written above the uploads, and written below them
+        # inside the loop that runs them, where bash reaches the rebinding once
+        # per iteration and every upload after the first goes under it.
         head, array, tail = split_array(preview_source())
         pre, loop, post = split_loop(tail)
         other = "desktop/preview-server-old/$FINGERPRINT"
@@ -1687,20 +1694,26 @@ class ShellPlatformMappingTests(unittest.TestCase):
             # occurrence it is rather than modelled.
             ("the name quoted", f'pre"f"ix="{other}"'),
         ):
-            with self.subTest(spelling=spelling):
-                t = self.tree()
-                t.write_preview_text(
-                    head + array + pre + step_lines(second) + loop + post)
-                r = t.run()
-                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-                self.assertIn("names `prefix` other than as an expansion of it",
-                              r.stderr)
-                self.assertIn(f"({second!r})", r.stderr)
-                self.assertNotIn("preview provisioning OK", r.stdout)
-        # A word that merely carries the name assigns nothing, and past the last
-        # expansion nothing is left to upload under a value: the real step lists
-        # objects with a `prefix=` URL parameter below its uploads, and a reader
-        # refusing that refuses a step that publishes exactly as written.
+            for position, body in (
+                ("above the uploads",
+                 head + array + pre + step_lines(second) + loop + post),
+                ("at the tail of the loop that uploads",
+                 head + array + pre + in_loop_tail(loop, second) + post),
+            ):
+                with self.subTest(spelling=spelling, position=position):
+                    t = self.tree()
+                    t.write_preview_text(body)
+                    r = t.run()
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn("names `prefix` other than as an expansion of "
+                                  "it", r.stderr)
+                    self.assertIn(f"({second!r})", r.stderr)
+                    self.assertNotIn("preview provisioning OK", r.stdout)
+        # A word that merely carries the name assigns nothing, and below every
+        # expansion with no loop running it again nothing is left to upload under
+        # a value: the real step lists objects with a `prefix=` URL parameter
+        # below its uploads, and a reader refusing that refuses a step that
+        # publishes exactly as written.
         for spelling, line, where in (
             ("the name inside another word", "list_prefix='desktop/'", "above"),
             ("the name inside an array assignment",
@@ -1718,6 +1731,16 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 r = t.run()
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertIn("preview provisioning OK", r.stdout)
+        # A loop is what carries a line below a use back above it, so sitting in
+        # one is not the finding either: this loop expands nothing, and the
+        # rebinding at its tail runs after every upload exactly once.
+        with self.subTest(sibling="at the tail of a loop that expands nothing"):
+            t = self.tree()
+            t.write_preview_text(head + array + pre + loop + step_lines(
+                "for attempt in 1 2; do", f"  prefix={other}", "done") + post)
+            r = t.run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preview provisioning OK", r.stdout)
 
     def test_the_manifest_authorities_come_from_the_command_that_writes_it(
             self) -> None:
@@ -1743,6 +1766,10 @@ class ShellPlatformMappingTests(unittest.TestCase):
         echoed = (" > /dev/null; echo '\n"
                   + command[at:command.index("data: [", at)]
                   + f"data: [\n{' ' * 23}]'\n")
+        # The same map carried by another word of the command that does write the
+        # manifest: jq is handed it and runs something else, so the published
+        # object has no `binaries` key while the step-wide count is still one.
+        carried = command[at:command.index("data: [", at)] + "data:"
         for label, body, refusal in (
             ("a second `jq -n` writing the map the real one no longer does",
              head + command.rstrip("\n") + " > /dev/null\n" + renamed,
@@ -1764,6 +1791,10 @@ class ShellPlatformMappingTests(unittest.TestCase):
             ("that same echo beside the map the command does write",
              head + command.rstrip("\n") + echoed,
              "`binaries: {` object in the manifest it writes (found 2)"),
+            ("the map carried by an option's value of that same command",
+             head + renamed.replace(binding,
+                                    f"{binding} --arg note '\n{carried}'", 1),
+             "other than the program it runs"),
         ):
             with self.subTest(decoy=label):
                 t = self.tree()
@@ -1780,6 +1811,65 @@ class ShellPlatformMappingTests(unittest.TestCase):
             r = t.run()
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("preview provisioning OK", r.stdout)
+        # Which word carries the map is the finding, not the extra word: the same
+        # option beside the program that does write the map publishes as written.
+        with self.subTest(decoy="an option's value beside the real map"):
+            t = self.tree()
+            t.write_preview_text(head + command.replace(
+                binding, f"{binding} --arg note 'no map here'", 1))
+            r = t.run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preview provisioning OK", r.stdout)
+
+    def test_the_manifest_command_is_split_into_words_the_way_jq_reads_them(
+            self) -> None:
+        # Which word jq runs as its program is what the option words ahead of it
+        # decide, so the gate has to place each of them: an option whose values
+        # it miscounts moves the region the manifest's keys are read from onto a
+        # word jq never executes. Options it cannot place, and a command left
+        # with no program word at all, refuse rather than guess.
+        head, command = split_jq(preview_source())
+        binding = '--arg fingerprint "$FINGERPRINT"'
+        program = command[command.index("'{"):]
+        for label, body, refusal in (
+            ("an option outside jq's own table",
+             head + command.replace(binding, f"--futurise 1 {binding}", 1),
+             "which is not one this gate can tell takes a value"),
+            ("a command whose program word is gone",
+             head + command.replace(program, "\n", 1),
+             "with no program word"),
+            # A redirection target is a file name bash keeps to itself. Counted
+            # as a word of the command it would be read as the program, and a map
+            # spelled there is one jq writes into a file rather than out of.
+            ("a redirection ahead of the program",
+             head + command.replace(program, f"> /dev/null {program}", 1),
+             "ahead of the program jq runs"),
+        ):
+            with self.subTest(command=label):
+                t = self.tree()
+                t.write_preview_text(body)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(refusal, r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+        # jq spells `-n` two ways and takes flags before its program, so a step
+        # writing the same manifest either way is read rather than reported as a
+        # command this gate never found.
+        for label, spelled in (
+            ("the long spelling of `-n`",
+             command.replace("jq -n", "jq --null-input", 1)),
+            ("a flag beside it", command.replace("jq -n", "jq -n -S", 1)),
+            ("an option taking a value ahead of the program",
+             command.replace(binding, f"--indent 2 {binding}", 1)),
+            ("a redirection past the program, which is where the step writes",
+             command.rstrip("\n") + " > /dev/null\n"),
+        ):
+            with self.subTest(command=label):
+                t = self.tree()
+                t.write_preview_text(head + spelled)
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
 
     def test_a_loop_over_the_array_the_gate_cannot_delimit_refuses(self) -> None:
         # Which commands a loop runs cannot be told without the `done` closing it,
