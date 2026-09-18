@@ -1709,6 +1709,46 @@ class ShellPlatformMappingTests(unittest.TestCase):
                                   "it", r.stderr)
                     self.assertIn(f"({second!r})", r.stderr)
                     self.assertNotIn("preview provisioning OK", r.stdout)
+        # A backslash is deleted along with its newline, so the `;` past it begins
+        # a command of the step's own and the rebinding is a line bash runs above
+        # the uploads.
+        with self.subTest(spelling="joined on by a line continuation"):
+            t = self.tree()
+            t.write_preview_text(
+                head + array + pre
+                + f"{STEP_INDENT}true \\\n{STEP_INDENT}  ; prefix={other}\n"
+                + loop + post)
+            r = t.run()
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("names `prefix` other than as an expansion of it",
+                          r.stderr)
+            self.assertIn(f"; prefix={other}", r.stderr)
+        # The same rebinding at the loop's tail, behind a construct that decides
+        # where the body ends: `done=1` is an assignment and closes nothing, and
+        # a loop opened past a list operator, inside a group, or with its `do`
+        # beneath a comment is one bash opens and runs the tail inside.
+        for construct, before in (
+            ("an assignment spelled `done`", ("done=1",)),
+            ("a loop opened past a list operator",
+             ("true && for attempt in 1 2; do", "  :", "done")),
+            ("a loop opened inside a group",
+             ("{ for attempt in 1 2; do", "  :", "done; }")),
+            ("a header whose `do` sits beneath a comment",
+             ("for attempt in 1 2", "# twice", "do", "  :", "done")),
+        ):
+            with self.subTest(construct=construct):
+                at = loop.index(f"{STEP_INDENT}done\n")
+                t = self.tree()
+                t.write_preview_text(
+                    head + array + pre + loop[:at]
+                    + step_lines(*(f"  {line}" for line in before),
+                                 f"  prefix={other}")
+                    + loop[at:] + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("names `prefix` other than as an expansion of it",
+                              r.stderr)
+                self.assertIn(f"(\'prefix={other}\')", r.stderr)
         # A word that merely carries the name assigns nothing, and below every
         # expansion with no loop running it again nothing is left to upload under
         # a value: the real step lists objects with a `prefix=` URL parameter
@@ -1873,14 +1913,12 @@ class ShellPlatformMappingTests(unittest.TestCase):
 
     def test_a_loop_over_the_array_the_gate_cannot_delimit_refuses(self) -> None:
         # Which commands a loop runs cannot be told without the `done` closing it,
-        # and a line that merely ends in the word `do` opens nothing: reading one
-        # as a header carries the body past its own `done`, so commands sitting
-        # outside the loop count as the ones publishing the array. The pass legs
-        # run the same consumers inside a loop the walk still has to delimit: one
-        # nesting a second loop, one closed by a redirected `done`, and one whose
-        # nested header puts its `do` on a line of its own -- which POSIX allows
-        # and which the walk has to pair with its keyword line, or the nested
-        # `done` closes the outer loop and truncates the body.
+        # and a nested loop left undelimited closes the outer one early, so the
+        # commands publishing the array read as absent. The pass legs run the
+        # same consumers inside a nested loop each spelling of which bash opens:
+        # one past a list operator, one whose `do` is on a line of its own, one
+        # whose `do` sits beneath a comment. The `do` ending `echo nothing to do`
+        # stands in no command position and opens nothing.
         head, array, tail = split_array(preview_source())
         pre, _, post = split_loop(tail)
         signs, *uploads = PREVIEW_CONSUMER_LINES
@@ -1894,6 +1932,12 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 "done < /dev/null")),
             ("a nested header whose `do` is on its own line",
              walk_lines("for attempt in 1 2", "do", "  :", "done",
+                        *PREVIEW_CONSUMER_LINES)),
+            ("a nested loop opened past a list operator",
+             walk_lines("true && while :; do", "  break", "done",
+                        *PREVIEW_CONSUMER_LINES)),
+            ("a nested header whose `do` sits beneath a comment",
+             walk_lines("for attempt in 1 2", "# twice", "do", "  :", "done",
                         *PREVIEW_CONSUMER_LINES)),
         ):
             with self.subTest(shape=label):
@@ -1911,12 +1955,16 @@ class ShellPlatformMappingTests(unittest.TestCase):
              walk_lines(*uploads)
              + step_lines(PREVIEW_LOOP_HEADER, f"  {signs}"),
              "loop with no `done` line closing it"),
-            # The keyword line is what licenses the bare `do`: taking any of them
-            # as an opener would carry the body past the `done` that closes the
-            # real loop and count this consumer, which sits outside it.
+            # The keyword line is what licenses the bare `do`: one nothing
+            # precedes opens a body with no header, so the line itself is what
+            # the refusal names.
             ("a bare `do` line no header precedes",
              walk_lines("echo x", "do", ":", "done", *PREVIEW_CONSUMER_LINES),
-             "never signs it, nor uploads it, nor uploads its signature"),
+             "spells a `do` no loop header precedes"),
+            ("a loop opened and closed on one line",
+             walk_lines("for attempt in 1 2; do :; done",
+                        *PREVIEW_CONSUMER_LINES),
+             "which this gate cannot read as one loop header"),
         ):
             with self.subTest(shape=label):
                 t = self.tree()

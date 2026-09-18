@@ -266,26 +266,27 @@ PREVIEW_CONSUMERS = (
      + SHELL_WORD_GAP + SHELL_FILE_OPTION
      + r'{signature}(?=[ \t;&|]|$)'),
 )
-#: `do` closing a loop header, and `done` opening a line. Counted so a loop
-#: nested in the body does not end it early. The opener must *begin* with the
-#: keyword whose header the `do` closes: a line merely ending in that word --
-#: `echo nothing to do` -- opens nothing, and reading one as an opener pushes the
-#: body past its own `done` and counts commands that sit outside the loop, which
-#: is the fail-open direction. `done` keeps its line to itself but for a
-#: redirection or a list operator, neither of which changes which loop it closes.
-SHELL_LOOP_KEYWORD = r"[ \t]*(?:for|while|until|select)(?![\w-])"
-PREVIEW_LOOP_OPEN = re.compile(SHELL_LOOP_KEYWORD
-                               + r".*(?:^|[ \t;])do$")
-PREVIEW_LOOP_CLOSE = re.compile(r"[ \t]*done(?![\w-])")
-#: A header that puts its `do` on a line of its own, which POSIX allows and which
-#: opens exactly what the joined spelling above does. Read as two lines rather
-#: than refused, so a loop written that way is delimited instead of closing its
-#: parent early -- which truncates the body and reports a member as missing, a
-#: refusal naming a reason that is not the reason. The keyword line is what
-#: licenses the bare `do`: a `do` no header precedes opens nothing, because
-#: opening on it would carry the body past the `done` that closes the real loop.
-PREVIEW_LOOP_KEYWORD = re.compile(SHELL_LOOP_KEYWORD)
-PREVIEW_LOOP_DO = re.compile(r"[ \t]*do(?![\w-])")
+#: The words that open a loop, read beside `do` and `done`. Bash treats each as
+#: a reserved word only where it is a whole unquoted word standing in command
+#: position, which is how they are recognised below: `done=1` is an assignment,
+#: `'done'` is a command named `done`, and the `do` ending `echo nothing to do`
+#: is an argument -- none of the three opens or closes a loop.
+SHELL_LOOP_WORDS = frozenset({"for", "while", "until", "select"})
+#: What bash reads the word after as a command word, which is the only place a
+#: reserved word is reserved. `for`, `select` and `case` are not members: each
+#: takes a name or a word next rather than a command. A redirection operator is
+#: not one either, its next word being a file name.
+SHELL_COMMAND_START = frozenset(
+    {";", "&", "|", "&&", "||", "(", ")", "{", "}", "!", "time", "if", "then",
+     "elif", "else", "fi", "esac", "do", "done", "while", "until"})
+#: One word of a command as bash splits it, or one operator that is not a word.
+#: Quoted strings and escapes are crossed whole, so a reserved word is seen only
+#: where bash sees one. The operators are kept rather than dropped, unlike the
+#: word walk further down, because which word stands in command position is what
+#: says whether it is a reserved word at all.
+SHELL_TOKEN = re.compile(
+    r"""(?:\\[^\n]|[^'"\\\s;&|<>(){}]|'[^']*'|"(?:\\.|[^"\\])*")+"""
+    r"""|&&|\|\||[;&|<>(){}]""")
 #: A line that gives the loop variable a value the loop did not. Past one the
 #: variable no longer names an element of the array, so `sign "$binary"` below it
 #: signs whatever was rebound -- the loop still walks `binaries` and publishes
@@ -358,6 +359,11 @@ SHELL_CONTEXTS = {
 #: stays out for the same reason, so that an authority which moves inside a
 #: `${ ... }` is read rather than erased.
 SHELL_HIDDEN = {"comment", "comsub", "backtick"}
+#: A line bash has already joined onto the one above it. Not a command start,
+#: but this step's own words all the same -- bash deletes the backslash and the
+#: newline and runs what is left as part of the line above, so a `;` here begins
+#: a command of the step's own.
+SHELL_JOINED = "the line before it, which ends in a line continuation"
 #: The command that writes the manifest, and the region both of the manifest's
 #: authorities are read out of -- each from its own part of it. `jq -n` is that
 #: command's whole identity: the step's other jq invocations all read a file or a
@@ -1100,7 +1106,7 @@ def _shell_step(body: str, where: str) -> ShellStep:
             return ("an unclosed `(` or `[`, which bash reads as one word or "
                     "expression")
         if joined:
-            return "the line before it, which ends in a line continuation"
+            return SHELL_JOINED
         return None
 
     def blank(start: int, end: int) -> None:
@@ -1269,6 +1275,115 @@ def _consumer_word(var: str, suffix: str = "") -> str:
     return rf'"\$(?:{name}|\{{{name}\}}){suffix}"'
 
 
+def _shell_lines(step: ShellStep) -> list[tuple[int, str, str]]:
+    """Every line bash runs as this step's own words, continuations joined.
+
+    Three readers derive an execution fact from this one walk, so where it
+    cannot match bash it refuses or includes rather than skipping -- a skipped
+    line is an omission bash still runs, and one trailing backslash would
+    otherwise hide a whole command behind the `;` on the line beneath.
+
+    A line whose words belong to something else -- a comment, a substitution, a
+    quoted region, a heredoc body -- is left out. A continuation line is not one
+    of those: it is joined onto the line above exactly as bash joins it, so each
+    entry is one logical line, offset at its command start, as the step spells it
+    and as the walk blanked it.
+    """
+    lines: list[tuple[int, str, str]] = []
+    continues: int | None = None
+    for at in sorted(step.line_context):
+        end = step.raw.find("\n", at) % (len(step.raw) + 1)
+        context = step.line_context[at]
+        if context == SHELL_JOINED and continues is not None:
+            start, raw, executed = lines[continues]
+            lines[continues] = (start,
+                                raw.removesuffix("\\") + step.raw[at:end],
+                                executed.removesuffix("\\") + step.executed[at:end])
+            continue
+        if context is not None:
+            continues = None
+            continue
+        lines.append((at, step.raw[at:end], step.executed[at:end]))
+        continues = len(lines) - 1
+    return lines
+
+
+def _refuse_loop_line(step: ShellStep, at: int, raw: str, what: str) -> Refusal:
+    line = step.raw.count("\n", 0, at) + 1
+    return Refusal(f"{step.where} has the line {raw.strip()!r} on line {line}, "
+                   f"which {what}. A loop is what carries execution backwards, "
+                   "so a body this gate cannot delimit is one it cannot tell a "
+                   "rebinding from a use in; write the loop as a header line of "
+                   "its own ending in `do`, or as a keyword line with a bare "
+                   "`do` beneath it, closed by a `done` line of its own")
+
+
+def _loop_shapes(step: ShellStep) -> list[tuple[int, str, str, str]]:
+    """Every executable line, each with what it does to loop nesting.
+
+    The fourth field is `open`, `close`, or empty. Loops are delimited by the
+    reserved words themselves, read where bash reads them -- a whole unquoted
+    word in command position, which is why the line is walked as tokens and not
+    matched as a shape. A header whose last word is `do` opens, wherever the
+    keyword sits in it; so does a keyword line with a bare `do` beneath it, at
+    the keyword line, blank and commented lines between the two being lines bash
+    passes over as well. A line whose one reserved word is `done` closes.
+
+    A line spelling those words any other way refuses, because the two ways of
+    reading one wrongly fail in opposite directions: an opener missed cuts a body
+    off above a rebinding and reads it as reaching nothing, while an opener
+    invented carries a body past the `done` that ends it and counts commands
+    outside the loop as the loop's own.
+    """
+    lines = _shell_lines(step)
+    shapes = [""] * len(lines)
+    pending: int | None = None
+    for index, (at, raw, executed) in enumerate(lines):
+        tokens = [token.group() for token in SHELL_TOKEN.finditer(executed)
+                  if token.group().strip("\0")]
+        reserved: list[str] = []
+        command = True
+        for token in tokens:
+            if command and (token in SHELL_LOOP_WORDS or token in ("do", "done")):
+                reserved.append(token)
+            command = token in SHELL_COMMAND_START
+        if not reserved:
+            if tokens:
+                pending = None
+            continue
+        if reserved[0] in SHELL_LOOP_WORDS:
+            if reserved[1:] == ["do"] and tokens[-1] == "do":
+                shapes[index] = "open"
+            elif reserved[1:]:
+                raise _refuse_loop_line(step, at, raw,
+                                        f"spells {reserved} on one line, which "
+                                        "this gate cannot read as one loop "
+                                        "header ending in its own `do`")
+            else:
+                pending = index
+                continue
+        elif reserved == ["do"]:
+            if tokens[0] != "do":
+                raise _refuse_loop_line(step, at, raw,
+                                        "runs a command ahead of its `do`, so "
+                                        "which loop that `do` opens, and where "
+                                        "its body begins, cannot be told")
+            if pending is None:
+                raise _refuse_loop_line(step, at, raw,
+                                        "spells a `do` no loop header precedes")
+            shapes[pending] = "open"
+        elif reserved == ["done"]:
+            shapes[index] = "close"
+        else:
+            raise _refuse_loop_line(step, at, raw,
+                                    f"spells {reserved} on one line, which this "
+                                    "gate cannot read as opening or closing one "
+                                    "body")
+        pending = None
+    return [(at, raw, executed, shapes[index])
+            for index, (at, raw, executed) in enumerate(lines)]
+
+
 def _loop_consumers(step: ShellStep, header: int, var: str) -> tuple[
         set[str], set[str], tuple[int, str] | None]:
     """Which of `PREVIEW_CONSUMERS` this loop's body runs on the loop variable.
@@ -1313,33 +1428,29 @@ def _loop_consumers(step: ShellStep, header: int, var: str) -> tuple[
     found: set[str] = set()
     cut_off: set[str] = set()
     ended: tuple[int, str] | None = None
-    depth, binds, pending = 1, True, False
-    for at in sorted(start for start in step.line_context if start > header):
-        if step.context(at) is not None:
+    depth, binds = 1, True
+    for at, raw, executed, shape in _loop_shapes(step):
+        if at <= header:
             continue
-        end = step.raw.find("\n", at) % (len(step.raw) + 1)
-        line = step.executed[at:end].rstrip("\0 \t")
-        if PREVIEW_LOOP_CLOSE.match(line):
+        line = executed.rstrip("\0 \t")
+        if shape == "close":
             depth -= 1
             if depth == 0:
                 return found, cut_off, ended
-            pending = False
             continue
         # Only the first: `binds` never goes back to True, so the lines after it
         # end nothing that is still open and naming one would point past the cut.
         if binds and any(spelling.group(1)
                          for spelling in rebind.finditer(_spliced(line)[0])):
             binds = False
-            ended = (step.raw.count("\n", 0, at) + 1, step.raw[at:end].strip())
-        joined = PREVIEW_LOOP_OPEN.match(line)
-        if joined or (pending and PREVIEW_LOOP_DO.match(line)):
+            ended = (step.raw.count("\n", 0, at) + 1, raw.strip())
+        if shape == "open":
             depth += 1
         else:
             (found if binds else cut_off).update(
                 name for name, pattern in PREVIEW_CONSUMERS
                 if re.search(pattern.format(binary=binary,
                                             signature=signature), line))
-        pending = bool(PREVIEW_LOOP_KEYWORD.match(line)) and not joined
     raise Refusal(f"{step.where} has a `for {var} in {PREVIEW_ARRAY_READ}; do` "
                   "loop with no `done` line closing it; which commands that loop "
                   "runs cannot be told, so neither can whether they are the ones "
@@ -1482,31 +1593,17 @@ def _loop_bodies(step: ShellStep) -> list[tuple[int, int]]:
     reader asking whether one line reaches another has to ask about, rather than
     which of the two is written first.
 
-    Delimited exactly as a loop over the array is: a header ending in `do`, or a
-    keyword line and a bare `do` beneath it, closed by the matching `done`. An
+    Delimited by `_loop_shapes`, exactly as a loop over the array is. An
     unclosed loop is taken to run to the end of the step, which puts more of it
     inside a body rather than less.
     """
     open_at: list[int] = []
     bodies: list[tuple[int, int]] = []
-    pending: int | None = None
-    for at in sorted(step.line_context):
-        if step.context(at) is not None:
-            continue
-        end = step.raw.find("\n", at) % (len(step.raw) + 1)
-        line = step.executed[at:end].rstrip("\0 \t")
-        if PREVIEW_LOOP_CLOSE.match(line):
-            if open_at:
-                bodies.append((open_at.pop(), at))
-            pending = None
-            continue
-        joined = PREVIEW_LOOP_OPEN.match(line)
-        if joined:
+    for at, _raw, _executed, shape in _loop_shapes(step):
+        if shape == "open":
             open_at.append(at)
-        elif pending is not None and PREVIEW_LOOP_DO.match(line):
-            open_at.append(pending)
-        pending = (at if PREVIEW_LOOP_KEYWORD.match(line) and not joined
-                   else None)
+        elif shape == "close" and open_at:
+            bodies.append((open_at.pop(), at))
     bodies.extend((at, len(step.raw)) for at in open_at)
     return bodies
 
@@ -1542,11 +1639,8 @@ def _upload_prefix(step: ShellStep) -> str:
     assigned: list[str] = []
     reads: list[int] = []
     otherwise: list[tuple[int, str]] = []
-    for at in sorted(step.line_context):
-        if step.context(at) is not None:
-            continue
-        line = step.raw[at:step.raw.find("\n", at) % (len(step.raw) + 1)]
-        spelled = list(names.finditer(_spliced(step.executed[at:at + len(line)])[0]))
+    for at, line, executed in _shell_lines(step):
+        spelled = list(names.finditer(_spliced(executed)[0]))
         if not spelled:
             continue
         if (assignment := PREVIEW_PREFIX_ASSIGN.fullmatch(line)) is not None:
