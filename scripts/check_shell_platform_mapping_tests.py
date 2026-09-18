@@ -1370,6 +1370,13 @@ class ShellPlatformMappingTests(unittest.TestCase):
                  '--file "$binary" --remote',
                  '--content-type "application/octet-stream" '
                  '--file "$binary" --remote')),
+            # A separator inside such a word is the command's own text rather
+            # than the end of the command, in either quoting.
+            ("a quoted separator ahead of the real --file",
+             head + array + tail.replace(
+                 '--file "$binary" --remote',
+                 '--content-type "octet-stream; x" '
+                 '--cache-control \'y && z | w\' --file "$binary" --remote')),
             ("the manifest signed and uploaded outside every loop",
              head + array + tail + step_lines(
                  'sign "$manifest"',
@@ -1429,6 +1436,24 @@ class ShellPlatformMappingTests(unittest.TestCase):
              pre + loop.replace(
                  '--file "$binary" --remote',
                  '--file "$other" --remote "x"--file "$binary"')
+             + post, ("uploads it",)),
+            # An unquoted separator ends the command the subcommand opened, so
+            # the option behind one is a word bash hands `echo` instead; the
+            # upload runs on the decoyed file and the binary is never published.
+            ("the accepted spelling behind a `;`",
+             pre + loop.replace(
+                 '--file "$binary" --remote',
+                 '--file "$other" --remote ; echo --file "$binary"')
+             + post, ("uploads it",)),
+            ("the accepted spelling behind an `&&`",
+             pre + loop.replace(
+                 '--file "$binary" --remote',
+                 '--file "$other" --remote && echo --file "$binary"')
+             + post, ("uploads it",)),
+            ("the accepted spelling behind a `|`",
+             pre + loop.replace(
+                 '--file "$binary" --remote',
+                 '--file "$other" --remote | echo --file "$binary"')
              + post, ("uploads it",)),
             ("the subcommand glued to a word of its own",
              pre + loop.replace(

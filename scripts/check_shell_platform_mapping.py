@@ -245,7 +245,16 @@ PREVIEW_ARRAY_LOOP = re.compile(
 #: the second. A boundary spelled as characters that must not precede a token
 #: admits every character the list forgot, so these patterns require the
 #: separator that must be there instead.
-SHELL_WORD_GAP = r"""(?:\\.|[^'"\\]|'[^']*'|"(?:\\.|[^"\\])*")*?"""
+#:
+#: The gap stays inside one command as well as outside one word. An unquoted
+#: `;`, `&`, `|` or newline ends the command the subcommand opened, so an option
+#: past one is a different command's: `put ... --file "$other" ; echo --file
+#: "$binary"` hands wrangler no `--file` for the binary, which then goes
+#: unuploaded while the array is walked. Quoted and escaped separators are words
+#: bash passes along, so they stay ordinary text -- the step's own
+#: `--cache-control "public, max-age=31536000, immutable"` is crossed like any
+#: other argument.
+SHELL_WORD_GAP = r"""(?:\\.|[^'"\\;&|\n]|'[^']*'|"(?:\\.|[^"\\])*")*?"""
 SHELL_FILE_OPTION = r"[ \t]--file[ \t]+"
 PREVIEW_CONSUMERS = (
     ("signs it", r'^[ \t]*sign[ \t]+{binary}(?=[ \t;&|]|$)'),
