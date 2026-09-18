@@ -289,7 +289,8 @@ PREVIEW_LOOP_DO = re.compile(r"[ \t]*do(?![\w-])")
 #: A line that gives the loop variable a value the loop did not. Past one the
 #: variable no longer names an element of the array, so `sign "$binary"` below it
 #: signs whatever was rebound -- the loop still walks `binaries` and publishes
-#: none of it.
+#: none of it. The upload prefix is held against this too, where what a line
+#: below carries is the path every object goes to rather than the file signed.
 #:
 #: Stated as the complement of a use, the name written any way but as an
 #: expansion of itself, rather than as the commands that bind it. A list of those
@@ -310,6 +311,14 @@ PREVIEW_LOOP_DO = re.compile(r"[ \t]*do(?![\w-])")
 #: name and only a bare occurrence is left to report. Matched against the whole
 #: line and applied ahead of the nesting count, because the rebinding spelling
 #: that hides best is a nested loop header, which ends in `do` like any other.
+#:
+#: Read as `_spliced` leaves the line, because every command that binds the name
+#: takes it as an argument, where bash removes quotes first: `printf -v b\inary`
+#: and `printf -v "binary"` each bind what the loop bound. An assignment prefix is
+#: the one place that quoting keeps the name from being a name -- bash reads
+#: `b\inary=x` as a command -- and it is reported as the bare occurrence it is
+#: rather than modelled, because the step's own `set -e` stops at that command
+#: and the refusal quotes the line it read.
 PREVIEW_REBIND = (r'\$\{{[#!]?{name}[^}}]*\}}'
                   r'|\${name}(?!\w)'
                   r'|(?<!\w)({name})(?!\w)')
@@ -349,12 +358,29 @@ SHELL_CONTEXTS = {
 #: stays out for the same reason, so that an authority which moves inside a
 #: `${ ... }` is read rather than erased.
 SHELL_HIDDEN = {"comment", "comsub", "backtick"}
-#: Read out of the step's executable text, and matched exactly once: taking the
-#: first match let a decoy object -- one a heredoc body carries, or one spelled
-#: ahead of the real jq program -- substitute the whole map. The object itself
-#: lives inside the jq program's single-quoted word, which is a word bash hands
-#: to jq, so it is held to being executable text and not to beginning a command
-#: line; requiring the latter would refuse the step this gate exists to read.
+#: The command that writes the manifest, and the region both of the manifest's
+#: authorities are read from. `jq -n` is its whole identity: the step's other jq
+#: invocations all read a file or a here-string, and this one alone builds the
+#: object the desktop resolves against out of nothing. Exactly one, because two of
+#: them make which object is published a question this gate cannot answer from the
+#: text -- and answering it wrongly is what lets a second `jq -n` supply a map the
+#: real one no longer writes.
+PREVIEW_MANIFEST_JQ = re.compile(r"(?<![\w-])jq[ \t]+-n(?![\w-])")
+#: How far that command runs: words, up to the first separator bash does not read
+#: as part of one. A quoted string is crossed whole, newlines included, because
+#: the jq program is one such word and the bindings ahead of it are continued
+#: across lines; an unquoted `;`, `&`, `|` or newline is where the next command
+#: begins and the manifest command stops owning what follows.
+PREVIEW_COMMAND_TEXT = re.compile(
+    r"""(?:\\.|[^'"\\;&|\n]|'[^']*'|"(?:\\.|[^"\\])*")*""", re.S)
+#: Read out of the manifest command's own text, and matched exactly once in the
+#: step: taking the first match let a decoy object -- one a heredoc body carries,
+#: or one spelled ahead of the real jq program -- substitute the whole map, and
+#: reading it from anywhere in the step let a decoy elsewhere supply it after the
+#: real map was renamed away. The object itself lives inside the jq program's
+#: single-quoted word, which is a word bash hands to jq, so it is held to being
+#: executable text and not to beginning a command line; requiring the latter would
+#: refuse the step this gate exists to read.
 #: Anchored on the `data:` key that follows it, because every entry *inside* the
 #: object also ends in `},` -- stopping at the first one would read a single
 #: platform's interior as the whole map and stranding the other three would look
@@ -376,14 +402,29 @@ PREVIEW_MANIFEST_URL = re.compile(r"^\s*(url|sig_url):\s*(.+)$", re.M)
 #: what fixes the path a manifest entry has to name. A gate holding its own copy
 #: of the path passes whenever the manifest agrees with that copy, including when
 #: both disagree with the upload the step performs.
+#:
+#: This spelling is what the value is read out of, and every other line naming
+#: the name is held against `PREVIEW_REBIND` instead, the way the loop variable
+#: is: `prefix=desktop/x/$F` and `export prefix="desktop/x/$F"` are assignments
+#: this pattern does not match, and bash keeps the last value assigned, so a
+#: reader that merely failed to match them checks the manifest against a path
+#: nothing is uploaded to. The value stays on the quoted spelling, where the `"`
+#: after the variable is what ends its name: quote removal would leave
+#: `"$FING"PRINT` reading as a variable bash never expands.
 PREVIEW_PREFIX_ASSIGN = re.compile(r'^\s*prefix="([^"\n]*)"\s*$', re.M)
 #: jq's own binding of a shell variable to the name its program uses, read out of
-#: the step's executable text. The prefix is shell (`$FINGERPRINT`) and the
+#: the manifest command's own words. The prefix is shell (`$FINGERPRINT`) and the
 #: manifest URL is jq (`$fingerprint`); this flag is the only thing that says the
 #: two are one value, so the pairing is read from it rather than inferred from
-#: the two spellings looking alike. The bindings sit on backslash-continued lines
-#: of the jq command, so like the manifest object they are held to being
-#: executable text rather than to beginning a command line.
+#: the two spellings looking alike. It binds nothing outside the command that
+#: carries it, so a pairing read from the rest of the step says the manifest names
+#: the uploaded path while the program expands whatever this command did bind.
+#: The bindings sit on backslash-continued lines of the jq command, so like the
+#: manifest object they are held to being executable text rather than to
+#: beginning a command line.
+#: Held to the quoted spelling, unlike the option and name counted below: the `"`
+#: after the variable is what ends its name, and quote removal leaves
+#: `"$FING"PRINT` reading as a variable bash never expands.
 PREVIEW_JQ_ARG = re.compile(r'--arg\s+(\w+)\s+"\$(\w+)"')
 #: Every jq option that binds a name into the program's namespace, from jq's own
 #: option table (`jq --help`): `--arg`, `--argjson`, `--slurpfile`, `--rawfile`,
@@ -1224,6 +1265,11 @@ def _loop_consumers(step: ShellStep, header: int, var: str) -> tuple[
     rebinds the variable rebinds nothing this reader sees. Decoys built either
     way are admitted. Rebinding is read the same way -- the variable is taken as
     rebound from the line that spells it onward, whether or not that line runs.
+
+    A rebinding is read after quote removal and a consumer as the line spells it:
+    the name a binding command takes is an argument bash unquotes first, while a
+    consumer is recognised by the quoted expansion it passes and removing those
+    quotes would leave no such word on any line.
     """
     binary = _consumer_word(var)
     signature = _consumer_word(var, r"\.minisig")
@@ -1245,7 +1291,8 @@ def _loop_consumers(step: ShellStep, header: int, var: str) -> tuple[
             continue
         # Only the first: `binds` never goes back to True, so the lines after it
         # end nothing that is still open and naming one would point past the cut.
-        if binds and any(spelling.group(1) for spelling in rebind.finditer(line)):
+        if binds and any(spelling.group(1)
+                         for spelling in rebind.finditer(_spliced(line)[0])):
             binds = False
             ended = (step.raw.count("\n", 0, at) + 1, step.raw[at:end].strip())
         joined = PREVIEW_LOOP_OPEN.match(line)
@@ -1390,6 +1437,94 @@ def _preview_artifacts(step: ShellStep) -> dict[str, str]:
     return artifacts
 
 
+def _upload_prefix(step: ShellStep) -> str:
+    """The path every preview object is uploaded to, from the step's assignment.
+
+    The value the uploads see, which is the last one assigned before the last
+    line expanding the name. Up to there, a line naming it any way but as an
+    expansion of itself is a value this gate did not read and bash uploads
+    under -- `export prefix=...`, `printf -v prefix`, and the bare spelling with
+    its value quoted some other way, none of which the one readable assignment
+    matches. Past the last expansion nothing is left to upload, which is what
+    leaves the `prefix=` URL parameter the step pages R2 with below its uploads
+    naming no value read here.
+
+    Read after quote removal, for the reason the loop variable is: every command
+    binding the name takes it as an argument. The word bash reads as a name only
+    when nothing in it is quoted is the assignment prefix, and one spelled that
+    way is reported as the bare occurrence it is rather than modelled.
+    """
+    names = re.compile(PREVIEW_REBIND.format(name="prefix"))
+    assigned: list[str] = []
+    reads: list[int] = []
+    otherwise: list[tuple[int, str]] = []
+    for at in sorted(step.line_context):
+        if step.context(at) is not None:
+            continue
+        line = step.raw[at:step.raw.find("\n", at) % (len(step.raw) + 1)]
+        spelled = list(names.finditer(_spliced(step.executed[at:at + len(line)])[0]))
+        if not spelled:
+            continue
+        if (assignment := PREVIEW_PREFIX_ASSIGN.fullmatch(line)) is not None:
+            assigned.append(assignment.group(1))
+        elif any(spelling.group(1) for spelling in spelled):
+            otherwise.append((step.raw.count("\n", 0, at) + 1, line.strip()))
+        else:
+            reads.append(at)
+    if len(assigned) != 1:
+        raise Refusal(f"{step.where} has no readable "
+                      f'`prefix="..."` assignment (found {len(assigned)}); the '
+                      "path every preview object is uploaded to must be "
+                      "unambiguous, and a path this gate supplies itself would "
+                      "check the manifest against nothing")
+    last = step.raw.count("\n", 0, max(reads)) + 1 if reads else 0
+    if live := [named for named in otherwise if named[0] <= last]:
+        at_line, text = live[0]
+        raise Refusal(f"{step.where} names `prefix` other than as an expansion of "
+                      f"it on line {at_line} ({text!r}), above the last line that "
+                      "expands it; bash uploads under the last value assigned, so "
+                      "the path this gate read is not the one the objects go to")
+    return assigned[0]
+
+
+def _manifest_command(step: ShellStep) -> tuple[int, int]:
+    """Where the step's one `jq -n` command begins and ends.
+
+    The manifest's two authorities -- the key map a desktop resolves against and
+    the jq name its URLs are built from -- are read out of this region alone.
+    Read from the whole step instead, either can be supplied by text that writes
+    no manifest while the command that does writes something else.
+
+    The command ends where bash ends it -- the first `;`, `&`, `|` or newline it
+    does not carry as part of a word -- rather than at the next line, which is
+    the same distinction the array's consumers are read with: a command sharing a
+    line with this one owns the words after the separator, and a map echoed there
+    is one no manifest carries. A word left open runs the end short, which is the
+    fail-closed direction: the authorities are then not found and refuse.
+    """
+    flat, origin = _spliced(step.executed)
+    starts: list[int] = []
+    for found in PREVIEW_MANIFEST_JQ.finditer(flat):
+        where = origin[found.start()]
+        at = step.raw.rfind("\n", 0, where) + 1
+        if step.context(at) is not None:
+            continue
+        if step.raw[at:where].strip():
+            line = step.raw[at:step.raw.find("\n", at) % (len(step.raw) + 1)]
+            raise Refusal(f"{step.where} runs `jq -n` on the line "
+                          f"{line.strip()!r}, which is not where this gate can "
+                          "tell the command begins; the manifest's keys and its "
+                          "fingerprint are read from that command's own words")
+        starts.append(at)
+    if len(starts) != 1:
+        raise Refusal(f"{step.where} has no readable `jq -n` command writing the "
+                      f"manifest (found {len(starts)}); the object a desktop "
+                      "resolves against is what one of them writes, and which "
+                      "one cannot be told from the text")
+    return starts[0], PREVIEW_COMMAND_TEXT.match(step.executed,
+                                                 starts[0]).end()
+
+
 def preview_platforms() -> dict[str, set[str]]:
     """Every triple preview provisioning declares, one set per place it says so.
 
@@ -1460,6 +1595,8 @@ def preview_platforms() -> dict[str, set[str]]:
     step = _shell_step(body, f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP}")
     artifacts = _preview_artifacts(step)
     signed = set(artifacts)
+    writes_at, writes_end = _manifest_command(step)
+    written = step.executed[writes_at:writes_end]
     blocks = list(PREVIEW_MANIFEST_BLOCK.finditer(step.executed))
     if len(blocks) != 1:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
@@ -1468,6 +1605,15 @@ def preview_platforms() -> dict[str, set[str]]:
                       "be unambiguous, and a set this gate cannot read is not an "
                       "empty one")
     block = blocks[0]
+    # The one object in the step has to be the one that command writes: a map the
+    # `jq -n` program does not carry is a map no desktop ever resolves against,
+    # and reading it leaves the published manifest unchecked in full.
+    if not writes_at <= block.start() < block.end() <= writes_end:
+        line = step.raw.count("\n", 0, block.start()) + 1
+        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} spells its "
+                      f"`binaries: {{` object on line {line}, outside the "
+                      "`jq -n` command that writes the manifest; the keys a "
+                      "desktop resolves against are the ones that command emits")
     manifest_keys = PREVIEW_MANIFEST_KEY.findall(block.group(1))
     duplicate_keys = sorted({key for key in manifest_keys
                              if manifest_keys.count(key) > 1})
@@ -1478,23 +1624,14 @@ def preview_platforms() -> dict[str, set[str]]:
                       "unambiguous key")
     keys = set(manifest_keys)
 
-    assignments = [found.group(1)
-                   for found in PREVIEW_PREFIX_ASSIGN.finditer(step.executed)
-                   if step.context(found.start()) is None]
-    if len(assignments) != 1:
-        raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} has no readable "
-                      f'`prefix="..."` assignment (found {len(assignments)}); the '
-                      "path every preview object is uploaded to must be "
-                      "unambiguous, and a path this gate supplies itself would "
-                      "check the manifest against nothing")
-    prefix = assignments[0]
+    prefix = _upload_prefix(step)
     shell = re.search(r"\$(\w+)", prefix)
     if shell is None:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} uploads to "
                       f"'{prefix}', which carries no variable; every fingerprint "
                       "would publish over one path, so the manifest could not "
                       "name a per-fingerprint object at all")
-    jq_args = PREVIEW_JQ_ARG.findall(step.executed)
+    jq_args = PREVIEW_JQ_ARG.findall(written)
     bound = [jq for jq, sh in jq_args if sh == shell.group(1)]
     if len(bound) != 1:
         raise Refusal(f"{PREVIEW_WORKFLOW}: {PREVIEW_SIGN_STEP} binds "

@@ -382,6 +382,12 @@ def split_loop(tail: str) -> tuple[str, str, str]:
     return tail[:start], tail[start:end], tail[end:]
 
 
+def split_jq(body: str) -> tuple[str, str]:
+    """A preview body around the `jq -n` command writing its manifest."""
+    start = body.index(f"{STEP_INDENT}jq -n ")
+    return body[:start], body[start:]
+
+
 def walk_lines(*body: str) -> str:
     """A loop over the array running `body`, each line one indent deeper."""
     return step_lines(PREVIEW_LOOP_HEADER,
@@ -1607,6 +1613,173 @@ class ShellPlatformMappingTests(unittest.TestCase):
                 self.assertIn(f"but never {missing} inside a loop", r.stderr)
                 self.assertIn("in one loop or in several", r.stderr)
                 self.assertNotIn("other than as an expansion of it", r.stderr)
+
+    def test_a_rebinding_hidden_behind_quotes_or_escapes_still_binds(self) -> None:
+        # Bash removes quotes and escapes from a word before the command binding
+        # the name is handed it, so each of these binds what the loop bound and
+        # the consumers below publish whatever it was bound to. A reader holding
+        # the name to its letters sees none of them and the job stays green while
+        # it signs and uploads one file four times.
+        head, array, tail = split_array(preview_source())
+        pre, _, post = split_loop(tail)
+        every = ("signs it", "uploads it", "uploads its signature")
+        for spelling, binding in (
+            ("escaped name", "printf -v b\\inary /dev/null"),
+            ("name quoted in the middle", 'printf -v bi"n"ary /dev/null'),
+            ("escaped name read from a file", "read -r bina\\ry < /dev/null"),
+            ("name spelled across two quoted halves",
+             'mapfile -t "bin""ary" < /dev/null'),
+        ):
+            with self.subTest(spelling=spelling):
+                t = self.tree()
+                t.write_preview_text(head + array + pre + walk_lines(
+                    binding, *PREVIEW_CONSUMER_LINES) + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(f"but never {', nor '.join(every)} inside a loop",
+                              r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+        # An assignment prefix is where the same quoting stops being a name at
+        # all -- bash runs `b\inary=x` as a command -- so it is reported as the
+        # bare occurrence it is, naming the line it read, rather than modelled.
+        with self.subTest(spelling="quoted assignment prefix"):
+            cut = "b\\inary=/dev/null"
+            t = self.tree()
+            t.write_preview_text(head + array + pre + walk_lines(
+                cut, *PREVIEW_CONSUMER_LINES) + post)
+            r = t.run()
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            names = re.escape(" names `binary` other than as an expansion "
+                              f"of it ({cut!r})")
+            self.assertRegex(r.stderr, rf"line \d+{names}")
+            self.assertNotIn("preview provisioning OK", r.stdout)
+        # The quote is not itself the finding: the same mechanisms over a name
+        # the loop never bound leave every consumer counted.
+        for spelling, binding in (("escaped name", "printf -v ot\\her /dev/null"),
+                                  ("quoted name", 'printf -v "other" /dev/null'),
+                                  ("escaped assignment prefix",
+                                   "ot\\her=/dev/null")):
+            with self.subTest(sibling=f"{spelling}, binding another name"):
+                t = self.tree()
+                t.write_preview_text(head + array + pre + walk_lines(
+                    binding, *PREVIEW_CONSUMER_LINES) + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
+
+    def test_an_upload_prefix_bound_by_another_line_refuses(self) -> None:
+        # The objects go to the last value assigned before they are uploaded, and
+        # the spelling this gate reads the path out of is one of many that assign
+        # it. Every other line naming the name up to the last one that expands it
+        # is a value read here and uploaded under there, so each of these leaves
+        # the manifest checked against a path no object was ever put at.
+        head, array, tail = split_array(preview_source())
+        pre, loop, post = split_loop(tail)
+        other = "desktop/preview-server-old/$FINGERPRINT"
+        for spelling, second in (
+            ("the value unquoted", f"prefix={other}"),
+            ("the value in two quoted halves",
+             'prefix="desktop/"\'preview-server-old/\'"$FINGERPRINT"'),
+            ("the name exported", f'export prefix="{other}"'),
+            ("the name printed into", f"printf -v prefix '%s' {other}"),
+            # bash runs this one rather than assigning -- a word with a quoted
+            # character is a command name -- and it is reported as the bare
+            # occurrence it is rather than modelled.
+            ("the name quoted", f'pre"f"ix="{other}"'),
+        ):
+            with self.subTest(spelling=spelling):
+                t = self.tree()
+                t.write_preview_text(
+                    head + array + pre + step_lines(second) + loop + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("names `prefix` other than as an expansion of it",
+                              r.stderr)
+                self.assertIn(f"({second!r})", r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+        # A word that merely carries the name assigns nothing, and past the last
+        # expansion nothing is left to upload under a value: the real step lists
+        # objects with a `prefix=` URL parameter below its uploads, and a reader
+        # refusing that refuses a step that publishes exactly as written.
+        for spelling, line, where in (
+            ("the name inside another word", "list_prefix='desktop/'", "above"),
+            ("the name inside an array assignment",
+             'keep_prefixes=("$prefix/")', "above"),
+            ("the name as an option's argument below the uploads",
+             'curl --data-urlencode "prefix=$list_prefix" https://example.invalid',
+             "below"),
+        ):
+            with self.subTest(sibling=spelling):
+                added = step_lines(line)
+                t = self.tree()
+                t.write_preview_text(
+                    head + array + pre + (added if where == "above" else "")
+                    + loop + (added if where == "below" else "") + post)
+                r = t.run()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("preview provisioning OK", r.stdout)
+
+    def test_the_manifest_authorities_come_from_the_command_that_writes_it(
+            self) -> None:
+        # The map a desktop resolves against and the jq name its URLs are built
+        # from are what one `jq -n` command emits. Read from anywhere in the step,
+        # each can be supplied by text that writes no manifest at all while the
+        # command that does writes something else -- a map under another key, or a
+        # fingerprint bound to another value -- and every URL published then names
+        # an object no desktop can fetch.
+        head, command = split_jq(preview_source())
+        map_line = f"{' ' * 23}binaries: {{\n"
+        self.assertEqual(command.count(map_line), 1)
+        renamed = command.replace(map_line, f"{' ' * 23}bins: {{\n")
+        binding = '--arg fingerprint "$FINGERPRINT"'
+        # bash hands jq one word per line of this, so the pairing reads out of it
+        # while the collision guard, which crosses no newline, does not.
+        note = (f"{STEP_INDENT}note='--arg\n"
+                f"{STEP_INDENT}fingerprint \"$FINGERPRINT\"'\n")
+        # The map echoed by the next command on the same line: the `;` is where
+        # this command stops owning its words, and every line past it is the
+        # echo's own however the gate delimits lines.
+        at = command.index(map_line)
+        echoed = (" > /dev/null; echo '\n"
+                  + command[at:command.index("data: [", at)]
+                  + f"data: [\n{' ' * 23}]'\n")
+        for label, body, refusal in (
+            ("a second `jq -n` writing the map the real one no longer does",
+             head + command.rstrip("\n") + " > /dev/null\n" + renamed,
+             "`jq -n` command writing the manifest (found 2)"),
+            ("the map written by a command that is not the `jq -n`",
+             head + command.replace("jq -n", "jq -r", 1).rstrip("\n")
+             + " > /dev/null\n" + renamed,
+             "outside the `jq -n` command that writes the manifest"),
+            ("the pairing carried by a word the manifest command never gets",
+             head + note + command.replace(binding, '--arg fingerprint "$COMMIT"'),
+             "binds $FINGERPRINT to 0 jq argument(s)"),
+            ("a `jq -n` this gate cannot place",
+             head + command.replace(f"{STEP_INDENT}jq -n",
+                                    f"{STEP_INDENT}true | jq -n", 1),
+             "which is not where this gate can tell the command begins"),
+            ("the map echoed past the `;` that ends the command",
+             head + renamed.rstrip("\n") + echoed,
+             "outside the `jq -n` command that writes the manifest"),
+            ("that same echo beside the map the command does write",
+             head + command.rstrip("\n") + echoed,
+             "`binaries: {` object in the manifest it writes (found 2)"),
+        ):
+            with self.subTest(decoy=label):
+                t = self.tree()
+                t.write_preview_text(body)
+                r = t.run()
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(refusal, r.stderr)
+                self.assertNotIn("preview provisioning OK", r.stdout)
+        # The decoy text is not what refuses: with the real authority still in
+        # the writing command, the same word beside it publishes as written.
+        with self.subTest(decoy="the pairing decoy beside the real binding"):
+            t = self.tree()
+            t.write_preview_text(head + note + command)
+            r = t.run()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preview provisioning OK", r.stdout)
 
     def test_a_loop_over_the_array_the_gate_cannot_delimit_refuses(self) -> None:
         # Which commands a loop runs cannot be told without the `done` closing it,
