@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use engine::game::deck_loading::DeckEntry;
 use engine::game::interaction::{bind_interaction_authority, derive_viewer_interaction};
+use engine::game::turn_control;
 use engine::game::visibility::filter_state_for_viewer;
 use engine::types::card::CardFace;
 use engine::types::format::FormatConfig;
@@ -285,6 +286,15 @@ fn turn_controller_of_the_sideboarding_seat_is_denied_that_pool() {
     let mut state = sideboarding_state(P0);
     state.active_player = P0;
     state.turn_decision_controller = Some(P1);
+    // Reach guard: owner-equality satisfies the loop below whether or not turn control is
+    // live, so the delegation itself has to be pinned. If the latch this fixture sets is
+    // ever tightened away, this fails rather than leaving the delegated arm unreached with
+    // the test still green.
+    assert_eq!(
+        turn_control::authorized_submitter_for_player(&state, P0),
+        P1,
+        "the fixture must actually delegate P0's submissions to P1"
+    );
 
     for seat in 0..SEATS {
         let viewer = PlayerId(seat);
@@ -305,9 +315,20 @@ fn turn_controller_of_the_sideboarding_seat_is_denied_that_pool() {
         }
     }
 
-    // Sibling state: the same seats with turn control pointed at a seat that is not
-    // sideboarding. Same verdict, reached through a different `active_player`.
+    // Sibling state: turn control still live, now over a seat that is not the one being
+    // prompted. Same verdict, and the pair of guards is what separates this state from the
+    // one above rather than repeating it.
     state.active_player = P2;
+    assert_eq!(
+        turn_control::authorized_submitter_for_player(&state, P2),
+        P1,
+        "turn control is still live, over P2"
+    );
+    assert_eq!(
+        turn_control::authorized_submitter_for_player(&state, P0),
+        P0,
+        "and it no longer reaches P0, the seat being prompted"
+    );
     for seat in 0..SEATS {
         let viewer = PlayerId(seat);
         assert_eq!(
