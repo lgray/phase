@@ -1505,7 +1505,7 @@ fn collect_player_zone_cards(
         .collect()
 }
 
-/// CR 608.2c + CR 608.2d + CR 603.7: Resolve the candidate card pool for a
+/// CR 608.2c + CR 608.2d: Resolve the candidate card pool for a
 /// tracked-set pick.
 ///
 /// Priority order (the `Legacy` provenance; every other

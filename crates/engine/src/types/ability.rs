@@ -4908,7 +4908,7 @@ pub enum CastingPermission {
         /// object qualities, not source/controller-relative.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         card_filter: Option<TargetFilter>,
-        /// CR 603.7 + CR 611.2a: Identity of the resolving tracked set for a
+        /// CR 608.2c + CR 611.2a: Identity of the resolving tracked set for a
         /// `single_use` grant. This is deliberately separate from `source_id`:
         /// the same permanent can create overlapping "one spell from among
         /// those cards" effects, and each tracked set gets its own cast slot.
@@ -7784,7 +7784,8 @@ pub enum TargetFilter {
     /// the permanent that HAS the static.
     ChosenCard,
     /// Matches exactly the objects in a tracked set.
-    /// CR 603.7: Delayed triggers act on specific objects from the originating effect.
+    /// CR 608.2c: a later instruction of the resolving ability names the objects
+    /// an earlier one affected.
     TrackedSet {
         id: super::identifiers::TrackedSetId,
     },

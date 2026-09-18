@@ -6826,7 +6826,7 @@ pub(super) fn handle_resolution_choice(
                                 }
                             }
                             crate::game::zone_pipeline::ZoneMoveTerminalResult::NeedsAuraAttachmentChoice => {
-                                // CR 608.2c + CR 603.7 + CR 303.4f: Publish the
+                                // CR 608.2c + CR 303.4f: Publish the
                                 // selection before pausing for Aura host choice —
                                 // this early return skips the terminal publish
                                 // below (Storm Herald "Exile those Auras").
@@ -6905,7 +6905,7 @@ pub(super) fn handle_resolution_choice(
                                 // `effects/mod.rs::drain_pending_change_zone_iteration`
                                 // resumes the loop after this replacement
                                 // choice resolves (issue #535).
-                                // CR 608.2c + CR 603.7: Publish selection before
+                                // CR 608.2c: Publish selection before
                                 // the replacement pause — same early-return gap
                                 // as NeedsAuraAttachmentChoice above.
                                 publish_effect_zone_choice_tracked_set(

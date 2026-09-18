@@ -8043,7 +8043,7 @@ pub fn is_known_effect(effect: &Effect) -> bool {
     !matches!(effect, Effect::Unimplemented { .. })
 }
 
-/// CR 603.7: Check if any descendant sub_ability needs tracked set recording.
+/// CR 608.2c: Check if any descendant sub_ability needs tracked set recording.
 ///
 /// A descendant consumes the tracked set when any of its quantity or filter
 /// positions reference the most recent set — via `QuantityRef::TrackedSetSize`
@@ -8215,7 +8215,7 @@ fn later_node_is_publisher_position(ability: &ResolvedAbility) -> bool {
         .is_some_and(node_or_later_is_publisher_position)
 }
 
-/// CR 603.7 + CR 700.2: is THIS node, or any strictly-later node of its chain,
+/// CR 608.2c + CR 700.2: is THIS node, or any strictly-later node of its chain,
 /// in publisher position? Stops at a mode boundary, exactly like its caller.
 ///
 /// Split out of [`later_node_is_publisher_position`] so that a chain remainder a
@@ -8612,7 +8612,7 @@ fn player_filter_references_tracked_set(filter: &PlayerFilter) -> bool {
 
 fn filter_references_tracked_set(filter: &TargetFilter) -> bool {
     match filter {
-        // CR 603.7: Both the bare tracked-set filter and its type-filtered
+        // CR 608.2c: Both the bare tracked-set filter and its type-filtered
         // intersection ("X cards revealed this way", "from among the milled
         // cards") consume the most recent tracked set — either form on a
         // sub-ability means the parent effect must publish its affected set.
@@ -10409,7 +10409,7 @@ pub(crate) fn publish_battlefield_object_for_pending_continuation(
     }
 }
 
-/// CR 603.7 + CR 109.5: Returns `true` when the effect resolves an acting
+/// CR 608.2c + CR 109.5: Returns `true` when the effect resolves an acting
 /// subject relative to the parent target — i.e., any effect-target slot
 /// reachable via [`effect_target_filter`] contains
 /// `TargetFilter::ParentTargetController` or `TargetFilter::ParentTarget`.
@@ -11005,7 +11005,7 @@ pub(crate) fn bind_detached_continuation_to_parent(
     continuation.targets = referents;
 }
 
-/// CR 603.7 + CR 109.5: Replace the first `TargetRef::Object` in a target
+/// CR 608.2c + CR 109.5: Replace the first `TargetRef::Object` in a target
 /// slice with the supplied object id. Used by the `repeat_for: TrackedSetSize`
 /// per-iteration rebind so the i-th iteration's parent reference (e.g.,
 /// `ParentTargetController` resolution in `search_library::resolve_library_owner`)
@@ -16400,7 +16400,7 @@ fn resolve_chain_body(
         }
     }
 
-    // CR 603.7: Snapshot event count so we can detect objects moved by this effect.
+    // CR 608.2c: Snapshot event count so we can detect objects moved by this effect.
     let events_before = events.len();
     let mut immediate_effect_result = None;
     // CR 610.3b + CR 118.12: per-call verdicts for this node's bounded zone
@@ -16433,7 +16433,7 @@ fn resolve_chain_body(
                 subject: None,
             });
         } else {
-            // CR 603.7 + CR 608.2c + CR 109.5: Per-iteration parent-target
+            // CR 608.2c + CR 109.5: Per-iteration parent-target
             // rebinding. When the body references the iterated object via a
             // context ref (`ParentTarget` / `ParentTargetController`), each
             // iteration must bind to a distinct member so the per-iteration
@@ -17011,7 +17011,7 @@ fn resolve_chain_body(
             ability
         };
 
-    // CR 603.7: Record the objects affected by this effect as a tracked set so
+    // CR 608.2c: Record the objects affected by this effect as a tracked set so
     // downstream sub-abilities can resolve "this way" references (pronouns,
     // `TrackedSetSize`, `TrackedSet` filters). The signal event depends on the
     // effect class:
@@ -32752,7 +32752,7 @@ mod tests {
         assert_eq!(run_expand_the_sphere_proliferate(2), 1);
     }
 
-    /// CR 603.7 + CR 109.5 + CR 701.23a: Winds of Abandon-shape — per-iteration
+    /// CR 608.2c + CR 109.5 + CR 701.23a: Winds of Abandon-shape — per-iteration
     /// parent-target rebinding for `repeat_for: TrackedSetSize` over a
     /// `ParentTargetController` search. Two creatures controlled by *different*
     /// opponents (P1 and P2) are exiled. Without the per-iteration rebind both
@@ -33785,7 +33785,7 @@ mod tests {
         );
     }
 
-    /// CR 603.7 + CR 608.2c: Regression — when `repeat_for` is set but the
+    /// CR 608.2c: Regression — when `repeat_for` is set but the
     /// effect does NOT use a parent-target reference (e.g. plain Draw), the
     /// per-iteration rebind logic must NOT touch `ability.targets`. Guards
     /// against the new rebind path leaking into unrelated `repeat_for`
@@ -38528,7 +38528,7 @@ mod tests {
         );
     }
 
-    /// CR 400.7i + CR 603.7: Issue #1549 — ExileTop(3) chained to
+    /// CR 400.7i + CR 608.2c: Issue #1549 — ExileTop(3) chained to
     /// `GrantCastingPermission { PlayFromExile, TrackedSet }` must attach
     /// exactly one permission per exiled card (no double-grant).
     #[test]

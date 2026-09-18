@@ -159,9 +159,13 @@ fn abdel_adrian_mints_one_soldier_per_permanent_the_choice_exiled() {
     );
 
     let offered = offered_zone_choice(&board.runner).expect("parked on the exile choice");
-    assert!(
-        offered.contains(&board.altar) && offered.contains(&board.animate_dead),
-        "the choice offers both other nonland permanents P0 controls"
+    let mut offered_sorted = offered.clone();
+    offered_sorted.sort_unstable_by_key(|id| id.0);
+    let mut nonland_permanents = vec![board.altar, board.animate_dead];
+    nonland_permanents.sort_unstable_by_key(|id| id.0);
+    assert_eq!(
+        offered_sorted, nonland_permanents,
+        "the choice offers exactly the two other nonland permanents P0 controls"
     );
 
     board

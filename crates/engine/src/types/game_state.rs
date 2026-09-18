@@ -20454,7 +20454,8 @@ declare_game_state! {
     #[serde(default)]
     pub delayed_triggers: Vec<DelayedTrigger>,
 
-    /// CR 603.7: Object sets tracked for delayed triggers ("those cards", "that creature").
+    /// CR 608.2c: Object sets a resolving ability publishes for its own later
+    /// instructions to name ("those cards", "that creature").
     #[serde(default)]
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_map")]
     pub tracked_object_sets: HashMap<TrackedSetId, Vec<ObjectId>>,
@@ -20462,7 +20463,7 @@ declare_game_state! {
     #[serde(default)]
     pub next_tracked_set_id: u64,
 
-    /// CR 603.7 + CR 608.2c: The tracked set published by the currently-resolving
+    /// CR 608.2c: The tracked set published by the currently-resolving
     /// ability chain, if any. Set by the first publish inside a chain and reused
     /// (extended) by later publishes in the same chain so compound zone-changing
     /// effects (e.g., "Exile target permanent and the top card of your library
@@ -20475,6 +20476,12 @@ declare_game_state! {
     /// Resolution-scoped, so `normalize_for_loop` clears it for the CR 104.4b
     /// position comparison: between resolutions it is the previous resolution's
     /// residue and must not split two identical positions.
+    ///
+    /// The same set is stated in several vocabularies — an identity here, a
+    /// recording at the publisher, a consumption at the reader, a pick pool at
+    /// the chooser — and all of them are this one CR 608.2c back-reference,
+    /// never a CR 603.7 delayed triggered ability, which the mechanism never
+    /// creates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_tracked_set_id: Option<TrackedSetId>,
 
@@ -21173,7 +21180,7 @@ declare_game_state! {
     #[serde(default)]
     #[serde(serialize_with = "crate::types::deterministic_serde::hash_set")]
     pub exile_play_permissions_used: HashSet<ObjectId>,
-    /// CR 601.2a + CR 603.7 + CR 611.2a: Tracks `single_use` `PlayFromExile`
+    /// CR 601.2a + CR 608.2c + CR 611.2a: Tracks `single_use` `PlayFromExile`
     /// grants whose one allowed cast has already been spent. Keyed by the
     /// tracked set published by the effect (Chandra, Hope's Beacon +1: "you may
     /// cast *a/an* [type] spell from among those exiled cards"). Distinct from

@@ -4758,7 +4758,7 @@ pub(super) fn parse_choose_ast(
         return Some(ast);
     }
 
-    // CR 608.2c + CR 603.7 / CR 610.3 + CR 406.6: "choose a card [at random]
+    // CR 608.2c / CR 610.3 + CR 406.6: "choose a card [at random]
     // exiled this way / exiled with ~" — the impulse-exile choose anaphor. The
     // "exiled this way" referent is the chain's tracked set (the cards exiled by
     // a preceding clause in this resolution, e.g. End-Blaze Epiphany); the
@@ -5196,7 +5196,7 @@ fn try_parse_choose_owned_by_voter(
     })
 }
 
-/// CR 608.2c + CR 603.7 / CR 610.3 + CR 406.6: Parse "choose a card [at random]
+/// CR 608.2c / CR 610.3 + CR 406.6: Parse "choose a card [at random]
 /// exiled this way / exiled with ~ / exiled with it" — the impulse-exile choose
 /// anaphor.
 ///
