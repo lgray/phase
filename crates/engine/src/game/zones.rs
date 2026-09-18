@@ -122,7 +122,8 @@ fn counters_persist_on_move(state: &GameState, object_id: ObjectId, to: Zone) ->
 /// moment of the zone change. The snapshot records each attachment's current
 /// controller and kind (Aura/Equipment) so that look-back triggers of the form
 /// "for each Aura you controlled that was attached to it" (Hateful Eidolon)
-/// can resolve their quantity after SBA has already unattached the Auras.
+/// can resolve their quantity after the departure has already unattached the
+/// Auras (CR 701.3d).
 pub(crate) fn capture_attachment_snapshot(
     state: &GameState,
     obj: &GameObject,
@@ -271,10 +272,11 @@ pub(crate) fn apply_zone_exit_cleanup(
                 // CR 701.60b: Capture suspected status at zone exit for
                 // "was suspected" look-back riders.
                 is_suspected: obj.is_suspected,
-                // CR 608.2h: The attachment set as it stood BEFORE SBA unattached it
-                // (CR 704.5m/n), so a source-referential intervening-if re-checked at
-                // resolution ("if this creature is enchanted" — Dreampod Druid) reads
-                // last known information once its source has left the battlefield.
+                // CR 608.2h: The attachment set as it stood BEFORE the departure
+                // sever (CR 701.3d) cleared it, so a source-referential intervening-if
+                // re-checked at resolution ("if this creature is enchanted" — Dreampod
+                // Druid) reads last known information once its source has left the
+                // battlefield.
                 // Supplied by the caller: the sever already ran by the time we get here.
                 attachments,
             };
@@ -1157,7 +1159,7 @@ pub fn apply_resolved_zone_change(
             command.cause,
         );
     }
-    // CR 704.5m + CR 704.5n + CR 702.26i: the command carries no attachment
+    // CR 701.3d: the command carries no attachment
     // payload, so replay re-runs the same severing authority the live
     // transition used. Idempotent, so the live path's earlier call is not
     // double-applied; the returned ids are dropped because replay reproduces
@@ -1452,7 +1454,8 @@ pub(crate) fn move_to_zone_with_entry_flags(
     let snapshot_object = liminal_entry_projection.as_ref().unwrap_or(obj);
     let mut zone_change_record =
         snapshot_object.snapshot_for_zone_change(object_id, Some(from), to);
-    // CR 603.10a + CR 603.6e: Capture attachment snapshot before SBA can detach.
+    // CR 603.10a + CR 603.6e: Capture attachment snapshot before the departure
+    // sever (CR 701.3d) clears it.
     zone_change_record.attachments = capture_attachment_snapshot(state, obj);
     // CR 603.10a + CR 607.2a: Leaves-the-battlefield triggers look back to the
     // object as it existed immediately before the move. Snapshot linked "exiled
@@ -1747,7 +1750,7 @@ pub(crate) fn move_to_zone_with_entry_flags(
         });
     }
 
-    // CR 701.3d + CR 704.5n: the other direction of the same relationship — each
+    // CR 701.3d: the other direction of the same relationship — each
     // attachment this departing permanent hosted has become unattached. Emitted
     // here, beside the attachment-side event, so both directions share one
     // ordering relative to the `ZoneChanged` that follows.
@@ -2097,10 +2100,11 @@ pub(crate) fn capture_linked_exile_snapshot(
 /// After leave-time snapshots are captured on the zone-change record, sever
 /// live attachment graph edges for a permanent departing the battlefield.
 ///
-/// Attached Auras/Equipment that remain on the battlefield are cleaned up by
-/// SBAs (CR 704.5m/704.5n). Hosts must not carry a stale `attachments` list
-/// into other zones (commander zone return, blink, etc.), and attachments that
-/// leave the battlefield must not keep a dangling `attached_to` pointer.
+/// An Aura left unattached on the battlefield is then put into its owner's
+/// graveyard by the SBA sweep (CR 704.5m); an unattached Equipment stays where
+/// it is. Hosts must not carry a stale `attachments` list into other zones
+/// (commander zone return, blink, etc.), and attachments that leave the
+/// battlefield must not keep a dangling `attached_to` pointer.
 ///
 /// The severing is symmetric: the departing host's `attachments` list is
 /// cleared AND each of those attachments has its `attached_to` back-pointer
@@ -2338,7 +2342,8 @@ pub fn move_to_library_at_index(
             .map(super::effects::attach::target_ref_from_attach_target)
     });
     let mut zone_change_record = obj.snapshot_for_zone_change(object_id, Some(from), Zone::Library);
-    // CR 603.10a + CR 603.6e: Capture attachment snapshot before SBA can detach.
+    // CR 603.10a + CR 603.6e: Capture attachment snapshot before the departure
+    // sever (CR 701.3d) clears it.
     zone_change_record.attachments = capture_attachment_snapshot(state, obj);
     zone_change_record.combat_status = capture_combat_status(state, object_id);
     zone_change_record.sync_trigger_source_exiled_cards(
@@ -2410,7 +2415,7 @@ pub fn move_to_library_at_index(
         });
     }
 
-    // CR 701.3d + CR 704.5n: mirrors the `move_to_zone` emit — the attachments
+    // CR 701.3d: mirrors the `move_to_zone` emit — the attachments
     // this departing permanent hosted have become unattached.
     for attachment_id in severed_attachments {
         events.push(GameEvent::Unattached {
@@ -5815,7 +5820,12 @@ mod tests {
 
     /// Build a merged permanent (CR 730.2) whose absorbed component carries a
     /// live attachment edge in both directions. Returns
-    /// `(survivor, component, attachment)`.
+    /// `(survivor, component, attachment)`. Production does not build this shape
+    /// today — every `absorb_component` caller absorbs a component arriving from
+    /// hand, graveyard, exile or the stack while the survivor is the battlefield
+    /// object, so a live edge names the survivor — which is what these rows
+    /// fence: a delivery route that ended edges without regard for which object
+    /// left.
     fn merged_permanent_with_attached_component(
         state: &mut GameState,
     ) -> (ObjectId, ObjectId, ObjectId) {

@@ -1479,7 +1479,7 @@ fn check_unattached_auras(
                 if !obj.card_types.core_types.contains(&CoreType::Enchantment) {
                     return None;
                 }
-                // CR 704.5m / CR 704.5n apply specifically to *Auras* —
+                // CR 704.5m applies specifically to *Auras* —
                 // gate on the Aura subtype so non-Aura enchantments
                 // (Saga, Class, Background, Shrine, etc.) are not
                 // affected. The CoreType check above is necessary but
@@ -4014,11 +4014,12 @@ mod tests {
     // attached to an illegal permanent or to a player, it becomes
     // unattached..."). `check_unattached_equipment` previously matched only
     // the "Equipment" subtype, so a Fortification attached to an illegal host
-    // that stays on the battlefield (a land that gained protection from
-    // artifacts, a nonland permanent, a player) kept a stale `attached_to`
-    // forever — this sweep never ran for that subtype. A host that LEAVES the
-    // battlefield is a different authority: the departure itself ends the
-    // edge (CR 701.3d), not this pass. These tests mirror the existing
+    // that has not left the zone it was in (a land that gained protection from
+    // artifacts, a nonland permanent, a player still in the game) kept a stale
+    // `attached_to` forever — this sweep never ran for that subtype. A host that
+    // LEAVES — a permanent leaving the zone it was in, or a player leaving the
+    // game — is a different authority: the departure itself ends the edge
+    // (CR 701.3d), not this pass. These tests mirror the existing
     // Equipment SBA tests above so the two attachment kinds are held to the
     // same bar; the Equipment cases are re-asserted here too as a regression
     // guard that broadening the filter to `||` did not change Equipment's own
@@ -4475,6 +4476,8 @@ mod tests {
             "CR 704.5n: it remains on the battlefield"
         );
     }
+
+    // ----------------- end Issue #1368 regression suite ------------------
 
     #[test]
     fn sba_aura_still_goes_to_graveyard_when_target_leaves() {

@@ -3219,8 +3219,9 @@ fn lki_snapshot_from_zone_change_record(record: &ZoneChangeRecord) -> LKISnapsho
         // CR 701.60b: Carry suspected status from the zone-change snapshot.
         is_suspected: record.is_suspected,
         // CR 608.2h: The zone-change record already froze the exit-time attachment set
-        // (SBA unattaches everything the instant the host leaves, CR 704.5m/n), so carry
-        // it through rather than dropping it on the way into the LKI.
+        // (the departure sever unattaches everything the instant the host leaves,
+        // CR 701.3d), so carry it through rather than dropping it on the way into the
+        // LKI.
         attachments: record.attachments.clone(),
     }
 }

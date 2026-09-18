@@ -451,13 +451,13 @@ pub struct LKISnapshot {
     #[serde(default)]
     pub is_suspected: bool,
     /// CR 608.2h + CR 400.7: Attachments (Auras/Equipment) as they last existed on
-    /// the battlefield. Attachment is a battlefield-only relationship — SBA unattaches
-    /// everything the instant the host leaves (CR 704.5m/n) — so a source-referential
-    /// intervening-if ("if this creature is enchanted" — Dreampod Druid; "if he's
-    /// equipped" — Whiplash) re-checked at resolution (CR 603.4) has nothing live to
-    /// read once its source is gone. CR 608.2h routes that question to LAST KNOWN
-    /// INFORMATION, so the attachment set must be captured on battlefield exit like
-    /// every other look-back characteristic here.
+    /// the battlefield. Attachment is a battlefield-only relationship — the departure
+    /// sever unattaches everything the instant the host leaves (CR 701.3d) — so a
+    /// source-referential intervening-if ("if this creature is enchanted" — Dreampod
+    /// Druid; "if he's equipped" — Whiplash) re-checked at resolution (CR 603.4) has
+    /// nothing live to read once its source is gone. CR 608.2h routes that
+    /// question to LAST KNOWN INFORMATION, so the attachment set must be captured
+    /// on battlefield exit like every other look-back characteristic here.
     ///
     /// Captured via [`capture_attachment_snapshot`](crate::game::zones::capture_attachment_snapshot),
     /// the same authority that fills `ZoneChangeRecord::attachments` — one snapshot
@@ -1624,8 +1624,8 @@ pub struct ZoneChangeRecord {
     /// CR 603.10a + CR 603.6e: Snapshot of attachments on the object at the moment
     /// of the zone change. Required by look-back triggers of the form
     /// "for each Aura you controlled that was attached to it" (Hateful Eidolon),
-    /// since Aura attachments are cleared by SBA immediately after the creature
-    /// leaves the battlefield.
+    /// since the departure sever clears Aura attachments the instant the creature
+    /// leaves the battlefield (CR 701.3d).
     #[serde(default)]
     pub attachments: Vec<AttachmentSnapshot>,
     /// CR 603.10a + CR 607.2a: Snapshot of cards linked as "exiled with" this
