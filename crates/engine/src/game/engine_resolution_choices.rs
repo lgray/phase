@@ -6569,7 +6569,7 @@ pub(super) fn handle_resolution_choice(
                 // objects and emits no battlefield-exit events, so no
                 // dies-trigger collection is needed.
                 //
-                // CR 603.7: Terminal empty `up_to` must still rebind a fresh
+                // CR 608.2c: Terminal empty `up_to` must still rebind a fresh
                 // empty chain tracked set before the continuation drains, or a
                 // following `TargetFilter::TrackedSet` can observe a prior
                 // non-empty set. Mid-pause empty publishes stay skipped at the
@@ -8757,7 +8757,7 @@ fn action_result_outcome(
     ))
 }
 
-/// CR 608.2c + CR 603.7: Publish the EffectZoneChoice selection as the chain
+/// CR 608.2c: Publish the EffectZoneChoice selection as the chain
 /// tracked set when a continuation will consume it ("those Auras", plotted
 /// cards, etc.).
 ///
@@ -13271,7 +13271,7 @@ mod tests {
         assert!(state.planar_deck.contains(&deck_top));
     }
 
-    /// CR 603.7: Terminal `up_to` EffectZoneChoice with zero cards selected must
+    /// CR 608.2c: Terminal `up_to` EffectZoneChoice with zero cards selected must
     /// rebind a fresh empty chain tracked set through the production
     /// `handle_resolution_choice` path so a following TrackedSet consumer cannot
     /// reuse a prior non-empty set. Mid-pause empty publishes stay skipped.

@@ -2286,7 +2286,7 @@ pub(super) fn parse_targeted_action_ast(
             count: None,
         });
     }
-    // CR 400.7 + CR 611.2c: Unified `return [all|each]?` dispatcher. Consumes
+    // CR 400.7: Unified `return [all|each]?` dispatcher. Consumes
     // the verb plus an optional `all`/`each` plural quantifier, then routes
     // by destination + origin. Mass-bounce ("return all creatures to their
     // owners' hands") promotes to `ReturnAll` ⇒ `Effect::BounceAll`.
@@ -2864,7 +2864,7 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
             destination: None,
             selection,
         },
-        // CR 400.7 + CR 611.2c: "Return all/each [filter]" mass-bounce — the
+        // CR 400.7: "Return all/each [filter]" mass-bounce — the
         // resolver iterates every matching permanent. Class filter is preserved
         // as-is; single-object refs (SelfRef / TriggeringSource / AttachedTo /
         // ParentTarget) cannot reach this AST variant because the bare

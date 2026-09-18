@@ -17421,7 +17421,7 @@ pub enum Effect {
         #[serde(default, skip_serializing_if = "BounceSelection::is_targeted")]
         selection: BounceSelection,
     },
-    /// CR 400.7 + CR 611.2c: Mass-bounce — return every permanent matching
+    /// CR 400.7: Mass-bounce — return every permanent matching
     /// `target` to its owner's hand (default) or `destination` if set. Mirrors
     /// `Effect::DestroyAll` / `Effect::PumpAll` / `Effect::TapAll` for the
     /// "return all/each [filter]" Oracle text class (Evacuation, Devastation

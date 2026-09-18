@@ -4614,7 +4614,7 @@ pub struct PendingPerPlayerZoneChoice {
     /// Players not yet chosen for, in APNAP order. When the controller makes
     /// every choice, this is the set they order (CR 101.4c), not an order.
     pub remaining_players: Vec<PlayerId>,
-    /// CR 603.7 + CR 608.2c: Whether a pick from THIS per-player iteration has
+    /// CR 608.2c: Whether a pick from THIS per-player iteration has
     /// already started its fresh chosen-card tracked set. The first non-empty
     /// pick must START a fresh set (so the chosen cards do NOT merge with an
     /// earlier producer's set — e.g. Breach the Multiverse's preceding mill,

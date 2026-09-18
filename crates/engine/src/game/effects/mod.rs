@@ -8752,7 +8752,7 @@ fn copy_spell_self_ref_keeps_resolving_spell_source(sub: &ResolvedAbility) -> bo
 ///     (CR 400.7); other destinations are not "this way"-referenced verbs, so
 ///     they carry no cause (consumed only by `caused_by: None`).
 ///   - BounceAll → `Bounced` if its destination is Hand, `Returned` if
-///     Battlefield (default Hand → `Bounced`, CR 400.7 / CR 611.2c).
+///     Battlefield (default Hand → `Bounced`, CR 400.7).
 ///   - ExileTop / ExileFromTopUntil → `Exiled` (CR 701.13a).
 ///   - RevealUntil's kept card / counter whose CR 614.1a exile rider did not
 ///     apply (see `this_way_cause_for_resolved`) / reveal / tap-untap producers do not
@@ -8853,7 +8853,10 @@ pub(crate) fn this_way_cause_for_effect(effect: &Effect) -> Option<ThisWayCause>
         Effect::ChangeZone { destination, .. } | Effect::ChangeZoneAll { destination, .. } => {
             this_way_cause_for_zone(*destination)
         }
-        // CR 611.2c: mass-bounce destination defaults to Hand.
+        // CR 608.2c + CR 614.6: the cause names the producing action, so it
+        // survives a replacement that redirects where the member lands. An
+        // absent `destination` is the AST's own mass-bounce convention for the
+        // owner's hand, not a rule, so it carries no number.
         Effect::BounceAll { destination, .. } => {
             this_way_cause_for_zone(destination.unwrap_or(Zone::Hand))
         }
@@ -9265,7 +9268,7 @@ fn affected_objects_from_events(
                 Effect::Discard { .. } | Effect::DiscardCard { .. } => {
                     Some(crate::types::zones::Zone::Graveyard)
                 }
-                // CR 400.7 + CR 611.2c: Mass-bounce destination defaults to
+                // CR 400.7: Mass-bounce destination defaults to
                 // Hand; downstream "those creatures" / "for each of those
                 // permanents" tracking must filter by the actual landing zone.
                 Effect::BounceAll { destination, .. } => {
@@ -9648,7 +9651,7 @@ fn mandatory_parent_effect_performed(effect: &Effect, events: &[GameEvent]) -> b
 /// consumer must bind that empty set rather than fall back to a preceding mode's
 /// non-empty one.
 pub(crate) fn publish_tracked_set(state: &mut GameState, affected_ids: Vec<ObjectId>) {
-    // CR 603.7 + CR 608.2c: Chain unification. If an ancestor in this
+    // CR 608.2c: Chain unification. If an ancestor in this
     // resolution chain already published a tracked set, extend that set with
     // the current publish so compound zone-changing effects expose every
     // affected object to a single downstream "those cards" reference.
@@ -10000,7 +10003,7 @@ pub(crate) fn publish_tracked_set_for_resolution(
     }
 }
 
-/// CR 603.7: A player-chosen "those creatures" set is a fresh resolution
+/// CR 608.2c: A player-chosen "those creatures" set is a fresh resolution
 /// scope — never extend an ancestor chain set.
 ///
 /// Unlike [`publish_tracked_set`] (which extends `chain_tracked_set_id` when an
@@ -17987,7 +17990,7 @@ fn resolve_chain_body(
                 return Ok(());
             }
 
-            // CR 608.2c + CR 603.7: An `If you do` boundary (`EffectOutcome
+            // CR 608.2c: An `If you do` boundary (`EffectOutcome
             // { OptionalEffectPerformed }`) opens a new instruction clause —
             // "you may [do X]. If you do, [rider]." The rider falls into one of
             // two classes by what it does with the tracked-set channel:
@@ -39785,7 +39788,7 @@ mod tests {
         );
     }
 
-    // CR 603.7: publish_fresh_tracked_set always allocates a strictly-greater
+    // CR 608.2c: publish_fresh_tracked_set always allocates a strictly-greater
     // id and rebinds chain_tracked_set_id — never extends an ancestor set.
     #[test]
     fn publish_fresh_tracked_set_never_extends_ancestor() {

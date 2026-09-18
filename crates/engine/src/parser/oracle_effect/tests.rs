@@ -10760,7 +10760,7 @@ fn effect_bounce() {
     assert!(matches!(e, Effect::Bounce { .. }));
 }
 
-/// CR 400.7 + CR 611.2c: Mass-bounce class — "return all/each [filter]"
+/// CR 400.7: Mass-bounce class — "return all/each [filter]"
 /// must lower to `Effect::BounceAll`, not single-target `Effect::Bounce`,
 /// so the runtime resolver iterates every matching permanent instead of
 /// prompting for one.

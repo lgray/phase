@@ -15735,7 +15735,7 @@ fn apply_non_priority_pass_action(
                     TargetRef::Player(_) => unreachable!("validated as objects above"),
                 })
                 .collect();
-            // CR 603.7: Always allocate a fresh tracked set — a player-chosen
+            // CR 608.2c: Always allocate a fresh tracked set — a player-chosen
             // "those creatures" set is a new resolution scope. An empty
             // selection yields an empty fresh set (size 0).
             effects::publish_fresh_tracked_set(state, ids);

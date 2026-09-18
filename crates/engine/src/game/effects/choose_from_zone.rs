@@ -1260,7 +1260,7 @@ pub(crate) fn drain_active_per_player_zone_choice(
     };
     let (ability, mut cursor) = PerPlayerCursor::of(pending);
 
-    // CR 603.7 + CR 608.2c: The FIRST resolution of this per-player iteration
+    // CR 608.2c: The FIRST resolution of this per-player iteration
     // STARTS a fresh chosen-card set — even when that first player declines (an
     // empty "up to one" pick). It must NOT extend or inherit an earlier
     // producer's tracked set: Breach the Multiverse mills first (publishing a
@@ -4250,7 +4250,7 @@ mod tests {
         assert!(exiled.contains(&plain_sorcery));
     }
 
-    /// CR 603.7 + CR 608.2c (MED #4093): the FIRST resolution of a per-player
+    /// CR 608.2c (MED #4093): the FIRST resolution of a per-player
     /// `ChooseFromZone` iteration must rebind a fresh (possibly empty) chain
     /// tracked set EVEN when that first player declines. Otherwise an earlier
     /// same-chain producer's tracked set stays bound, and a downstream
