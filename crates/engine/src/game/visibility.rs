@@ -2198,8 +2198,24 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     // (object_id, card_id, ability, cost) — the card's identity is already visible via
     // the stack object.
 
+    // CR 100.4: a sideboard is the group of additional cards a player may use to
+    // modify their deck between games of a match, so the only moment a projection must
+    // carry deck-pool contents is while that player's own sideboarding prompt is live.
+    // Outside it the pools are registration data no viewer reads — `sideboard_projection`
+    // and the client's BetweenGamesSideboard modal are their only consumers, and both run
+    // under this prompt. Gating on `can_view_private_for_player` rather than on the viewer
+    // keeps this predicate identical to every sibling redaction in this function and to the
+    // authority `sideboard_projection` resolves its semantic owner to.
+    let sideboarding_player = match &state.waiting_for {
+        WaitingFor::BetweenGamesSideboard { player, .. }
+            if can_view_private_for_player(*player) =>
+        {
+            Some(*player)
+        }
+        _ => None,
+    };
     for pool in &mut filtered.deck_pools {
-        if pool.player != viewer {
+        if Some(pool.player) != sideboarding_player {
             // Per-seat redaction: replace the Arc'd decks with fresh empties.
             // Cheaper than `make_mut + clear` because we discard the contents;
             // the original Arcs remain shared by the unfiltered state and any
