@@ -20,6 +20,7 @@ use engine::types::player::PlayerId;
 
 const P0: PlayerId = PlayerId(0);
 const P1: PlayerId = PlayerId(1);
+const P2: PlayerId = PlayerId(2);
 const SEATS: u8 = 4;
 
 /// Three names that isolate the three lists `sideboard_projection` consumes: one only in
@@ -94,8 +95,11 @@ fn projection_drops_every_deck_list() {
             assert!(pool.registered_planar_deck.is_empty());
             assert!(pool.registered_scheme_deck.is_empty());
             assert!(pool.current_scheme_deck.is_empty());
-            // Commander identity is read off the projection by
-            // `derived::derive_display_state`, so an over-broad blanking is red here.
+            // The blanking list is the nine registration lists above and nothing else.
+            // A commander is public information — CR 903.6 puts it face up in the command
+            // zone at the start of the game — so its two lists sit outside that list
+            // deliberately, as does the Oathbreaker signature-spell pair that mirrors them.
+            // An over-broad blanking is red here.
             assert!(!pool.registered_commander.is_empty());
             assert!(!pool.current_commander.is_empty());
         }
@@ -137,9 +141,12 @@ fn projection_sheds_the_viewers_own_pool_payload() {
             payload > 0,
             "the fixture carries an own-pool payload to shed"
         );
-        assert!(
-            shed * 2 > payload,
-            "seat {seat} still ships its own deck lists: shed {shed} of {payload}"
+        // `blank_registration_lists` clears exactly the nine lists the production loop
+        // clears, so `without_own_pool` is the projection: the whole payload goes, not
+        // some fraction of it.
+        assert_eq!(
+            shed, payload,
+            "seat {seat} still ships part of its own deck lists: shed {shed} of {payload}"
         );
         seats_exercised += 1;
     }
@@ -156,10 +163,10 @@ fn entry(name: &str, count: u32) -> DeckEntry {
     }
 }
 
-/// A four-seat state whose live prompt is P1's sideboarding step. Built rather than
-/// loaded: every committed dump sits at `Priority` with an empty `registered_sideboard`,
+/// A four-seat state whose live prompt is `sideboarding`'s sideboarding step. Built rather
+/// than loaded: every committed dump sits at `Priority` with an empty `registered_sideboard`,
 /// so a dump-driven carve-out leg would be red at base and at tip alike.
-fn sideboarding_state() -> GameState {
+fn sideboarding_state(sideboarding: PlayerId) -> GameState {
     let mut state = GameState::new(FormatConfig::standard(), SEATS, 7);
     state.deck_pools = (0..SEATS)
         .map(|seat| PlayerDeckPool {
@@ -172,7 +179,7 @@ fn sideboarding_state() -> GameState {
         })
         .collect();
     state.waiting_for = WaitingFor::BetweenGamesSideboard {
-        player: P1,
+        player: sideboarding,
         game_number: 2,
         score: MatchScore::default(),
         min_main_deck_size: 0,
@@ -213,7 +220,7 @@ fn candidate_amount(
 
 #[test]
 fn sideboard_prompt_keeps_only_its_own_pool() {
-    let state = sideboarding_state();
+    let state = sideboarding_state(P1);
 
     let for_owner = filter_state_for_viewer(&state, P1);
     let own = pool_of(&for_owner.deck_pools, P1);
@@ -258,4 +265,52 @@ fn sideboard_prompt_keeps_only_its_own_pool() {
     let other_view = derive_viewer_interaction(&state, &for_other, P0);
     assert!(!other_view.can_submit);
     assert!(other_view.opportunities.is_empty());
+}
+
+/// Whether `viewer`'s projection still carries `owner`'s registration lists.
+fn keeps_pool_of(state: &GameState, viewer: PlayerId, owner: PlayerId) -> bool {
+    !pool_of(&filter_state_for_viewer(state, viewer).deck_pools, owner)
+        .registered_main
+        .is_empty()
+}
+
+/// The arm `can_view_private_for_player` adds over plain owner-equality: the prompt's pool
+/// also reaches whoever `turn_control::authorized_submitter_for_player` resolves the
+/// sideboarding seat to. It is the only arm that puts another seat's registered 75 on a
+/// viewer's wire, and the test above never reaches it.
+#[test]
+fn turn_controller_of_the_sideboarding_seat_keeps_that_pool() {
+    let mut state = sideboarding_state(P0);
+    state.active_player = P0;
+    state.turn_decision_controller = Some(P1);
+
+    for seat in 0..SEATS {
+        let viewer = PlayerId(seat);
+        assert_eq!(
+            keeps_pool_of(&state, viewer, P0),
+            viewer == P0 || viewer == P1,
+            "P0 sideboards under P1's turn control: exactly P0 and P1 keep P0's pool, \
+             so seat {seat} is on the wrong side of it"
+        );
+        // Turn control over the sideboarding seat is not a key to anyone else's pool —
+        // including the controller's own, which is not the seat being prompted.
+        for other in [P1, P2, PlayerId(3)] {
+            assert!(
+                !keeps_pool_of(&state, viewer, other),
+                "seat {seat} received {other:?}'s pool, which no prompt is live for"
+            );
+        }
+    }
+
+    // Turn control over a seat that is *not* sideboarding grants nothing: the authority
+    // resolves per semantic player, not "this viewer controls someone".
+    state.active_player = P2;
+    for seat in 0..SEATS {
+        let viewer = PlayerId(seat);
+        assert_eq!(
+            keeps_pool_of(&state, viewer, P0),
+            viewer == P0,
+            "P1 controls P2's turn, not P0's, so only P0 keeps P0's pool — not seat {seat}"
+        );
+    }
 }

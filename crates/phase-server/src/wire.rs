@@ -9,9 +9,10 @@ use flate2::Compression;
 const FORMAT_RAW: u8 = 0x00;
 const FORMAT_GZIP: u8 = 0x01;
 const COMPRESSION_THRESHOLD: usize = 256;
-/// Deflate level for the outgoing envelope. Level 3 is the knee of `miniz_oxide`'s
-/// bytes-per-CPU curve for state frames; level 4 is not monotone in bytes on them, so
-/// this is not a dial to round up. `flate2::Compression::fast()` is level 1.
+/// Deflate level for the outgoing envelope, and the only place it is chosen. Measured
+/// across real four-seat state frames, level 3 buys most of the bytes level 6 does for a
+/// fraction of its CPU. For scale: `flate2::Compression::fast()` is level 1, `::default()`
+/// is 6.
 const COMPRESSION_LEVEL: u32 = 3;
 
 /// This envelope is the single compression authority on the egress path: gzip output is
@@ -127,7 +128,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gzip_envelope_uses_a_level_above_fastest() {
+    async fn gzip_envelope_uses_the_named_compression_level() {
         let json =
             serde_json::to_string(&ServerMessage::error("x".repeat(COMPRESSION_THRESHOLD * 2)))
                 .unwrap();
@@ -136,14 +137,17 @@ mod tests {
         };
         assert_eq!(framed[0], FORMAT_GZIP);
 
-        let mut fastest = GzEncoder::new(Vec::new(), Compression::fast());
-        fastest.write_all(json.as_bytes()).unwrap();
-        let fastest = fastest.finish().unwrap();
-        assert!(
-            framed.len() - 1 < fastest.len(),
-            "production envelope compresses harder than Compression::fast(): {} vs {}",
-            framed.len() - 1,
-            fastest.len()
+        let mut expected = GzEncoder::new(Vec::new(), Compression::new(COMPRESSION_LEVEL));
+        expected.write_all(json.as_bytes()).unwrap();
+        let expected = expected.finish().unwrap();
+        // Byte equality against the const's own level, not a length bound against
+        // `Compression::fast()`: a length bound cannot tell `COMPRESSION_LEVEL` apart from
+        // a neighbouring level, so it pinned a neighbourhood rather than the const the
+        // encoder is supposed to read.
+        assert_eq!(
+            &framed[1..],
+            expected.as_slice(),
+            "envelope body is not gzip level {COMPRESSION_LEVEL}"
         );
         assert_eq!(decode_envelope(&framed, 4096).unwrap(), json);
     }

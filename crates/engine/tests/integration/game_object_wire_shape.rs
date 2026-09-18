@@ -2,6 +2,11 @@
 //! bytes on the wire. The contract the legs below pin is serde's, not a rules one: an
 //! absent key means "the value `#[serde(default)]` will rebuild", so every skip predicate
 //! must agree exactly with the default its own field declares.
+//!
+//! `wire_round_trip_is_a_fixpoint` is corpus-bounded, not exhaustive: a skipped field that
+//! no fixture object holds at a non-default value is never exercised by the walk. What
+//! closes the class is construction — each predicate is written in terms of its own field's
+//! `Default` — not the corpus.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
