@@ -4013,17 +4013,16 @@ mod tests {
     // Fortification identically ("If an Equipment or Fortification is
     // attached to an illegal permanent or to a player, it becomes
     // unattached..."). `check_unattached_equipment` previously matched only
-    // the "Equipment" subtype, so a Fortification attached to an illegal host
-    // that has not left the zone it was in (a land that gained protection from
-    // artifacts, a nonland permanent, a player still in the game) kept a stale
-    // `attached_to` forever — this sweep never ran for that subtype. A host that
-    // LEAVES — a permanent leaving the zone it was in, or a player leaving the
-    // game — is a different authority: the departure itself ends the edge
-    // (CR 701.3d), not this pass. These tests mirror the existing
-    // Equipment SBA tests above so the two attachment kinds are held to the
-    // same bar; the Equipment cases are re-asserted here too as a regression
-    // guard that broadening the filter to `||` did not change Equipment's own
-    // behavior.
+    // the "Equipment" subtype, so a Fortification attached to an illegal
+    // permanent that has not left the zone it was in (a land that gained
+    // protection from artifacts, a nonland permanent) or to a player kept a
+    // stale `attached_to` forever — this sweep never ran for that subtype. A
+    // host that LEAVES — a permanent leaving the zone it was in — is a
+    // different authority: the departure itself ends the edge (CR 701.3d),
+    // not this pass. These tests mirror the existing Equipment SBA tests
+    // above so the two attachment kinds are held to the same bar; the
+    // Equipment cases are re-asserted here too as a regression guard that
+    // broadening the filter to `||` did not change Equipment's own behavior.
     // ---------------------------------------------------------------------
 
     #[test]
@@ -4425,7 +4424,7 @@ mod tests {
         // requires a Fortification's host to be a land, so this fails
         // `is_valid_attachment_target` while both permanents stay put. Host
         // EXIT is deliberately not the vehicle — `zones::move_to_zone` now
-        // severs the attachment graph itself per CR 702.26i, so a departing
+        // severs the attachment graph itself per CR 701.3d, so a departing
         // host would clear the pointer before this SBA ever ran and the
         // assertion would no longer be about the SBA at all.
         let mut state = setup();

@@ -5567,7 +5567,7 @@ mod tests {
         assert_eq!(
             state.objects[&equipment].zone,
             Zone::Battlefield,
-            "CR 704.5n: the equipment itself remains on the battlefield"
+            "CR 701.3d: the Equipment must remain on the battlefield, not vanish"
         );
         // CR 701.3d: becoming unattached is a real event. `match_unattach`'s
         // `ZoneChanged` fallback arm re-derives this by reading the
@@ -5821,11 +5821,10 @@ mod tests {
     /// Build a merged permanent (CR 730.2) whose absorbed component carries a
     /// live attachment edge in both directions. Returns
     /// `(survivor, component, attachment)`. Production does not build this shape
-    /// today — every `absorb_component` caller absorbs a component arriving from
-    /// hand, graveyard, exile or the stack while the survivor is the battlefield
-    /// object, so a live edge names the survivor — which is what these rows
-    /// fence: a delivery route that ended edges without regard for which object
-    /// left.
+    /// today — every `absorb_component` caller absorbs a component that is not a
+    /// battlefield object while the survivor is, so a live edge names the
+    /// survivor — which is what these rows fence: a delivery route that ended
+    /// edges without regard for which object left.
     fn merged_permanent_with_attached_component(
         state: &mut GameState,
     ) -> (ObjectId, ObjectId, ObjectId) {
