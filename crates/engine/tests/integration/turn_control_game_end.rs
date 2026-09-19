@@ -236,7 +236,7 @@ fn control_ends_when_a_loop_draw_ends_the_game() {
         "BetweenGamesSideboard",
         "reach guard: the draw moved the match to its between-games step"
     );
-    assert_no_control_survives(&state, "the teardown's placement at `end_game`");
+    assert_no_control_survives(&state, "a CR 104.4b draw that eliminates nobody");
 }
 
 #[test]
@@ -318,7 +318,7 @@ fn the_play_draw_prompt_routes_to_its_own_seat() {
     );
     assert_no_control_survives(
         &state,
-        "the teardown's placement at `end_game`, sibling prompt",
+        "a CR 104.4b draw that eliminates nobody, sibling prompt",
     );
 }
 
@@ -380,7 +380,10 @@ fn every_seat_answers_its_own_prompt_in_a_multi_seat_match() {
         "BetweenGamesSideboard",
         "reach guard: the draw moved the match to its between-games step"
     );
-    assert_no_control_survives(&state, "the teardown's placement at `end_game`, four seats");
+    assert_no_control_survives(
+        &state,
+        "a CR 104.4b draw that eliminates nobody, four seats",
+    );
     for seat in [P0, P1, P2, PlayerId(3)] {
         assert_eq!(
             authorized_submitters(&state),
@@ -391,9 +394,9 @@ fn every_seat_answers_its_own_prompt_in_a_multi_seat_match() {
     }
 }
 
-/// A best-of-one never reaches `handle_game_over_transition`'s between-games
-/// path, so the teardown has to belong to the game layer: the terminal snapshot
-/// carries no live control either.
+/// A best-of-one draw completes the match rather than opening between-games
+/// prompts, so its terminal snapshot is the only place a surviving control
+/// could show: it carries none.
 #[test]
 fn control_ends_when_a_bo1_game_ends_in_a_draw() {
     let state = game_ended_by_a_loop_draw_under_control(
@@ -412,7 +415,7 @@ fn control_ends_when_a_bo1_game_ends_in_a_draw() {
     assert_eq!(state.waiting_for.variant_name(), "GameOver");
     assert_no_control_survives(
         &state,
-        "the teardown's placement at `end_game`, past the match",
+        "a CR 104.4b draw that eliminates nobody, past the match",
     );
 }
 
