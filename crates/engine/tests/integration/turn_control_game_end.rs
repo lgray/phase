@@ -160,7 +160,8 @@ fn game_ended_by_a_loop_draw_under_control(
 }
 
 /// CR 104.1 + CR 723.1: no player-control effect survives the game, in any of the
-/// places one is recorded. `clause` names what the calling row discriminates.
+/// places one is recorded. `clause` names the ending or teardown clause the
+/// calling row pins.
 fn assert_no_control_survives(state: &GameState, clause: &str) {
     assert_eq!(
         state.turn_decision_controller, None,
