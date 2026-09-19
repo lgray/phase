@@ -13536,8 +13536,9 @@ impl GameState {
     /// admission, hoisted into one authority so the routing signal and the consumer it routes to
     /// cannot disagree. It answers WHOSE RECORD THIS IS. Whether the OBJECT-GROWTH ROUTE IS LIVE
     /// for a seat is the different question [`GameState::loop_period_driver`] below answers, this
-    /// answer narrowed by the per-step premise those routes rest on; the two differ once a period
-    /// holds a step no player takes at priority. Each fails closed on `None`.
+    /// answer narrowed by the per-step premise those routes rest on; the two differ exactly when
+    /// this one names a seat and that period holds a step no player takes at priority — a
+    /// heterogeneous period is `None` here, so it is `None` there too. Each fails closed on `None`.
     ///
     /// WHICH CALLERS KEEP THE UNNARROWED READ IS A PROPERTY OF THE QUESTION THEY ASK, never a
     /// list here: `grep -rn 'loop_period_controller()\|loop_period_driver()' crates/engine/src`
@@ -13545,7 +13546,8 @@ impl GameState {
     ///
     /// * ADMITTING a record — or a precondition fenced to an admission, mirroring its test so the
     ///   two cannot drift — where a separate premise gate decides offerability immediately after,
-    ///   so the road still reaches the producer and stops at the one gate that owns that decision.
+    ///   so the road still reaches the producer and stops at the gate that applies the per-step
+    ///   premise.
     /// * A WRITER scoping its own clear to the record's owner. Ownership is its whole question: a
     ///   record is evidence about the seat that recorded it, and liveness says nothing about whose
     ///   it is to discard.
@@ -13586,8 +13588,9 @@ impl GameState {
     /// narrowed by the premise above. Read wherever the question is route liveness or
     /// re-derivability — can this seat be routed onto, or driven down, the object-growth path —
     /// and NOT where it is whose record this is to admit or discard, which keeps the unnarrowed
-    /// authority for the reasons given there. The two answers differ once a period holds a step no
-    /// player takes at priority. Which sites read which is the call set's own answer, regenerated
+    /// authority for the reasons given there. The two answers differ exactly when the unnarrowed
+    /// one names a seat and that period holds a step no player takes at priority; a heterogeneous
+    /// period is `None` on both. Which sites read which is the call set's own answer, regenerated
     /// by the command on [`GameState::loop_period_controller`]; this doc states no list of them.
     pub(crate) fn loop_period_driver(&self) -> Option<PlayerId> {
         self.loop_period_controller()
