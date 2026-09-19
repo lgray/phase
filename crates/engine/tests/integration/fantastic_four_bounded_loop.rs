@@ -3817,8 +3817,8 @@ fn a1_the_users_accept_committed_nothing_board_now_commits_on_every_axis() {
 }
 
 /// ITEM 2 (CR 732.2a) — the DECLARE seam: **on an offer that published no declaration of its
-/// own**, a `template: None` declaration is admitted only when the recorded period belongs to
-/// the offer's own proposer. The qualifier is item-4 C2's and is load-bearing — see the arm
+/// own**, a `template: None` declaration is admitted only when `loop_period_driver()` names the
+/// offer's own proposer. The qualifier is item-4 C2's and is load-bearing — see the arm
 /// table below.
 ///
 /// **WHY THIS FIXTURE AND NOT `loop_shortcut.rs`.** Site F sits under
@@ -3838,7 +3838,9 @@ fn a1_the_users_accept_committed_nothing_board_now_commits_on_every_axis() {
 /// re-derives its template from `last_loop_action_sequence`. Once (1b) went seat-relative, a
 /// bounded offer can be minted with a FOREIGN period in state; under a merely-non-empty test that
 /// foreign period would take the unvalidated sibling arm and open the CR 732.2b APNAP window on a
-/// client-supplied declaration. The arm therefore asks whose period it is.
+/// client-supplied declaration. The arm therefore asks whether the object-growth route it would
+/// re-derive from is live for this proposer, which is whose period it is AND that every step of
+/// it is one they take at priority.
 ///
 /// **ALL THREE ARMS RUN ON AN OFFER WHOSE OWN `declaration` IS CLEARED (item-4 C2).** That is
 /// the offer shape site F still decides — `handle_declare_shortcut` resolves a `template: None`

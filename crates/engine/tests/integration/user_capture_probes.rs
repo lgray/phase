@@ -128,7 +128,7 @@ enum PeriodRelation {
     /// The period is this proposer's own and every step of it is one they take at priority, so
     /// step (1b) must refuse.
     Own,
-    /// The period belongs to another seat, so it must not affect this proposer.
+    /// The period is one another seat drives at priority, so it must not affect this proposer.
     Foreign,
     /// There is no period step (1b) dispatches on — none recorded, a heterogeneous run, or one
     /// holding a step no player takes at priority — or this is not a proposing frame.

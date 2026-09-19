@@ -2843,8 +2843,8 @@ fn bounded_cycle_offer(
     };
     // (1b) The bounded drain mints nothing, so it is reachable in `materialize_fixed_shortcut`
     // ONLY below that function's object-growth dispatch — and that dispatch is an EARLY RETURN
-    // taken when the recorded period belongs to the accepting proposal's proposer. An offer minted
-    // while THIS proposer's own period is accumulating would be accepted and routed to the
+    // taken when `loop_period_driver()` names the accepting proposal's proposer. An offer minted
+    // while THIS proposer is driving such a period would be accepted and routed to the
     // object-growth materializer, committing ZERO bounded cycles and making this whole path
     // silently dead. The two conjuncts are not disjoint — a mana activation arms a period and a
     // same-controller on-stack activation both appends to it and leaves the stack non-empty, which
@@ -2864,10 +2864,9 @@ fn bounded_cycle_offer(
     // (CR 732.3's fragmented-loop rule is NOT what this guard ever enforced — the engine
     // implements no CR 732.3 gate anywhere; see the contrast note under step (2).)
     //
-    // NARROWED to `loop_period_driver`: the misroute this refuses is SITE C's early return, which
-    // dispatches on that same narrowed answer. A period holding a step no player takes at priority
-    // cannot reach that early return, so refusing the bounded offer for it would withhold a
-    // verdict this engine can still deliver. Fails closed on `None` exactly as before.
+    // WHY THE NARROWED READ: a period holding a step no player takes at priority cannot reach
+    // that early return, so refusing the bounded offer for it would withhold a verdict this
+    // engine can still deliver. Fails closed on `None` exactly as before.
     if state.loop_period_driver() == Some(proposer) {
         return Err(BoundedOfferRefusal::ProposerHasDrivingPeriod);
     }
@@ -3133,7 +3132,7 @@ fn certified_bounded_cycle_offer<'a>(
     //
     // ⚠ STALE REASON, CORRECTED. This block used to say the relief cannot fire "because step (1b)
     // requires `last_loop_action_sequence` to be EMPTY". Step (1b) no longer requires that: it
-    // refuses only when the recorded period is the PROPOSER'S OWN, so a bounded offer can now be
+    // refuses only when `loop_period_driver()` names the proposer, so a bounded offer can now be
     // minted with a FOREIGN period sitting in state. What preserves the conclusion is instead
     // `window_cast_card_ids`, which is proposer-scoped: when the verdict container names a
     // proposer, only that seat's own period is proof of what the window casts, so a foreign period
@@ -5141,9 +5140,11 @@ fn apply_until_lethal_shortcut(
 
     // DRIVE one representative cycle to produce the measured post-drive `work` state.
     //
-    // SITE D (CR 732.2a): drive the recorded period ONLY when it is this proposal's proposer's
-    // own. Under `!is_empty()` a foreign seat's independent activation sitting in state would make
-    // this branch drive THAT seat's period and measure its delta as if it were the proposal's —
+    // SITE D (CR 732.2a): drive the recorded period ONLY when `loop_period_driver()` names this
+    // proposal's proposer — the seat whose predictable continuation it records, and only while
+    // every step of it is one they take at priority. Under `!is_empty()` a foreign seat's
+    // independent activation sitting in state would make this branch drive THAT seat's period
+    // and measure its delta as if it were the proposal's —
     // CR 732.2a binds a shortcut to the choices its proposer can predictably take, and another
     // seat's period is not among them. Fails closed on `None` into the ring-boundary branch below,
     // which reads no sequence at all.
@@ -5153,8 +5154,8 @@ fn apply_until_lethal_shortcut(
     // foreign period sat in state already reached here and drove the wrong seat. No fixture reaches
     // that path today; the guard is the one-line root-cause fix through the same authority.
     //
-    // NARROWED to `loop_period_driver`: the branch below DRIVES the recorded period, and a step
-    // no player takes at priority is one the drive refuses outright. Reading the unnarrowed
+    // WHY THE NARROWED READ: the branch below DRIVES the recorded period, and a step no player
+    // takes at priority is one the drive refuses outright. Reading the unnarrowed
     // authority would enter this branch only to abort into `until_lethal_fallback`; the narrowed
     // read takes the ring-boundary branch below instead, which is where the base went for no
     // period at all. Fails closed on `None`, unchanged.
@@ -5992,19 +5993,16 @@ fn materialize_fixed_shortcut(
     // is the shape being rejected here, not per-accept binding as such.)
     //
     // SITE C (CR 732.2a) — MANDATORY IN LOCKSTEP WITH SITE B. Route to the object-growth
-    // materializer only when the recorded period belongs to THIS proposal's proposer, which is
-    // exactly the admission `try_offer_object_growth_shortcut` required to mint the offer being
-    // materialized. Under `!is_empty()` the seat-relative (1b) above would let a bounded drain
+    // materializer only when `loop_period_driver()` names THIS proposal's proposer, which is
+    // exactly the pair of admissions `try_offer_object_growth_shortcut` required to mint the offer
+    // being materialized: whose record this is, AND that every step of it is one its controller
+    // takes at priority. A period failing either never minted this offer and must not capture its
+    // materialization. Under `!is_empty()` the seat-relative (1b) above would let a bounded drain
     // offer be accepted while a FOREIGN period sits in state; this early return would then fire
     // and commit ZERO bounded cycles — the precise silent misroute (1b)'s own doc block exists to
     // prevent, reintroduced through the back door. Fails closed on `None` into the drain path
     // below, which is correct because a heterogeneous period cannot have minted an object-growth
     // offer in the first place.
-    //
-    // NARROWED to `loop_period_driver`, in the same lockstep: the admission that minted the offer
-    // being materialized refuses a period any of whose steps is not one its controller takes at
-    // priority, so a period holding such a step never minted this offer and must not capture its
-    // materialization. Fails closed on `None` into the drain path, unchanged.
     if state.loop_period_driver() == Some(proposal.proposer) {
         // THE ELISION IS TAKEN ONLY FOR A NON-ZERO COUNT THAT NOBODY SHORTENED. One rule, two
         // grounds, decided above the route choice because both belong to the count and to the
@@ -8561,16 +8559,16 @@ fn handle_declare_shortcut(
         //
         // SITE F (CR 732.2a) — THE STRICTEST LOCKSTEP CONSTRAINT ON SITE B, because it is the
         // one direction in which relaxing (1b) would make the engine LESS safe than before.
-        // "Re-derivable" means the period is THIS offer's proposer's own — the same test
-        // `materialize` dispatches on. A merely non-empty test would let a FOREIGN period take
-        // the sibling `None => {}` arm, which performs ZERO pin validation, and open the APNAP
+        // "Re-derivable" means `loop_period_driver()` names THIS offer's proposer — the same
+        // test `materialize` dispatches on. A merely non-empty test would let a FOREIGN period
+        // take the sibling `None => {}` arm, which performs ZERO pin validation, and open the APNAP
         // window on a client-supplied declaration against a schema with published points. So
-        // this arm must reject unless the period is the proposer's, not merely unless one
+        // this arm must reject unless that read names the proposer, not merely unless a period
         // exists. `None` from a heterogeneous run also rejects, which is the fail-closed
         // direction: nothing can be re-derived from a period that is nobody's.
         //
-        // NARROWED to `loop_period_driver`, which is the re-derivability question in full: a
-        // period holding a step no player takes at priority is present and NOT re-derivable, so
+        // The narrowed read IS the re-derivability question in full: a period holding a step no
+        // player takes at priority is present and NOT re-derivable, so
         // it must reject here rather than fall through to the sibling `None => {}` arm that
         // validates no pins at all. `None` still rejects, so the narrowing only ever rejects
         // more.

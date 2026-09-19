@@ -6980,8 +6980,8 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
 /// object-growth and Path A drain mints both measure nothing (never `is_bounded()`), and the
 /// bounded mint's gate (1b) refuses `ProposerHasDrivingPeriod`. Accepting
 /// the pair anyway routes the accepted proposal through `materialize_fixed_shortcut`'s
-/// period-ownership early return into `materialize_object_growth_shortcut` — the table agreed to
-/// `n` cycles and gets NONE.
+/// `loop_period_driver` early return into `materialize_object_growth_shortcut` — the table
+/// agreed to `n` cycles and gets NONE.
 ///
 /// ⚠ NOT A CR REFUSAL, and the row asserts on the engine-invariant message accordingly. CR 732.2a's
 /// Example is a proposer repeating THEIR OWN activation a specified 999,999 more times, so this
@@ -11349,16 +11349,16 @@ fn multiplayer_pure_life_drain_offers_at_three_and_four_players() {
 /// PAIRED ARMS ON ONE CERTIFYING STATE, differing in exactly one field, asserting opposite
 /// outcomes — so no constant implementation passes.
 ///
-/// The retained name states arm ⓑ's contract: the bounded offer must not mint when the recorded
-/// period belongs to its proposer. Step (1b) is seat-relative: a non-empty sequence recorded by
-/// ANOTHER seat mints the offer, which is what
+/// The retained name states arm ⓑ's contract: the bounded offer must not mint when
+/// `loop_period_driver()` names its proposer. Step (1b) is seat-relative: a non-empty sequence
+/// recorded by ANOTHER seat mints the offer, which is what
 /// [`a_foreign_driving_period_neither_refuses_nor_recertifies_a_bounded_offer`] directly below
 /// asserts.
 ///
 /// WHY THE GUARD IS LOAD-BEARING (measured, not hypothetical): `materialize_fixed_shortcut`
-/// EARLY-RETURNS into `materialize_object_growth_shortcut` when the recorded period is the
-/// accepting proposal's proposer's own, and the bounded drain path begins strictly below that
-/// return. An offer minted while THIS proposer's period is accumulating would be accepted and
+/// EARLY-RETURNS into `materialize_object_growth_shortcut` when `loop_period_driver()` names the
+/// accepting proposal's proposer, and the bounded drain path begins strictly below that
+/// return. An offer minted while THIS proposer drives such a period would be accepted and
 /// routed to the object-growth materializer, committing ZERO bounded cycles — the guard converts
 /// that silent misroute into an observable refusal. The two conjuncts are NOT disjoint in the
 /// tree: the bridge's own gate needs a non-empty STACK, and an on-stack `ActivateAbility` appends

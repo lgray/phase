@@ -3559,12 +3559,12 @@ impl LoopWindowScope<'static> {
 /// progress (CR 500.8 + CR 500.10: an insert can repeat the SAME step label inside one turn,
 /// and once its entry is taken only the unit record shows it). Derived LOCALLY, so it is
 /// independent of gate ORDER; `extra_turns` is not a conjunct because an extra TURN is taken
-/// after the current one and `turn_number` is monotone. `sole_driver`: `Some(p)` only when
-/// BOTH frames' driving sequences are non-empty and every entry in BOTH names controller `p`
-/// (CR 117.1b) — reading only `prior` would mint `Some(p)` for a window another player
-/// drove. `identity_unstable` (CR 400.7) is NOT derived here: [`identity_unstable_ids`] must
-/// be computed from the same PROJECTED pair the caller hands the firewall, so it is threaded
-/// in as `pinned` and `period`.
+/// after the current one and `turn_number` is monotone. `sole_driver`: `Some(p)` exactly when
+/// BOTH frames' [`GameState::loop_period_driver`] answer `Some(p)` (CR 117.1b) — reading only
+/// `prior` would mint `Some(p)` for a window another player drove. That accessor is NAMED
+/// rather than re-derived here so its conjuncts cannot be restated stale. `identity_unstable`
+/// (CR 400.7) is NOT derived here: [`identity_unstable_ids`] must be computed from the same
+/// PROJECTED pair the caller hands the firewall, so it is threaded in as `pinned` and `period`.
 fn window_scope_from_cover_frames<'a>(
     pa: &GameState,
     pb: &GameState,
@@ -7394,10 +7394,11 @@ fn fire_time_conditions_read_growing_class_scoped(
                 //     the OWN-controller permanents `relieved` cannot, and lands whose census
                 //     is genuine on the merits.
                 //
-                // `scope.sole_driver` is `Some` exactly when BOTH cover frames carry a
-                // non-empty, single-controller loop period AND agree on its controller. That is
-                // the proof that `last_loop_action_sequence` on the SCANNED frame describes
-                // THIS window rather than an earlier one; without it the record is a stale
+                // `scope.sole_driver` is `Some(p)` exactly when BOTH cover frames'
+                // [`GameState::loop_period_driver`] answer `Some(p)` — the derivation lives on
+                // [`window_scope_from_cover_frames`] and is not restated here. That is the proof
+                // that `last_loop_action_sequence` on the SCANNED frame describes THIS window
+                // rather than an earlier one; without it the record is a stale
                 // artifact and absence from it proves nothing. PER-ABILITY, never per-object:
                 // this closure is inside `obj.abilities.iter().enumerate().any(..)`, and
                 // `ability_index` is exactly what `LoopAction::Activate` binds.
@@ -23347,8 +23348,12 @@ mod tests {
     ///   `phase_invariant == None` assertion FAILS while the paired `Some(BeginCombat)` still
     ///   passes.
     /// * drop the turn-number conjunct ⇒ the differing-turn assertion FAILS.
+    /// * re-point `sole_driver` to the UNNARROWED [`GameState::loop_period_controller`] ⇒ the
+    ///   trigger-driven `sole_driver == None` assertion FAILS while the four probes above,
+    ///   which run before it, still pass.
     #[test]
     fn window_scope_is_fail_closed_on_a_heterogeneous_window() {
+        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
         use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
 
         fn ctx(controller: u8) -> LoopActionContext {
@@ -23505,6 +23510,33 @@ mod tests {
             window_scope_from_cover_frames(&pa, &pb_phase, None, None, None).phase_invariant,
             None,
             "(p2) a window that crosses a phase boundary is not phase-invariant"
+        );
+
+        // ── `sole_driver` (s3) — CR 603.3 ──
+        // The baseline frames one FIELD apart: the step's action. A triggered ability goes on
+        // the stack with no player electing it, so the period is not one its controller can
+        // take again and `loop_period_driver` answers `None` for it on both frames.
+        let trigger_frame = || {
+            let mut s = base();
+            s.last_loop_action_sequence = vec![LoopActionContext {
+                action: LoopAction::ResolveTrigger {
+                    source_id: ObjectId(960),
+                    occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                        base_set: TriggerBaseSetInstanceRef::INITIAL,
+                        printed_index: 0,
+                    },
+                },
+                ..ctx(0)
+            }];
+            s
+        };
+        let (pa_trigger, pb_trigger) = (trigger_frame(), trigger_frame());
+        assert_eq!(
+            window_scope_from_cover_frames(&pa_trigger, &pb_trigger, None, None, None).sole_driver,
+            None,
+            "(s3) this period is non-empty and single-controller on BOTH frames, so only the \
+             priority-driven conjunct can refuse it — the `Some(PlayerId(0))` positive at the \
+             top of this row is these same frames one ACTION apart"
         );
     }
     /// CR 732.2a — `ring_delta_signature`'s "seen TWICE" contract, at the building-block
@@ -31051,8 +31083,8 @@ mod tests {
 
     /// **Row 21 (NEGATIVE — an empty loop-action sequence does not relieve).**
     ///
-    /// `scope.sole_driver` is `Some` exactly when BOTH cover frames carry a non-empty,
-    /// single-controller loop period and agree on its controller — it is the proof that
+    /// `scope.sole_driver` is `Some(p)` exactly when BOTH cover frames'
+    /// [`GameState::loop_period_driver`] answer `Some(p)` — it is the proof that
     /// `last_loop_action_sequence` describes THIS window. An empty sequence proves nothing:
     /// "the record does not name this ability" and "there is no record" are the same shell
     /// output, and only the first licenses CR 732.2a's absence argument. Fail closed.
@@ -31095,8 +31127,8 @@ mod tests {
         assert_eq!(
             scope2.sole_driver,
             Some(P2_DRIVER),
-            "row 21 paired positive reach-guard: a non-empty single-controller period on both \
-             frames DOES mint the proof"
+            "row 21 paired positive reach-guard: this row's one-step activation period, \
+             recorded on both frames, DOES mint the proof"
         );
         assert!(
             !fire_time_conditions_read_growing_class_scoped(&current2, None, scope2),
