@@ -1,7 +1,9 @@
 //! CR 104.1 + CR 723.1: a game that ends takes no further turn and no further
 //! combat phase, so every player-control effect over it is over too. Driven from
-//! the CR 104.4b mandatory-loop draw, the one game end that eliminates nobody
-//! and therefore never reaches CR 800.4a's leave-game teardown.
+//! the CR 104.4b mandatory-loop draw, a game end that eliminates nobody and
+//! therefore never reaches CR 800.4a's leave-game teardown, and from the
+//! CR 732.2a loop crown, which parks the terminal wait inside `game/engine.rs`
+//! without ever calling `elimination::end_game`.
 
 use std::sync::Arc;
 
@@ -13,11 +15,14 @@ use engine::game::turn_control::{authorized_submitters, turn_decision_maker};
 use engine::game::turns::advance_phase;
 use engine::game::visibility::filter_state_for_viewer;
 use engine::game::EngineError;
-use engine::types::ability::TargetRef;
+use engine::types::ability::ControlWindow;
 use engine::types::actions::GameAction;
 use engine::types::card::CardFace;
 use engine::types::format::{FormatConfig, SideboardPolicy};
-use engine::types::game_state::{CastPaymentMode, GameState, PlayerDeckPool, WaitingFor};
+use engine::types::game_state::{
+    ActivePlayerControl, GameState, LoopDetectionMode, PlayerDeckPool, ScheduledTurnControl,
+    WaitingFor,
+};
 use engine::types::interaction::{
     InteractionOpportunityResponse, InteractionResponseSpec, InteractionSessionId,
 };
@@ -112,36 +117,7 @@ fn game_ended_by_a_loop_draw_under_control(
         state.waiting_for = WaitingFor::Priority { player: controller };
     }
 
-    let card_id = runner.state().objects[&worst_fears].card_id;
-    runner
-        .act(GameAction::CastSpell {
-            object_id: worst_fears,
-            card_id,
-            targets: vec![],
-            payment_mode: CastPaymentMode::Auto,
-        })
-        .expect("the controller casts Worst Fears");
-    for _ in 0..48 {
-        match &runner.state().waiting_for {
-            WaitingFor::TargetSelection { .. } => {
-                runner
-                    .act(GameAction::ChooseTarget {
-                        target: Some(TargetRef::Player(target)),
-                    })
-                    .expect("Worst Fears targets the controlled player");
-            }
-            WaitingFor::ManaPayment { .. } => {
-                runner.act(GameAction::PassPriority).expect("pay");
-            }
-            WaitingFor::Priority { .. } => {
-                if runner.state().stack.is_empty() {
-                    break;
-                }
-                runner.act(GameAction::PassPriority).expect("resolve");
-            }
-            other => panic!("unexpected cast window: {other:?}"),
-        }
-    }
+    runner.cast(worst_fears).target_player(target).resolve();
 
     // CR 723.1: control activates when the affected player's turn begins. Stop at
     // a main phase, the first window of that turn a spell can be cast in.
@@ -437,5 +413,121 @@ fn control_ends_when_a_bo1_game_ends_in_a_draw() {
     assert_no_control_survives(
         &state,
         "the teardown's placement at `end_game`, past the match",
+    );
+}
+
+// A self-refilling drain: P0 gains life, each opponent loses 1, that loss gains
+// P0 1 back. Local copies rather than a shared constant — the module idiom here;
+// `grep -rln 'Whenever you gain life, each opponent loses 1 life' crates/engine/tests/integration/`
+// lists the modules that carry them.
+const DRAIN_CLERIC: &str = "Whenever you gain life, each opponent loses 1 life.";
+const BLOOD_SIPPER: &str = "Whenever an opponent loses life, you gain 1 life.";
+const KICKOFF: &str = "You gain 1 life.";
+
+/// CR 104.1 + CR 723.1 through the production entry point: a CR 732.2a loop
+/// crown parks `WaitingFor::GameOver` inside `game/engine.rs` without ever
+/// calling `elimination::end_game`, so only the teardown in
+/// `match_flow::handle_game_over_transition` can end player control on it.
+///
+/// Seats: **P0** is the active player, the drain engine's owner, the crown's
+/// winner, and the CR 723 effect's `target_player`. **P1** is the seat the drain
+/// takes life from, and the CR 723 `controller`. That orientation is forced:
+/// `effective_authority_for_player` derives the controlled seat as
+/// `semantic_player == active_player` and never reads `target_player`, so a latch
+/// whose controller is the active seat is indistinguishable from no latch.
+#[test]
+fn an_open_coded_crown_driven_through_apply_ends_player_control() {
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 20);
+    scenario.with_life(P1, 6);
+    scenario.add_creature_from_oracle(P0, "Test Drain Cleric", 2, 2, DRAIN_CLERIC);
+    scenario.add_creature_from_oracle(P0, "Test Blood Sipper", 2, 2, BLOOD_SIPPER);
+    let kickoff = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
+        .id();
+    let mut runner = scenario.build();
+
+    // Order matters: `install_match` projects `MatchConfig::loop_detection` onto
+    // `state.loop_detection`, and `Off` is its default — arming first would be
+    // silently reset, the board would die by natural CR 704.5a SBA through
+    // `end_game`, and this row would measure the wrong teardown.
+    install_match(runner.state_mut(), MatchType::Bo3, 2);
+    runner.state_mut().loop_detection = LoopDetectionMode::On;
+
+    {
+        let state = runner.state_mut();
+        state.scheduled_turn_controls.push(ScheduledTurnControl {
+            target_player: P0,
+            controller: P1,
+            timestamp: 1,
+            grant_extra_turn_after: false,
+            window: ControlWindow::NextTurn,
+        });
+        state.active_full_turn_control = Some(ActivePlayerControl {
+            controller: P1,
+            timestamp: 1,
+        });
+        state.turn_decision_controller = Some(P1);
+        state.turn_decision_control_timestamp = Some(1);
+        // With the latch installed, `authorized_submitter_for_player(state, P0)`
+        // is P1, and every `WaitingFor::Priority` arm of the action reducer
+        // compares that against `priority_player` — left at P0 the first cast
+        // returns `NotYourPriority` and the drive never reaches a beat.
+        state.priority_player = P1;
+    }
+
+    assert_eq!(
+        authorized_submitters(runner.state()),
+        vec![P1],
+        "reach guard: CR 723.1 control is live and routes away from the active seat"
+    );
+    assert_eq!(
+        runner.state().turn_decision_controller,
+        Some(P1),
+        "reach guard: the latch is installed before the drive"
+    );
+
+    runner.cast(kickoff).resolve();
+    for _ in 0..2000 {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::Priority { .. } => {
+                if runner.act(GameAction::PassPriority).is_err() {
+                    break;
+                }
+            }
+            WaitingFor::OrderTriggers { triggers, .. } => {
+                let order: Vec<usize> = (0..triggers.len()).collect();
+                if runner.act(GameAction::OrderTriggers { order }).is_err() {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+
+    let state = runner.state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::GameOver { .. })
+            || state.match_phase == MatchPhase::BetweenGames,
+        "reach guard: the drive reached the crown rather than exhausting its cap ({:?})",
+        state.waiting_for
+    );
+    assert!(
+        state.players.iter().find(|p| p.id == P1).unwrap().life > 0,
+        "reach guard: the CR 732.2a crown ended it early, not a natural CR 704.5a death"
+    );
+    assert!(
+        state.game_end.is_none(),
+        "reach guard: the open-coded park ran, not `elimination::end_game`"
+    );
+    assert_eq!(
+        state.match_phase,
+        MatchPhase::BetweenGames,
+        "reach guard: `handle_game_over_transition` ran on this ending"
+    );
+    assert_no_control_survives(
+        state,
+        "the teardown's call in `handle_game_over_transition`",
     );
 }

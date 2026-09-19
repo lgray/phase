@@ -1737,24 +1737,14 @@ pub(super) fn end_game(
     events.push(GameEvent::GameOver { winner });
     state.waiting_for = WaitingFor::GameOver { winner };
 
-    // CR 104.1: the game ends immediately, so it will take no further turn and no
-    // further combat phase — every scheduled player-control window is over, including
-    // one that has not activated yet (CR 723.1: control lasts the whole turn and ends
-    // at the beginning of the next one). CR 800.4a already ends control when a party
-    // leaves, which covers every elimination-driven end; a game that ends with nobody
-    // eliminated (the CR 104.4b mandatory-loop draw) reaches here with the latch still
-    // live and would hand the between-games prompts to the controller. Each removal
-    // routes through the single release authority, whose returned CR 500.7 extra-turn
-    // grant is deliberately dropped — the game is already over. The authority clears a
-    // window only for the exact entry that created it, so the explicit window clear is
-    // what makes "no control survives" hold for the whole state rather than entry by
-    // entry, and the recompute retires a latch no surviving window backs.
-    while !state.scheduled_turn_controls.is_empty() {
-        super::turn_control::release_control_at(state, 0);
-    }
-    state.active_full_turn_control = None;
-    state.active_combat_phase_control = None;
-    super::turn_control::recompute_active_player_control(state);
+    // CR 104.1: this is the game-layer instant at which the game ends, so player
+    // control ends here too. CR 800.4a's leave-game teardown covers only the
+    // entries the departing player is a party to (`do_eliminate` matches on
+    // `controller` or `target_player`), so an entry between two surviving seats
+    // outlives it — and a game that ends with nobody eliminated at all, the
+    // CR 104.4b mandatory-loop draw, never reaches that teardown in the first
+    // place and would otherwise hand the between-games prompts to the controller.
+    super::turn_control::end_all_player_control(state);
 }
 
 /// Re-establish the CR 104 terminal-state invariant if an outer action path
