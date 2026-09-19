@@ -4628,7 +4628,7 @@ describe("P2P wire-protocol version gate", () => {
 });
 
 /**
- * FU-53. A frame the transport cannot deliver used to die in a `console.warn`,
+ * A frame the transport cannot deliver used to die in a `console.warn`,
  * leaving `initializeGame()` pending forever and the user unmessaged. The
  * answer is keyed on re-requestability, not on the cause: the host's redelivery
  * sweep heals a seated guest, `reconnect_ack` can be re-asked for exactly once,
@@ -4951,9 +4951,10 @@ describe("P2P undeliverable frames", () => {
     garbled.fireOpen();
     await garbled.simulateData(undecodable());
 
-    // Decision 2's admitted member, pinned: `identified` flips only inside the
-    // one-shot `onMessage`, which runs only on a decodable frame, so the host
-    // cannot tell this guest from a tokenless one and spends no retry on it.
+    // The host answers a token-bearing guest exactly as a tokenless one, and
+    // that is deliberate: `identified` flips only inside the one-shot
+    // `onMessage`, which runs only on a decodable frame, so a frame the host
+    // could not decode carries no token to tell the two apart.
     expect(await sentOfType(garbled, "reconnect_rejected")).toEqual(
       expect.objectContaining({ reasonCode: "first_message_invalid" }),
     );
