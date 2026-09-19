@@ -2683,11 +2683,14 @@ fn build_cert(
 pub enum BoundedOfferRefusal {
     /// (1) Not a `WaitingFor::Priority` beat, so nobody may suggest a shortcut.
     NotAtPriority,
-    /// (1b) A driving period belonging to the PROPOSER'S OWN seat is accumulating, which routes
-    /// an accepted proposal to the object-growth materializer — it would commit zero bounded
-    /// cycles. Another seat's period is not a reason to refuse (CR 732.2a): it describes no
-    /// sequence this proposer can take, and `try_offer_object_growth_shortcut` will not admit it
-    /// either. Named for the state that refuses, not for a non-emptiness test the conjunct
+    /// (1b) A driving period belonging to the PROPOSER'S OWN seat is accumulating AND every one
+    /// of its steps is one its controller takes at priority — `GameState::loop_period_driver`,
+    /// the read this conjunct dispatches on. That state routes an accepted proposal to the
+    /// object-growth materializer, which would commit zero bounded cycles. Neither weaker state
+    /// refuses, because `try_offer_object_growth_shortcut` admits neither and there is then no
+    /// such route to misroute into: another seat's period describes no sequence this proposer can
+    /// take (CR 732.2a), and an own period holding a step no player elects is one nobody repeats
+    /// at priority. Named for the state that refuses, not for a non-emptiness test the conjunct
     /// stopped applying when it went seat-relative.
     ProposerHasDrivingPeriod,
     /// (2) The priority holder is not the active player the ring sampler gates on.
@@ -27030,8 +27033,11 @@ mod bounded_offer_conjunct_tests {
         );
         state.waiting_for = offer;
         // CR 732.2a: a bare declaration (no client template) is admitted only from a proposer
-        // who owns the recorded driving period — the property every real offer board carries at
-        // its own offer beat, and the one a synthetic ring has no play history to have written.
+        // whose recorded driving period is one they can take again at priority — SITE F reads
+        // `loop_period_driver`, not mere ownership. That is the property every real offer board
+        // carries at its own offer beat, and the one a synthetic ring has no play history to have
+        // written; the `Activate` step below is voluntarily repeatable, so this period satisfies
+        // the narrowed read rather than only the ownership half of it.
         // Recorded AFTER the mint, so certification read the board this fixture actually built.
         state
             .last_loop_action_sequence
@@ -27046,10 +27052,11 @@ mod bounded_offer_conjunct_tests {
                 pins: vec![],
             });
         assert_eq!(
-            state.loop_period_controller(),
+            state.loop_period_driver(),
             Some(P0),
-            "REACH-GUARD: the declare handler's bare-template arm reads this, and a period it \
-             does not attribute to the proposer is rejected before the response window"
+            "REACH-GUARD: SITE F — the declare handler's bare-template arm dispatches on this, so \
+             a period that is not the proposer's own, or that holds a step no player takes at \
+             priority, is rejected before the response window"
         );
 
         crate::game::engine::apply(

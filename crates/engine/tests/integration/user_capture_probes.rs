@@ -107,26 +107,31 @@ fn load_dina_raw() -> (GameState, serde_json::Value) {
     (state, raw_seq)
 }
 
-/// Mirror of `GameState::loop_period_controller`, which is `pub(crate)` and therefore unreachable
-/// from an integration test: the seat every recorded step shares, or `None` for a heterogeneous
-/// run (which every routing site fail-closes on).
-fn period_controller(state: &GameState) -> Option<PlayerId> {
+/// Mirror of `GameState::loop_period_driver`, which is `pub(crate)` and therefore unreachable
+/// from an integration test: the seat every recorded step shares when every one of those steps is
+/// also an action that seat takes at priority, else `None` (which every routing site fail-closes
+/// on). It mirrors the NARROWED accessor because that is what step (1b) dispatches on — mirroring
+/// the unnarrowed `loop_period_controller` would classify a frame as OWN that (1b) does not
+/// refuse, and the classification below would then predict the wrong verdict.
+fn period_driver(state: &GameState) -> Option<PlayerId> {
     let owner = state.last_loop_action_sequence.first()?.controller;
     state
         .last_loop_action_sequence
         .iter()
-        .all(|step| step.controller == owner)
+        .all(|step| step.controller == owner && step.action.is_voluntarily_repeatable())
         .then_some(owner)
 }
 
 /// How the recorded period relates to this frame's proposer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PeriodRelation {
-    /// The period is this proposer's own, so step (1b) must refuse.
+    /// The period is this proposer's own and every step of it is one they take at priority, so
+    /// step (1b) must refuse.
     Own,
     /// The period belongs to another seat, so it must not affect this proposer.
     Foreign,
-    /// There is no uniformly owned period, or this is not a proposing frame.
+    /// There is no period step (1b) dispatches on — none recorded, a heterogeneous run, or one
+    /// holding a step no player takes at priority — or this is not a proposing frame.
     AbsentOrHeterogeneous,
 }
 
@@ -206,8 +211,8 @@ fn mint_frame(state: &GameState, beat: u32) -> MintFrame {
     };
     let mut cleared_board = state.clone();
     cleared_board.last_loop_action_sequence.clear();
-    let relation = match (proposer, period_controller(state)) {
-        (Some(proposer), Some(controller)) if controller == proposer => PeriodRelation::Own,
+    let relation = match (proposer, period_driver(state)) {
+        (Some(proposer), Some(driver)) if driver == proposer => PeriodRelation::Own,
         (Some(_), Some(_)) => PeriodRelation::Foreign,
         _ => PeriodRelation::AbsentOrHeterogeneous,
     };
@@ -519,10 +524,10 @@ fn the_user_captures_offer_is_reached_with_its_own_foreign_period_live() {
         .collect();
     assert!(
         leaked.is_empty(),
-        "CR 732.2a OWN-PERIOD: at every beat where the recorded period is the PROPOSER'S OWN, \
-         step (1b) must refuse — an offer minted there would be accepted and routed to the \
-         object-growth materializer, committing ZERO bounded cycles. {} of {} own frames did not: \
-         {leaked:?}",
+        "CR 732.2a OWN-PERIOD: at every beat where the recorded period is the PROPOSER'S OWN and \
+         every step of it is one they take at priority, step (1b) must refuse — an offer minted \
+         there would be accepted and routed to the object-growth materializer, committing ZERO \
+         bounded cycles. {} of {} own frames did not: {leaked:?}",
         leaked.len(),
         own.len()
     );
