@@ -15,9 +15,10 @@ use crate::types::statics::StaticMode;
 /// current decision controller from the effects that remain applicable. Returns
 /// the removed entry so the caller can apply
 /// window-specific post-processing (CR 723.1 extra-turn grant; CR 723.2 no-op).
-/// All three release sites — turn boundary (`start_next_turn`), combat-phase
-/// boundary (`finish_enter_phase`), and leave-game cleanup (`do_eliminate`) —
-/// route through here so control ends in exactly one place.
+/// All four release sites — turn boundary (`start_next_turn`), combat-phase
+/// boundary (`finish_enter_phase`), leave-game cleanup (`do_eliminate`), and
+/// game end (`end_game`, CR 104.1) — route through here so control ends in
+/// exactly one place.
 pub(super) fn release_control_at(state: &mut GameState, idx: usize) -> ScheduledTurnControl {
     let entry = state.scheduled_turn_controls[idx];
     let identity = control_identity(entry);
