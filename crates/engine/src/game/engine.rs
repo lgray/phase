@@ -7576,9 +7576,10 @@ fn try_offer_object_growth_shortcut(
     // rather than re-implementing it. It deliberately keeps the UNNARROWED authority, in lockstep
     // with the empty-stack bridge precondition that routes here: the two are fenced together so
     // the road still reaches this producer and stops at the gate immediately below, which is the
-    // one site that decides whether the period is offerable at all. The route-liveness sites (the
-    // bounded mint's (1b), the two materialize/drive dispatches, the declare arm) ask the narrower
-    // question and read `loop_period_driver`; they route to a path this producer never minted for.
+    // one site that decides whether the period is offerable at all. A site asking the narrower
+    // ROUTE-LIVENESS question reads `loop_period_driver` instead, because it routes onto a path
+    // this producer never minted for; which sites those are is that accessor's own call set to
+    // say, and this one states no list of them.
     if state.loop_period_controller() != Some(caster) {
         return None;
     }

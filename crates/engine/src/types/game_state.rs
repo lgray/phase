@@ -13350,27 +13350,20 @@ impl GameState {
     /// (`WaitingFor::LoopShortcut` / `RespondToShortcut`), where the pending accept→materialize
     /// resolution still re-derives the ∞ pile from it (`current_period_fodder`). In every
     /// other loaded state the field is a ROUTING SIGNAL whose consumers are the READS of the two
-    /// accessors below outside `#[cfg(test)]`: the live detection re-drive
-    /// (`try_offer_object_growth_shortcut`), its own empty-stack bridge precondition, the bounded
-    /// mint's step (1b), the `materialize_fixed_shortcut` and `apply_until_lethal_shortcut` drive
-    /// dispatches, `handle_declare_shortcut`'s `template: None` arm, the growing-class firewall's
-    /// scope derivation (`analysis::resource::window_scope_from_cover_frames`, once per cover
-    /// frame) and its cast-set scoping (`window_cast_card_ids`), and the restore-boundary guard
-    /// `reject_zero_bound_shortcut_offer`. Dropping is still safe: each asks the record one of
-    /// two questions — whose record this is ([`GameState::loop_period_controller`]) or
-    /// whether the object-growth route is live for a seat ([`GameState::loop_period_driver`], the
-    /// narrowing the route-liveness consumers read) — and BOTH fail CLOSED on an empty record, so
-    /// a cleared field routes to the drain/manual path, grants no soundness relief, and never
-    /// reaches a pin-consuming drive with nothing to re-derive from. (It is also true that a
-    /// stale loaded prefix only HARMS the re-drive, which re-drives from a pinless `seq[0]` and
-    /// aborts — the Kilo bug.)
+    /// accessors below outside `#[cfg(test)]`. Dropping is still safe: each asks the record one of
+    /// two questions — whose record this is ([`GameState::loop_period_controller`]) or whether the
+    /// object-growth route is live for a seat ([`GameState::loop_period_driver`], that answer
+    /// narrowed) — and BOTH fail CLOSED on an empty record, so a cleared field routes to the
+    /// drain/manual path, grants no soundness relief, and never reaches a pin-consuming drive with
+    /// nothing to re-derive from. (It is also true that a stale loaded prefix only HARMS the
+    /// re-drive, which re-drives from a pinless `seq[0]` and aborts — the Kilo bug.)
     ///
-    /// ⚠ RE-DERIVE THAT LIST FROM THE CALL SET, never adjust it in place:
-    /// `grep -rn 'loop_period_controller()\|loop_period_driver()' crates/engine/src` names every
-    /// reader, and the conclusion holds for whatever it returns because it quantifies over the two
-    /// accessors, not over the list. The two ownership-scoped clears it also returns
-    /// (`handle_decline_shortcut`, `until_lethal_fallback`) are WRITERS scoping their own clear,
-    /// not consumers of the routing signal, and are deliberately not listed.
+    /// That conclusion quantifies over the two accessors, so it holds for whatever their call set
+    /// turns out to be and this doc names no member of it — the classification by question, and
+    /// the command that regenerates the set, live on [`GameState::loop_period_controller`]. A
+    /// class that command returns is not a consumer of the routing signal at all: a WRITER scoping
+    /// its own clear reads the record to decide whose it is to discard, and a field already
+    /// cleared at the load boundary leaves it nothing to scope.
     ///
     /// Called from `PersistedGameState::into_game_state`, the single production restore chokepoint
     /// for both the server (`GameSession::from_persisted`) and WASM (`decode_restored_game_state`)
@@ -13541,14 +13534,27 @@ impl GameState {
     ///
     /// This is the SAME whole-period test `try_offer_object_growth_shortcut` applies to its own
     /// admission, hoisted into one authority so the routing signal and the consumer it routes to
-    /// cannot disagree. It answers WHOSE RECORD THIS IS, and that is the question two classes of
-    /// caller ask: the fenced pair that must still reach the producer (the empty-stack bridge
-    /// precondition and the producer's own admission) and the ownership-scoped clears
-    /// (`handle_decline_shortcut`, `until_lethal_fallback`), whose question is whose record this
-    /// is to discard. A caller whose question is instead whether the OBJECT-GROWTH ROUTE IS LIVE
-    /// for a seat reads [`GameState::loop_period_driver`] below, which narrows this answer by the
-    /// per-step premise those routes rest on; the two may differ once a period holds a step no
-    /// player takes at priority. Each fails closed on `None`.
+    /// cannot disagree. It answers WHOSE RECORD THIS IS. Whether the OBJECT-GROWTH ROUTE IS LIVE
+    /// for a seat is the different question [`GameState::loop_period_driver`] below answers, this
+    /// answer narrowed by the per-step premise those routes rest on; the two differ once a period
+    /// holds a step no player takes at priority. Each fails closed on `None`.
+    ///
+    /// WHICH CALLERS KEEP THE UNNARROWED READ IS A PROPERTY OF THE QUESTION THEY ASK, never a
+    /// list here: `grep -rn 'loop_period_controller()\|loop_period_driver()' crates/engine/src`
+    /// names every reader, and each classifies by what it asks. The questions that keep this one:
+    ///
+    /// * ADMITTING a record — or a precondition fenced to an admission, mirroring its test so the
+    ///   two cannot drift — where a separate premise gate decides offerability immediately after,
+    ///   so the road still reaches the producer and stops at the one gate that owns that decision.
+    /// * A WRITER scoping its own clear to the record's owner. Ownership is its whole question: a
+    ///   record is evidence about the seat that recorded it, and liveness says nothing about whose
+    ///   it is to discard.
+    /// * Needing BOTH answers at DIFFERENT CONDITIONALITY. The narrowed accessor fuses the two
+    ///   conjuncts under one guard, so a caller applying the premise unconditionally while
+    ///   applying ownership only when a proposer is bound cannot express itself through it and
+    ///   reads this authority and [`GameState::loop_period_is_priority_driven`] separately. Such a
+    ///   caller is ALREADY narrowed, in its own conjunct order — a narrowing decision that
+    ///   searches for the narrowed accessor's name alone will mistake it for one that never was.
     ///
     /// The homogeneity clause is a backstop, not a live case: `accumulate_loop_action_step` clears
     /// the sequence on a controller change, so a heterogeneous run should be unreachable in play.
@@ -13577,13 +13583,12 @@ impl GameState {
     }
 
     /// CR 732.2a: the seat the object-growth route is live for — [`GameState::loop_period_controller`]
-    /// narrowed by the premise above. Read at each site whose question is route liveness or
-    /// re-derivability: the bounded mint's step (1b), `materialize_fixed_shortcut`'s SITE C,
-    /// `apply_until_lethal_shortcut`'s SITE D, `handle_declare_shortcut`'s SITE F,
-    /// `window_scope_from_cover_frames`'s `sole_driver` (both frames), and
-    /// `reject_zero_bound_shortcut_offer`. The sites asking whose record this is to admit or
-    /// discard keep the unnarrowed authority, which is why the two answers may differ once a
-    /// period holds a step no player takes at priority.
+    /// narrowed by the premise above. Read wherever the question is route liveness or
+    /// re-derivability — can this seat be routed onto, or driven down, the object-growth path —
+    /// and NOT where it is whose record this is to admit or discard, which keeps the unnarrowed
+    /// authority for the reasons given there. The two answers differ once a period holds a step no
+    /// player takes at priority. Which sites read which is the call set's own answer, regenerated
+    /// by the command on [`GameState::loop_period_controller`]; this doc states no list of them.
     pub(crate) fn loop_period_driver(&self) -> Option<PlayerId> {
         self.loop_period_controller()
             .filter(|_| self.loop_period_is_priority_driven())
