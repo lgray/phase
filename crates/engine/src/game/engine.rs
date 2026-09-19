@@ -2273,11 +2273,12 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
     // stack, so the sampler clears the ring at that beat and the `!stack.is_empty()` bridge
     // is structurally unreachable for it. Detect it here by driving the captured loop-action
     // sequence on a clone. Gated identically (opt-in + top-level-only) plus a cheap
-    // `last_loop_action_sequence` precondition (armed only on a buyback-paid token-creating
-    // cast, a lone token-creating activation, or a multi-activation engine's accumulated beats —
-    // so the clone-drive runs ~never for the recast class; a mana engine arms per mana activation
-    // but its drive aborts fast when unsustainable). INV-2: this OFFERS the interactive shortcut
-    // (never auto-resolves — CR 732.2a).
+    // `last_loop_action_sequence` precondition, which asks only whether a period is recorded for
+    // this seat at all — which BEATS can open one is the record's own type to say, and this site
+    // states no list of them. The cost claim rests on that: a period is recorded only where some
+    // beat armed it, so the clone-drive runs ~never for the recast class (a mana engine arms per
+    // mana activation but its drive aborts fast when unsustainable). INV-2: this OFFERS the
+    // interactive shortcut (never auto-resolves — CR 732.2a).
     //
     // SITE A (CR 732.2a): the precondition asks whose period it is, not merely whether one exists.
     // BEHAVIOUR-PRESERVING by construction — `try_offer_object_growth_shortcut` below applies the
@@ -2859,7 +2860,12 @@ fn bounded_cycle_offer(
     //
     // (CR 732.3's fragmented-loop rule is NOT what this guard ever enforced — the engine
     // implements no CR 732.3 gate anywhere; see the contrast note under step (2).)
-    if state.loop_period_controller() == Some(proposer) {
+    //
+    // NARROWED to `loop_period_driver`: the misroute this refuses is SITE C's early return, which
+    // dispatches on that same narrowed answer. A period holding a step no player takes at priority
+    // cannot reach that early return, so refusing the bounded offer for it would withhold a
+    // verdict this engine can still deliver. Fails closed on `None` exactly as before.
+    if state.loop_period_driver() == Some(proposer) {
         return Err(BoundedOfferRefusal::ProposerHasDrivingPeriod);
     }
     // (2) The ring sampler gates on `Priority{active_player}`, so requiring the proposer to
@@ -5143,7 +5149,13 @@ fn apply_until_lethal_shortcut(
     // ring-gated offer) never reads the sequence, so a Path-A `UntilLethal` offer accepted while a
     // foreign period sat in state already reached here and drove the wrong seat. No fixture reaches
     // that path today; the guard is the one-line root-cause fix through the same authority.
-    let work: GameState = if committed.loop_period_controller() == Some(proposal.proposer) {
+    //
+    // NARROWED to `loop_period_driver`: the branch below DRIVES the recorded period, and a step
+    // no player takes at priority is one the drive refuses outright. Reading the unnarrowed
+    // authority would enter this branch only to abort into `until_lethal_fallback`; the narrowed
+    // read takes the ring-boundary branch below instead, which is where the base went for no
+    // period at all. Fails closed on `None`, unchanged.
+    let work: GameState = if committed.loop_period_driver() == Some(proposal.proposer) {
         // Object-growth loop period (recast buyback+convoke, or a multi-activation mana engine)
         // declared `UntilLethal` by the AI (the shape it proposes against an offer that narrowed no
         // bound; a bounded one gets `Fixed`). Drive one real period on a clone under the
@@ -5932,11 +5944,12 @@ fn materialize_fixed_shortcut(
     // PR-7 Phase 4d-ii / P7 v3 (CR 732.2a): an object-growth loop (buyback recast, or a
     // multi-activation mana engine) settles with an EMPTY stack and grows a projected resource,
     // so the per-beat auto-pass drive below never recognizes its recurrence. Route it to the
-    // INJECTOR instead, which drives one real period per cycle on a clone. A non-empty
-    // `last_loop_action_sequence` (armed only on a buyback token cast or an accumulated
-    // activation period) is the routing signal; the `seq` rides `state.last_loop_action_sequence`
-    // (carried on the clone since the offer). The drain path below is byte-identical for every
-    // other loop.
+    // INJECTOR instead, which drives one real period per cycle on a clone. The routing signal is
+    // the recorded period read as ROUTE LIVENESS for this proposal's proposer
+    // (`loop_period_driver`, SITE C below) — which beats can open a period is the record's own
+    // type to say, and this site states no list of them; the `seq` rides
+    // `state.last_loop_action_sequence` (carried on the clone since the offer). The drain path
+    // below is byte-identical for every other loop.
     //
     // CR 732.2c: record the count the shortcut was ACCEPTED at. "Once the last player has
     // either accepted or shortened the shortcut proposal, the shortcut is taken" — its ending
@@ -5984,7 +5997,12 @@ fn materialize_fixed_shortcut(
     // prevent, reintroduced through the back door. Fails closed on `None` into the drain path
     // below, which is correct because a heterogeneous period cannot have minted an object-growth
     // offer in the first place.
-    if state.loop_period_controller() == Some(proposal.proposer) {
+    //
+    // NARROWED to `loop_period_driver`, in the same lockstep: the admission that minted the offer
+    // being materialized refuses a period any of whose steps is not one its controller takes at
+    // priority, so a period holding such a step never minted this offer and must not capture its
+    // materialization. Fails closed on `None` into the drain path, unchanged.
+    if state.loop_period_driver() == Some(proposal.proposer) {
         // THE ELISION IS TAKEN ONLY FOR A NON-ZERO COUNT THAT NOBODY SHORTENED. One rule, two
         // grounds, decided above the route choice because both belong to the count and to the
         // answer rather than to the shapes whose emitters happen to name zero.
@@ -6408,7 +6426,9 @@ struct RecastAbort;
 /// activation names, so the drive can re-validate the positional `ability_index` by `Eq` each
 /// iteration (a layer re-eval that reorders/removes the granted ability ⇒ fail-closed abort).
 /// `None` for a `Recast` or a subtype-derived land-mana fallback with no printed definition.
-fn loop_action_expected_def(
+/// `pub(crate)` so the row that pins the trigger-driven re-find against a REBUILT live trigger
+/// list drives this production function rather than re-implementing the re-find beside it.
+pub(crate) fn loop_action_expected_def(
     state: &GameState,
     ctx: &crate::types::game_state::LoopActionContext,
 ) -> Option<crate::types::ability::AbilityDefinition> {
@@ -6433,6 +6453,23 @@ fn loop_action_expected_def(
                     .cloned()
             })
         }
+        // CR 603.3 + CR 608.2: re-find the trigger LIVE through
+        // `functioning_abilities::active_trigger_definitions`, the same CR 702.26b / CR 114.4 /
+        // CR 709.5-gated authority the arming beat located it through, by the stored IMMUTABLE
+        // occurrence rather than by its position in that live list. A layer re-evaluation that
+        // removed the entry or stopped it functioning leaves no entry carrying that occurrence
+        // (⇒ `None`); one that merely reordered the list returns the same entry, because
+        // occurrence identity is not positional. Fails closed: `None` aborts the drive and
+        // refuses the producer's static scan, and never fabricates a definition.
+        crate::types::game_state::LoopAction::ResolveTrigger {
+            source_id,
+            occurrence,
+        } => {
+            let source = state.objects.get(source_id)?;
+            crate::game::functioning_abilities::active_trigger_definitions(state, source)
+                .find(|active| active.definition_ref.occurrence == *occurrence)
+                .and_then(|active| active.definition.execute.as_deref().cloned())
+        }
     }
 }
 
@@ -6447,13 +6484,16 @@ pub(crate) fn activation_creates_token(def: &crate::types::ability::AbilityDefin
         .any(|effect| crate::analysis::ability_graph::resolution_token_mint(effect).is_some())
 }
 
-/// P7 v3 (CR 602.2a + CR 732.2a): append a driving activation to the current loop-action period
+/// P7 v3 (CR 602.2a + CR 732.2a): append a driving step to the current loop-action period
 /// (`state.last_loop_action_sequence`). A CONTROLLER CHANGE resets to a fresh single-step period
 /// (a period belongs to one controller — a mid-period controller switch is a different loop); a
-/// LENGTH CAP bounds an adversarial/incidental run of unrelated activations. Callers gate on
+/// LENGTH CAP bounds an adversarial/incidental run of unrelated steps. Callers gate on
 /// `samples() && !in_simulation_probe()`, so the detection/materialize drive never grows the
 /// sequence (it is COMPARED byte-for-byte across the cover frames, resource.rs).
-fn accumulate_loop_action_step(
+///
+/// `pub(crate)` for the trigger-resolution arming beat in `game::stack`, which reaches the ONE
+/// accumulator rather than writing the record itself.
+pub(crate) fn accumulate_loop_action_step(
     state: &mut GameState,
     step: crate::types::game_state::LoopActionContext,
 ) {
@@ -6991,6 +7031,13 @@ fn drive_loop_action_iteration(
             )
             .map_err(|_| RecastAbort)?;
         }
+        // CR 603.3: a triggered ability's resolution is driven by no `GameAction` a player
+        // submits, so there is no opener to replay here. Replaying such a step — re-firing the
+        // trigger and answering the choices its resolution asks — is a later behaviour; until
+        // then the drive falls CLOSED to manual play. Every drive entry routes through this
+        // dispatch via `drive_loop_sequence_iteration`, which propagates the abort, so no entry
+        // carries a trigger-driven period further.
+        LoopAction::ResolveTrigger { .. } => return Err(RecastAbort),
     }
 
     let beat_cap = auto_pass_loop_max_iterations(clone);
@@ -7524,22 +7571,26 @@ fn try_offer_object_growth_shortcut(
     // sequence is fail-closed here; the per-step drive's controller re-find is the runtime
     // backstop (T-HET). Faithful generalization of the pre-P7 `ctx.controller != caster` check.
     //
-    // CR 732.2a: this admission test IS `loop_period_controller`, and reads it rather than
-    // re-implementing it. That is the whole point of the hoist — the ROUTING sites (the bridge
-    // precondition, the bounded mint's (1b), the two materialize/drive dispatches, the declare
-    // arm) all route to THIS consumer, so a routing signal coarser than this admission is an
-    // in-tree contradiction: it sends a foreign period down a path that then refuses it. Sharing
-    // one authority closes that by construction instead of by parallel edits.
+    // CR 732.2a: this admission asks WHOSE RECORD THIS IS, and reads `loop_period_controller`
+    // rather than re-implementing it. It deliberately keeps the UNNARROWED authority, in lockstep
+    // with the empty-stack bridge precondition that routes here: the two are fenced together so
+    // the road still reaches this producer and stops at the gate immediately below, which is the
+    // one site that decides whether the period is offerable at all. The route-liveness sites (the
+    // bounded mint's (1b), the two materialize/drive dispatches, the declare arm) ask the narrower
+    // question and read `loop_period_driver`; they route to a path this producer never minted for.
     if state.loop_period_controller() != Some(caster) {
         return None;
     }
     // STEP D (CR 104.4b / CR 601.2a / CR 602.2 / CR 605.3a): only OFFER a VOLUNTARILY-repeatable
-    // (optional) loop — every driving step must be a player-initiated cast/activation. Replaces
+    // (optional) loop — every driving step must be one its controller takes at priority. Replaces
     // the pre-P7 `no_living_player_has_meaningful_priority_action` offer gate (HAZARD A: that
     // predicate + its leaf `is_meaningful_priority_activation` (mana_sources.rs) stay byte-identical
     // for the MANDATORY lethal/draw paths). A mana engine's activations are voluntary
-    // (CR 605.3a) so it offers; a future mandatory driving variant is forced to return `false`.
-    if !seq.iter().all(|c| c.action.is_voluntarily_repeatable()) {
+    // (CR 605.3a) so it offers; a mandatory driving variant is forced to return `false`. Reads
+    // `loop_period_is_priority_driven` — the same test over the same steps, now the authority the
+    // narrowed accessor is built from rather than a restatement of it, so this stopping site and
+    // the routing sites cannot drift apart.
+    if !state.loop_period_is_priority_driven() {
         return None;
     }
     // CR 602.2a / CR 732.2a (G4): the per-step ability def each `Activate` step names, so the drive
@@ -7609,6 +7660,13 @@ fn try_offer_object_growth_shortcut(
                     ),
                     None => false,
                 }
+            }
+            // CR 603.3: scan the re-found trigger definition's own `execute`, which is what
+            // `loop_action_expected_def` returns for this step — the identical answer the
+            // `Activate` arm gives, through the identical scanner. `?` on an absent definition:
+            // an undeterminable ability WITHDRAWS the offer and never admits one.
+            crate::types::game_state::LoopAction::ResolveTrigger { .. } => {
+                crate::game::ability_scan::spell_ability_bears_randomness(expected_def.as_ref()?)
             }
         };
         if bears_randomness {
@@ -8507,8 +8565,14 @@ fn handle_declare_shortcut(
         // this arm must reject unless the period is the proposer's, not merely unless one
         // exists. `None` from a heterogeneous run also rejects, which is the fail-closed
         // direction: nothing can be re-derived from a period that is nobody's.
+        //
+        // NARROWED to `loop_period_driver`, which is the re-derivability question in full: a
+        // period holding a step no player takes at priority is present and NOT re-derivable, so
+        // it must reject here rather than fall through to the sibling `None => {}` arm that
+        // validates no pins at all. `None` still rejects, so the narrowing only ever rejects
+        // more.
         None if !offer.schema.points.is_empty()
-            && state.loop_period_controller() != Some(offer.proposer) =>
+            && state.loop_period_driver() != Some(offer.proposer) =>
         {
             reject_shortcut_declaration(state, &mut result);
             return Ok(result);
@@ -24687,6 +24751,326 @@ mod kilo_interruptibility_tests {
             )),
             "the published point carries the shrouded seat: exclusion belongs to the TARGET \
              seam, not to this one"
+        );
+    }
+
+    /// CR 603.3 — the drive REFUSES a recorded trigger-driven step, at the one dispatch
+    /// (`drive_loop_action_iteration`'s `match &ctx.action`) every drive entry routes through, so
+    /// no replay can be reached before the phase that builds one exists.
+    ///
+    /// LIVE CONTROL in the same invocation: the module's own recorded `Activate` period, handed to
+    /// the SAME entry with the SAME expected defs on the SAME board, is driven PAST that dispatch
+    /// and returns `Ok`. Without it, an `Err` would be indistinguishable from a drive that never
+    /// ran at all.
+    ///
+    /// REVERT-PROBE: replace the `ResolveTrigger` arm with a silent `Ok` ⇒ the `is_err` assertion
+    /// fails while the control leg keeps passing.
+    #[test]
+    fn the_drive_refuses_a_recorded_trigger_driven_step() {
+        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
+        use crate::types::game_state::{LoopAction, LoopActionContext};
+
+        let mut driven = load_migrated_dump();
+        drive_one_live_cycle(&mut driven);
+        let base = at_priority_window(driven);
+        let seq = base.last_loop_action_sequence.clone();
+        assert_eq!(
+            seq.len(),
+            2,
+            "reach-guard: the live cycle recorded the clean 2-step pinned period"
+        );
+        let expected_defs: Vec<Option<crate::types::ability::AbilityDefinition>> = seq
+            .iter()
+            .map(|c| loop_action_expected_def(&base, c))
+            .collect();
+
+        // The drive mutates a clone under the same probe guard the producer drives under, so the
+        // replay does not re-record the very steps it is replaying.
+        let _probe = SimulationProbeGuard::enter();
+
+        // LIVE CONTROL: the recorded activation period is driven PAST the dispatch.
+        let mut control = base.clone();
+        assert!(
+            drive_loop_sequence_iteration(&mut control, &seq, 0, &expected_defs).is_ok(),
+            "live control: a recorded `Activate` period drives past the dispatch, so the refusal \
+             below is the arm and not an inert drive"
+        );
+
+        // Same entry, same board, one step of the recorded trigger-driven shape.
+        let trigger_seq = vec![LoopActionContext {
+            card_id: seq[0].card_id,
+            controller: seq[0].controller,
+            action: LoopAction::ResolveTrigger {
+                source_id: RELIC,
+                occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index: 0,
+                },
+            },
+            convoke: None,
+            pins: Vec::new(),
+        }];
+        let mut probed = base.clone();
+        assert!(
+            drive_loop_sequence_iteration(&mut probed, &trigger_seq, 0, &[None]).is_err(),
+            "CR 603.3: no player elects a triggered ability's repetition at priority, so the one \
+             dispatch every drive entry routes through refuses the step rather than replaying it"
+        );
+    }
+
+    /// CR 104.4b — the road a recorded trigger-driven period travels stops at the PRODUCER's
+    /// voluntariness gate. The stop is located rather than merely observed: every upstream
+    /// conjunct of `try_offer_object_growth_shortcut` is asserted to PASS on the substituted state
+    /// (a non-empty record, the empty-stack priority window, and a period whose controller IS the
+    /// priority holder), and the gate's own predicate is the one that answers `false`.
+    ///
+    /// LIVE CONTROL in the same invocation and on the same dump: the module's own intact driven
+    /// `Activate` period OFFERS before the trigger-driven period is substituted — which is also
+    /// the revert-probe (swapping the period back restores the offer).
+    #[test]
+    fn a_trigger_driven_period_stops_at_the_producers_voluntariness_gate() {
+        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
+        use crate::types::game_state::{LoopAction, LoopActionContext};
+
+        let mut driven = load_migrated_dump();
+        drive_one_live_cycle(&mut driven);
+        let base = at_priority_window(driven);
+
+        // LIVE CONTROL: this dump's own recorded period offers at this window.
+        assert!(
+            try_offer_object_growth_shortcut(&base).is_some(),
+            "live control: the intact driven period re-derives the CR 732.2a offer, so the \
+             substituted period's `None` below is the substitution"
+        );
+
+        // Substitute a period of the recorded trigger-driven shape, controlled by the same seat.
+        let mut substituted = base.clone();
+        substituted.last_loop_action_sequence = vec![LoopActionContext {
+            card_id: base.last_loop_action_sequence[0].card_id,
+            controller: P0,
+            action: LoopAction::ResolveTrigger {
+                source_id: RELIC,
+                occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index: 0,
+                },
+            },
+            convoke: None,
+            pins: Vec::new(),
+        }];
+
+        // Locate the stop: every conjunct ahead of the gate passes on this very state.
+        assert!(
+            !substituted.last_loop_action_sequence.is_empty()
+                && matches!(substituted.waiting_for, WaitingFor::Priority { player } if player == P0)
+                && substituted.loop_period_controller() == Some(P0),
+            "reach-guard: the emptiness, window and whose-record conjuncts ahead of the gate all \
+             pass, so the gate is the site that answers"
+        );
+        assert!(
+            !substituted.loop_period_is_priority_driven(),
+            "CR 104.4b: a step no player takes at priority makes the period not priority-driven"
+        );
+        assert!(
+            try_offer_object_growth_shortcut(&substituted).is_none(),
+            "the producer stops at its voluntariness gate: a trigger-driven period is never \
+             offered as a CR 732.2a shortcut"
+        );
+    }
+
+    /// Put a token-minting (CR 111.1) triggered ability of `controller` on the stack through the
+    /// production push and resolve it by passing priority through `apply()`. The permanent
+    /// carrying the printed trigger is created first, so a caller can read the offer verdict on
+    /// the very board the leg then changes.
+    fn add_minting_permanent(
+        state: &mut GameState,
+        card_id: CardId,
+        controller: PlayerId,
+    ) -> ObjectId {
+        use crate::game::zones::create_object;
+        use crate::types::ability::TriggerDefinition;
+        use crate::types::triggers::TriggerMode;
+
+        let source = create_object(
+            state,
+            card_id,
+            controller,
+            "Minting Source".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .expect("the permanent was just created")
+            // The mode is deliberately one nothing in this window produces: a zone-change mode
+            // would be re-fired by the token the execute mints, which is a loop of the fixture's
+            // making and not of the beat's. The arming beat reads the located entry's `execute`,
+            // never its mode.
+            .push_printed_trigger(TriggerDefinition {
+                execute: Some(Box::new(minting_definition())),
+                ..TriggerDefinition::new(TriggerMode::Attacks)
+            });
+        source
+    }
+
+    /// A definition whose resolution mints a token — the CR 111.1 family membership the arming
+    /// beat consults `activation_creates_token` about.
+    fn minting_definition() -> crate::types::ability::AbilityDefinition {
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, Effect, PtValue, QuantityExpr, TargetFilter,
+        };
+        AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Token {
+                name: "Illusion".to_string(),
+                power: PtValue::Fixed(0),
+                toughness: PtValue::Fixed(1),
+                types: vec!["Creature".to_string()],
+                colors: vec![crate::types::mana::ManaColor::White],
+                keywords: vec![],
+                tapped: false,
+                count: QuantityExpr::Fixed { value: 1 },
+                owner: TargetFilter::Controller,
+                attach_to: None,
+                enters_attacking: false,
+                supertypes: vec![],
+                static_abilities: vec![],
+                enter_with_counters: vec![],
+            },
+        )
+    }
+
+    /// Resolve `source`'s printed minting trigger through the public boundary: the production
+    /// trigger push writes the stack entry, and priority passes drive it to resolution.
+    fn resolve_minting_trigger(state: &mut GameState, source: ObjectId, controller: PlayerId) {
+        use crate::game::triggers::{push_pending_trigger_to_stack, PendingTrigger};
+        use crate::types::ability::{ResolvedAbility, TriggerDefinitionRef};
+        use crate::types::identifiers::ObjectIncarnationRef;
+
+        let (occurrence, incarnation) = {
+            let object = &state.objects[&source];
+            let occurrence = crate::game::functioning_abilities::active_trigger_definitions(
+                state, object,
+            )
+            .map(|active| active.definition_ref.occurrence)
+            .next()
+            .expect("reach-guard: the printed minting trigger is exposed as a functioning entry");
+            (occurrence, ObjectIncarnationRef::from_object(object))
+        };
+        let mut ability =
+            ResolvedAbility::new(*minting_definition().effect, Vec::new(), source, controller);
+        ability.trigger_definition_ref = Some(TriggerDefinitionRef {
+            source: incarnation,
+            occurrence,
+        });
+        let mut events = Vec::new();
+        push_pending_trigger_to_stack(
+            state,
+            PendingTrigger::ordinary(source, controller, None, Box::new(ability), 0),
+            &mut events,
+        );
+        assert!(
+            !state.stack.is_empty(),
+            "reach-guard: the production push put the triggered ability on the stack"
+        );
+        for _ in 0..16 {
+            if state.stack.is_empty() {
+                return;
+            }
+            let actor = beat_actor(state);
+            apply(state, actor, GameAction::PassPriority).expect("pass priority");
+        }
+        panic!("the triggered ability did not resolve within the beat cap");
+    }
+
+    /// CR 603.3 + CR 732.2a — the write rule, against a period another beat is ALREADY
+    /// accumulating. One dump, two legs, one invocation:
+    ///
+    /// * (a) the period holder's OWN minting trigger resolves ⇒ the beat APPENDS its step to the
+    ///   accumulating period, which stops being priority-driven, so the producer withdraws;
+    /// * (b) an OPPONENT's minting trigger resolves ⇒ the accumulator's controller-change rule
+    ///   clears the proposer's period and reseeds it for that opponent, so the producer withdraws
+    ///   at its whose-record admission instead.
+    ///
+    /// The base's own verdict on the SAME board — the offer fires and the recorded period is the
+    /// clean 2-step activation period — is read in the same invocation, per leg, before the
+    /// trigger resolves. REVERT-PROBE: remove the arming beat ⇒ both legs' records match their
+    /// base and every delta assertion below fails.
+    #[test]
+    fn a_resolving_minting_trigger_writes_against_the_accumulating_period() {
+        use crate::types::game_state::LoopAction;
+
+        // ── leg (a): the period holder's own trigger ──
+        let mut own = load_migrated_dump();
+        drive_one_live_cycle(&mut own);
+        let mut own = at_priority_window(own);
+        let own_source = add_minting_permanent(&mut own, CardId(9_101), P0);
+        assert_eq!(
+            (
+                own.last_loop_action_sequence.len(),
+                own.loop_period_controller(),
+                try_offer_object_growth_shortcut(&own).is_some(),
+            ),
+            (2, Some(P0), true),
+            "paired positive for leg (a): before the trigger resolves, this very board carries \
+             the clean 2-step period and offers"
+        );
+        resolve_minting_trigger(&mut own, own_source, P0);
+        let own_after = at_priority_window(own);
+        assert!(
+            matches!(
+                own_after.last_loop_action_sequence.as_slice(),
+                [_, _, third] if third.controller == P0
+                    && matches!(&third.action, LoopAction::ResolveTrigger { source_id, .. }
+                        if *source_id == own_source)
+            ),
+            "leg (a): the beat APPENDED the resolving trigger's step to the period the holder was \
+             already accumulating; got {:?}",
+            own_after.last_loop_action_sequence
+        );
+        assert!(
+            try_offer_object_growth_shortcut(&own_after).is_none(),
+            "leg (a): the appended step is not one taken at priority (CR 104.4b), so the period \
+             the proposer was accumulating stops being offerable"
+        );
+
+        // ── leg (b): an opponent's trigger, against the same accumulating period ──
+        let opponent = PlayerId(1);
+        let mut foreign = load_migrated_dump();
+        drive_one_live_cycle(&mut foreign);
+        let mut foreign = at_priority_window(foreign);
+        assert!(
+            !foreign.players[opponent.0 as usize].is_eliminated,
+            "reach-guard: leg (b) needs a living opponent to attribute the trigger to"
+        );
+        let foreign_source = add_minting_permanent(&mut foreign, CardId(9_102), opponent);
+        assert_eq!(
+            (
+                foreign.last_loop_action_sequence.len(),
+                foreign.loop_period_controller(),
+                try_offer_object_growth_shortcut(&foreign).is_some(),
+            ),
+            (2, Some(P0), true),
+            "paired positive for leg (b): the same pre-trigger board, with the opponent's \
+             permanent already present"
+        );
+        resolve_minting_trigger(&mut foreign, foreign_source, opponent);
+        let foreign_after = at_priority_window(foreign);
+        assert!(
+            matches!(
+                foreign_after.last_loop_action_sequence.as_slice(),
+                [only] if only.controller == opponent
+                    && matches!(&only.action, LoopAction::ResolveTrigger { source_id, .. }
+                        if *source_id == foreign_source)
+            ),
+            "leg (b): a different controller's step CLEARS the proposer's period and reseeds it \
+             for that opponent; got {:?}",
+            foreign_after.last_loop_action_sequence
+        );
+        assert!(
+            try_offer_object_growth_shortcut(&foreign_after).is_none(),
+            "leg (b): the record now belongs to the opponent, so the producer's whose-record \
+             admission withdraws the proposer's offer"
         );
     }
 }

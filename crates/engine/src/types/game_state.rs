@@ -1367,21 +1367,42 @@ pub enum LoopAction {
     TapLandForMana {
         selection: crate::types::mana::ManaSourceSelection,
     },
+    /// CR 603.3 + CR 608.2: re-resolve the triggered ability of `source_id` that `occurrence`
+    /// names — the driving action of a loop whose cycle is a chain of triggers resolving on the
+    /// stack. The source is pinned by `ObjectId` (G3, as `Activate` is: a plain token is
+    /// `CardId(0)`, so a card-identity re-find would match the fodder the loop manufactures);
+    /// the trigger is pinned by its immutable occurrence, never by a live-vector position,
+    /// because `active_trigger_definitions` exposes that position as presentation metadata only.
+    /// Re-found live on every read.
+    ResolveTrigger {
+        source_id: ObjectId,
+        occurrence: TriggerDefinitionOccurrenceRef,
+    },
 }
 
 impl LoopAction {
     /// CR 601.2a / CR 602.2 / CR 605.3a: whether repeating this action is a VOLUNTARY choice the
     /// controller makes at priority — the precondition for OFFERING a CR 732.2a loop shortcut
-    /// (CR 104.4b: an optional loop). Both current variants are voluntary: casting a spell
-    /// (CR 601.2a "a player first moves that card") and activating an activated ability
-    /// (CR 602.2 / CR 605.3a "a player MAY activate") are player-initiated. Exhaustive (NO
-    /// wildcard) so a future MANDATORY driving variant (e.g. a forced upkeep trigger) is forced
-    /// to declare its optionality at compile time rather than silently defaulting to offerable.
+    /// (CR 104.4b: an optional loop). The PROPERTY, not a count of variants: every member a
+    /// player TAKES at priority answers `true` — casting a spell (CR 601.2a "a player first moves
+    /// that card") and activating an activated ability (CR 602.2 / CR 605.3a "a player MAY
+    /// activate") are player-initiated. Exhaustive (NO wildcard) so a MANDATORY driving variant
+    /// is forced to declare its optionality at compile time rather than silently defaulting to
+    /// offerable.
     pub fn is_voluntarily_repeatable(&self) -> bool {
         match self {
             LoopAction::Recast { .. }
             | LoopAction::Activate { .. }
             | LoopAction::TapLandForMana { .. } => true,
+            // CR 603.3: a triggered ability goes on the stack with no player electing it, so
+            // repeating it is not a choice anyone makes at priority. Such a cycle DOES carry a
+            // voluntary action in its cards' own words ("you may exile"; "exile any number",
+            // where zero is a number) and CR 104.4b's closing sentence therefore keeps it off
+            // the CR 732.4 draw path — but that choice is made AS an ability resolves, and this
+            // shape records no choice a step's resolution asks, so it cannot declare on its
+            // behalf. Fail-closed: `false` withholds an offer a shape that DID record those
+            // choices might be owed, and can never grant one.
+            LoopAction::ResolveTrigger { .. } => false,
         }
     }
 }
@@ -13056,8 +13077,9 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
             );
         }
         // THE PAIR NO PRODUCER MINTS. `is_bounded()` says the offer's producer MEASURED a
-        // CR 704 repetition threshold; `loop_period_controller()` says a driving period belonging
-        // to THIS proposer is recorded. The engine's three `LoopShortcut` mints
+        // CR 704 repetition threshold; `loop_period_driver()` says a driving period belonging
+        // to THIS proposer is recorded AND is one they can take again at priority. The engine's
+        // three `LoopShortcut` mints
         // partition that cross-product and none of them lands in this cell:
         //
         //   * the object-growth mint (`reconcile_terminal_result`, schema from
@@ -13075,11 +13097,15 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
         //
         // No live beat can join the two afterwards either. Nothing assigns `schema` or either of
         // its published answers in place anywhere in the engine, so an unbounded offer cannot
-        // ACQUIRE a measured threshold; and every writer that GROWS `last_loop_action_sequence` is priority-side
-        // — the `TapLandForMana` / `ActivateManaSource` / `ActivateAbility` `WaitingFor::Priority`
-        // arms (`accumulate_loop_action_step` and the token-creating `vec![step]` beside it) and
-        // the cast finalize. A pending offer reaches none of them: its only reducer arms are
-        // `DeclareShortcut` and `DeclineShortcut`.
+        // ACQUIRE a measured threshold; and the guard below reads `loop_period_driver()`, which
+        // is `Some` only for a period every one of whose steps its controller takes at priority.
+        // The writers that can grow such a period are the `TapLandForMana` / `ActivateManaSource`
+        // / `ActivateAbility` `WaitingFor::Priority` arms (`accumulate_loop_action_step` and the
+        // token-creating `vec![step]` beside it) and the cast finalize. A pending offer reaches
+        // none of them: its only reducer arms are `DeclareShortcut` and `DeclineShortcut`. A beat
+        // at which no player acts — the trigger-resolution arming beat in `game::stack` — also
+        // grows the field, and the narrowed read is what keeps this conclusion standing: the
+        // period it grows answers `None` here, exactly as no period does.
         //
         // WHAT IT COSTS TO ACCEPT IT: `materialize_fixed_shortcut` (SITE C) dispatches on period
         // ownership ALONE and early-returns the accepted proposal into
@@ -13114,7 +13140,11 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
         // carries no `schema` at all (the scoping note on the zero-capacity guard above). The candidate discriminator on that host is `proposal.per_cycle.is_some()`; it is
         // filed rather than shipped because "`per_cycle: Some` ⟺ the bounded mint" is not yet
         // measured per branch, and a guard on an inherited marker is what this seam must not carry.
-        if schema.is_bounded() && state.loop_period_controller() == Some(*proposer) {
+        // Narrowed (CR 732.2a): the harm is SITE C's misroute, which the same narrowed accessor
+        // now dispatches on. Reading the unnarrowed authority here would refuse a save whose
+        // route that dispatch no longer takes. Fails closed on `None` — the load is accepted, as
+        // it is for no period at all.
+        if schema.is_bounded() && state.loop_period_driver() == Some(*proposer) {
             return Err(
                 "persisted LoopShortcut offer narrows its repetition bound while recording the \
                  proposer's own driving period; no producer mints that pair, and accepting it \
@@ -13323,10 +13353,12 @@ impl GameState {
     /// bounded mint's step (1b), the `materialize_fixed_shortcut` and `apply_until_lethal_shortcut`
     /// drive dispatches, `handle_declare_shortcut`'s `template: None` arm, and the certification
     /// window's cast-set scoping (`analysis::resource::window_cast_card_ids`). Dropping is still
-    /// safe, but for a different reason than the one recorded here before: all seven ask the SAME
-    /// question ([`GameState::loop_period_controller`]) and every one of them fails CLOSED on
-    /// `None`, so a cleared field routes to the drain/manual path, grants no soundness relief, and
-    /// never reaches a pin-consuming drive with nothing to re-derive from. (It is also true that a
+    /// safe, but for a different reason than the one recorded here before: each asks the record
+    /// one of two questions — whose record this is ([`GameState::loop_period_controller`]) or
+    /// whether the object-growth route is live for a seat ([`GameState::loop_period_driver`], the
+    /// narrowing the route-liveness consumers read) — and BOTH fail CLOSED on an empty record, so
+    /// a cleared field routes to the drain/manual path, grants no soundness relief, and never
+    /// reaches a pin-consuming drive with nothing to re-derive from. (It is also true that a
     /// stale loaded prefix only HARMS the re-drive, which re-drives from a pinless `seq[0]` and
     /// aborts — the Kilo bug.)
     ///
@@ -13334,8 +13366,8 @@ impl GameState {
     /// FALSE — the other six are not re-drives — and the false premise is precisely why the
     /// routing signal went un-audited against its own consumer. The revision after it named five
     /// and missed the bridge precondition and the cast-set scoping, i.e. it corrected an
-    /// undercount with a smaller one. The count above is the enumerated call set of
-    /// `loop_period_controller` outside `#[cfg(test)]`; the conclusion survives either way.
+    /// undercount with a smaller one. The count above is the enumerated call set of the two
+    /// accessors named above outside `#[cfg(test)]`; the conclusion survives either way.
     /// (`handle_decline_shortcut` also reads the accessor, but as a WRITER — it scopes its own
     /// clear — so it is not a consumer of the routing signal and is deliberately not counted.)
     ///
@@ -13508,9 +13540,14 @@ impl GameState {
     ///
     /// This is the SAME whole-period test `try_offer_object_growth_shortcut` applies to its own
     /// admission, hoisted into one authority so the routing signal and the consumer it routes to
-    /// cannot disagree. Every routing site reads `loop_period_controller() == Some(proposer)`,
-    /// which is exactly "the object-growth route is live for this seat"; each fails closed on
-    /// `None`.
+    /// cannot disagree. It answers WHOSE RECORD THIS IS, and that is the question two classes of
+    /// caller ask: the fenced pair that must still reach the producer (the empty-stack bridge
+    /// precondition and the producer's own admission) and the ownership-scoped clears
+    /// (`handle_decline_shortcut`, `until_lethal_fallback`), whose question is whose record this
+    /// is to discard. A caller whose question is instead whether the OBJECT-GROWTH ROUTE IS LIVE
+    /// for a seat reads [`GameState::loop_period_driver`] below, which narrows this answer by the
+    /// per-step premise those routes rest on; the two may differ once a period holds a step no
+    /// player takes at priority. Each fails closed on `None`.
     ///
     /// The homogeneity clause is a backstop, not a live case: `accumulate_loop_action_step` clears
     /// the sequence on a controller change, so a heterogeneous run should be unreachable in play.
@@ -13520,6 +13557,35 @@ impl GameState {
             .iter()
             .all(|step| step.controller == owner)
             .then_some(owner)
+    }
+
+    /// CR 732.2a: whether every step of the recorded period is an action its controller takes at
+    /// priority — [`LoopAction::is_voluntarily_repeatable`] quantified over the whole period.
+    ///
+    /// This is the premise the record's consumers rest on. Each of the beats that writes a
+    /// priority-side step preserves it: the cast capture sets-or-clears on every cast, the
+    /// on-stack activation arm continues-seeds-or-clears, and the mana beat clears on an invalid
+    /// source — so a period built only from those beats is a sequence its controller can take
+    /// again. A beat at which no player acts breaks it, which is what this predicate exists to
+    /// detect. Vacuously true for an empty period, which every consumer already fails closed on
+    /// through its own emptiness test.
+    pub(crate) fn loop_period_is_priority_driven(&self) -> bool {
+        self.last_loop_action_sequence
+            .iter()
+            .all(|step| step.action.is_voluntarily_repeatable())
+    }
+
+    /// CR 732.2a: the seat the object-growth route is live for — [`GameState::loop_period_controller`]
+    /// narrowed by the premise above. Read at each site whose question is route liveness or
+    /// re-derivability: the bounded mint's step (1b), `materialize_fixed_shortcut`'s SITE C,
+    /// `apply_until_lethal_shortcut`'s SITE D, `handle_declare_shortcut`'s SITE F,
+    /// `window_scope_from_cover_frames`'s `sole_driver` (both frames), and
+    /// `reject_zero_bound_shortcut_offer`. The sites asking whose record this is to admit or
+    /// discard keep the unnarrowed authority, which is why the two answers may differ once a
+    /// period holds a step no player takes at priority.
+    pub(crate) fn loop_period_driver(&self) -> Option<PlayerId> {
+        self.loop_period_controller()
+            .filter(|_| self.loop_period_is_priority_driven())
     }
 }
 
@@ -29691,9 +29757,11 @@ impl GameState {
     /// and only when their own observer appeared.
     ///
     /// Supporting lemmas, each checkable at a symbol rather than by argument:
-    /// * **L1 OPTIONALITY** — the offer gate admits only voluntarily-repeatable periods, and
-    ///   `LoopAction::is_voluntarily_repeatable` is `true` on an exhaustive match over all three
-    ///   variants (`Recast`, `Activate`, `TapLandForMana`), every one player-initiated. A mandatory
+    /// * **L1 OPTIONALITY** — the offer gate admits only periods every step of which is
+    ///   voluntarily repeatable (`GameState::loop_period_is_priority_driven`), and
+    ///   `LoopAction::is_voluntarily_repeatable` answers `true` on exactly the members a player
+    ///   TAKES at priority — the property its own exhaustive match declares, variant by variant.
+    ///   A driving action nobody elects answers `false` and never reaches an offer; a mandatory
     ///   loop never produces this shape and stays on the CR 104.4b draw / lethal paths. So in
     ///   manual play the controller may stop after any prefix.
     /// * **L2 UNCONDITIONALITY BY CONSTRUCTION** — pins plus the static randomness scan plus the

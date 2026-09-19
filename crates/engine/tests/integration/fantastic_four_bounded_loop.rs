@@ -3020,12 +3020,16 @@ fn u6_the_generators_own_candidate_opens_the_window_and_the_accepted_shape_is_me
     );
 
     assert!(
-        state.last_loop_action_sequence.is_empty(),
-        "the measured precondition that makes the `Fixed` + `None` arm below ATTRIBUTABLE: with \
-         no recorded period at all, the `None if …loop_period_controller() != Some(proposer)` \
-         arm would refuse this declaration on the pre-C2 engine, so that arm's acceptance is \
-         attributable to item-4 C2's `or_else` and to nothing else on this board. len={}",
-        state.last_loop_action_sequence.len()
+        !state
+            .last_loop_action_sequence
+            .iter()
+            .all(|step| step.action.is_voluntarily_repeatable()),
+        "the measured precondition that makes the `Fixed` + `None` arm below ATTRIBUTABLE: this \
+         board's recorded period holds a step no player elects at priority (CR 603.3), so \
+         `loop_period_driver()` answers `None` and the `None if … != Some(proposer)` arm would \
+         refuse this declaration on the pre-C2 engine — that arm's acceptance is attributable to \
+         item-4 C2's `or_else` and to nothing else on this board. sequence={:?}",
+        state.last_loop_action_sequence
     );
     assert!(
         offer_declaration(&state).is_some(),
@@ -5557,15 +5561,19 @@ fn t3_the_published_token_rate_is_delivered_by_the_accepted_drive() {
 /// break (a bounded offer publishes nothing to the unbounded-resource channel), and (c) is the
 /// reducer property that containment argument quantifies over.
 ///
-/// `GameState::loop_period_controller` — the predicate guarding the only mark route this
-/// phase's new axis could reach — is `pub(crate)` and unnameable here, so (b) asserts its
-/// INPUT: `last_loop_action_sequence` is EMPTY, which makes that function's leading
-/// `first()?` return `None` outright.
+/// `GameState::loop_period_driver` — the predicate guarding the only mark route this phase's
+/// new axis could reach — is `pub(crate)` and unnameable here, so (b) asserts the property it
+/// reads: every step this board records is one no player elects at priority
+/// (`LoopAction::is_voluntarily_repeatable` answers `false`), which is what makes that accessor
+/// answer `None`. The board records a period here rather than none, because the resolutions
+/// carrying this loop are triggered abilities (CR 603.3).
 ///
 /// # Discrimination
 ///
-/// (a) reds if the token term is dropped from `ResourceVector::period`. (b) reds if the
-/// accept-side route stops testing the controller predicate.
+/// (a) reds if the token term is dropped from `ResourceVector::period`. (b) reds if a step a
+/// player DOES elect at priority enters this board's recorded period, if the voluntariness
+/// predicate starts answering `true` for a triggered-ability resolution, or if the period stops
+/// being recorded at all — an empty sequence fails the assertion as written.
 #[test]
 fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_closed() {
     use engine::analysis::resource::ResourceAxis;
@@ -5629,9 +5637,12 @@ fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_c
 
     // ── (b) the guard's input is unset at the offer beat, with its own positive control.
     assert!(
-        sequence_at_offer.is_empty(),
-        "no seat owns a driving period at the offer beat, so the object-growth mark route is \
-         not live for anyone. sequence={sequence_at_offer:?}"
+        !sequence_at_offer
+            .iter()
+            .all(|step| step.action.is_voluntarily_repeatable()),
+        "no seat owns a DRIVING period at the offer beat, so the object-growth mark route is \
+         not live for anyone: this board's recorded steps are triggered-ability resolutions \
+         (CR 603.3), which no player elects at priority. sequence={sequence_at_offer:?}"
     );
     assert!(
         state.unbounded_resources.is_empty(),
@@ -5691,9 +5702,15 @@ fn t8_the_token_axis_reaches_the_certificate_while_the_unbounded_channel_stays_c
          about a drive that actually ran: life {life_before:?} -> {life_after:?}"
     );
     assert!(
-        state.last_loop_action_sequence.is_empty() && state.unbounded_resources.is_empty(),
-        "after the bounded drive the object-growth route is STILL not live and nothing was \
-         published to the unbounded-resource channel. sequence={:?} marks={:?}",
+        !state
+            .last_loop_action_sequence
+            .iter()
+            .all(|step| step.action.is_voluntarily_repeatable())
+            && state.unbounded_resources.is_empty(),
+        "after the bounded drive the object-growth route is STILL not live — every step the \
+         committed drive recorded is a triggered-ability resolution no player elects at \
+         priority (CR 603.3) — and nothing was published to the unbounded-resource channel. \
+         sequence={:?} marks={:?}",
         state.last_loop_action_sequence,
         state.unbounded_resources
     );

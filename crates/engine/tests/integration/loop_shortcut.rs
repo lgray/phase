@@ -11591,6 +11591,105 @@ fn a_foreign_driving_period_neither_refuses_nor_recertifies_a_bounded_offer() {
     );
 }
 
+/// CR 732.2a — the route-liveness consumer `bounded_cycle_offer` step (1b) answers at the tip what
+/// it answered at the base, on a board OUTSIDE the class that arms a trigger-driven period. The
+/// guard now asks whether the recorded period is one the proposer DRIVES at priority, not merely
+/// whose record it is; a trigger-driven period is no such thing, so it must leave a certified
+/// bounded offer exactly where an empty record leaves it.
+///
+/// THREE ARMS on one certifying state, differing ONLY in `last_loop_action_sequence`:
+///
+/// | arm | sequence | expected |
+/// |---|---|---|
+/// | twin | empty | `Ok` — the trigger-free reference, and the reach-guard |
+/// | trigger | proposer-controlled `ResolveTrigger` | the SAME value as the twin — the claim |
+/// | admitted | proposer-controlled `Recast` | `Err(ProposerHasDrivingPeriod)` — must-not-flip |
+///
+/// The refusal arm is asserted BY REASON, never as bare absence, and it is what makes the claim
+/// non-vacuous: an implementation that narrowed (1b) by EMPTINESS rather than by the predicate
+/// would pass the first two arms and fail this one.
+///
+/// REVERT-PROBE: make (1b) read `loop_period_controller` again ⇒ the trigger arm returns
+/// `Err(ProposerHasDrivingPeriod)` while the twin still returns `Ok` ⇒ the equality fails.
+#[test]
+fn a_trigger_driven_period_leaves_a_bounded_offer_where_an_empty_record_leaves_it() {
+    use engine::game::engine::{
+        try_offer_bounded_cycle_shortcut_metered, BoundedOfferRefusal, ProbeCap,
+    };
+    use engine::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
+    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    drive_to_bounded_offer(&mut state, 400)
+        .expect("the arms need a state that PROVABLY certifies; see the acceptance row");
+    let (proposer, _, _) = bounded_offer_parts(&state);
+    // The offer beat's `waiting_for` IS the offer, so rewind that one field to the Priority beat
+    // it was raised at — the same entry condition the five-arm row re-derives from.
+    state.waiting_for = WaitingFor::Priority { player: proposer };
+    let source = state
+        .objects
+        .values()
+        .find(|o| o.controller == proposer)
+        .map(|o| o.id)
+        .expect("REACH-GUARD: the proposer controls an object to attribute the trigger step to");
+    let card_id = state.objects[&source].card_id;
+
+    let ask = |seq: Vec<LoopActionContext>| {
+        let mut probe = state.clone();
+        probe.last_loop_action_sequence = seq;
+        try_offer_bounded_cycle_shortcut_metered(&probe, false, ProbeCap::Shipped).0
+    };
+
+    // ── twin: the SAME state certifies with no recorded period at all. The other two arms are
+    // vacuous without it, and it is the value the trigger arm is compared against. ──
+    let twin = ask(vec![]);
+    assert!(
+        twin.is_ok(),
+        "REACH-GUARD: the trigger arm is vacuous unless this same state certifies with an empty \
+         record; got {twin:?}"
+    );
+
+    // ── trigger: a proposer-controlled trigger-driven period is not a period they drive. ──
+    assert_eq!(
+        ask(vec![LoopActionContext {
+            card_id,
+            controller: proposer,
+            action: LoopAction::ResolveTrigger {
+                source_id: source,
+                occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index: 0,
+                },
+            },
+            convoke: None,
+            pins: vec![],
+        }]),
+        twin,
+        "CR 603.3: no player elects a triggered ability's repetition at priority, so a \
+         trigger-driven record routes to no path this offer would misroute into — it must leave \
+         the bounded offer where an empty record leaves it"
+    );
+
+    // ── admitted member: a period the proposer DOES drive still refuses, in the same slot. ──
+    assert_eq!(
+        ask(vec![LoopActionContext {
+            card_id,
+            controller: proposer,
+            action: LoopAction::Recast {
+                from_zone: engine::types::zones::Zone::Hand,
+                uses_buyback: BuybackUsage::NotUsed,
+            },
+            convoke: None,
+            pins: vec![],
+        }]),
+        Err(BoundedOfferRefusal::ProposerHasDrivingPeriod),
+        "the narrowing is by the PREDICATE, not by emptiness: the proposer's own accumulating \
+         period would still route an accepted proposal to the object-growth materializer"
+    );
+}
+
 /// PR-7 Phase 5b — a declared count ABOVE the offered bound is handed back fail-closed.
 ///
 /// **TEST-ONLY ROW, ZERO NEW PRODUCTION CODE.** The guard already ships

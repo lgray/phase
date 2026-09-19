@@ -3582,15 +3582,22 @@ fn window_scope_from_cover_frames<'a>(
         && pb.extra_phase_resume.is_empty())
     .then_some(pa.phase);
 
-    // (s1) BOTH sequences non-empty; (s2) one controller across BOTH sequences. Both conjuncts
-    // are exactly [`GameState::loop_period_controller`] applied per frame — "whose period is
-    // this", the single authority every routing site reads — with the two answers required to
-    // agree. Stating it that way rather than re-deriving `first().controller` + `all()` here is
-    // the point of hoisting that authority: a two-frame twin of the same question cannot drift
-    // from the one-frame form it duplicates.
+    // (s1) BOTH sequences non-empty; (s2) one controller across BOTH sequences; (s3) every
+    // recorded step is one that controller takes at priority. All three conjuncts are exactly
+    // [`GameState::loop_period_driver`] applied per frame — "is the object-growth route live for
+    // this seat", the narrowed authority every ROUTE-LIVENESS consumer reads — with the two
+    // answers required to agree. The unnarrowed [`GameState::loop_period_controller`] answers a
+    // different question, whose record this is, and is read by the sites that admit or discard a
+    // record rather than route on it. Stating it that way rather than re-deriving
+    // `first().controller` + `all()` here is the point of hoisting that authority: a two-frame
+    // twin of the same question cannot drift from the one-frame form it duplicates.
+    //
+    // (s3) is what the reliefs behind this scope rest on: each rests on "no player but the sole
+    // driver receives priority inside the taken shortcut", which a period holding a step no
+    // player takes does not support. `None` ⇒ both reliefs fail closed, exactly as for no period.
     let sole_driver = pa
-        .loop_period_controller()
-        .filter(|driver| pb.loop_period_controller() == Some(*driver));
+        .loop_period_driver()
+        .filter(|driver| pb.loop_period_driver() == Some(*driver));
 
     LoopWindowScope {
         phase_invariant,
@@ -3996,11 +4003,22 @@ pub(crate) fn loop_states_cover_modulo_growth_pinned<'a>(
 /// `Some(vec![])` would assert the latter and relieve EVERY conditioned self-cost static.
 /// `None` = scan everything.
 ///
+/// FAIL-CLOSED ON A STEP NO PLAYER TAKES AT PRIORITY (CR 732.2a): the whole list is evidence
+/// about what a seat's own repeatable sequence casts, and a step nobody elects says nothing
+/// about what the window casts — `Some(vec![card])` for it would name a card that casts nothing
+/// and relieve every conditioned self-cost static whose card is not that one, which is one
+/// element from the shape the paragraph above forbids. Checked over the WHOLE period and ABOVE
+/// the proposer test, because the proposer axis is separate: the proposer-less entry must stay
+/// byte-identical for a period every step of which IS priority-driven.
+///
 /// FAIL-CLOSED ON A FOREIGN PERIOD (CR 732.2a): a recorded period is evidence about the seat
 /// that recorded it, so an opponent's choice of WHICH CARD TO ACTIVATE must not select which
 /// soundness relief applies to the proposer's certification. `is_some_and`, NOT `is_some`: the
 /// proposer-less 2-arg entry binds no proposer, and requiring one would strip that class.
 fn window_cast_card_ids(state: &GameState, proposer: Option<PlayerId>) -> Option<Vec<CardId>> {
+    if !state.loop_period_is_priority_driven() {
+        return None;
+    }
     if proposer.is_some_and(|p| state.loop_period_controller() != Some(p)) {
         return None;
     }
@@ -6335,6 +6353,16 @@ fn activated_ability_is_not_a_loop_choice(
                     && selection.ability_index == Some(ability_index)
             }
             LoopAction::Recast { .. } => false,
+            // CR 603.3 vs CR 602.2a: a trigger-driven step names a TRIGGERED ability, which no
+            // player activates, so it can never be the `(obj.id, ability_index)` ACTIVATED
+            // ability this closure is asked about — the same declaration the `Recast` arm makes
+            // for a card being cast. Answering `true` instead would assert that every activated
+            // ability on the board is the loop's driving choice, a false CR 732.2a claim.
+            //
+            // `false` is the relieving direction here, so state why it is not reached: the
+            // `sole_driver` this closure sits behind reads `GameState::loop_period_driver`, which
+            // is `None` for any period holding such a step, so the scan does not open at all.
+            LoopAction::ResolveTrigger { .. } => false,
         })
 }
 
@@ -17295,6 +17323,111 @@ mod tests {
         );
     }
 
+    /// A trigger-driven step, pinned by its immutable occurrence rather than by a live-vector
+    /// position (CR 603.3).
+    fn resolve_trigger_ctx(
+        source_id: ObjectId,
+        printed_index: usize,
+    ) -> crate::types::game_state::LoopActionContext {
+        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
+        crate::types::game_state::LoopActionContext {
+            card_id: CardId(4242),
+            controller: PlayerId(0),
+            action: crate::types::game_state::LoopAction::ResolveTrigger {
+                source_id,
+                occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index,
+                },
+            },
+            convoke: None,
+            pins: Vec::new(),
+        }
+    }
+
+    /// The same two-sided classify on the trigger-driven shape, through `eq_except_growable`:
+    /// (a) two frames whose recorded step is the SAME `ResolveTrigger` still certify (the paired
+    /// positive reach-guard for (b) and (c)); (b) two frames differing ONLY in the step's
+    /// `occurrence` reject; (c) a two-step period naming two DIFFERENT sources rejects against one
+    /// naming the same source twice — the multi-authority fixture, which a source-only identity
+    /// would lose. Revert-failing: removing the
+    /// `a.last_loop_action_sequence == b.last_loop_action_sequence` conjunct in
+    /// `eq_except_growable` flips (b) and (c) to COVER while (a) stays COVER. Non-vacuous: the
+    /// custom `impl PartialEq for GameState` EXCLUDES the field, so this conjunct is the SOLE
+    /// discriminator.
+    #[test]
+    fn fodder_cover_trigger_driven_context_three_sided() {
+        const SOURCE: ObjectId = ObjectId(950);
+        const OTHER_SOURCE: ObjectId = ObjectId(951);
+
+        // (a) equal ResolveTrigger contexts ⇒ still covers.
+        let (mut prior, mut current) = fodder_cover_base();
+        prior.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 0)];
+        current.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 0)];
+        assert!(
+            fodder_cover(&prior, &current),
+            "(a) equal ResolveTrigger contexts ⇒ object-growth cover still CERTIFIES"
+        );
+
+        // (b) the SAME source, a different occurrence ⇒ rejects. Only `occurrence` differs.
+        let (mut p2, mut c2) = fodder_cover_base();
+        p2.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 0)];
+        c2.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 1)];
+        assert!(
+            !fodder_cover(&p2, &c2),
+            "(b) two frames differing only in the step's occurrence must REJECT"
+        );
+
+        // (c) two steps naming two DIFFERENT sources against two naming the same source twice.
+        let (mut p3, mut c3) = fodder_cover_base();
+        p3.last_loop_action_sequence = vec![
+            resolve_trigger_ctx(SOURCE, 0),
+            resolve_trigger_ctx(SOURCE, 0),
+        ];
+        c3.last_loop_action_sequence = vec![
+            resolve_trigger_ctx(SOURCE, 0),
+            resolve_trigger_ctx(OTHER_SOURCE, 0),
+        ];
+        assert!(
+            !fodder_cover(&p3, &c3),
+            "(c) a period whose two steps name DIFFERENT minting triggers must REJECT against one \
+             naming the same trigger twice — what a per-trigger identity buys and a source-only \
+             one would lose"
+        );
+    }
+
+    /// The trigger-driven sibling of [`loop_states_equal_last_loop_action_sequence_two_sided`], on
+    /// the constant-depth equality gate rather than the cover: (a) equal steps ⇒ equal; (b) a
+    /// differing `occurrence` ⇒ unequal; (c) a differing source ⇒ unequal.
+    #[test]
+    fn loop_states_equal_trigger_driven_context_three_sided() {
+        const SOURCE: ObjectId = ObjectId(950);
+        const OTHER_SOURCE: ObjectId = ObjectId(951);
+
+        let mut a = GameState::new_two_player(7);
+        inert_token(&mut a, 900, 0, "Engine");
+        let mut b = a.clone();
+
+        a.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 0)];
+        b.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 0)];
+        assert!(
+            loop_states_equal_modulo_resources(&a, &b),
+            "(a) equal ResolveTrigger steps ⇒ loop_states_equal_modulo_resources holds"
+        );
+
+        b.last_loop_action_sequence = vec![resolve_trigger_ctx(SOURCE, 1)];
+        assert!(
+            !loop_states_equal_modulo_resources(&a, &b),
+            "(b) a differing occurrence ⇒ NOT equal"
+        );
+
+        b.last_loop_action_sequence = vec![resolve_trigger_ctx(OTHER_SOURCE, 0)];
+        assert!(
+            !loop_states_equal_modulo_resources(&a, &b),
+            "(c) a differing source ⇒ NOT equal"
+        );
+    }
+
     // ─────── CR 732.2a: persistent-axis collapse routing + δ + partition ───────
 
     /// CR 732.2a: `counter_growth_is_observed` / `life_growth_is_observed` ROUTE an accepted loop —
@@ -20418,6 +20551,70 @@ mod tests {
             (None, None),
             "(4) a heterogeneous run belongs to no seat, so it proves nothing for EITHER — \
              reading only `seq[0].controller` would wrongly prove it for the first"
+        );
+    }
+
+    /// CR 732.2a: a period holding a step no player takes at priority is no proof about what the
+    /// window casts, so [`window_cast_card_ids`] answers for it exactly as it answers for NO
+    /// period. Called DIRECTLY for the same anti-domination reason as its two siblings above.
+    ///
+    /// The two legs must AGREE (both `None`). The PAIRED POSITIVE is the same read with a one-step
+    /// `Recast` period recorded, which must answer DIFFERENTLY from the empty leg — so the row
+    /// cannot be passed by an implementation that answers `None` always.
+    ///
+    /// REVERT-PROBE: drop the `loop_period_is_priority_driven` guard ⇒ the trigger-driven leg
+    /// returns `Some(vec![CardId(64)])`, disagreeing with the empty leg ⇒ the paired `assert_eq!`
+    /// FAILS. The named card casts nothing, and one element is exactly the shape the function's own
+    /// doc forbids: it would relieve every conditioned self-cost static whose card is not that one.
+    #[test]
+    fn a_trigger_driven_period_proves_nothing_about_this_windows_casting() {
+        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
+        use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+        let owner = PlayerId(0);
+        let step = |action: LoopAction| LoopActionContext {
+            card_id: CardId(64),
+            controller: owner,
+            action,
+            convoke: None,
+            pins: Vec::new(),
+        };
+
+        let empty = GameState::new_two_player(7);
+        assert!(empty.last_loop_action_sequence.is_empty());
+
+        let mut trigger_driven = GameState::new_two_player(7);
+        trigger_driven.last_loop_action_sequence = vec![step(LoopAction::ResolveTrigger {
+            source_id: ObjectId(960),
+            occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                base_set: TriggerBaseSetInstanceRef::INITIAL,
+                printed_index: 0,
+            },
+        })];
+
+        assert_eq!(
+            (
+                window_cast_card_ids(&empty, Some(owner)),
+                window_cast_card_ids(&trigger_driven, Some(owner)),
+            ),
+            (None, None),
+            "a period holding a step no player takes at priority answers exactly as no period \
+             does: it is NO PROOF about this window's cast set, and `Some(vec![card])` for it \
+             would name a card that casts nothing"
+        );
+
+        // PAIRED POSITIVE: the same read with a priority-side period recorded must answer
+        // DIFFERENTLY from the empty leg, so the agreement above is a result and not a constant.
+        let mut priority_driven = GameState::new_two_player(7);
+        priority_driven.last_loop_action_sequence = vec![step(LoopAction::Recast {
+            from_zone: Zone::Hand,
+            uses_buyback: BuybackUsage::Used,
+        })];
+        assert_eq!(
+            window_cast_card_ids(&priority_driven, Some(owner)),
+            Some(vec![CardId(64)]),
+            "paired positive: a one-step priority-side period IS proof, so the guard above is \
+             narrowing rather than blanking the function"
         );
     }
 
@@ -31271,6 +31468,80 @@ mod tests {
              inside the taken shortcut, so the IDENTICAL definition under an opponent is \
              relieved even though the proposal names it. Inverting `obj.controller != driver` \
              swaps BOTH verdicts and reds this row"
+        );
+    }
+
+    /// CR 603.3 vs CR 602.2a: the block-(2) proposal-absence relief answers DIFFERENTLY for a
+    /// trigger-driven period than for an activation period naming the same `(ObjectId,
+    /// ability_index)` pair. One source, one activated ability index, two recorded periods whose
+    /// only difference is the step's kind.
+    ///
+    /// The `Activate` leg is the PAIRED POSITIVE: it must answer *relief refused*, so the
+    /// `ResolveTrigger` leg's *relief granted* is read off a predicate that discriminates rather
+    /// than one that says nothing. Both verdicts in ONE `assert_eq!`, the shape row 37 above sets.
+    ///
+    /// REVERT-PROBE: answer `true` for the `ResolveTrigger` arm in
+    /// `activated_ability_is_not_a_loop_choice` ⇒ the two periods stop answering differently and
+    /// the pair below prints `(true, true)` ⇒ **FAILS**.
+    ///
+    /// UNIT-LEVEL DELIBERATELY, for the reason row 37 states and one more of its own: the
+    /// `sole_driver` this closure sits behind reads `GameState::loop_period_driver`, which is
+    /// `None` for any period holding a trigger-driven step, so on a driven board the scan never
+    /// opens and this arm is unreachable. That unreachability is the point — the arm exists so a
+    /// later phase cannot reach it and find a false CR 732.2a claim — and it is why the axis is
+    /// constructible only where the record is written directly.
+    #[test]
+    fn the_proposal_absence_relief_separates_a_trigger_step_from_an_activation_naming_the_same_pair(
+    ) {
+        use crate::types::ability::{TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef};
+        use crate::types::game_state::LoopAction;
+        let stable = HashSet::new();
+
+        let build =
+            |action: LoopAction| p2_board(vec![p2_class_reading_ability()], vec![p2_step(action)]);
+        let activation = build(LoopAction::Activate {
+            source_id: P2_HOST,
+            ability_index: 0,
+        });
+        let trigger_driven = build(LoopAction::ResolveTrigger {
+            source_id: P2_HOST,
+            occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                base_set: TriggerBaseSetInstanceRef::INITIAL,
+                printed_index: 0,
+            },
+        });
+        p2_reach_guards(&activation, 0, P2_DRIVER, "the activation leg");
+        p2_reach_guards(&trigger_driven, 0, P2_DRIVER, "the trigger-driven leg");
+        assert_eq!(
+            activation.last_loop_action_sequence[0].controller,
+            trigger_driven.last_loop_action_sequence[0].controller,
+            "reach-guard: the two periods share a controller, so the step's KIND is the only \
+             variable"
+        );
+
+        assert_eq!(
+            (
+                activated_ability_is_not_a_loop_choice(
+                    &activation,
+                    &activation.objects[&P2_HOST],
+                    &activation.objects[&P2_HOST].abilities[0],
+                    0,
+                    Some(&stable),
+                ),
+                activated_ability_is_not_a_loop_choice(
+                    &trigger_driven,
+                    &trigger_driven.objects[&P2_HOST],
+                    &trigger_driven.objects[&P2_HOST].abilities[0],
+                    0,
+                    Some(&stable),
+                ),
+            ),
+            (false, true),
+            "ACTIVATION (expect relief REFUSED): the record NAMES this exact (source, \
+             ability_index) pair, so CR 732.2a inapplicability is false. TRIGGER-DRIVEN (expect \
+             relief GRANTED): a trigger-driven step names a TRIGGERED ability (CR 603.3), which \
+             no player activates, so it can never be this ACTIVATED ability (CR 602.2a) — the \
+             same declaration the `Recast` arm makes for a card being cast"
         );
     }
 
