@@ -6423,10 +6423,13 @@ fn materialize_fixed_shortcut(
 #[derive(Debug)]
 struct RecastAbort;
 
-/// CR 602.2a / CR 605.3a / CR 732.2a (G4): capture the `AbilityDefinition` an indexed
-/// activation names, so the drive can re-validate the positional `ability_index` by `Eq` each
-/// iteration (a layer re-eval that reorders/removes the granted ability ⇒ fail-closed abort).
-/// `None` for a `Recast` or a subtype-derived land-mana fallback with no printed definition.
+/// CR 602.2a / CR 603.3 / CR 605.3a / CR 732.2a (G4): re-find, LIVE, the `AbilityDefinition` a
+/// recorded step names, each step kind by the coordinate it binds — a position into the
+/// layer-derived `abilities` vec for an activation, the immutable occurrence for a resolving
+/// trigger — so the drive re-validates by `Eq` each iteration instead of trusting what was
+/// captured (a layer re-eval that leaves nothing at that coordinate ⇒ `None` ⇒ fail-closed
+/// abort). `None` too for a step that names no ability at all: a `Recast` names a card being
+/// cast (CR 601.2a), and a subtype-derived land-mana fallback has no printed definition.
 /// `pub(crate)` so the row that pins the trigger-driven re-find against a REBUILT live trigger
 /// list drives this production function rather than re-implementing the re-find beside it.
 pub(crate) fn loop_action_expected_def(
@@ -6474,9 +6477,12 @@ pub(crate) fn loop_action_expected_def(
     }
 }
 
-/// CR 602.2a + CR 111.1: whether any effect anywhere in this activated ability's tree puts a token
-/// onto the battlefield when it resolves, asked as the activation goes on the stack. Membership is
-/// `resolution_token_mint`'s; the whole-tree reach is this beat's own.
+/// CR 111.1 + CR 608.2c: whether any effect anywhere in this ability's tree puts a token onto the
+/// battlefield when its controller follows the ability's instructions on resolution. A forecast
+/// read off the definition alone: it fixes neither the ability's kind nor the beat, so a caller
+/// holding an activated or a triggered ability may ask it at any beat before the resolution it
+/// forecasts. Membership is `resolution_token_mint`'s; the whole-tree reach is this predicate's
+/// own.
 pub(crate) fn activation_creates_token(def: &crate::types::ability::AbilityDefinition) -> bool {
     let mut effects = Vec::new();
     crate::analysis::ability_graph::collect_effects(def, &mut effects);
@@ -6485,7 +6491,7 @@ pub(crate) fn activation_creates_token(def: &crate::types::ability::AbilityDefin
         .any(|effect| crate::analysis::ability_graph::resolution_token_mint(effect).is_some())
 }
 
-/// P7 v3 (CR 602.2a + CR 732.2a): append a driving step to the current loop-action period
+/// P7 v3 (CR 732.2a): append a driving step to the current loop-action period
 /// (`state.last_loop_action_sequence`). A CONTROLLER CHANGE resets to a fresh single-step period
 /// (a period belongs to one controller — a mid-period controller switch is a different loop); a
 /// LENGTH CAP bounds an adversarial/incidental run of unrelated steps. Callers gate on
@@ -6498,8 +6504,8 @@ pub(crate) fn accumulate_loop_action_step(
     state: &mut GameState,
     step: crate::types::game_state::LoopActionContext,
 ) {
-    // ponytail: cap at 16 steps — a real loop period is 2-4 activations; raise only if a real
-    // >16-action period appears. Bounds a hostile/incidental run before the drive+cover reject it.
+    // ponytail: cap at 16 steps — a real loop period is 2-4 steps; raise only if a real >16-step
+    // period appears. Bounds a hostile/incidental run before the drive+cover reject it.
     const MAX_LOOP_PERIOD_STEPS: usize = 16;
     let controller_changed = state
         .last_loop_action_sequence
