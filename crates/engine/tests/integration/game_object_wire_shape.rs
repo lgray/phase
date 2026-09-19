@@ -10,6 +10,7 @@
 //! the leg that names what a diverged pair costs.
 
 use std::collections::BTreeSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use engine::game::game_object::GameObject;
@@ -134,8 +135,6 @@ const DERIVED_NOT_DESERIALIZED: &[&str] = &[
 ];
 
 fn gunzip(bytes: &[u8]) -> String {
-    use std::io::Read;
-
     let mut json = String::new();
     flate2::read::GzDecoder::new(bytes)
         .read_to_string(&mut json)
