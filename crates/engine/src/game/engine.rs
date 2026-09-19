@@ -2854,7 +2854,7 @@ fn bounded_cycle_offer(
     // of choices": a period recorded from a DIFFERENT seat's independent activation describes no
     // sequence this proposer can take, so it is no reason to refuse their own predictable one. One
     // opponent activation used to refuse a proposer's certified bounded offer for the rest of the
-    // game. `loop_period_controller()` is `None` for a heterogeneous run, which also mints — and
+    // game. `loop_period_driver()` is `None` for a heterogeneous run, which also mints — and
     // that is sound in the same direction, because `try_offer_object_growth_shortcut` fail-closes
     // on heterogeneity too, so no object-growth offer can exist to be misrouted to.
     //
@@ -8458,7 +8458,7 @@ fn handle_declare_shortcut(
     // (which passes) and then hand the `Some(t)` arm a foreign-owner template it accepts.
     // Pinned by `r3_placement_a_restored_foreign_owner_declaration_is_refused`.
     //
-    // WHAT THIS DOES TO THE `None if …loop_period_controller() != Some(proposer)` ARM BELOW,
+    // WHAT THIS DOES TO THE `None if …loop_period_driver() != Some(proposer)` ARM BELOW,
     // stated because it reads like a loosening and is not: that arm is BYPASSED whenever the
     // offer published a declaration, because `&template` then takes the `Some(t)` arm instead.
     // That is intended. The arm exists so a PINLESS drive never runs — its own doc says "with

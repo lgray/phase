@@ -30668,9 +30668,10 @@ mod tests {
         }
     }
 
-    /// One recorded loop step whose action is `action`, controlled by the sole driver (so
-    /// `loop_period_controller` — and therefore `sole_driver` — is `Some(P2_DRIVER)` whenever a
-    /// row derives its scope from frames rather than writing it directly).
+    /// One recorded loop step whose action is `action`, controlled by the sole driver. A row that
+    /// derives its scope from frames rather than writing it directly reads `sole_driver`, which is
+    /// `loop_period_driver`: `Some(P2_DRIVER)` for a priority-driven `action`, `None` for a
+    /// `ResolveTrigger` one.
     fn p2_step(
         action: crate::types::game_state::LoopAction,
     ) -> crate::types::game_state::LoopActionContext {
@@ -31482,7 +31483,7 @@ mod tests {
     ///
     /// REVERT-PROBE: answer `true` for the `ResolveTrigger` arm in
     /// `activated_ability_is_not_a_loop_choice` ⇒ the two periods stop answering differently and
-    /// the pair below prints `(true, true)` ⇒ **FAILS**.
+    /// the pair below prints `(false, false)` ⇒ **FAILS**.
     ///
     /// UNIT-LEVEL DELIBERATELY, for the reason row 37 states and one more of its own: the
     /// `sole_driver` this closure sits behind reads `GameState::loop_period_driver`, which is

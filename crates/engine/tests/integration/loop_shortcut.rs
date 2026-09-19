@@ -6974,7 +6974,7 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
 
 /// R0e — the wire pair NO PRODUCER MINTS: a persisted `LoopShortcut` offer that NARROWS its
 /// repetition bound (`schema.is_bounded()`) while recording the PROPOSER'S OWN driving period
-/// (`loop_period_controller() == Some(proposer)`) must fail the load.
+/// (`loop_period_driver() == Some(proposer)`) must fail the load.
 ///
 /// The engine's three mints partition that cross-product and none lands in this cell: the
 /// object-growth and Path A drain mints both measure nothing (never `is_bounded()`), and the
@@ -6997,7 +6997,7 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
 /// |---|---|---|
 /// | delete the whole own-period `if` block | A1 → `Ok` | A2, A3, A4, A5, A6 |
 /// | delete `schema.is_bounded() &&` | A3, A5 → `Err` | A1, A2, A4, A6 |
-/// | delete `&& loop_period_controller() == …` | A2, A4 → `Err` | A1, A3, A5, A6 |
+/// | delete `&& loop_period_driver() == …` | A2, A4 → `Err` | A1, A3, A5, A6 |
 /// | hoist the block ABOVE the zero-capacity block | A6's message | A1–A5 |
 #[test]
 fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
@@ -7045,7 +7045,7 @@ fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
         .expect("the real object-growth capture records a driving period to donate");
     assert!(
         !donor_steps.is_empty(),
-        "an empty donated sequence would make loop_period_controller() None and every arm vacuous"
+        "an empty donated sequence would make loop_period_driver() None and every arm vacuous"
     );
     assert!(
         donor_steps
@@ -7173,8 +7173,9 @@ fn a_wire_bounded_offer_carrying_the_proposers_own_period_fails_the_load() {
             .last_loop_action_sequence
             .iter()
             .all(|step| step.controller == *combo_proposer),
-        "the surviving period must be homogeneous on the PROPOSER's seat — that is what makes \
-         loop_period_controller() == Some(proposer) and puts this arm on the guard's own predicate"
+        "the surviving period must be homogeneous on the PROPOSER's seat — with the donated \
+         Recast step, that is what makes loop_period_driver() == Some(proposer) and puts this arm \
+         on the guard's own predicate"
     );
     assert!(
         !schema.is_bounded(),
@@ -11427,7 +11428,8 @@ fn a_proposers_own_driving_period_mints_no_bounded_offer() {
 /// The routing signal was strictly coarser than the admission predicate of the consumer it routes
 /// to — `try_offer_object_growth_shortcut` already required every step to belong to the priority
 /// holder — so a foreign period could not produce an object-growth offer yet still refused the
-/// bounded one. Both now read `GameState::loop_period_controller`.
+/// bounded one. Step (1b) now reads `GameState::loop_period_driver`, that same admission
+/// narrowed by the priority-driven premise, so the routing signal is no longer the coarser.
 ///
 /// FIVE ARMS ON ONE CERTIFYING STATE, differing ONLY in `last_loop_action_sequence`:
 ///
@@ -11446,7 +11448,7 @@ fn a_proposers_own_driving_period_mints_no_bounded_offer() {
 /// TWO-SIDED CONTROL ON (1b), PER ASSERTION — no constant implementation passes:
 /// * **DROP** the proposer comparison (restore `!is_empty()`) ⇒ ⓒ and ⓓ return
 ///   `Err(ProposerHasDrivingPeriod)` ⇒ THOSE assertions fail, while ⓑ/ⓔ still pass.
-/// * **TRIVIALIZE** it constant-refuse (`loop_period_controller().is_some()`) ⇒ ⓒ/ⓓ fail as above.
+/// * **TRIVIALIZE** it constant-refuse (`loop_period_driver().is_some()`) ⇒ ⓒ/ⓓ fail as above.
 ///   TRIVIALIZE it constant-admit (never refuse) ⇒ ⓑ and ⓔ return `Ok` ⇒ **those** assertions
 ///   fail instead. Each direction flips a DIFFERENT named assertion.
 ///

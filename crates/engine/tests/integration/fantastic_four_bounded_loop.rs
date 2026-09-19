@@ -2950,7 +2950,7 @@ fn d6_the_ai_declare_candidate_carries_the_offers_own_published_declaration() {
 /// that commit's partition. Item-4 C2 IS that change: `handle_declare_shortcut` now resolves a
 /// `None` template against `offer.declaration` before the `template.owner` firewall, so on this
 /// board — which publishes a declaration — that arm is ACCEPTED and the `None if
-/// …loop_period_controller() != Some(proposer)` arm is bypassed rather than reached. The arm is
+/// …loop_period_driver() != Some(proposer)` arm is bypassed rather than reached. The arm is
 /// kept, flipped, because it is the one row here that measures the manual ingress agreeing with
 /// the AI ingress on one and the same offer. Its fail-closed sibling did not disappear — it
 /// moved to the offer shape that still reaches it, which is
