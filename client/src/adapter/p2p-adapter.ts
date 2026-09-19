@@ -3921,10 +3921,10 @@ export class P2PGuestAdapter implements EngineAdapter {
       },
       onUndeliverableFrame: () => {
         if (this.session !== session || this.terminated) return;
-        // A seated guest holds a token too, so this test MUST precede the
-        // token test below: the host's redelivery sweep resends exactly the
-        // frames a seated guest can lose, and closing here would tear down a
-        // session that heals itself.
+        // A seated guest holds a token too, so preserve its existing drop
+        // policy before the first-contact retry logic below. The host resends
+        // state updates and terminal results; preview replies are not covered
+        // by that redelivery and their timeout policy is a separate concern.
         if (this.authenticatedSession === session) return;
         this.undeliverableFramesSinceDecode += 1;
         // `reconnect_ack` IS re-requestable — `attemptReconnect` re-sends
