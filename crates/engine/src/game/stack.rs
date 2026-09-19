@@ -1448,10 +1448,12 @@ pub(crate) fn bind_resolving_ability_referents(
 /// CR 603.3 + CR 608.2: record a resolving triggered ability as one driving step of the current
 /// CR 732.2a loop period, when its resolution puts a token onto the battlefield (CR 111.1).
 ///
-/// This is the third arming beat, beside the cast capture and the on-stack activation arm. It is
-/// the one at which no player acts: CR 603.3 puts a triggered ability on the stack with nobody
-/// electing it, which is why the step it records declares itself NOT voluntarily repeatable and
-/// why the road that period opens stops at the producer's CR 104.4b gate.
+/// It joins the beats that already arm a period — the cast capture in `game::casting_costs`, the
+/// off-stack mana recorder and the on-stack activation arm in `game::engine` — and is the one at
+/// which no player acts: CR 603.3 puts a triggered ability on the stack with nobody electing it,
+/// which is why the step it records declares itself NOT voluntarily repeatable and why the road
+/// that period opens stops at the producer's CR 104.4b gate. The set is
+/// `GameState::last_loop_action_sequence`'s writers, named rather than counted.
 ///
 /// PLACEMENT (CR 603.4 / CR 608.2b): called past the intervening-if recheck and past the
 /// target-validation branch, before the entry's effects run — so a trigger whose condition fails
@@ -1463,8 +1465,11 @@ fn arm_trigger_driven_loop_period(
     entry: &StackEntry,
     ability: &ResolvedAbility,
 ) {
-    // The identical gate pair both existing arming beats carry: #4603-Off never writes, and the
+    // The gate pair every arming beat enforces: #4603-Off never writes, and the
     // detection/materialize drive leaves the record byte-stable across the cover's sample frames.
+    // Early-return shape, as the off-stack mana recorder has — neither writes nor clears when
+    // either gate is shut; the cast capture and the on-stack activation arm reach the same two
+    // properties through a branch that clears on Off instead.
     if !state.loop_detection.samples() || crate::game::engine::in_simulation_probe() {
         return;
     }
@@ -15917,8 +15922,8 @@ mod tests {
         }
 
         /// A board with a battlefield source carrying one printed trigger per element of
-        /// `damages`, plus a creature that can be targeted. Sampling is on, as both existing
-        /// arming beats require.
+        /// `damages`, plus a creature that can be targeted. Sampling is on, as every arming beat
+        /// requires.
         fn board(damages: &[i32]) -> (GameState, ObjectId, ObjectId) {
             let mut state = setup();
             state.loop_detection = LoopDetectionMode::Interactive;

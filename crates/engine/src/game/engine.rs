@@ -6426,10 +6426,17 @@ struct RecastAbort;
 /// CR 602.2a / CR 603.3 / CR 605.3a / CR 732.2a (G4): re-find, LIVE, the `AbilityDefinition` a
 /// recorded step names, each step kind by the coordinate it binds — a position into the
 /// layer-derived `abilities` vec for an activation, the immutable occurrence for a resolving
-/// trigger — so the drive re-validates by `Eq` each iteration instead of trusting what was
-/// captured (a layer re-eval that leaves nothing at that coordinate ⇒ `None` ⇒ fail-closed
-/// abort). `None` too for a step that names no ability at all: a `Recast` names a card being
-/// cast (CR 601.2a), and a subtype-derived land-mana fallback has no printed definition.
+/// trigger. A layer re-eval that leaves nothing at that coordinate ⇒ `None` ⇒ fail-closed.
+/// `None` too for a step that names no ability at all: a `Recast` names a card being cast
+/// (CR 601.2a), and a subtype-derived land-mana fallback has no printed definition.
+///
+/// WHAT READS THIS, PER STEP KIND. `drive_loop_action_iteration` re-validates the `Activate` and
+/// `TapLandForMana` answers by `Eq` against the live coordinate each iteration instead of
+/// trusting what was captured; it never reads the `ResolveTrigger` answer, because its opener
+/// dispatch returns `Err(RecastAbort)` for that kind before any replay (CR 603.3). The sole
+/// reader of the trigger answer is `try_offer_object_growth_shortcut`'s static randomness
+/// pre-scan, which hands every kind's answer to `spell_ability_bears_randomness`.
+///
 /// `pub(crate)` so the row that pins the trigger-driven re-find against a REBUILT live trigger
 /// list drives this production function rather than re-implementing the re-find beside it.
 pub(crate) fn loop_action_expected_def(
@@ -6722,14 +6729,36 @@ fn record_non_mana_activation_accepted(
 }
 
 /// FIX-1 (CR 732.2a): append a recorded fixed in-cycle player choice (tap-cost target, mana
-/// color, or proliferate target) to the CURRENT loop-period step — the driving `Activate` step
-/// the choice belongs to (`last_mut`; the Relic activation for the Kilo loop, whose cost/trigger
-/// choices are all answered before the next driving activation appends a new step). Gated EXACTLY
-/// like the samplers (`samples() && !in_simulation_probe()`): #4603-Off never records, and the
-/// detection/materialize drive (under `SimulationProbeGuard`) REPLAYS pins without re-recording
-/// them — keeping the sequence byte-stable across the cover's `s_n`/`s_n1`/`s_n2` frames. No-op
-/// unless a period is accumulating for `controller` (there is no step to attach the pin to
-/// otherwise, and a mid-period controller mismatch is a different loop).
+/// color, or proliferate target) to the period's CURRENT LAST step (`last_mut`) — whatever kind
+/// of step that is. Gated EXACTLY like the samplers (`samples() && !in_simulation_probe()`):
+/// #4603-Off never records, and the detection/materialize drive (under `SimulationProbeGuard`)
+/// REPLAYS pins without re-recording them — keeping the sequence byte-stable across the cover's
+/// `s_n`/`s_n1`/`s_n2` frames. No-op unless a period is accumulating for `controller` (there is
+/// no step to attach the pin to otherwise, and a mid-period controller mismatch is a different
+/// loop).
+///
+/// THE LAST STEP IS NOT ALWAYS THE DRIVING `Activate` THE CHOICE BELONGS TO, and no invariant
+/// makes it one. The trigger-resolution arming beat in `game::stack` appends its step BEFORE the
+/// resolving entry's effects run (CR 603.4 / CR 608.2b), so a same-controller token-minting
+/// trigger that resolves between an activation and that activation's own cost/trigger answers
+/// takes the following pins in its place.
+///
+/// WHY THAT IS INERT TODAY, and the only reason it is:
+/// `GameState::loop_period_is_priority_driven` is `LoopAction::is_voluntarily_repeatable` over
+/// the WHOLE period and `LoopAction::ResolveTrigger` answers `false`, so
+/// `try_offer_object_growth_shortcut` refuses any period carrying such a step at its CR 104.4b
+/// voluntariness gate, before a pin is read at all. A route that somehow got past that gate still
+/// replays no pin: `drive_loop_action_iteration` aborts on the same step kind at its opener
+/// dispatch.
+///
+/// ⚠ THE PROPERTY A FUTURE AUTHOR WOULD HAVE TO BREAK: SINGLE-STEP REMOVAL. A displaced pin
+/// turns into a live bug only once the step it landed on can be evicted while the pin stays
+/// behind on the wrong one. Nothing removes a single step: `last_loop_action_sequence` takes no
+/// `pop`, `retain`, `truncate`, `remove`, `drain` or `split_off` anywhere in this crate — every
+/// removal is a whole-sequence `clear()` or a whole-sequence replacement — so a displaced pin
+/// always dies with the period holding it. The phase that drives trigger-step replay, or any
+/// change that adds one of those operations, must re-point this write at the step the choice
+/// belongs to in the SAME change.
 fn record_loop_pin(
     state: &mut GameState,
     controller: PlayerId,
@@ -7210,9 +7239,13 @@ fn drive_loop_action_iteration(
 /// the clone by driving each captured step in order through `drive_loop_action_iteration` (which
 /// settles every beat to its OWN empty-stack `Priority` boundary, CR 601.2i). A 1-element
 /// sequence is the single-action recast/token case (byte-identical to the pre-P7 single drive); a
-/// 2+ element sequence is a multi-activation engine (e.g. Basalt Monolith's off-stack mana beat,
-/// CR 605.3b, then its on-stack `{3}: Untap` beat). Each step's `expected_def` re-validates its
-/// `Activate` `ability_index` by `Eq` (G4); a `Recast` step's is `None`. ANY step's `RecastAbort`
+/// 2+ element sequence was accumulated across several driving beats — a multi-activation engine
+/// (e.g. Basalt Monolith's off-stack mana beat, CR 605.3b, then its on-stack `{3}: Untap` beat),
+/// or, since the trigger-resolution arming beat in `game::stack` exists, one carrying a
+/// `ResolveTrigger` step among its activations. `drive_loop_action_iteration` refuses that kind
+/// at its opener dispatch (CR 603.3), so a period holding one aborts the whole drive here rather
+/// than replaying it. Each step's `expected_def` re-validates its `Activate` `ability_index` by
+/// `Eq` (G4); a `Recast` step's is `None`. ANY step's `RecastAbort`
 /// aborts the whole period fail-closed — a partial/broken period never certifies (the drive+cover
 /// IS the period-boundary check, so no explicit boundary detection is needed in the reducer).
 fn drive_loop_sequence_iteration(
