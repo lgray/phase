@@ -16996,6 +16996,153 @@ mod issue_4548_deadlock_tests {
         );
     }
 
+    /// A prepared terminal delivery. The sweep reads only the presence of a
+    /// code in the prepared map, so the fields carry no behaviour here; they
+    /// exist because production only ever prepares a real one.
+    fn terminal_delivery(game_code: &str) -> server_core::CurrentTerminalDelivery {
+        server_core::CurrentTerminalDelivery {
+            key: server_core::FullSessionKey {
+                game_code: game_code.to_string(),
+                generation: 0,
+            },
+            terminal_revision: 0,
+            delivery_id: server_core::TerminalDeliveryId(format!("{game_code}-delivery")),
+            credential: server_core::TerminalCredential(format!("{game_code}-credential")),
+            display: server_core::TerminalMatchDisplay {
+                winner: None,
+                reason: "Opponent disconnected (grace period expired)".to_string(),
+                ranked_result: None,
+            },
+        }
+    }
+
+    /// The deferral that does not clear itself. A contended game is skipped for
+    /// one tick and reaped by the next, but a started game whose terminal
+    /// preparation produced nothing is skipped again on every tick for as long
+    /// as the preparation keeps failing — and tearing it down instead would
+    /// drop the result its players are owed.
+    #[tokio::test]
+    async fn a_started_game_with_no_prepared_terminal_is_deferred_not_torn_down() {
+        let state: SharedState = Arc::new(Mutex::new(SessionManager::new()));
+        let (_file, game_db) = temp_game_db();
+        let code = {
+            let mut mgr = state.lock().await;
+            let (code, _token) = mgr.create_game(PlayerDeckPayload::default(), None);
+            mgr.try_session(&code).expect("session").game_started = true;
+            mgr.reconnect
+                .record_disconnect(&code, PlayerId(0), Duration::from_millis(0));
+            code
+        };
+        tokio::time::sleep(Duration::from_millis(2)).await;
+
+        // Keyed on an unrelated game, so the guard below reads this code's own
+        // absence rather than an empty map.
+        let prepared = HashMap::from([(
+            "OTHER1".to_string(),
+            vec![(PlayerId(0), terminal_delivery("OTHER1"))],
+        )]);
+        let mut mgr = state.lock().await;
+        let expired = mgr.reconnect.check_expired();
+        assert_eq!(
+            expired,
+            vec![code.clone()],
+            "reach guard: the sweep must see the lapsed seat"
+        );
+        assert!(
+            mgr.try_session(&code).expect("session").game_started,
+            "reach guard: the fixture must reach the started arm, not the retire arm"
+        );
+        assert!(
+            !prepared.contains_key(&code),
+            "reach guard: no terminal was prepared for this game this tick"
+        );
+
+        let sweep = reap_expired_disconnects(&mut mgr, &game_db, &expired, &prepared);
+        assert!(
+            sweep.acted.is_empty(),
+            "a started game owed a terminal result is not torn down without one"
+        );
+        assert_eq!(
+            sweep.deferred, 1,
+            "and the sweep reports the skip, so an unending retry is not a silent one"
+        );
+        assert!(
+            mgr.contains_game(&code),
+            "the game stays in the registry, which is what makes this a deferral"
+        );
+    }
+
+    /// The prepared path owes the session nothing: its terminal transaction has
+    /// already committed. A prepared code the registry still holds is removed
+    /// even though it is started, and one the registry no longer holds is
+    /// consumed. Neither is a retry, so neither may be counted as one.
+    #[tokio::test]
+    async fn a_prepared_code_is_removed_or_consumed_but_never_deferred() {
+        let state: SharedState = Arc::new(Mutex::new(SessionManager::new()));
+        let (_file, game_db) = temp_game_db();
+        let registered = {
+            let mut mgr = state.lock().await;
+            let (code, _token) = mgr.create_game(PlayerDeckPayload::default(), None);
+            // Production prepares a terminal only for a started game, and an
+            // unprepared started game is precisely the arm that defers.
+            mgr.try_session(&code).expect("session").game_started = true;
+            mgr.reconnect
+                .record_disconnect(&code, PlayerId(0), Duration::from_millis(0));
+            mgr.reconnect
+                .record_disconnect("GONE02", PlayerId(0), Duration::from_millis(0));
+            code
+        };
+        tokio::time::sleep(Duration::from_millis(2)).await;
+
+        let prepared = HashMap::from([
+            (
+                registered.clone(),
+                vec![(PlayerId(0), terminal_delivery(&registered))],
+            ),
+            (
+                "GONE02".to_string(),
+                vec![(PlayerId(0), terminal_delivery("GONE02"))],
+            ),
+        ]);
+
+        let mut mgr = state.lock().await;
+        let mut expired = mgr.reconnect.check_expired();
+        expired.sort();
+        let mut both = vec![registered.clone(), "GONE02".to_string()];
+        both.sort();
+        assert_eq!(
+            expired, both,
+            "reach guard: the sweep must see both lapsed seats"
+        );
+        assert!(
+            prepared.contains_key(&registered) && prepared.contains_key("GONE02"),
+            "reach guard: both codes take the prepared path, which skips the session checks"
+        );
+        assert!(
+            mgr.contains_game(&registered),
+            "reach guard: the registry still holds the prepared game"
+        );
+        assert!(
+            !mgr.contains_game("GONE02"),
+            "reach guard: the registry no longer holds the other prepared code"
+        );
+
+        let sweep = reap_expired_disconnects(&mut mgr, &game_db, &expired, &prepared);
+        assert_eq!(
+            sweep.acted,
+            vec![registered.clone()],
+            "a prepared, still-registered game is removed even though it is started"
+        );
+        assert_eq!(
+            sweep.deferred, 0,
+            "and a prepared code with nothing left to remove is consumed, never counted as a retry"
+        );
+        assert!(
+            mgr.reconnect.check_expired().is_empty(),
+            "both records are consumed rather than re-reported forever"
+        );
+    }
+
     /// The production lobby-expiry timeout, from the reap block.
     const LOBBY_EXPIRY_SECS: u64 = 300;
 
