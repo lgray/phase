@@ -9049,7 +9049,9 @@ mod tests {
         let data = name_deck("Forest", 40);
         let (mut mgr, code) = seated_room(&db, &data);
 
-        let session = mgr.sessions.get_mut(&code).unwrap();
+        let session = mgr
+            .session_exclusive(&code)
+            .expect("a freshly seated room is still solely owned by the manager");
         session.start_game(&db).expect("a fully decked room starts");
         assert_eq!(session.state.active_interaction_slots.len(), 2);
         for player in [PlayerId(0), PlayerId(1)] {
