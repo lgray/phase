@@ -119,6 +119,16 @@ impl ReconnectManager {
         self.disconnected.contains_key(&key)
     }
 
+    /// Erase every disconnect record belonging to one game. `disconnected` is
+    /// keyed per `(game, seat)`, so a game has one entry per lapsed seat and no
+    /// keyed `remove` can reach them; the entries carry their own `game_code`,
+    /// and `retain` over a `DisconnectInfo` field is the shape `check_expired`
+    /// already uses.
+    pub fn remove_game(&mut self, game_code: &str) {
+        self.disconnected
+            .retain(|_, info| info.game_code != game_code);
+    }
+
     pub fn remove_disconnect(&mut self, game_code: &str, player: PlayerId) {
         let key = format!("{}:{}", game_code, player.0);
         self.disconnected.remove(&key);
