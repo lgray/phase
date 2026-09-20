@@ -2442,8 +2442,20 @@ async fn serve() {
                     }
                 }
 
-                if restored > 0 {
-                    info!(count = restored, "restored active games from disk");
+                // Unconditional, so every boot leaves one line saying the
+                // pass ran: a restore that found nothing and a restore that
+                // could read nothing print the same count and are told apart
+                // by the warn below.
+                info!(count = restored, "restored active games from disk");
+                match game_db.count_legacy_full_sessions() {
+                    Ok(0) => {}
+                    Ok(dropped) => warn!(
+                        count = dropped,
+                        "active games written by an earlier build cannot be restored by this one"
+                    ),
+                    Err(error) => {
+                        warn!(%error, "failed to count active games an earlier build wrote")
+                    }
                 }
             }
             Err(e) => {

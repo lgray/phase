@@ -545,8 +545,10 @@ impl GameDb {
     /// SQLite to fence stale writers but are never reconstructed at startup.
     pub fn load_active_full_sessions(&self) -> rusqlite::Result<Vec<FullPersistSnapshot>> {
         let conn = self.conn.lock().unwrap();
-        // One read shape. The `WHERE` drops the rows an earlier build wrote, so
-        // they are never decoded and never logged. Both payload columns are
+        // One read shape. The `WHERE` drops the rows an earlier build wrote
+        // before they are decoded; `count_legacy_full_sessions` reports how
+        // many it dropped, so "restored nothing" stays distinguishable from
+        // "there was nothing to restore". Both payload columns are
         // written by one statement, so a row carrying one without the other has
         // no production producer; it is read as absent and skipped per row,
         // like the decode failure below, rather than failing the whole restore.
@@ -594,6 +596,20 @@ impl GameDb {
             }
         }
         Ok(snapshots)
+    }
+
+    /// Counts the live rows an earlier build wrote — payload in `session_json`,
+    /// no `session_state_json`. `load_active_full_sessions` drops these in its
+    /// `WHERE`, so without this count an upgrade that can restore none of its
+    /// games looks exactly like a boot with no games to restore.
+    pub fn count_legacy_full_sessions(&self) -> rusqlite::Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM game_sessions
+             WHERE retired = 0 AND session_state_json IS NULL AND session_json IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
     }
 
     /// Atomically records one immutable Full terminal artifact, creates one
@@ -1367,8 +1383,9 @@ mod tests {
             .collect()
     }
 
-    /// Exactly what the pre-change writer wrote: the whole payload in
-    /// `session_json`, both new columns absent.
+    /// A row whose payload lives in `session_json` with both new columns
+    /// absent. The payload's interior is not a pre-change payload: `deck_pools`
+    /// is now `skip_serializing`, so no pools sub-object is written.
     fn insert_legacy_row(db: &GameDb, game_code: &str) {
         let legacy = serde_json::to_string(&full_snapshot(game_code, 1, 1, None, false).persisted)
             .expect("a legacy payload serializes");
@@ -1505,6 +1522,55 @@ mod tests {
                 .iter()
                 .any(|snapshot| snapshot.key.game_code == "NOPOOLS"),
             "the row with no pools column is not restored"
+        );
+    }
+
+    /// The count that makes the compatibility break visible in a boot log.
+    /// It must be the reader's drop set and nothing else: this build's own
+    /// saved row, a key claimed but never saved and a tombstone are all live
+    /// in the same table, and a row the reader's `WHERE` lets through is
+    /// reported by the reader itself. Counting any of them would announce
+    /// healthy, finished or already-reported games as lost.
+    #[test]
+    fn only_live_rows_an_earlier_build_wrote_are_counted() {
+        let db = test_db();
+        let (mgr, code) = seeded_full_session(&db);
+        assert_eq!(save(&db, &mgr, &code), FullPersistDisposition::Applied);
+        let (_unsaved, placeholder) = seeded_full_session(&db);
+        insert_legacy_row(&db, "LEGACY");
+        insert_legacy_row(&db, "TOMBSTONE");
+        insert_legacy_row(&db, "BOTHCOLS");
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE game_sessions SET retired = 1 WHERE game_code = ?1",
+                params!["TOMBSTONE"],
+            )
+            .expect("retire the legacy row");
+            conn.execute(
+                "UPDATE game_sessions SET session_state_json = session_json WHERE game_code = ?1",
+                params!["BOTHCOLS"],
+            )
+            .expect("give the legacy row a column this build reads");
+        }
+
+        assert_eq!(
+            db.count_legacy_full_sessions().expect("count"),
+            1,
+            "only the live row this build's reader drops counts, not {code}, \
+             {placeholder}, the tombstone or the row carrying both columns"
+        );
+
+        let restored: Vec<String> = db
+            .load_active_full_sessions()
+            .expect("read back")
+            .into_iter()
+            .map(|snapshot| snapshot.key.game_code)
+            .collect();
+        assert_eq!(
+            restored,
+            vec![code],
+            "reach guard: the reader drops the counted row and keeps its own"
         );
     }
 
