@@ -1541,10 +1541,17 @@ fn draft_socket_admission_rejection(
 /// > The instrument that produced this order is **intraprocedural** — it
 /// > brace-matches within one file and cannot see an edge formed across a
 /// > function call — so for code written after this change the order holds by
-/// > this declaration, not by the instrument.
+/// > this declaration, not by the instrument. It also walks only edges
+/// > *between* tiers: a same-tier nesting is not an inversion in its model and
+/// > so is invisible to it. That is the blind spot that matters here, because
+/// > the one same-tier edge that would deadlock outright is session -> session
+/// > — hence the standing rule above that no site holds two `GameSession`
+/// > guards at once, which the instrument cannot check for you.
 ///
-/// The `Err` is the relocated refusal: this is the only production producer of
-/// `game_not_found`. A caller whose own error type is `SessionActionError` or
+/// The `Err` is the relocated refusal, and it is the only production producer of
+/// `game_not_found`: every other production frame that answers an absent game
+/// that way carries this `Err` rather than rebuilding the message. A caller
+/// whose own error type is `SessionActionError` or
 /// `PreviewRefusal` converts with `.map_err(Into::into)`, the same
 /// `From<String>` impl the relocated method used internally. A caller whose
 /// base answer to an absent game is a different message, a default value, or
@@ -2337,93 +2344,98 @@ async fn serve() {
                     let game_code = &runtime.key.game_code;
                     info!(game = %game_code, "restoring persisted session");
                     match GameSession::from_persisted(snapshot.persisted, &db) {
-                        Ok(session) => match finish_restored_full_startup(
-                            &mut mgr, &game_db, &runtime, session,
-                        ) {
-                            Ok(RestoredFullStartup::Terminal) => {
-                                info!(game = %game_code, "terminalized restored Full session");
-                            }
-                            Ok(RestoredFullStartup::Active) => {
-                                let (
-                                    lobby_meta,
-                                    is_started,
-                                    reconnect_players,
-                                    current_players,
-                                    max_players,
-                                    format_config,
-                                    match_config,
-                                ) = {
-                                    // Restore-window access: the `expect`
-                                    // asserts the manager's sole ownership
-                                    // immediately after the handoff, not that
-                                    // the registry still holds this game.
-                                    let session = mgr
-                                        .session_exclusive(game_code)
-                                        .expect("active startup handoff retains its session");
-                                    let reconnect_players: Vec<PlayerId> = session
-                                        .player_tokens
-                                        .iter()
-                                        .enumerate()
-                                        .filter_map(|(index, token)| {
-                                            let player = PlayerId(index as u8);
-                                            (!token.is_empty()
-                                                && !session.ai_seats.contains(&player))
-                                            .then_some(player)
-                                        })
-                                        .collect();
-                                    (
-                                        session.lobby_meta.clone(),
-                                        session.game_started,
-                                        reconnect_players,
-                                        session.current_player_count(),
-                                        session.player_count as u32,
-                                        session.state.format_config.clone(),
-                                        session.state.match_config,
-                                    )
-                                };
-
-                                // Register all non-AI human players as disconnected
-                                // to start the 120s grace period from now. This is
-                                // deliberately after the durable startup handoff:
-                                // a failed resume is not reconnectable.
-                                let default_grace = mgr.reconnect.grace_period;
-                                for player in reconnect_players {
-                                    mgr.reconnect.record_disconnect(
-                                        game_code,
-                                        player,
-                                        default_grace,
-                                    );
+                        Ok(mut session) => {
+                            // The column's own string, so the first persist
+                            // after a restart re-serializes nothing.
+                            session.seed_deck_pools_encoding(snapshot.deck_pools_json);
+                            match finish_restored_full_startup(
+                                &mut mgr, &game_db, &runtime, session,
+                            ) {
+                                Ok(RestoredFullStartup::Terminal) => {
+                                    info!(game = %game_code, "terminalized restored Full session");
                                 }
+                                Ok(RestoredFullStartup::Active) => {
+                                    let (
+                                        lobby_meta,
+                                        is_started,
+                                        reconnect_players,
+                                        current_players,
+                                        max_players,
+                                        format_config,
+                                        match_config,
+                                    ) = {
+                                        // Restore-window access: the `expect`
+                                        // asserts the manager's sole ownership
+                                        // immediately after the handoff, not that
+                                        // the registry still holds this game.
+                                        let session = mgr
+                                            .session_exclusive(game_code)
+                                            .expect("active startup handoff retains its session");
+                                        let reconnect_players: Vec<PlayerId> = session
+                                            .player_tokens
+                                            .iter()
+                                            .enumerate()
+                                            .filter_map(|(index, token)| {
+                                                let player = PlayerId(index as u8);
+                                                (!token.is_empty()
+                                                    && !session.ai_seats.contains(&player))
+                                                .then_some(player)
+                                            })
+                                            .collect();
+                                        (
+                                            session.lobby_meta.clone(),
+                                            session.game_started,
+                                            reconnect_players,
+                                            session.current_player_count(),
+                                            session.player_count as u32,
+                                            session.state.format_config.clone(),
+                                            session.state.match_config,
+                                        )
+                                    };
 
-                                // Restore lobby entry if game hasn't started.
-                                // Persisted sessions pre-date version metadata;
-                                // restored lobbies appear without a version badge.
-                                if let Some(meta) = lobby_meta {
-                                    if !is_started {
-                                        lob.register_game(
+                                    // Register all non-AI human players as disconnected
+                                    // to start the 120s grace period from now. This is
+                                    // deliberately after the durable startup handoff:
+                                    // a failed resume is not reconnectable.
+                                    let default_grace = mgr.reconnect.grace_period;
+                                    for player in reconnect_players {
+                                        mgr.reconnect.record_disconnect(
                                             game_code,
-                                            RegisterGameRequest {
-                                                host_name: meta.host_name,
-                                                public: meta.public,
-                                                password: meta.password,
-                                                timer_seconds: meta.timer_seconds,
-                                                current_players,
-                                                max_players,
-                                                format_config: Some(format_config),
-                                                match_config,
-                                                ..Default::default()
-                                            },
-                                            &SysEnv,
+                                            player,
+                                            default_grace,
                                         );
                                     }
-                                }
 
-                                restored += 1;
+                                    // Restore lobby entry if game hasn't started.
+                                    // Persisted sessions pre-date version metadata;
+                                    // restored lobbies appear without a version badge.
+                                    if let Some(meta) = lobby_meta {
+                                        if !is_started {
+                                            lob.register_game(
+                                                game_code,
+                                                RegisterGameRequest {
+                                                    host_name: meta.host_name,
+                                                    public: meta.public,
+                                                    password: meta.password,
+                                                    timer_seconds: meta.timer_seconds,
+                                                    current_players,
+                                                    max_players,
+                                                    format_config: Some(format_config),
+                                                    match_config,
+                                                    ..Default::default()
+                                                },
+                                                &SysEnv,
+                                            );
+                                        }
+                                    }
+
+                                    restored += 1;
+                                }
+                                Err(error) => {
+                                    warn!(game = %game_code, %error, "restored Full session remains private for recovery");
+                                }
                             }
-                            Err(error) => {
-                                warn!(game = %game_code, %error, "restored Full session remains private for recovery");
-                            }
-                        },
+                        }
                         Err(e) => {
                             warn!(game = %game_code, error = %e, "failed to restore active session; retaining fenced row for recovery");
                         }
@@ -2492,9 +2504,10 @@ async fn serve() {
         loop {
             interval.tick().await;
 
-            // Check reconnect grace period expiry
+            // Check reconnect grace period expiry. The read is non-destructive:
+            // a code this tick cannot act on is reported again by the next one.
             let expired = {
-                let mut mgr = bg_state.lock().await;
+                let mgr = bg_state.lock().await;
                 mgr.reconnect.check_expired()
             };
             if !expired.is_empty() {
@@ -2506,7 +2519,9 @@ async fn serve() {
                             // `try_session` under the registry guard: it never
                             // waits, so it cannot close a cycle, and a game
                             // with a transition in flight is precisely the one
-                            // to leave alone for ten seconds.
+                            // to leave alone for ten seconds — which the
+                            // non-destructive `check_expired` is what makes
+                            // true, by reporting it again on the next tick.
                             let session = mgr.try_session(game_code)?;
                             session
                                 .game_started
@@ -2534,36 +2549,15 @@ async fn serve() {
                         }
                     }
                 }
-                // The decision and the removal happen in one registry critical
-                // section, so no new handle can be obtained between them —
-                // obtaining one needs the registry this loop holds. Everything
-                // the removed `GameSession` used to supply downstream is read
-                // from the `try_session` guard before the removal.
                 let removed = {
                     let mut mgr = bg_state.lock().await;
-                    let mut removed: Vec<String> = Vec::new();
-                    for game_code in &expired {
-                        let Some(session) = mgr.try_session(game_code) else {
-                            continue;
-                        };
-                        let game_started = session.game_started;
-                        if game_started && !prepared.contains_key(game_code) {
-                            continue;
-                        }
-                        if !game_started {
-                            retire_unstarted_session_async(&bg_game_db, &session);
-                        }
-                        drop(session);
-                        if mgr.remove_game(game_code) {
-                            removed.push(game_code.clone());
-                        }
-                    }
-                    removed
+                    reap_expired_disconnects(&mut mgr, &bg_game_db, &expired, &prepared)
                 };
                 // Nothing else is held here: the branch below takes
                 // `bg_game_spectators` at its end and the lobby-expiry branch
-                // takes `bg_lobby` before `bg_state`, so the lobby lock this
-                // call takes is nested under neither.
+                // takes `bg_lobby` and `bg_state` in sequence, never one inside
+                // the other, so the lobby lock this call takes is nested under
+                // neither.
                 delist_removed_sessions(&bg_lobby, &bg_lobby_subs, &removed).await;
                 {
                     let conns = bg_connections.lock().await;
@@ -2592,68 +2586,57 @@ async fn serve() {
             }
 
             // Check lobby game expiry (5 minute timeout for waiting games).
-            // The broker reaps stale entries and returns the LobbyGameRemoved
-            // fan-out outbounds; the Full-mode session/db deletion stays here
-            // (the broker is WASM-safe and has no SQLite/SessionManager). The
-            // expired codes are recovered from the returned outbounds.
-            let reap_outbounds = {
-                let mut broker = bg_lobby.lock().await;
-                broker.reap_expired(300, &SysEnv)
+            // The report is non-destructive, so a listing this tick declines to
+            // act on is reported again by the next one; the broker then
+            // consumes exactly what was dispositioned. The Full-mode session/db
+            // deletion stays here — the broker is WASM-safe and has no
+            // SQLite/SessionManager.
+            let expired_lobby = {
+                let broker = bg_lobby.lock().await;
+                broker.lobby().check_expired(300, &SysEnv)
             };
-            if !reap_outbounds.is_empty() {
-                let expired_lobby: Vec<String> = reap_outbounds
-                    .iter()
-                    .filter_map(|ob| match ob {
-                        Outbound::ToSubscribers(
-                            lobby_broker::LobbyServerMessage::LobbyGameRemoved { game_code },
-                        ) => Some(game_code.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                // `expired_lobby` is deliberately lobby-filtered: it drives the
-                // Full-mode session/db cleanup below, and a tournament has no
-                // server-run session to retire. But `reap_outbounds` now also
-                // carries tournament lifecycle events, so reporting only the
-                // lobby count would print a misleading `count=0` for a sweep
-                // that reaped tournaments and nothing else. Both counts are
-                // named explicitly rather than summed — they are different
-                // kinds of expiry with different cleanup, and a single total
-                // would hide which one actually fired.
-                let tournament_events = reap_outbounds.len() - expired_lobby.len();
-                info!(
-                    lobby_games = expired_lobby.len(),
-                    tournament_events, "expiring stale lobby entries"
-                );
+            let handled_lobby = if expired_lobby.is_empty() {
+                Vec::new()
+            } else {
                 // Same discipline as the reaper above: `try_session` under the
                 // registry guard decides, the removal happens in the same
                 // critical section, and the session the retire needs is read
                 // from that guard before it is dropped. A contended game is
                 // skipped, not waited on.
                 let mut mgr = bg_state.lock().await;
-                for game_code in &expired_lobby {
-                    let unstarted = match mgr.try_session(game_code) {
-                        Some(session) if !session.game_started => {
-                            retire_unstarted_session_async(&bg_game_db, &session);
-                            true
-                        }
-                        Some(_) => false,
-                        None => continue,
-                    };
-                    if unstarted {
-                        mgr.remove_game(game_code);
-                    } else {
-                        error!(game = %game_code, "refusing to retire a started session from lobby expiry");
-                    }
-                }
-                drop(mgr);
-                // Unchanged from base: this sweep prunes every expired lobby
-                // code, removed or not. That asymmetry with the reaper's prune
-                // is base behaviour and is why the abandon path keeps both of
-                // its authority checks.
-                prune_game_connections(&bg_connections, expired_lobby.iter().map(String::as_str))
+                handle_expired_lobby_games(&mut mgr, &bg_game_db, &expired_lobby)
+            };
+            // Every tick, not only the ticks a lobby entry lapsed: the
+            // tournament half of this sweep runs on its own lifecycle clocks
+            // and has no shell-side decline to wait for.
+            let reap_outbounds = {
+                let mut broker = bg_lobby.lock().await;
+                broker.reap_expired_handled(&handled_lobby, &SysEnv)
+            };
+            if !reap_outbounds.is_empty() {
+                // `handled_lobby` is deliberately lobby-only: it drove the
+                // Full-mode session/db cleanup above, and a tournament has no
+                // server-run session to retire. But `reap_outbounds` also
+                // carries tournament lifecycle events, so reporting only the
+                // lobby count would print a misleading `count=0` for a sweep
+                // that reaped tournaments and nothing else. Both counts are
+                // named explicitly rather than summed — they are different
+                // kinds of expiry with different cleanup, and a single total
+                // would hide which one actually fired.
+                let tournament_events = reap_outbounds.len() - handled_lobby.len();
+                info!(
+                    lobby_games = handled_lobby.len(),
+                    tournament_events, "expiring stale lobby entries"
+                );
+                // Still every code this sweep dispositioned, removed or not —
+                // that asymmetry with the reaper's prune, which takes only the
+                // codes it removed, is base behaviour and is why the abandon
+                // path keeps both of its authority checks. Only a deferred code
+                // drops out, and it is pruned on the tick that retires it.
+                prune_game_connections(&bg_connections, handled_lobby.iter().map(String::as_str))
                     .await;
                 let mut specs = bg_game_spectators.lock().await;
-                for game_code in &expired_lobby {
+                for game_code in &handled_lobby {
                     specs.remove(game_code);
                 }
 
@@ -3478,18 +3461,19 @@ mod lifecycle_tests {
         }
     }
 
-    /// Verification Matrix row 10. `Broker::reap_expired` returning the right
-    /// outbounds is necessary but NOT sufficient — the shell's reap block also
-    /// has to forward them. This drives the block's two real steps in the same
-    /// order the production code does:
+    /// Verification Matrix row 10. The broker returning the right outbounds is
+    /// necessary but NOT sufficient — the shell's reap block also has to
+    /// forward them. This drives the block's two real steps in the same order
+    /// the production code does:
     ///
-    ///   1. the `expired_lobby` `filter_map`, which is lobby-only by design
-    ///      (a tournament has no Full-mode session to retire), and
+    ///   1. the `expired_lobby` report, which is lobby-only by design (a
+    ///      tournament has no Full-mode session to retire, and so never
+    ///      reaches the registry critical section), and
     ///   2. the fan-out loop, which iterates the FULL `reap_outbounds` rather
-    ///      than the filtered list — the reason tournaments reach subscribers
-    ///      with no new code in the loop.
+    ///      than that lobby-only list — the reason tournaments reach
+    ///      subscribers with no new code in the loop.
     ///
-    /// If step 2 were ever narrowed to `expired_lobby`, a subscribed client
+    /// If step 2 were ever narrowed to `handled_lobby`, a subscribed client
     /// would receive nothing when a tournament it is watching expires, while
     /// every broker-level test kept passing.
     #[tokio::test]
@@ -3524,23 +3508,17 @@ mod lifecycle_tests {
         // Past the registration window, so the sweep reaps it.
         env.now
             .set(env.now.get() + (lobby_broker::REGISTRATION_TIMEOUT_SECS + 1) * 1000);
-        let reap_outbounds = broker.reap_expired(300, &env);
-        assert!(!reap_outbounds.is_empty());
 
-        // Step 1, verbatim from the reap block.
-        let expired_lobby: Vec<String> = reap_outbounds
-            .iter()
-            .filter_map(|ob| match ob {
-                Outbound::ToSubscribers(LobbyServerMessage::LobbyGameRemoved { game_code }) => {
-                    Some(game_code.clone())
-                }
-                _ => None,
-            })
-            .collect();
+        // Step 1, verbatim from the reap block: the lobby-only report, then the
+        // consume of what the registry critical section handled — nothing, a
+        // tournament having no session to retire.
+        let expired_lobby = broker.lobby().check_expired(300, &env);
         assert!(
             expired_lobby.is_empty(),
             "a tournament must not be mistaken for a lobby game needing session cleanup"
         );
+        let reap_outbounds = broker.reap_expired_handled(&expired_lobby, &env);
+        assert!(!reap_outbounds.is_empty());
 
         // Step 2, verbatim: one subscribed client, and the fan-out loop.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5670,6 +5648,118 @@ fn retire_unstarted_session_async(game_db: &SharedGameDb, session: &GameSession)
             }
         }
     });
+}
+
+/// The forfeit sweep's registry critical section: act on the codes
+/// `ReconnectManager::check_expired` reported, and return the ones actually
+/// removed. Extracted for the same stated reason
+/// `create_and_connect_multiplayer_session` is — the sweep and its regression
+/// test must share the production code path, not a description of it.
+///
+/// The decision and the removal happen in one critical section, so no new
+/// handle can be obtained between them: obtaining one needs this registry.
+/// Everything a removed `GameSession` supplies downstream is read from the
+/// `try_session` guard before the removal.
+///
+/// A code this call declines to act on keeps its reconnect records, so the next
+/// tick reports it again — `check_expired` no longer erases what it reports,
+/// and a game skipped for contention is retried rather than stranded.
+fn reap_expired_disconnects(
+    mgr: &mut SessionManager,
+    game_db: &SharedGameDb,
+    expired: &[String],
+    prepared: &HashMap<String, Vec<(PlayerId, server_core::CurrentTerminalDelivery)>>,
+) -> Vec<String> {
+    let mut removed: Vec<String> = Vec::new();
+    for game_code in expired {
+        // A prepared code's terminal transaction has already committed, so the
+        // removal owes the session nothing and must not defer on a contended
+        // one: the row is retired and its players are waiting on a teardown
+        // only this can deliver.
+        if !prepared.contains_key(game_code) {
+            // `try_session` under the registry guard: it never waits, so it
+            // cannot close a cycle, and a game with a transition in flight is
+            // precisely the one to leave alone until the next tick.
+            let Some(session) = mgr.try_session(game_code) else {
+                continue;
+            };
+            if session.game_started {
+                // Started, but terminal preparation produced no deliveries for
+                // it this tick. Retry rather than tear it down without the
+                // result its players are owed.
+                continue;
+            }
+            retire_unstarted_session_async(game_db, &session);
+            drop(session);
+        }
+        if mgr.remove_game(game_code) {
+            removed.push(game_code.clone());
+        }
+    }
+    // The consumption rule, stated once: a disconnect record survives until its
+    // game leaves the registry. `remove_game` erased the ones removed above; a
+    // code the registry no longer holds at all has nothing left to forfeit, so
+    // consume it here instead of re-reporting it every tick forever. A
+    // *contended* game is still in the registry, so its records survive and the
+    // next tick retries it.
+    for game_code in expired {
+        if !mgr.contains_game(game_code) {
+            mgr.reconnect.remove_game(game_code);
+        }
+    }
+    removed
+}
+
+/// The lobby-expiry sweep's registry critical section: act on the codes
+/// `LobbyManager::check_expired` reported, and return the ones this tick
+/// dispositioned. Extracted for the same stated reason
+/// [`reap_expired_disconnects`] is — the sweep and its regression test must
+/// share the production code path, not a description of it.
+///
+/// The decision and the removal happen in one critical section, so no new
+/// handle can be obtained between them: obtaining one needs this registry.
+/// Everything a retired `GameSession` supplies is read from the `try_session`
+/// guard before the removal.
+///
+/// A code this call declines to act on is left out of the returned set, so the
+/// broker keeps its listing and the next tick reports it again — `check_expired`
+/// no longer erases what it reports, and a lobby entry skipped for contention is
+/// retried rather than stranded holding an unstarted session that never retires.
+fn handle_expired_lobby_games(
+    mgr: &mut SessionManager,
+    game_db: &SharedGameDb,
+    expired: &[String],
+) -> Vec<String> {
+    let mut handled: Vec<String> = Vec::new();
+    for game_code in expired {
+        // `try_session` under the registry guard: it never waits, so it cannot
+        // close a cycle, and a game with a transition in flight is precisely
+        // the one to leave alone until the next tick. `None` alone is ambiguous
+        // — the registry may never have held the code, or a transition may be
+        // holding its guard — and `contains_game` is what separates them.
+        let unstarted = match mgr.try_session(game_code) {
+            Some(session) if !session.game_started => {
+                retire_unstarted_session_async(game_db, &session);
+                true
+            }
+            Some(_) => {
+                error!(game = %game_code, "refusing to retire a started session from lobby expiry");
+                false
+            }
+            None if mgr.contains_game(game_code) => continue,
+            None => false,
+        };
+        if unstarted {
+            mgr.remove_game(game_code);
+        }
+        // The consumption rule, stated once: every branch above but the
+        // contended one is a final disposition for this listing, so the entry
+        // is consumed. A lapsed listing is the advertisement's TTL and not the
+        // game's — a started session keeps running and only loses its ad, and a
+        // code the registry does not hold has nothing left to retire.
+        handled.push(game_code.clone());
+    }
+    handled
 }
 
 #[derive(Debug, Clone)]
@@ -8233,10 +8323,10 @@ async fn handle_client_message(
                 // already refused any request whose `game_code` differs from
                 // the attached seat's, so this game *is* the attached game
                 // wherever `full_seat()` is `Some`.
-                let session = lock_session(state, &game_code).await.ok();
+                let session = lock_session(state, &game_code).await;
                 let authority_ok = match session.as_deref() {
                     _ if identity.full_seat().is_none() => true,
-                    Some(session) => {
+                    Ok(session) => {
                         full_socket_is_current_while_state_locked(
                             session,
                             connections,
@@ -8245,18 +8335,17 @@ async fn handle_client_message(
                         )
                         .await
                     }
-                    None => false,
+                    Err(_) => false,
                 };
                 if !authority_ok {
                     ReconnectOutcome::Err(FULL_SOCKET_AUTHORITY_REJECTION.to_string())
                 } else {
-                    // An absent game keeps base's `Game not found`, which is
-                    // exactly what `lock_session` refuses with.
+                    // An absent game keeps base's `Game not found` — carried
+                    // from `lock_session`'s own refusal rather than rebuilt, so
+                    // that function stays the single producer.
                     match session {
-                        None => {
-                            ReconnectOutcome::Err(server_core::session::game_not_found(&game_code))
-                        }
-                        Some(mut session) => {
+                        Err(refusal) => ReconnectOutcome::Err(refusal),
+                        Ok(mut session) => {
                             if session.is_pregame() {
                                 // Hosting reconnect: game exists but hasn't started yet.
                                 match session.player_for_token(&player_token) {
@@ -8654,7 +8743,7 @@ async fn handle_client_message(
 
             if !ai_requests.is_empty() && ai_requests.len() as u8 == pc - 1 {
                 // --- AI game path: create, start, and run initial AI actions ---
-                let (game_code, player_token, full_key, game_started_msg, ai_failure) = {
+                let (game_code, player_token, full_key) = {
                     let mut mgr = state.lock().await;
                     // Sole capacity check for the AI path, under the lock that
                     // inserts — see the `CreateGame` arm for why it cannot move
@@ -8713,26 +8802,33 @@ async fn handle_client_message(
                         let _ = tx.send(ServerMessage::error(error));
                         return;
                     }
-                    let session = mgr
-                        .session_exclusive(&game_code)
-                        .expect("a freshly created session has no outstanding handle");
+                    (game_code, player_token, full_key)
+                }; // registry released before the AI batch below
+
+                // The opening AI batch and its persist run under this game's own
+                // guard, never the registry's — the same discipline the
+                // `JoinGame` arm already follows. Under the registry they
+                // blocked `lock_session` for every other game in the pod for the
+                // whole batch.
+                let (game_started_msg, ai_failure) = {
+                    let mut session = match lock_session(state, &game_code).await {
+                        Ok(session) => session,
+                        Err(error) => {
+                            let _ = tx.send(ServerMessage::error(error));
+                            return;
+                        }
+                    };
                     let ai_failure = session.run_ai().fault;
-                    persist_full_session_async(game_db, session);
+                    persist_full_session_async(game_db, &mut session);
                     // Initial start of a Play-vs-AI game: the human seat sees
                     // the first-player contest dice. Drain so they are not
                     // re-sent on reconnect.
                     let start_events = std::mem::take(&mut session.start_events);
                     let game_started_msg =
-                        build_game_started_message(session, PlayerId(0), None, start_events);
+                        build_game_started_message(&session, PlayerId(0), None, start_events);
 
-                    (
-                        game_code,
-                        player_token,
-                        full_key,
-                        game_started_msg,
-                        ai_failure,
-                    )
-                }; // lock dropped
+                    (game_started_msg, ai_failure)
+                }; // session guard dropped
 
                 if let Err(error) = attach_full_seat(
                     state,
@@ -13064,7 +13160,7 @@ mod draft_socket_authority_tests {
 
             tokio::time::sleep(Duration::from_millis(1)).await;
             {
-                let mut games = app_state.sessions.lock().await;
+                let games = app_state.sessions.lock().await;
                 {
                     let session = games
                         .try_session(&expected_key.game_code)
@@ -13183,7 +13279,7 @@ mod draft_socket_authority_tests {
                 .expect("close attached game socket");
             loop {
                 tokio::time::sleep(Duration::from_millis(1)).await;
-                let mut games = app_state.sessions.lock().await;
+                let games = app_state.sessions.lock().await;
                 if games
                     .reconnect
                     .is_disconnected(&expected_key.game_code, PlayerId(0))
@@ -16715,6 +16811,356 @@ mod issue_4548_deadlock_tests {
 
         let _ = release_a.send(());
         parked_a.await.expect("the parked transition finishes");
+    }
+
+    /// A game the forfeit sweep skips for contention is retried on the next
+    /// tick. With a destructive `check_expired` the one tick that mattered was
+    /// also the last: the record was erased on report, the sweep declined on a
+    /// contended game, and nothing ever re-recorded it — `record_disconnect`
+    /// fires on a socket close and the player is already gone. The game stayed
+    /// live with an un-forfeited seat for the rest of the process's life.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_game_skipped_for_contention_is_reaped_on_the_next_tick() {
+        let state: SharedState = Arc::new(Mutex::new(SessionManager::new()));
+        let (_file, game_db) = temp_game_db();
+        let code = {
+            let mut mgr = state.lock().await;
+            let (code, _token) = mgr.create_game(PlayerDeckPayload::default(), None);
+            mgr.reconnect
+                .record_disconnect(&code, PlayerId(0), Duration::from_millis(0));
+            code
+        };
+        tokio::time::sleep(Duration::from_millis(2)).await;
+
+        let (release, parked) = park_session(&state, &code).await;
+        assert!(
+            !parked.is_finished(),
+            "reach guard: the transition must still hold the game's guard"
+        );
+
+        // Tick one: the seat has lapsed but the game is mid-transition.
+        let first = {
+            let mut mgr = state.lock().await;
+            let expired = mgr.reconnect.check_expired();
+            assert_eq!(
+                expired,
+                vec![code.clone()],
+                "reach guard: the sweep must see the lapsed seat"
+            );
+            assert!(
+                mgr.try_session(&code).is_none(),
+                "reach guard: the game is genuinely contended"
+            );
+            reap_expired_disconnects(&mut mgr, &game_db, &expired, &HashMap::new())
+        };
+        assert!(first.is_empty(), "a contended game is skipped, not removed");
+        assert!(
+            state.lock().await.contains_game(&code),
+            "and is left in the registry for the next tick"
+        );
+
+        let _ = release.send(());
+        parked.await.expect("the parked transition finishes");
+
+        // Tick two: the contention is gone and the record survived to drive it.
+        let second = {
+            let mut mgr = state.lock().await;
+            let expired = mgr.reconnect.check_expired();
+            assert_eq!(
+                expired,
+                vec![code.clone()],
+                "the skipped game must be reported again"
+            );
+            reap_expired_disconnects(&mut mgr, &game_db, &expired, &HashMap::new())
+        };
+        assert_eq!(
+            second,
+            vec![code.clone()],
+            "the next tick must forfeit what the first could not"
+        );
+        let mgr = state.lock().await;
+        assert!(!mgr.contains_game(&code), "the forfeited game is removed");
+        assert!(
+            mgr.reconnect.check_expired().is_empty(),
+            "acting on a game is what consumes its record"
+        );
+    }
+
+    /// The member the retry must refuse: an expired record whose game the
+    /// registry does not hold at all has nothing left to forfeit, so it is
+    /// consumed rather than re-reported every ten seconds forever.
+    #[tokio::test]
+    async fn an_expired_record_with_no_registered_game_is_consumed_not_retried() {
+        let state: SharedState = Arc::new(Mutex::new(SessionManager::new()));
+        let (_file, game_db) = temp_game_db();
+        {
+            let mut mgr = state.lock().await;
+            mgr.reconnect
+                .record_disconnect("GONE01", PlayerId(0), Duration::from_millis(0));
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+
+        let mut mgr = state.lock().await;
+        let expired = mgr.reconnect.check_expired();
+        assert_eq!(
+            expired,
+            vec!["GONE01".to_string()],
+            "reach guard: the sweep must see the lapsed seat"
+        );
+        assert!(
+            !mgr.contains_game("GONE01"),
+            "reach guard: the registry must not hold this code"
+        );
+
+        let removed = reap_expired_disconnects(&mut mgr, &game_db, &expired, &HashMap::new());
+        assert!(removed.is_empty(), "there was no session to remove");
+        assert!(
+            mgr.reconnect.check_expired().is_empty(),
+            "a game the registry no longer holds must not be retried forever"
+        );
+    }
+
+    /// The production lobby-expiry timeout, from the reap block.
+    const LOBBY_EXPIRY_SECS: u64 = 300;
+
+    /// `SysEnv`'s clock advanced past [`LOBBY_EXPIRY_SECS`], so an entry
+    /// registered with `SysEnv` reads as lapsed without reaching into the
+    /// broker's private map or making the test wait out a real timeout.
+    struct LapsedEnv;
+
+    impl BrokerEnv for LapsedEnv {
+        fn now_ms(&self) -> u64 {
+            SysEnv.now_ms() + LOBBY_EXPIRY_SECS * 2 * 1_000
+        }
+        fn new_token(&self) -> String {
+            SysEnv.new_token()
+        }
+        fn new_game_code(&self) -> String {
+            SysEnv.new_game_code()
+        }
+    }
+
+    async fn list_in_lobby(lobby: &SharedLobby, game_code: &str) {
+        lobby.lock().await.lobby_mut().register_game(
+            game_code,
+            RegisterGameRequest {
+                host_name: "Host".to_string(),
+                public: true,
+                ..Default::default()
+            },
+            &SysEnv,
+        );
+    }
+
+    /// A lobby listing whose session is mid-transition when it lapses is reaped
+    /// on the next tick. While the report consumed, the one tick that mattered
+    /// was also the last: the listing was erased on report, the sweep declined
+    /// on the contended session, and nothing re-reported it — the unstarted
+    /// session never retired and its game code stayed held until `delete_stale`
+    /// aged it out at some later startup.
+    ///
+    /// Drives the three production steps in the order the reap block runs them:
+    /// report off the broker, act under the registry guard, consume what was
+    /// handled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_lobby_expired_game_skipped_for_contention_is_reaped_on_the_next_tick() {
+        let state: SharedState = Arc::new(Mutex::new(SessionManager::new()));
+        let (_file, game_db) = temp_game_db();
+        let lobby: SharedLobby = Arc::new(Mutex::new(Broker::new()));
+
+        let code = {
+            let mut mgr = state.lock().await;
+            let (code, _token) = mgr.create_game(PlayerDeckPayload::default(), None);
+            code
+        };
+        list_in_lobby(&lobby, &code).await;
+
+        let (release, parked) = park_session(&state, &code).await;
+        assert!(
+            !parked.is_finished(),
+            "reach guard: the transition must still hold the game's guard"
+        );
+
+        // Tick one: the listing has lapsed, but the game is mid-transition.
+        let reported = lobby
+            .lock()
+            .await
+            .lobby()
+            .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv);
+        assert_eq!(
+            reported,
+            vec![code.clone()],
+            "reach guard: the sweep must see the lapsed listing"
+        );
+        let first = {
+            let mut mgr = state.lock().await;
+            assert!(
+                mgr.try_session(&code).is_none(),
+                "reach guard: the game is genuinely contended"
+            );
+            handle_expired_lobby_games(&mut mgr, &game_db, &reported)
+        };
+        assert!(
+            first.is_empty(),
+            "a contended game is skipped, not dispositioned"
+        );
+        {
+            let mut lob = lobby.lock().await;
+            assert!(
+                lob.reap_expired_handled(&first, &SysEnv).is_empty(),
+                "nothing is announced for a listing the sweep deferred"
+            );
+            assert!(
+                lob.lobby().has_game(&code),
+                "and the listing survives for the next tick"
+            );
+        }
+        assert!(
+            state.lock().await.contains_game(&code),
+            "the session is left in the registry with it"
+        );
+
+        let _ = release.send(());
+        parked.await.expect("the parked transition finishes");
+
+        // Tick two: the contention is gone and the listing survived to drive it.
+        let reported = lobby
+            .lock()
+            .await
+            .lobby()
+            .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv);
+        assert_eq!(
+            reported,
+            vec![code.clone()],
+            "the skipped listing must be reported again"
+        );
+        let second = {
+            let mut mgr = state.lock().await;
+            handle_expired_lobby_games(&mut mgr, &game_db, &reported)
+        };
+        assert_eq!(
+            second,
+            vec![code.clone()],
+            "the next tick must retire what the first could not"
+        );
+        assert!(
+            !state.lock().await.contains_game(&code),
+            "the unstarted session is retired out of the registry"
+        );
+        let mut lob = lobby.lock().await;
+        assert_eq!(
+            lob.reap_expired_handled(&second, &SysEnv).len(),
+            1,
+            "the removal is announced by the tick that really performed it"
+        );
+        assert!(
+            lob.lobby()
+                .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv)
+                .is_empty(),
+            "acting on a game is what consumes its listing"
+        );
+    }
+
+    /// The member the retry must refuse: a lapsed listing whose code the
+    /// session registry does not hold has nothing left to retire, so it is
+    /// consumed rather than re-reported every ten seconds forever.
+    #[tokio::test]
+    async fn an_expired_lobby_entry_with_no_registered_game_is_consumed_not_retried() {
+        let state: SharedState = Arc::new(Mutex::new(SessionManager::new()));
+        let (_file, game_db) = temp_game_db();
+        let lobby: SharedLobby = Arc::new(Mutex::new(Broker::new()));
+        list_in_lobby(&lobby, "GONE01").await;
+
+        let reported = lobby
+            .lock()
+            .await
+            .lobby()
+            .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv);
+        assert_eq!(
+            reported,
+            vec!["GONE01".to_string()],
+            "reach guard: the sweep must see the lapsed listing"
+        );
+
+        let handled = {
+            let mut mgr = state.lock().await;
+            assert!(
+                !mgr.contains_game("GONE01"),
+                "reach guard: the registry must not hold this code"
+            );
+            handle_expired_lobby_games(&mut mgr, &game_db, &reported)
+        };
+        assert_eq!(
+            handled,
+            vec!["GONE01".to_string()],
+            "there is no session to retire, so the listing is dispositioned"
+        );
+
+        let mut lob = lobby.lock().await;
+        lob.reap_expired_handled(&handled, &SysEnv);
+        assert!(
+            lob.lobby()
+                .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv)
+                .is_empty(),
+            "a listing whose game the registry never held must not be retried forever"
+        );
+    }
+
+    /// The other member the retry must refuse: a started session is one the
+    /// sweep deliberately will not retire, so its lapsed listing is still
+    /// consumed. Deferring it instead would relist a running game every tick
+    /// and log the refusal forever.
+    #[tokio::test]
+    async fn an_expired_lobby_entry_for_a_started_game_is_consumed_without_retiring_it() {
+        let state: SharedState = Arc::new(Mutex::new(SessionManager::new()));
+        let (_file, game_db) = temp_game_db();
+        let lobby: SharedLobby = Arc::new(Mutex::new(Broker::new()));
+
+        let code = {
+            let mut mgr = state.lock().await;
+            let (code, _token) = mgr.create_game(PlayerDeckPayload::default(), None);
+            mgr.try_session(&code).expect("session").game_started = true;
+            code
+        };
+        list_in_lobby(&lobby, &code).await;
+
+        let reported = lobby
+            .lock()
+            .await
+            .lobby()
+            .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv);
+        assert_eq!(
+            reported,
+            vec![code.clone()],
+            "reach guard: the sweep must see the lapsed listing"
+        );
+
+        let handled = {
+            let mut mgr = state.lock().await;
+            assert!(
+                mgr.try_session(&code).expect("session").game_started,
+                "reach guard: the fixture must reach the started arm, not the retire arm"
+            );
+            handle_expired_lobby_games(&mut mgr, &game_db, &reported)
+        };
+        assert_eq!(
+            handled,
+            vec![code.clone()],
+            "a listing the sweep refuses to retire is still dispositioned"
+        );
+        assert!(
+            state.lock().await.contains_game(&code),
+            "and the running game keeps its session"
+        );
+
+        let mut lob = lobby.lock().await;
+        lob.reap_expired_handled(&handled, &SysEnv);
+        assert!(
+            lob.lobby()
+                .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv)
+                .is_empty(),
+            "a started game loses its advertisement once, not once per tick"
+        );
     }
 
     /// Row 2: the hostile sibling of row 1 — two operations naming ONE game

@@ -370,20 +370,30 @@ impl LobbyManager {
             .and_then(|meta| meta.timer_seconds)
     }
 
-    /// Returns and removes games older than `timeout_secs`.
-    pub fn check_expired(&mut self, timeout_secs: u64, env: &impl BrokerEnv) -> Vec<String> {
+    /// Reports the games older than `timeout_secs` **without removing them**.
+    ///
+    /// **Reporting is not consuming.** The Full-mode sweep declines to act on a
+    /// game whose session is contended (`SessionManager::try_session` never
+    /// waits), so erasing the entry on report made that decline permanent: the
+    /// listing was already gone, nothing re-reported it, and the unstarted
+    /// session it named never retired — its game code stayed held until a later
+    /// startup aged it out. A reported entry is consumed by
+    /// [`Self::unregister_game`], which the sweep calls once it has established
+    /// there is nothing left to retire; until then the same code is reported on
+    /// the next tick, which is the retry the sweep's cadence already assumes.
+    ///
+    /// [`crate::broker::Broker::reap_expired`] reports and consumes in one
+    /// call, which is right for a shell that cannot decline — the Durable
+    /// Object has no session registry to contend on.
+    /// [`crate::broker::Broker::reap_expired_handled`] is the two-step form for
+    /// a shell that can.
+    pub fn check_expired(&self, timeout_secs: u64, env: &impl BrokerEnv) -> Vec<String> {
         let now = env.now_ms() / 1000;
-
-        let mut expired = Vec::new();
-        self.games.retain(|code, meta| {
-            if now.saturating_sub(meta.created_at) > timeout_secs {
-                expired.push(code.clone());
-                false
-            } else {
-                true
-            }
-        });
-        expired
+        self.games
+            .iter()
+            .filter(|(_, meta)| now.saturating_sub(meta.created_at) > timeout_secs)
+            .map(|(code, _)| code.clone())
+            .collect()
     }
 }
 
@@ -617,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn check_expired_removes_old_games() {
+    fn check_expired_reports_old_games_without_consuming_them() {
         let env = FakeEnv::new();
         let mut lobby = LobbyManager::new();
         register_basic(&mut lobby, "GAME01", "Alice", true, None, None, &env);
@@ -626,13 +636,30 @@ mod tests {
         lobby.games.get_mut("GAME01").unwrap().created_at = 0;
 
         let expired = lobby.check_expired(300, &env);
-        assert_eq!(expired.len(), 1);
-        assert_eq!(expired[0], "GAME01");
+        assert_eq!(expired, vec!["GAME01".to_string()]);
+
+        // Reporting is not consuming. The sweep that acts on this code can
+        // decline — its session may be mid-transition — and an entry erased on
+        // report is one nothing ever reports again.
+        assert_eq!(
+            lobby.check_expired(300, &env),
+            vec!["GAME01".to_string()],
+            "a tick that did not act must leave the entry for the next one"
+        );
+        assert_eq!(
+            lobby.public_games().len(),
+            1,
+            "and the listing stands until someone disposes of it"
+        );
+
+        // Consumption is the caller unregistering what it handled.
+        lobby.unregister_game("GAME01");
+        assert!(lobby.check_expired(300, &env).is_empty());
         assert!(lobby.public_games().is_empty());
     }
 
     #[test]
-    fn check_expired_retains_fresh_games() {
+    fn check_expired_retains_and_does_not_report_fresh_games() {
         let env = FakeEnv::new();
         let mut lobby = LobbyManager::new();
         register_basic(&mut lobby, "GAME01", "Alice", true, None, None, &env);

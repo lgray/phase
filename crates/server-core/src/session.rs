@@ -556,8 +556,10 @@ pub struct GameSession {
     /// engine-side `Arc::make_mut` must copy-on-write and cannot mutate a pool
     /// in place behind this cache. The comparison is then a pointer check per
     /// field; correctness rests on content equality, only speed rests on
-    /// pointer identity. Starts `None`, a restored session included, so the
-    /// first persist after a restart re-serializes once and caches.
+    /// pointer identity. Starts `None`; a restored session is seeded from the
+    /// `deck_pools_json` column it was rebuilt from
+    /// ([`GameSession::seed_deck_pools_encoding`]), so the first persist after
+    /// a restart re-serializes nothing either.
     deck_pools_cache: Option<(Vec<PlayerDeckPool>, Arc<str>)>,
 }
 
@@ -693,6 +695,25 @@ impl GameSession {
             .into();
         self.deck_pools_cache = Some((pools.to_vec(), Arc::clone(&json)));
         json
+    }
+
+    /// Seat the encoding a restore already has in hand — the `deck_pools_json`
+    /// column this session was rebuilt from — beside the pools it decoded to.
+    ///
+    /// The restore owner calls this right after [`Self::from_persisted`], which
+    /// cannot: it receives the payload alone, not the snapshot the column
+    /// travels in. Without it the first persist after a restart re-serializes
+    /// pools it just finished decoding.
+    ///
+    /// Pairs the string with the session's live pools, which requires that the
+    /// restore hand back the pools the string encodes rather than altering them
+    /// on the way in. That is a property of the restore path, not of this
+    /// function, so it is asserted directly — see
+    /// `a_restore_seeds_the_pool_encoding_it_was_rebuilt_from`. Every later
+    /// persist is decided by the ordinary content comparison, so a pool edit
+    /// invalidates this seed exactly as it invalidates a live encoding.
+    pub fn seed_deck_pools_encoding(&mut self, json: Arc<str>) {
+        self.deck_pools_cache = Some((self.state.deck_pools.clone(), json));
     }
 
     /// Returns the player index for the given token, if valid.
@@ -6187,6 +6208,65 @@ mod tests {
             second.as_ref(),
             third.as_ref(),
             "the refreshed encoding must differ in content, not only in identity"
+        );
+    }
+
+    /// The restore's own `deck_pools_json` seeds the rebuilt session's cache,
+    /// so the first persist after a restart re-serializes nothing — and the
+    /// string it reuses really does describe the pools the restore produced.
+    /// That second half is a property of the restore path, which is why it is
+    /// asserted here rather than argued at `seed_deck_pools_encoding`.
+    #[test]
+    fn a_restore_seeds_the_pool_encoding_it_was_rebuilt_from() {
+        let db = Arc::new(CardDatabase::default());
+        let mut mgr = SessionManager::new();
+        let (code, _) = mgr.create_game(make_deck(), None);
+        let mut session = mgr.try_session(&code).unwrap();
+        seed_deck_pools(&mut session);
+        assert!(
+            !session.state.deck_pools.is_empty(),
+            "reach guard: the fixture must have pools to encode"
+        );
+
+        // What `load_active_full_sessions` reads out of the column and carries
+        // beside the payload.
+        let carried: Arc<str> = serde_json::to_string(&session.to_persisted().deck_pools)
+            .unwrap()
+            .into();
+        let mut restored = round_trip_through_disk(&session, &db);
+        restored.full_runtime = Some(FullRuntime {
+            key: FullSessionKey {
+                game_code: code.clone(),
+                generation: 1,
+            },
+            activation_epoch: None,
+        });
+        assert_eq!(
+            serde_json::to_string(&restored.state.deck_pools).unwrap(),
+            carried.as_ref(),
+            "the restore must rebuild exactly the pools the carried encoding describes"
+        );
+
+        restored.seed_deck_pools_encoding(Arc::clone(&carried));
+        let first = restored
+            .full_persist_snapshot()
+            .expect("a runtime-bound session has a snapshot")
+            .deck_pools_json;
+        assert!(
+            Arc::ptr_eq(&first, &carried),
+            "the first persist after a restart must reuse the column's own string"
+        );
+
+        // Hostile sibling: the seed is a cache, not a pin. An edit after the
+        // restore must still re-encode.
+        Arc::make_mut(&mut restored.state.deck_pools[0].current_main).clear();
+        let second = restored
+            .full_persist_snapshot()
+            .expect("a runtime-bound session has a snapshot")
+            .deck_pools_json;
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "an edit after the restore must invalidate the seeded encoding"
         );
     }
 

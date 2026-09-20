@@ -646,8 +646,17 @@ impl Broker {
     /// events, then at most one trailing `TournamentListUpdate`.
     ///
     /// The Full-mode session/db deletion stays in the shell — it pulls the
-    /// expired codes from [`Broker::lobby_mut`]`.check_expired` directly, and
+    /// expired codes from [`Broker::lobby`]`.check_expired` directly, and
     /// tournaments have no equivalent server-run session to clean up.
+    ///
+    /// Consumes **every** expired lobby entry, which is right for a shell whose
+    /// sweep cannot decline: a Durable Object has no session registry to
+    /// contend on, so reporting an entry and disposing of it are the same act.
+    /// A shell that *can* decline — the Full-mode server, whose `try_session`
+    /// defers a game mid-transition — reports with
+    /// [`Broker::lobby`]`.check_expired` and consumes with
+    /// [`Broker::reap_expired_handled`] instead, so an entry it skipped
+    /// survives to be reported again.
     ///
     /// `timeout_secs` applies to lobby entries only. Tournament expiry runs on
     /// the three fixed lifecycle clocks
@@ -657,14 +666,39 @@ impl Broker {
     /// 30-day retention are not the same duration as a lobby listing's, and
     /// threading one number through both would imply they are.
     pub fn reap_expired(&mut self, timeout_secs: u64, env: &impl BrokerEnv) -> Vec<Outbound> {
-        let mut out: Vec<Outbound> = self
-            .lobby
-            .check_expired(timeout_secs, env)
-            .into_iter()
-            .map(|game_code| {
-                Outbound::ToSubscribers(LobbyServerMessage::LobbyGameRemoved { game_code })
-            })
-            .collect();
+        let expired = self.lobby.check_expired(timeout_secs, env);
+        self.reap_expired_handled(&expired, env)
+    }
+
+    /// [`Broker::reap_expired`]'s sweep for a caller that already reported the
+    /// expired lobby codes itself and acted on them: it consumes exactly
+    /// `handled` and leaves every other entry registered.
+    ///
+    /// Emits one `LobbyGameRemoved` per element of `handled`, in order, then
+    /// the tournament half unchanged — the tournament registry is swept here
+    /// rather than by the caller because no consumer of it can decline (see
+    /// [`TournamentManager::check_expired`]), so there is nothing to report
+    /// separately. Call it on every tick for that reason, not only on the ticks
+    /// a lobby entry lapsed.
+    ///
+    /// A code whose entry another path already unregistered between the report
+    /// and this call still emits its removal: the lobby lock is released in
+    /// between, and a client that over-prunes recovers where a client that
+    /// never hears of the removal does not.
+    pub fn reap_expired_handled(
+        &mut self,
+        handled: &[String],
+        env: &impl BrokerEnv,
+    ) -> Vec<Outbound> {
+        let mut out: Vec<Outbound> = Vec::with_capacity(handled.len());
+        for game_code in handled {
+            self.lobby.unregister_game(game_code);
+            out.push(Outbound::ToSubscribers(
+                LobbyServerMessage::LobbyGameRemoved {
+                    game_code: game_code.clone(),
+                },
+            ));
+        }
 
         let events = self.tournaments.check_expired(env);
         let list_changed = !events.is_empty();
@@ -3910,6 +3944,70 @@ mod tests {
     }
 
     // -- Rows 6 & 7: the widened reaper -------------------------------------
+
+    /// The broker half of the non-destructive sweep: a shell that can decline
+    /// reports with `lobby().check_expired` and hands back only the codes it
+    /// dispositioned, so an entry it skipped stays listed and is reported
+    /// again. While the report consumed, that skip was permanent — the listing
+    /// was already gone and no later tick could see it.
+    #[test]
+    fn reap_expired_handled_consumes_only_what_the_shell_handled() {
+        let env = FakeEnv::new();
+        let mut broker = Broker::new();
+
+        let mut host_a = ConnState::default();
+        hello(&mut host_a, &mut broker, &env);
+        let acted = game_code_of(&create(&mut host_a, &mut broker, &env));
+        let mut host_b = ConnState::default();
+        hello(&mut host_b, &mut broker, &env);
+        let deferred = game_code_of(&create(&mut host_b, &mut broker, &env));
+
+        env.advance_secs(301);
+
+        // Reach guard: both listings really lapsed, so a one-entry fixture
+        // cannot make "consumes only what it was handed" pass by coincidence.
+        let mut reported = broker.lobby().check_expired(300, &env);
+        reported.sort();
+        let mut both = vec![acted.clone(), deferred.clone()];
+        both.sort();
+        assert_eq!(reported, both);
+
+        let out = broker.reap_expired_handled(std::slice::from_ref(&acted), &env);
+        assert_eq!(
+            out,
+            [Outbound::ToSubscribers(
+                LobbyServerMessage::LobbyGameRemoved {
+                    game_code: acted.clone()
+                }
+            )],
+            "only the handled entry is announced"
+        );
+        assert!(!broker.lobby().has_game(&acted), "and only it is consumed");
+        assert!(
+            broker.lobby().has_game(&deferred),
+            "the deferred entry keeps its listing"
+        );
+
+        // The next tick reports the deferred entry again — that is the retry.
+        assert_eq!(
+            broker.lobby().check_expired(300, &env),
+            vec![deferred.clone()],
+            "a deferred entry must be reported again"
+        );
+        let second = broker.reap_expired_handled(std::slice::from_ref(&deferred), &env);
+        assert_eq!(
+            second,
+            [Outbound::ToSubscribers(
+                LobbyServerMessage::LobbyGameRemoved {
+                    game_code: deferred
+                }
+            )]
+        );
+        assert!(
+            broker.lobby().is_empty(),
+            "a deferred entry is consumed by the tick that can act on it"
+        );
+    }
 
     #[test]
     fn reap_expired_recovers_lobby_and_tournament_events_together() {

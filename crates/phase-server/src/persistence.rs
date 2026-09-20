@@ -325,9 +325,12 @@ impl GameDb {
 
         // The dynamic payload and the pools are two columns of one upsert in
         // one transaction, so they cannot diverge on a production write.
-        // `session_json` is no longer bound: every row this build writes has
-        // it NULL, which is what moves the payload out from under an older
-        // reader.
+        // `session_json` is not bound *and* is nulled on conflict, so the
+        // statement itself — not an argument about its callers — is what makes
+        // every row this build writes carry it NULL. That is what moves the
+        // payload out from under an older reader; a row an earlier build wrote
+        // arrives here still carrying one, and is exactly the row that reader
+        // would otherwise restore subtly wrong.
         let changed = tx.execute(
             "INSERT INTO game_sessions
                 (game_code, generation, mutation_revision, activation_epoch, retired,
@@ -338,6 +341,7 @@ impl GameDb {
                 mutation_revision = excluded.mutation_revision,
                 activation_epoch = excluded.activation_epoch,
                 retired = 0,
+                session_json = NULL,
                 session_state_json = excluded.session_state_json,
                 deck_pools_json = excluded.deck_pools_json,
                 updated_at = excluded.updated_at
@@ -419,6 +423,8 @@ impl GameDb {
             ),
             params![now],
         )?;
+        // Same structural clear as `save_full_session`: this build never leaves
+        // a payload where an older reader looks for one.
         tx.execute(
             "INSERT INTO game_sessions
                 (game_code, generation, mutation_revision, activation_epoch, retired,
@@ -429,6 +435,7 @@ impl GameDb {
                 mutation_revision = excluded.mutation_revision,
                 activation_epoch = excluded.activation_epoch,
                 retired = 0,
+                session_json = NULL,
                 session_state_json = excluded.session_state_json,
                 deck_pools_json = excluded.deck_pools_json,
                 updated_at = excluded.updated_at
@@ -573,9 +580,10 @@ impl GameDb {
                     mutation_revision,
                     activation_epoch,
                     persisted,
-                    // The column's own string, so the cache field arrives
-                    // already encoded and the first persist after a restart
-                    // re-serializes nothing.
+                    // The column's own string, carried so the restore owner can
+                    // seed the rebuilt session's encoding cache with it
+                    // (`GameSession::seed_deck_pools_encoding`) instead of
+                    // re-serializing pools it just decoded.
                     deck_pools_json: pools.into(),
                 }),
                 Err(error) => error!("Failed to deserialize Full session row: {error}"),
@@ -1544,6 +1552,62 @@ mod tests {
             db.retire_unstarted_full_session(&started_key, None)
                 .is_err(),
             "a started game must not retire through the unstarted path"
+        );
+    }
+
+    /// The compatibility break's central invariant — every row this build
+    /// writes carries `session_json` NULL — held by the statements rather than
+    /// by the fact that neither writer binds the column. Each writer's upsert
+    /// meets a row an older build wrote, which is the one row shape an older
+    /// reader would otherwise restore subtly wrong.
+    #[test]
+    fn both_writers_null_an_older_builds_payload_on_conflict() {
+        let db = test_db();
+        insert_legacy_row(&db, "LEGACY");
+        assert!(
+            column::<Option<String>>(&db, "session_json", "LEGACY").is_some(),
+            "reach guard: the seeded row must really carry a legacy payload"
+        );
+        assert_eq!(
+            db.save_full_session(&full_snapshot("LEGACY", 1, 2, None, false))
+                .expect("save"),
+            FullPersistDisposition::Applied,
+            "reach guard: the write must reach the conflict path, not be refused"
+        );
+        assert_eq!(
+            column::<Option<String>>(&db, "session_json", "LEGACY"),
+            None,
+            "the upsert must null the column an older reader selects on"
+        );
+        assert!(
+            column::<Option<String>>(&db, "session_state_json", "LEGACY").is_some(),
+            "positive control: the columns this build does write stay populated"
+        );
+
+        // The sibling statement, on its own retention mode.
+        let file = NamedTempFile::new().unwrap();
+        let solo = GameDb::open(file.path(), SessionRetention::SingleUser).unwrap();
+        insert_legacy_row(&solo, "SOLO_L");
+        assert!(
+            column::<Option<String>>(&solo, "session_json", "SOLO_L").is_some(),
+            "reach guard: the seeded row must really carry a legacy payload"
+        );
+        let (_epoch, result) = solo
+            .activate_single_user_session(&full_snapshot("SOLO_L", 1, 2, None, false))
+            .expect("activate");
+        assert_eq!(
+            result,
+            FullPersistDisposition::Applied,
+            "reach guard: the activation must reach the conflict path"
+        );
+        assert_eq!(
+            column::<Option<String>>(&solo, "session_json", "SOLO_L"),
+            None,
+            "the activation upsert must null it too"
+        );
+        assert!(
+            column::<Option<String>>(&solo, "session_state_json", "SOLO_L").is_some(),
+            "positive control: the activation wrote its own payload column"
         );
     }
 
