@@ -545,11 +545,11 @@ impl GameDb {
     /// SQLite to fence stale writers but are never reconstructed at startup.
     pub fn load_active_full_sessions(&self) -> rusqlite::Result<Vec<FullPersistSnapshot>> {
         let conn = self.conn.lock().unwrap();
-        // One read shape. The `WHERE` is what excludes the NULL case, and both
-        // payload columns are written by one statement, so a row carrying one
-        // without the other has no production producer. A row an earlier build
-        // wrote is not selected at all, so it is never decoded and never
-        // logged.
+        // One read shape. The `WHERE` drops the rows an earlier build wrote, so
+        // they are never decoded and never logged. Both payload columns are
+        // written by one statement, so a row carrying one without the other has
+        // no production producer; it is read as absent and skipped per row,
+        // like the decode failure below, rather than failing the whole restore.
         let mut stmt = conn.prepare(
             "SELECT game_code, generation, mutation_revision, activation_epoch,
                     session_state_json, deck_pools_json
@@ -562,12 +562,16 @@ impl GameDb {
                 row.get::<_, u64>(2)?,
                 row.get::<_, Option<u64>>(3)?,
                 row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })?;
         let mut snapshots = Vec::new();
         for row in rows {
             let (game_code, generation, mutation_revision, activation_epoch, json, pools) = row?;
+            let Some(pools) = pools else {
+                error!("Skipped Full session row {game_code}: deck_pools_json is NULL");
+                continue;
+            };
             match serde_json::from_str(&json).and_then(|mut persisted: PersistedSession| {
                 persisted.deck_pools = serde_json::from_str(&pools)?;
                 Ok(persisted)
@@ -1381,6 +1385,24 @@ mod tests {
             .expect("seed a pre-change row");
     }
 
+    /// The half-written shape no production writer produces: the mutation
+    /// payload bound without its pools column.
+    fn insert_pool_less_row(db: &GameDb, game_code: &str) {
+        let payload = serde_json::to_string(&full_snapshot(game_code, 1, 1, None, false).persisted)
+            .expect("a payload serializes");
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO game_sessions
+                    (game_code, generation, mutation_revision, activation_epoch, retired,
+                     session_state_json, deck_pools_json, updated_at)
+                 VALUES (?1, 1, 1, NULL, 0, ?2, NULL, 0)",
+                params![game_code, payload],
+            )
+            .expect("seed a pools-less row");
+    }
+
     fn column<T: rusqlite::types::FromSql>(db: &GameDb, column: &str, game_code: &str) -> T {
         db.conn
             .lock()
@@ -1457,6 +1479,32 @@ mod tests {
             payload["state"]["state"]["deck_pools"],
             serde_json::json!([]),
             "the mutation-time payload must not carry the pools"
+        );
+    }
+
+    /// A row whose pools column is NULL is skipped like a payload that fails
+    /// to decode, not propagated out of the reader — one such row must not
+    /// cost the boot every other game.
+    #[test]
+    fn a_row_missing_its_pools_column_is_skipped_not_fatal() {
+        let db = test_db();
+        let (mgr, code) = seeded_full_session(&db);
+        assert_eq!(save(&db, &mgr, &code), FullPersistDisposition::Applied);
+        insert_pool_less_row(&db, "NOPOOLS");
+
+        let loaded = db
+            .load_active_full_sessions()
+            .expect("one unreadable row must not fail the whole restore");
+
+        assert!(
+            loaded.iter().any(|snapshot| snapshot.key.game_code == code),
+            "the production-written row is still restored"
+        );
+        assert!(
+            !loaded
+                .iter()
+                .any(|snapshot| snapshot.key.game_code == "NOPOOLS"),
+            "the row with no pools column is not restored"
         );
     }
 

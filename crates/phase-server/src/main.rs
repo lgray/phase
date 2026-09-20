@@ -1524,9 +1524,9 @@ fn draft_socket_admission_rejection(
 /// > `sessions` (the registry) -> `lobby` -> `connections` ->
 /// > `game_spectators` -> `lobby_subscribers`.
 /// >
-/// > This is the topological order of the production nesting edges
-/// > `.lockpersist-probe2/lockorder.py` reports, with the session tier
-/// > inserted above the registry; `lobby`'s position below the registry is
+/// > This is the topological order of the production nesting edges a
+/// > one-time survey of this crate found, with the session tier inserted
+/// > above the registry; `lobby`'s position below the registry is
 /// > unconstrained by any observed edge and is fixed here so the order is
 /// > total. A guard is never re-acquired at a lower level; a site that needs
 /// > a lower level again releases first. Nesting *downward* is legal at every
@@ -1538,15 +1538,15 @@ fn draft_socket_admission_rejection(
 /// > `SessionManager::try_session` is for, and a contended sweep defers
 /// > rather than blocks. Never hold two `GameSession` guards at once.
 /// >
-/// > The instrument that produced this order is **intraprocedural** — it
-/// > brace-matches within one file and cannot see an edge formed across a
-/// > function call — so for code written after this change the order holds by
-/// > this declaration, not by the instrument. It also walks only edges
-/// > *between* tiers: a same-tier nesting is not an inversion in its model and
-/// > so is invisible to it. That is the blind spot that matters here, because
-/// > the one same-tier edge that would deadlock outright is session -> session
-/// > — hence the standing rule above that no site holds two `GameSession`
-/// > guards at once, which the instrument cannot check for you.
+/// > That survey was **intraprocedural**: it brace-matched guard scopes
+/// > within a single file, so an edge formed across a function call was
+/// > invisible to it, and it compared tier against tier only, so a same-tier
+/// > nesting was never reported as an inversion. For code written after this
+/// > change the order therefore holds by this declaration, not by any check.
+/// > The same-tier blind spot is the one that matters here, because the
+/// > same-tier edge that would deadlock outright is session -> session —
+/// > hence the standing rule above that no site holds two `GameSession`
+/// > guards at once.
 ///
 /// The `Err` is the relocated refusal, and it is the only production producer of
 /// `game_not_found`: every other production frame that answers an absent game
