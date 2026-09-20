@@ -592,7 +592,7 @@ impl GameDb {
                     // re-serializing pools it just decoded.
                     deck_pools_json: pools.into(),
                 }),
-                Err(error) => error!("Failed to deserialize Full session row: {error}"),
+                Err(error) => error!("Failed to deserialize Full session row {game_code}: {error}"),
             }
         }
         Ok(snapshots)
@@ -1383,9 +1383,9 @@ mod tests {
             .collect()
     }
 
-    /// A row whose payload lives in `session_json` with both new columns
-    /// absent. The payload's interior is not a pre-change payload: `deck_pools`
-    /// is now `skip_serializing`, so no pools sub-object is written.
+    /// Seeds the row shape an earlier build wrote: payload in `session_json`,
+    /// both new columns absent. Shape-faithful only — nothing should assert on
+    /// the payload's interior.
     fn insert_legacy_row(db: &GameDb, game_code: &str) {
         let legacy = serde_json::to_string(&full_snapshot(game_code, 1, 1, None, false).persisted)
             .expect("a legacy payload serializes");
