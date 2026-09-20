@@ -2534,6 +2534,13 @@ async fn serve() {
                                     )
                                     .map(|artifact| (game_code.clone(), artifact))
                                 })?
+                                // A started game whose artifact cannot be built
+                                // is skipped by the reaper below and retried on
+                                // every tick; unreported, that retry is a silent
+                                // loop.
+                                .inspect_err(|error| {
+                                    error!(game = %game_code, %error, "disconnect terminal artifact failed")
+                                })
                                 .ok()
                         })
                         .collect::<Vec<_>>()
@@ -2549,10 +2556,22 @@ async fn serve() {
                         }
                     }
                 }
-                let removed = {
+                let ExpirySweep {
+                    acted: removed,
+                    deferred,
+                } = {
                     let mut mgr = bg_state.lock().await;
                     reap_expired_disconnects(&mut mgr, &bg_game_db, &expired, &prepared)
                 };
+                // Unconditional inside this branch, because the per-game lines
+                // below are emitted only for what was removed: a tick that
+                // deferred every lapsed seat would otherwise look exactly like
+                // a tick with nothing to do, which is the one case contention
+                // needs reported.
+                info!(
+                    forfeited = removed.len(),
+                    deferred, "disconnect grace sweep"
+                );
                 // Nothing else is held here: the branch below takes
                 // `bg_game_spectators` at its end and the lobby-expiry branch
                 // takes `bg_lobby` and `bg_state` in sequence, never one inside
@@ -2595,8 +2614,11 @@ async fn serve() {
                 let broker = bg_lobby.lock().await;
                 broker.lobby().check_expired(300, &SysEnv)
             };
-            let handled_lobby = if expired_lobby.is_empty() {
-                Vec::new()
+            let ExpirySweep {
+                acted: handled_lobby,
+                deferred: deferred_lobby,
+            } = if expired_lobby.is_empty() {
+                ExpirySweep::default()
             } else {
                 // Same discipline as the reaper above: `try_session` under the
                 // registry guard decides, the removal happens in the same
@@ -2613,7 +2635,10 @@ async fn serve() {
                 let mut broker = bg_lobby.lock().await;
                 broker.reap_expired_handled(&handled_lobby, &SysEnv)
             };
-            if !reap_outbounds.is_empty() {
+            // The deferred disjunct is load-bearing: a tick that deferred every
+            // lapsed listing hands the broker nothing, so `reap_outbounds` is
+            // empty and the contention would go unreported on the guard alone.
+            if !reap_outbounds.is_empty() || deferred_lobby > 0 {
                 // `handled_lobby` is deliberately lobby-only: it drove the
                 // Full-mode session/db cleanup above, and a tournament has no
                 // server-run session to retire. But `reap_outbounds` also
@@ -2626,7 +2651,9 @@ async fn serve() {
                 let tournament_events = reap_outbounds.len() - handled_lobby.len();
                 info!(
                     lobby_games = handled_lobby.len(),
-                    tournament_events, "expiring stale lobby entries"
+                    tournament_events,
+                    deferred = deferred_lobby,
+                    "expiring stale lobby entries"
                 );
                 // Still every code this sweep dispositioned, removed or not —
                 // that asymmetry with the reaper's prune, which takes only the
@@ -5650,9 +5677,25 @@ fn retire_unstarted_session_async(game_db: &SharedGameDb, session: &GameSession)
     });
 }
 
+/// What one expiry sweep did with the codes it was handed: the ones it acted
+/// on, and how many it left for the next tick because their session was
+/// mid-transition.
+///
+/// The count comes from the sweep rather than from a call-site subtraction
+/// because only the sweep can tell the two exclusions apart: `expired` minus
+/// `acted` also holds codes consumed *without* action — a registry that no
+/// longer has the game — and counting those as deferrals would report a retry
+/// that will never happen.
+#[derive(Default)]
+struct ExpirySweep {
+    acted: Vec<String>,
+    deferred: usize,
+}
+
 /// The forfeit sweep's registry critical section: act on the codes
 /// `ReconnectManager::check_expired` reported, and return the ones actually
-/// removed. Extracted for the same stated reason
+/// removed alongside the number left for the next tick. Extracted for the same
+/// stated reason
 /// `create_and_connect_multiplayer_session` is — the sweep and its regression
 /// test must share the production code path, not a description of it.
 ///
@@ -5669,8 +5712,9 @@ fn reap_expired_disconnects(
     game_db: &SharedGameDb,
     expired: &[String],
     prepared: &HashMap<String, Vec<(PlayerId, server_core::CurrentTerminalDelivery)>>,
-) -> Vec<String> {
+) -> ExpirySweep {
     let mut removed: Vec<String> = Vec::new();
+    let mut deferred = 0usize;
     for game_code in expired {
         // A prepared code's terminal transaction has already committed, so the
         // removal owes the session nothing and must not defer on a contended
@@ -5681,12 +5725,18 @@ fn reap_expired_disconnects(
             // cannot close a cycle, and a game with a transition in flight is
             // precisely the one to leave alone until the next tick.
             let Some(session) = mgr.try_session(game_code) else {
+                // `None` alone is ambiguous — the registry may never have held
+                // the code, or a transition may be holding its guard. Only the
+                // second is a deferral; the first is consumed by the loop below
+                // and must not be counted as one.
+                deferred += usize::from(mgr.contains_game(game_code));
                 continue;
             };
             if session.game_started {
                 // Started, but terminal preparation produced no deliveries for
                 // it this tick. Retry rather than tear it down without the
                 // result its players are owed.
+                deferred += 1;
                 continue;
             }
             retire_unstarted_session_async(game_db, &session);
@@ -5707,12 +5757,16 @@ fn reap_expired_disconnects(
             mgr.reconnect.remove_game(game_code);
         }
     }
-    removed
+    ExpirySweep {
+        acted: removed,
+        deferred,
+    }
 }
 
 /// The lobby-expiry sweep's registry critical section: act on the codes
 /// `LobbyManager::check_expired` reported, and return the ones this tick
-/// dispositioned. Extracted for the same stated reason
+/// dispositioned alongside the number left for the next tick. Extracted for the
+/// same stated reason
 /// [`reap_expired_disconnects`] is — the sweep and its regression test must
 /// share the production code path, not a description of it.
 ///
@@ -5729,8 +5783,9 @@ fn handle_expired_lobby_games(
     mgr: &mut SessionManager,
     game_db: &SharedGameDb,
     expired: &[String],
-) -> Vec<String> {
+) -> ExpirySweep {
     let mut handled: Vec<String> = Vec::new();
+    let mut deferred = 0usize;
     for game_code in expired {
         // `try_session` under the registry guard: it never waits, so it cannot
         // close a cycle, and a game with a transition in flight is precisely
@@ -5746,7 +5801,10 @@ fn handle_expired_lobby_games(
                 error!(game = %game_code, "refusing to retire a started session from lobby expiry");
                 false
             }
-            None if mgr.contains_game(game_code) => continue,
+            None if mgr.contains_game(game_code) => {
+                deferred += 1;
+                continue;
+            }
             None => false,
         };
         if unstarted {
@@ -5759,7 +5817,10 @@ fn handle_expired_lobby_games(
         // code the registry does not hold has nothing left to retire.
         handled.push(game_code.clone());
     }
-    handled
+    ExpirySweep {
+        acted: handled,
+        deferred,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -16853,7 +16914,14 @@ mod issue_4548_deadlock_tests {
             );
             reap_expired_disconnects(&mut mgr, &game_db, &expired, &HashMap::new())
         };
-        assert!(first.is_empty(), "a contended game is skipped, not removed");
+        assert!(
+            first.acted.is_empty(),
+            "a contended game is skipped, not removed"
+        );
+        assert_eq!(
+            first.deferred, 1,
+            "and the sweep reports the skip, so an all-deferred tick is not silent"
+        );
         assert!(
             state.lock().await.contains_game(&code),
             "and is left in the registry for the next tick"
@@ -16874,9 +16942,13 @@ mod issue_4548_deadlock_tests {
             reap_expired_disconnects(&mut mgr, &game_db, &expired, &HashMap::new())
         };
         assert_eq!(
-            second,
+            second.acted,
             vec![code.clone()],
             "the next tick must forfeit what the first could not"
+        );
+        assert_eq!(
+            second.deferred, 0,
+            "and reports no deferral once the contention is gone"
         );
         let mgr = state.lock().await;
         assert!(!mgr.contains_game(&code), "the forfeited game is removed");
@@ -16912,8 +16984,12 @@ mod issue_4548_deadlock_tests {
             "reach guard: the registry must not hold this code"
         );
 
-        let removed = reap_expired_disconnects(&mut mgr, &game_db, &expired, &HashMap::new());
-        assert!(removed.is_empty(), "there was no session to remove");
+        let sweep = reap_expired_disconnects(&mut mgr, &game_db, &expired, &HashMap::new());
+        assert!(sweep.acted.is_empty(), "there was no session to remove");
+        assert_eq!(
+            sweep.deferred, 0,
+            "a code the registry does not hold is consumed, never counted as a retry"
+        );
         assert!(
             mgr.reconnect.check_expired().is_empty(),
             "a game the registry no longer holds must not be retried forever"
@@ -17001,13 +17077,17 @@ mod issue_4548_deadlock_tests {
             handle_expired_lobby_games(&mut mgr, &game_db, &reported)
         };
         assert!(
-            first.is_empty(),
+            first.acted.is_empty(),
             "a contended game is skipped, not dispositioned"
+        );
+        assert_eq!(
+            first.deferred, 1,
+            "and the sweep reports the skip, so an all-deferred tick is not silent"
         );
         {
             let mut lob = lobby.lock().await;
             assert!(
-                lob.reap_expired_handled(&first, &SysEnv).is_empty(),
+                lob.reap_expired_handled(&first.acted, &SysEnv).is_empty(),
                 "nothing is announced for a listing the sweep deferred"
             );
             assert!(
@@ -17039,9 +17119,13 @@ mod issue_4548_deadlock_tests {
             handle_expired_lobby_games(&mut mgr, &game_db, &reported)
         };
         assert_eq!(
-            second,
+            second.acted,
             vec![code.clone()],
             "the next tick must retire what the first could not"
+        );
+        assert_eq!(
+            second.deferred, 0,
+            "and reports no deferral once the contention is gone"
         );
         assert!(
             !state.lock().await.contains_game(&code),
@@ -17049,7 +17133,7 @@ mod issue_4548_deadlock_tests {
         );
         let mut lob = lobby.lock().await;
         assert_eq!(
-            lob.reap_expired_handled(&second, &SysEnv).len(),
+            lob.reap_expired_handled(&second.acted, &SysEnv).len(),
             1,
             "the removal is announced by the tick that really performed it"
         );
@@ -17091,13 +17175,17 @@ mod issue_4548_deadlock_tests {
             handle_expired_lobby_games(&mut mgr, &game_db, &reported)
         };
         assert_eq!(
-            handled,
+            handled.acted,
             vec!["GONE01".to_string()],
             "there is no session to retire, so the listing is dispositioned"
         );
+        assert_eq!(
+            handled.deferred, 0,
+            "a code the registry does not hold is consumed, never counted as a retry"
+        );
 
         let mut lob = lobby.lock().await;
-        lob.reap_expired_handled(&handled, &SysEnv);
+        lob.reap_expired_handled(&handled.acted, &SysEnv);
         assert!(
             lob.lobby()
                 .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv)
@@ -17144,9 +17232,13 @@ mod issue_4548_deadlock_tests {
             handle_expired_lobby_games(&mut mgr, &game_db, &reported)
         };
         assert_eq!(
-            handled,
+            handled.acted,
             vec![code.clone()],
             "a listing the sweep refuses to retire is still dispositioned"
+        );
+        assert_eq!(
+            handled.deferred, 0,
+            "a refusal is a disposition, not a retry"
         );
         assert!(
             state.lock().await.contains_game(&code),
@@ -17154,7 +17246,7 @@ mod issue_4548_deadlock_tests {
         );
 
         let mut lob = lobby.lock().await;
-        lob.reap_expired_handled(&handled, &SysEnv);
+        lob.reap_expired_handled(&handled.acted, &SysEnv);
         assert!(
             lob.lobby()
                 .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv)
