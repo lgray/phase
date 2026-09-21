@@ -21,7 +21,7 @@ pub mod validation;
 
 pub use broker::{
     check_build_commit, Broker, BuildCommitCheck, ClientHelloInfo, ConnState, Outbound,
-    MAX_LOBBY_ENTRIES,
+    ReapOutcome, MAX_LOBBY_ENTRIES,
 };
 pub use directory::{
     compare_announcement_to_info, info_url, normalize_announced_url, score, validate_announcement,

@@ -42,8 +42,9 @@ use engine::types::GameLogEntry;
 use http::{HeaderMap, HeaderValue};
 use lobby_broker::{
     check_build_commit, conn_holds_reservation, validate_announcement, Broker, BrokerEnv,
-    BuildCommitCheck, ConnState, ExpiredLobbyGame, Outbound, RawAnnouncement, ServerAnnouncement,
-    ServerInfoDocument, DIRECTORY_VERSION, INFO_PATH, MAX_SERVER_NAME_LEN, NOT_OWNED_RESERVATION,
+    BuildCommitCheck, ConnState, ExpiredLobbyGame, Outbound, RawAnnouncement, ReapOutcome,
+    ServerAnnouncement, ServerInfoDocument, DIRECTORY_VERSION, INFO_PATH, MAX_SERVER_NAME_LEN,
+    NOT_OWNED_RESERVATION,
 };
 use rand::TryRngCore;
 use seat_reducer::types::{DeckChoice, DeckResolver, ReducerCtx};
@@ -2643,7 +2644,10 @@ async fn serve() {
             // Every tick, not only the ticks a lobby entry lapsed: the
             // tournament half of this sweep runs on its own lifecycle clocks
             // and has no shell-side decline to wait for.
-            let reap_outbounds = {
+            let ReapOutcome {
+                outbounds: reap_outbounds,
+                announced: reaped_lobby,
+            } = {
                 let mut broker = bg_lobby.lock().await;
                 broker.reap_expired_handled(&handled_lobby, &SysEnv)
             };
@@ -2660,26 +2664,38 @@ async fn serve() {
                 // named explicitly rather than summed — they are different
                 // kinds of expiry with different cleanup, and a single total
                 // would hide which one actually fired.
-                let tournament_events = reap_outbounds.len() - handled_lobby.len();
+                // Counted from what the broker announced, never inferred by
+                // subtracting what was handed in. Consumption is
+                // identity-conditional: a superseded observation is consumed
+                // without an outbound, so `handled_lobby.len()` stopped being a
+                // lower bound on `reap_outbounds.len()` and the old subtraction
+                // underflowed on exactly the tick the identity check fires.
+                // Both subtractions below are non-negative by construction —
+                // `reaped_lobby` is a subset of `handled_lobby`, and each of
+                // its codes contributed exactly one outbound.
+                let superseded = handled_lobby.len() - reaped_lobby.len();
+                let tournament_events = reap_outbounds.len() - reaped_lobby.len();
                 info!(
-                    lobby_games = handled_lobby.len(),
+                    lobby_games = reaped_lobby.len(),
+                    superseded,
                     tournament_events,
                     deferred = deferred_lobby,
                     "expiring stale lobby entries"
                 );
-                // Still every code this sweep dispositioned, removed or not —
-                // that asymmetry with the reaper's prune, which takes only the
+                // Every code whose removal the broker announced — which is
+                // every code this sweep dispositioned except a superseded one.
+                // That asymmetry with the reaper's prune, which takes only the
                 // codes it removed, is base behaviour and is why the abandon
-                // path keeps both of its authority checks. Only a deferred code
-                // drops out, and it is pruned on the tick that retires it.
-                prune_game_connections(
-                    &bg_connections,
-                    handled_lobby.iter().map(ExpiredLobbyGame::game_code),
-                )
-                .await;
+                // path keeps both of its authority checks. A deferred code
+                // drops out and is pruned on the tick that retires it; a
+                // superseded code drops out because it now names a live
+                // replacement, and pruning it would reach into a game this
+                // sweep did not retire.
+                prune_game_connections(&bg_connections, reaped_lobby.iter().map(String::as_str))
+                    .await;
                 let mut specs = bg_game_spectators.lock().await;
-                for expired in &handled_lobby {
-                    specs.remove(expired.game_code());
+                for game_code in &reaped_lobby {
+                    specs.remove(game_code);
                 }
 
                 let subs = bg_lobby_subs.lock().await;
@@ -3559,7 +3575,7 @@ mod lifecycle_tests {
             expired_lobby.is_empty(),
             "a tournament must not be mistaken for a lobby game needing session cleanup"
         );
-        let reap_outbounds = broker.reap_expired_handled(&expired_lobby, &env);
+        let reap_outbounds = broker.reap_expired_handled(&expired_lobby, &env).outbounds;
         assert!(!reap_outbounds.is_empty());
 
         // Step 2, verbatim: one subscribed client, and the fan-out loop.
@@ -5712,7 +5728,7 @@ struct ExpirySweep<T = String> {
 }
 
 // Hand-written rather than derived: `derive(Default)` would bound `T: Default`,
-// which an expiry observation is not, and an empty sweep needs no such bound.
+// and an empty sweep needs no such bound.
 impl<T> Default for ExpirySweep<T> {
     fn default() -> Self {
         Self {
@@ -17276,7 +17292,9 @@ mod issue_4548_deadlock_tests {
         {
             let mut lob = lobby.lock().await;
             assert!(
-                lob.reap_expired_handled(&first.acted, &SysEnv).is_empty(),
+                lob.reap_expired_handled(&first.acted, &SysEnv)
+                    .outbounds
+                    .is_empty(),
                 "nothing is announced for a listing the sweep deferred"
             );
             assert!(
@@ -17322,7 +17340,9 @@ mod issue_4548_deadlock_tests {
         );
         let mut lob = lobby.lock().await;
         assert_eq!(
-            lob.reap_expired_handled(&second.acted, &SysEnv).len(),
+            lob.reap_expired_handled(&second.acted, &SysEnv)
+                .outbounds
+                .len(),
             1,
             "the removal is announced by the tick that really performed it"
         );

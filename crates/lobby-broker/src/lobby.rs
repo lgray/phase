@@ -123,8 +123,8 @@ struct LobbyGameMeta {
     /// registration listed under the same code. See [`ExpiredLobbyGame`].
     ///
     /// `default` covers a snapshot written by a build that predates the field;
-    /// [`LobbyManager::allocate_generation`] is what keeps such a snapshot from
-    /// colliding with it.
+    /// [`LobbyManagerSnapshot`] is what keeps such a snapshot from colliding
+    /// with a later registration.
     #[serde(default)]
     generation: u64,
     password: Option<String>,
@@ -144,13 +144,50 @@ struct LobbyGameMeta {
     reservations: HashMap<String, LobbyReservation>,
 }
 
+/// Wire form of [`LobbyManager`]. It exists so the generation counter can be
+/// seeded **once**, at the deserialize boundary, above every generation the
+/// snapshot carries.
+///
+/// A snapshot written by a build predating these fields reads the counter and
+/// every entry's generation as `0`. Deriving the next identity from the live
+/// map instead would not fix that, because removing an entry *lowers* the
+/// derived floor: empty the map and it falls back to `0`, handing a fresh
+/// registration the identity an outstanding observation still names. Seeding
+/// here makes [`LobbyManager::next_generation`] monotone for the manager's
+/// whole life, which no removal can undo.
+#[derive(Deserialize)]
+struct LobbyManagerSnapshot {
+    games: HashMap<String, LobbyGameMeta>,
+    #[serde(default)]
+    next_generation: u64,
+}
+
+impl From<LobbyManagerSnapshot> for LobbyManager {
+    fn from(snapshot: LobbyManagerSnapshot) -> Self {
+        let seeded = snapshot
+            .games
+            .values()
+            .map(|meta| meta.generation + 1)
+            .max()
+            .unwrap_or(0)
+            .max(snapshot.next_generation);
+        Self {
+            games: snapshot.games,
+            next_generation: seeded,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
+#[serde(from = "LobbyManagerSnapshot")]
 pub struct LobbyManager {
     games: HashMap<String, LobbyGameMeta>,
-    /// Next value [`LobbyManager::allocate_generation`] will hand out. Carried
-    /// across a hibernation round-trip so an identity is not reused by a
-    /// registration made after a restore.
-    #[serde(default)]
+    /// Strictly monotone source of registration identities, seeded past the
+    /// snapshot's generations by [`LobbyManagerSnapshot`] and never lowered.
+    ///
+    /// Neither this struct nor [`LobbyGameMeta`] denies unknown fields, so a
+    /// snapshot written by a *newer* build also loads on an older one — the
+    /// extra fields are dropped and the old build behaves as it did before.
     next_generation: u64,
 }
 
@@ -162,31 +199,6 @@ impl LobbyManager {
         }
     }
 
-    /// Allocates the identity for a new registration.
-    ///
-    /// Floors above every generation currently registered rather than trusting
-    /// the stored counter alone. The whole [`crate::broker::Broker`] is
-    /// round-tripped through serde for Durable Object hibernation, and a
-    /// snapshot written by a build that predates these fields deserializes the
-    /// counter *and* every entry's generation as `0`. Without the floor the
-    /// first registration after such a restore would be handed `0` — the
-    /// identity a restored entry already carries — which is the collision the
-    /// identity exists to rule out.
-    ///
-    /// The scan is over the listings currently held and runs once per
-    /// registration, which is a client-driven event rather than a hot path.
-    fn allocate_generation(&mut self) -> u64 {
-        let floor = self
-            .games
-            .values()
-            .map(|meta| meta.generation + 1)
-            .max()
-            .unwrap_or(0);
-        let generation = self.next_generation.max(floor);
-        self.next_generation = generation + 1;
-        generation
-    }
-
     pub fn register_game(
         &mut self,
         game_code: &str,
@@ -195,7 +207,11 @@ impl LobbyManager {
     ) {
         let has_password = req.password.is_some();
         let created_at = env.now_ms() / 1000;
-        let generation = self.allocate_generation();
+        // Monotone for the manager's whole life — see `next_generation`. A
+        // removal never lowers it, so an identity an outstanding expiry
+        // observation still names cannot be handed out again.
+        let generation = self.next_generation;
+        self.next_generation += 1;
 
         debug!(
             game = %game_code,
@@ -536,6 +552,17 @@ mod tests {
     fn codes(observed: &[ExpiredLobbyGame]) -> Vec<String> {
         observed.iter().map(|e| e.game_code().to_string()).collect()
     }
+
+    /// Round-trips a manager through the snapshot shape an older build wrote:
+    /// no `generation` on any entry and no `next_generation` on the manager.
+    fn restore_without_generations(seed: &LobbyManager) -> LobbyManager {
+        let mut raw: serde_json::Value = serde_json::to_value(seed).expect("manager serializes");
+        raw.as_object_mut().unwrap().remove("next_generation");
+        for entry in raw["games"].as_object_mut().unwrap().values_mut() {
+            entry.as_object_mut().unwrap().remove("generation");
+        }
+        serde_json::from_value(raw).expect("an older snapshot still loads")
+    }
     use engine::types::format::{FormatConfig, GameFormat};
     use engine::types::match_config::MatchConfig;
     use std::cell::Cell;
@@ -848,6 +875,42 @@ mod tests {
         );
     }
 
+    /// The ordering a floor derived from the *live* map gets wrong: removing an
+    /// entry lowers that floor, so emptying the map hands the next registration
+    /// the identity an outstanding observation still names. Seeding the counter
+    /// once at load makes it monotone, and no removal can undo it.
+    #[test]
+    fn an_identity_is_not_reissued_after_the_observed_entry_is_removed() {
+        let env = FakeEnv::new();
+        let mut seed = LobbyManager::new();
+        register_basic(&mut seed, "GAME01", "Alice", true, None, None, &env);
+        seed.games.get_mut("GAME01").unwrap().created_at = 0;
+        let mut lobby = restore_without_generations(&seed);
+
+        let observed = lobby.check_expired(300, &env);
+        assert_eq!(
+            codes(&observed),
+            vec!["GAME01".to_string()],
+            "reach guard: the restored entry is the one observed"
+        );
+
+        // Another path disposes of the entry, emptying the map, before the
+        // code is registered again — the sequence that used to reset the floor.
+        lobby.unregister_game("GAME01");
+        register_basic(&mut lobby, "GAME01", "Bob", true, None, None, &env);
+
+        assert_eq!(
+            lobby.unregister_expired(&observed[0]),
+            ExpiryConsumption::Superseded,
+            "an identity an outstanding observation names must never be reissued"
+        );
+        assert_eq!(
+            lobby.public_games()[0].host_name,
+            "Bob",
+            "so the replacement survives"
+        );
+    }
+
     /// Restore safety. The whole `Broker` round-trips through serde for Durable
     /// Object hibernation, and a snapshot written before these fields existed
     /// deserializes the counter *and* every entry's generation as `0`. Without
@@ -861,15 +924,7 @@ mod tests {
         register_basic(&mut seed, "GAME01", "Alice", true, None, None, &env);
         seed.games.get_mut("GAME01").unwrap().created_at = 0;
 
-        // A snapshot as an older build wrote it: no `generation`, no counter.
-        let mut raw: serde_json::Value = serde_json::to_value(&seed).expect("manager serializes");
-        raw.as_object_mut().unwrap().remove("next_generation");
-        raw["games"]["GAME01"]
-            .as_object_mut()
-            .unwrap()
-            .remove("generation");
-        let mut lobby: LobbyManager =
-            serde_json::from_value(raw).expect("an older snapshot still loads");
+        let mut lobby = restore_without_generations(&seed);
 
         let observed = lobby.check_expired(300, &env);
         assert_eq!(
