@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::env::BrokerEnv;
-use crate::lobby::{LobbyManager, RegisterGameRequest};
+use crate::lobby::{ExpiredLobbyGame, ExpiryConsumption, LobbyManager, RegisterGameRequest};
 use crate::protocol::{
     LobbyClientMessage, LobbyServerMessage, ServerMode, TournamentRequestId, TournamentView,
 };
@@ -652,6 +652,9 @@ impl Broker {
     /// Consumes **every** expired lobby entry, which is right for a shell whose
     /// sweep cannot decline: a Durable Object has no session registry to
     /// contend on, so reporting an entry and disposing of it are the same act.
+    /// Nothing can replace an entry between the two halves here — they run
+    /// under one `&mut self` — so every observation this path makes is still
+    /// good when it is consumed.
     /// A shell that *can* decline — the Full-mode server, whose `try_session`
     /// defers a game mid-transition — reports with
     /// [`Broker::lobby`]`.check_expired` and consumes with
@@ -674,30 +677,40 @@ impl Broker {
     /// expired lobby codes itself and acted on them: it consumes exactly
     /// `handled` and leaves every other entry registered.
     ///
-    /// Emits one `LobbyGameRemoved` per element of `handled`, in order, then
-    /// the tournament half unchanged — the tournament registry is swept here
-    /// rather than by the caller because no consumer of it can decline (see
-    /// [`TournamentManager::check_expired`]), so there is nothing to report
-    /// separately. Call it on every tick for that reason, not only on the ticks
-    /// a lobby entry lapsed.
+    /// Emits one `LobbyGameRemoved` per element of `handled` whose observation
+    /// is still good, in order, then the tournament half unchanged — the
+    /// tournament registry is swept here rather than by the caller because no
+    /// consumer of it can decline (see [`TournamentManager::check_expired`]),
+    /// so there is nothing to report separately. Call it on every tick for that
+    /// reason, not only on the ticks a lobby entry lapsed.
     ///
-    /// A code whose entry another path already unregistered between the report
-    /// and this call still emits its removal: the lobby lock is released in
-    /// between, and a client that over-prunes recovers where a client that
-    /// never hears of the removal does not.
+    /// Consumption is identity-conditional. The lobby lock is released between
+    /// the caller's report and this call, so what sits under a reported code
+    /// may no longer be what was reported, and the two ways that can happen are
+    /// not the same act (see [`ExpiryConsumption`]). A code another path
+    /// already unregistered still emits its removal — a client that over-prunes
+    /// recovers where one that never hears of the removal does not. A code a
+    /// `register_game` has since *replaced* emits nothing and keeps its entry:
+    /// that listing is live and unexpired, and removing it here would delist a
+    /// game nobody retired.
     pub fn reap_expired_handled(
         &mut self,
-        handled: &[String],
+        handled: &[ExpiredLobbyGame],
         env: &impl BrokerEnv,
     ) -> Vec<Outbound> {
         let mut out: Vec<Outbound> = Vec::with_capacity(handled.len());
-        for game_code in handled {
-            self.lobby.unregister_game(game_code);
-            out.push(Outbound::ToSubscribers(
-                LobbyServerMessage::LobbyGameRemoved {
-                    game_code: game_code.clone(),
-                },
-            ));
+        for expired in handled {
+            let announce = match self.lobby.unregister_expired(expired) {
+                ExpiryConsumption::Removed | ExpiryConsumption::AlreadyGone => true,
+                ExpiryConsumption::Superseded => false,
+            };
+            if announce {
+                out.push(Outbound::ToSubscribers(
+                    LobbyServerMessage::LobbyGameRemoved {
+                        game_code: expired.game_code().to_string(),
+                    },
+                ));
+            }
         }
 
         let events = self.tournaments.check_expired(env);
@@ -3966,13 +3979,20 @@ mod tests {
 
         // Reach guard: both listings really lapsed, so a one-entry fixture
         // cannot make "consumes only what it was handed" pass by coincidence.
-        let mut reported = broker.lobby().check_expired(300, &env);
-        reported.sort();
+        let reported = broker.lobby().check_expired(300, &env);
+        let mut reported_codes: Vec<String> =
+            reported.iter().map(|e| e.game_code().to_string()).collect();
+        reported_codes.sort();
         let mut both = vec![acted.clone(), deferred.clone()];
         both.sort();
-        assert_eq!(reported, both);
+        assert_eq!(reported_codes, both);
 
-        let out = broker.reap_expired_handled(std::slice::from_ref(&acted), &env);
+        let acted_observation = reported
+            .iter()
+            .find(|e| e.game_code() == acted)
+            .expect("the handled entry was reported")
+            .clone();
+        let out = broker.reap_expired_handled(std::slice::from_ref(&acted_observation), &env);
         assert_eq!(
             out,
             [Outbound::ToSubscribers(
@@ -3989,12 +4009,16 @@ mod tests {
         );
 
         // The next tick reports the deferred entry again — that is the retry.
+        let retried = broker.lobby().check_expired(300, &env);
         assert_eq!(
-            broker.lobby().check_expired(300, &env),
+            retried
+                .iter()
+                .map(|e| e.game_code().to_string())
+                .collect::<Vec<_>>(),
             vec![deferred.clone()],
             "a deferred entry must be reported again"
         );
-        let second = broker.reap_expired_handled(std::slice::from_ref(&deferred), &env);
+        let second = broker.reap_expired_handled(&retried, &env);
         assert_eq!(
             second,
             [Outbound::ToSubscribers(
@@ -4006,6 +4030,66 @@ mod tests {
         assert!(
             broker.lobby().is_empty(),
             "a deferred entry is consumed by the tick that can act on it"
+        );
+    }
+
+    /// The shell releases the lobby lock between reporting an expiry and
+    /// handing it back here, and `register_game` overwrites whatever is
+    /// registered under a code. A consume keyed on the code alone therefore
+    /// removed the *replacement* and told every subscriber to delist it — a
+    /// live, unexpired listing silently deleted. The consume is keyed on the
+    /// registration that was observed instead.
+    #[test]
+    fn a_replacement_listing_survives_the_consume_of_the_entry_it_replaced() {
+        let env = FakeEnv::new();
+        let mut broker = Broker::new();
+
+        let mut host_a = ConnState::default();
+        hello(&mut host_a, &mut broker, &env);
+        let code = game_code_of(&create(&mut host_a, &mut broker, &env));
+
+        env.advance_secs(301);
+
+        let reported = broker.lobby().check_expired(300, &env);
+        assert_eq!(
+            reported
+                .iter()
+                .map(|e| e.game_code().to_string())
+                .collect::<Vec<_>>(),
+            vec![code.clone()],
+            "reach guard: the lapsed listing really was observed"
+        );
+
+        // The gap: the shell has dropped the lobby lock to do its session work,
+        // and the freed code is registered again before the consume lands.
+        broker.lobby_mut().register_game(
+            &code,
+            RegisterGameRequest {
+                host_name: "replacement".to_string(),
+                public: true,
+                ..Default::default()
+            },
+            &env,
+        );
+
+        let out = broker.reap_expired_handled(&reported, &env);
+        assert!(
+            out.is_empty(),
+            "a superseded observation must announce nothing: {out:?}"
+        );
+        assert!(
+            broker.lobby().has_game(&code),
+            "and the replacement keeps its listing"
+        );
+        assert_eq!(
+            broker
+                .lobby()
+                .public_games()
+                .iter()
+                .map(|g| g.host_name.clone())
+                .collect::<Vec<_>>(),
+            vec!["replacement".to_string()],
+            "the entry standing is the replacement, not the one that lapsed"
         );
     }
 

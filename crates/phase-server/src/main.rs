@@ -42,8 +42,8 @@ use engine::types::GameLogEntry;
 use http::{HeaderMap, HeaderValue};
 use lobby_broker::{
     check_build_commit, conn_holds_reservation, validate_announcement, Broker, BrokerEnv,
-    BuildCommitCheck, ConnState, Outbound, RawAnnouncement, ServerAnnouncement, ServerInfoDocument,
-    DIRECTORY_VERSION, INFO_PATH, MAX_SERVER_NAME_LEN, NOT_OWNED_RESERVATION,
+    BuildCommitCheck, ConnState, ExpiredLobbyGame, Outbound, RawAnnouncement, ServerAnnouncement,
+    ServerInfoDocument, DIRECTORY_VERSION, INFO_PATH, MAX_SERVER_NAME_LEN, NOT_OWNED_RESERVATION,
 };
 use rand::TryRngCore;
 use seat_reducer::types::{DeckChoice, DeckResolver, ReducerCtx};
@@ -2672,11 +2672,14 @@ async fn serve() {
                 // codes it removed, is base behaviour and is why the abandon
                 // path keeps both of its authority checks. Only a deferred code
                 // drops out, and it is pruned on the tick that retires it.
-                prune_game_connections(&bg_connections, handled_lobby.iter().map(String::as_str))
-                    .await;
+                prune_game_connections(
+                    &bg_connections,
+                    handled_lobby.iter().map(ExpiredLobbyGame::game_code),
+                )
+                .await;
                 let mut specs = bg_game_spectators.lock().await;
-                for game_code in &handled_lobby {
-                    specs.remove(game_code);
+                for expired in &handled_lobby {
+                    specs.remove(expired.game_code());
                 }
 
                 let subs = bg_lobby_subs.lock().await;
@@ -5698,10 +5701,25 @@ fn retire_unstarted_session_async(game_db: &SharedGameDb, session: &GameSession)
 /// `acted` also holds codes consumed *without* action — a registry that no
 /// longer has the game — and counting those as deferrals would report a retry
 /// that will never happen.
-#[derive(Default)]
-struct ExpirySweep {
-    acted: Vec<String>,
+///
+/// `T` is whatever identifies a thing this sweep acted on. The forfeit sweep
+/// acts on game codes; the lobby sweep acts on [`ExpiredLobbyGame`]
+/// observations, because the broker it hands them back to must be able to tell
+/// the registration it reported from a replacement.
+struct ExpirySweep<T = String> {
+    acted: Vec<T>,
     deferred: usize,
+}
+
+// Hand-written rather than derived: `derive(Default)` would bound `T: Default`,
+// which an expiry observation is not, and an empty sweep needs no such bound.
+impl<T> Default for ExpirySweep<T> {
+    fn default() -> Self {
+        Self {
+            acted: Vec::new(),
+            deferred: 0,
+        }
+    }
 }
 
 /// The forfeit sweep's registry critical section: act on the codes
@@ -5794,11 +5812,16 @@ fn reap_expired_disconnects(
 fn handle_expired_lobby_games(
     mgr: &mut SessionManager,
     game_db: &SharedGameDb,
-    expired: &[String],
-) -> ExpirySweep {
-    let mut handled: Vec<String> = Vec::new();
+    expired: &[ExpiredLobbyGame],
+) -> ExpirySweep<ExpiredLobbyGame> {
+    let mut handled: Vec<ExpiredLobbyGame> = Vec::new();
     let mut deferred = 0usize;
-    for game_code in expired {
+    for observation in expired {
+        // The observation is carried through, not reduced to its code: the
+        // lobby lock is released across this sweep, so only the identity it
+        // was reported with can tell the broker whether the entry it is about
+        // to consume is still the one that lapsed.
+        let game_code = observation.game_code();
         // `try_session` under the registry guard: it never waits, so it cannot
         // close a cycle, and a game with a transition in flight is precisely
         // the one to leave alone until the next tick. `None` alone is ambiguous
@@ -5827,7 +5850,7 @@ fn handle_expired_lobby_games(
         // is consumed. A lapsed listing is the advertisement's TTL and not the
         // game's — a started session keeps running and only loses its ad, and a
         // code the registry does not hold has nothing left to retire.
-        handled.push(game_code.clone());
+        handled.push(observation.clone());
     }
     ExpirySweep {
         acted: handled,
@@ -17175,6 +17198,13 @@ mod issue_4548_deadlock_tests {
         }
     }
 
+    /// The codes an expiry report named. For assertions about *which listings*
+    /// were seen; an assertion about *which registration* compares the
+    /// observations themselves.
+    fn codes(observed: &[ExpiredLobbyGame]) -> Vec<String> {
+        observed.iter().map(|e| e.game_code().to_string()).collect()
+    }
+
     async fn list_in_lobby(lobby: &SharedLobby, game_code: &str) {
         lobby.lock().await.lobby_mut().register_game(
             game_code,
@@ -17223,7 +17253,7 @@ mod issue_4548_deadlock_tests {
             .lobby()
             .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv);
         assert_eq!(
-            reported,
+            codes(&reported),
             vec![code.clone()],
             "reach guard: the sweep must see the lapsed listing"
         );
@@ -17269,7 +17299,7 @@ mod issue_4548_deadlock_tests {
             .lobby()
             .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv);
         assert_eq!(
-            reported,
+            codes(&reported),
             vec![code.clone()],
             "the skipped listing must be reported again"
         );
@@ -17278,7 +17308,7 @@ mod issue_4548_deadlock_tests {
             handle_expired_lobby_games(&mut mgr, &game_db, &reported)
         };
         assert_eq!(
-            second.acted,
+            codes(&second.acted),
             vec![code.clone()],
             "the next tick must retire what the first could not"
         );
@@ -17320,7 +17350,7 @@ mod issue_4548_deadlock_tests {
             .lobby()
             .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv);
         assert_eq!(
-            reported,
+            codes(&reported),
             vec!["GONE01".to_string()],
             "reach guard: the sweep must see the lapsed listing"
         );
@@ -17334,7 +17364,7 @@ mod issue_4548_deadlock_tests {
             handle_expired_lobby_games(&mut mgr, &game_db, &reported)
         };
         assert_eq!(
-            handled.acted,
+            codes(&handled.acted),
             vec!["GONE01".to_string()],
             "there is no session to retire, so the listing is dispositioned"
         );
@@ -17377,7 +17407,7 @@ mod issue_4548_deadlock_tests {
             .lobby()
             .check_expired(LOBBY_EXPIRY_SECS, &LapsedEnv);
         assert_eq!(
-            reported,
+            codes(&reported),
             vec![code.clone()],
             "reach guard: the sweep must see the lapsed listing"
         );
@@ -17391,7 +17421,7 @@ mod issue_4548_deadlock_tests {
             handle_expired_lobby_games(&mut mgr, &game_db, &reported)
         };
         assert_eq!(
-            handled.acted,
+            codes(&handled.acted),
             vec![code.clone()],
             "a listing the sweep refuses to retire is still dispositioned"
         );

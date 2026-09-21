@@ -71,10 +71,62 @@ pub struct LobbyReservation {
     pub expires_at_ms: Option<u64>,
 }
 
+/// A lobby listing observed past its timeout by
+/// [`LobbyManager::check_expired`], carrying the identity of the exact
+/// registration that was observed rather than only its code.
+///
+/// A code names a slot the lobby reuses: [`LobbyManager::register_game`]
+/// overwrites whatever is registered under it. The report is deliberately
+/// non-destructive, so the lobby lock is released between an observation and
+/// the consumption that acts on it — that release is what lets a sweep decline
+/// a contended game — and a registration can land in that gap. Consuming by
+/// code alone would delete that replacement and broadcast its removal;
+/// [`LobbyManager::unregister_expired`] consumes only what was observed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpiredLobbyGame {
+    game_code: String,
+    generation: u64,
+}
+
+impl ExpiredLobbyGame {
+    /// The code the observed registration was listed under.
+    pub fn game_code(&self) -> &str {
+        &self.game_code
+    }
+}
+
+/// What [`LobbyManager::unregister_expired`] did with an expiry observation.
+///
+/// Three outcomes rather than a bool because the two that remove nothing are
+/// not the same act: one still owes subscribers a removal and the other must
+/// stay silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpiryConsumption {
+    /// The observed registration was still listed, and has been removed.
+    Removed,
+    /// Nothing is listed under the code — another path removed it between the
+    /// observation and this call. Nothing was removed here, but subscribers are
+    /// still told: a client that over-prunes a listing it no longer has
+    /// recovers, where one that never hears of a removal keeps a dead entry.
+    AlreadyGone,
+    /// A *different* registration is listed under the code — `register_game`
+    /// replaced the entry after it was observed. The replacement is live and
+    /// has not expired, so it stays registered and no removal is announced.
+    Superseded,
+}
+
 #[derive(Serialize, Deserialize)]
 struct LobbyGameMeta {
     host_name: String,
     created_at: u64,
+    /// Identity of this registration, distinguishing it from any other
+    /// registration listed under the same code. See [`ExpiredLobbyGame`].
+    ///
+    /// `default` covers a snapshot written by a build that predates the field;
+    /// [`LobbyManager::allocate_generation`] is what keeps such a snapshot from
+    /// colliding with it.
+    #[serde(default)]
+    generation: u64,
     password: Option<String>,
     has_password: bool,
     timer_seconds: Option<u32>,
@@ -95,13 +147,44 @@ struct LobbyGameMeta {
 #[derive(Serialize, Deserialize)]
 pub struct LobbyManager {
     games: HashMap<String, LobbyGameMeta>,
+    /// Next value [`LobbyManager::allocate_generation`] will hand out. Carried
+    /// across a hibernation round-trip so an identity is not reused by a
+    /// registration made after a restore.
+    #[serde(default)]
+    next_generation: u64,
 }
 
 impl LobbyManager {
     pub fn new() -> Self {
         Self {
             games: HashMap::new(),
+            next_generation: 0,
         }
+    }
+
+    /// Allocates the identity for a new registration.
+    ///
+    /// Floors above every generation currently registered rather than trusting
+    /// the stored counter alone. The whole [`crate::broker::Broker`] is
+    /// round-tripped through serde for Durable Object hibernation, and a
+    /// snapshot written by a build that predates these fields deserializes the
+    /// counter *and* every entry's generation as `0`. Without the floor the
+    /// first registration after such a restore would be handed `0` — the
+    /// identity a restored entry already carries — which is the collision the
+    /// identity exists to rule out.
+    ///
+    /// The scan is over the listings currently held and runs once per
+    /// registration, which is a client-driven event rather than a hot path.
+    fn allocate_generation(&mut self) -> u64 {
+        let floor = self
+            .games
+            .values()
+            .map(|meta| meta.generation + 1)
+            .max()
+            .unwrap_or(0);
+        let generation = self.next_generation.max(floor);
+        self.next_generation = generation + 1;
+        generation
     }
 
     pub fn register_game(
@@ -112,6 +195,7 @@ impl LobbyManager {
     ) {
         let has_password = req.password.is_some();
         let created_at = env.now_ms() / 1000;
+        let generation = self.allocate_generation();
 
         debug!(
             game = %game_code,
@@ -126,6 +210,7 @@ impl LobbyManager {
             LobbyGameMeta {
                 host_name: req.host_name,
                 created_at,
+                generation,
                 password: req.password,
                 has_password,
                 timer_seconds: req.timer_seconds,
@@ -378,22 +463,61 @@ impl LobbyManager {
     /// listing was already gone, nothing re-reported it, and the unstarted
     /// session it named never retired — its game code stayed held until a later
     /// startup aged it out. A reported entry is consumed by
-    /// [`Self::unregister_game`], which the sweep calls once it has established
-    /// there is nothing left to retire; until then the same code is reported on
-    /// the next tick, which is the retry the sweep's cadence already assumes.
+    /// [`Self::unregister_expired`], which the sweep calls once it has
+    /// established there is nothing left to retire; until then the same code is
+    /// reported on the next tick, which is the retry the sweep's cadence
+    /// already assumes.
+    ///
+    /// Each report carries the identity of the registration it observed, not
+    /// just its code, because the lock released in between lets a replacement
+    /// take that code — see [`ExpiredLobbyGame`].
     ///
     /// [`crate::broker::Broker::reap_expired`] reports and consumes in one
     /// call, which is right for a shell that cannot decline — the Durable
     /// Object has no session registry to contend on.
     /// [`crate::broker::Broker::reap_expired_handled`] is the two-step form for
     /// a shell that can.
-    pub fn check_expired(&self, timeout_secs: u64, env: &impl BrokerEnv) -> Vec<String> {
+    pub fn check_expired(&self, timeout_secs: u64, env: &impl BrokerEnv) -> Vec<ExpiredLobbyGame> {
         let now = env.now_ms() / 1000;
         self.games
             .iter()
             .filter(|(_, meta)| now.saturating_sub(meta.created_at) > timeout_secs)
-            .map(|(code, _)| code.clone())
+            .map(|(code, meta)| ExpiredLobbyGame {
+                game_code: code.clone(),
+                generation: meta.generation,
+            })
             .collect()
+    }
+
+    /// Consumes an expiry observation, removing the listing **only** when the
+    /// registration currently under that code is the one that was observed.
+    ///
+    /// The identity check is the whole point: the lobby lock is released
+    /// between [`Self::check_expired`] and this call, so `register_game` can
+    /// replace the entry in between with a live, unexpired listing. Removing
+    /// that replacement would also broadcast a `LobbyGameRemoved` that delists
+    /// it for every subscriber — the caller keys that broadcast off the
+    /// returned [`ExpiryConsumption`], which is why the two no-op outcomes are
+    /// distinguished rather than collapsed.
+    ///
+    /// [`Self::unregister_game`] stays the unconditional form, for the paths
+    /// that own the entry they remove (a host leaving, a game starting) and
+    /// hold the lock across their own decision.
+    pub fn unregister_expired(&mut self, expired: &ExpiredLobbyGame) -> ExpiryConsumption {
+        match self.games.get(&expired.game_code) {
+            None => ExpiryConsumption::AlreadyGone,
+            Some(meta) if meta.generation == expired.generation => {
+                self.unregister_game(&expired.game_code);
+                ExpiryConsumption::Removed
+            }
+            Some(_) => {
+                debug!(
+                    game = %expired.game_code,
+                    "lobby expiry observation superseded — replacement listing kept"
+                );
+                ExpiryConsumption::Superseded
+            }
+        }
     }
 }
 
@@ -406,6 +530,12 @@ impl Default for LobbyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The codes an expiry report named, for assertions about which listings
+    /// were seen rather than which registration.
+    fn codes(observed: &[ExpiredLobbyGame]) -> Vec<String> {
+        observed.iter().map(|e| e.game_code().to_string()).collect()
+    }
     use engine::types::format::{FormatConfig, GameFormat};
     use engine::types::match_config::MatchConfig;
     use std::cell::Cell;
@@ -636,13 +766,13 @@ mod tests {
         lobby.games.get_mut("GAME01").unwrap().created_at = 0;
 
         let expired = lobby.check_expired(300, &env);
-        assert_eq!(expired, vec!["GAME01".to_string()]);
+        assert_eq!(codes(&expired), vec!["GAME01".to_string()]);
 
         // Reporting is not consuming. The sweep that acts on this code can
         // decline — its session may be mid-transition — and an entry erased on
         // report is one nothing ever reports again.
         assert_eq!(
-            lobby.check_expired(300, &env),
+            codes(&lobby.check_expired(300, &env)),
             vec!["GAME01".to_string()],
             "a tick that did not act must leave the entry for the next one"
         );
@@ -652,10 +782,113 @@ mod tests {
             "and the listing stands until someone disposes of it"
         );
 
-        // Consumption is the caller unregistering what it handled.
-        lobby.unregister_game("GAME01");
+        // Consumption is the caller handing the observation back.
+        assert_eq!(
+            lobby.unregister_expired(&expired[0]),
+            ExpiryConsumption::Removed
+        );
         assert!(lobby.check_expired(300, &env).is_empty());
         assert!(lobby.public_games().is_empty());
+    }
+
+    /// The blocker this identity exists for: the lobby lock is released between
+    /// the report and the consume, so a `register_game` can take the code in
+    /// between. Consuming by code alone would delete that replacement — a live,
+    /// unexpired listing — and tell every subscriber to delist it.
+    #[test]
+    fn a_replacement_registered_after_the_report_is_not_consumed_by_it() {
+        let env = FakeEnv::new();
+        let mut lobby = LobbyManager::new();
+        register_basic(&mut lobby, "GAME01", "Alice", true, None, None, &env);
+        lobby.games.get_mut("GAME01").unwrap().created_at = 0;
+
+        let observed = lobby.check_expired(300, &env);
+        assert_eq!(
+            codes(&observed),
+            vec!["GAME01".to_string()],
+            "reach guard: the lapsed listing really was observed"
+        );
+
+        // The gap. A new host takes the freed code while the lobby lock is down.
+        register_basic(&mut lobby, "GAME01", "Bob", true, None, None, &env);
+
+        assert_eq!(
+            lobby.unregister_expired(&observed[0]),
+            ExpiryConsumption::Superseded,
+            "the observation names a registration that is no longer listed"
+        );
+        let games = lobby.public_games();
+        assert_eq!(games.len(), 1, "the replacement keeps its listing");
+        assert_eq!(
+            games[0].host_name, "Bob",
+            "and it is the replacement that stands, not the entry that lapsed"
+        );
+        assert!(
+            lobby.check_expired(300, &env).is_empty(),
+            "the replacement is fresh, so it is not itself reported as expired"
+        );
+    }
+
+    /// The outcome that must stay an announcement: nothing is listed, because
+    /// another path removed it between the report and the consume. Distinct
+    /// from `Superseded`, whose whole point is that subscribers hear nothing.
+    #[test]
+    fn an_entry_removed_by_another_path_is_reported_already_gone() {
+        let env = FakeEnv::new();
+        let mut lobby = LobbyManager::new();
+        register_basic(&mut lobby, "GAME01", "Alice", true, None, None, &env);
+        lobby.games.get_mut("GAME01").unwrap().created_at = 0;
+
+        let observed = lobby.check_expired(300, &env);
+        lobby.unregister_game("GAME01");
+
+        assert_eq!(
+            lobby.unregister_expired(&observed[0]),
+            ExpiryConsumption::AlreadyGone
+        );
+    }
+
+    /// Restore safety. The whole `Broker` round-trips through serde for Durable
+    /// Object hibernation, and a snapshot written before these fields existed
+    /// deserializes the counter *and* every entry's generation as `0`. Without
+    /// the floor in `allocate_generation`, the first registration after such a
+    /// restore would be handed `0` — the identity the restored entry already
+    /// carries — and `Superseded` would collapse back into `Removed`.
+    #[test]
+    fn a_registration_after_a_generation_less_restore_cannot_reuse_an_identity() {
+        let env = FakeEnv::new();
+        let mut seed = LobbyManager::new();
+        register_basic(&mut seed, "GAME01", "Alice", true, None, None, &env);
+        seed.games.get_mut("GAME01").unwrap().created_at = 0;
+
+        // A snapshot as an older build wrote it: no `generation`, no counter.
+        let mut raw: serde_json::Value = serde_json::to_value(&seed).expect("manager serializes");
+        raw.as_object_mut().unwrap().remove("next_generation");
+        raw["games"]["GAME01"]
+            .as_object_mut()
+            .unwrap()
+            .remove("generation");
+        let mut lobby: LobbyManager =
+            serde_json::from_value(raw).expect("an older snapshot still loads");
+
+        let observed = lobby.check_expired(300, &env);
+        assert_eq!(
+            codes(&observed),
+            vec!["GAME01".to_string()],
+            "reach guard: the restored entry is the one observed"
+        );
+
+        register_basic(&mut lobby, "GAME01", "Bob", true, None, None, &env);
+        assert_eq!(
+            lobby.unregister_expired(&observed[0]),
+            ExpiryConsumption::Superseded,
+            "a restored entry's identity must not be handed out again"
+        );
+        assert_eq!(
+            lobby.public_games()[0].host_name,
+            "Bob",
+            "so the replacement survives a restore exactly as it does without one"
+        );
     }
 
     #[test]
