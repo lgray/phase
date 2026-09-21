@@ -42,9 +42,8 @@ use engine::types::GameLogEntry;
 use http::{HeaderMap, HeaderValue};
 use lobby_broker::{
     check_build_commit, conn_holds_reservation, validate_announcement, Broker, BrokerEnv,
-    BuildCommitCheck, ConnState, ExpiredLobbyGame, Outbound, RawAnnouncement, ReapOutcome,
-    ServerAnnouncement, ServerInfoDocument, DIRECTORY_VERSION, INFO_PATH, MAX_SERVER_NAME_LEN,
-    NOT_OWNED_RESERVATION,
+    BuildCommitCheck, ConnState, ExpiredLobbyGame, Outbound, RawAnnouncement, ServerAnnouncement,
+    ServerInfoDocument, DIRECTORY_VERSION, INFO_PATH, MAX_SERVER_NAME_LEN, NOT_OWNED_RESERVATION,
 };
 use rand::TryRngCore;
 use seat_reducer::types::{DeckChoice, DeckResolver, ReducerCtx};
@@ -2644,41 +2643,33 @@ async fn serve() {
             // Every tick, not only the ticks a lobby entry lapsed: the
             // tournament half of this sweep runs on its own lifecycle clocks
             // and has no shell-side decline to wait for.
-            let ReapOutcome {
-                outbounds: reap_outbounds,
-                announced: reaped_lobby,
-            } = {
+            let reaped = {
                 let mut broker = bg_lobby.lock().await;
                 broker.reap_expired_handled(&handled_lobby, &SysEnv)
             };
-            // The deferred disjunct is load-bearing: a tick that deferred every
-            // lapsed listing hands the broker nothing, so `reap_outbounds` is
-            // empty and the contention would go unreported on the guard alone.
-            if !reap_outbounds.is_empty() || deferred_lobby > 0 {
-                // `handled_lobby` is deliberately lobby-only: it drove the
-                // Full-mode session/db cleanup above, and a tournament has no
-                // server-run session to retire. But `reap_outbounds` also
-                // carries tournament lifecycle events, so reporting only the
-                // lobby count would print a misleading `count=0` for a sweep
-                // that reaped tournaments and nothing else. Both counts are
-                // named explicitly rather than summed — they are different
+            // Every disjunct is load-bearing, because each names work this tick
+            // did that no other disjunct witnesses: a tick that deferred every
+            // lapsed listing hands the broker nothing, and a tick whose every
+            // listing was superseded produces no outbound either — yet it
+            // retired a session, which is exactly the tick worth seeing.
+            if !reaped.lobby_removed.is_empty()
+                || !reaped.tournament.is_empty()
+                || deferred_lobby > 0
+                || reaped.superseded > 0
+            {
+                // Every count comes from the sweep that produced it; nothing
+                // here is recovered by arithmetic over the outbounds. That is
+                // deliberate — deriving the lobby half by subtracting what was
+                // handed in underflowed on exactly the tick a superseded
+                // observation appears, which is the tick this reports on.
+                //
+                // The counts stay named rather than summed: they are different
                 // kinds of expiry with different cleanup, and a single total
                 // would hide which one actually fired.
-                // Counted from what the broker announced, never inferred by
-                // subtracting what was handed in. Consumption is
-                // identity-conditional: a superseded observation is consumed
-                // without an outbound, so `handled_lobby.len()` stopped being a
-                // lower bound on `reap_outbounds.len()` and the old subtraction
-                // underflowed on exactly the tick the identity check fires.
-                // Both subtractions below are non-negative by construction —
-                // `reaped_lobby` is a subset of `handled_lobby`, and each of
-                // its codes contributed exactly one outbound.
-                let superseded = handled_lobby.len() - reaped_lobby.len();
-                let tournament_events = reap_outbounds.len() - reaped_lobby.len();
                 info!(
-                    lobby_games = reaped_lobby.len(),
-                    superseded,
-                    tournament_events,
+                    lobby_games = reaped.lobby_removed.len(),
+                    superseded = reaped.superseded,
+                    tournament_events = reaped.tournament.len(),
                     deferred = deferred_lobby,
                     "expiring stale lobby entries"
                 );
@@ -2691,15 +2682,18 @@ async fn serve() {
                 // superseded code drops out because it now names a live
                 // replacement, and pruning it would reach into a game this
                 // sweep did not retire.
-                prune_game_connections(&bg_connections, reaped_lobby.iter().map(String::as_str))
-                    .await;
+                prune_game_connections(
+                    &bg_connections,
+                    reaped.lobby_removed.iter().map(String::as_str),
+                )
+                .await;
                 let mut specs = bg_game_spectators.lock().await;
-                for game_code in &reaped_lobby {
+                for game_code in &reaped.lobby_removed {
                     specs.remove(game_code);
                 }
 
                 let subs = bg_lobby_subs.lock().await;
-                for ob in reap_outbounds {
+                for ob in reaped.into_outbounds() {
                     if let Outbound::ToSubscribers(msg) = ob {
                         let server_msg = to_server_message(msg);
                         for sub in subs.iter() {
@@ -3575,7 +3569,9 @@ mod lifecycle_tests {
             expired_lobby.is_empty(),
             "a tournament must not be mistaken for a lobby game needing session cleanup"
         );
-        let reap_outbounds = broker.reap_expired_handled(&expired_lobby, &env).outbounds;
+        let reap_outbounds = broker
+            .reap_expired_handled(&expired_lobby, &env)
+            .into_outbounds();
         assert!(!reap_outbounds.is_empty());
 
         // Step 2, verbatim: one subscribed client, and the fan-out loop.
@@ -17293,7 +17289,7 @@ mod issue_4548_deadlock_tests {
             let mut lob = lobby.lock().await;
             assert!(
                 lob.reap_expired_handled(&first.acted, &SysEnv)
-                    .outbounds
+                    .into_outbounds()
                     .is_empty(),
                 "nothing is announced for a listing the sweep deferred"
             );
@@ -17341,7 +17337,7 @@ mod issue_4548_deadlock_tests {
         let mut lob = lobby.lock().await;
         assert_eq!(
             lob.reap_expired_handled(&second.acted, &SysEnv)
-                .outbounds
+                .into_outbounds()
                 .len(),
             1,
             "the removal is announced by the tick that really performed it"
@@ -19810,10 +19806,21 @@ mod metrics_tests {
             );
             assert_eq!(refused, RACERS - 1, "{path}");
             let survivor = {
-                let mgr = sessions.lock().await;
-                assert_eq!(mgr.game_count(), 1, "{path}: sessions past the cap");
-                let code = mgr.game_codes().next().expect("one session");
-                let session = mgr.try_session(code).expect("one session");
+                // `try_session` would be wrong here: it never waits, so a
+                // session still held by the winner's own connection task reads
+                // as absent and this asserts a cap violation that did not
+                // happen. Take the handle under the registry guard, release the
+                // guard, then await the session — the ordering `lock_session`
+                // uses, and the only one that distinguishes "not there" from
+                // "busy".
+                let handle = {
+                    let mgr = sessions.lock().await;
+                    assert_eq!(mgr.game_count(), 1, "{path}: sessions past the cap");
+                    let code = mgr.game_codes().next().expect("one session").clone();
+                    mgr.session(&code).expect("one session")
+                };
+                // Named so it drops before `handle` does.
+                let session = handle.lock().await;
                 session.ai_seats.len()
             };
             // Which insert actually ran: only `create_game_with_ai` seats an AI.
@@ -19834,9 +19841,14 @@ mod metrics_tests {
 
     /// Snapshot a live room and rebuild it the way a process restart does.
     async fn restart(sessions: &super::SharedState, game_code: &str) -> GameSession {
+        // Awaits rather than `try_session` for the same reason the cap race
+        // does: a room whose socket task holds its guard is busy, not gone.
         let persisted = {
-            let mgr = sessions.lock().await;
-            let session = mgr.try_session(game_code).expect("the room is live");
+            let handle = {
+                let mgr = sessions.lock().await;
+                mgr.session(game_code).expect("the room is live")
+            };
+            let session = handle.lock().await;
             session.to_persisted()
         };
         GameSession::from_persisted(persisted, &Arc::new(CardDatabase::default()))

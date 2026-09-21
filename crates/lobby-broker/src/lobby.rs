@@ -911,6 +911,34 @@ mod tests {
         );
     }
 
+    /// The arm that makes `next_generation` worth serializing at all: with the
+    /// map empty there is nothing to seed *from*, so only the stored counter
+    /// carries the identities already handed out. Without it a hibernation
+    /// round-trip taken while no game is listed would restart at `0` and
+    /// reissue every identity in order.
+    #[test]
+    fn an_emptied_manager_carries_its_counter_across_a_round_trip() {
+        let env = FakeEnv::new();
+        let mut lobby = LobbyManager::new();
+        register_basic(&mut lobby, "GAME01", "Alice", true, None, None, &env);
+        register_basic(&mut lobby, "GAME02", "Bob", true, None, None, &env);
+        lobby.unregister_game("GAME01");
+        lobby.unregister_game("GAME02");
+        assert!(
+            lobby.public_games().is_empty(),
+            "reach guard: the map is empty, so the floor can seed nothing"
+        );
+
+        let json = serde_json::to_string(&lobby).expect("manager serializes");
+        let mut restored: LobbyManager = serde_json::from_str(&json).expect("and deserializes");
+
+        register_basic(&mut restored, "GAME03", "Carol", true, None, None, &env);
+        assert_eq!(
+            restored.games["GAME03"].generation, 2,
+            "the next identity must follow the two already issued, not restart"
+        );
+    }
+
     /// Restore safety. The whole `Broker` round-trips through serde for Durable
     /// Object hibernation, and a snapshot written before these fields existed
     /// deserializes the counter *and* every entry's generation as `0`. Without

@@ -226,20 +226,45 @@ pub struct Broker {
     tournaments: TournamentManager,
 }
 
-/// What one sweep produced: the outbounds to fan out, and the codes whose
-/// removal it announced.
+/// What one sweep did, reported in the pieces a caller actually needs rather
+/// than as one vector it has to take apart again.
 ///
-/// The two are reported separately because they stopped being one-to-one when
-/// consumption became identity-conditional. A superseded observation is
-/// consumed without an outbound, and a caller that inferred the lobby half by
-/// subtracting what it handed in would underflow on exactly the tick the
-/// identity check fires. `announced` is also what a caller's own cleanup must
-/// key off: a superseded code names a live replacement, so pruning its
-/// connections or spectators would reach into a game this sweep did not retire.
-#[derive(Debug, Default)]
+/// The halves are separate because a caller that recovered them by arithmetic
+/// got it wrong: consumption is identity-conditional, so a superseded
+/// observation is consumed without an outbound, and deriving the lobby count by
+/// subtracting what was handed in underflowed on exactly the tick the identity
+/// check fires. Nothing here has to be subtracted.
+///
+/// `lobby_removed` is also what a caller's own cleanup must key off. A
+/// superseded code names a live replacement, so pruning its connections or
+/// spectators would reach into a game this sweep did not retire.
+#[derive(Debug)]
 pub struct ReapOutcome {
-    pub outbounds: Vec<Outbound>,
-    pub announced: Vec<String>,
+    /// Codes whose removal was announced — every handled observation but a
+    /// superseded one, in the order handed in. One `LobbyGameRemoved` was
+    /// emitted per element.
+    pub lobby_removed: Vec<String>,
+    /// Handled observations left alone because a replacement holds the code.
+    pub superseded: usize,
+    /// The tournament half, which no caller can decline and which is swept
+    /// here rather than reported (see [`TournamentManager::check_expired`]).
+    pub tournament: Vec<Outbound>,
+}
+
+impl ReapOutcome {
+    /// Every outbound this sweep produced, in the wire order the lobby
+    /// protocol has always used: one `LobbyGameRemoved` per removed code,
+    /// then the tournament lifecycle events, then at most one trailing
+    /// `TournamentListUpdate`.
+    pub fn into_outbounds(self) -> Vec<Outbound> {
+        self.lobby_removed
+            .into_iter()
+            .map(|game_code| {
+                Outbound::ToSubscribers(LobbyServerMessage::LobbyGameRemoved { game_code })
+            })
+            .chain(self.tournament)
+            .collect()
+    }
 }
 
 impl Broker {
@@ -686,19 +711,20 @@ impl Broker {
     /// threading one number through both would imply they are.
     pub fn reap_expired(&mut self, timeout_secs: u64, env: &impl BrokerEnv) -> Vec<Outbound> {
         let expired = self.lobby.check_expired(timeout_secs, env);
-        self.reap_expired_handled(&expired, env).outbounds
+        self.reap_expired_handled(&expired, env).into_outbounds()
     }
 
     /// [`Broker::reap_expired`]'s sweep for a caller that already reported the
     /// expired lobby codes itself and acted on them: it consumes exactly
     /// `handled` and leaves every other entry registered.
     ///
-    /// Emits one `LobbyGameRemoved` per element of `handled` whose observation
-    /// is still good, in order, then the tournament half unchanged — the
+    /// Reports one removed code per element of `handled` whose observation is
+    /// still good, in order, alongside the tournament half unchanged — the
     /// tournament registry is swept here rather than by the caller because no
     /// consumer of it can decline (see [`TournamentManager::check_expired`]),
     /// so there is nothing to report separately. Call it on every tick for that
     /// reason, not only on the ticks a lobby entry lapsed.
+    /// [`ReapOutcome::into_outbounds`] renders both halves in wire order.
     ///
     /// Consumption is identity-conditional. The lobby lock is released between
     /// the caller's report and this call, so what sits under a reported code
@@ -714,22 +740,17 @@ impl Broker {
         handled: &[ExpiredLobbyGame],
         env: &impl BrokerEnv,
     ) -> ReapOutcome {
-        let mut out: Vec<Outbound> = Vec::with_capacity(handled.len());
-        let mut announced: Vec<String> = Vec::with_capacity(handled.len());
+        let mut lobby_removed: Vec<String> = Vec::new();
+        let mut superseded = 0usize;
         for expired in handled {
-            let announce = match self.lobby.unregister_expired(expired) {
-                ExpiryConsumption::Removed | ExpiryConsumption::AlreadyGone => true,
-                ExpiryConsumption::Superseded => false,
-            };
-            if announce {
-                announced.push(expired.game_code().to_string());
-                out.push(Outbound::ToSubscribers(
-                    LobbyServerMessage::LobbyGameRemoved {
-                        game_code: expired.game_code().to_string(),
-                    },
-                ));
+            match self.lobby.unregister_expired(expired) {
+                ExpiryConsumption::Removed | ExpiryConsumption::AlreadyGone => {
+                    lobby_removed.push(expired.game_code().to_string())
+                }
+                ExpiryConsumption::Superseded => superseded += 1,
             }
         }
+        let mut out: Vec<Outbound> = Vec::new();
 
         let events = self.tournaments.check_expired(env);
         let list_changed = !events.is_empty();
@@ -775,8 +796,9 @@ impl Broker {
         }
 
         ReapOutcome {
-            outbounds: out,
-            announced,
+            lobby_removed,
+            superseded,
+            tournament: out,
         }
     }
 
@@ -4015,11 +4037,12 @@ mod tests {
             .clone();
         let first = broker.reap_expired_handled(std::slice::from_ref(&acted_observation), &env);
         assert_eq!(
-            first.announced,
+            first.lobby_removed,
             vec![acted.clone()],
-            "the handled entry is reported as announced"
+            "the handled entry is reported as removed"
         );
-        let out = first.outbounds;
+        assert_eq!(first.superseded, 0);
+        let out = first.into_outbounds();
         assert_eq!(
             out,
             [Outbound::ToSubscribers(
@@ -4045,7 +4068,7 @@ mod tests {
             vec![deferred.clone()],
             "a deferred entry must be reported again"
         );
-        let second = broker.reap_expired_handled(&retried, &env).outbounds;
+        let second = broker.reap_expired_handled(&retried, &env).into_outbounds();
         assert_eq!(
             second,
             [Outbound::ToSubscribers(
@@ -4101,14 +4124,13 @@ mod tests {
 
         let outcome = broker.reap_expired_handled(&reported, &env);
         assert!(
-            outcome.outbounds.is_empty(),
-            "a superseded observation must announce nothing: {:?}",
-            outcome.outbounds
+            outcome.lobby_removed.is_empty(),
+            "a superseded observation must not be reported as removed, or the \
+             shell prunes a live game's connections"
         );
-        assert!(
-            outcome.announced.is_empty(),
-            "and must not be reported as announced, or the shell prunes a live game"
-        );
+        assert_eq!(outcome.superseded, 1, "and is counted as superseded");
+        let out = outcome.into_outbounds();
+        assert!(out.is_empty(), "nor may it announce anything: {out:?}");
         assert!(
             broker.lobby().has_game(&code),
             "and the replacement keeps its listing"
@@ -4125,11 +4147,10 @@ mod tests {
         );
     }
 
-    /// The count invariant a one-entry fixture cannot see. Consumption stopped
-    /// being one outbound per handled code the moment it became conditional, so
-    /// a mixed tick is the shape that shows `announced` tracking the outbounds
-    /// rather than the input. The shell's `reap_outbounds.len() -
-    /// announced.len()` and `handled.len() - announced.len()` both key off this.
+    /// The split a one-entry fixture cannot see. Consumption stopped being one
+    /// outbound per handled code the moment it became conditional, so a mixed
+    /// tick is the shape that shows each half of [`ReapOutcome`] tracking what
+    /// the sweep did rather than what it was handed.
     #[test]
     fn a_mixed_tick_announces_only_the_entries_it_removed() {
         let env = FakeEnv::new();
@@ -4159,18 +4180,23 @@ mod tests {
 
         let outcome = broker.reap_expired_handled(&reported, &env);
         assert_eq!(
-            outcome.announced,
+            outcome.lobby_removed,
             vec![kept.clone()],
-            "only the entry actually removed is announced"
+            "only the entry actually removed is reported removed"
         );
         assert_eq!(
-            outcome.outbounds.len(),
-            1,
-            "and there is one outbound for it, fewer than the two handed in"
+            outcome.superseded, 1,
+            "and the other is counted, not silently dropped — this is the only \
+             witness a tick that superseded everything did any work at all"
         );
         assert!(
-            outcome.announced.len() <= reported.len(),
-            "the shell subtracts on this, so it must never exceed the input"
+            outcome.tournament.is_empty(),
+            "reach guard: no tournament expiry is muddying the counts"
+        );
+        assert_eq!(
+            outcome.into_outbounds().len(),
+            1,
+            "one outbound, fewer than the two observations handed in"
         );
         assert!(
             broker.lobby().has_game(&replaced),
@@ -4199,21 +4225,26 @@ mod tests {
 
         // Another path disposes of the entry while the lobby lock is down.
         broker.lobby_mut().unregister_game(&code);
+        assert!(
+            !broker.lobby().has_game(&code),
+            "reach guard: nothing is listed, so this is the AlreadyGone branch \
+             and not the Removed one"
+        );
 
         let outcome = broker.reap_expired_handled(&reported, &env);
         assert_eq!(
-            outcome.outbounds,
-            [Outbound::ToSubscribers(
-                LobbyServerMessage::LobbyGameRemoved {
-                    game_code: code.clone()
-                }
-            )],
-            "a removal another path made is still announced"
+            outcome.lobby_removed,
+            vec![code.clone()],
+            "an entry another path removed is still reported removed, so the \
+             shell still prunes it"
         );
+        assert_eq!(outcome.superseded, 0);
         assert_eq!(
-            outcome.announced,
-            vec![code],
-            "and is reported as announced, so the shell still prunes it"
+            outcome.into_outbounds(),
+            [Outbound::ToSubscribers(
+                LobbyServerMessage::LobbyGameRemoved { game_code: code }
+            )],
+            "and its removal is still announced"
         );
     }
 
