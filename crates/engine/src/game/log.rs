@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use crate::game::combat::AttackTarget;
 use crate::game::planechase::PlanarDieFace;
 use crate::types::ability::{AbilityTag, TargetRef};
@@ -34,6 +36,7 @@ pub fn resolve_log_entries(
         }
     };
 
+    let batch = BatchIndex::new(events, after);
     events
         .iter()
         .enumerate()
@@ -41,10 +44,10 @@ pub fn resolve_log_entries(
             cursor.apply(event);
             (!should_exclude_event(event, after)
                 && !is_redundant_log_event(events, index)
-                && !is_player_leave_move(events, index, after))
+                && !is_player_leave_move(events, index, &batch))
             .then(|| {
                 let mut segments = format_segments(event, after);
-                name_at_event_time(&mut segments, &events[index + 1..]);
+                name_at_event_time(&mut segments, &batch, index + 1);
                 (!segments.is_empty()).then(|| GameLogEntry {
                     seq: 0, // Assigned by frontend
                     turn: cursor.turn,
@@ -155,10 +158,72 @@ fn is_redundant_log_event(events: &[GameEvent], index: usize) -> bool {
     }
 }
 
+/// A batch `ZoneChanged` as (position, origin, recorded name).
+type BatchMove<'a> = (usize, Option<Zone>, &'a str);
+
+/// Batch look-ups gathered once, so no per-event check rescans the batch or the journal.
+struct BatchIndex<'a> {
+    /// Each object's moves, ascending by position.
+    moves: HashMap<ObjectId, Vec<BatchMove<'a>>>,
+    turn_starts: Vec<usize>,
+    eliminations: Vec<(usize, PlayerId)>,
+    /// The event carries no incarnation, so the turn zone-change index tells repeated
+    /// identical moves apart.
+    player_leave_moves: HashSet<(ObjectId, Zone, Zone, usize)>,
+}
+
+impl<'a> BatchIndex<'a> {
+    fn new(events: &'a [GameEvent], state: &GameState) -> Self {
+        let mut batch = Self {
+            moves: HashMap::new(),
+            turn_starts: Vec::new(),
+            eliminations: Vec::new(),
+            player_leave_moves: state
+                .resolved_rules_journal
+                .entries()
+                .iter()
+                .filter_map(|entry| match entry.command.as_ref() {
+                    Some(ResolvedRulesCommand::ZoneChange(command))
+                        if matches!(command.cause, RulesExecutionNodeRef::PlayerLeave(_)) =>
+                    {
+                        Some((
+                            command.object.object_id,
+                            command.from,
+                            command.to,
+                            command.turn_zone_change_index,
+                        ))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        };
+        for (position, event) in events.iter().enumerate() {
+            match event {
+                GameEvent::ZoneChanged {
+                    object_id,
+                    from,
+                    record,
+                    ..
+                } => batch.moves.entry(*object_id).or_default().push((
+                    position,
+                    *from,
+                    record.name.as_str(),
+                )),
+                GameEvent::TurnStarted { .. } => batch.turn_starts.push(position),
+                GameEvent::PlayerEliminated { player_id } => {
+                    batch.eliminations.push((position, *player_id))
+                }
+                _ => {}
+            }
+        }
+        batch
+    }
+}
+
 /// CR 800.4a: whether this hidden-origin move is the leaving-player sweep; the journal holding
 /// that cause is cleared at each turn start, so a move that a later `TurnStarted` follows is
 /// judged from the batch.
-fn is_player_leave_move(events: &[GameEvent], index: usize, state: &GameState) -> bool {
+fn is_player_leave_move(events: &[GameEvent], index: usize, batch: &BatchIndex) -> bool {
     let Some(GameEvent::ZoneChanged {
         object_id,
         from: Some(from),
@@ -171,54 +236,43 @@ fn is_player_leave_move(events: &[GameEvent], index: usize, state: &GameState) -
     if from.is_public() {
         return false;
     }
-    let later = &events[index + 1..];
-    match later
-        .iter()
-        .position(|event| matches!(event, GameEvent::TurnStarted { .. }))
-    {
+    let next_turn_start = batch.turn_starts.get(
+        batch
+            .turn_starts
+            .partition_point(|&position| position <= index),
+    );
+    match next_turn_start {
         // Also hides the owner's own face-up exile earlier in that turn segment, since the
         // journal that told them apart is gone.
-        Some(turn_start) => {
+        Some(&turn_start) => {
             *to == Zone::Exile
-                && later[..turn_start].iter().any(|event| {
-                    matches!(event, GameEvent::PlayerEliminated { player_id } if *player_id == record.owner)
+                && batch.eliminations.iter().any(|&(position, player_id)| {
+                    player_id == record.owner && (index..turn_start).contains(&position)
                 })
         }
-        None => state.resolved_rules_journal.entries().iter().any(|entry| {
-            matches!(
-                entry.command.as_ref(),
-                Some(ResolvedRulesCommand::ZoneChange(command))
-                    if matches!(command.cause, RulesExecutionNodeRef::PlayerLeave(_))
-                        && command.object.object_id == *object_id
-                        && command.from == *from
-                        && command.to == *to
-                        // The event carries no incarnation, so this index tells repeated
-                        // identical moves apart.
-                        && command.turn_zone_change_index == record.turn_zone_change_index
-            )
-        }),
+        None => batch.player_leave_moves.contains(&(
+            *object_id,
+            *from,
+            *to,
+            record.turn_zone_change_index,
+        )),
     }
 }
 
 /// CR 400.7: a card's name can change as it moves, so a card cited before a later move in the
 /// batch takes that move's recorded name, if the move left a public zone (CR 400.2).
-fn name_at_event_time(segments: &mut [LogSegment], later: &[GameEvent]) {
+fn name_at_event_time(segments: &mut [LogSegment], batch: &BatchIndex, from_index: usize) {
     for segment in segments {
         let LogSegment::CardName { name, object_id } = segment else {
             continue;
         };
-        let next_move = later.iter().find_map(|event| match event {
-            GameEvent::ZoneChanged {
-                object_id: moved,
-                from,
-                record,
-                ..
-            } if moved == object_id => Some((*from, record)),
-            _ => None,
-        });
-        if let Some((Some(from), record)) = next_move {
+        let Some(object_moves) = batch.moves.get(object_id) else {
+            continue;
+        };
+        let next = object_moves.partition_point(|&(position, ..)| position < from_index);
+        if let Some(&(_, Some(from), recorded)) = object_moves.get(next) {
             if from.is_public() {
-                name.clone_from(&record.name);
+                recorded.clone_into(name);
             }
         }
     }
@@ -592,8 +646,9 @@ fn should_exclude_event(event: &GameEvent, state: &GameState) -> bool {
         // card; this event exists for mill triggers, so narrating it would duplicate
         // that line.
         GameEvent::Milled { .. } => true,
-        // CR 400.2 + CR 406.3 + CR 708.2: a card leaving a hidden zone becomes public
-        // only by arriving face up in a public zone, and a same-zone move says nothing.
+        // CR 400.2 + CR 406.3 + CR 708.2: a hidden-origin move is narrated only into a public
+        // zone and only if the card is face up in the end-of-batch state; a same-zone move says
+        // nothing.
         GameEvent::ZoneChanged {
             object_id,
             from: Some(from),
@@ -3189,6 +3244,10 @@ mod tests {
             .unwrap();
     }
 
+    fn is_first_a_leave_move(events: &[GameEvent], state: &GameState) -> bool {
+        is_player_leave_move(events, 0, &BatchIndex::new(events, state))
+    }
+
     /// CR 800.4a: only the exact move the leave node performed is the sweep.
     #[test]
     fn player_leave_journal_key_scopes_the_hidden_card_exclusion() {
@@ -3204,10 +3263,10 @@ mod tests {
         journal_zone_move(&mut state, &sweep_exile, leave);
         journal_zone_move(&mut state, &public_sweep, leave);
 
-        assert!(is_player_leave_move(&[sweep_exile], 0, &state));
-        assert!(!is_player_leave_move(&[face_up_exile], 0, &state));
-        assert!(!is_player_leave_move(&[public_sweep], 0, &state));
-        assert!(!is_player_leave_move(&[no_command], 0, &state));
+        assert!(is_first_a_leave_move(&[sweep_exile], &state));
+        assert!(!is_first_a_leave_move(&[face_up_exile], &state));
+        assert!(!is_first_a_leave_move(&[public_sweep], &state));
+        assert!(!is_first_a_leave_move(&[no_command], &state));
     }
 
     /// CR 800.4a: across a turn start the batch must show the owner's elimination before it.
@@ -3223,7 +3282,7 @@ mod tests {
         };
 
         let crossed = [hand_exile(leaver), eliminated.clone(), turn_started.clone()];
-        assert!(is_player_leave_move(&crossed, 0, &state));
+        assert!(is_first_a_leave_move(&crossed, &state));
 
         let eliminated_after_turn_start =
             [hand_exile(leaver), turn_started.clone(), eliminated.clone()];
@@ -3246,7 +3305,7 @@ mod tests {
             &same_turn,
             &public_origin,
         ] {
-            assert!(!is_player_leave_move(batch, 0, &state), "{batch:?}");
+            assert!(!is_first_a_leave_move(batch, &state), "{batch:?}");
         }
     }
 
@@ -3262,6 +3321,7 @@ mod tests {
 
     #[test]
     fn event_time_name_reads_public_origin_records_only() {
+        let state = GameState::new_two_player(42);
         let card = ObjectId(7);
         let named_move = |from, to, name: &str| {
             let GameEvent::ZoneChanged {
@@ -3286,7 +3346,7 @@ mod tests {
                 name: "After Name".to_string(),
                 object_id: card,
             }];
-            name_at_event_time(&mut segments, later);
+            name_at_event_time(&mut segments, &BatchIndex::new(later, &state), 0);
             match &segments[0] {
                 LogSegment::CardName { name, .. } => name.clone(),
                 other => panic!("{other:?}"),
@@ -3313,6 +3373,44 @@ mod tests {
         );
         let other_card = zone_move(ObjectId(8), Zone::Stack, Zone::Exile, PlayerId(0), 0);
         assert_eq!(rename(&[other_card]), "After Name");
+    }
+
+    #[test]
+    fn batch_resolution_scales_near_linearly() {
+        let mut state = GameState::new_two_player(42);
+        let proposal = state.resolved_rules_journal.begin_proposal().unwrap();
+        let events: Vec<GameEvent> = (0..10_000u64)
+            .flat_map(|i| {
+                [
+                    GameEvent::KeywordAbilityActivated {
+                        ability_tag: AbilityTag::Equip,
+                        player_id: PlayerId(0),
+                        source_id: ObjectId(i),
+                        is_mana_ability: false,
+                    },
+                    zone_move(
+                        ObjectId(100_000 + i),
+                        Zone::Library,
+                        Zone::Graveyard,
+                        PlayerId(0),
+                        i as usize,
+                    ),
+                ]
+            })
+            .collect();
+        for event in events.iter().skip(1).step_by(2) {
+            journal_zone_move(&mut state, event, proposal);
+        }
+
+        let started = std::time::Instant::now();
+        let entries = resolve_log_entries(&events, &state, &state);
+        let elapsed = started.elapsed();
+
+        assert_eq!(entries.len(), events.len());
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "20k-event batch took {elapsed:?}, limit 500ms"
+        );
     }
 
     #[test]

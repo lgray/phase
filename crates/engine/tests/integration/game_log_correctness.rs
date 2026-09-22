@@ -85,7 +85,6 @@ fn pass_until_elimination(runner: &mut GameRunner, mut result: ActionResult) -> 
     panic!("no elimination batch; waiting for {:?}", result.waiting_for);
 }
 
-/// P1 and P2 auto-pass until their own next turn, then P0 passes into its end step.
 fn arm_auto_pass_and_reach_end_step(runner: &mut GameRunner) {
     runner.act(GameAction::PassPriority).unwrap();
     for player in [P1, P2] {
@@ -449,7 +448,6 @@ fn adventure_resolution_names_the_adventure_face() {
     assert_eq!(exile.as_deref(), Some("Probe Creature Face"), "{entries:?}");
 }
 
-/// CR 702.6a: one equip activation is one log line.
 #[test]
 fn tagged_activation_logs_one_line() {
     let mut scenario = GameScenario::new();
