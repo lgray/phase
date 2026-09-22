@@ -1436,8 +1436,7 @@ pub struct LoopActionContext {
     /// CR 732.2a (FIX-1): the fixed in-cycle player choices recorded during the demonstrated
     /// iteration — every choice a beat inside this step asks of its controller, whichever kind of
     /// step it is; regenerate the writer set with
-    /// `grep -rnP '(?<![a-z_])record_(loop|trigger_step)_pin\s*\(' crates/engine/src/`. Replayed by the object-growth
-    /// detection drive via `build_recast_template` → `decision_template::resolve`. Round-trips via
+    /// `grep -rnP '(?<![a-z_])record_(loop|trigger_step)_pin\s*\(' crates/engine/src/`. Round-trips via
     /// serde for an offer-save KEPT by the conditional load migration (FIX-3); a save captured
     /// outside an object-growth shortcut window drops the whole sequence on load and re-records the
     /// pins from live play. Compared cross-cycle (element-wise `Vec` `PartialEq`) in the

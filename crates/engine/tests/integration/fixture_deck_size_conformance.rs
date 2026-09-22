@@ -267,7 +267,7 @@ fn order_slot_disagreement(at: &str, slot: &DecisionSlot) -> Option<String> {
 /// because nothing here decodes a whole document: that root also holds a card map, a
 /// decklist bundle and census artifacts that are not persisted game states at all.
 #[test]
-fn every_migrated_decision_slot_carries_the_point_its_neighbour_names() {
+fn every_migrated_slot_in_a_committed_gz_carries_the_point_its_neighbour_names() {
     use engine::analysis::decision_template::{DecisionPoint, DecisionPointKind, PinnedDecision};
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

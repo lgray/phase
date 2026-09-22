@@ -159,6 +159,9 @@ stage_locality_control || exit 1
 rc=0
 for FIX in "$@"; do
   [ -f "$FIX" ] || { echo "no such fixture: $FIX" >&2; rc=1; continue; }
+  # GNU `gzip -dc` transparently reads a single-member deflate zip, so an unrefused `.zip`
+  # would be decompressed, re-gzipped, and `mv`d over the archive with every arm green.
+  case "$FIX" in *.json.gz) ;; *) echo "not a .json.gz fixture: $FIX" >&2; rc=1; continue ;; esac
   TMP="$(stage_beside "$FIX")"
   STAGE_FILES="$STAGE_FILES $TMP"
   # CALL-SITE guard, and it is NOT redundant with `stage_locality_control` above. That

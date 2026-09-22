@@ -340,14 +340,15 @@ fn a_trigger_driven_period_still_publishes_no_offer_while_recording_its_answers(
     );
 }
 
-/// CR 400.7 — **the identity re-check separates a re-push that differs only in its seat.**
-/// `accumulate_loop_action_step` decides its clear from the sequence's FIRST step, so a
-/// controller change clears at length 1 and the re-push lands at index 0 again: a same-source
-/// `ResolveTrigger` occupies the captured index under another seat, and source alone admits it.
-/// The fixture is the board's own recorded step with its controller — and nothing else — changed,
-/// so the refusal can only be the seat conjunct's.
+/// **A harness self-check, not a production seam.** Every assertion runs
+/// `recorded_trigger_step_at`, the predicate this file defines, so no production line reverts
+/// to break the row; what it pins is the discriminating power of the index+source+seat key the
+/// replay rows below read a recorded sequence through. Both polarities run: the ordinary
+/// same-seat successor is admitted at the captured index, and a same-source re-push under
+/// another seat is refused. The fixture is the board's own recorded step with its controller —
+/// and nothing else — changed, so the refusal can only be the seat conjunct's.
 #[test]
-fn the_identity_re_check_separates_a_re_push_that_differs_only_in_its_seat() {
+fn recorded_trigger_step_at_separates_a_re_push_that_differs_only_in_its_seat() {
     let Some(performed) = board_b_performed(ACCEPTS) else {
         return;
     };

@@ -1094,11 +1094,10 @@ fn resolve_target(
 /// `None` on no match, and the CALLER maps that to the pin-kind-appropriate
 /// `ReplayFailure` — G2's per-pin-kind failure selection.
 ///
-/// The `Order` pin and the two `game::engine` slot seams enter through
-/// [`resolve_ability_instance`] rather than here; this function is that accessor's
-/// BATTLEFIELD DISJUNCT, and it remains the whole answer for the TARGET path
-/// ([`resolve_target`]'s `Object` arm and `evaluate_schedule`'s `Object` head), where the
-/// battlefield filter IS the CR 608.2b legality re-check.
+/// The two `game::engine` slot seams enter through [`resolve_ability_instance`] rather than
+/// here; this function is that accessor's BATTLEFIELD DISJUNCT, and it remains the whole answer
+/// for the TARGET path ([`resolve_target`]'s `Object` arm and `evaluate_schedule`'s `Object`
+/// head), where the battlefield filter IS the CR 608.2b legality re-check.
 pub(crate) fn resolve_source(src: &DecisionSource, state: &GameState) -> Option<ObjectId> {
     match src {
         // CR 400.7: bind ONE incarnation — a re-entered permanent bumps `incarnation`
@@ -1131,11 +1130,11 @@ pub(crate) fn resolve_source(src: &DecisionSource, state: &GameState) -> Option<
 /// INSTANCE it identifies — a different question from [`resolve_source`]'s, and the reason
 /// this accessor exists rather than a second spelling at each caller.
 ///
-/// THE ONLY SPELLING of that question. Every production asker routes here: `resolve_pin`'s
-/// `Order` arm and `evaluate_schedule`'s `Seat` arm call it directly, and
-/// `game::engine::slot_source_prompted` is the `bool`-valued wrapper every seam in that module
-/// asks through — each of them by way of [`take_answer`], which owns the selection. There is no
-/// bare `resolve_source` slot comparison left in `game::engine`. Regenerate the asker set with
+/// THE ONLY SPELLING of that question. Every production asker routes here:
+/// `evaluate_schedule`'s `Seat` arm calls it directly, and `game::engine::slot_source_prompted`
+/// is the `bool`-valued wrapper every seam in that module asks through — each of them by way of
+/// [`take_answer`], which owns the selection. There is no bare `resolve_source` slot comparison
+/// left in `game::engine`. Regenerate the asker set with
 /// `grep -rn 'resolve_ability_instance\|slot_source_prompted' crates/engine/src/`.
 ///
 /// A *pin's* source identifies a TARGET, so [`resolve_source`] is deliberately

@@ -65,12 +65,20 @@ pub struct TournamentRequestId(pub u64);
 ///      u32`, so `WaitingFor::LoopShortcut` publishes the threshold the
 ///      reduction measured separately from the count this engine will deliver.
 ///      Both new fields carry a `#[serde(default)]`, the removed one did too,
-///      and the struct has no `deny_unknown_fields` — so this is a capability
-///      bump rather than a parse bump: a v109 frame's `max_iterations` is
-///      dropped here and a v110 frame's absent key defaults there, leaving a
-///      stale peer driving a count neither side measured, silently. The
-///      handshake is the only place that skew is refusable. P2P moves in
-///      lockstep (wire 92); lobby messages are unchanged.
+///      and the struct has no `deny_unknown_fields` — so this half is a
+///      capability bump rather than a parse bump: a v109 frame's
+///      `max_iterations` is dropped here and a v110 frame's absent key defaults
+///      there, leaving a stale peer driving a count neither side measured,
+///      silently. The handshake is the only place that skew is refusable.
+///      The same version also moves `DecisionSlot`, which reaches this wire
+///      through `WaitingFor::LoopShortcut`'s schema, its declaration and
+///      `GameState::decision_templates`: the slot gained a required
+///      `point: ChoicePoint` naming WHICH CR choice it identifies, and
+///      `PinnedDecision::Order` replaced its bare `source` with a full slot.
+///      Neither field carries a serde default, so this half is a PARSE break
+///      in both directions rather than a silent capability skew, and a
+///      snapshot written by either side is unreadable by the other.
+///      P2P moves in lockstep (wire 92); lobby messages are unchanged.
 ///
 /// 109 — CR 201.5a granter binding: `ObjectScope::GrantingObject` and
 ///      `ObjectScope::SpecificObject`, `TargetFilter::GrantingObject { bound }`,
@@ -412,14 +420,6 @@ pub struct TournamentRequestId(pub u64);
 ///      `#[serde(default)]`. A v75 peer parses a v76 `PendingCast` and a v76
 ///      peer parses every v75 one, so they ride this condition rather than
 ///      forcing it, and no persisted `PendingCast` changes shape.
-///      The same version also moves `DecisionSlot`, which reaches this wire
-///      through `WaitingFor::LoopShortcut`'s schema, its declaration and
-///      `GameState::decision_templates`: the slot gained a required
-///      `point: ChoicePoint` naming WHICH CR choice it identifies, and
-///      `PinnedDecision::Order` replaced its bare `source` with a full slot.
-///      Neither field carries a serde default, so this half is a PARSE break
-///      in both directions rather than a silent capability skew, and a
-///      snapshot written by either side is unreadable by the other.
 ///
 /// 75 — `ResolutionCastCleanup`, its delayed-trigger receipts, and every
 ///      receipt-eligible delayed-install origin now carry the producer-issued

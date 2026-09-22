@@ -3733,9 +3733,7 @@ fn pinned_decisions_to_points(
                     kind: DecisionPointKind::ConvokeTaps { tappable },
                 }
             }
-            // FIX-1 (B1): reify the recorded fixed in-cycle choices. The drive replays these SAME
-            // pins via `decision_template::resolve` (CR 608.2b ByIdentity live re-binding), so the
-            // offer schema carries their read-side dual (one template = single source of truth).
+            // FIX-1 (B1): reify the recorded fixed in-cycle choices.
             // CR 608.2b: resolve each pinned target to its live legal `TargetRef` — the pinned
             // identity IS the singleton legal set (a fixed declinable ∞ offer, no FE re-selection).
             PinnedDecision::Targets { slot, targets } => {
@@ -7621,9 +7619,10 @@ fn drive_loop_action_iteration(
                 apply_action(clone, actor, GameAction::PassPriority, None)
                     .map_err(|_| RecastAbort)?;
             }
-            // CR 117.3b: passing priority is what advances a beat toward this step's own settle
-            // boundary. WHICH boundary that is, is decided ABOVE this match, before the beat is
-            // answered — a trigger-driven step's boundary is not a `Priority` beat at all.
+            // CR 117.4 + CR 117.3b: passing priority is what advances a beat toward this
+            // step's own settle boundary. WHICH boundary that is, is decided ABOVE this match,
+            // before the beat is answered — a trigger-driven step's boundary is not a
+            // `Priority` beat at all.
             WaitingFor::Priority { .. } => {
                 apply_action(clone, actor, GameAction::PassPriority, None)
                     .map_err(|_| RecastAbort)?;
